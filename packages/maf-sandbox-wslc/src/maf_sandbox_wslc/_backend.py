@@ -87,10 +87,10 @@ _LABEL_VALUE_MAX = 63
 _LABEL_VALUE_SAFE = re.compile(r"[A-Za-z0-9._-]+")
 _LABEL_VALUE_DIGEST = re.compile(r"sha256-[0-9a-f]{48}")
 
-#: `wslc` exits non-zero for a container that is not there, so removal is judged by this.
 # The narrowest set any shipped backend declares: no pull surface, no removal, no run_code.
 _CAPABILITIES = frozenset({Capability.EXEC, Capability.FILES_IN})
 
+#: `wslc` exits non-zero for a container that is not there, so removal is judged by this.
 _NOT_FOUND = "WSLC_E_CONTAINER_NOT_FOUND"
 # `container cp` reports a missing guest path with this code on the live CLI.
 _PATH_NOT_FOUND = "ERROR_PATH_NOT_FOUND"

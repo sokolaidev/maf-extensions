@@ -160,7 +160,7 @@ It costs round trips — several backend calls per host-tool call, plus polling,
 | `os_families: frozenset[OsFamily]` on the backend | `declarations.os_families` |
 
 ```python
-from maf_sandbox import BackendDeclarations, Capability, Egress
+from maf_sandbox import BackendDeclarations, Capability, Egress, Isolation
 
 class MyBackend:
     name = "mine"

@@ -505,6 +505,46 @@ class TestTheDeclarationsObject:
         with pytest.raises(SandboxBackendNotPermitted, match="egress_modes"):
             SandboxRouter([backend], min_isolation=Isolation.NONE)
 
+    def test_a_leftover_property_that_raises_is_still_caught(self):
+        """`hasattr` runs the descriptor and answers False when it raises, which waves through
+        exactly the backend this guard exists for: every superseded declaration was written as
+        a `property`, so a leftover one whose backing field is gone is the likely shape."""
+        backend = InProcessSandboxBackend(isolation=Isolation.MICROVM)
+        type(backend).limits = property(  # type: ignore[attr-defined]
+            lambda self: self._gone  # pyright: ignore[reportAttributeAccessIssue]
+        )
+        try:
+            assert hasattr(backend, "limits") is False
+            with pytest.raises(SandboxBackendNotPermitted, match="limits"):
+                SandboxRouter([backend])
+        finally:
+            del type(backend).limits  # type: ignore[attr-defined]
+
+    def test_a_leftover_declaration_is_never_executed_to_find_it(self):
+        """A declaration this package has stopped reading should not be run to learn it is
+        there — a property with a side effect, or a network call, is not the router's to make."""
+        ran: list[int] = []
+        backend = InProcessSandboxBackend(isolation=Isolation.MICROVM)
+        type(backend).capabilities = property(  # type: ignore[attr-defined]
+            lambda self: ran.append(1) or frozenset()
+        )
+        try:
+            with pytest.raises(SandboxBackendNotPermitted, match="capabilities"):
+                SandboxRouter([backend])
+            assert ran == []
+        finally:
+            del type(backend).capabilities  # type: ignore[attr-defined]
+
+    def test_an_explicit_none_is_refused_rather_than_read_as_silence(self):
+        """Absent means "declared nothing" and is legal; `declarations = None` is a stated value
+        this package cannot read. Conflating them answers a declaration error with whatever the
+        defaults refuse next — an egress message for a backend whose egress was never the
+        problem."""
+        backend = _BackendDeclaringNothing()
+        setattr(backend, "declarations", None)
+        with pytest.raises(SandboxBackendNotPermitted, match="NoneType"):
+            SandboxRouter([backend])
+
     def test_a_declarations_of_the_wrong_shape_is_refused_and_named(self):
         backend = _BackendDeclaringNothing()
         setattr(backend, "declarations", frozenset({Egress.CLOSED}))

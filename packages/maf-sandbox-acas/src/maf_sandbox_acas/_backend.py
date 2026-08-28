@@ -197,8 +197,10 @@ _FILES_LIMITS = TransferLimits(
 )
 _LIMITS = SandboxLimits(files_in=_FILES_LIMITS, files_out=_FILES_LIMITS)
 
-# What the router reads off this backend. Every field is a constant: the sandbox group's egress
-# policy, the data plane's own surface and the guest family are all fixed before a spec arrives.
+# What the router reads off this backend. The three fields stated here are constants — the
+# sandbox group's egress policy and the data plane's own surface are both fixed before a spec
+# arrives. `os_families` is left unstated, so the router reads it as the empty set and refuses a
+# spec that asks for a guest shape; declaring the family this backend actually hands out is #588.
 #
 # `egress_modes`: `_egress_policy` builds a Deny-default allowlist — named hosts resolve as
 # ALLOWLIST, an empty allowlist as CLOSED (deny all). Never UNRESTRICTED, because the group's

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import inspect
 import logging
 import math
 import weakref
@@ -100,10 +101,12 @@ class SandboxBackendNotPermitted(PermissionError):
     would hide a misconfiguration, and silently proceeding with the weaker one would break
     the boundary every claim about the execution surface rests on.
 
-    The **declaration** one is raised at construction and again per spec: a backend still
-    carrying one of the attributes :class:`~maf_sandbox.BackendDeclarations` replaced, a
-    ``declarations`` that is not one, or a ``capabilities`` / ``egress_modes`` that is not a
-    set.
+    The **declaration** one covers a backend this package cannot read, and it is raised at two
+    times. At construction, and again per spec: a backend still carrying one of the attributes
+    :class:`~maf_sandbox.BackendDeclarations` replaced, or a ``declarations`` that is not one —
+    both are properties of the backend alone, so the earliest moment is construction. Per spec
+    only: a ``capabilities`` or ``egress_modes`` that is not a set, which is read where the
+    match consumes it.
     """
 
 
@@ -265,6 +268,23 @@ def _declared_isolation(backend: SandboxBackend) -> Isolation:
 _SUPERSEDED_DECLARATIONS = ("capabilities", "limits", "egress_modes", "os_families")
 
 
+#: Sentinel for :func:`_has_attribute`. ``None`` cannot serve as one: an attribute explicitly set
+#: to ``None`` is a declaration to refuse, not an absent one to read as silence.
+_MISSING = object()
+
+
+def _has_attribute(backend: SandboxBackend, name: str) -> bool:
+    """Whether ``backend`` defines ``name``, **without running it**.
+
+    Not :func:`hasattr`, which calls the descriptor and answers ``False`` when it raises. Every
+    superseded declaration was written as a ``property``, so the half-migrated backend this is
+    looking for is the one whose leftover property raises — and ``hasattr`` reads exactly that
+    as "no such attribute" and waves it through. Not executing it is the second reason: a
+    declaration this package has stopped reading should not be run to find out it is there.
+    """
+    return inspect.getattr_static(backend, name, _MISSING) is not _MISSING
+
+
 def _declarations(backend: SandboxBackend) -> BackendDeclarations:
     """The one object every optional declaration is read from: one ``getattr``, four fields.
 
@@ -278,7 +298,7 @@ def _declarations(backend: SandboxBackend) -> BackendDeclarations:
     declared to be narrow. Nothing in the type system marks any of this, because none of the
     four was ever a Protocol member and ``isinstance`` holds either way.
     """
-    superseded = [name for name in _SUPERSEDED_DECLARATIONS if hasattr(backend, name)]
+    superseded = [name for name in _SUPERSEDED_DECLARATIONS if _has_attribute(backend, name)]
     if superseded:
         raise SandboxBackendNotPermitted(
             f"sandbox backend {backend.name!r} declares {', '.join(superseded)} directly, "
@@ -287,9 +307,9 @@ def _declarations(backend: SandboxBackend) -> BackendDeclarations:
             "attribute. Refused rather than ignored: nothing reads those attributes now, so "
             "each one left behind is silently replaced by that field's default."
         )
-    declared: object = getattr(backend, "declarations", None)
-    if declared is None:
+    if not _has_attribute(backend, "declarations"):
         return DEFAULT_BACKEND_DECLARATIONS
+    declared: object = getattr(backend, "declarations", None)
     if isinstance(declared, BackendDeclarations):
         return declared
     kind = type(declared)
@@ -395,9 +415,8 @@ class SandboxRouter:
             rung below ``min_isolation`` or one this package does not recognise, or when its
             declarations cannot be read — an attribute
             :class:`~maf_sandbox.BackendDeclarations` replaced, or a ``declarations`` that is
-            not one. Failing
-            here rather than at first use means a misconfigured deployment cannot start with
-            the feature apparently enabled and quietly unsafe.
+            not one. Failing here rather than at first use means a misconfigured deployment
+            cannot start with the feature apparently enabled and quietly unsafe.
         ValueError: at construction, when ``min_isolation`` is not a rung this package
             recognises — raised by :class:`Isolation` itself rather than surfacing later as a
             bare ``KeyError`` out of a rank comparison, which would only happen once a backend

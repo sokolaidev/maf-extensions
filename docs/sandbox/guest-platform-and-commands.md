@@ -118,7 +118,7 @@ os_families: frozenset[OsFamily]
 requires_os_family: OsFamily | None = None
 ```
 
-`ensure_can_serve` refuses when `spec.requires_os_family` is set and is not in the backend's `os_families`. A spec that declares nothing is refused by nothing, exactly as `spec.requires` behaves against `backend.capabilities` today, so the change is additive for every existing caller.
+`ensure_can_serve` refuses when `spec.requires_os_family` is set and is not in the backend's `declarations.os_families`. A spec that declares nothing is refused by nothing, exactly as `spec.requires` behaves against `declarations.capabilities` today, so the change is additive for every existing caller.
 
 **Two values, not three.** Subtract command availability — Decision 2 sends it elsewhere — and nothing left branches on Linux versus macOS. What does branch is argv quoting (`shlex.join` versus `CommandLineToArgvW` rules), path grammar (a `/` root versus drive letters and UNC), the Windows reserved device names, and what `EntryKind.SYMLINK` maps from. All four split POSIX from Windows and none splits Linux from macOS.
 
