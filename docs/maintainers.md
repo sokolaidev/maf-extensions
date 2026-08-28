@@ -74,6 +74,7 @@ Setting it up is a one-time job. The variables below all point at Azure resource
    | `ACAS_SANDBOX_ENDPOINT`, `ACAS_SANDBOX_SUBSCRIPTION_ID`, `ACAS_SANDBOX_RESOURCE_GROUP`, `ACAS_SANDBOX_GROUP`, `ACAS_SANDBOX_REGISTRY` | the sandbox group and registry (Azure 1–3) |
    | `BICEP_SANDBOX_IMAGE` | `repository:tag` of the imported Bicep image (Azure 3) |
    | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_CHAT_MODEL` | the reasoning-model deployment (Azure 5) |
+   | `ACAS_SANDBOX_NONROOT_IMAGE` | **optional.** `repository:tag` of an imported image whose `USER` is not root. Nothing else in the live suites needs one, and unset is a supported state: the leg that measures the acquire-time non-root gate skips and names itself in the `-ra` summary. Set it and that leg costs one more billable sandbox per run |
 
 Each pair shares one assertion script, which is what keeps the two sides comparable. **None of them reads the model's prose for anything the run is being gated on**. Samples 01–06 and 09 each print a fenced block of what their tool returned — the framework records that beside the call, so the model does not write it — closed by a line the sample tagged `[measured]`. The samples pass every reply through `quoted` in `_scaffold.py` first, which turns any line of it beginning with that tag into a quotation, so a model can write the heading and cannot close the block.
 

@@ -95,9 +95,12 @@ jobs:
       - name: Sync workspace
         run: uv sync --locked
 
-      # `-ra` because this suite skips itself when either variable it gates on is empty, and
-      # the check above has already made that impossible: a skip here is a bug rather than a
-      # configuration gap, and without the summary it reads identically to a pass.
+      # `-ra` because this suite skips itself when a variable it gates on is empty, and the
+      # check above has already made that impossible for every required one: a skip here is a
+      # bug rather than a configuration gap, and without the summary it reads identically to a
+      # pass. One leg is deliberately optional — the non-root gate needs an image whose USER is
+      # not root, which a deployment need not have imported — and it names itself in the
+      # summary when it skips.
       - name: Run the ACAS live suite
         env:
           ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
@@ -106,6 +109,7 @@ jobs:
           ACAS_SANDBOX_GROUP: ${{ vars.ACAS_SANDBOX_GROUP }}
           ACAS_SANDBOX_REGISTRY: ${{ vars.ACAS_SANDBOX_REGISTRY }}
           MAF_SANDBOX_ACAS_E2E_IMAGE: ${{ vars.BICEP_SANDBOX_IMAGE }}
+          MAF_SANDBOX_ACAS_E2E_NONROOT_IMAGE: ${{ vars.ACAS_SANDBOX_NONROOT_IMAGE }}
         run: |
           set -euo pipefail
           uv run pytest packages/maf-sandbox-acas/tests/test_acas_e2e.py -q -ra

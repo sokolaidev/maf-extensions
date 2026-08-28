@@ -621,10 +621,17 @@ class _GuestAnswer:
 class _GuestSandboxClient(_FakeSandboxClient):
     """A sandbox whose `exec` answers `id -u`, which is the whole of the acquire-time probe."""
 
-    def __init__(self, sandbox_id: str, answer) -> None:
+    def __init__(self, sandbox_id: str, answer, owner) -> None:
         super().__init__(sandbox_id)
         self._answer = answer
+        self._owner = owner
         self.execs: list[tuple[str, str]] = []
+
+    async def begin_delete(self) -> None:
+        await super().begin_delete()
+        if self._owner.delete_fails:
+            raise RuntimeError("the principal may not delete this sandbox")
+        self._owner.deleted.append(self.sandbox_id)
 
     async def set_lifecycle_policy(self, policy) -> None:
         return None
@@ -639,9 +646,11 @@ class _GuestSandboxClient(_FakeSandboxClient):
 class _GuestGroupClient:
     """Hands out sandboxes that answer the probe, on the create path and the reuse path alike."""
 
-    def __init__(self, answer) -> None:
+    def __init__(self, answer, delete_fails: bool = False) -> None:
         self._answer = answer
+        self.delete_fails = delete_fails
         self.create_calls = 0
+        self.deleted: list[str] = []
         self.clients: list[_GuestSandboxClient] = []
 
     def get_sandbox_client(self, sandbox_id: str) -> _GuestSandboxClient:
@@ -658,7 +667,7 @@ class _GuestGroupClient:
         return _Poller()
 
     def _client(self, sandbox_id: str) -> _GuestSandboxClient:
-        client = _GuestSandboxClient(sandbox_id, self._answer)
+        client = _GuestSandboxClient(sandbox_id, self._answer, self)
         self.clients.append(client)
         return client
 
@@ -815,16 +824,17 @@ class TestAnImageWhoseGuestCannotWrite:
             backend.acquire(self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_OUT))
         )
 
-    def test_an_unreadable_probe_is_asked_again_next_time(self):
-        """Only an answer is remembered: a transport hiccup must not decide for the process."""
-        client = _GuestGroupClient(RuntimeError("service unavailable"))
+    def test_an_image_that_could_not_answer_is_asked_only_once(self):
+        """An image with no `id` would otherwise put a round trip, and its timeout, in front
+        of every tool call — including the warm reuse the probe used to skip entirely."""
+        client = _GuestGroupClient(RuntimeError("no shell in this image"))
         backend = _backend_with(client)
         spec = _spec_requiring(Capability.EXEC, Capability.FILES_OUT)
 
         asyncio.run(backend.acquire(self._key("scope-a"), spec))
         asyncio.run(backend.acquire(self._key("scope-b"), spec))
 
-        assert len(client.probes) == 2
+        assert len(client.probes) == 1
 
     def test_the_uid_is_read_once_per_image(self):
         """A property of the image, not of the sandbox: a second key pays no round trip."""
@@ -868,6 +878,78 @@ class TestAnImageWhoseGuestCannotWrite:
             )
 
         assert client.create_calls == 0
+
+    def test_a_refused_create_is_deleted_rather_than_left_running(self):
+        """The create is what learned the uid, and an acquire that raises is handed to nobody —
+        so the framework's per-call cleanup never sees this sandbox. It is billable until
+        something deletes it, and this is the only place that can."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+
+        with pytest.raises(SandboxCapabilityNotSupported):
+            asyncio.run(
+                backend.acquire(self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_OUT))
+            )
+
+        assert client.deleted == ["sbx-1"]
+        assert backend._registry == {}
+        assert backend._undeleted == {}
+
+    def test_a_refused_create_whose_delete_fails_is_kept_for_the_retry(self):
+        """Same record `dispose` keeps: the registry no longer holds the id, so nothing else
+        in this process could ask for it again."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(10001), delete_fails=True)
+        backend = _backend_with(client)
+        key = self._key()
+
+        with pytest.raises(SandboxCapabilityNotSupported):
+            asyncio.run(
+                backend.acquire(key, _spec_requiring(Capability.EXEC, Capability.FILES_OUT))
+            )
+
+        assert client.deleted == []
+        assert backend._undeleted == {(key.scope, key.thread_id, key.agent_dir): {"sbx-1"}}
+
+    def test_a_refused_reuse_keeps_the_sandbox_for_the_key_to_dispose(self):
+        """The other half of the split: a warm sandbox predates this acquire, so it belongs to
+        the key's own disposal rather than to the acquire that was refused."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+        key = self._key()
+        registry_key = (key.scope, key.thread_id, key.agent_dir, "codeact")
+        backend._registry[registry_key] = "sbx-warm"
+
+        with pytest.raises(SandboxCapabilityNotSupported):
+            asyncio.run(
+                backend.acquire(key, _spec_requiring(Capability.EXEC, Capability.FILES_OUT))
+            )
+
+        assert backend._registry == {registry_key: "sbx-warm"}
+        assert client.deleted == []
+
+    def test_a_refused_reuse_is_not_logged_as_a_reuse(self, caplog):
+        """`acquire` promises to name which of three things happened. A refused call did none
+        of them."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+        key = self._key()
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "codeact")] = "sbx-warm"
+
+        with caplog.at_level(logging.INFO, logger="maf_sandbox_acas"):
+            with pytest.raises(SandboxCapabilityNotSupported):
+                asyncio.run(
+                    backend.acquire(key, _spec_requiring(Capability.EXEC, Capability.FILES_OUT))
+                )
+
+        assert not [r for r in caplog.records if "sandbox reused" in r.getMessage()], caplog.text
 
     def test_a_workload_that_neither_execs_nor_collects_is_never_probed(self):
         """A spec asking for nothing the uid could refuse pays nothing to find it out."""

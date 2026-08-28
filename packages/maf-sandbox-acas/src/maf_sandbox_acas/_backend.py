@@ -158,6 +158,11 @@ _GUEST_UID_COMMAND = "id -u"
 #: into a directory that does not exist fails for a reason unrelated to the answer.
 _PROBE_WORKING_DIRECTORY = "/"
 
+#: How long the probe gets. Its own bound rather than `read_timeout_seconds`, which is 120 by
+#: default and describes a read that never returns: a guest that has not answered `id -u` in 30
+#: seconds is not going to, and this runs on the way to a cold acquire.
+_PROBE_TIMEOUT_S = 30.0
+
 
 def _image_identity(spec: SandboxSpec) -> tuple[str, str]:
     """What a spec names its image by — the key the guest's uid is remembered under.
@@ -166,6 +171,11 @@ def _image_identity(spec: SandboxSpec) -> tuple[str, str]:
     can still boot different artefacts.
     """
     return (spec.image_id or "", spec.image or "")
+
+
+def _image_label(spec: SandboxSpec) -> str:
+    """How a message names the image :func:`_image_identity` keys on."""
+    return spec.image or spec.image_id or "the configured image"
 
 
 #: So the ceilings below read as sizes rather than as eight-digit literals.
@@ -621,9 +631,11 @@ class AcasSandboxBackend:
         # loop, so one shared client would be a cross-loop hazard; one per call would leak a
         # connection pool per tool invocation.
         self._clients: dict[asyncio.AbstractEventLoop, tuple[Any, Any]] = {}
-        #: The uid `exec` runs as, per image a spec named. A property of the image rather
-        #: than of the sandbox booted from it, so one probe answers for every sandbox after.
-        self._guest_uids: dict[tuple[str, str], int] = {}
+        #: The uid `exec` runs as, per image a spec named — `None` where the image could not
+        #: say. A property of the image rather than of the sandbox booted from it, so one probe
+        #: answers for every sandbox after; membership, not the value, is what says it was
+        #: asked, because an image with no `id` must not be re-probed on every tool call.
+        self._guest_uids: dict[tuple[str, str], int | None] = {}
         #: Which (image, kind) pairs have already been warned about. `acquire` runs on every
         #: tool call, and a warning per call is noise rather than a signal.
         self._warned_about_the_guest: set[tuple[tuple[str, str], str]] = set()
@@ -779,13 +791,6 @@ class AcasSandboxBackend:
             try:
                 sc = gc.get_sandbox_client(sandbox_id)
                 await sc.ensure_running(timeout=_RESUME_TIMEOUT_S)
-                logger.info(
-                    "sandbox reused: id=%s kind=%s thread=%s agent=%s",
-                    sandbox_id,
-                    spec.kind,
-                    key.thread_id,
-                    key.agent_dir,
-                )
                 reused = _AcasSandbox(sc, self._config.read_timeout_seconds)
             except Exception as exc:  # noqa: BLE001 - a dead sandbox is replaced, not reported
                 # Not a warning: a sandbox reclaimed by its auto-delete timer between rounds
@@ -799,8 +804,16 @@ class AcasSandboxBackend:
             else:
                 # Outside the `try`, because a refusal is this acquire's answer rather than a
                 # sandbox that failed to resume, and the handler above would swallow it into a
-                # replacement create.
+                # replacement create. Before the log, so a refused acquire does not report one
+                # of the three outcomes `acquire` promises to name.
                 await self._refuse_or_warn_where_the_guest_cannot_write(spec, reused)
+                logger.info(
+                    "sandbox reused: id=%s kind=%s thread=%s agent=%s",
+                    sandbox_id,
+                    spec.kind,
+                    key.thread_id,
+                    key.agent_dir,
+                )
                 return reused
             self._registry.pop(registry_key, None)
 
@@ -847,8 +860,41 @@ class AcasSandboxBackend:
                 sc.sandbox_id,
             )
         created = _AcasSandbox(sc, self._config.read_timeout_seconds)
-        await self._refuse_or_warn_where_the_guest_cannot_write(spec, created)
+        try:
+            await self._refuse_or_warn_where_the_guest_cannot_write(spec, created)
+        except SandboxCapabilityNotSupported:
+            self._registry.pop(registry_key, None)
+            await self._release_the_refused(gc, key, sc.sandbox_id)
+            raise
         return created
+
+    async def _release_the_refused(self, gc: Any, key: SandboxKey, sandbox_id: str) -> None:
+        """Delete a sandbox this acquire created and then refused; remember it if that fails.
+
+        An acquire that raises is handed to nobody, and the framework's per-call cleanup
+        disposes only what it was handed — so without this the microVM runs on, billable and
+        unusable, until the auto-delete timer or the conversation's purge reaches it.  The
+        caller has already dropped it from the registry.
+        """
+        prefix = (key.scope, key.thread_id, key.agent_dir)
+        # Before the await, the way `dispose` records it: the registry no longer holds this id
+        # and there is no listing to fall back on, so a delete that fails is retried only here.
+        self._undeleted[prefix] = self._undeleted.get(prefix, set()) | {sandbox_id}
+        if (await self._delete(gc, sandbox_id)).failure is not None:
+            return
+        logger.info(
+            "sandbox released: id=%s thread=%s agent=%s",
+            sandbox_id,
+            key.thread_id,
+            key.agent_dir,
+        )
+        # Read from the live map, not from what this call wrote: a disposal running beside it
+        # may have recorded ids of its own.
+        left = self._undeleted.get(prefix, set()) - {sandbox_id}
+        if left:
+            self._undeleted[prefix] = left
+        else:
+            self._undeleted.pop(prefix, None)
 
     async def _refuse_or_warn_where_the_guest_cannot_write(
         self, spec: SandboxSpec, sandbox: _AcasSandbox | None = None
@@ -859,20 +905,21 @@ class AcasSandboxBackend:
         The two planes act as two principals: the file plane writes as root, so every directory
         it creates lands ``0:0 0755``, while ``exec`` runs as the image's ``USER`` and the SDK
         exposes no selector to raise it.  On an image whose guest is not root, a guest program
-        can therefore create nothing beside the files it was given — neither a declared output
-        nor the host-tool transport's own markers — however the working directory is chosen,
-        because the call's own directory is one the file plane made.
+        can therefore create nothing inside a directory the file plane made — neither a declared
+        output beside the files it was given nor the host-tool transport's own markers, which go
+        into a call directory the launcher's own upload created.
 
         Called twice by :meth:`_get_or_create`: once with no sandbox, which answers only from
         what an earlier acquire measured and so refuses before paying for a create, and once
-        with the sandbox the probe runs in.  A sandbox refused after its create stays
-        registered, so the disposal that ends the turn still reaches it.  The warning is emitted
-        once per image and kind rather than on both of those calls, and rather than on every
-        acquire — this method runs on every tool call.
+        with the sandbox the probe runs in — where a refused **create** is deleted by the caller
+        and a refused **reuse** stays registered for the key's own disposal.  The warning is
+        emitted once per image and kind rather than on both of those calls, and rather than on
+        every acquire — this method runs on every tool call.
 
-        An image whose uid cannot be read is **served**.  Refusing on an unreadable probe would
-        take a working root image off a deployment, where serving it costs no more than the
-        failure that happens today.
+        An image whose uid cannot be read is **served**, and asked only once.  Refusing on an
+        unreadable probe would take a working root image off a deployment, where serving it
+        costs no more than the failure that happens today; re-probing one would put an `exec`
+        round trip, and its timeout, in front of every tool call.
 
         Raises:
             SandboxCapabilityNotSupported: when the spec requires a capability only a guest that
@@ -880,13 +927,17 @@ class AcasSandboxBackend:
         """
         if not spec.requires & _PROBE_WHEN_REQUIRED:
             return
-        uid = self._guest_uids.get(_image_identity(spec))
-        if uid is None and sandbox is not None:
+        identity = _image_identity(spec)
+        if identity in self._guest_uids:
+            uid = self._guest_uids[identity]
+        elif sandbox is None:
+            return
+        else:
             uid = await self._probe_guest_uid(sandbox, spec)
         if uid is None or uid == 0:
             return
 
-        image = spec.image or spec.image_id or "the configured image"
+        image = _image_label(spec)
         refused = spec.requires & _NEEDS_A_WRITING_GUEST
         if refused:
             raise SandboxCapabilityNotSupported(
@@ -916,17 +967,21 @@ class AcasSandboxBackend:
     async def _probe_guest_uid(self, sandbox: _AcasSandbox, spec: SandboxSpec) -> int | None:
         """The uid ``exec`` runs as, remembered per image, ``None`` when the guest cannot say.
 
-        Remembered the way a resolved disk-image id is: the uid belongs to the artefact a
-        reference names rather than to the sandbox booted from it, so one round trip on one cold
-        acquire answers for every sandbox after it.  Only an answer is remembered, so an image
-        that did not report one is asked again on the next acquire.
+        The uid belongs to the artefact a reference names rather than to the sandbox booted
+        from it, so one round trip on one cold acquire answers for every sandbox after it.  The
+        memo is this backend instance's, not the module's — unlike ``_images``' disk-image cache
+        — so a host that builds a backend per request pays one probe per request.
+
+        **A failure is remembered too**, as ``None``: an image with no ``id`` would otherwise be
+        asked again on every acquire, including the warm reuse the probe used to skip, and each
+        ask is a round trip bounded by :data:`_PROBE_TIMEOUT_S`.
         """
-        image = spec.image or spec.image_id or "the configured image"
+        image = _image_label(spec)
         try:
             answered = await sandbox.exec(
                 _GUEST_UID_COMMAND,
                 working_directory=_PROBE_WORKING_DIRECTORY,
-                timeout=self._config.read_timeout_seconds,
+                timeout=_PROBE_TIMEOUT_S,
             )
         except Exception as unreachable:  # noqa: BLE001 - an acquire must not fail over this
             logger.debug(
@@ -935,6 +990,7 @@ class AcasSandboxBackend:
                 _GUEST_UID_COMMAND,
                 error_detail(unreachable),
             )
+            self._guest_uids[_image_identity(spec)] = None
             return None
         reported = answered.stdout.strip()
         if answered.exit_code != 0 or not reported.isdecimal():
@@ -945,6 +1001,7 @@ class AcasSandboxBackend:
                 answered.exit_code,
                 reported,
             )
+            self._guest_uids[_image_identity(spec)] = None
             return None
         uid = int(reported)
         self._guest_uids[_image_identity(spec)] = uid
