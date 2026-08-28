@@ -871,14 +871,14 @@ class TestAnImageWhoseGuestIsNotRoot:
         This is the launcher's own first two steps, which is why the transport cannot start
         here — the call directory arrives root-owned and the run's work directory goes inside it.
         """
-        call = f"{_WORK}/{uuid.uuid4().hex[:12]}"
+        guest_call = f"{_WORK}/{uuid.uuid4().hex[:12]}"
         nonroot.run(
-            nonroot.sandbox.write_file(f"{call}/given.txt", "in\n", working_directory=_WORK)
+            nonroot.sandbox.write_file(f"{guest_call}/given.txt", "in\n", working_directory=_WORK)
         )
 
         refused = nonroot.run(
             nonroot.sandbox.exec(
-                ["mkdir", f"{call}/work"], working_directory="/", timeout=_EXEC_TIMEOUT
+                ["mkdir", f"{guest_call}/work"], working_directory="/", timeout=_EXEC_TIMEOUT
             )
         )
 

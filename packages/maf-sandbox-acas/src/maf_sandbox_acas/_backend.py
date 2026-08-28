@@ -156,7 +156,7 @@ _GUEST_UID_COMMAND = "id -u"
 
 #: Where that runs. Never `spec.work_dir`, which nothing has created yet at acquire: an exec
 #: into a directory that does not exist fails for a reason unrelated to the answer.
-_PROBE_WORKING_DIRECTORY = "/"
+_GUEST_PROBE_WORKING_DIRECTORY = "/"
 
 #: How long the probe gets. Its own bound rather than `read_timeout_seconds`, which is 120 by
 #: default and describes a read that never returns: a guest that has not answered `id -u` in 30
@@ -975,12 +975,18 @@ class AcasSandboxBackend:
         **A failure is remembered too**, as ``None``: an image with no ``id`` would otherwise be
         asked again on every acquire, including the warm reuse the probe used to skip, and each
         ask is a round trip bounded by :data:`_PROBE_TIMEOUT_S`.
+
+        **A failure never displaces an answer.**  Two cold acquires for one image can be in
+        flight together — different keys, one backend — so a probe that fails late would
+        otherwise overwrite the uid the other established, and ``None`` is served rather than
+        refused.  Both failure paths record through ``setdefault`` and return what the memo
+        holds, so a late failure yields to the measurement instead of disabling the gate.
         """
         image = _image_label(spec)
         try:
             answered = await sandbox.exec(
                 _GUEST_UID_COMMAND,
-                working_directory=_PROBE_WORKING_DIRECTORY,
+                working_directory=_GUEST_PROBE_WORKING_DIRECTORY,
                 timeout=_PROBE_TIMEOUT_S,
             )
         except Exception as unreachable:  # noqa: BLE001 - an acquire must not fail over this
@@ -990,8 +996,7 @@ class AcasSandboxBackend:
                 _GUEST_UID_COMMAND,
                 error_detail(unreachable),
             )
-            self._guest_uids[_image_identity(spec)] = None
-            return None
+            return self._guest_uids.setdefault(_image_identity(spec), None)
         reported = answered.stdout.strip()
         if answered.exit_code != 0 or not reported.isdecimal():
             logger.debug(
@@ -1001,8 +1006,7 @@ class AcasSandboxBackend:
                 answered.exit_code,
                 reported,
             )
-            self._guest_uids[_image_identity(spec)] = None
-            return None
+            return self._guest_uids.setdefault(_image_identity(spec), None)
         uid = int(reported)
         self._guest_uids[_image_identity(spec)] = uid
         return uid

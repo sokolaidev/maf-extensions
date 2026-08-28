@@ -847,6 +847,50 @@ class TestAnImageWhoseGuestCannotWrite:
 
         assert len(client.probes) == 1
 
+    def test_a_dropped_probe_does_not_displace_a_uid_another_one_measured(self):
+        """Two cold acquires for one image overlap, and the one that fails writes second.
+
+        `None` is served, so recording it over a measured uid turns the gate off for the life
+        of the backend — this races towards the open failure.
+        """
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+        execing = _spec_requiring(Capability.EXEC)
+        identity = ("pinned-id", "python-nonroot:3.13")
+
+        sandbox = asyncio.run(backend.acquire(self._key("scope-a"), execing))
+        for handed_out in client.clients:
+            handed_out._answer = RuntimeError("transport dropped")
+
+        answered = asyncio.run(backend._probe_guest_uid(sandbox, execing))
+
+        assert answered == 10001, "the losing probe reported its failure over the measurement"
+        assert backend._guest_uids[identity] == 10001
+        with pytest.raises(SandboxCapabilityNotSupported, match="files_out"):
+            asyncio.run(
+                backend.acquire(
+                    self._key("scope-b"), _spec_requiring(Capability.EXEC, Capability.FILES_OUT)
+                )
+            )
+
+    def test_an_unreadable_answer_does_not_displace_one_either(self):
+        """The same race down the other failure path, which a non-numeric answer reaches."""
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+        execing = _spec_requiring(Capability.EXEC)
+        identity = ("pinned-id", "python-nonroot:3.13")
+
+        sandbox = asyncio.run(backend.acquire(self._key("scope-a"), execing))
+        for handed_out in client.clients:
+            handed_out._answer = _GuestAnswer(stdout="", stderr="not found", exit_code=127)
+
+        answered = asyncio.run(backend._probe_guest_uid(sandbox, execing))
+
+        assert answered == 10001
+        assert backend._guest_uids[identity] == 10001
+
     def test_the_second_workload_is_refused_without_a_sandbox_of_its_own(self):
         """What the memo buys: the first acquire pays a create to learn the uid, and no acquire
         after it does."""
