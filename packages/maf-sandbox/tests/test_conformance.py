@@ -448,6 +448,28 @@ class TestWhatTheRunnerReports:
         assert all(len(probe.why) > 40 for probe in FILES_OUT_PROBES)
         assert len({probe.name for probe in FILES_OUT_PROBES}) == len(FILES_OUT_PROBES)
 
+    def test_no_probe_explains_itself_in_the_vocabulary_the_repository_retired(self):
+        """`ConformanceFailure` prints `why` verbatim, so a stale word is what a user reads.
+
+        "walk" named this check until it collided with the directory traversal in `maf.py`,
+        and "lexical test" named the file name check. These `why` strings are the only copies
+        a consumer of the wheel ever sees, so they are the ones worth holding.
+        """
+        retired = re.compile(r"\bwalk(s|ed|ing)?\b|\blexical\b", re.IGNORECASE)
+        offenders = [
+            probe.name
+            for probes in (
+                FILES_OUT_PROBES,
+                FILES_IN_PROBES,
+                EXEC_PROBES,
+                FILES_DELETE_PROBES,
+                RECLAIM_PROBES,
+            )
+            for probe in probes
+            if retired.search(probe.why)
+        ]
+        assert offenders == []
+
 
 class TestTheLayout:
     def test_outside_is_a_sibling_that_shares_a_prefix_with_the_working_directory(self):
