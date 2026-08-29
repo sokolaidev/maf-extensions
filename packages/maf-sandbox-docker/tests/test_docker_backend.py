@@ -1728,6 +1728,52 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
         assert (facts.guest_uid, facts.guest_gid) == (10001, 0)
 
+    def test_a_passwd_read_that_reached_the_byte_cap_is_still_used(self):
+        """A bounded read kills `docker cp` once the cap is reached, so a complete passwd can
+        arrive alongside a nonzero code — the stream was longer than the cap, not broken.
+        Rejecting it would drop a resolvable user to `id`, or to root when the image has none.
+        """
+        passwd = b"root:x:0:0:root:/root:/bin/bash\napp:x:10001:20001::/home/app:/bin/sh\n"
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"app\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        killed = _tar_response(passwd)
+
+        def respond(args):
+            if args[0] == "cp" and args[1].endswith(":/etc/passwd"):
+                # What the cap looks like: SIGKILL's code, with the whole entry buffered.
+                return _DockerResult(-9, killed.stdout, "")
+            return _machine(running=[_NAME], overrides=overrides)(args)
+
+        fake._responder = respond
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
+        assert fake.matching("exec") == []
+
+    def test_a_group_read_that_reached_the_byte_cap_is_still_used(self):
+        """The same on `/etc/group`: a capped read must not turn a resolvable named group into
+        the gid-0 remainder.
+        """
+        group = b"root:x:0:\ndevs:x:30001:\n"
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001:devs\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        killed = _tar_response(group)
+
+        def respond(args):
+            if args[0] == "cp" and args[1].endswith(":/etc/group"):
+                return _DockerResult(-9, killed.stdout, "")
+            return _machine(running=[_NAME], overrides=overrides)(args)
+
+        fake._responder = respond
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 30001)
+        assert fake.matching("exec") == []
+
     def test_a_uid_gid_pair_is_split(self):
         facts, _ = self._facts(b"10001:20001\n")
         assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)

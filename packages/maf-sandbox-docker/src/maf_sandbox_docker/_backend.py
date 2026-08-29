@@ -1001,7 +1001,11 @@ class DockerSandboxBackend:
         except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
             logger.debug("docker: could not read %s's /etc/passwd (%s)", name, unreadable)
             return None
-        if result.returncode != 0 or not result.stdout:
+        # `and`, not `or`, and the same rule `_stat_guest` reads by: a bounded read kills the
+        # child once the cap is reached, so a nonzero code with bytes in hand means the stream
+        # was longer than the cap — not that the read failed.  The header and body length
+        # checks below decide whether what arrived is complete.
+        if result.returncode != 0 and not result.stdout:
             return None
         if len(result.stdout) < _TAR_BLOCK:
             return None
@@ -1035,7 +1039,9 @@ class DockerSandboxBackend:
         except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
             logger.debug("docker: could not read %s's /etc/group (%s)", name, unreadable)
             return {}
-        if result.returncode != 0 or not result.stdout or len(result.stdout) < _TAR_BLOCK:
+        if result.returncode != 0 and not result.stdout:
+            return {}
+        if len(result.stdout) < _TAR_BLOCK:
             return {}
         try:
             info = tarfile.TarInfo.frombuf(
