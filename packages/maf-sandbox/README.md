@@ -171,7 +171,7 @@ class MyBackend:
     )
 ```
 
-**Each field's default is its own silence rule, and the four still differ** — `capabilities` reads as `DEFAULT_CAPABILITIES`, `limits` as `DEFAULT_SANDBOX_LIMITS`, and `egress_modes` and `os_families` as the empty set. So a field left unstated means exactly what an absent attribute used to, and a backend that declares no `declarations` at all reads as `DEFAULT_BACKEND_DECLARATIONS`. `isolation` did not move: it is a protocol member, because a backend with no rung cannot be placed against a floor.
+**Each field's default is its own silence rule, and the four still differ** — `capabilities` reads as `DEFAULT_CAPABILITIES`, `limits` as `DEFAULT_SANDBOX_LIMITS`, and `egress_modes` and `os_families` as the empty set. So a field left unstated means exactly what an absent attribute used to, and a backend that declares neither the object nor any of the four attributes it replaced reads as `DEFAULT_BACKEND_DECLARATIONS`. One that still carries any of the four is refused at construction, per the paragraph above — declaring no object is not a way to stay unmigrated. `isolation` did not move: it is a protocol member, because a backend with no rung cannot be placed against a floor.
 
 `capabilities` and `egress_modes` are now also refused when they are not a *set* — the router subtracts one and tests membership in the other, and a string or a list used to raise a bare `TypeError` out of a host's agent factory. The members are not checked, so a backend declaring plain strings still matches: `Capability` and `Egress` are `StrEnum`.
 

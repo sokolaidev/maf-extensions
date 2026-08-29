@@ -971,9 +971,9 @@ class SandboxBackend(Protocol):
     will carry, which egress modes it enforces and which guest shapes it hands out.  It is not
     a member of this Protocol, deliberately: :func:`~typing.runtime_checkable` enforces member
     *presence*, so declaring it here would stop every backend written before it from being a
-    ``SandboxBackend`` at all.  Saying nothing is read as
-    :data:`DEFAULT_BACKEND_DECLARATIONS`, and :class:`BackendDeclarations` is where each
-    field's silence rule is written down.
+    ``SandboxBackend`` at all.  Declaring neither it nor any of the four
+    attributes it replaced is read as :data:`DEFAULT_BACKEND_DECLARATIONS`, and
+    :class:`BackendDeclarations` is where each field's silence rule is written down.
 
     ``declarations`` replaced four separate attributes — ``capabilities``, ``limits``,
     ``egress_modes`` and ``os_families`` — and a backend still carrying any of them is refused

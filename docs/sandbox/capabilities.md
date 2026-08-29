@@ -45,7 +45,7 @@ The two file-read capabilities side by side, since a kind chooses between them a
 
 ## Declared, required, matched
 
-A backend declares `capabilities: frozenset[Capability]`; a spec declares `requires: frozenset[Capability]`; `SandboxRouter.ensure_can_serve` refuses `spec.requires - capabilities` with `SandboxCapabilityNotSupported`. The same check runs inside `acquire`, so a caller who skipped `ensure_can_serve` is refused too rather than served behind a capability set the spec never agreed to.
+A backend declares `declarations.capabilities: frozenset[Capability]`; a spec declares `requires: frozenset[Capability]`; `SandboxRouter.ensure_can_serve` refuses `spec.requires - declarations.capabilities` with `SandboxCapabilityNotSupported`. The same check runs inside `acquire`, so a caller who skipped `ensure_can_serve` is refused too rather than served behind a capability set the spec never agreed to.
 
 **Silence is read charitably here, and that is a claim about which kind of claim it is.** `capabilities` is a field of `BackendDeclarations` defaulting to `DEFAULT_CAPABILITIES`: a backend that never heard of the vocabulary still honestly does what `Sandbox` obligates, so the default is a *functionality* claim and costs nothing. `egress_modes` silence and `limits` silence are *safety* claims and resolve the other way — a backend declaring no mode enforces none and is refused whatever the workload runs in ([`network.md`](network.md)), and an undeclared ceiling is the default ceiling with a bigger ask refused. A third silence is neither: an undeclared `os_families` is the **absence of an answer**, read as `frozenset()`, which refuses a spec that asks for a guest shape and leaves every spec that does not exactly as it was.
 
