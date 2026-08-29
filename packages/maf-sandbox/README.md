@@ -148,7 +148,9 @@ The contract says what may be called; it does not say how a host-tool call *reac
 
 It costs round trips — several backend calls per host-tool call, plus polling, plus one on every return to reclaim, and one more to stop the program on a run that overran. It serves one outstanding call at a time. This module's own docstring counts those costs exactly, beside the code that decides them; whether the trade is worth it is a measurement rather than an assumption.
 
-## Upgrading to 0.26
+## Upgrading to 0.27
+
+**These landed in the tree tagged `maf-sandbox-v0.26.0`, which never reached PyPI.** That tag and its GitHub Release are immutable and will stay visible; there is no 0.26.0 to install, and the same tree ships as 0.27.0. The changelog's 0.26.0 section says why.
 
 **A backend's four optional declarations became one object.** `capabilities`, `limits`, `egress_modes` and `os_families` were four attributes the router read off a backend with four `getattr` calls. They are four fields of one `BackendDeclarations`, read with one, and **a backend still carrying any of the four attributes is refused when the router resolves it** — at construction, with the attribute named. That refusal is deliberate: none of the four was ever a member of the `SandboxBackend` protocol, so `isinstance` holds either way and nothing in the type system marks a backend half-moved, while a stray attribute is silently replaced by that field's default. On `egress_modes` the default enforces nothing and refuses every workload; on `limits` it *widens* a ceiling the backend meant to be narrow.
 
@@ -389,7 +391,7 @@ Implement `name`, `isolation`, `acquire`, `dispose`, `dispose_scope`, and a `dec
 
 **Declare `declarations.egress_modes` honestly.** It is the set of modes you can actually *enforce*, read before any workload's tool is attached, and a backend that omits it enforces nothing the router can see and is refused. List a mode only if you can hold it: a backend that cannot cut the network does not list `closed`, and one that always proxies does not list `unrestricted`. The router serves a workload in exactly the mode it declares or refuses — it never substitutes a stricter one, because a posture the workload was not built for is not a favour.
 
-**`declarations.capabilities` is optional, and its silence is the opposite of `egress_modes`'s.** Leaving the field unstated reads as `DEFAULT_CAPABILITIES = {EXEC, FILES_IN}` — what the `Sandbox` protocol already obliges — so state it only once you offer more, or less. The same is true of `limits` (`DEFAULT_SANDBOX_LIMITS`) and `os_families` (the empty set, which refuses only a spec that asks for a guest shape). **Do not leave any of the four as a bare attribute on the backend**: they were attributes before 0.26 and the router refuses a backend that still carries one, because a stray attribute is read by nothing and silently replaced by that field's default.
+**`declarations.capabilities` is optional, and its silence is the opposite of `egress_modes`'s.** Leaving the field unstated reads as `DEFAULT_CAPABILITIES = {EXEC, FILES_IN}` — what the `Sandbox` protocol already obliges — so state it only once you offer more, or less. The same is true of `limits` (`DEFAULT_SANDBOX_LIMITS`) and `os_families` (the empty set, which refuses only a spec that asks for a guest shape). **Do not leave any of the four as a bare attribute on the backend**: they were attributes before 0.27 and the router refuses a backend that still carries one, because a stray attribute is read by nothing and silently replaced by that field's default.
 
 **Your `Sandbox` implements `run_code` whether or not you serve it.** It is a member of the protocol, so an implementation without it is not a `Sandbox` at all; raise `NotImplementedError` unless you declare `Capability.RUN_CODE`. The same is true of `remove` and `list_dir` — the methods `FILES_DELETE` and `FILES_LIST` name.
 
