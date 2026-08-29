@@ -56,6 +56,25 @@ config = DockerSandboxConfig(egress_proxy_image="maf-egress-proxy:local")
 
 Whether that is actually enforced is not this package's own claim either. `maf_sandbox.conformance` is the shared suite every backend serving `FILES_OUT` answers, and this is the one backend that answers it **against a real engine on every pull request** — a container on the runner, a hostile layout planted in it through the public surface, and the probes attacking that.
 
+**`declarations.os_families = {POSIX}` on a Linux daemon, and nothing on any other — asked for with `create`.** A workload states the guest shape its commands are written for in `SandboxSpec.requires_os_family`, and the router refuses a backend whose `os_families` does not hold it. This backend reads the answer from its own daemon (`docker version --format '{{.Server.Os}}'`) rather than taking it as configuration: a host would be restating what the engine already knows, and a value it typed could only go stale against the engine that has to back it. The read needs an `await`, so it lives in a factory — `__init__` makes no engine calls, and a blocking read in a constructor would do subprocess I/O on your event loop against a daemon that can hang rather than refuse.
+
+```python
+from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
+
+
+async def wired() -> DockerSandboxBackend:
+    # Asks the daemon once, and declares what it answered.
+    return await DockerSandboxBackend.create(DockerSandboxConfig())
+
+
+# Unchanged, and declares no family — which refuses only a spec that names one.
+backend = DockerSandboxBackend(DockerSandboxConfig())
+```
+
+**A `windows` daemon declares nothing, not `WINDOWS`.** Everything this backend runs in a guest is POSIX: `sh -c` for a string command, `rm -rf` for a removal, and `/`-rooted path arithmetic that refuses a backslash outright. Declaring `WINDOWS` would be a promise no code path here backs, and would move the failure from the guest's first command to the router's certificate. A daemon that will not answer declares nothing for the same reason: silence refuses a spec that asks for a family and serves every spec that does not, which is what this backend did before it asked at all.
+
+**The declaration is a snapshot, so a create re-asks.** The client resolves `DOCKER_HOST` and the active context on *every* call, so switching Docker Desktop to Windows containers moves the engine under a running backend. The router matched the old answer when your tool was attached and cannot ask again — so an `acquire` that is about to create a container reads the daemon once more, ahead of the container and its network, and raises `SandboxOsFamilyNotSupported` if the answer changed. Reusing a warm container costs nothing, and a backend built by the plain constructor never asks.
+
 ## The backend
 
 `DockerSandboxBackend` implements `maf_sandbox.SandboxBackend`:
@@ -71,6 +90,7 @@ Whether that is actually enforced is not this package's own claim either. `maf_s
 | `declarations.egress_modes` | `{closed}`, or `{closed, allowlist}` when `egress_proxy_image` is set |
 | `declarations.capabilities` | `{EXEC, FILES_IN, FILES_OUT, FILES_DELETE, HOST_TOOLS}` |
 | `declarations.limits` | the transfer ceilings a spec may not exceed, per direction |
+| `declarations.os_families` | `{posix}` when the daemon reports `linux`, and `frozenset()` for every other answer — filled by `DockerSandboxBackend.create`, empty from the plain constructor |
 
 Container names are derived from the key and kind rather than remembered, so `acquire` and `dispose` agree on one without a registry to keep in sync. Labels are the durable record `dispose_scope` selects on, and their values are digested when they are long or carry a separator — the same mapping on both sides, because transforming one and not the other makes a purge quietly select nothing.
 
@@ -87,6 +107,7 @@ No bind mounts, no host paths, and never the Docker socket cross into a sandbox 
 | `backend.capabilities` | `backend.declarations.capabilities` |
 | `backend.limits` | `backend.declarations.limits` |
 | `backend.egress_modes` | `backend.declarations.egress_modes` |
+| `backend.os_families` | `backend.declarations.os_families` |
 
 Nothing about what this backend declares changed — the values, and how they are derived from the config, are exactly as they were. `maf-sandbox`'s own README carries the reasoning and what a backend author has to do.
 

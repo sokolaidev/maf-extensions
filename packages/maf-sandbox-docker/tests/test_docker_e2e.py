@@ -35,6 +35,7 @@ from maf_sandbox import (
     HostToolRegistry,
     HostToolRun,
     Isolation,
+    OsFamily,
     SandboxKey,
     SandboxProgramTimeout,
     SandboxRouter,
@@ -690,6 +691,65 @@ class TestALiveContainer:
         try:
             name = asyncio.run(scenario())
             assert _names_on_the_machine(name) == []
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+
+class TestTheGuestFamilyAgainstARealDaemon:
+    """What `create` reads off the daemon this suite is pointed at, and the workload it admits.
+
+    The mapping is asserted rather than the environment: the daemon is read again here, with
+    `docker` rather than through the backend, so the test says the same thing on a Linux runner
+    and on a Windows-container daemon.
+    """
+
+    @staticmethod
+    def _daemon_os() -> str:
+        return (
+            subprocess.run(
+                ["docker", "version", "--format", "{{.Server.Os}}"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=True,
+            )
+            .stdout.strip()
+            .lower()
+        )
+
+    def test_the_declaration_is_what_the_daemon_reports(self):
+        backend = asyncio.run(DockerSandboxBackend.create(DockerSandboxConfig()))
+        posix = frozenset({OsFamily.POSIX})
+        assert backend.declarations.os_families == (
+            posix if self._daemon_os() == "linux" else frozenset()
+        )
+
+    def test_the_plain_constructor_declares_nothing_against_the_same_daemon(self):
+        assert DockerSandboxBackend(DockerSandboxConfig()).declarations.os_families == frozenset()
+
+    def test_a_workload_requiring_the_declared_family_is_served_and_runs(self):
+        """The declaration backed by a container rather than matched on paper: the router
+        admits the spec, and the guest the backend hands back takes POSIX argv."""
+        if self._daemon_os() != "linux":
+            pytest.skip("this daemon does not run the family this suite's image is built for")
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = asyncio.run(DockerSandboxBackend.create(DockerSandboxConfig()))
+        router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
+        spec = _spec(requires_os_family=OsFamily.POSIX)
+
+        async def scenario() -> None:
+            router.ensure_can_serve(spec)
+            sandbox = await router.acquire(_key(scope), spec)
+            # At `/` rather than `work_dir`: what this asserts is the guest's grammar and
+            # argv, which every Linux image answers for, not a directory some of them carry.
+            ran = await sandbox.exec(
+                ["sh", "-c", "printf posix"], working_directory="/", timeout=60
+            )
+            assert ran.exit_code == 0, ran.stderr
+            assert ran.stdout == "posix"
+
+        try:
+            asyncio.run(scenario())
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 

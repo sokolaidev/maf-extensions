@@ -15,6 +15,11 @@ utility VM, which the ladder classifies at ``container`` — and no configuratio
 Egress is :data:`~maf_sandbox.Egress.CLOSED` by default — every container is created
 ``--network none`` — and :data:`~maf_sandbox.Egress.ALLOWLIST` when a proxy image is
 configured, enforced by topology exactly as ``maf-sandbox-wslc`` does it.
+
+The ``os_families`` field of its :class:`~maf_sandbox.BackendDeclarations` is read from the
+daemon, by :meth:`DockerSandboxBackend.create` and only there: a daemon running ``linux``
+guests declares :data:`~maf_sandbox.OsFamily.POSIX`, and every other answer declares nothing.
+The plain constructor declares nothing too — it is the one field no input to it could answer.
 """
 
 from __future__ import annotations
@@ -41,11 +46,13 @@ from maf_sandbox import (
     EntryKind,
     ExecResult,
     Isolation,
+    OsFamily,
     Sandbox,
     SandboxBackend,
     SandboxEntry,
     SandboxKey,
     SandboxLimits,
+    SandboxOsFamilyNotSupported,
     SandboxSpec,
     SandboxTransferCapExceeded,
     ScopePurge,
@@ -165,6 +172,18 @@ _CAPABILITIES = frozenset(
         Capability.HOST_TOOLS,
     }
 )
+
+#: How this backend asks a daemon which guest it runs, and the one answer that entitles it to
+#: declare a family. `version` rather than `info`: both carry the field and this is the cheaper
+#: command.
+#:
+#: Every other answer declares nothing, and `windows` is not a fallback among them. This
+#: backend's `exec` is `sh -c`, its removals are `rm -rf`, its guest paths go through
+#: `posixpath` against a `/` root, and `maf_sandbox.paths` refuses a backslash outright — so
+#: `OsFamily.WINDOWS` is a guarantee no code path here backs, and reading one out of a daemon
+#: would only move the failure from the first command to the router's certificate.
+_DAEMON_OS_FORMAT = "{{.Server.Os}}"
+_DAEMON_OS_POSIX = "linux"
 
 
 def _label_value(raw: str) -> str:
@@ -762,6 +781,11 @@ class DockerSandboxBackend:
         # with a proxy image this backend can allowlist named hosts or deny all, and without
         # one it can only run `--network none`. Never UNRESTRICTED: a container backend always
         # cuts or proxies, so it cannot offer a workload that asked to run open.
+        #
+        # `os_families` is left at its default here and filled only by `create`, which asks the
+        # daemon: it is the one field no input to this constructor could answer. Empty is the
+        # absence of an answer rather than a claim, so a backend built here refuses a spec
+        # naming a family and leaves every other spec exactly as it was.
         self._declarations = BackendDeclarations(
             capabilities=_CAPABILITIES,
             limits=_LIMITS,
@@ -790,6 +814,34 @@ class DockerSandboxBackend:
         # because a container name is not, so one name can come back carrying a different one.
         self._facts: dict[tuple[str, str, str], _ContainerFacts] = {}
 
+    @classmethod
+    async def create(cls, config: DockerSandboxConfig) -> DockerSandboxBackend:
+        """Build a backend that has asked its daemon which guest it hands out.
+
+        Use this to get an ``os_families`` declaration.  The plain constructor stays exactly as
+        it was and declares nothing, so nothing that builds one today changes.
+
+        It is a coroutine because ``__init__`` makes no engine calls: every fact this backend
+        holds is read through an awaited seam, and a blocking read in a constructor would do
+        subprocess I/O on the caller's event loop — against a daemon that, measured, can hang
+        rather than refuse.
+
+        A daemon answering ``linux`` declares :data:`~maf_sandbox.OsFamily.POSIX`.  **Anything
+        else declares nothing**, which refuses only a spec that names a family and is what the
+        plain constructor does.  That covers a daemon that will not answer and one that answers
+        ``windows`` alike; :data:`_DAEMON_OS_FORMAT` says why the second is not a translation
+        waiting to be written.
+
+        The answer is never taken from configuration.  A host would be restating what the
+        daemon already knows, and a value it typed could only go stale against the engine that
+        has to back it.
+        """
+        backend = cls(config)
+        backend._declarations = replace(
+            backend._declarations, os_families=await backend._families_the_daemon_serves()
+        )
+        return backend
+
     @property
     def name(self) -> str:
         return BACKEND_NAME
@@ -806,6 +858,83 @@ class DockerSandboxBackend:
     def declarations(self) -> BackendDeclarations:
         return self._declarations
 
+    async def _families_the_daemon_serves(self) -> frozenset[OsFamily]:
+        """What the daemon entitles this backend to declare, empty when it is not sure."""
+        answer = await self._daemon_os()
+        if answer == _DAEMON_OS_POSIX:
+            logger.info("docker: the daemon runs %s guests, so this backend declares posix", answer)
+            return frozenset({OsFamily.POSIX})
+        reason = (
+            f"answered {answer!r}, which this backend cannot serve"
+            if answer
+            else "could not be asked"
+        )
+        # Warned rather than logged quietly: a host that called `create` asked for the
+        # declaration, and getting none back is what leaves the axis refusing nothing.
+        logger.warning(
+            "docker: declaring no guest family — the daemon %s. A spec naming "
+            "requires_os_family is refused at attach until one is declared; a spec naming "
+            "none is served exactly as before.",
+            reason,
+        )
+        return frozenset()
+
+    async def _daemon_os(self) -> str | None:
+        """The daemon's own ``OSType``, lowercased, or ``None`` when it did not answer one.
+
+        Every failure is that one answer — a stopped daemon, a client that is not on PATH, an
+        engine whose ``--format`` does not speak this template.  Nothing is refused on it, so
+        nothing is raised out of it.
+        """
+        try:
+            result = await self._docker(
+                "version",
+                "--format",
+                _DAEMON_OS_FORMAT,
+                timeout=self._config.command_timeout_seconds,
+            )
+        except Exception as unreadable:  # noqa: BLE001 — an unread family declares nothing
+            logger.debug("docker: could not read the daemon's OS (%s)", unreadable)
+            return None
+        if result.returncode != 0:
+            logger.debug("docker: could not read the daemon's OS (%s)", result.stderr.strip())
+            return None
+        return result.stdout.decode("utf-8", errors="replace").strip().lower() or None
+
+    async def _refuse_a_daemon_that_moved_under_the_declaration(self, spec: SandboxSpec) -> None:
+        """Re-ask the daemon before creating, for a backend that declared a family.
+
+        ``os_families`` is a snapshot, not a binding: this backend resolves ``DOCKER_HOST`` and
+        the active context on every invocation, so switching Docker Desktop to Windows
+        containers moves the engine under a running host.  The router matched the old answer at
+        attach and cannot ask again, so the re-check belongs here.
+
+        **Before anything is created**, which is why the create path calls it rather than the
+        acquire that finished: a refusal that had to dispose what it just made would be a
+        second failure mode over the same fact.  One round trip per create, and none at all for
+        a backend that declared nothing.  A daemon that will not answer now is served — the
+        create is about to fail on its own terms, and refusing on an unreadable probe would
+        take a working deployment off the air over a transient.
+
+        Raises:
+            SandboxOsFamilyNotSupported: when the daemon no longer runs the guest this backend
+                told the router it hands out.
+        """
+        if not self._declarations.os_families:
+            return
+        answer = await self._daemon_os()
+        if answer is None or answer == _DAEMON_OS_POSIX:
+            return
+        raise SandboxOsFamilyNotSupported(
+            f"sandbox backend {BACKEND_NAME!r} declared it hands out "
+            f"{str(OsFamily.POSIX)!r} guests and its daemon now runs {answer!r} ones. The "
+            f"engine moved under this backend, so the family the router matched for the "
+            f"{spec.kind!r} workload at attach is not the one a container would have — "
+            "refused here, before one is created. Point the client back at the daemon this "
+            "backend was built against, or build it again (DockerSandboxBackend.create) "
+            "against the one you mean to use."
+        )
+
     # -- SandboxBackend -----------------------------------------------------------
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> _DockerSandbox:
@@ -815,12 +944,20 @@ class DockerSandboxBackend:
         host reboot stopped, or one a crashed setup left half-connected, is rebuilt here rather
         than leaving a sandbox that declares an allowlist and enforces nothing. Reused, restarted
         and created are logged at INFO.
+
+        Raises:
+            SandboxOsFamilyNotSupported: when this backend declared a guest family and the
+                daemon a create would go to no longer runs it.
         """
         egress_id = self._egress_id(spec)
         name = _container_name(key, spec.kind, egress_id)
         async with self._acquire_lock(key, spec.kind):
             running = await self._is_running(name)
             stopped = not running and await self._exists(name)
+            if not running and not stopped:
+                # Ahead of the egress scaffolding as well as the create, so a refusal leaves
+                # neither a container nor a network and a proxy behind it.
+                await self._refuse_a_daemon_that_moved_under_the_declaration(spec)
             if egress_id:
                 await self._ensure_egress(name, key, spec, fresh=not running and not stopped)
 
