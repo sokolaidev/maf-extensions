@@ -318,6 +318,13 @@ class HostToolRegistry:
         response_limits: The per-response and per-run byte ceilings, reusing
             :class:`~maf_sandbox.TransferLimits` — its per-file leg caps one response, its
             total leg the run, its count leg the delivered responses.
+        mint_user_identity: An async callback returning the authority an
+            :data:`~maf_sandbox.Identity.USER` tool acts under, called at most once per
+            :class:`HostToolRun` with that run's ``run_id`` and handed to the body as
+            ``user_identity``.  Default ``None``, in which case such a tool registers and its
+            call is refused: a registry stays writable honestly on a host that serves no user
+            authority.  Where one is given, a ``USER`` tool taking no ``user_identity``
+            parameter is refused at registration.
         host_tool_calls_observer: A host's callback that sees each call and the run that made
             it, so the host can attribute the call to the program. Takes the run and the
             name and returns a context manager the call enters and exits
@@ -432,8 +439,7 @@ class HostToolRegistry:
         Called at most once per :class:`HostToolRun`, with that run's ``run_id``, the first
         time a :data:`~maf_sandbox.Identity.USER` tool is reached; its result is handed to the
         body as ``user_identity`` and never persisted.  Without one, such a tool registers and
-        is refused at call time, which is what this library did for every host until a host
-        could say where the authority comes from.
+        its call is refused.
         """
         return self._mint_user_identity
 
@@ -790,42 +796,68 @@ class HostToolRun:
         self._delivered = 0
         self._delivered_bytes = 0
         self._minted_user_identity: str | None = None
+        # Constructed here rather than lazily: an uncontended `asyncio.Lock` touches no loop,
+        # so one built outside a loop — or reused across the sequential ones a test drives —
+        # is fine, and only genuine contention needs the running loop it then has.
+        self._mint_lock = asyncio.Lock()
 
     async def _user_identity(self) -> str | None:
         """This run's user authority, minted at most once, or ``None`` if it could not be.
 
         Cached on success only: a mint that failed is a transient the next call may survive,
         while a mint that succeeded must not be repeated — one run, one identity is the bound
-        the whole mechanism rests on.
+        the whole mechanism rests on.  Calls of one run may overlap, so the mint is serialized
+        and the cache re-read inside the lock: without that, two callers both find it empty,
+        both mint, and two authorities exist for the run that promised one.
         """
         if self._minted_user_identity is not None:
             return self._minted_user_identity
         mint = self._registry.mint_user_identity
         if mint is None:  # pragma: no cover - `call` refuses before reaching this
             return None
-        try:
-            minted = await mint(self._run_id)
-        except Exception as exc:  # noqa: BLE001 - the guest gets a sentence, the log the rest
-            self._logger.warning(
-                "minting the user's identity for run %r failed: %s",
-                self._run_id,
-                error_detail(exc),
-            )
-            return None
-        # A minter that answers with something unusable is the same failure as one that
-        # raised, and worth the same refusal: an empty string or a non-string reaching a tool
-        # body as its authority is how a call runs with no authority at all and nobody notices.
-        answered = cast(object, minted)
-        if not isinstance(answered, str) or not answered:
-            self._logger.warning(
-                "minting the user's identity for run %r returned %r, which is not a usable "
-                "identity",
-                self._run_id,
-                answered,
-            )
-            return None
-        self._minted_user_identity = answered
-        return answered
+        async with self._mint_lock:
+            # The second read. Whoever held the lock may have filled it, and that identity is
+            # this run's — minting a second beside it is the failure this method exists to
+            # avoid, not a cache miss to satisfy.
+            if self._minted_user_identity is not None:
+                return self._minted_user_identity
+            try:
+                minted = await mint(self._run_id)
+            except asyncio.CancelledError:
+                # The record `call` promises, at a second await it did not have before: a
+                # cancel here lands inside the host's own minter, which may already have
+                # exchanged a credential nothing will now use.
+                self._logger.warning(
+                    "host tools: minting the user's identity for run %r was cancelled — a "
+                    "credential may already have been issued for a call that will not run",
+                    self._run_id,
+                )
+                raise
+            except Exception as exc:  # noqa: BLE001 - the guest gets a sentence, the log the rest
+                self._logger.warning(
+                    "minting the user's identity for run %r failed: %s",
+                    self._run_id,
+                    error_detail(exc),
+                )
+                return None
+            # A minter that answers with something unusable is the same failure as one that
+            # raised, and worth the same refusal: an empty string or a non-string reaching a
+            # tool body as its authority is how a call runs with no authority at all and
+            # nobody notices.
+            answered = cast(object, minted)
+            if not isinstance(answered, str) or not answered:
+                # The type, never the value. A misconfigured minter that answers with `bytes`
+                # is answering with a real token, and `%r` would write it to the host's log —
+                # a secret is sensitive whether or not it satisfies this contract.
+                self._logger.warning(
+                    "minting the user's identity for run %r answered with %s, which is not a "
+                    "usable identity",
+                    self._run_id,
+                    "an empty string" if isinstance(answered, str) else type(answered).__name__,
+                )
+                return None
+            self._minted_user_identity = answered
+            return answered
 
     @property
     def run_id(self) -> str:

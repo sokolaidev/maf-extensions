@@ -911,10 +911,9 @@ def _minting_registry(mint=None, **overrides) -> HostToolRegistry:
 
 
 class TestServingTheUsersIdentity:
-    """A `USER` tool becomes callable once a host says where the authority comes from (#568).
+    """A `USER` tool is callable where the registry mints the authority, and refused where not.
 
-    The body runs host-side, so what a host owes is the mint — the in-guest half of two-axis
-    C′ bounds a different mechanism and is not what this refusal was ever about.
+    One run holds one identity, and a guest cannot choose the one its own call runs under.
     """
 
     def test_a_minted_identity_reaches_the_body(self):
@@ -943,6 +942,72 @@ class TestServingTheUsersIdentity:
 
         assert minted == ["run-7"]
         assert first.value_json == second.value_json == '"acting as token-1"'
+
+    def test_overlapping_calls_share_the_one_identity(self):
+        """Calls of one run may overlap, and two of them must not mint two authorities.
+
+        The mint is awaited, so without serialization both callers find the cache empty
+        before either finishes and the run ends up with two.
+        """
+        minted: list[str] = []
+
+        async def _mint(run_id: str) -> str:
+            minted.append(run_id)
+            await asyncio.sleep(0)  # let the other caller reach the same empty cache
+            return f"token-{len(minted)}"
+
+        registry = _minting_registry(_mint)
+        registry.register(_as_user_tool())
+        run = HostToolRun(registry, run_id="run-7")
+
+        async def _both():
+            return await asyncio.gather(run.call("whoami"), run.call("whoami"))
+
+        first, second = asyncio.run(_both())
+
+        assert minted == ["run-7"], f"minted {len(minted)} times for one run"
+        assert first.value_json == second.value_json == '"acting as token-1"'
+
+    def test_a_cancel_while_minting_is_recorded(self, caplog):
+        """The record `call` promises (#355), at an await the mint added."""
+        started = asyncio.Event()
+
+        async def _mint(run_id: str) -> str:
+            started.set()
+            await asyncio.sleep(3600)
+            return "never"  # pragma: no cover - the sleep is cancelled first
+
+        registry = _minting_registry(_mint)
+        registry.register(_as_user_tool())
+        run = HostToolRun(registry, run_id="run-7")
+
+        async def _cancel_mid_mint():
+            call = asyncio.ensure_future(run.call("whoami"))
+            await started.wait()
+            call.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await call
+
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox._host_tools"):
+            asyncio.run(_cancel_mid_mint())
+
+        assert [r for r in caplog.records if "was cancelled" in r.getMessage()], caplog.text
+
+    def test_a_rejected_mint_is_logged_by_type_rather_than_value(self, caplog):
+        """A misconfigured minter answering with `bytes` is answering with a real token."""
+
+        async def _mint(run_id: str):
+            return b"super-secret-token"
+
+        registry = _minting_registry(_mint)
+        registry.register(_as_user_tool())
+
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox._host_tools"):
+            result = _call_host_tool(HostToolRun(registry), "whoami")
+
+        assert not result.ok
+        assert "super-secret-token" not in caplog.text, caplog.text
+        assert "bytes" in caplog.text, caplog.text
 
     def test_each_run_mints_its_own(self):
         registry = _minting_registry()
