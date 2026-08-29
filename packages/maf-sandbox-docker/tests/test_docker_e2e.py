@@ -308,11 +308,12 @@ class TestAGuestThatIsNotRoot:
     reason="needs MAF_SANDBOX_DOCKER_E2E_NAMED_USER_IMAGE naming an image whose USER is a name",
 )
 class TestAGuestNamedRatherThanNumbered:
-    """A named `USER` against a real engine.
+    """A named `USER` against a real engine, over a `work_dir` the image already carries.
 
-    Every other image this suite runs states a numeric pair, which `Config.User` hands back
-    as-is — so the account-file resolution, the whole subject of #680, is otherwise exercised
-    only against the in-process fake.
+    A numeric pair is taken from `Config.User` as-is, so only an image naming a *user* reaches
+    the account files at all.  This one pairs that with a `work_dir` built into the image,
+    which leaves the call directory's parent root's — the half of the pair that decides which
+    removals the guest can make.  `TestAnImageThatDoesNotCarryItsWorkDir` is the other half.
     """
 
     def _spec(self) -> SandboxSpec:

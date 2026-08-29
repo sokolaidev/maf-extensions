@@ -63,7 +63,7 @@ Whether that is actually enforced is not this package's own claim either. `maf_s
 | | |
 |---|---|
 | `acquire(key, spec)` | get-or-create, keyed `(scope, thread, agent, kind)`. A running container is reused, a stopped one started, a missing one created; an absent image is pulled explicitly first so a cold pull does not ride the lifecycle timeout |
-| `write_file(path, content, *, working_directory)` | a confined tar on stdin to `cp - <container>:/`, carrying the file and an explicit entry for every missing directory at or below `working_directory`, each stamped with the image user; `str` is UTF-8, `bytes` is written as given |
+| `write_file(path, content, *, working_directory)` | a confined tar on stdin to `cp - <container>:/`, carrying the file and an explicit entry for every missing directory at or below `working_directory`, each stamped with the user `Config.User` resolves to — or with root's `0:0` on an image that names a user and answers no identity probe ([#741](https://github.com/sokolaidev/maf-extensions/issues/741)); `str` is UTF-8, `bytes` is written as given |
 | `stat_file` / `read_file` | the `FILES_OUT` pull surface — stat from the first tar header of `docker cp`, read from the same stream; symlinks and other non-regular entries refused on the header type, every parent component refused unless it is a real directory, a body over the caller's cap refused rather than truncated |
 | `dispose(key)` | `rm -f` on every kind's container the key names, with the proxy and network of an allowlisted one |
 | `dispose_scope(scope, thread)` | delete every container for a conversation — **by label, read back from docker**, not from process memory |
