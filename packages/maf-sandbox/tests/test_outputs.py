@@ -1349,7 +1349,7 @@ class TestMakeFileSystemSink:
 
 
 class TestTheNameThisHadBefore:
-    """`portable_name` warns on lookup and hands back `portable_file_name`."""
+    """`portable_name` warns when called, and hands back what `portable_file_name` returns."""
 
     def test_it_warns_and_delegates(self):
         with pytest.warns(DeprecationWarning, match="portable_file_name"):

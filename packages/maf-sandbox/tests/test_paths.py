@@ -336,7 +336,11 @@ class TestRefuseSymlinkedParents:
 
 
 class TestTheNamesTheseHadBefore:
-    """Each spelling from before the rename warns on lookup and hands back the replacement."""
+    """Each spelling from before the rename warns when *called* and delegates to its replacement.
+
+    Not on lookup: importing one must stay silent, or the three shipped backends fail under
+    ``-W error``.
+    """
 
     RENAMED = [
         ("confine_guest_path", "confine_resolve_guest_path"),

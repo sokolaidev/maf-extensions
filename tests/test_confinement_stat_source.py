@@ -1,6 +1,6 @@
 """The stat a backend hands the confinement check must not be answered inside its own guest.
 
-`maf_sandbox.paths.refuse_symlinked_parents` runs over a stat the backend supplies, and that
+`maf_sandbox.paths.refuse_symlinked_ancestors` runs over a stat the backend supplies, and that
 stat has three requirements. Two are properties of the call — unconfined, no-follow — and a
 wrong one shows up as a refusal that does not happen. The third is a property of *who answers*,
 and it shows up as nothing at all: a guest that replaces `test` in its own image answers every

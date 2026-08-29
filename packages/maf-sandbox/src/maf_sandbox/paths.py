@@ -163,10 +163,8 @@ def _warn_renamed(old: str, new: str) -> None:
     )
 
 
-# The spellings these four had before the rename, served for one minor. Delegating wrappers
-# rather than a module ``__getattr__``: the hook fires on *import*, and the three shipped
-# backends import these names, so under ``-W error`` it stopped them loading at all. A wrapper
-# warns when the function is called, which is the notice without the breakage.
+# The spellings these four had before the rename, served for one minor. Importing one must not
+# warn — a backend that imports it would fail under ``-W error`` — so the notice is on the call.
 
 
 def confine_guest_path(path: str, working_directory: str) -> str:
