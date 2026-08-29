@@ -9,6 +9,7 @@ contained and is not.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import subprocess
 import sys
 import warnings
@@ -28,7 +29,7 @@ from maf_sandbox.paths import (
 _WORK_DIR = "/maf-sandbox/work"
 
 
-class TestConfineGuestPath:
+class TestConfineResolveGuestPath:
     def test_a_relative_path_joins_onto_the_working_directory(self):
         assert confine_resolve_guest_path("a.txt", _WORK_DIR) == "/maf-sandbox/work/a.txt"
 
@@ -132,7 +133,7 @@ class TestGuestPathRelativeTo:
         )
 
 
-class TestConfineGuestWritePath:
+class TestConfineResolveGuestWritePath:
     def _run(self, path, *, kinds=None, working_directory=_WORK_DIR):
         kinds = kinds or {}
 
@@ -194,7 +195,7 @@ class TestConfineGuestWritePath:
             )
 
 
-class TestGuestDirectoryChain:
+class TestGuestPathAndAncestors:
     def test_the_chain_starts_above_the_working_directory(self):
         """A nested work dir has ancestors the guest can replace, so they are checked too."""
         assert guest_path_and_ancestors("/a/b/maf-sandbox/work", "/a/b/maf-sandbox/work") == (
@@ -229,8 +230,8 @@ class TestGuestDirectoryChain:
         )
 
     def test_a_working_directory_with_a_dot_segment_is_normalised_first(self):
-        """Unnormalised, the `.` becomes a chain entry of its own and the guest path's own
-        ancestors are dropped — the chain would stat everything except what it is for."""
+        """Unnormalised, the `.` becomes an ancestor of its own and the real ones are dropped —
+        the check would stat everything except what it is for."""
         assert guest_path_and_ancestors("/a/b/maf-sandbox/work/out", "/a/b/maf-sandbox/work/.") == (
             "/a",
             "/a/b",
@@ -240,7 +241,7 @@ class TestGuestDirectoryChain:
         )
 
 
-class TestRefuseSymlinkedParents:
+class TestRefuseSymlinkedAncestors:
     """The check all three implementations of the pull surface now share.
 
     Its answers are two different refusals, and telling them apart is the whole point: a link
@@ -355,11 +356,11 @@ class TestTheNamesTheseHadBefore:
         assert confined == paths.confine_resolve_guest_path("out/a.png", _WORK_DIR)
 
         with pytest.warns(DeprecationWarning, match="guest_path_and_ancestors"):
-            chain = paths.guest_directory_chain("/maf-sandbox/work/out", _WORK_DIR)
-        assert chain == paths.guest_path_and_ancestors("/maf-sandbox/work/out", _WORK_DIR)
+            returned = paths.guest_directory_chain("/maf-sandbox/work/out", _WORK_DIR)
+        assert returned == paths.guest_path_and_ancestors("/maf-sandbox/work/out", _WORK_DIR)
 
     def test_the_async_pair_warns_and_delegates(self):
-        stat, _ = TestRefuseSymlinkedParents._stat(
+        stat, _ = TestRefuseSymlinkedAncestors._stat(
             {"/maf-sandbox": EntryKind.DIRECTORY, "/maf-sandbox/work": EntryKind.DIRECTORY}
         )
 
@@ -375,7 +376,7 @@ class TestTheNamesTheseHadBefore:
 
         `confine_guest_write_path` gives the reason the shims are sync and return a coroutine.
         """
-        stat, _ = TestRefuseSymlinkedParents._stat(
+        stat, _ = TestRefuseSymlinkedAncestors._stat(
             {"/maf-sandbox": EntryKind.DIRECTORY, "/maf-sandbox/work": EntryKind.DIRECTORY}
         )
 
@@ -384,6 +385,20 @@ class TestTheNamesTheseHadBefore:
             asyncio.run(paths.refuse_symlinked_parents(stat, "/maf-sandbox/work/a.png", _WORK_DIR))
 
         assert Path(caught[0].filename).name == Path(__file__).name
+
+    def test_the_async_shims_still_answer_iscoroutinefunction(self):
+        """Both spellings were `async def`, so both must keep reading as coroutine functions.
+
+        A sync shim returning a coroutine is invisible to `await` and visible to
+        `inspect.iscoroutinefunction`, which is what a caller that dispatches on it would stop
+        awaiting. `inspect.markcoroutinefunction` restores the answer the old spelling gave.
+        """
+        for old, new in (
+            (paths.confine_guest_write_path, paths.confine_resolve_guest_write_path),
+            (paths.refuse_symlinked_parents, paths.refuse_symlinked_ancestors),
+        ):
+            assert inspect.iscoroutinefunction(new)
+            assert inspect.iscoroutinefunction(old), f"{old.__name__} reads as synchronous"
 
     def test_importing_the_old_spelling_does_not_warn(self):
         """The three shipped backends import these; warning here fails them under `-W error`."""

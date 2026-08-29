@@ -23,6 +23,7 @@ guest path or raises; ``refuse_*`` returns nothing and raises.  Nothing here ans
 
 from __future__ import annotations
 
+import inspect
 import posixpath
 import warnings
 from collections.abc import Awaitable, Callable, Coroutine
@@ -106,16 +107,18 @@ def guest_path_and_ancestors(guest_path: str, working_directory: str) -> tuple[s
     follows straight through them.  ``guest_path`` must already be confined.
     """
     base = posixpath.normpath(working_directory)
-    ancestors: list[str] = []
+    path_and_ancestors: list[str] = []
     so_far = ""
     for segment in (s for s in base.split("/") if s):
         so_far = f"{so_far}/{segment}"
-        ancestors.append(so_far)
+        path_and_ancestors.append(so_far)
     relative = guest_path_relative_to(guest_path, base)
     if relative:
         for segment in relative.split("/"):
-            ancestors.append(posixpath.join(ancestors[-1] if ancestors else "/", segment))
-    return tuple(ancestors)
+            path_and_ancestors.append(
+                posixpath.join(path_and_ancestors[-1] if path_and_ancestors else "/", segment)
+            )
+    return tuple(path_and_ancestors)
 
 
 async def refuse_symlinked_ancestors(
@@ -175,6 +178,7 @@ def confine_guest_path(path: str, working_directory: str) -> str:
     return confine_resolve_guest_path(path, working_directory)
 
 
+@inspect.markcoroutinefunction
 def confine_guest_write_path(
     stat: Callable[[str], Awaitable[SandboxEntry | None]],
     path: str,
@@ -186,6 +190,10 @@ def confine_guest_write_path(
     the coroutine, so the warning would be attributed to ``asyncio`` rather than to the caller.
     Warning here and handing back the replacement's coroutine keeps the notice at the call
     site, and ``await`` on the result is unchanged.
+
+    The marker is what keeps that invisible.  This spelling *was* an ``async def``, so a caller
+    dispatching on :func:`inspect.iscoroutinefunction` would otherwise read the shim as
+    synchronous and stop awaiting it — a break during the one minor that exists to avoid one.
     """
     _warn_renamed("confine_guest_write_path", "confine_resolve_guest_write_path")
     return confine_resolve_guest_write_path(stat, path, working_directory)
@@ -197,6 +205,7 @@ def guest_directory_chain(guest_path: str, working_directory: str) -> tuple[str,
     return guest_path_and_ancestors(guest_path, working_directory)
 
 
+@inspect.markcoroutinefunction
 def refuse_symlinked_parents(
     stat: Callable[[str], Awaitable[SandboxEntry | None]],
     guest_path: str,
@@ -206,7 +215,7 @@ def refuse_symlinked_parents(
 ) -> Coroutine[Any, Any, None]:
     """Deprecated. Use :func:`refuse_symlinked_ancestors`.
 
-    Not ``async``, for the reason :func:`confine_guest_write_path` gives.
+    Not ``async``, and marked, for the reasons :func:`confine_guest_write_path` gives.
     """
     _warn_renamed("refuse_symlinked_parents", "refuse_symlinked_ancestors")
     return refuse_symlinked_ancestors(
