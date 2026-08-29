@@ -34,9 +34,10 @@ _DISPOSED = re.compile(
 )
 
 #: The framework's own count of call directories it could not remove, from the handler the
-#: sample wires on the router. Nought is the claim; anything else means a call left its files
-#: in a sandbox the next call in that conversation can read. Tagged like the line above, so a
-#: model writing "no reclaim failures" into its reply cannot answer for the framework.
+#: sample wires on the router. Nought is the claim; anything else cost the conversation its
+#: sandbox, since this sample's policy disposes what it could not clean. Tagged like the line
+#: above, so a model writing "no reclaim failures" into its reply cannot answer for the
+#: framework.
 _RECLAIM_FAILURES = re.compile(
     r"^  (?-i:\[measured\]) Reclaim failures this turn:\s+(\d+)", re.MULTILINE | re.IGNORECASE
 )
@@ -91,8 +92,9 @@ def assess(output: str, image: bytes | None) -> list[str]:
         )
     elif int(left_behind.group(1)) > 0:
         failures.append(
-            f"{left_behind.group(1)} call director(ies) could not be reclaimed — the files a "
-            "call wrote stayed where the conversation's next call can read them"
+            f"{left_behind.group(1)} call director(ies) could not be reclaimed — each one cost "
+            "the conversation its sandbox, and where the disposal did not land either, those "
+            "files stay readable by the next call"
         )
 
     if image is None:

@@ -118,11 +118,21 @@ async def run() -> int:
     # raises is caught and logged rather than replacing the call's own answer.
     reclaim_failures: list[ReclaimFailure] = []
 
+    # One phrasing per `DisposalOutcome`, because the bare word does not read as a sentence:
+    # `failed` is the disposal's outcome, not something done to the sandbox.
+    disposal_said = {
+        "disposed": "disposed the sandbox",
+        "failed": "could not dispose the sandbox",
+        "kept": "kept the sandbox",
+    }
+
     async def note_reclaim_failure(failure: ReclaimFailure) -> None:
-        # `failure.path` is a guest path — host-side detail, and never model-facing.
+        # `failure.path` is a guest path — host-side detail, and never model-facing. It names
+        # what the call affected, not what is still there: a disposal that landed took the
+        # whole sandbox with it.
         print(
-            f"\n{MEASURED}a call directory was left behind: {failure.path} "
-            f"({failure.reason}); the framework {failure.disposal} the sandbox",
+            f"\n{MEASURED}a call could not be cleaned: {failure.path} "
+            f"({failure.reason}); the framework {disposal_said[failure.disposal]}",
             file=sys.stderr,
         )
         reclaim_failures.append(failure)

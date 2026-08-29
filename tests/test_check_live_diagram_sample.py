@@ -94,7 +94,7 @@ class TestTheReclaimHalf:
         assert any("nothing vouches for the call directories" in reason for reason in failures)
 
     def test_a_directory_left_behind_fails(self):
-        """The failure this exists for: the call's files stayed where the next call reads."""
+        """The failure this exists for: a call the framework could not clean."""
         output = _HEALTHY.replace(
             _RECLAIM_LINE, f"{scaffold.MEASURED}Reclaim failures this turn: 1"
         )
@@ -106,6 +106,18 @@ class TestTheReclaimHalf:
         untagged = _HEALTHY.replace(_RECLAIM_LINE, "Reclaim failures this turn: 0")
         failures = check.assess(untagged, _png(640, 480))
         assert any("nothing vouches for the call directories" in reason for reason in failures)
+
+    def test_the_sample_prints_the_line_from_the_scaffold(self):
+        """The producer half. Without it the wording above pins only this file to itself.
+
+        Everything else here feeds `assess` a string this module wrote, so a rename on either
+        side of the contract stays green until the sample runs live.
+        """
+        source = (_ROOT / "samples" / _SAMPLE / "agent.py").read_text(encoding="utf-8")
+        assert "{MEASURED}Reclaim failures this turn: " in source, (
+            f"samples/{_SAMPLE}/agent.py no longer tags its reclaim-failure count the way "
+            "`_RECLAIM_FAILURES` reads it, so the live check vouches for nothing"
+        )
 
 
 class TestTheSandboxHalf:
