@@ -7,8 +7,10 @@ filesystem path this module is the wrong answer — use :meth:`pathlib.Path.reso
 :meth:`pathlib.Path.is_relative_to`, which know the host's grammar and follow its symlinks.
 
 Confinement has two halves and one function each, and the names are worth keeping straight.
-**The file name check** is :func:`confine_guest_path`: text arithmetic only — join, normalise,
-refuse anything resolving outside — and it cannot see a symlink, which is why the other exists.
+**The file name check** is :func:`confine_guest_path`: text arithmetic over a whole guest path
+— join, normalise, refuse anything resolving outside — and it cannot see a symlink, which is
+why the other exists.  It is not :func:`~maf_sandbox.portable_name`, which rewrites the
+*segments* of a name for a hostile filesystem and confines nothing.
 **The filesystem path check** is :func:`refuse_symlinked_parents`: it looks at the guest's real
 filesystem, one directory at a time from the root down, and refuses a path whose ancestors are
 not real directories.  :func:`confine_guest_write_path` is both, plus the two refusals a write

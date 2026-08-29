@@ -657,8 +657,9 @@ class Sandbox(Protocol):
                 working directory itself.
             NotADirectoryError: If a parent is neither a directory nor a link.
 
-        The check and the write are not atomic on any shipped backend; a guest that turns a checked
-        component into a link in between wins.
+        The filesystem path check and the write are not atomic on any shipped backend; a guest
+        that turns a checked component into a link in between wins.  The file name check cannot
+        race: it is text arithmetic over arguments nothing else can reach.
         """
         ...
 
@@ -821,7 +822,8 @@ class Sandbox(Protocol):
         allowlist and the most trusted enumeration in the system, this is the least trusted
         one, and both are in scope inside a kind's tool body.
 
-        The check runs one component deeper here — ``include_self`` — because an enumeration
+        The filesystem path check runs one component deeper here — ``include_self``, which the
+        file name check has no equivalent of — because an enumeration
         passes through a link as readily as a read does.  A listed link is reported as
         :data:`EntryKind.SYMLINK`, not hidden: a name handed back with its type erased is a
         name read without the warning.
