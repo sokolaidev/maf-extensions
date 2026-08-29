@@ -947,8 +947,9 @@ class DockerSandboxBackend:
         except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
             logger.debug("docker: could not read %s's guest identity (%s)", name, unreadable)
         logger.warning(
-            "docker: %s's user could not be resolved; writes stay root's (the pre-#680 "
-            "behavior) — the guest will not own what it is given",
+            "docker: %s's user could not be resolved, so its files stay root-owned and the "
+            "guest cannot empty its own call directory; give the image a numeric uid:gid in "
+            "Config.User, or a readable /etc/passwd, or an `id` it can run",
             name,
         )
         return 0, 0
@@ -1059,8 +1060,6 @@ class DockerSandboxBackend:
         probe = _DockerSandbox(self._docker, name, self._config.command_timeout_seconds)
         try:
             answer = await probe.ancestors_are_the_hosts(spec.work_dir)
-        except TimeoutError:
-            raise
         except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
             logger.debug("docker: could not read %s's work dir ancestors (%s)", name, unreadable)
             answer = False

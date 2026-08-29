@@ -1108,6 +1108,28 @@ class TestExecDiscardsATimedOutSandbox:
             asyncio.run(sandbox.exec(["hang"], working_directory=_WORK, timeout=1))
         assert fake.matching("rm", "-f", _NAME) != []
 
+    def test_a_timeout_walking_the_ancestors_fails_closed_instead(self):
+        """The other half of the same rule, and the reason it is not one rule.  The ancestor
+        walk is `docker cp` only, so its timeout leaves the container running and there is
+        something to hand back; the identity probe's `exec` removes it, so there is not.
+        Propagating here would turn a slow daemon into a failed acquire, where the
+        conservative answer — removals run as the guest — is already correct and safe.
+        """
+
+        def responder(args):
+            if args[0] == "cp" and args[1].startswith(f"{_NAME}:/maf-sandbox"):
+                raise TimeoutError("a daemon too slow to answer the ancestor walk")
+            if args[:2] == ("image", "inspect"):
+                return _DockerResult(0, b"", "")
+            if args[0] == "inspect" and args[-1] == _NAME:
+                return _DockerResult(0, b"true\n", "")
+            return _DockerResult(0, b"", "")
+
+        backend, fake = _backend_with(responder)
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert fake.matching("rm", "-f", _NAME) == []
+        assert [f.host_owned_ancestors for f in backend._facts.values()] == [False]
+
     def test_a_timeout_while_reading_facts_fails_the_acquire(self):
         """The identity probe's exec removes the container on its way out; swallowing the
         timeout here would hand `acquire` a sandbox for a container that no longer exists,
