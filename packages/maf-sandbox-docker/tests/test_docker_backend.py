@@ -1130,6 +1130,29 @@ class TestExecDiscardsATimedOutSandbox:
         assert fake.matching("rm", "-f", _NAME) == []
         assert [f.host_owned_ancestors for f in backend._facts.values()] == [False]
 
+    def test_a_timeout_reading_config_user_falls_back_instead(self, caplog):
+        """The third read, and the same rule: `inspect` is host-side, so a timeout there
+        killed a CLI process and left the container running.  It takes the documented `0:0`
+        fallback with its warning, and never reaches `id` — there is no user to resolve.
+        """
+
+        def responder(args):
+            if args[:3] == ("inspect", "-f", "{{.Config.User}}"):
+                raise TimeoutError("a daemon too slow to answer inspect")
+            if args[:2] == ("image", "inspect"):
+                return _DockerResult(0, b"", "")
+            if args[0] == "inspect" and args[-1] == _NAME:
+                return _DockerResult(0, b"true", "")
+            return _DockerResult(0, b"", "")
+
+        backend, fake = _backend_with(responder)
+        with caplog.at_level(logging.INFO):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert fake.matching("rm", "-f", _NAME) == []
+        assert [(f.guest_uid, f.guest_gid) for f in backend._facts.values()] == [(0, 0)]
+        assert fake.matching("exec") == []
+        assert any("could not be resolved" in r.message for r in caplog.records)
+
     def test_a_timeout_while_reading_facts_fails_the_acquire(self):
         """The identity probe's exec removes the container on its way out; swallowing the
         timeout here would hand `acquire` a sandbox for a container that no longer exists,

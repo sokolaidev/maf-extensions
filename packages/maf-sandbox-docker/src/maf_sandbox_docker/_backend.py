@@ -878,10 +878,16 @@ class DockerSandboxBackend:
         root's ``0:0`` — the pre-#680 behavior for an image that positively identifies
         nothing, rather than a guess that could stamp a stranger's ownership.
 
-        A ``TimeoutError`` propagates: the timed-out probe removes the container on its way
-        out, so this is not an unreadable identity but a dying sandbox, and caching
-        fallback facts for it would serve ``acquire`` a container that no longer exists.
+        Only the ``id`` step's ``TimeoutError`` propagates, because only it runs a guest
+        command and ``_exec`` removes the container on its way out: that is a dying sandbox
+        rather than an unreadable identity, and caching fallback facts for it would serve
+        ``acquire`` a container that no longer exists.  A host-side read that times out has
+        removed nothing, so it falls back like any other unreadable answer.
         """
+        uid: int | None = None
+        gid: int | None = None
+        group_name: str | None = None
+        named_a_user = False
         try:
             result = await self._docker(
                 "inspect",
@@ -899,9 +905,10 @@ class DockerSandboxBackend:
             raw = result.stdout.decode("utf-8", errors="replace").strip()
             if not raw or raw == "0:0":
                 return 0, 0
+            named_a_user = True
             user_spec, _, group_spec = raw.partition(":")
-            uid: int | None = int(user_spec) if user_spec.isdigit() else None
-            gid: int | None = int(group_spec) if group_spec.isdigit() else None
+            uid = int(user_spec) if user_spec.isdigit() else None
+            gid = int(group_spec) if group_spec.isdigit() else None
             group_name = group_spec if group_spec and not group_spec.isdigit() else None
             # `/etc/passwd` answers a uid, and a gid only when the group half is not
             # named; a bare uid beside a named group (`10001:devs`) is entirely
@@ -929,23 +936,25 @@ class DockerSandboxBackend:
             if gid is None and group_name is not None:
                 groups = await self._group_entry(name)
                 gid = groups.get(group_name)
-            # `id` last, and only for what the account files left open: it is the one
-            # step that runs a guest command, so an image whose `id` hangs must not cost
-            # the sandbox an acquire over a gid `/etc/group` already carries.
-            if uid is None or gid is None:
-                u_res, g_res = await self._effective_ids(name, probe)
-                uid = uid if uid is not None else u_res
-                gid = gid if gid is not None else g_res
-            if uid is not None and gid is not None:
-                return uid, gid
-            if uid is not None:
-                # A positively-known uid with no gid answer: the runtime picks 0 for a
-                # uid with no passwd entry, so that is the honest remainder.
-                return uid, 0
-        except TimeoutError:
-            raise
         except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
+            # Everything above is host-side — one `inspect` and two `docker cp` pulls — so a
+            # timeout among them killed a CLI process and left the container alone.  It is an
+            # unreadable answer like any other and joins the fallback below.
             logger.debug("docker: could not read %s's guest identity (%s)", name, unreadable)
+        # `id` last, and outside that `except` on purpose: it is the only step that runs a
+        # guest command, and `_exec` removes the container when it times out.  That is a dying
+        # sandbox rather than an unreadable identity, so it propagates instead of being cached
+        # as a fallback fact for a container that no longer exists.
+        if named_a_user and (uid is None or gid is None):
+            u_res, g_res = await self._effective_ids(name, probe)
+            uid = uid if uid is not None else u_res
+            gid = gid if gid is not None else g_res
+        if uid is not None and gid is not None:
+            return uid, gid
+        if uid is not None:
+            # A positively-known uid with no gid answer: the runtime picks 0 for a uid with
+            # no passwd entry, so that is the honest remainder.
+            return uid, 0
         logger.warning(
             "docker: %s's user could not be resolved, so its files stay root-owned and the "
             "guest cannot empty its own call directory; give the image a numeric uid:gid in "
