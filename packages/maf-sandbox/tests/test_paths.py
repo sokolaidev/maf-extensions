@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import subprocess
 import sys
+import warnings
+from pathlib import Path
 
 import pytest
 
@@ -363,6 +365,23 @@ class TestTheNamesTheseHadBefore:
         with pytest.warns(DeprecationWarning, match="confine_resolve_guest_write_path"):
             written = asyncio.run(paths.confine_guest_write_path(stat, "a.png", _WORK_DIR))
         assert written == "/maf-sandbox/work/a.png"
+
+    def test_the_warning_names_the_caller_and_not_asyncio(self):
+        """RELEASING.md wants the notice at the call site, which an `async def` shim loses.
+
+        Its body runs only once the loop has the coroutine, so the warning is attributed to
+        `asyncio/events.py`. The shims are sync functions returning the replacement's
+        coroutine for exactly this reason.
+        """
+        stat, _ = TestRefuseSymlinkedParents._stat(
+            {"/maf-sandbox": EntryKind.DIRECTORY, "/maf-sandbox/work": EntryKind.DIRECTORY}
+        )
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            asyncio.run(paths.refuse_symlinked_parents(stat, "/maf-sandbox/work/a.png", _WORK_DIR))
+
+        assert Path(caught[0].filename).name == Path(__file__).name
 
     def test_importing_the_old_spelling_does_not_warn(self):
         """The three shipped backends import these; warning here fails them under `-W error`."""

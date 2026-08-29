@@ -23,7 +23,8 @@ from __future__ import annotations
 
 import posixpath
 import warnings
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Any
 
 from ._protocol import EntryKind, SandboxEntry
 
@@ -174,14 +175,20 @@ def confine_guest_path(path: str, working_directory: str) -> str:
     return confine_resolve_guest_path(path, working_directory)
 
 
-async def confine_guest_write_path(
+def confine_guest_write_path(
     stat: Callable[[str], Awaitable[SandboxEntry | None]],
     path: str,
     working_directory: str,
-) -> str:
-    """Deprecated. Use :func:`confine_resolve_guest_write_path`."""
+) -> Coroutine[Any, Any, str]:
+    """Deprecated. Use :func:`confine_resolve_guest_write_path`.
+
+    Deliberately not ``async``: an ``async def`` body runs only once the event loop has taken
+    the coroutine, so the warning would be attributed to ``asyncio`` rather than to the caller.
+    Warning here and handing back the replacement's coroutine keeps the notice at the call
+    site, and ``await`` on the result is unchanged.
+    """
     _warn_renamed("confine_guest_write_path", "confine_resolve_guest_write_path")
-    return await confine_resolve_guest_write_path(stat, path, working_directory)
+    return confine_resolve_guest_write_path(stat, path, working_directory)
 
 
 def guest_directory_chain(guest_path: str, working_directory: str) -> tuple[str, ...]:
@@ -190,13 +197,18 @@ def guest_directory_chain(guest_path: str, working_directory: str) -> tuple[str,
     return guest_path_and_ancestors(guest_path, working_directory)
 
 
-async def refuse_symlinked_parents(
+def refuse_symlinked_parents(
     stat: Callable[[str], Awaitable[SandboxEntry | None]],
     guest_path: str,
     working_directory: str,
     *,
     include_self: bool = False,
-) -> None:
-    """Deprecated. Use :func:`refuse_symlinked_ancestors`."""
+) -> Coroutine[Any, Any, None]:
+    """Deprecated. Use :func:`refuse_symlinked_ancestors`.
+
+    Not ``async``, for the reason :func:`confine_guest_write_path` gives.
+    """
     _warn_renamed("refuse_symlinked_parents", "refuse_symlinked_ancestors")
-    await refuse_symlinked_ancestors(stat, guest_path, working_directory, include_self=include_self)
+    return refuse_symlinked_ancestors(
+        stat, guest_path, working_directory, include_self=include_self
+    )
