@@ -75,6 +75,10 @@ _GUEST_OWNED_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_GUEST_OWNED_IMAGE")
 #: The same again, but with the directory *above* `work_dir` given to that user — which is
 #: what `reclaim` checks at acquire, because it owes no walk of its own.
 _LOOSE_PARENT_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_LOOSE_PARENT_IMAGE")
+#: An image whose `USER` is a *name* rather than a numeric pair, the shape #680 was reported
+#: against: uid and gid come from the container's own `/etc/passwd`, and its gid differs from
+#: its uid so a gid that was read cannot be mistaken for one guessed to equal the uid.
+_NAMED_USER_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_NAMED_USER_IMAGE")
 #: What the images above put in `work_dir` at build time: the control for a reclaim.
 _CARRIED = "carried.json"
 
@@ -289,6 +293,78 @@ class TestAGuestThatIsNotRoot:
             )
             assert owner.exit_code == 0, owner.stderr
             assert owner.stdout.split() == [identity.stdout.strip()] * 2
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+
+@pytest.mark.skipif(
+    not _NAMED_USER_IMAGE,
+    reason="needs MAF_SANDBOX_DOCKER_E2E_NAMED_USER_IMAGE naming an image whose USER is a name",
+)
+class TestAGuestNamedRatherThanNumbered:
+    """A named `USER` against a real engine.
+
+    Every other image this suite runs states a numeric pair, which `Config.User` hands back
+    as-is — so the account-file resolution, the whole subject of #680, is otherwise exercised
+    only against the in-process fake.
+    """
+
+    def _spec(self) -> SandboxSpec:
+        return SandboxSpec(kind="e2e-named", image=_NAMED_USER_IMAGE, work_dir=_WORK)
+
+    def test_a_named_user_resolves_to_the_uid_and_gid_its_passwd_entry_names(self):
+        """`app` is `10001:20001` in the image's `/etc/passwd`, read host-side over the pull
+        surface.  The gid is the half that matters: it is not the uid, so a run that reported
+        `10001:10001` would be guessing, and one reporting `0:0` would be the pre-fix fallback.
+        """
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), self._spec())
+            call_directory = f"{_WORK}/abc123def456"
+            await sandbox.write_file(
+                f"{call_directory}/note", "written by the host\n", working_directory=_WORK
+            )
+            # Read with the guest's own `stat`, so the assertion is about what landed on the
+            # filesystem rather than about what the backend believes it sent.
+            owners = await sandbox.exec(
+                ["sh", "-c", f"stat -c '%u:%g' {call_directory} {call_directory}/note"],
+                working_directory="/",
+                timeout=60,
+            )
+            assert owners.exit_code == 0, owners.stderr
+            assert owners.stdout.split() == ["10001:20001", "10001:20001"]
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+    def test_the_guest_can_empty_the_call_directory_it_was_given(self):
+        """The point of the ownership, end to end: the principal named by `USER app` removes
+        what the host wrote beside it, which is what `reclaim` will be asked to do.
+        """
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), self._spec())
+            call_directory = f"{_WORK}/abc123def456"
+            await sandbox.write_file(
+                f"{call_directory}/note", "left behind\n", working_directory=_WORK
+            )
+
+            await sandbox.reclaim(call_directory, working_directory=_WORK, timeout=60)
+
+            listed = await sandbox.exec(
+                ["sh", "-c", f"ls -A {_WORK}"], working_directory="/", timeout=60
+            )
+            assert listed.exit_code == 0, listed.stderr
+            assert listed.stdout.split() == [_CARRIED]
 
         try:
             asyncio.run(scenario())

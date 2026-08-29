@@ -385,6 +385,7 @@ jobs:
       MAF_SANDBOX_DOCKER_E2E_NONROOT_IMAGE: maf-sandbox-docker-nonroot:ci
       MAF_SANDBOX_DOCKER_E2E_GUEST_OWNED_IMAGE: maf-sandbox-docker-guest-owned:ci
       MAF_SANDBOX_DOCKER_E2E_LOOSE_PARENT_IMAGE: maf-sandbox-docker-loose-parent:ci
+      MAF_SANDBOX_DOCKER_E2E_NAMED_USER_IMAGE: maf-sandbox-docker-named-user:ci
       # The CodeAct kind runs a Python program in the guest, so it needs an interpreter the
       # backend suite's image does not carry. Same registry for the same reason — MCR rather
       # than Docker Hub, whose unauthenticated pull limit is per shared-runner IP — and the
@@ -414,7 +415,9 @@ jobs:
           # below are otherwise the first thing in this job to resolve the tag.
           docker pull "$MAF_SANDBOX_DOCKER_E2E_IMAGE"
           # Three non-root guests off that base, so each build adds a layer and no download.
-          # A numeric USER needs no `useradd`, which this base does not carry. All carry a file
+          # A numeric USER needs no `useradd`, which this base does not carry — the named-user
+          # image below appends its account rows instead, because a numeric pair is taken from
+          # `Config.User` as-is and never exercises the account-file resolution. All carry a file
           # in `work_dir` at build time — the shape a kind's image has — so a reclaim can be
           # shown to remove its own directory and nothing beside it; they differ in how far up
           # the chain that user owns: nothing, `work_dir`, or `/maf-sandbox` above it.
@@ -427,6 +430,13 @@ jobs:
           printf 'FROM %s\nRUN mkdir -p /maf-sandbox/work && echo "{}" > /maf-sandbox/work/carried.json && chown -R 10001:10001 /maf-sandbox\nUSER 10001:10001\n' \
             "$MAF_SANDBOX_DOCKER_E2E_IMAGE" \
             | docker build -t "$MAF_SANDBOX_DOCKER_E2E_LOOSE_PARENT_IMAGE" -
+          # A *named* `USER`, the shape #680 was reported against: `Config.User` says `app`, so
+          # uid and gid are resolved from the container's own account files. Its gid differs
+          # from its uid on purpose — the numeric images above cannot tell a gid that was read
+          # from `/etc/passwd` apart from one guessed to equal the uid.
+          printf 'FROM %s\nRUN mkdir -p /maf-sandbox/work && echo "{}" > /maf-sandbox/work/carried.json && echo "devs:x:20001:" >> /etc/group && echo "app:x:10001:20001::/home/app:/bin/sh" >> /etc/passwd\nUSER app\n' \
+            "$MAF_SANDBOX_DOCKER_E2E_IMAGE" \
+            | docker build -t "$MAF_SANDBOX_DOCKER_E2E_NAMED_USER_IMAGE" -
           # Both live suites in one invocation: the backend's, and the CodeAct kind's on top of
           # it (#397). `-ra` because each skips itself when its image variable is empty, which
           # the env block above has already made impossible — a skip here is a bug, and without
