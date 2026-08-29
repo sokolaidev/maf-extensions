@@ -382,8 +382,8 @@ class _DockerSandbox:
         **implicit** intermediate as ``root`` whatever the file entry's ownership says, so
         a missing directory has to travel as its own explicit entry under the container's
         user; and an entry naming a directory that already exists re-stamps its mode, so an
-        existing one must not.  Which is which comes from the confinement walk this call
-        already paid for, rather than a second stat.
+        existing one must not.  Which is which comes from the filesystem path check this
+        call already paid for, rather than a second stat.
 
         The entries stop at ``working_directory``: an absent ancestor above it is docker's
         to create as root, since a guest-owned entry there would be a redirect the reach
