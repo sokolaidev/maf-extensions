@@ -631,8 +631,9 @@ class Sandbox(Protocol):
     is refused.
 
     **Confinement is a duty of all five, and it is not a check on the argument string.**  A
-    path whose *parent* is a link satisfies every lexical test and still reads outside: with
-    ``out -> /etc``, ``out/hostname`` stats as a regular 12-byte file.  Discharge it with
+    path whose *parent* is a link passes the file name check and still reads outside: with
+    ``out -> /etc``, ``out/hostname`` stats as a regular 12-byte file.  The filesystem path
+    check is what catches it, so discharge that half with
     :func:`~maf_sandbox.paths.refuse_symlinked_ancestors` rather than by writing that check again —
     it is where the two refusals a caller must be able to tell apart are defined, and
     :mod:`maf_sandbox.conformance` is the same duty as probes, for holding a backend that
@@ -649,16 +650,17 @@ class Sandbox(Protocol):
         ``path`` is POSIX-shaped and relative to ``working_directory``; an absolute path resolving
         inside it is accepted. ``str`` means UTF-8 whatever the host's locale says; ``bytes`` is
         written as given, and is what an in-door carrying a PNG or a spreadsheet needs. Parent
-        directories are created as needed. A missing component ends the check, so nothing created
-        by this call can be a link.
+        directories are created as needed. A missing component ends the filesystem path check,
+        so nothing created by this call can be a link.
 
         Raises:
             ValueError: If the path is outside, passes through a link, names a link, or is the
                 working directory itself.
             NotADirectoryError: If a parent is neither a directory nor a link.
 
-        The check and the write are not atomic on any shipped backend; a guest that turns a checked
-        component into a link in between wins.
+        The filesystem path check and the write are not atomic on any shipped backend; a guest
+        that turns a checked component into a link in between wins.  The file name check cannot
+        race: it is text arithmetic over arguments nothing else can reach.
         """
         ...
 
@@ -821,7 +823,8 @@ class Sandbox(Protocol):
         allowlist and the most trusted enumeration in the system, this is the least trusted
         one, and both are in scope inside a kind's tool body.
 
-        The check runs one component deeper here — ``include_self`` — because an enumeration
+        The filesystem path check runs one component deeper here — ``include_self``, which the
+        file name check has no equivalent of — because an enumeration
         passes through a link as readily as a read does.  A listed link is reported as
         :data:`EntryKind.SYMLINK`, not hidden: a name handed back with its type erased is a
         name read without the warning.

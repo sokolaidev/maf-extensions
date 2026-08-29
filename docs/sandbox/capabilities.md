@@ -161,7 +161,7 @@ DEFAULT_TRANSFER_LIMITS = TransferLimits(max_bytes_per_file=8 * MiB, max_total_b
 
 ## `write_file` widens; no capability for it
 
-`write_file` takes `(path: str, content: str | bytes, *, working_directory: str)`, with `str` continuing to mean UTF-8 whatever the host's locale says. The in-door otherwise cannot carry a PNG or a spreadsheet. It gets no capability by the admission test above. It uses the same POSIX grammar and `working_directory` confinement as the read surface, including refusal of lexical escapes, symlinked parents, and a link at the leaf; parent directories are created as needed, and a missing component ends the check, so nothing this call creates can be a link. The check and the write are not atomic on any shipped backend: a guest that turns a checked component into a link in between wins.
+`write_file` takes `(path: str, content: str | bytes, *, working_directory: str)`, with `str` continuing to mean UTF-8 whatever the host's locale says. The in-door otherwise cannot carry a PNG or a spreadsheet. It gets no capability by the admission test above. It uses the same POSIX grammar and `working_directory` confinement as the read surface, including refusal of lexical escapes, symlinked parents, and a link at the leaf; parent directories are created as needed, and a missing component ends the filesystem path check, so nothing this call creates can be a link. That check and the write are not atomic on any shipped backend: a guest that turns a checked component into a link in between wins. The file name check cannot race — it is text arithmetic — so the window belongs to the other half alone.
 
 ## `FILES_DELETE`
 

@@ -266,8 +266,8 @@ class ConformancePaths:
     def under_linked_directory(self) -> str:
         """A working directory one level *inside* the link — the ``/maf-sandbox -> /`` case.
 
-        Distinct from making the work dir itself the link: an implementation whose check starts
-        at the work dir passes that one and still reads straight through this.
+        Distinct from making the work dir itself the link: an implementation whose filesystem path
+        check starts at the work dir passes that one and still reads straight through this.
         """
         return f"{self.linked_directory}/sub"
 
