@@ -35,7 +35,7 @@ import json
 import logging
 import uuid
 import warnings
-from collections.abc import Callable, Generator, Mapping
+from collections.abc import Awaitable, Callable, Generator, Mapping
 from dataclasses import dataclass
 from typing import Any, TypeVar, cast
 
@@ -86,11 +86,37 @@ DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN = 16
 #: "no room left" answerable before a tool runs rather than only after its size is known.
 _SMALLEST_RESPONSE = 1
 
-#: What serving a USER-identity tool would need, named once — the refusal and the docs must
-#: tell the same story.
-_USER_IDENTITY_PREREQUISITES = (
-    "per-run token minting, an audience-within-egress check, and an ephemeral exec env channel"
-)
+#: What serving a USER-identity tool still needs, named once — the refusal and the docs must
+#: tell the same story.  Only per-run minting: the body runs host-side, so the in-guest half of
+#: two-axis C′ (an `exec` env channel, audience ⊆ egress) bounds a different mechanism.
+_USER_IDENTITY_PREREQUISITES = "a per-run mint_user_identity the registry can call"
+
+#: The keyword a minted identity reaches a tool body by.  Reserved: a guest sending one would
+#: be choosing the authority its own call runs under, so an argument of this name is refused
+#: before binding rather than quietly overwritten by the injection.
+_USER_IDENTITY_PARAMETER = "user_identity"
+
+
+def _accepts_user_identity(func: Callable[..., Any]) -> bool:
+    """Whether ``func`` can be handed the minted identity by keyword.
+
+    ``**kwargs`` counts, since a body may fan its arguments out rather than name each one, and
+    so does a signature that cannot be read: nothing is provable about one here, and the call
+    is refused later by the same guard that validates the guest's arguments.
+    """
+    try:
+        signature = inspect.signature(func)
+    except Exception:  # noqa: BLE001 - unprovable here, and refused at call time
+        return True
+    for parameter in signature.parameters.values():
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        if (
+            parameter.name == _USER_IDENTITY_PARAMETER
+            and parameter.kind is not inspect.Parameter.POSITIONAL_ONLY
+        ):
+            return True
+    return False
 
 
 class MafSandboxHostToolsWarning(UserWarning):
@@ -312,6 +338,7 @@ class HostToolRegistry:
         host_tool_calls_observer: (
             Callable[[HostToolRun, object], contextlib.AbstractContextManager[object]] | None
         ) = None,
+        mint_user_identity: Callable[[str], Awaitable[str]] | None = None,
     ) -> None:
         _refuse_non_integer("max_host_tool_calls_per_run", max_host_tool_calls_per_run)
         if max_host_tool_calls_per_run < 1:
@@ -373,7 +400,17 @@ class HostToolRegistry:
                     "allowed_identities may hold only Identity members, not "
                     f"{type(member).__name__}: {member!r}"
                 )
+        if mint_user_identity is not None:
+            # Refused at construction for the observer's reason: a minter this registry cannot
+            # call is a USER tool that refuses at call time, where only a sanitized sentence
+            # comes back and the host cannot see which of its arguments was wrong.
+            given_minter = cast(object, mint_user_identity)
+            if not callable(given_minter):
+                raise TypeError(
+                    f"mint_user_identity must be callable, not {type(mint_user_identity).__name__}"
+                )
         self._require_declared = require_declared
+        self._mint_user_identity = mint_user_identity
         self._allowed_identities = frozenset(allowed_identities)
         self._max_host_tool_calls_per_run = max_host_tool_calls_per_run
         self._response_limits = response_limits
@@ -387,6 +424,18 @@ class HostToolRegistry:
     def require_declared(self) -> bool:
         """Whether unstamped functions are refused rather than degraded."""
         return self._require_declared
+
+    @property
+    def mint_user_identity(self) -> Callable[[str], Awaitable[str]] | None:
+        """Mints this run's user authority, or ``None`` where the host serves none.
+
+        Called at most once per :class:`HostToolRun`, with that run's ``run_id``, the first
+        time a :data:`~maf_sandbox.Identity.USER` tool is reached; its result is handed to the
+        body as ``user_identity`` and never persisted.  Without one, such a tool registers and
+        is refused at call time, which is what this library did for every host until a host
+        could say where the authority comes from.
+        """
+        return self._mint_user_identity
 
     @property
     def allowed_identities(self) -> frozenset[Identity]:
@@ -492,6 +541,22 @@ class HostToolRegistry:
                 "construction with allowed_identities=frozenset({Identity.APP, "
                 "Identity.USER}); a tool declaring identity=None exercises no authority and is "
                 "always allowed. denied_identities on the router stays the attach-time backstop."
+            )
+        # Only where the host means to serve one. A registry with no minter keeps refusing
+        # USER tools at call time, and declaring one there must stay possible: a registry has
+        # to be writable honestly on a host that serves no user authority, which is the whole
+        # reason the principal is declarable before it is servable.
+        if (
+            effective_identity is Identity.USER
+            and self._mint_user_identity is not None
+            and not _accepts_user_identity(func)
+        ):
+            raise ValueError(
+                f"host tool {tool_name!r} exercises the user's authority but takes no "
+                f"{_USER_IDENTITY_PARAMETER!r} parameter, so this registry has nowhere to hand "
+                "the identity it mints for the run. Give it one — a tool acting as the user "
+                "receives that authority explicitly rather than reaching for an ambient "
+                "credential, which is what makes the per-run bound structural."
             )
         _warn_host_tools_once()
         self._tools[tool_name] = func
@@ -724,6 +789,43 @@ class HostToolRun:
         self._calls = 0
         self._delivered = 0
         self._delivered_bytes = 0
+        self._minted_user_identity: str | None = None
+
+    async def _user_identity(self) -> str | None:
+        """This run's user authority, minted at most once, or ``None`` if it could not be.
+
+        Cached on success only: a mint that failed is a transient the next call may survive,
+        while a mint that succeeded must not be repeated — one run, one identity is the bound
+        the whole mechanism rests on.
+        """
+        if self._minted_user_identity is not None:
+            return self._minted_user_identity
+        mint = self._registry.mint_user_identity
+        if mint is None:  # pragma: no cover - `call` refuses before reaching this
+            return None
+        try:
+            minted = await mint(self._run_id)
+        except Exception as exc:  # noqa: BLE001 - the guest gets a sentence, the log the rest
+            self._logger.warning(
+                "minting the user's identity for run %r failed: %s",
+                self._run_id,
+                error_detail(exc),
+            )
+            return None
+        # A minter that answers with something unusable is the same failure as one that
+        # raised, and worth the same refusal: an empty string or a non-string reaching a tool
+        # body as its authority is how a call runs with no authority at all and nobody notices.
+        answered = cast(object, minted)
+        if not isinstance(answered, str) or not answered:
+            self._logger.warning(
+                "minting the user's identity for run %r returned %r, which is not a usable "
+                "identity",
+                self._run_id,
+                answered,
+            )
+            return None
+        self._minted_user_identity = answered
+        return answered
 
     @property
     def run_id(self) -> str:
@@ -831,10 +933,11 @@ class HostToolRun:
                 f"Error: {name!r} carries no complete information-flow declaration, and "
                 "this host calls declared tools only"
             )
-        if declaration is not None and declaration.identity is Identity.USER:
+        acts_as_user = declaration is not None and declaration.identity is Identity.USER
+        if acts_as_user and self._registry.mint_user_identity is None:
             return _refused(
-                f"Error: {name!r} exercises the user's identity, which cannot be served "
-                f"yet — serving it needs {_USER_IDENTITY_PREREQUISITES}"
+                f"Error: {name!r} exercises the user's identity, which this host cannot serve "
+                f"— serving it needs {_USER_IDENTITY_PREREQUISITES}"
             )
         # Cast to `object` because a transport hands over whatever the guest's JSON
         # parsed to — the annotation describes the contract, this check enforces it.
@@ -844,6 +947,22 @@ class HostToolRun:
                 f"Error: arguments for {name!r} must be a JSON object of keyword arguments"
             )
         provided: dict[str, Any] = dict(arguments) if arguments is not None else {}
+        if acts_as_user:
+            if _USER_IDENTITY_PARAMETER in provided:
+                # Before the mint, and a refusal rather than an overwrite: a guest naming this
+                # argument is trying to choose the authority its own call runs under, and that
+                # attempt is worth surfacing rather than silently correcting.
+                return _refused(
+                    f"Error: {_USER_IDENTITY_PARAMETER!r} is not an argument a caller may send "
+                    f"to {name!r} — the host mints the identity this tool acts under"
+                )
+            minted = await self._user_identity()
+            if minted is None:
+                return _refused(
+                    f"Error: the user's identity could not be minted for this run, so {name!r} "
+                    "was not called — the reason is in the host's log"
+                )
+            provided[_USER_IDENTITY_PARAMETER] = minted
         limits = self._registry.response_limits
         # Both ledgers, before the call rather than after it. A sink tool's body runs in the
         # host process and does its work there; refusing once it has already run means the

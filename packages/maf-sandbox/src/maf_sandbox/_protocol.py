@@ -237,12 +237,12 @@ class Identity(StrEnum):
     Least privilege for host tools comes from what a host registers, never from what it
     declares.
 
-    :data:`USER` is **declarable but not servable**: declaring it must be possible so a
-    registry can be written honestly and refused loudly, and serving it must not be until
-    per-run token minting, an audience-within-egress check, and the ephemeral ``exec`` env
-    channel exist — or a host ships model-orchestrated user authority before anything bounds
-    it.  Registering a ``USER`` tool raises the whole ``execute_code`` surface to
-    approval-gated; calling one is refused with the prerequisites named.
+    :data:`USER` is **served only where a host mints it**.  A registry given
+    ``mint_user_identity`` hands each run one freshly minted authority and passes it to the
+    body as ``user_identity``; a registry without one keeps refusing the call, which is what
+    lets a registry be written honestly on a host that serves no user authority at all.
+    Registering a ``USER`` tool raises the whole ``execute_code`` surface to approval-gated
+    either way: the mint bounds where the authority comes from, not what a tool does with it.
     """
 
     #: The host application's own authority — everything its process can already do.
