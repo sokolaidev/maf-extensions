@@ -21,6 +21,7 @@ from hashlib import sha256
 from typing import TYPE_CHECKING, Any, cast
 
 from maf_sandbox import (
+    BackendDeclarations,
     Capability,
     DisposalFailure,
     Egress,
@@ -195,6 +196,52 @@ _FILES_LIMITS = TransferLimits(
     max_bytes_per_file=32 * _MIB, max_total_bytes=128 * _MIB, max_files=128
 )
 _LIMITS = SandboxLimits(files_in=_FILES_LIMITS, files_out=_FILES_LIMITS)
+
+# What the router reads off this backend. The three fields stated here are constants — the
+# sandbox group's egress policy and the data plane's own surface are both fixed before a spec
+# arrives. `os_families` is left unstated, so the router reads it as the empty set and refuses a
+# spec that asks for a guest shape; declaring the family this backend actually hands out is #588.
+#
+# `egress_modes`: `_egress_policy` builds a Deny-default allowlist — named hosts resolve as
+# ALLOWLIST, an empty allowlist as CLOSED (deny all). Never UNRESTRICTED, because the group's
+# policy denies by default and cannot be told to allow everything.
+#
+# `capabilities`: FILES_LIST as well as FILES_OUT, which is the split's own test — name the
+# backend that lacks it. Enumeration is native here and unavailable on the backends that
+# transport a named path only.
+#
+# HOST_TOOLS is the one member with no method behind it, so what it asserts is narrower than the
+# others and worth stating: `exec` **detaches**. A process started by one call outlives it and is
+# observable from the next, because the sandbox is a microVM the group keeps between calls rather
+# than a session torn down per `exec` call — which is what `host_tool_calls_over_exec` is built
+# on, its launcher returning at once and the exit-code file being the run's only witness. This is
+# the backend where that could not be taken on faith, since every call is an HTTP round trip to a
+# remote control plane, so `test_acas_e2e.py` measures it against the service rather than against
+# a reading of the SDK.
+#
+# It is *not* a claim about the image. The shipped launcher wants `sh`, `nohup`, `printf`, `mv`,
+# `mkdir`, `rm` and `kill`, and `setsid` where the image has it; a kind wants whatever interpreter
+# it names — codeact wants `python3` — none of which this backend chooses, since `spec.image`
+# does. That gap is #111's axis, and it is the same gap `EXEC` already has: a kind execing
+# `python3` against an image without Python fails inside the sandbox today.
+#
+# The image does narrow one thing, and `acquire` is where it lands rather than here: a guest that
+# is not root can create nothing inside a directory the file plane made, so this pair is refused
+# there for such an image (#722).
+_DECLARATIONS = BackendDeclarations(
+    capabilities=frozenset(
+        {
+            Capability.EXEC,
+            Capability.FILES_IN,
+            Capability.FILES_OUT,
+            Capability.FILES_LIST,
+            Capability.FILES_DELETE,
+            Capability.HOST_TOOLS,
+        }
+    ),
+    limits=_LIMITS,
+    egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED}),
+)
 
 # The data-plane routes and payload fields the pull surface reads for itself, rather than
 # through the SDK's typed models — see `_AcasSandbox._files_payload`.
@@ -660,52 +707,8 @@ class AcasSandboxBackend:
         return Isolation.MICROVM
 
     @property
-    def egress_modes(self) -> frozenset[Egress]:
-        # `_egress_policy` builds a Deny-default allowlist: named hosts resolve as ALLOWLIST,
-        # an empty allowlist as CLOSED (deny all). Never UNRESTRICTED — the group's policy
-        # denies by default and cannot be told to allow everything.
-        return frozenset({Egress.ALLOWLIST, Egress.CLOSED})
-
-    @property
-    def capabilities(self) -> frozenset[Capability]:
-        # FILES_LIST as well as FILES_OUT, which is the split's own test — name the backend
-        # that lacks it. Enumeration is native here and unavailable on the backends that
-        # transport a named path only.
-        #
-        # HOST_TOOLS is the one member with no method behind it, so what it asserts here is
-        # narrower than the others and worth stating: `exec` **detaches**. A process started by
-        # one call outlives it and is observable from the next, because the sandbox is a microVM
-        # the group keeps between calls rather than a session torn down per `exec` call — which
-        # is what `host_tool_calls_over_exec` is built on, its launcher returning at once and the
-        # exit-code file being the run's only witness. This is the backend where that could not
-        # be taken on faith, since every call is an HTTP round trip to a remote control plane, so
-        # `test_acas_e2e.py` measures it against the service rather than against a reading of the
-        # SDK.
-        #
-        # It is *not* a claim about the image. The shipped launcher wants `sh`, `nohup`,
-        # `printf`, `mv`, `mkdir`, `rm` and `kill`, and `setsid` where the image has it; a
-        # kind wants whatever interpreter it names — codeact wants `python3` —
-        # none of which this backend chooses, since `spec.image` does. That gap is #111's axis,
-        # and it is the same gap `EXEC` already has: a kind execing `python3` against an image
-        # without Python fails inside the sandbox today.
-        #
-        # The image does narrow one thing, and `acquire` is where it lands rather than here: a
-        # guest that is not root can create nothing inside a directory the file plane made, so
-        # this pair is refused there for such an image (#722).
-        return frozenset(
-            {
-                Capability.EXEC,
-                Capability.FILES_IN,
-                Capability.FILES_OUT,
-                Capability.FILES_LIST,
-                Capability.FILES_DELETE,
-                Capability.HOST_TOOLS,
-            }
-        )
-
-    @property
-    def limits(self) -> SandboxLimits:
-        return _LIMITS
+    def declarations(self) -> BackendDeclarations:
+        return _DECLARATIONS
 
     # -- client -------------------------------------------------------------------
 

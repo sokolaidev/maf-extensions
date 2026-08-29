@@ -8,6 +8,7 @@ consume it.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import shlex
 
 import pytest
@@ -15,6 +16,7 @@ import pytest
 from maf_sandbox import (
     DEFAULT_CAPABILITIES,
     DEFAULT_SANDBOX_LIMITS,
+    BackendDeclarations,
     CallerContext,
     Capability,
     Egress,
@@ -30,7 +32,12 @@ from maf_sandbox import (
     SandboxTransferCapExceeded,
     TransferLimits,
 )
-from maf_sandbox.testing import InMemoryStore, InProcessSandbox, InProcessSandboxBackend
+from maf_sandbox.testing import (
+    FAKE_BACKEND_DECLARATIONS,
+    InMemoryStore,
+    InProcessSandbox,
+    InProcessSandboxBackend,
+)
 
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
 _SPEC = SandboxSpec(kind="test")
@@ -144,23 +151,51 @@ class TestInProcessSandboxBackend:
 
     def test_egress_modes_default_to_allowlist_and_closed_so_a_workload_attaches(self):
         """A proxy-capable live backend's shape: the default CLOSED spec and an ALLOWLIST spec
-        both resolve, rather than every consumer's offline test becoming a test of the refusal."""
-        assert InProcessSandboxBackend().egress_modes == frozenset(
+        both resolve, rather than every consumer's offline test becoming a test of the refusal.
+
+        It is the one field `FAKE_BACKEND_DECLARATIONS` departs from
+        `DEFAULT_BACKEND_DECLARATIONS` on, because that silence rule refuses every spec.
+        """
+        assert InProcessSandboxBackend().declarations.egress_modes == frozenset(
             {Egress.ALLOWLIST, Egress.CLOSED}
         )
+        assert (
+            dataclasses.replace(FAKE_BACKEND_DECLARATIONS, egress_modes=frozenset())
+            == BackendDeclarations()
+        )
+
+    def test_the_declarations_are_configurable(self):
+        """A kind's tests need a backend that claims more, and one that claims less."""
+        declared = BackendDeclarations(capabilities=frozenset({Capability.RUN_CODE}))
+        assert InProcessSandboxBackend(declarations=declared).declarations == declared
 
     def test_egress_modes_are_configurable(self):
-        backend = InProcessSandboxBackend(egress_modes=frozenset({Egress.UNRESTRICTED}))
-        assert backend.egress_modes == frozenset({Egress.UNRESTRICTED})
+        """The field a test of the attach refusal narrows, and the one this fake departs from
+        the router's silence rule on — so it is the leg most worth pinning here."""
+        backend = InProcessSandboxBackend(
+            declarations=BackendDeclarations(egress_modes=frozenset({Egress.UNRESTRICTED}))
+        )
+        assert backend.declarations.egress_modes == frozenset({Egress.UNRESTRICTED})
+
+    def test_constructing_a_bare_declarations_drops_this_fake_egress_default(self):
+        """The trap the `declarations` docstring names: overriding one field with a bare
+        `BackendDeclarations` resets `egress_modes` to the rule that enforces nothing, and the
+        attach then fails about a field the test never named. `dataclasses.replace` is the way
+        to state one field and keep the rest."""
+        bare = InProcessSandboxBackend(
+            declarations=BackendDeclarations(capabilities=frozenset({Capability.RUN_CODE}))
+        )
+        assert bare.declarations.egress_modes == frozenset()
+        kept = InProcessSandboxBackend(
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS, capabilities=frozenset({Capability.RUN_CODE})
+            )
+        )
+        assert kept.declarations.egress_modes == frozenset({Egress.ALLOWLIST, Egress.CLOSED})
 
     def test_capabilities_default_to_what_every_sandbox_owes(self):
         """`write_file` and `exec` — the two the `Sandbox` protocol already obligates."""
-        assert InProcessSandboxBackend().capabilities == DEFAULT_CAPABILITIES
-
-    def test_capabilities_are_configurable(self):
-        """A kind's tests need a backend that claims more, and one that claims less."""
-        backend = InProcessSandboxBackend(capabilities=frozenset({Capability.RUN_CODE}))
-        assert backend.capabilities == frozenset({Capability.RUN_CODE})
+        assert InProcessSandboxBackend().declarations.capabilities == DEFAULT_CAPABILITIES
 
     def test_acquire_records_the_key_and_spec_and_returns_the_sandbox(self):
         sandbox = InProcessSandbox()
@@ -905,10 +940,13 @@ class TestInProcessSandboxWalksTheComponents:
 
 class TestInProcessSandboxBackendLimits:
     def test_limits_default_to_default_sandbox_limits(self):
-        assert InProcessSandboxBackend().limits == DEFAULT_SANDBOX_LIMITS
+        assert InProcessSandboxBackend().declarations.limits == DEFAULT_SANDBOX_LIMITS
 
     def test_limits_are_configurable(self):
         custom = SandboxLimits(
             files_out=TransferLimits(max_bytes_per_file=1, max_total_bytes=1, max_files=1)
         )
-        assert InProcessSandboxBackend(limits=custom).limits == custom
+        backend = InProcessSandboxBackend(
+            declarations=dataclasses.replace(FAKE_BACKEND_DECLARATIONS, limits=custom)
+        )
+        assert backend.declarations.limits == custom

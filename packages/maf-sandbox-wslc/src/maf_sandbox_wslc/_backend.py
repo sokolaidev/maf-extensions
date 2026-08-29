@@ -34,6 +34,7 @@ from hashlib import sha256
 from typing import TYPE_CHECKING, Protocol, cast
 
 from maf_sandbox import (
+    BackendDeclarations,
     Capability,
     DisposalFailure,
     Egress,
@@ -85,6 +86,9 @@ _LABEL_PREFIX = "maf-sandbox.label."
 _LABEL_VALUE_MAX = 63
 _LABEL_VALUE_SAFE = re.compile(r"[A-Za-z0-9._-]+")
 _LABEL_VALUE_DIGEST = re.compile(r"sha256-[0-9a-f]{48}")
+
+# The narrowest set any shipped backend declares: no pull surface, no removal, no run_code.
+_CAPABILITIES = frozenset({Capability.EXEC, Capability.FILES_IN})
 
 #: `wslc` exits non-zero for a container that is not there, so removal is judged by this.
 _NOT_FOUND = "WSLC_E_CONTAINER_NOT_FOUND"
@@ -530,6 +534,17 @@ class WslcSandboxBackend:
 
     def __init__(self, config: WslcSandboxConfig) -> None:
         self._config = config
+        # Built once: every input is fixed here, and the router reads the object on each
+        # `ensure_can_serve` and each `acquire`. Only `egress_modes` reads the config at all —
+        # with a proxy image this backend can allowlist named hosts or deny all, and without
+        # one it can only close. Never UNRESTRICTED: a container backend always cuts or
+        # proxies. `limits` is left at its default, which is the ceiling this backend accepts.
+        self._declarations = BackendDeclarations(
+            capabilities=_CAPABILITIES,
+            egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED})
+            if config.egress_proxy_image
+            else frozenset({Egress.CLOSED}),
+        )
         # (scope, thread_id, agent_dir, kind) -> name: a purge fallback for when the listing
         # fails, never the truth. Holds the last name acquired per key and kind, which is
         # enough to reclaim them.
@@ -558,16 +573,8 @@ class WslcSandboxBackend:
         return Isolation.CONTAINER
 
     @property
-    def egress_modes(self) -> frozenset[Egress]:
-        # With a proxy image it can allowlist named hosts or deny all; without one it can only
-        # close. Never UNRESTRICTED: a container backend always cuts or proxies.
-        if self._config.egress_proxy_image:
-            return frozenset({Egress.ALLOWLIST, Egress.CLOSED})
-        return frozenset({Egress.CLOSED})
-
-    @property
-    def capabilities(self) -> frozenset[Capability]:
-        return frozenset({Capability.EXEC, Capability.FILES_IN})
+    def declarations(self) -> BackendDeclarations:
+        return self._declarations
 
     # -- SandboxBackend -----------------------------------------------------------
 

@@ -13,6 +13,7 @@ detail.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
 import json
 import logging
@@ -54,7 +55,12 @@ from maf_sandbox import (
     launcher_script,
     sandbox_tool,
 )
-from maf_sandbox.testing import InMemoryStore, InProcessSandbox, InProcessSandboxBackend
+from maf_sandbox.testing import (
+    FAKE_BACKEND_DECLARATIONS,
+    InMemoryStore,
+    InProcessSandbox,
+    InProcessSandboxBackend,
+)
 
 from maf_sandbox_codeact import (
     CODEACT_KIND,
@@ -382,11 +388,15 @@ def _backend(
     # its own.
     if limits is None and capabilities is not None and Capability.HOST_TOOLS in capabilities:
         limits = _CALL_LIMITS
+    declarations = FAKE_BACKEND_DECLARATIONS
+    if capabilities is not None:
+        declarations = dataclasses.replace(declarations, capabilities=capabilities)
+    if limits is not None:
+        declarations = dataclasses.replace(declarations, limits=limits)
     return InProcessSandboxBackend(
         sandbox if sandbox is not None else _ScriptedSandbox(),
         acquire_error=acquire_error,
-        **({} if capabilities is None else {"capabilities": capabilities}),
-        **({} if limits is None else {"limits": limits}),
+        declarations=declarations,
     )
 
 

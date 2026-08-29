@@ -8,6 +8,7 @@ one `asyncio.run`, no pytest-asyncio.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import struct
 import sys
 import zlib
@@ -23,7 +24,11 @@ from maf_sandbox import (
     make_file_system_sink,
 )
 from maf_sandbox.maf import list_no_files, make_caller_context
-from maf_sandbox.testing import InProcessSandbox, InProcessSandboxBackend
+from maf_sandbox.testing import (
+    FAKE_BACKEND_DECLARATIONS,
+    InProcessSandbox,
+    InProcessSandboxBackend,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -86,7 +91,9 @@ def _tools(sandbox: InProcessSandbox, out_dir: Path, **kwargs):
     """The sample's own factory, wired to the in-process backend instead of docker."""
     backend = InProcessSandboxBackend(
         sandbox,
-        capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT},
+        declarations=dataclasses.replace(
+            FAKE_BACKEND_DECLARATIONS, capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
+        ),
     )
     router = SandboxRouter([backend], min_isolation=Isolation.NONE)
     return make_diagram_tools(

@@ -817,7 +817,7 @@ async def run() -> int:
         # declares it; docker does not (no engine-level directory-listing primitive), so there the
         # leftover-traffic count cannot be taken and the act is skipped — acts 2-4 above, which is
         # what #519 measures, ran in full either way.
-        if Capability.FILES_LIST in backend.capabilities:
+        if Capability.FILES_LIST in backend.declarations.capabilities:
             await act_five_what_the_runs_left_behind(router, registry)
         else:
             print("== 5. What the runs left in the guest ==\n")

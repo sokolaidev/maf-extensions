@@ -38,7 +38,8 @@ This package draws no isolation boundary itself — it is protocol and policy ov
 | `SandboxKey` | `(scope, thread_id, agent_dir)` — the one sandbox a caller may reach |
 | `SandboxSpec` | what a sandbox of a given *kind* needs: image, egress allowlist, work dir, `requires` capabilities, and an optional `min_isolation` that may raise the host's floor |
 | `Sandbox` | `write_file`, `exec` and `run_code`, the pull surface `stat_file` / `read_file` / `list_dir`, `remove`, and `reclaim` — what a workload gets, gated by what the backend declares, except `reclaim`, which is gated by nothing |
-| `SandboxBackend` | `acquire` / `dispose` / `dispose_scope`, plus the `isolation`, `egress_modes`, `capabilities` and `os_families` it declares |
+| `SandboxBackend` | `acquire` / `dispose` / `dispose_scope`, plus the `isolation` it declares and the `BackendDeclarations` it hands the router |
+| `BackendDeclarations` | the four optional declarations in one object — `capabilities`, `limits`, `egress_modes`, `os_families` — each field's default being its own silence rule |
 | `SandboxRouter` | picks the backend, enforces the minimum-isolation floor, the capability match, and the egress rule |
 | `SandboxPurger` | duck-typed `purge_scoped_thread(scope, thread_id)` for a host's delete path |
 
@@ -60,13 +61,13 @@ router = SandboxRouter(backends, min_isolation=Isolation.NONE)  # a developer ma
 
 It refuses rather than degrades. Falling back to a stronger backend would hide a misconfiguration; proceeding with the weaker one would break claims the host's security posture makes about every execution surface. Neither is better than an error.
 
-**2. The capability match.** A backend declares `capabilities: frozenset[Capability]` (`EXEC`, `RUN_CODE`, `HOST_TOOLS`, `FILES_IN`, `FILES_OUT`, `FILES_LIST`, `FILES_DELETE`, `SNAPSHOT`, `ATTACHED_IDENTITY`) — what it can actually do — and a spec declares `requires`, what its workload cannot run without. `ensure_can_serve(spec)` raises `SandboxCapabilityNotSupported` when the backend is missing something the spec requires. Unlike the floor, silence here is a functionality claim rather than a safety one: an undeclared `capabilities` reads as exactly `DEFAULT_CAPABILITIES = {EXEC, FILES_IN}` — what this package's own `Sandbox` protocol already obligates, so a backend written before `Capability` existed does not have to start lying to keep working.
+**2. The capability match.** A backend declares `declarations.capabilities` (a `frozenset[Capability]`: `EXEC`, `RUN_CODE`, `HOST_TOOLS`, `FILES_IN`, `FILES_OUT`, `FILES_LIST`, `FILES_DELETE`, `SNAPSHOT`, `ATTACHED_IDENTITY`) — what it can actually do — and a spec declares `requires`, what its workload cannot run without. `ensure_can_serve(spec)` raises `SandboxCapabilityNotSupported` when the backend is missing something the spec requires. Unlike the floor, silence here is a functionality claim rather than a safety one: an unstated `capabilities` reads as exactly `DEFAULT_CAPABILITIES = {EXEC, FILES_IN}` — what this package's own `Sandbox` protocol already obligates, so a backend written before `Capability` existed does not have to start lying to keep working.
 
 **3. The egress rule**, unchanged in substance. `egress_allow` was a contract nothing checked, so a backend that reads it and one that ignores it have the same type, the same methods and the same passing tests — each one declares an `Egress` level instead: `allowlist` (deny by default, allow the named hosts), `closed` (all or nothing), or `unrestricted` (cannot confine egress at all). `ensure_can_serve(spec)` refuses the last one. Here silence is *not* read charitably: an undeclared `egress` is treated as `unrestricted` and refused, because a backend written before the property existed cannot have been enforcing an allowlist it never read.
 
 Which direction a backend misses egress by decides the outcome, and it is not symmetrical. A backend that confines **less** than the spec asks silently widens what the workload was designed to reach — refused. One that confines **more** is permitted, with a warning: the sandbox reaches nothing it should not, and the workload fails visibly at whatever it could not fetch.
 
-**4. The guest-shape match.** A backend declares `os_families: frozenset[OsFamily]` — the guest shapes it hands out, `posix` or `windows` — and a spec declares `requires_os_family`, the shape its commands and scripts are written for. `ensure_can_serve(spec)` raises `SandboxOsFamilyNotSupported` on a mismatch, so a POSIX workload meets a Windows guest at attach rather than at its first command. **The axis is path grammar and argv quoting, and nothing else**: a spec asking for `posix` and getting it can still meet an image with no shell, because what is *installed* in a guest is a property of the image, and one backend may be handed many. `docs/sandbox/guest-platform-and-commands.md` settles where that separate question is answered. Silence here is neither of the readings above — an undeclared `os_families` is the *absence of an answer*, read as `frozenset()`, which refuses a spec that asks and leaves every spec that does not exactly as it was. A backend with no guest in the operating-system sense, such as one serving a language runtime, has nothing to declare and declares nothing.
+**4. The guest-shape match.** A backend declares `declarations.os_families` (a `frozenset[OsFamily]`) — the guest shapes it hands out, `posix` or `windows` — and a spec declares `requires_os_family`, the shape its commands and scripts are written for. `ensure_can_serve(spec)` raises `SandboxOsFamilyNotSupported` on a mismatch, so a POSIX workload meets a Windows guest at attach rather than at its first command. **The axis is path grammar and argv quoting, and nothing else**: a spec asking for `posix` and getting it can still meet an image with no shell, because what is *installed* in a guest is a property of the image, and one backend may be handed many. `docs/sandbox/guest-platform-and-commands.md` settles where that separate question is answered. Silence here is neither of the readings above — an unstated `os_families` is the *absence of an answer*, read as `frozenset()`, which refuses a spec that asks and leaves every spec that does not exactly as it was. A backend with no guest in the operating-system sense, such as one serving a language runtime, has nothing to declare and declares nothing.
 
 Note that the checks answer to different owners. How strong the boundary must be *here* is the *host's* policy, read from `min_isolation` — and a spec may raise that floor for itself, never lower it. What a sandbox may reach, and what it must be able to do, are properties of the *workload*, stated in its spec. Keeping the axes apart is deliberate: merging isolation into a "required capabilities" list would let a workload ask for a weaker boundary than the deployment mandates.
 
@@ -148,6 +149,48 @@ The contract says what may be called; it does not say how a host-tool call *reac
 It costs round trips — several backend calls per host-tool call, plus polling, plus one on every return to reclaim, and one more to stop the program on a run that overran. It serves one outstanding call at a time. This module's own docstring counts those costs exactly, beside the code that decides them; whether the trade is worth it is a measurement rather than an assumption.
 
 ## Upgrading to 0.26
+
+**A backend's four optional declarations became one object.** `capabilities`, `limits`, `egress_modes` and `os_families` were four attributes the router read off a backend with four `getattr` calls. They are four fields of one `BackendDeclarations`, read with one, and **a backend still carrying any of the four attributes is refused when the router resolves it** — at construction, with the attribute named. That refusal is deliberate: none of the four was ever a member of the `SandboxBackend` protocol, so `isinstance` holds either way and nothing in the type system marks a backend half-moved, while a stray attribute is silently replaced by that field's default. On `egress_modes` the default enforces nothing and refuses every workload; on `limits` it *widens* a ceiling the backend meant to be narrow.
+
+| Was | Is |
+| --- | --- |
+| `capabilities: frozenset[Capability]` on the backend | `declarations.capabilities` |
+| `limits: SandboxLimits` on the backend | `declarations.limits` |
+| `egress_modes: frozenset[Egress]` on the backend | `declarations.egress_modes` |
+| `os_families: frozenset[OsFamily]` on the backend | `declarations.os_families` |
+
+```python
+from maf_sandbox import BackendDeclarations, Capability, Egress, Isolation
+
+class MyBackend:
+    name = "mine"
+    isolation = Isolation.CONTAINER
+    declarations = BackendDeclarations(
+        capabilities=frozenset({Capability.EXEC, Capability.FILES_IN}),
+        egress_modes=frozenset({Egress.CLOSED}),
+    )
+```
+
+**Each field's default is its own silence rule, and the four still differ** — `capabilities` reads as `DEFAULT_CAPABILITIES`, `limits` as `DEFAULT_SANDBOX_LIMITS`, and `egress_modes` and `os_families` as the empty set. So a field left unstated means exactly what an absent attribute used to, and a backend that declares neither the object nor any of the four attributes it replaced reads as `DEFAULT_BACKEND_DECLARATIONS`. One that still carries any of the four is refused at construction, per the paragraph above — declaring no object is not a way to stay unmigrated. `isolation` did not move: it is a protocol member, because a backend with no rung cannot be placed against a floor.
+
+`capabilities` and `egress_modes` are now also refused when they are not a *set* — the router subtracts one and tests membership in the other, and a string or a list used to raise a bare `TypeError` out of a host's agent factory. The members are not checked, so a backend declaring plain strings still matches: `Capability` and `Egress` are `StrEnum`.
+
+**`maf_sandbox.testing.InProcessSandboxBackend` lost its `capabilities=`, `limits=`, `egress_modes=` and `os_families=` keyword arguments**, replaced by one `declarations=`. Override with `dataclasses.replace(FAKE_BACKEND_DECLARATIONS, ...)` rather than constructing a bare `BackendDeclarations`: the fake's default states `egress_modes={ALLOWLIST, CLOSED}` so a workload under test attaches, and a bare object resets it to the rule that enforces nothing.
+
+```python
+import dataclasses
+
+from maf_sandbox import DEFAULT_CAPABILITIES, Capability
+from maf_sandbox.testing import FAKE_BACKEND_DECLARATIONS, InProcessSandboxBackend
+
+# was: InProcessSandboxBackend(capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT})
+# is:
+InProcessSandboxBackend(
+    declarations=dataclasses.replace(
+        FAKE_BACKEND_DECLARATIONS, capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
+    )
+)
+```
 
 **A backend says a delete failed by returning, not by raising.** `dispose` is contractually best-effort and never raises, so the refusal 0.23 shipped — a key held closed until its disposal lands — could never fire against a compliant backend: each swallowed its delete error, said nothing, and was read as having disposed. Both disposal methods now carry the answer back:
 
@@ -338,21 +381,21 @@ The dependent packages moved with it: `maf-sandbox-bicep` and `maf-sandbox-codea
 
 **`AcasSandboxBackend` now declares `microvm`, not `vm`.** ACA Sandboxes are hardware-isolated micro-VMs; `vm` now means a dedicated, full VM on remote infrastructure. A host that pinned `min_isolation=Isolation.VM` expecting ACA Sandboxes to satisfy it should use `Isolation.MICROVM` — the default, and the rung the micro-VM standard defines.
 
-Backends need no edit to keep working: one that declares no `capabilities` is read as declaring `DEFAULT_CAPABILITIES` (`exec` + `files_in`), which is what the `Sandbox` protocol already obliges. Declare a wider set to serve workloads that require more.
+A backend that states no `capabilities` field is read as declaring `DEFAULT_CAPABILITIES` (`exec` + `files_in`), which is what the `Sandbox` protocol already obliges. Declare a wider set to serve workloads that require more.
 
 ## Writing a backend
 
-Implement `name`, `isolation`, `egress_modes`, `acquire`, `dispose`, `dispose_scope`. `capabilities` and `os_families` are optional. Eight things worth knowing before you start:
+Implement `name`, `isolation`, `acquire`, `dispose`, `dispose_scope`, and a `declarations` holding a `BackendDeclarations`. The object is optional and every field in it has a default, but `egress_modes` is the one you must state — see below. Eight things worth knowing before you start:
 
-**Declare `egress_modes` honestly.** It is the set of modes you can actually *enforce*, read before any workload's tool is attached, and a backend that omits it enforces nothing the router can see and is refused. List a mode only if you can hold it: a backend that cannot cut the network does not list `closed`, and one that always proxies does not list `unrestricted`. The router serves a workload in exactly the mode it declares or refuses — it never substitutes a stricter one, because a posture the workload was not built for is not a favour.
+**Declare `declarations.egress_modes` honestly.** It is the set of modes you can actually *enforce*, read before any workload's tool is attached, and a backend that omits it enforces nothing the router can see and is refused. List a mode only if you can hold it: a backend that cannot cut the network does not list `closed`, and one that always proxies does not list `unrestricted`. The router serves a workload in exactly the mode it declares or refuses — it never substitutes a stricter one, because a posture the workload was not built for is not a favour.
 
-**`capabilities` is optional, and silence is the opposite of `egress_modes`'s.** Omitting it reads as `DEFAULT_CAPABILITIES = {EXEC, FILES_IN}`, so a backend that has always offered exec and file-write does not need to add the property to keep working — only declare it once you offer more, or less.
+**`declarations.capabilities` is optional, and its silence is the opposite of `egress_modes`'s.** Leaving the field unstated reads as `DEFAULT_CAPABILITIES = {EXEC, FILES_IN}` — what the `Sandbox` protocol already obliges — so state it only once you offer more, or less. The same is true of `limits` (`DEFAULT_SANDBOX_LIMITS`) and `os_families` (the empty set, which refuses only a spec that asks for a guest shape). **Do not leave any of the four as a bare attribute on the backend**: they were attributes before 0.26 and the router refuses a backend that still carries one, because a stray attribute is read by nothing and silently replaced by that field's default.
 
 **Your `Sandbox` implements `run_code` whether or not you serve it.** It is a member of the protocol, so an implementation without it is not a `Sandbox` at all; raise `NotImplementedError` unless you declare `Capability.RUN_CODE`. The same is true of `remove` and `list_dir` — the methods `FILES_DELETE` and `FILES_LIST` name.
 
 **`reclaim` is the one member that escape does not reach.** Every other protocol method a backend cannot serve may raise `NotImplementedError` as long as it does not declare the matching `Capability` — that is exactly the sentence above. `reclaim` is the first member with no capability behind it, so there is no spec the router could refuse before a caller arrives, and no declaration to withhold: a sandbox answering `reclaim` with `NotImplementedError` leaks a directory per call out of a `finally` that reports rather than raises. A third-party backend has to genuinely implement it. What makes that payable on any backend: `reclaim` owes no confinement, because the directory is one this stack created under `working_directory` with an unguessable name, so there is no attacker-chosen component to check — which is why a backend that must refuse `remove` (`maf-sandbox-wslc`, for want of the filesystem path check) can still serve `reclaim` honestly.
 
-**`os_families` is optional and means nothing about what is installed.** Declare the guest shapes this instance hands out — `posix`, `windows` — when your guest has an operating system at all; a backend serving a language runtime has no answer and gives none, which refuses a spec that asks and leaves every other spec untouched. It says nothing about whether the image has a shell.
+**`declarations.os_families` is optional and means nothing about what is installed.** Declare the guest shapes this instance hands out — `posix`, `windows` — when your guest has an operating system at all; a backend serving a language runtime has no answer and gives none, which refuses a spec that asks and leaves every other spec untouched. It says nothing about whether the image has a shell.
 
 **`acquire` is get-or-create.** A workload's fix-round loop calls it every iteration; returning a cold sandbox each time turns a seconds-long loop into a minutes-long one.
 

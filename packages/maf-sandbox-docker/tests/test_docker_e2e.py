@@ -818,7 +818,7 @@ class TestFilesOutAgainstARealEngine:
                 PosixGuestSubject(
                     sandbox=sandbox,
                     working_directory=_WORK,
-                    capabilities=backend.capabilities,
+                    capabilities=backend.declarations.capabilities,
                 )
             )
             # The listing probes are skipped here and nowhere else: this backend does not
@@ -856,7 +856,7 @@ class TestFilesInAgainstARealEngine:
                 PosixGuestSubject(
                     sandbox=sandbox,
                     working_directory=_WORK,
-                    capabilities=backend.capabilities,
+                    capabilities=backend.declarations.capabilities,
                 )
             )
             assert not [r for r in results if r.skipped]
@@ -888,7 +888,7 @@ class TestExecAgainstARealEngine:
                 PosixGuestSubject(
                     sandbox=sandbox,
                     working_directory=_WORK,
-                    capabilities=backend.capabilities,
+                    capabilities=backend.declarations.capabilities,
                 )
             )
             assert not [r for r in results if r.skipped]
@@ -918,7 +918,7 @@ class TestFilesDeleteAgainstARealEngine:
                 PosixGuestSubject(
                     sandbox=sandbox,
                     working_directory=_WORK,
-                    capabilities=backend.capabilities,
+                    capabilities=backend.declarations.capabilities,
                 )
             )
             assert not [r for r in results if r.skipped]
@@ -948,7 +948,7 @@ class TestReclaimAgainstARealEngine:
                 PosixGuestSubject(
                     sandbox=sandbox,
                     working_directory=_WORK,
-                    capabilities=backend.capabilities,
+                    capabilities=backend.declarations.capabilities,
                 )
             )
             assert not [r for r in results if r.skipped]
@@ -1052,7 +1052,7 @@ class TestAllowlistEgress:
             subject = PosixGuestSubject(
                 sandbox=sandbox,
                 working_directory=_WORK,
-                capabilities=backend.capabilities,
+                capabilities=backend.declarations.capabilities,
             )
             asyncio.run(
                 assert_egress_conformance(

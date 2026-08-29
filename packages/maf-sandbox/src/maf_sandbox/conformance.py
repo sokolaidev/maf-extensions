@@ -116,7 +116,9 @@ class ConformanceSubject(Protocol):
     may not verify through an ``exec`` the backend never promised (#639).  ``capabilities``
     decides which probes run: a backend that never claimed
     :data:`~maf_sandbox.Capability.FILES_LIST` skips the ones attacking :meth:`Sandbox.list_dir`
-    rather than failing them.
+    rather than failing them.  It is this subject's own field, filled from the backend's
+    ``declarations.capabilities`` — a subject may narrow it no further, or the run attacks less
+    than the backend promised.
     """
 
     @property
@@ -1737,7 +1739,8 @@ async def _run_suite(
         raise ValueError(
             f"this subject declares no {str(gate).upper()}, so every probe would be skipped "
             "and the run would report success having attacked nothing. Pass the backend's own "
-            "`capabilities` — the frozenset the router reads — rather than a narrower set."
+            "`declarations.capabilities` — the frozenset the router reads — rather than a "
+            "narrower set."
         )
     paths = await plant(subject)
     results: list[ProbeResult] = []

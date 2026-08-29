@@ -25,20 +25,16 @@ from typing import TYPE_CHECKING
 
 from ._outputs import SandboxTransferCapExceeded
 from ._protocol import (
-    DEFAULT_CAPABILITIES,
-    DEFAULT_SANDBOX_LIMITS,
-    Capability,
+    BackendDeclarations,
     DisposalFailure,
     Egress,
     EntryKind,
     ExecResult,
     Isolation,
-    OsFamily,
     Sandbox,
     SandboxBackend,
     SandboxEntry,
     SandboxKey,
-    SandboxLimits,
     SandboxSpec,
     ScopePurge,
 )
@@ -49,7 +45,12 @@ from .paths import (
     refuse_symlinked_parents,
 )
 
-__all__ = ["InMemoryStore", "InProcessSandbox", "InProcessSandboxBackend"]
+__all__ = [
+    "FAKE_BACKEND_DECLARATIONS",
+    "InMemoryStore",
+    "InProcessSandbox",
+    "InProcessSandboxBackend",
+]
 
 
 def _child_name(entry_rel: str | None, directory_rel: str) -> str | None:
@@ -343,6 +344,15 @@ class InProcessSandbox:
         return tuple(entries)
 
 
+#: What :class:`InProcessSandboxBackend` declares unless a test says otherwise.  One field
+#: departs from :data:`~maf_sandbox.DEFAULT_BACKEND_DECLARATIONS`: ``egress_modes`` is stated,
+#: because the router's silence rule there refuses every spec, and an offline suite that has to
+#: opt out of the attach refusal in every test is measuring the fake rather than the workload.
+FAKE_BACKEND_DECLARATIONS = BackendDeclarations(
+    egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED})
+)
+
+
 class InProcessSandboxBackend:
     """A :class:`~maf_sandbox.SandboxBackend` that hands out one :class:`InProcessSandbox`.
 
@@ -357,26 +367,23 @@ class InProcessSandboxBackend:
         isolation: Returned by the :attr:`isolation` property — configurable because the
             router's minimum-isolation floor is exercised against fakes claiming every
             :class:`~maf_sandbox.Isolation` rung, not only ``NONE``.
-        egress_modes: Returned by the :attr:`egress_modes` property — the modes this backend
-            can enforce. Defaults to ``{ALLOWLIST, CLOSED}`` so a workload under test attaches
-            as it would against a proxy-capable live backend: the default ``CLOSED`` spec and an
-            ``ALLOWLIST`` spec both resolve, rather than every offline test becoming a test of
-            the attach refusal. A test of the refusal passes a narrower set (``frozenset()`` for
-            "enforces nothing", ``{UNRESTRICTED}`` for the no-confinement backend).
-        capabilities: Returned by the :attr:`capabilities` property. Still defaults to
-            :data:`~maf_sandbox.DEFAULT_CAPABILITIES` even though the sandbox now genuinely
-            implements the pull surface: widening the default would change what a bare
-            ``InProcessSandboxBackend()`` attaches against for every existing caller that
-            never asked for :data:`~maf_sandbox.Capability.FILES_OUT` or
-            :data:`~maf_sandbox.Capability.FILES_LIST`. A test that wants the pull surface
-            asks for it explicitly.
-        limits: Returned by the :attr:`limits` property. Defaults to
-            :data:`~maf_sandbox.DEFAULT_SANDBOX_LIMITS` — the same constant the router assumes
-            for a backend that declares nothing, so leaving this unset and setting it
-            explicitly serve one spec identically.
-        os_families: Returned by the :attr:`os_families` property. Defaults to ``frozenset()``
-            — the same thing the router reads from a backend that declares nothing, so an
-            existing test is unaffected and one exercising the axis states a family.
+        declarations: Returned by the :attr:`declarations` property. Defaults to
+            :data:`FAKE_BACKEND_DECLARATIONS`, which differs from
+            :data:`~maf_sandbox.DEFAULT_BACKEND_DECLARATIONS` in one field: ``egress_modes`` is
+            ``{ALLOWLIST, CLOSED}`` so a workload under test attaches as it would against a
+            proxy-capable live backend, rather than every offline test becoming a test of the
+            attach refusal. A test of that refusal passes a narrower set (``frozenset()`` for
+            "enforces nothing", ``{UNRESTRICTED}`` for the no-confinement backend). The other
+            three fields keep the router's own silence rules, so leaving them unset and stating
+            them explicitly serve one spec identically — which is why ``capabilities`` still
+            defaults to :data:`~maf_sandbox.DEFAULT_CAPABILITIES` even though this sandbox
+            genuinely implements the pull surface: a test that wants it asks for it.
+
+            **Override with** ``dataclasses.replace(FAKE_BACKEND_DECLARATIONS, ...)``, never
+            with a bare :class:`~maf_sandbox.BackendDeclarations`: constructing one resets
+            ``egress_modes`` to the router's silence rule, which enforces nothing, and every
+            attach then fails with :class:`~maf_sandbox.SandboxEgressNotEnforced` about a field
+            the test never named.
         acquire_error: When set, ``acquire`` raises this instead of returning the sandbox —
             for exercising a kind's "sandbox unavailable" degrade path.
         dispose_error: When set, ``dispose`` records the key and then raises this — for
@@ -407,10 +414,7 @@ class InProcessSandboxBackend:
         *,
         name: str = "in-process",
         isolation: Isolation = Isolation.NONE,
-        egress_modes: frozenset[Egress] = frozenset({Egress.ALLOWLIST, Egress.CLOSED}),
-        capabilities: frozenset[Capability] = DEFAULT_CAPABILITIES,
-        limits: SandboxLimits = DEFAULT_SANDBOX_LIMITS,
-        os_families: frozenset[OsFamily] = frozenset(),
+        declarations: BackendDeclarations = FAKE_BACKEND_DECLARATIONS,
         acquire_error: BaseException | None = None,
         dispose_error: BaseException | None = None,
         dispose_failure: DisposalFailure | None = None,
@@ -419,10 +423,7 @@ class InProcessSandboxBackend:
         self.sandbox = sandbox if sandbox is not None else InProcessSandbox()
         self._name = name
         self._isolation = isolation
-        self._egress_modes = egress_modes
-        self._capabilities = capabilities
-        self._limits = limits
-        self._os_families = os_families
+        self._declarations = declarations
         self.acquire_error = acquire_error
         self.dispose_error = dispose_error
         self.dispose_failure = dispose_failure
@@ -442,20 +443,8 @@ class InProcessSandboxBackend:
         return self._isolation
 
     @property
-    def egress_modes(self) -> frozenset[Egress]:
-        return self._egress_modes
-
-    @property
-    def os_families(self) -> frozenset[OsFamily]:
-        return self._os_families
-
-    @property
-    def capabilities(self) -> frozenset[Capability]:
-        return self._capabilities
-
-    @property
-    def limits(self) -> SandboxLimits:
-        return self._limits
+    def declarations(self) -> BackendDeclarations:
+        return self._declarations
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> InProcessSandbox:
         if self.acquire_error is not None:

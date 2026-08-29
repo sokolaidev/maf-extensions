@@ -218,8 +218,12 @@ def act_three_the_other_axis() -> None:
     # A reference that need not resolve: nothing is started here, and the modes are read off the
     # configuration rather than the image. Act 4 uses one that has to be real.
     allowlisting = DockerSandboxBackend(DockerSandboxConfig(egress_proxy_image="maf-egress-proxy"))
-    print(f"  DockerSandboxConfig()                        -> {sorted(closed.egress_modes)}")
-    print(f"  DockerSandboxConfig(egress_proxy_image=...)   -> {sorted(allowlisting.egress_modes)}")
+    print(
+        f"  DockerSandboxConfig()                        -> {sorted(closed.declarations.egress_modes)}"
+    )
+    print(
+        f"  DockerSandboxConfig(egress_proxy_image=...)   -> {sorted(allowlisting.declarations.egress_modes)}"
+    )
     print("  Same backend class. The set is a fact about the deployment's wiring, and it is what")
     print("  a workload's chosen mode is matched against.\n")
 
@@ -230,7 +234,9 @@ def act_three_the_other_axis() -> None:
         SandboxRouter([closed], min_isolation=FLOOR).ensure_can_serve(wants_a_host)
         print("  BUG: a closed-only backend served an ALLOWLIST run.")
     except SandboxEgressNotEnforced:
-        print(f"  An ALLOWLIST run on a {sorted(closed.egress_modes)} backend: refused, not")
+        print(
+            f"  An ALLOWLIST run on a {sorted(closed.declarations.egress_modes)} backend: refused, not"
+        )
         print("    degraded. The closed backend does not quietly serve it behind a closed")
         print("    boundary — the workload asked to reach a host, and this backend cannot.\n")
 

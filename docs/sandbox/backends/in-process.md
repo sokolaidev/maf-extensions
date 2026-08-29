@@ -4,19 +4,21 @@
 
 ## What it declares
 
-| Declaration | Default | Overridable |
+`name` and `isolation` are constructor arguments of their own. The four below them are **fields of one `declarations` object**, and there is one argument for all four — `declarations=`, taking a `BackendDeclarations`. State one field with `dataclasses.replace(FAKE_BACKEND_DECLARATIONS, ...)`; a bare `BackendDeclarations` resets the other three to the router's own silence rules, and on `egress_modes` that enforces nothing and refuses every attach.
+
+| Declaration | Default | Set by |
 |---|---|---|
-| `isolation` | `Isolation.NONE` | yes |
-| `capabilities` | `DEFAULT_CAPABILITIES` — `{EXEC, FILES_IN}` | yes |
-| `egress_modes` | `{Egress.ALLOWLIST, Egress.CLOSED}` | yes |
-| `limits` | `DEFAULT_SANDBOX_LIMITS` | yes |
-| `os_families` | `frozenset()` | yes |
+| `isolation` | `Isolation.NONE` | `isolation=` |
+| `capabilities` | `DEFAULT_CAPABILITIES` — `{EXEC, FILES_IN}` | a field of `declarations=` |
+| `egress_modes` | `{Egress.ALLOWLIST, Egress.CLOSED}` | a field of `declarations=` |
+| `limits` | `DEFAULT_SANDBOX_LIMITS` | a field of `declarations=` |
+| `os_families` | `frozenset()` | a field of `declarations=` |
 
 `Isolation.NONE` is the whole point: this backend runs nothing in a boundary. The workload executes in the host process with the host's authority, and the declaration says exactly that, so the router's default `microvm` floor refuses it and a host that wants it opts all the way down. Nothing here pretends otherwise, and that is what makes it safe to ship in the wheel.
 
-`egress_modes` defaults to `{ALLOWLIST, CLOSED}` rather than to silence so a workload under test **attaches** as it would against a proxy-capable live backend: the default `CLOSED` spec and an `ALLOWLIST` spec both resolve, instead of every offline test becoming a test of the attach refusal. A test *of* the refusal passes a narrower set: `frozenset()` for a backend that enforces nothing, `{UNRESTRICTED}` for the no-confinement shape — which is what the no-isolation backend in [`samples/09_inprocess_bicep`](../../../samples/09_inprocess_bicep) now declares, honestly, and it is served only by a workload that asked to run open.
+`egress_modes` defaults to `{ALLOWLIST, CLOSED}` rather than to silence so a workload under test **attaches** as it would against a proxy-capable live backend: the default `CLOSED` spec and an `ALLOWLIST` spec both resolve, instead of every offline test becoming a test of the attach refusal. A test *of* the refusal states a narrower set in that field — `frozenset()` for a backend that enforces nothing, `{UNRESTRICTED}` for the no-confinement shape — which is what the no-isolation backend in [`samples/09_inprocess_bicep`](../../../samples/09_inprocess_bicep) now declares, honestly, and it is served only by a workload that asked to run open.
 
-`capabilities` still defaults to `DEFAULT_CAPABILITIES` even though the sandbox genuinely implements the pull surface: widening the default would change what a bare `InProcessSandboxBackend()` attaches against for every existing caller that never asked for `FILES_OUT` or `FILES_LIST`. A test that wants the pull surface asks for it. `os_families` defaults to `frozenset()` — exactly what the router reads from a backend that declares nothing, so a test written before the axis existed is unaffected and one exercising it states a family.
+`capabilities` still defaults to `DEFAULT_CAPABILITIES` even though the sandbox genuinely implements the pull surface: widening the default would change what a bare `InProcessSandboxBackend()` attaches against for every existing caller that never asked for `FILES_OUT` or `FILES_LIST`. A test that wants the pull surface states that field. `os_families` defaults to `frozenset()` — exactly what the router reads from a backend that declares nothing, so a test written before the axis existed is unaffected and one exercising it states a family. `FAKE_BACKEND_DECLARATIONS` is the whole default object, and `egress_modes` is the one field it departs from `DEFAULT_BACKEND_DECLARATIONS` on.
 
 ## Overridable declarations are what make it a policy fixture
 
@@ -30,7 +32,7 @@ One deliberate simplification: every `acquire` returns the same sandbox whatever
 
 ## The protocol surface it implements
 
-The fake implements the whole `Sandbox` protocol, because a member it did not implement would be a member no kind's test suite could exercise: `write_file` ([`testing.py:180`](../../../packages/maf-sandbox/src/maf_sandbox/testing.py)), `exec` (`:184`), `run_code` (`:196`), `stat_file` (`:247`), `read_file` (`:258`), `remove` (`:276`), `reclaim` (`:308`) and `list_dir` (`:332`). Storage is bytes, keyed by normalised absolute guest paths, so it can stand in for a real pull surface rather than only for a text-only one; `seed_files` plants regular content, and `EntryKind.SYMLINK`, `EntryKind.DIRECTORY` or any other kind plants an entry with no content. All four read methods confine `path` to the `working_directory` a call names and run the shared `refuse_symlinked_parents` check over the components, the same rule a real backend enforces against its own guest filesystem. `read_file` serves only `EntryKind.FILE` and **refuses** rather than truncates a file over `max_bytes`.
+The fake implements the whole `Sandbox` protocol, because a member it did not implement would be a member no kind's test suite could exercise: `write_file` ([`testing.py:179`](../../../packages/maf-sandbox/src/maf_sandbox/testing.py)), `exec` (`:183`), `run_code` (`:195`), `stat_file` (`:246`), `read_file` (`:257`), `remove` (`:275`), `reclaim` (`:307`) and `list_dir` (`:325`). Storage is bytes, keyed by normalised absolute guest paths, so it can stand in for a real pull surface rather than only for a text-only one; `seed_files` plants regular content, and `EntryKind.SYMLINK`, `EntryKind.DIRECTORY` or any other kind plants an entry with no content. All four read methods confine `path` to the `working_directory` a call names and run the shared `refuse_symlinked_parents` check over the components, the same rule a real backend enforces against its own guest filesystem. `read_file` serves only `EntryKind.FILE` and **refuses** rather than truncates a file over `max_bytes`.
 
 `reclaim` is the member the fake cannot answer with a gesture, since no capability gates it and nothing else offline stands in for it. It removes the directory and everything under it from the store for real, so a kind's test sees the state a real backend would leave behind; and it records the call into `reclaims`, so a test that asserts the framework reclaimed a call's directory asserts something that fails when the reclaim stops happening. Confinement is no more its duty here than it is a real backend's: what it is handed is a directory the framework created under `working_directory`.
 
