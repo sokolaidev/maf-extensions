@@ -152,10 +152,8 @@ async def refuse_symlinked_ancestors(
             raise NotADirectoryError(f"{directory!r} is not a directory")
 
 
-# The names these four had before the vocabulary in the module docstring was settled, kept so a
-# backend written against the old ones keeps importing and calling them while it moves. Aliases
-# rather than wrappers: they are the same objects, so `is` holds and a traceback names the new
-# one. They go in the next minor (#734); a backend still on them is a backend that has not moved.
+# The spellings these four had before the rename, kept while callers move to the new ones.
+# Aliases rather than wrappers: the same objects, so `is` holds.
 confine_guest_path = confine_resolve_guest_path
 confine_guest_write_path = confine_resolve_guest_write_path
 guest_directory_chain = guest_path_and_ancestors

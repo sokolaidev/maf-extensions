@@ -365,9 +365,7 @@ def portable_file_name(name: str) -> str:
     return _SEPARATOR.join(_portable_segment(segment) for segment in name.split(_SEPARATOR))
 
 
-#: The name this had before it was clear which "name" it meant — a *file* name, against the
-#: file name check in `maf_sandbox.paths`, which confines a whole guest path. Goes in the next
-#: minor (#734); it is the same object, not a wrapper.
+#: The spelling this had before the rename, kept while callers move. The same object.
 portable_name = portable_file_name
 
 

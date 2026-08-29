@@ -1348,7 +1348,7 @@ class TestMakeFileSystemSink:
 
 
 class TestTheNameThisHadBefore:
-    """`portable_name` still resolves, and is the same object as `portable_file_name` (#734)."""
+    """`portable_name` still resolves, and is the same object as `portable_file_name`."""
 
     def test_the_old_spelling_still_resolves(self):
         import maf_sandbox

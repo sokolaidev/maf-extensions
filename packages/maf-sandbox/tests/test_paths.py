@@ -332,12 +332,7 @@ class TestRefuseSymlinkedParents:
 
 
 class TestTheNamesTheseHadBefore:
-    """The old spellings still import and are the same objects (#734).
-
-    A backend pins a core version, not a branch, so the rename cannot land in one step: these
-    keep the three shipped backends importing and running while they move. `is` rather than a
-    call, because an alias that resolved to a *copy* would drift the moment either side changed.
-    """
+    """The old spellings still import, and are the same objects rather than copies."""
 
     def test_the_four_path_names_still_resolve(self):
         assert paths.confine_guest_path is paths.confine_resolve_guest_path
