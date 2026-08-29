@@ -466,8 +466,48 @@ class TestTheDaemonMovingUnderTheDeclaration:
         assert fake.matching("run") == []
         assert fake.matching("network", "create") == []
 
+    def test_a_stopped_container_is_not_restarted_onto_a_moved_daemon(self, monkeypatch):
+        """A restart hands out a container from whichever daemon is answering now, so it is
+        gated exactly like a create — and refused before `docker start` runs."""
+        daemon = {"os": b"linux\n"}
+        machine = _machine(stopped=[_NAME])
+
+        def respond(args: tuple[str, ...]) -> _DockerResult:
+            if args[:1] == ("version",):
+                return _DockerResult(0, daemon["os"], "")
+            return machine(args)
+
+        backend, fake = _created_with(monkeypatch, respond)
+        daemon["os"] = b"windows\n"
+        with pytest.raises(SandboxOsFamilyNotSupported):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert fake.matching("start") == []
+        assert fake.matching("run") == []
+
+    def test_a_restart_that_would_fall_through_to_a_create_is_refused_first(self, monkeypatch):
+        """The path a create-only gate missed: `_restart` removes a container that will not
+        start and falls through to a create, so a guard asking "does no container exist?" let
+        that create through unchecked."""
+        daemon = {"os": b"linux\n"}
+        machine = _machine(
+            stopped=[_NAME], overrides={("start",): _DockerResult(1, b"", "cannot start")}
+        )
+
+        def respond(args: tuple[str, ...]) -> _DockerResult:
+            if args[:1] == ("version",):
+                return _DockerResult(0, daemon["os"], "")
+            return machine(args)
+
+        backend, fake = _created_with(monkeypatch, respond)
+        daemon["os"] = b"windows\n"
+        with pytest.raises(SandboxOsFamilyNotSupported):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert fake.matching("run") == []
+
     def test_a_warm_container_is_served_without_asking_again(self, monkeypatch):
-        """One round trip per *create*, not per acquire: a reuse asks nothing."""
+        """The stated residual: a *running* container is served without a round trip, because
+        re-asking here would put one in front of every tool call. Reaching it takes a switch to
+        an engine already running a container under the same derived name."""
         daemon = {"os": b"linux\n"}
         machine = _machine(running=[_NAME])
 

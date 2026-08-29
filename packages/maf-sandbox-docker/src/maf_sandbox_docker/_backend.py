@@ -902,19 +902,25 @@ class DockerSandboxBackend:
         return result.stdout.decode("utf-8", errors="replace").strip().lower() or None
 
     async def _refuse_a_daemon_that_moved_under_the_declaration(self, spec: SandboxSpec) -> None:
-        """Re-ask the daemon before creating, for a backend that declared a family.
+        """Re-ask the daemon before starting a container, for a backend that declared a family.
 
         ``os_families`` is a snapshot, not a binding: this backend resolves ``DOCKER_HOST`` and
         the active context on every invocation, so switching Docker Desktop to Windows
         containers moves the engine under a running host.  The router matched the old answer at
         attach and cannot ask again, so the re-check belongs here.
 
-        **Before anything is created**, which is why the create path calls it rather than the
-        acquire that finished: a refusal that had to dispose what it just made would be a
-        second failure mode over the same fact.  One round trip per create, and none at all for
-        a backend that declared nothing.  A daemon that will not answer now is served — the
-        create is about to fail on its own terms, and refusing on an unreadable probe would
+        **Before anything is created or started**, which is why the caller runs it ahead of both
+        rather than after the acquire: a refusal that had to dispose what it just made would be
+        a second failure mode over the same fact.  One round trip per cold acquire, and none at
+        all for a backend that declared nothing.  A daemon that will not answer now is served —
+        the acquire is about to fail on its own terms, and refusing on an unreadable probe would
         take a working deployment off the air over a transient.
+
+        **A warm container is not re-checked**, deliberately: that would put a round trip in
+        front of every tool call, which is the path this backend exists to keep cheap.  The
+        residual is narrow — a container is only warm here because this daemon is running it,
+        so reaching it takes a switch to an engine that already holds a container under the
+        same derived name.
 
         Raises:
             SandboxOsFamilyNotSupported: when the daemon no longer runs the guest this backend
@@ -947,16 +953,19 @@ class DockerSandboxBackend:
 
         Raises:
             SandboxOsFamilyNotSupported: when this backend declared a guest family and the
-                daemon a create would go to no longer runs it.
+                daemon a cold acquire would create or start a container on no longer runs it.
         """
         egress_id = self._egress_id(spec)
         name = _container_name(key, spec.kind, egress_id)
         async with self._acquire_lock(key, spec.kind):
             running = await self._is_running(name)
             stopped = not running and await self._exists(name)
-            if not running and not stopped:
-                # Ahead of the egress scaffolding as well as the create, so a refusal leaves
-                # neither a container nor a network and a proxy behind it.
+            if not running:
+                # Every path that starts a container, not only the create: a `_restart` that
+                # fails removes the container and falls through to one, so gating on
+                # `not stopped` would let that create through unchecked. Ahead of the egress
+                # scaffolding too, so a refusal leaves neither a container nor a network and a
+                # proxy behind it.
                 await self._refuse_a_daemon_that_moved_under_the_declaration(spec)
             if egress_id:
                 await self._ensure_egress(name, key, spec, fresh=not running and not stopped)
