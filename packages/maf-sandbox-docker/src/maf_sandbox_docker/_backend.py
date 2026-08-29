@@ -539,7 +539,8 @@ class _DockerSandbox:
         where that policy lives.  The floor below re-refuses a subset of it, because this
         command runs from ``/`` and can carry root's authority.
 
-        Why root is allowed without a check, and which half of the argument is settled at
+        Why root is allowed without the filesystem path check — the file name check still runs,
+        in :func:`~maf_sandbox.reclaim_guest_path` — and which half of the argument is settled at
         acquire rather than asserted: ``docs/sandbox/backends/docker.md``.
         """
         del working_directory

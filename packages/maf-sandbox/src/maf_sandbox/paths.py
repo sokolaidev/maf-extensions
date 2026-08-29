@@ -91,9 +91,9 @@ def guest_path_relative_to(path: str, base: str) -> str | None:
 def guest_directory_chain(guest_path: str, working_directory: str) -> tuple[str, ...]:
     """Every directory from the filesystem root down to ``guest_path``, outermost first.
 
-    The check starts *above* ``working_directory`` rather than at it, because a nested work dir
-    has ancestors the guest can replace and stat-ing only the work dir follows straight through
-    them.  ``guest_path`` must already be confined.
+    The filesystem path check starts *above* ``working_directory`` rather than at it, because a
+    nested work dir has ancestors the guest can replace, and stat-ing only the work dir
+    follows straight through them.  ``guest_path`` must already be confined.
     """
     base = posixpath.normpath(working_directory)
     chain: list[str] = []

@@ -631,8 +631,9 @@ class Sandbox(Protocol):
     is refused.
 
     **Confinement is a duty of all five, and it is not a check on the argument string.**  A
-    path whose *parent* is a link satisfies every lexical test and still reads outside: with
-    ``out -> /etc``, ``out/hostname`` stats as a regular 12-byte file.  Discharge it with
+    path whose *parent* is a link passes the file name check and still reads outside: with
+    ``out -> /etc``, ``out/hostname`` stats as a regular 12-byte file.  The filesystem path
+    check is what catches it, so discharge that half with
     :func:`~maf_sandbox.paths.refuse_symlinked_parents` rather than by writing that check again —
     it is where the two refusals a caller must be able to tell apart are defined, and
     :mod:`maf_sandbox.conformance` is the same duty as probes, for holding a backend that
@@ -649,8 +650,8 @@ class Sandbox(Protocol):
         ``path`` is POSIX-shaped and relative to ``working_directory``; an absolute path resolving
         inside it is accepted. ``str`` means UTF-8 whatever the host's locale says; ``bytes`` is
         written as given, and is what an in-door carrying a PNG or a spreadsheet needs. Parent
-        directories are created as needed. A missing component ends the check, so nothing created
-        by this call can be a link.
+        directories are created as needed. A missing component ends the filesystem path check,
+        so nothing created by this call can be a link.
 
         Raises:
             ValueError: If the path is outside, passes through a link, names a link, or is the
