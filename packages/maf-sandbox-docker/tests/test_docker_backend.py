@@ -200,6 +200,8 @@ def _machine(
                 if image in images
                 else _DockerResult(1, b"", "No such image")
             )
+        if args[:3] == ("inspect", "-f", "{{.Config.User}}"):
+            return _DockerResult(0, b"\n", "")
         if args[0] == "inspect":
             name = args[-1]
             if name not in present:
@@ -1085,12 +1087,18 @@ class TestReclaimKeepsAFloorUnderRoot:
 
 class TestExecDiscardsATimedOutSandbox:
     def test_a_timed_out_exec_removes_the_container(self):
+        """The acquire path's identity probe answers so a sandbox comes back at all; the
+        sandbox's own exec is what times out and discards the container.
+        """
+
         def responder(args):
             if args[0] == "exec":
+                if len(args) > 4 and args[4] == "id":
+                    return _DockerResult(0, b"20001\n", "")
                 raise TimeoutError
             if args[:2] == ("image", "inspect"):
                 return _DockerResult(0, b"", "")
-            if args[0] == "inspect":
+            if args[0] == "inspect" and args[-1] == _NAME:
                 return _DockerResult(0, b"true\n", "")
             return _DockerResult(0, b"", "")
 
@@ -1099,6 +1107,76 @@ class TestExecDiscardsATimedOutSandbox:
         with pytest.raises(TimeoutError):
             asyncio.run(sandbox.exec(["hang"], working_directory=_WORK, timeout=1))
         assert fake.matching("rm", "-f", _NAME) != []
+
+    def test_a_timeout_walking_the_ancestors_fails_closed_instead(self):
+        """The other half of the same rule, and the reason it is not one rule.  The ancestor
+        walk is `docker cp` only, so its timeout leaves the container running and there is
+        something to hand back; the identity probe's `exec` removes it, so there is not.
+        Propagating here would turn a slow daemon into a failed acquire, where the
+        conservative answer — removals run as the guest — is already correct and safe.
+        """
+
+        def responder(args):
+            if args[0] == "cp" and args[1].startswith(f"{_NAME}:/maf-sandbox"):
+                raise TimeoutError("a daemon too slow to answer the ancestor walk")
+            if args[:2] == ("image", "inspect"):
+                return _DockerResult(0, b"", "")
+            if args[0] == "inspect" and args[-1] == _NAME:
+                return _DockerResult(0, b"true\n", "")
+            return _DockerResult(0, b"", "")
+
+        backend, fake = _backend_with(responder)
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert fake.matching("rm", "-f", _NAME) == []
+        assert [f.host_owned_ancestors for f in backend._facts.values()] == [False]
+
+    def test_a_timeout_reading_config_user_falls_back_instead(self, caplog):
+        """The third read, and the same rule: `inspect` is host-side, so a timeout there
+        killed a CLI process and left the container running.  It takes the documented `0:0`
+        fallback with its warning, and never reaches `id` — there is no user to resolve.
+        """
+
+        def responder(args):
+            if args[:3] == ("inspect", "-f", "{{.Config.User}}"):
+                raise TimeoutError("a daemon too slow to answer inspect")
+            if args[:2] == ("image", "inspect"):
+                return _DockerResult(0, b"", "")
+            if args[0] == "inspect" and args[-1] == _NAME:
+                return _DockerResult(0, b"true", "")
+            return _DockerResult(0, b"", "")
+
+        backend, fake = _backend_with(responder)
+        with caplog.at_level(logging.INFO):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert fake.matching("rm", "-f", _NAME) == []
+        assert [(f.guest_uid, f.guest_gid) for f in backend._facts.values()] == [(0, 0)]
+        assert fake.matching("exec") == []
+        assert any("could not be resolved" in r.message for r in caplog.records)
+
+    def test_a_timeout_while_reading_facts_fails_the_acquire(self):
+        """The identity probe's exec removes the container on its way out; swallowing the
+        timeout here would hand `acquire` a sandbox for a container that no longer exists,
+        with fallback facts cached against it.
+        """
+
+        def responder(args):
+            if args[:1] == ("exec",):
+                # Every exec times out — ancestors_are_the_hosts swallows its failures, but
+                # the identity probe must not.
+                raise TimeoutError
+            if args[:2] == ("image", "inspect"):
+                return _DockerResult(0, b"", "")
+            if args[0] == "inspect" and args[-1] == _NAME:
+                return _DockerResult(0, b"true\n", "")
+            if args[:3] == ("inspect", "-f", "{{.Config.User}}"):
+                return _DockerResult(0, b"10001\n", "")
+            return _DockerResult(0, b"", "")
+
+        backend, fake = _backend_with(responder)
+        with pytest.raises(TimeoutError):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert fake.matching("rm", "-f", _NAME) != []
+        assert not any(key[0] == _NAME for key in backend._facts)
 
 
 # ---------------------------------------------------------------------------
@@ -1126,7 +1204,7 @@ class TestWriteFile:
         stdin = fake.only("cp", "-").stdin
         assert stdin is not None
         with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
-            assert archive.getnames() == ["maf-sandbox/work/main.bicep"]
+            assert archive.getnames()[-1] == "maf-sandbox/work/main.bicep"
 
     def test_str_content_round_trips_as_utf8(self):
         sandbox, fake = self._sandbox()
@@ -1163,6 +1241,157 @@ class TestWriteFile:
         with pytest.raises(ValueError):
             asyncio.run(sandbox.write_file("../escape", "x", working_directory=_WORK))
         assert fake.matching("cp", "-") == []
+
+    def test_the_entry_carries_the_container_user(self):
+        """A non-root image gets tar entries under its own uid, and the call-directory
+        parents arrive as explicit guest-owned directory entries: docker creates an implicit
+        intermediate as root whatever the file entry says (measured), so the ownership has to
+        be spelled entry by entry.  Ancestors above the work directory stay out of the tar.
+        """
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(0, b"10001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(0, b"10001\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        asyncio.run(sandbox.write_file(f"{_WORK}/call-a1b2c3/note", "x", working_directory=_WORK))
+        stdin = fake.only("cp", "-").stdin
+        assert stdin is not None
+        with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
+            assert archive.getnames() == [
+                "maf-sandbox/work/call-a1b2c3",
+                "maf-sandbox/work/call-a1b2c3/note",
+            ]
+            file_entry = archive.getmember("maf-sandbox/work/call-a1b2c3/note")
+            assert (file_entry.uid, file_entry.gid) == (10001, 10001)
+            call_dir = archive.getmember("maf-sandbox/work/call-a1b2c3")
+            assert call_dir.isdir() and (call_dir.uid, call_dir.gid) == (10001, 10001)
+
+    def test_a_write_directly_in_the_work_dir_adds_no_call_directory(self):
+        """A file beside the calls, not under one: the tar carries the file alone."""
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(0, b"10001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(0, b"10001\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        asyncio.run(sandbox.write_file(f"{_WORK}/note", "x", working_directory=_WORK))
+        stdin = fake.only("cp", "-").stdin
+        assert stdin is not None
+        with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
+            assert archive.getnames() == ["maf-sandbox/work/note"]
+
+    def test_an_absent_work_dir_on_a_nonroot_image_travels_guest_owned(self):
+        """The `d == base` branch of the subtree rule: an image carrying `/maf-sandbox`
+        but no `work_dir` gets it as an explicit guest-owned entry — without it, docker
+        creates `work_dir` implicitly as root and every call directory under it leaks.
+        """
+        overrides = {
+            _cp("/maf-sandbox"): _DockerResult(
+                0, _owned_directory_tar("maf-sandbox", 0, 0o755), ""
+            ),
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(0, b"10001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(0, b"10001\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        asyncio.run(sandbox.write_file(f"{_WORK}/call-a1b2c3/note", "x", working_directory=_WORK))
+        stdin = fake.only("cp", "-").stdin
+        assert stdin is not None
+        with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
+            assert archive.getnames() == [
+                "maf-sandbox/work",
+                "maf-sandbox/work/call-a1b2c3",
+                "maf-sandbox/work/call-a1b2c3/note",
+            ]
+            work_dir = archive.getmember("maf-sandbox/work")
+            assert work_dir.isdir() and (work_dir.uid, work_dir.gid) == (10001, 10001)
+
+    def test_a_relative_work_dir_still_stamps_its_directories(self):
+        """The other spelling `normpath` leaves alone.  `guest_directory_chain` roots what it
+        is handed — it already writes `/workspace` into the walk — so an unrooted
+        `working_directory` compared against it matches nothing, and every directory goes
+        back to docker to create as root.
+        """
+        work = "workspace"
+        spec = SandboxSpec(kind="e2e", image="img", work_dir=work)
+        overrides = {
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001:20001\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, spec))
+        asyncio.run(sandbox.write_file("call-a1/note", "x", working_directory=work))
+        stdin = fake.only("cp", "-").stdin
+        assert stdin is not None
+        with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
+            assert archive.getnames() == [
+                "workspace",
+                "workspace/call-a1",
+                "workspace/call-a1/note",
+            ]
+            stamped = archive.getmember("workspace/call-a1")
+            assert stamped.isdir() and (stamped.uid, stamped.gid) == (10001, 20001)
+
+    def test_a_double_rooted_work_dir_still_stamps_its_directories(self):
+        """`posixpath.normpath` keeps exactly two leading slashes, which POSIX permits, while
+        the directory chain is rebuilt from segments and is always single-rooted.  Comparing
+        the two spellings matches nothing, so the subtree filter drops every directory and
+        hands them back to docker to create as root — the leak this rule exists to close.
+        """
+        work = "//maf-sandbox/work"
+        spec = SandboxSpec(kind="e2e", image="img", work_dir=work)
+        overrides = {
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001:20001\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, spec))
+        asyncio.run(sandbox.write_file(f"{work}/call-a1/note", "x", working_directory=work))
+        stdin = fake.only("cp", "-").stdin
+        assert stdin is not None
+        with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
+            assert archive.getnames() == [
+                "maf-sandbox/work",
+                "maf-sandbox/work/call-a1",
+                "maf-sandbox/work/call-a1/note",
+            ]
+            stamped = archive.getmember("maf-sandbox/work/call-a1")
+            assert stamped.isdir() and (stamped.uid, stamped.gid) == (10001, 20001)
+
+    def test_a_root_working_directory_keeps_its_components_whole(self):
+        """The subtree rule on `working_directory = "/"`: `/` is the cp destination and
+        needs no entry, and `tmp` under it is a `working_directory` descendant here, so
+        the entries run `tmp`, `tmp/run-1`, file.
+        """
+        overrides = {
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(0, b"10001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(0, b"10001\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        asyncio.run(sandbox.write_file("/tmp/run-1/note", "x", working_directory="/"))
+        stdin = fake.only("cp", "-").stdin
+        assert stdin is not None
+        with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
+            assert archive.getnames() == ["tmp", "tmp/run-1", "tmp/run-1/note"]
+
+    def test_a_root_image_keeps_the_default_ownership(self):
+        """`Config.User` unset means root: the tar entries stay uid 0, as they always were."""
+        backend, fake = _backend_with(_machine(running=[_NAME]))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        asyncio.run(sandbox.write_file(f"{_WORK}/call-a1b2c3/note", "x", working_directory=_WORK))
+        stdin = fake.only("cp", "-").stdin
+        assert stdin is not None
+        with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
+            call_dir = archive.getmember("maf-sandbox/work/call-a1b2c3")
+            assert call_dir.isdir() and (call_dir.uid, call_dir.gid) == (0, 0)
+            member = archive.getmember("maf-sandbox/work/call-a1b2c3/note")
+            assert (member.uid, member.gid) == (0, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -1420,6 +1649,386 @@ class TestListDirIsRefused:
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
         with pytest.raises(NotImplementedError, match="FILES_LIST"):
             asyncio.run(sandbox.list_dir(".", working_directory=_WORK))
+
+
+def _passwd_responder(
+    running: list[str], overrides: dict[tuple[str, ...], _DockerResult], passwd: bytes
+):
+    """A responder that answers the `/etc/passwd` pull with a one-entry tar carrying
+    ``passwd``, and everything else from ``running``/``overrides`` via the machine.
+    """
+
+    def respond(args):
+        if args[0] == "cp" and args[1].endswith(":/etc/passwd"):
+            return _tar_response(passwd)
+        machine = _machine(running=running, overrides=overrides)
+        return machine(args)
+
+    return respond
+
+
+def _tar_response(body: bytes) -> _DockerResult:
+    """A `docker cp` stdout shaped as a one-entry tar carrying ``body``."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        entry = tarfile.TarInfo("entry")
+        entry.size = len(body)
+        entry.mode = 0o644
+        archive.addfile(entry, io.BytesIO(body))
+    return _DockerResult(0, buffer.getvalue(), "")
+
+
+class TestTheGuestIdentityIsReadFromTheContainer:
+    """`Config.User` says who runs the container's default command; `write_file`'s tar entries
+    have to answer to the same principal, since a reused container can predate a config change.
+    """
+
+    def _facts(self, user: bytes, name: str = _NAME):
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, user, ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        facts = asyncio.run(backend._container_facts(name, _SPEC))
+        return facts, fake
+
+    def test_an_unset_user_reads_as_root(self):
+        facts, _ = self._facts(b"\n")
+        assert (facts.guest_uid, facts.guest_gid) == (0, 0)
+
+    def test_a_bare_zero_is_resolved_like_any_other_bare_uid(self):
+        """`USER 0` with no passwd entry runs as root with root's gid, but an image whose
+        passwd entry gives uid 0 another primary group must not be short-circuited to
+        `0:0` — the gid is asked for the same way it is for any bare uid.
+        """
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"0\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(0, b"0\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(0, b"20001\n", ""),
+        }
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (0, 20001)
+
+    def test_a_bare_uid_keeps_gid_0_when_neither_passwd_nor_id_answers(self):
+        """The gid-0 fallback: with `/etc/passwd` unreadable and an `id` that answers
+        nothing, a bare uid's gid stays 0 — what the runtime picks for a uid with no
+        passwd entry.
+        """
+        facts, fake = self._facts(b"10001\n")
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 0)
+        # `Config.User` already gave the uid, so only the open half is asked for.
+        assert [c.args for c in fake.matching("exec")] == [
+            ("exec", "-w", "/", _NAME, "id", "-g"),
+        ]
+
+    def test_a_bare_uid_falls_back_to_id_when_passwd_is_unreadable(self):
+        """The `id` fallback when the guest answers: with `/etc/passwd` unreadable, a bare
+        uid's primary gid is asked from the guest — and `id` resolving both sides is what
+        supplies the expected pair, since the fake carries no passwd tar for this test.
+        """
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(0, b"10001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(0, b"20001\n", ""),
+        }
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
+
+    def test_a_known_gid_is_never_asked_for_even_if_id_would_hang(self):
+        """`app:20001` leaves only the uid open, so `id -g` is never run — and an image
+        whose `id -g` hangs must not cost the acquire a gid `Config.User` already named.
+        A timed-out `exec` removes the container, so the wasted call is not merely wasted.
+        """
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"app:20001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(0, b"10001\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+
+        def respond(args):
+            if args[:6] == ("exec", "-w", "/", _NAME, "id", "-g"):
+                raise TimeoutError("an image whose `id -g` hangs")
+            return _machine(running=[_NAME], overrides=overrides)(args)
+
+        fake._responder = respond
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
+        assert [c.args for c in fake.matching("exec")] == [
+            ("exec", "-w", "/", _NAME, "id", "-u"),
+        ]
+
+    def test_a_half_that_answers_is_kept_when_the_other_refuses(self):
+        """Each half of `id` stands alone: a guest that answers `id -u` and refuses `id -g`
+        resolves the uid, and only the gid falls to the 0 remainder.  Discarding both would
+        throw away an answer the guest gave.
+        """
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"ghost\n", ""),
+            ("cp", f"{_NAME}:/etc/passwd"): _DockerResult(1, b"", "no such file"),
+            ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(0, b"10001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(1, b"", "id: cannot"),
+        }
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 0)
+
+    def test_a_passwd_read_that_reached_the_byte_cap_is_still_used(self):
+        """A bounded read kills `docker cp` once the cap is reached, so a complete passwd can
+        arrive alongside a nonzero code — the stream was longer than the cap, not broken.
+        Rejecting it would drop a resolvable user to `id`, or to root when the image has none.
+        """
+        passwd = b"root:x:0:0:root:/root:/bin/bash\napp:x:10001:20001::/home/app:/bin/sh\n"
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"app\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        killed = _tar_response(passwd)
+
+        def respond(args):
+            if args[0] == "cp" and args[1].endswith(":/etc/passwd"):
+                # What the cap looks like: SIGKILL's code, with the whole entry buffered.
+                return _DockerResult(-9, killed.stdout, "")
+            return _machine(running=[_NAME], overrides=overrides)(args)
+
+        fake._responder = respond
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
+        assert fake.matching("exec") == []
+
+    def test_a_group_read_that_reached_the_byte_cap_is_still_used(self):
+        """The same on `/etc/group`: a capped read must not turn a resolvable named group into
+        the gid-0 remainder.
+        """
+        group = b"root:x:0:\ndevs:x:30001:\n"
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001:devs\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        killed = _tar_response(group)
+
+        def respond(args):
+            if args[0] == "cp" and args[1].endswith(":/etc/group"):
+                return _DockerResult(-9, killed.stdout, "")
+            return _machine(running=[_NAME], overrides=overrides)(args)
+
+        fake._responder = respond
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 30001)
+        assert fake.matching("exec") == []
+
+    def test_an_empty_user_half_is_dockers_shorthand_for_root(self):
+        """`USER :20001` runs as `0:20001` — measured against a real engine, which resolves
+        the empty half to root itself.  Reading it as unknown cost the gid the field had
+        already stated: with no `id` to answer the uid, the pair fell back to `0:0`.
+        """
+        facts, fake = self._facts(b":20001\n")
+        assert (facts.guest_uid, facts.guest_gid) == (0, 20001)
+        # Both halves are known from `Config.User` alone, so the guest is not asked at all.
+        assert fake.matching("exec") == []
+
+    def test_a_bare_colon_is_root_with_the_group_its_passwd_entry_names(self):
+        """`USER :` runs as `0:0` (measured).  The uid half is root by the same rule, and
+        the gid then comes from root's own passwd entry rather than from the guest.
+        """
+        passwd = b"root:x:0:0:root:/root:/bin/bash\napp:x:10001:20001::/home/app:/bin/sh\n"
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b":\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        fake._responder = _passwd_responder([_NAME], overrides, passwd)
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (0, 0)
+        assert fake.matching("exec") == []
+
+    def test_an_empty_group_half_takes_the_gid_the_passwd_entry_names(self):
+        """`USER 10001:` runs as `10001:20001` (measured): docker resolves the empty group
+        half from the passwd entry, and so does this.
+        """
+        passwd = b"root:x:0:0:root:/root:/bin/bash\napp:x:10001:20001::/home/app:/bin/sh\n"
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001:\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        fake._responder = _passwd_responder([_NAME], overrides, passwd)
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
+        assert fake.matching("exec") == []
+
+    def test_a_uid_gid_pair_is_split(self):
+        facts, _ = self._facts(b"10001:20001\n")
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
+
+    def test_a_named_user_is_resolved_from_the_passwd_file(self):
+        """A name in `Config.User` is resolved against the container's `/etc/passwd`, read
+        host-side over the pull surface — no guest utility needed, so an image without
+        `id` (or without a shell to reach it through) still resolves.
+        """
+        passwd = b"root:x:0:0:root:/root:/bin/bash\napp:x:10001:20001::/home/app:/bin/sh\n"
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"app\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        fake._responder = _passwd_responder([_NAME], overrides, passwd)
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
+        assert fake.matching("exec") == []
+
+    def test_a_named_user_falls_back_to_id_when_passwd_is_unreadable(self):
+        """A passwd file that will not come over the wire leaves `id` as the resolver."""
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"app\n", ""),
+            ("cp", f"{_NAME}:/etc/passwd"): _DockerResult(1, b"", "no such file"),
+            ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(0, b"20001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(0, b"10001\n", ""),
+        }
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
+
+    def test_a_bare_uid_takes_its_gid_from_the_passwd_entry(self):
+        """A bare uid's primary gid is the one its `/etc/passwd` entry names."""
+        passwd = b"root:x:0:0:root:/root:/bin/bash\napp:x:10001:20001::/home/app:/bin/sh\n"
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        fake._responder = _passwd_responder([_NAME], overrides, passwd)
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
+        assert fake.matching("exec") == []
+
+    @pytest.mark.parametrize(
+        ("user", "expected"),
+        [
+            ("app:20001", (10001, 20001)),
+            ("10001:devs", (10001, 30001)),
+            ("app:devs", (10001, 30001)),
+        ],
+    )
+    def test_a_mixed_user_group_pair_resolves_each_side(self, user, expected):
+        """`Config.User` accepts `user:group` with either side numeric or named; each half
+        resolves from its own account file.
+        """
+        passwd = b"root:x:0:0:root:/root:/bin/bash\napp:x:10001:20001::/home/app:/bin/sh\n"
+        group = b"root:x:0:\ndevs:x:30001:\n"
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, user.encode(), ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+
+        def respond(args):
+            if args[0] == "cp" and args[1].endswith(":/etc/passwd"):
+                return _tar_response(passwd)
+            if args[0] == "cp" and args[1].endswith(":/etc/group"):
+                return _tar_response(group)
+            return _machine(running=[_NAME], overrides=overrides)(args)
+
+        fake._responder = respond
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == expected
+        # Both account files answer this pair, so `id` — the one step that runs a guest
+        # command — is never reached.
+        assert fake.matching("exec") == []
+
+    def test_a_named_group_is_read_before_the_guest_is_asked(self):
+        """`/etc/group` resolves the named half, so a bare uid beside it never pulls passwd
+        (which could not answer it) and never runs `id`: an image whose `id` hangs would
+        otherwise cost the acquire a gid `/etc/group` already carries.
+        """
+        group = b"root:x:0:\ndevs:x:30001:\n"
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001:devs\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+
+        def respond(args):
+            if args[0] == "cp" and args[1].endswith(":/etc/group"):
+                return _tar_response(group)
+            if args[0] == "exec":
+                raise TimeoutError("an image whose `id` hangs")
+            return _machine(running=[_NAME], overrides=overrides)(args)
+
+        fake._responder = respond
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 30001)
+        assert fake.matching("exec") == []
+        # `_passwd_entry` swallows every exception, so the pull is asserted on the record
+        # rather than through the responder.
+        assert fake.matching("cp", f"{_NAME}:/etc/passwd") == []
+
+    def test_an_unresolvable_identity_fails_open_to_root(self, caplog):
+        """A named user with neither a passwd answer nor `id` leaves root-owned entries, and
+        the reach rule decides the removals.  Guessing an arbitrary ownership could stamp a
+        stranger's identity on the files.
+        """
+        passwd = b"root:x:0:0:root:/root:/bin/bash\n"
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"ghost\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(1, b"", "id: not found"),
+            ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(1, b"", "id: not found"),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        fake._responder = _passwd_responder([_NAME], overrides, passwd)
+        with caplog.at_level(logging.INFO):
+            facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (0, 0)
+        assert any("could not be resolved" in r.message for r in caplog.records), [
+            r.message for r in caplog.records
+        ]
+
+    def test_an_unreadable_user_fails_open_to_root_and_says_so(self, caplog):
+        """An image this backend cannot ask keeps today's behaviour: root-owned entries — and
+        is warned about, because a daemon that would not answer and an image that names no
+        user reach the same `0:0` from opposite states, and only one of them is a choice.
+        """
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(1, b"", "daemon error"),
+        }
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        with caplog.at_level(logging.INFO):
+            facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (0, 0)
+        assert any("could not be resolved" in r.message for r in caplog.records), [
+            r.message for r in caplog.records
+        ]
+
+    def test_an_unset_user_is_root_without_a_warning(self, caplog):
+        """The other side of the same coin: `Config.User` empty *is* the answer, so it must
+        not warn — a notice on every stock image would make the real one unreadable.
+        """
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=_WORK_IS_A_DIRECTORY))
+        with caplog.at_level(logging.INFO):
+            facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (0, 0)
+        assert [r.message for r in caplog.records if "could not be resolved" in r.message] == []
+
+    def test_the_answer_is_read_once_per_container(self):
+        backend, fake = _backend_with(_machine(running=[_NAME]))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        fake.mark()
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert [
+            c.args
+            for c in fake.calls[fake._marked :]
+            if c.args[:3] == ("inspect", "-f", "{{.Config.User}}")
+        ] == []
 
 
 # ---------------------------------------------------------------------------
