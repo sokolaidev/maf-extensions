@@ -74,17 +74,23 @@ def assess(output: str, image: bytes | None) -> list[str]:
     failures: list[str] = []
 
     disposed = _DISPOSED.search(output)
+    left_behind = _RECLAIM_FAILURES.search(output)
+
+    # A reported reclaim failure is proof a call held a sandbox — one is raised for no other
+    # kind of call. This sample disposes what it could not clean, so that sandbox is already
+    # gone by the final purge: a zero there means cleanup ran early, not that nothing ran.
+    acquired = left_behind is not None and int(left_behind.group(1)) > 0
+
     if disposed is None:
         failures.append(
             "no measured 'Disposed N sandbox(es)' line — the sample did not run to completion"
         )
-    elif int(disposed.group(1)) < 1:
+    elif int(disposed.group(1)) < 1 and not acquired:
         failures.append(
             "'Disposed 0 sandbox(es)' — no sandbox was ever created, so the model answered "
             "without calling render_diagram"
         )
 
-    left_behind = _RECLAIM_FAILURES.search(output)
     if left_behind is None:
         failures.append(
             "no measured 'Reclaim failures this turn' line — the sample did not reach its "

@@ -103,20 +103,9 @@ async def run() -> int:
 
     backend = DockerSandboxBackend(DockerSandboxConfig())
 
-    # What this host does about a call whose directory could not be removed. Both halves are
-    # decisions rather than plumbing, and a host that leaves them at their defaults has still
-    # made them:
-    #
-    # `failed_reclaim_policy` is the one with a blast radius. `DISPOSE` — the default, stated
-    # here rather than inherited — ends the sandbox, so the conversation's next call starts
-    # cold; `KEEP` leaves it warm with the unremovable data still in it. A directory nobody
-    # could remove stays readable by every later call in the conversation, because `acquire`
-    # is get-or-create, so disposal is the only thing that actually removes it.
-    #
-    # `on_failure` is *not* where that is decided. It runs after the framework has already
-    # acted, and `ReclaimFailure.disposal` says which of `disposed`, `failed` or `kept` it
-    # did. This is where a host logs, counts and pages — nothing more, and a handler that
-    # raises is caught and logged rather than replacing the call's own answer.
+    # `on_failure` runs *after* the framework has acted on `failed_reclaim_policy`, so it
+    # reports rather than decides; the README says what each policy costs. `DISPOSE` is the
+    # default and is written out because leaving it unset is still a choice.
     reclaim_failures: list[ReclaimFailure] = []
 
     # One phrasing per `DisposalOutcome`, because the bare word does not read as a sentence:

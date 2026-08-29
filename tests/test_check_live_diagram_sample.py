@@ -107,6 +107,24 @@ class TestTheReclaimHalf:
         failures = check.assess(untagged, _png(640, 480))
         assert any("nothing vouches for the call directories" in reason for reason in failures)
 
+    def test_a_failed_reclaim_is_not_read_as_a_turn_that_never_ran(self):
+        """The two measurements interact, and only one reading of the pair is right.
+
+        This sample disposes what it could not clean, so a call whose reclaim failed loses its
+        sandbox there rather than at `dispose_scope` — and the final purge honestly counts
+        nought. The count is proof a call *did* hold one, so it cannot also mean the model
+        never called the tool.
+        """
+        output = _HEALTHY.replace(
+            _RECLAIM_LINE, f"{scaffold.MEASURED}Reclaim failures this turn: 1"
+        ).replace(_DISPOSAL_LINE, f"{scaffold.MEASURED}Disposed 0 sandbox(es).")
+        failures = check.assess(output, _png(640, 480))
+        assert any("could not be reclaimed" in reason for reason in failures)
+        assert not any("no sandbox was ever created" in reason for reason in failures), (
+            "a failed reclaim was diagnosed as a turn that never called the tool"
+        )
+        assert len(failures) == 1
+
     def test_the_sample_prints_the_line_from_the_scaffold(self):
         """The producer half. Without it the wording above pins only this file to itself.
 
