@@ -26,9 +26,11 @@ from maf_sandbox import (
     Egress,
     EntryKind,
     Isolation,
+    OsFamily,
     SandboxBackend,
     SandboxBackendNotPermitted,
     SandboxKey,
+    SandboxOsFamilyNotSupported,
     SandboxRouter,
     SandboxSpec,
     SandboxTransferCapExceeded,
@@ -232,6 +234,38 @@ def _backend_with(responder=None, config=None) -> tuple[DockerSandboxBackend, _F
     return backend, fake
 
 
+def _created_with(monkeypatch, responder=None, config=None):
+    """A backend built through `create`, so the daemon read actually runs.
+
+    The seam is patched on the *class* rather than the instance because `create` builds the
+    instance itself, and re-bound to that instance afterwards so the rest of a test keeps
+    talking to the same fake.
+    """
+    fake = _FakeDocker(responder)
+
+    async def seam(_self, *args, stdin=None, timeout=None, read_limit=None):
+        return await fake(*args, stdin=stdin, timeout=timeout, read_limit=read_limit)
+
+    monkeypatch.setattr(DockerSandboxBackend, "_docker", seam)
+    backend = asyncio.run(DockerSandboxBackend.create(config or DockerSandboxConfig()))
+    backend._docker = fake  # type: ignore[method-assign]
+    return backend, fake
+
+
+def _daemon_running(os_name: bytes | None, base=None):
+    """`_machine`, with `docker version` answering `os_name` — `None` failing the read."""
+    machine = base or _machine()
+
+    def respond(args: tuple[str, ...]) -> _DockerResult:
+        if args[:1] == ("version",):
+            if os_name is None:
+                return _DockerResult(1, b"", "Cannot connect to the Docker daemon")
+            return _DockerResult(0, os_name, "")
+        return machine(args)
+
+    return respond
+
+
 # ---------------------------------------------------------------------------
 # Backend identity — read by the router's isolation floor and capability match
 # ---------------------------------------------------------------------------
@@ -302,6 +336,216 @@ class TestBackendIdentity:
         limits = DockerSandboxBackend(DockerSandboxConfig()).declarations.limits
         assert limits.files_out.max_files >= 1
         assert limits.files_in.max_bytes_per_file >= 1
+
+
+# ---------------------------------------------------------------------------
+# The guest family — read off the daemon by `create`, matched by the router at attach (#587)
+# ---------------------------------------------------------------------------
+
+
+class TestGuestFamilyDeclaration:
+    """What `os_families` says, and the one daemon answer that entitles it to say anything."""
+
+    def test_the_plain_constructor_declares_nothing(self):
+        """`__init__` makes no engine calls, so it has nothing to declare — and says so."""
+        assert DockerSandboxBackend(DockerSandboxConfig()).declarations.os_families == frozenset()
+
+    def test_a_linux_daemon_declares_posix(self, monkeypatch):
+        backend, _ = _created_with(monkeypatch, _daemon_running(b"linux\n"))
+        assert backend.declarations.os_families == frozenset({OsFamily.POSIX})
+
+    def test_the_daemon_is_asked_with_version_and_the_ostype_template(self, monkeypatch):
+        _, fake = _created_with(monkeypatch, _daemon_running(b"linux\n"))
+        assert fake.only("version").args == ("version", "--format", "{{.Server.Os}}")
+
+    def test_the_read_is_bounded_by_the_command_timeout(self, monkeypatch):
+        """Measured: an unroutable DOCKER_HOST does not refuse, it hangs. So this one is timed."""
+        config = DockerSandboxConfig(command_timeout_seconds=7.5)
+        _, fake = _created_with(monkeypatch, _daemon_running(b"linux\n"), config=config)
+        assert fake.only("version").timeout == 7.5
+
+    def test_the_declaration_is_read_once_and_then_answered_from_memory(self, monkeypatch):
+        backend, fake = _created_with(monkeypatch, _daemon_running(b"linux\n"))
+        for _ in range(3):
+            assert backend.declarations.os_families == frozenset({OsFamily.POSIX})
+        assert len(fake.matching("version")) == 1
+
+    def test_a_windows_daemon_declares_nothing_rather_than_windows(self, monkeypatch):
+        """The refusal that keeps this backend honest: `exec` is `sh -c` and removals are
+        `rm -rf`, so `WINDOWS` would be a guarantee no code path here backs."""
+        backend, _ = _created_with(monkeypatch, _daemon_running(b"windows\n"))
+        assert backend.declarations.os_families == frozenset()
+
+    def test_a_daemon_that_will_not_answer_declares_nothing(self, monkeypatch):
+        backend, _ = _created_with(monkeypatch, _daemon_running(None))
+        assert backend.declarations.os_families == frozenset()
+
+    def test_a_client_that_is_not_installed_declares_nothing(self, monkeypatch):
+        """`create` reads a declaration; it is not a health check, so it raises nothing."""
+        backend, _ = _created_with(monkeypatch, _explodes)
+        assert backend.declarations.os_families == frozenset()
+
+    def test_an_empty_answer_declares_nothing(self, monkeypatch):
+        """An engine whose `--format` does not speak this template exits 0 and prints nothing."""
+        backend, _ = _created_with(monkeypatch, _daemon_running(b"\n"))
+        assert backend.declarations.os_families == frozenset()
+
+    def test_the_answer_is_read_case_insensitively(self, monkeypatch):
+        backend, _ = _created_with(monkeypatch, _daemon_running(b"Linux\n"))
+        assert backend.declarations.os_families == frozenset({OsFamily.POSIX})
+
+
+class TestTheRouterMatchesTheDeclaredFamily:
+    """The point of the declaration: an axis that refuses something, at attach."""
+
+    @staticmethod
+    def _router(backend) -> SandboxRouter:
+        return SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
+
+    def test_a_posix_workload_is_served_by_a_linux_daemon(self, monkeypatch):
+        backend, _ = _created_with(monkeypatch, _daemon_running(b"linux\n"))
+        spec = SandboxSpec(kind="bicep", image="i:local", requires_os_family=OsFamily.POSIX)
+        self._router(backend).ensure_can_serve(spec)
+
+    def test_a_windows_workload_is_refused_by_a_linux_daemon(self, monkeypatch):
+        backend, _ = _created_with(monkeypatch, _daemon_running(b"linux\n"))
+        spec = SandboxSpec(kind="bicep", image="i:local", requires_os_family=OsFamily.WINDOWS)
+        with pytest.raises(SandboxOsFamilyNotSupported):
+            self._router(backend).ensure_can_serve(spec)
+
+    def test_a_backend_that_declared_nothing_refuses_a_spec_that_asks(self, monkeypatch):
+        """Unchanged behaviour, pinned: silence refuses only a spec naming a family."""
+        backend, _ = _created_with(monkeypatch, _daemon_running(None))
+        spec = SandboxSpec(kind="bicep", image="i:local", requires_os_family=OsFamily.POSIX)
+        with pytest.raises(SandboxOsFamilyNotSupported):
+            self._router(backend).ensure_can_serve(spec)
+
+    def test_a_spec_naming_no_family_is_served_either_way(self, monkeypatch):
+        backend, _ = _created_with(monkeypatch, _daemon_running(None))
+        self._router(backend).ensure_can_serve(_SPEC)
+        self._router(DockerSandboxBackend(DockerSandboxConfig())).ensure_can_serve(_SPEC)
+
+
+class TestTheDaemonMovingUnderTheDeclaration:
+    """`os_families` is a snapshot: the client resolves DOCKER_HOST and the active context per
+    invocation, so switching Docker Desktop to Windows containers moves the engine under a
+    running host. A create re-asks; everything else does not."""
+
+    @staticmethod
+    def _switchable(daemon: dict[str, bytes]):
+        machine = _machine()
+
+        def respond(args: tuple[str, ...]) -> _DockerResult:
+            if args[:1] == ("version",):
+                return _DockerResult(0, daemon["os"], "")
+            return machine(args)
+
+        return respond
+
+    def test_a_create_is_refused_when_the_daemon_no_longer_runs_linux(self, monkeypatch):
+        daemon = {"os": b"linux\n"}
+        backend, _ = _created_with(monkeypatch, self._switchable(daemon))
+        daemon["os"] = b"windows\n"
+        with pytest.raises(SandboxOsFamilyNotSupported, match="moved under this backend"):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+
+    def test_the_refusal_leaves_nothing_behind_to_dispose(self, monkeypatch):
+        """Ahead of the create *and* of the egress scaffolding, so there is nothing to clean."""
+        daemon = {"os": b"linux\n"}
+        config = DockerSandboxConfig(egress_proxy_image="proxy:local")
+        backend, fake = _created_with(monkeypatch, self._switchable(daemon), config=config)
+        daemon["os"] = b"windows\n"
+        spec = SandboxSpec(
+            kind="bicep",
+            image="bicep-sandbox:local",
+            egress=Egress.ALLOWLIST,
+            egress_allow=("example.com",),
+        )
+        with pytest.raises(SandboxOsFamilyNotSupported):
+            asyncio.run(backend.acquire(_KEY, spec))
+        assert fake.matching("run") == []
+        assert fake.matching("network", "create") == []
+
+    def test_a_stopped_container_is_not_restarted_onto_a_moved_daemon(self, monkeypatch):
+        """A restart hands out a container from whichever daemon is answering now, so it is
+        gated exactly like a create — and refused before `docker start` runs."""
+        daemon = {"os": b"linux\n"}
+        machine = _machine(stopped=[_NAME])
+
+        def respond(args: tuple[str, ...]) -> _DockerResult:
+            if args[:1] == ("version",):
+                return _DockerResult(0, daemon["os"], "")
+            return machine(args)
+
+        backend, fake = _created_with(monkeypatch, respond)
+        daemon["os"] = b"windows\n"
+        with pytest.raises(SandboxOsFamilyNotSupported):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert fake.matching("start") == []
+        assert fake.matching("run") == []
+
+    def test_a_restart_that_would_fall_through_to_a_create_is_refused_first(self, monkeypatch):
+        """The path a create-only gate missed: `_restart` removes a container that will not
+        start and falls through to a create, so a guard asking "does no container exist?" let
+        that create through unchecked."""
+        daemon = {"os": b"linux\n"}
+        machine = _machine(
+            stopped=[_NAME], overrides={("start",): _DockerResult(1, b"", "cannot start")}
+        )
+
+        def respond(args: tuple[str, ...]) -> _DockerResult:
+            if args[:1] == ("version",):
+                return _DockerResult(0, daemon["os"], "")
+            return machine(args)
+
+        backend, fake = _created_with(monkeypatch, respond)
+        daemon["os"] = b"windows\n"
+        with pytest.raises(SandboxOsFamilyNotSupported):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert fake.matching("run") == []
+
+    def test_a_warm_container_is_served_without_asking_again(self, monkeypatch):
+        """The stated residual: a *running* container is served without a round trip, because
+        re-asking here would put one in front of every tool call. Reaching it takes a switch to
+        an engine already running a container under the same derived name."""
+        daemon = {"os": b"linux\n"}
+        machine = _machine(running=[_NAME])
+
+        def respond(args: tuple[str, ...]) -> _DockerResult:
+            if args[:1] == ("version",):
+                return _DockerResult(0, daemon["os"], "")
+            return machine(args)
+
+        backend, fake = _created_with(monkeypatch, respond)
+        asked_at_create = len(fake.matching("version"))
+        daemon["os"] = b"windows\n"
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert len(fake.matching("version")) == asked_at_create
+
+    def test_a_backend_that_declared_nothing_never_asks(self):
+        """No declaration, no promise to re-check, and no round trip on the create path."""
+        backend, fake = _backend_with(_daemon_running(b"windows\n"))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert fake.matching("version") == []
+        assert fake.matching("run") != []
+
+    def test_a_daemon_that_will_not_answer_now_is_served(self, monkeypatch):
+        """An unreadable re-check serves: the create is about to fail on its own terms, and
+        refusing on a transient would take a working deployment off the air."""
+        answers = {"failing": False}
+        machine = _machine()
+
+        def respond(args: tuple[str, ...]) -> _DockerResult:
+            if args[:1] == ("version",):
+                if answers["failing"]:
+                    return _DockerResult(1, b"", "Cannot connect to the Docker daemon")
+                return _DockerResult(0, b"linux\n", "")
+            return machine(args)
+
+        backend, fake = _created_with(monkeypatch, respond)
+        answers["failing"] = True
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert fake.matching("run") != []
 
 
 class TestRouterFloor:

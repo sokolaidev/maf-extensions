@@ -8,7 +8,7 @@ A `docker`-compatible command-line client talking to a Docker-API-compatible soc
 
 ## What it declares
 
-The four below `isolation` are fields of this backend's `declarations`.
+The four below `isolation` are fields of this backend's `declarations`. Three are settled by the constructor; `os_families` is the one the daemon has to be asked for, and only `create` asks.
 
 | Declaration | Value |
 |---|---|
@@ -16,11 +16,21 @@ The four below `isolation` are fields of this backend's `declarations`.
 | `capabilities` | `EXEC`, `FILES_IN`, `FILES_OUT`, `FILES_DELETE`, `HOST_TOOLS` — never `FILES_LIST`, never `RUN_CODE` |
 | `egress_modes` | `{Egress.CLOSED}`; `{Egress.CLOSED, Egress.ALLOWLIST}` when an egress proxy image is configured. Never `UNRESTRICTED`: a container backend always cuts or proxies |
 | `limits` | 64 MiB per file, 256 MiB total, 256 files — the same `TransferLimits` in each direction |
-| `os_families` | **not declared**. The daemon knows its `OSType` and this backend does not read it, so the router sees `frozenset()` and refuses a spec that asks for a family |
+| `os_families` | `{OsFamily.POSIX}` when the daemon reports `linux`; `frozenset()` for every other answer, `windows` included. Read once by `DockerSandboxBackend.create`, and the plain constructor declares nothing |
 
 ## `container` is a constant
 
 `isolation` is not a function of the config, in this version or any later one. A container shares the host kernel and no setting this package has can change that; a Docker Desktop or Colima VM does not lift the rung, because one shared VM kernel serves every container — the same shape as wslc's WSL 2 utility VM, which the ladder also classifies at `container`. A hardened runtime would be a different rung, but only with a way to *verify* it is in effect, and a runtime string a backend cannot verify must never become a security guarantee the router repeats. The rung sits below the router's default floor, so a host opts down explicitly with `min_isolation=Isolation.CONTAINER`; with nothing passed, construction raises. Three self-imposed constraints hold the guest↔host surface narrow — no bind mounts, no host-path sharing, and never `/var/run/docker.sock` passthrough — and they are self-imposed: nothing checks that a backend declaring `container` refrained from mounting the host filesystem.
+
+## The guest family is read from the daemon, and only `linux` is declared
+
+The `os_families` field of this backend's `declarations` comes from `docker version --format '{{.Server.Os}}'`, asked once by `DockerSandboxBackend.create` — an `async` factory, because `__init__` makes no engine calls and a blocking read in a constructor would do subprocess I/O on the caller's event loop, against a daemon that (measured) can hang rather than refuse. The plain constructor is unchanged and still declares nothing, so nothing that builds one today has to move.
+
+**A `linux` daemon declares `POSIX`. Every other answer declares `frozenset()`, and `windows` is not a translation waiting to be written.** This backend's `exec` is `sh -c`, its removals are `rm -rf`, its guest paths go through `posixpath` against a `/` root, and core's `maf_sandbox.paths` refuses a backslash outright — so `OsFamily.WINDOWS` would be a guarantee no code path here backs, and reading one off a daemon would move the failure from the guest's first command to the router's certificate. A daemon that will not answer declares nothing for the reason a guess would be worse than silence: `frozenset()` refuses only a spec that names a family, which is what this backend did before it asked at all.
+
+**The declaration is a snapshot, so a cold acquire re-asks.** The client resolves `DOCKER_HOST` and the active docker context on *every* invocation, and switching Docker Desktop to Windows containers moves the engine under a running host. The router matched the old answer at attach and cannot ask again, so `acquire` re-reads the daemon before it starts a container — ahead of the create, ahead of the restart and ahead of the egress scaffolding, so a refusal leaves nothing to dispose — and raises `SandboxOsFamilyNotSupported` when it changed. A backend that declared nothing asks nothing, and a daemon unreachable *now* is served: the acquire is about to fail on its own terms, and refusing on a transient would take a working deployment off the air.
+
+**A restart is gated exactly like a create, and the reason is not symmetry.** `_restart` removes a container that will not start and falls through to a create, so a check asking *"does no container exist?"* would let that create through unchecked — and a restart that does succeed hands out a container from whichever daemon is answering now, which is the same claim a create makes. **A *running* container is the stated residual:** it is served without a round trip, because re-asking there would put one in front of every tool call, which is the path this backend exists to keep cheap. Reaching it takes a switch to an engine that is already running a container under the same derived name.
 
 ## The pull surface: one tar, read twice
 
@@ -101,4 +111,4 @@ Names are **derived** from a digest of scope, thread, agent dir, kind and egress
 | The egress proxy is a byte copy of wslc's, pinned by test rather than hoisted into core | shipped, by maintainer ruling | — |
 | Live e2e on every pull request as the repository's acceptance gate | shipped | — |
 | Shared egress probes across backends, so this topology is not the only one ever measured | shipped — `assert_egress_conformance` runs in this suite on every pull request, and in ACAS's and wslc's for the same outcome, so this topology is no longer the only one a shared probe has ever met. What stays open under the issue is the third assertion its acceptance names, the no-DNS-leak one, which is asserted in no suite | [#402](https://github.com/sokolaidev/maf-extensions/issues/402) (open) — the probe [#547](https://github.com/sokolaidev/maf-extensions/pull/547), the wiring [#548](https://github.com/sokolaidev/maf-extensions/pull/548) (merged) |
-| A guest-platform axis a kind can declare and match | shipped in core, unanswered here — the axis exists and this backend declares no family. Reading the daemon's `OSType` at construction is the design ([`../guest-platform-and-commands.md`](../guest-platform-and-commands.md)) and is unbuilt, which matters most on the one shipped backend likeliest to meet a non-Linux guest | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (closed) by [#532](https://github.com/sokolaidev/maf-extensions/pull/532) (merged); the declaration itself is [#587](https://github.com/sokolaidev/maf-extensions/issues/587) (open) |
+| A guest-platform axis a kind can declare and match | shipped — `DockerSandboxBackend.create` reads the daemon's `OSType` and declares `POSIX` for `linux`, nothing for anything else, `windows` included, because this backend could not serve a Windows guest whatever it declared. The declaration is a snapshot, so a cold acquire re-asks — before a create and before a restart, since a failed restart becomes a create — and refuses a daemon that moved under it; an already-running container is the stated residual, and the plain constructor still declares nothing | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (closed) by [#532](https://github.com/sokolaidev/maf-extensions/pull/532) (merged); the declaration itself is [#587](https://github.com/sokolaidev/maf-extensions/issues/587) |

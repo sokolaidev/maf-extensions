@@ -18,7 +18,10 @@ every container — and becomes :data:`~maf_sandbox.Egress.ALLOWLIST` when the c
 behind a filtering proxy.  It declares :data:`~maf_sandbox.Capability.FILES_OUT` — stat from
 the first tar header of ``docker cp``, read from the same stream — and never
 :data:`~maf_sandbox.Capability.FILES_LIST`, the enumeration capability Docker has no
-engine-level primitive for.
+engine-level primitive for.  Its ``os_families`` comes from the daemon rather than from
+configuration: :meth:`DockerSandboxBackend.create` asks once and declares
+:data:`~maf_sandbox.OsFamily.POSIX` for a ``linux`` daemon, nothing for any other answer, and
+the plain constructor declares nothing.
 
 This package is the backend only.  The sandbox kinds that run on it live in sibling packages
 and are written against the router's protocol, not against this backend, so they never import
