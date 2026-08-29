@@ -16,10 +16,10 @@ Two findings, and they are different mistakes:
   That decision is now tracked by nothing, which is the state the convention exists to prevent.
 
 A run that belongs to a pull request judges the state at *merge* rather than the state today:
-what the request promises to close — read from GitHub's own closing references, never parsed
-back out of the body — counts as `CLOSED`, and the row a merge is about to invalidate can be
-flipped in the request that earns the flip. A run with no request to its name — the one on
-`main` — judges live state, which is what catches a promise that never landed.
+what the request promises to close — read from GitHub's own closing references — counts as
+`CLOSED`, and the row a merge is about to invalidate can be flipped in the request that earns
+the flip. A run with no request to its name — the one on `main` — judges live state, which is
+what catches a promise that never landed.
 
 A reference to another repository is reported as unchecked rather than guessed at: upstream
 issues close on somebody else's schedule and this check has no standing to read them.
@@ -290,15 +290,32 @@ def query(slug: str, numbers: list[int]) -> str:
     return f'query {{ repository(owner: "{owner}", name: "{name}") {{ {fields} }} }}'
 
 
+class GraphQLRefusal(Exception):
+    """A query GitHub answered with errors inside a 200, which is a refusal, not an answer."""
+
+
+def answered(body: dict) -> dict:
+    """The `data` of one GraphQL answer, refusing one that carries errors.
+
+    GraphQL reports a refused query inside a 200, and `urlopen` does not raise for it; an
+    error swallowed here reads downstream as an empty answer — every state missing, every
+    promise empty — which for this check is a green it must never report.
+    """
+    errors = body.get("errors") or []
+    if errors:
+        raise GraphQLRefusal(str(errors[0].get("message", "GitHub answered with errors")))
+    return body.get("data") or {}
+
+
 def _post(document: str, auth: str) -> dict:
-    """One GraphQL document answered, or the refusal the transport raised."""
+    """One GraphQL document's data, or the refusal the transport or the answer raised."""
     request = urllib.request.Request(
         _API,
         data=json.dumps({"query": document}).encode(),
         headers={"Authorization": f"bearer {auth}", "Content-Type": "application/json"},
     )
     with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
-        return json.loads(response.read())
+        return answered(json.loads(response.read()))
 
 
 def ask(slug: str, numbers: list[int], auth: str) -> dict[int, str | None]:
@@ -306,11 +323,10 @@ def ask(slug: str, numbers: list[int], auth: str) -> dict[int, str | None]:
     states: dict[int, str | None] = {}
     for start in range(0, len(numbers), _BATCH):
         batch = numbers[start : start + _BATCH]
-        body = _post(query(slug, batch), auth)
-        repository = (body.get("data") or {}).get("repository") or {}
+        repository = _post(query(slug, batch), auth).get("repository") or {}
         for number in batch:
-            answered = repository.get(f"n{number}")
-            states[number] = answered.get("state") if answered else None
+            entry = repository.get(f"n{number}")
+            states[number] = entry.get("state") if entry else None
     return states
 
 
@@ -320,35 +336,41 @@ def pull_request_number() -> int | None:
     return int(raw) if raw.isdigit() else None
 
 
-def closures_query(slug: str, number: int) -> str:
-    """One GraphQL document asking what the request itself says it closes.
+def closures_query(slug: str, number: int, cursor: str | None) -> str:
+    """One GraphQL document asking for one page of what the request itself says it closes.
 
     `closingIssuesReferences` is GitHub's own reading of the closing keywords, which is the
-    question this check is asking. A hand-rolled parser would have to reproduce every context
-    GitHub ignores and every spelling it accepts — a colon after the keyword, code blocks, a
-    request targeting a branch other than the default — and it is wrong the first time either
-    list moves.
+    question this check is asking: what a merge closes is decided by GitHub, not reproduced
+    here. The cursor asks for the page after the first hundred, so a growing list never
+    silently truncates.
     """
     owner, name = slug.split("/")
+    after = f', after: "{cursor}"' if cursor else ""
     return (
         f'query {{ repository(owner: "{owner}", name: "{name}") '
-        f"{{ pullRequest(number: {number}) {{ closingIssuesReferences(first: 100) "
-        f"{{ nodes {{ number repository {{ nameWithOwner }} }} }} }} }} }}"
+        f"{{ pullRequest(number: {number}) {{ closingIssuesReferences(first: 100{after}) "
+        f"{{ pageInfo {{ hasNextPage endCursor }} nodes {{ number repository {{ nameWithOwner }} }} }} }} }} }}"
     )
 
 
 def closing_issues(slug: str, number: int, auth: str) -> list[dict]:
-    """The issues GitHub says this request closes, every repository's list included.
+    """Every issue GitHub says this request closes, every repository's list included.
 
     Keeping this repository's only happens in `promised_numbers`, which stays pure and so
-    testable offline; this half is one query, like `ask`. A request that is gone answers with
-    an empty list, which is a fact about the repository rather than a refusal.
+    testable offline; this half pages the way `ask` batches, so a growing list never
+    silently truncates. A request that is gone answers with an empty list, which is a fact
+    about the repository rather than a refusal.
     """
-    body = _post(closures_query(slug, number), auth)
-    pull = (body.get("data") or {}).get("repository") or {}
-    answered = (pull or {}).get("pullRequest") or {}
-    references = (answered or {}).get("closingIssuesReferences") or {}
-    return references.get("nodes") or []
+    issues: list[dict] = []
+    cursor: str | None = None
+    while True:
+        repository = _post(closures_query(slug, number, cursor), auth).get("repository") or {}
+        references = (repository.get("pullRequest") or {}).get("closingIssuesReferences") or {}
+        issues.extend(references.get("nodes") or [])
+        page = references.get("pageInfo") or {}
+        if not (page.get("hasNextPage") and page.get("endCursor")):
+            return issues
+        cursor = page["endCursor"]
 
 
 def branch_pull_request_number(root: Path) -> int | None:
@@ -412,11 +434,12 @@ def main(argv: list[str]) -> int:
         promised: frozenset[int] = frozenset()
         if number is not None:
             promised = promised_numbers(closing_issues(slug, number, auth), slug)
-    except urllib.error.HTTPError as refused:
-        # Asked and turned away — a rejected token or a spent rate limit. Not the same as being
-        # offline and not skippable: in CI the token is always there, so a silent pass here would
-        # be the check reporting green on the one failure it cannot see past.
-        print(f"GitHub refused the query: {refused.code} {refused.reason}", file=sys.stderr)
+    except (urllib.error.HTTPError, GraphQLRefusal) as refused:
+        # Asked and turned away — a rejected token, a spent rate limit, a query answered with
+        # errors. Not the same as being offline and not skippable: in CI the token is always
+        # there, so a silent pass here would be the check reporting green on the one failure
+        # it cannot see past.
+        print(f"GitHub refused the query: {refused}", file=sys.stderr)
         return 1
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as unreachable:
         print(f"skipped: could not reach GitHub ({unreachable})")

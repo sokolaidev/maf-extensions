@@ -18,7 +18,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from check_doc_trackers import (  # noqa: E402
+    GraphQLRefusal,
     Row,
+    answered,
     closures_query,
     findings,
     is_outstanding,
@@ -251,11 +253,35 @@ class TestTheQuery:
 
 class TestTheClosuresQuery:
     def test_it_asks_githubs_own_reading_of_the_closing_keywords(self):
-        """Not a re-parse of the body: what GitHub ignores or accepts is already decided."""
-        asked = closures_query(_SLUG, 737)
+        asked = closures_query(_SLUG, 737, None)
         assert "pullRequest(number: 737)" in asked
         assert "closingIssuesReferences(first: 100)" in asked
         assert "nameWithOwner" in asked
+
+    def test_the_first_page_asks_for_the_cursor_to_the_next(self):
+        """A reference past the first hundred would otherwise be scored against live state."""
+        asked = closures_query(_SLUG, 737, None)
+        assert "pageInfo { hasNextPage endCursor }" in asked
+        assert "after:" not in asked
+
+    def test_a_later_page_asks_after_the_cursor_it_was_handed(self):
+        assert 'after: "NEXT"' in closures_query(_SLUG, 737, "NEXT")
+
+
+class TestTheAnswer:
+    """An answer carrying errors is a refusal, not an empty answer the check scores as green."""
+
+    def test_errors_are_a_refusal(self):
+        with pytest.raises(GraphQLRefusal, match="rate limit exceeded"):
+            answered({"errors": [{"message": "rate limit exceeded"}]})
+
+    def test_no_data_with_no_errors_is_empty(self):
+        assert answered({"data": None}) == {}
+
+    def test_a_good_answer_hands_back_its_data(self):
+        assert answered({"data": {"repository": {"name": "maf-extensions"}}}) == {
+            "repository": {"name": "maf-extensions"}
+        }
 
 
 class TestTheRemoteSlug:
