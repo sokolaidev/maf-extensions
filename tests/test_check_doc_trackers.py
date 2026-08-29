@@ -1,9 +1,11 @@
 """Tests for the checker that reads a Status row's tracker against the live issue.
 
-Every test here is offline. The script's one network call lives behind `ask`, and nothing below
-touches it: what is worth pinning is the reading — which rows count, which references belong to
-this repository, and which of the two mistakes each finding is. A test that reached GitHub would
-fail on a train and prove nothing about the parsing that actually goes wrong.
+Every test here is offline. The script's network calls live behind `ask` and `closing_issues`
+and its `gh` call behind `branch_pull_request_number`, and nothing below touches them: what is
+worth pinning is the reading — which rows count, which references belong to this repository,
+what GitHub says the request closes, and which of the two mistakes each finding is. A test
+that reached GitHub would fail on a train and prove nothing about the parsing that goes
+wrong.
 """
 
 from __future__ import annotations
@@ -16,12 +18,18 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from check_doc_trackers import (  # noqa: E402
+    GraphQLRefusal,
     Row,
+    answered,
+    closures_query,
     findings,
     is_outstanding,
+    promised_numbers,
+    pull_request_number,
     query,
     references,
     slug_from_url,
+    state_at_merge,
     status_rows,
 )
 
@@ -84,6 +92,31 @@ class TestReadingTheReferences:
         assert references("untracked") == []
 
 
+class TestPromisedNumbers:
+    """What GitHub itself says the request closes, filtered to this repository's issues."""
+
+    @staticmethod
+    def _nodes(*pairs: tuple[str, int]) -> list[dict]:
+        return [
+            {"number": number, "repository": {"nameWithOwner": owner}} for owner, number in pairs
+        ]
+
+    def test_this_repositorys_promises_count(self):
+        nodes = self._nodes((_SLUG, 591), (_SLUG, 592))
+        assert promised_numbers(nodes, _SLUG) == frozenset({591, 592})
+
+    def test_another_repositorys_promises_do_not_count(self):
+        """A cross-repository reference is a real promise, just not one this check may score."""
+        nodes = self._nodes((_SLUG, 591), ("microsoft/azure-container-apps", 1807))
+        assert promised_numbers(nodes, _SLUG) == frozenset({591})
+
+    def test_a_request_closing_nothing_promises_nothing(self):
+        assert promised_numbers([], _SLUG) == frozenset()
+
+    def test_a_node_without_a_repository_is_not_ours_to_guess(self):
+        assert promised_numbers([{"number": 591}], _SLUG) == frozenset()
+
+
 class TestWhichRowsAreOutstanding:
     @pytest.mark.parametrize("state", ["open", "partial — half of it", "parked", "Open"])
     def test_these_still_owe_something(self, state: str):
@@ -96,6 +129,22 @@ class TestWhichRowsAreOutstanding:
     def test_a_shipped_row_whose_prose_says_open_is_not_outstanding(self):
         """The word appears in shipped rows describing what their successors still owe."""
         assert not is_outstanding("shipped — the umbrella's remaining parts are open")
+
+
+class TestTheStateAtMerge:
+    """A promise changes one thing: an open issue becomes closed when the request merges."""
+
+    def test_an_open_issue_a_request_promises_becomes_closed(self):
+        assert state_at_merge("OPEN", 591, frozenset({591})) == "CLOSED"
+
+    def test_an_open_issue_nobody_promises_stays_open(self):
+        assert state_at_merge("OPEN", 591, frozenset()) == "OPEN"
+
+    def test_a_merge_is_not_undone_by_promising_at_it(self):
+        assert state_at_merge("MERGED", 532, frozenset({532})) == "MERGED"
+
+    def test_a_number_the_repository_does_not_have_is_not_invented(self):
+        assert state_at_merge(None, 999999, frozenset({999999})) is None
 
 
 class TestTheTwoMistakes:
@@ -139,6 +188,57 @@ class TestTheTwoMistakes:
         )
 
 
+class TestThePromisesInFindings:
+    """What the two mistakes do with a number the request promises to close."""
+
+    def test_a_row_flipped_to_closed_passes_before_the_merge(self):
+        """The flip a merge earns lands in the request that earns it, not in a follow-up."""
+        rows = [_row("shipped", f"{_link(591)} (closed)")]
+        assert findings(rows, {591: "OPEN"}, _SLUG, frozenset({591})) == []
+
+    def test_a_row_left_open_about_a_promised_issue_is_reported(self):
+        rows = [_row("open", f"{_link(591)} (open)")]
+        problem = findings(rows, {591: "OPEN"}, _SLUG, frozenset({591}))
+        assert "names #591 as (open), and this PR closes it" in problem[0]
+
+    def test_a_state_cell_left_open_about_a_promised_issue_is_reported(self):
+        rows = [_row("open", _link(591))]
+        problem = findings(rows, {591: "OPEN"}, _SLUG, frozenset({591}))
+        assert "nothing will track it once this PR merges (#591)" in problem[0]
+
+    def test_without_a_promise_the_flipped_row_still_fails_today(self):
+        """Live state is what a run with no request to its name judges — the follow-up's cause."""
+        rows = [_row("shipped", f"{_link(591)} (closed)")]
+        problem = findings(rows, {591: "OPEN"}, _SLUG)
+        assert "names #591 as (closed), and it is open" in problem[0]
+
+    def test_a_promise_does_not_undo_a_merge(self):
+        rows = [_row("shipped", f"{_link(532, 'pull')} (merged)")]
+        assert findings(rows, {532: "MERGED"}, _SLUG, frozenset({532})) == []
+
+    def test_a_promise_for_a_number_the_repository_lacks_stays_missing(self):
+        rows = [_row("open", _link(999999))]
+        problem = findings(rows, {999999: None}, _SLUG, frozenset({999999}))
+        assert "#999999 does not exist" in problem[0]
+
+
+class TestTheCINamedRequest:
+    """The number a CI run names for its pull request, which a `push` run has none of."""
+
+    def test_the_number_is_read_as_a_number(self, monkeypatch):
+        monkeypatch.setenv("PR_NUMBER", "737")
+        assert pull_request_number() == 737
+
+    @pytest.mark.parametrize("empty", ["", "soon"])
+    def test_what_is_not_a_number_is_no_number(self, monkeypatch, empty: str):
+        monkeypatch.setenv("PR_NUMBER", empty)
+        assert pull_request_number() is None
+
+    def test_a_run_that_names_no_request_has_no_number(self, monkeypatch):
+        monkeypatch.delenv("PR_NUMBER", raising=False)
+        assert pull_request_number() is None
+
+
 class TestTheQuery:
     def test_it_asks_for_every_number_in_one_document(self):
         asked = query(_SLUG, [1, 2])
@@ -149,6 +249,39 @@ class TestTheQuery:
         """A tracking cell names merged pull requests as often as issues."""
         assert "... on Issue { state }" in query(_SLUG, [1])
         assert "... on PullRequest { state }" in query(_SLUG, [1])
+
+
+class TestTheClosuresQuery:
+    def test_it_asks_githubs_own_reading_of_the_closing_keywords(self):
+        asked = closures_query(_SLUG, 737, None)
+        assert "pullRequest(number: 737)" in asked
+        assert "closingIssuesReferences(first: 100)" in asked
+        assert "nameWithOwner" in asked
+
+    def test_the_first_page_asks_for_the_cursor_to_the_next(self):
+        """A reference past the first hundred would otherwise be scored against live state."""
+        asked = closures_query(_SLUG, 737, None)
+        assert "pageInfo { hasNextPage endCursor }" in asked
+        assert "after:" not in asked
+
+    def test_a_later_page_asks_after_the_cursor_it_was_handed(self):
+        assert 'after: "NEXT"' in closures_query(_SLUG, 737, "NEXT")
+
+
+class TestTheAnswer:
+    """An answer carrying errors is a refusal, not an empty answer the check scores as green."""
+
+    def test_errors_are_a_refusal(self):
+        with pytest.raises(GraphQLRefusal, match="rate limit exceeded"):
+            answered({"errors": [{"message": "rate limit exceeded"}]})
+
+    def test_no_data_with_no_errors_is_empty(self):
+        assert answered({"data": None}) == {}
+
+    def test_a_good_answer_hands_back_its_data(self):
+        assert answered({"data": {"repository": {"name": "maf-extensions"}}}) == {
+            "repository": {"name": "maf-extensions"}
+        }
 
 
 class TestTheRemoteSlug:
