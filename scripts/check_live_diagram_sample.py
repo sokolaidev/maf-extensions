@@ -96,11 +96,11 @@ def assess(output: str, image: bytes | None) -> list[str]:
             "no measured 'Reclaim failures this turn' line — the sample did not reach its "
             "`finally`, so nothing vouches for the call directories it made"
         )
-    elif int(left_behind.group(1)) > 0:
+    elif (unreclaimed := int(left_behind.group(1))) > 0:
         failures.append(
-            f"{left_behind.group(1)} call director(ies) could not be reclaimed — each one cost "
-            "the conversation its sandbox, and where the disposal did not land either, those "
-            "files stay readable by the next call"
+            f"{unreclaimed} call {'directory' if unreclaimed == 1 else 'directories'} could "
+            "not be reclaimed — each one cost the conversation its sandbox, and where the "
+            "disposal did not land either, those files stay readable by the next call"
         )
 
     if image is None:

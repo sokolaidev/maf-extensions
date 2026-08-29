@@ -93,7 +93,7 @@ class TestTheReclaimHalf:
         failures = check.assess(output, _png(640, 480))
         assert any("nothing vouches for the call directories" in reason for reason in failures)
 
-    def test_a_directory_left_behind_fails(self):
+    def test_a_nonzero_count_fails(self):
         """The failure this exists for: a call the framework could not clean."""
         output = _HEALTHY.replace(
             _RECLAIM_LINE, f"{scaffold.MEASURED}Reclaim failures this turn: 1"
@@ -135,6 +135,23 @@ class TestTheReclaimHalf:
         assert "{MEASURED}Reclaim failures this turn: " in source, (
             f"samples/{_SAMPLE}/agent.py no longer tags its reclaim-failure count the way "
             "`_RECLAIM_FAILURES` reads it, so the live check vouches for nothing"
+        )
+
+    def test_the_handler_is_wired_to_the_router(self):
+        """The half a healthy run cannot show, because nought is what it reports either way.
+
+        Detach `on_failure` and the count still prints nought forever: this suite, and the
+        live check it backs, stay green over a sample that vouches for nothing. Only the
+        source says whether the number came from the framework or from an empty list.
+        """
+        source = (_ROOT / "samples" / _SAMPLE / "agent.py").read_text(encoding="utf-8")
+        assert "on_failure=note_reclaim_failure" in source, (
+            f"samples/{_SAMPLE}/agent.py no longer passes its handler to `ReclaimConfig`, so "
+            "the count it prints is an empty list rather than the framework's answer"
+        )
+        assert "reclaim_failures.append(failure)" in source, (
+            f"samples/{_SAMPLE}/agent.py no longer records what the handler was told, so the "
+            "count it prints is nought whatever the framework reported"
         )
 
 
