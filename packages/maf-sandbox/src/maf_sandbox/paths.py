@@ -7,33 +7,44 @@ filesystem path this module is the wrong answer — use :meth:`pathlib.Path.reso
 :meth:`pathlib.Path.is_relative_to`, which know the host's grammar and follow its symlinks.
 
 Confinement has two halves and one function each, and the names are worth keeping straight.
-**The file name check** is :func:`confine_guest_path`: text arithmetic over a whole guest path
-— join, normalise, refuse anything resolving outside — and it cannot see a symlink, which is
-why the other exists.  It is not :func:`~maf_sandbox.portable_name`, which rewrites the
-*segments* of a name for a hostile filesystem and confines nothing.
-**The filesystem path check** is :func:`refuse_symlinked_parents`: it looks at the guest's real
-filesystem, one directory at a time from the root down, and refuses a path whose ancestors are
-not real directories.  :func:`confine_guest_write_path` is both, plus the two refusals a write
-owes on top.
+**The file name check** is :func:`confine_resolve_guest_path`: text arithmetic over a whole
+guest path — join, normalise, refuse anything resolving outside — and it cannot see a symlink,
+which is why the other exists.  It is not :func:`~maf_sandbox.portable_file_name`, which
+rewrites the *segments* of a name for a hostile filesystem and confines nothing.
+**The filesystem path check** is :func:`refuse_symlinked_ancestors`: it looks at the guest's
+real filesystem, one directory at a time from the root down, and refuses a path whose ancestors
+are not real directories.  :func:`confine_resolve_guest_write_path` is both, plus the two
+refusals a write owes on top.
+
+**The prefix says what a function hands back.**  ``confine_resolve_*`` returns the resolved
+guest path or raises; ``refuse_*`` returns nothing and raises.  Nothing here answers a
+``bool``, so a name in the shape of a predicate would be read as one and is not used.
 """
 
 from __future__ import annotations
 
+import inspect
 import posixpath
-from collections.abc import Awaitable, Callable
+import warnings
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Any
 
 from ._protocol import EntryKind, SandboxEntry
 
 __all__ = [
     "confine_guest_path",
     "confine_guest_write_path",
+    "confine_resolve_guest_path",
+    "confine_resolve_guest_write_path",
     "guest_directory_chain",
+    "guest_path_and_ancestors",
     "guest_path_relative_to",
+    "refuse_symlinked_ancestors",
     "refuse_symlinked_parents",
 ]
 
 
-def confine_guest_path(path: str, working_directory: str) -> str:
+def confine_resolve_guest_path(path: str, working_directory: str) -> str:
     """The file name check: POSIX-join ``path`` onto ``working_directory`` and refuse an escape.
 
     Raises a bare :class:`ValueError`, which ``maf_sandbox`` translates into
@@ -49,16 +60,16 @@ def confine_guest_path(path: str, working_directory: str) -> str:
     return resolved
 
 
-async def confine_guest_write_path(
+async def confine_resolve_guest_write_path(
     stat: Callable[[str], Awaitable[SandboxEntry | None]],
     path: str,
     working_directory: str,
 ) -> str:
     """Confine a write using an unconfined, no-follow stat; refuse a link at the leaf."""
-    resolved = confine_guest_path(path, working_directory)
+    resolved = confine_resolve_guest_path(path, working_directory)
     if resolved == posixpath.normpath(working_directory):
         raise ValueError(f"refusing to write over the working directory itself: {resolved!r}")
-    await refuse_symlinked_parents(stat, resolved, working_directory)
+    await refuse_symlinked_ancestors(stat, resolved, working_directory)
     entry = await stat(resolved)
     if entry is not None and entry.kind is EntryKind.SYMLINK:
         raise ValueError(
@@ -88,7 +99,7 @@ def guest_path_relative_to(path: str, base: str) -> str | None:
     return resolved[len(prefix) :]
 
 
-def guest_directory_chain(guest_path: str, working_directory: str) -> tuple[str, ...]:
+def guest_path_and_ancestors(guest_path: str, working_directory: str) -> tuple[str, ...]:
     """Every directory from the filesystem root down to ``guest_path``, outermost first.
 
     The filesystem path check starts *above* ``working_directory`` rather than at it, because a
@@ -96,19 +107,21 @@ def guest_directory_chain(guest_path: str, working_directory: str) -> tuple[str,
     follows straight through them.  ``guest_path`` must already be confined.
     """
     base = posixpath.normpath(working_directory)
-    chain: list[str] = []
-    walked = ""
+    path_and_ancestors: list[str] = []
+    so_far = ""
     for segment in (s for s in base.split("/") if s):
-        walked = f"{walked}/{segment}"
-        chain.append(walked)
+        so_far = f"{so_far}/{segment}"
+        path_and_ancestors.append(so_far)
     relative = guest_path_relative_to(guest_path, base)
     if relative:
         for segment in relative.split("/"):
-            chain.append(posixpath.join(chain[-1] if chain else "/", segment))
-    return tuple(chain)
+            path_and_ancestors.append(
+                posixpath.join(path_and_ancestors[-1] if path_and_ancestors else "/", segment)
+            )
+    return tuple(path_and_ancestors)
 
 
-async def refuse_symlinked_parents(
+async def refuse_symlinked_ancestors(
     stat: Callable[[str], Awaitable[SandboxEntry | None]],
     guest_path: str,
     working_directory: str,
@@ -133,7 +146,7 @@ async def refuse_symlinked_parents(
     through a link as readily as a read does.
     """
     deepest = guest_path if include_self else posixpath.dirname(guest_path)
-    for directory in guest_directory_chain(deepest, working_directory):
+    for directory in guest_path_and_ancestors(deepest, working_directory):
         entry = await stat(directory)
         if entry is None:
             return
@@ -144,3 +157,67 @@ async def refuse_symlinked_parents(
             )
         if entry.kind is not EntryKind.DIRECTORY:
             raise NotADirectoryError(f"{directory!r} is not a directory")
+
+
+def _warn_renamed(old: str, new: str) -> None:
+    """The notice a caller still on the old spelling gets, once per call."""
+    warnings.warn(
+        f"maf_sandbox.paths.{old} is deprecated and is removed in the next minor; use {new}.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
+
+# The spellings these four had before the rename, served for one minor. Importing one must not
+# warn — a backend that imports it would fail under ``-W error`` — so the notice is on the call.
+
+
+def confine_guest_path(path: str, working_directory: str) -> str:
+    """Deprecated. Use :func:`confine_resolve_guest_path`."""
+    _warn_renamed("confine_guest_path", "confine_resolve_guest_path")
+    return confine_resolve_guest_path(path, working_directory)
+
+
+@inspect.markcoroutinefunction
+def confine_guest_write_path(
+    stat: Callable[[str], Awaitable[SandboxEntry | None]],
+    path: str,
+    working_directory: str,
+) -> Coroutine[Any, Any, str]:
+    """Deprecated. Use :func:`confine_resolve_guest_write_path`.
+
+    Deliberately not ``async``: an ``async def`` body runs only once the event loop has taken
+    the coroutine, so the warning would be attributed to ``asyncio`` rather than to the caller.
+    Warning here and handing back the replacement's coroutine keeps the notice at the call
+    site, and ``await`` on the result is unchanged.
+
+    The marker is what keeps that invisible.  This spelling *was* an ``async def``, so a caller
+    dispatching on :func:`inspect.iscoroutinefunction` would otherwise read the shim as
+    synchronous and stop awaiting it — a break during the one minor that exists to avoid one.
+    """
+    _warn_renamed("confine_guest_write_path", "confine_resolve_guest_write_path")
+    return confine_resolve_guest_write_path(stat, path, working_directory)
+
+
+def guest_directory_chain(guest_path: str, working_directory: str) -> tuple[str, ...]:
+    """Deprecated. Use :func:`guest_path_and_ancestors`."""
+    _warn_renamed("guest_directory_chain", "guest_path_and_ancestors")
+    return guest_path_and_ancestors(guest_path, working_directory)
+
+
+@inspect.markcoroutinefunction
+def refuse_symlinked_parents(
+    stat: Callable[[str], Awaitable[SandboxEntry | None]],
+    guest_path: str,
+    working_directory: str,
+    *,
+    include_self: bool = False,
+) -> Coroutine[Any, Any, None]:
+    """Deprecated. Use :func:`refuse_symlinked_ancestors`.
+
+    Not ``async``, and marked, for the reasons :func:`confine_guest_write_path` gives.
+    """
+    _warn_renamed("refuse_symlinked_parents", "refuse_symlinked_ancestors")
+    return refuse_symlinked_ancestors(
+        stat, guest_path, working_directory, include_self=include_self
+    )

@@ -31,7 +31,7 @@ Four lines is the terse form; the bars below put the same four lifetimes on one 
 The concept with no word was the framework's own place in the guest, and both kinds invented one — codeact's `run_dir`, used even where no transport run exists, and bicep's `round_dir`. It is **`guest_call_path()`**, and each word carries something:
 
 - **`call`**, not `run` — bicep runs several guest commands in one place and has no run at all. "One per call" holds for both kinds; "one per run" describes neither.
-- **`guest`** — a bare name reads as a path on the machine the agent runs on, the one place it is not. This repository already spends `guest` on that distinction: `guest_path_relative_to`, `guest_run_layout`, `confine_guest_path`.
+- **`guest`** — a bare name reads as a path on the machine the agent runs on, the one place it is not. This repository already spends `guest` on that distinction: `guest_path_relative_to`, `guest_run_layout`, `confine_resolve_guest_path`.
 - **`path`**, not `directory` — a path is all the protocol promises. `Sandbox.remove`'s contract is *"`path`, and everything under it"*, and `FILES_LIST` is a separate capability precisely because enumeration is not universal. A backend serving its store from memory addresses a place the same way.
 
 Not `guest_call_prefix`: a prefix invites `f"{prefix}name"` with no separator.

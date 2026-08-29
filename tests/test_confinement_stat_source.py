@@ -1,6 +1,6 @@
 """The stat a backend hands the confinement check must not be answered inside its own guest.
 
-`maf_sandbox.paths.refuse_symlinked_parents` runs over a stat the backend supplies, and that
+`maf_sandbox.paths.refuse_symlinked_ancestors` runs over a stat the backend supplies, and that
 stat has three requirements. Two are properties of the call — unconfined, no-follow — and a
 wrong one shows up as a refusal that does not happen. The third is a property of *who answers*,
 and it shows up as nothing at all: a guest that replaces `test` in its own image answers every
@@ -27,9 +27,15 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PACKAGES = REPO_ROOT / "packages"
 
-#: The two entry points that take a backend's stat as their first argument. Both are the same
-#: duty: `confine_guest_write_path` is `refuse_symlinked_parents` plus the write-path refusals.
-ENTRY_POINTS = ("refuse_symlinked_parents", "confine_guest_write_path")
+#: The entry points that take a backend's stat as their first argument. Both are the same duty:
+#: `confine_resolve_guest_write_path` is `refuse_symlinked_ancestors` plus the write refusals.
+ENTRY_POINTS = (
+    "refuse_symlinked_ancestors",
+    "confine_resolve_guest_write_path",
+    # Both spellings are exported, so a caller on either is matched.
+    "refuse_symlinked_parents",
+    "confine_guest_write_path",
+)
 
 #: Where those entry points live, absolute and relative — `maf_sandbox`'s own modules import
 #: them as `.paths`.

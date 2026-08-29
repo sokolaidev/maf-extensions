@@ -95,16 +95,16 @@ class _Leaky:
     a link component is replaced by its target before anything is looked up, exactly as an
     engine resolving daemon-side or a data plane resolving service-side does.
 
-    ``walks`` turns the component walk off. ``names_links`` makes it answer
+    ``checks`` turns the filesystem path check off. ``names_links`` makes it answer
     :data:`~maf_sandbox.EntryKind.OTHER` for a link instead of
     :data:`~maf_sandbox.EntryKind.SYMLINK` — the backend that cannot tell one from a fifo, which
     still refuses every path attacked here and cannot say why.
     """
 
-    def __init__(self, *, walks: bool = True, names_links: bool = True) -> None:
+    def __init__(self, *, checks: bool = True, names_links: bool = True) -> None:
         self.contents: dict[str, bytes] = {}
         self.links: dict[str, str] = {}
-        self._walks = walks
+        self._checks = checks
         self._names_links = names_links
 
     # -- the guest's own filesystem ------------------------------------------------------
@@ -144,27 +144,29 @@ class _Leaky:
             raise ValueError(f"path {path!r} resolves outside working directory {base!r}")
         return guest
 
-    def _walk(self, guest: str, working_directory: str, *, include_self: bool = False) -> None:
-        """The component walk, deciding from the *reported* kind rather than private knowledge.
+    def _check_ancestors(
+        self, guest: str, working_directory: str, *, include_self: bool = False
+    ) -> None:
+        """The filesystem path check, deciding from the *reported* kind rather than private knowledge.
 
         Which is the point of `names_links`: a backend that can only report `OTHER` has no way
-        to name the escape, so this walk cannot either, and the probes see the difference.
+        to name the escape, so this check cannot either, and the probes see the difference.
         """
         del working_directory
-        if not self._walks:
+        if not self._checks:
             return
         deepest = guest if include_self else posixpath.dirname(guest)
-        walked = ""
+        so_far = ""
         for part in (part for part in deepest.split("/") if part):
-            walked = f"{walked}/{part}"
-            found = self._classify(walked)
+            so_far = f"{so_far}/{part}"
+            found = self._classify(so_far)
             if found is None:
                 return
             kind, _ = found
             if kind is EntryKind.SYMLINK:
-                raise ValueError(f"{walked!r} is a link rather than a real directory")
+                raise ValueError(f"{so_far!r} is a link rather than a real directory")
             if kind is not EntryKind.DIRECTORY:
-                raise NotADirectoryError(f"{walked!r} is not a directory")
+                raise NotADirectoryError(f"{so_far!r} is not a directory")
 
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
         del working_directory
@@ -187,7 +189,7 @@ class _Leaky:
 
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
         guest = self._confined(path, working_directory)
-        self._walk(guest, working_directory)
+        self._check_ancestors(guest, working_directory)
         found = self._classify(self._follow_parents(guest))
         if found is None:
             return None
@@ -197,7 +199,7 @@ class _Leaky:
     async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
         del max_bytes
         guest = self._confined(path, working_directory)
-        self._walk(guest, working_directory)
+        self._check_ancestors(guest, working_directory)
         resolved = self._follow_parents(guest)
         if resolved in self.links:
             raise OSError(f"{path!r} is not a regular file and is refused")
@@ -212,7 +214,7 @@ class _Leaky:
         unlinking something outside, where nothing has to come back for the damage to be done.
         """
         guest = self._confined(path, working_directory)
-        self._walk(guest, working_directory, include_self=False)
+        self._check_ancestors(guest, working_directory, include_self=False)
         resolved = self._follow_parents(guest)
         resolved = self.links.get(resolved, resolved)
         prefix = resolved.rstrip("/") + "/"
@@ -235,7 +237,7 @@ class _Leaky:
 
     async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
         guest = self._confined(path, working_directory)
-        self._walk(guest, working_directory, include_self=True)
+        self._check_ancestors(guest, working_directory, include_self=True)
         base = posixpath.normpath(working_directory)
         resolved = self.links.get(self._follow_parents(guest), self._follow_parents(guest))
         prefix = resolved.rstrip("/") + "/"
@@ -274,7 +276,7 @@ def _leaky_subject(**kwargs) -> _LeakySubject:
 
 class TestTheSuitePassesAnImplementationThatDischargesTheDuty:
     def test_the_shipped_fake_answers_every_probe(self):
-        """`InProcessSandbox` runs the shared walk, so it answers the same probes a backend does."""
+        """`InProcessSandbox` runs the shared check, so it answers the same probes a backend does."""
         subject = _FakeSubject(InProcessSandbox(), _BOTH)
         assert _results(subject) == dict.fromkeys([p.name for p in FILES_OUT_PROBES], None)
 
@@ -291,8 +293,8 @@ class TestTheSuitePassesAnImplementationThatDischargesTheDuty:
 class TestTheSuiteFailsAnImplementationThatDoesNot:
     """The half that decides whether any of this is worth shipping."""
 
-    def test_a_backend_that_skips_the_walk_fails_exactly_the_walk_probes(self):
-        failures = {name for name, why in _results(_leaky_subject(walks=False)).items() if why}
+    def test_a_backend_that_skips_the_check_fails_exactly_the_check_probes(self):
+        failures = {name for name, why in _results(_leaky_subject(checks=False)).items() if why}
         assert failures == {
             "stat-through-a-linked-parent",
             "read-through-a-linked-parent",
@@ -306,7 +308,7 @@ class TestTheSuiteFailsAnImplementationThatDoesNot:
 
     def test_the_read_probe_says_the_bytes_came_back(self):
         """Not merely 'no exception': the specimen returns `/maf-sandbox/work-outside/secret.txt`."""
-        failure = _results(_leaky_subject(walks=False))["read-through-a-linked-parent"]
+        failure = _results(_leaky_subject(checks=False))["read-through-a-linked-parent"]
         assert failure is not None and "returned instead of raising" in failure
 
     def test_a_backend_that_cannot_name_a_link_is_safe_but_fails_the_naming_probes(self):
@@ -340,21 +342,21 @@ class TestTheSuiteFailsAnImplementationThatDoesNot:
         assert failure["a-legitimate-read-still-works"] is not None
 
     def test_the_probe_below_a_linked_ancestor_is_the_one_that_reaches_the_acas_case(self):
-        """A walk that starts *at* the work dir passes the work-dir probe and fails this one.
+        """A check that starts *at* the work dir passes the work-dir probe and fails this one.
 
         The two are separate probes because they are separate mistakes, and the specimen here
         makes only the second: it classifies the work dir it was handed and nothing above it.
         """
 
-        class _WalksFromTheWorkDir(_Leaky):
-            def _walk(self, guest, working_directory, *, include_self=False):
+        class _ChecksFromTheWorkDir(_Leaky):
+            def _check_ancestors(self, guest, working_directory, *, include_self=False):
                 del guest, include_self
                 found = self._classify(posixpath.normpath(working_directory))
                 if found is not None and found[0] is EntryKind.SYMLINK:
                     raise ValueError("work dir is a link rather than a real directory")
 
         subject = _LeakySubject(
-            sandbox=_WalksFromTheWorkDir(),
+            sandbox=_ChecksFromTheWorkDir(),
             working_directory=_WORK,
             capabilities=_BOTH,
             exec_timeout=5,
@@ -418,13 +420,13 @@ class TestWhatTheRunnerReports:
 
     def test_every_probe_runs_even_after_one_fails(self):
         """A backend fixing one refusal at a time learns nothing from a suite that stops early."""
-        results = asyncio.run(run_files_out_probes(_leaky_subject(walks=False)))
+        results = asyncio.run(run_files_out_probes(_leaky_subject(checks=False)))
         assert len(results) == len(FILES_OUT_PROBES)
         assert len([r for r in results if r.failure]) > 1
 
     def test_the_failure_names_every_probe_and_why_each_is_in_the_suite(self):
         with pytest.raises(ConformanceFailure) as raised:
-            asyncio.run(assert_files_out_conformance(_leaky_subject(walks=False)))
+            asyncio.run(assert_files_out_conformance(_leaky_subject(checks=False)))
         message = str(raised.value)
         assert "stat-through-a-linked-parent" in message
         assert "read-through-a-linked-parent" in message
@@ -445,6 +447,28 @@ class TestWhatTheRunnerReports:
         """A probe whose point is not written down is a probe someone deletes when it fails."""
         assert all(len(probe.why) > 40 for probe in FILES_OUT_PROBES)
         assert len({probe.name for probe in FILES_OUT_PROBES}) == len(FILES_OUT_PROBES)
+
+    def test_no_probe_explains_itself_in_the_vocabulary_the_repository_retired(self):
+        """`ConformanceFailure` prints `why` verbatim, so a stale word is what a user reads.
+
+        "walk" named this check until it collided with the directory traversal in `maf.py`,
+        and "lexical test" named the file name check. These `why` strings are the only copies
+        a consumer of the wheel ever sees, so they are the ones worth holding.
+        """
+        retired = re.compile(r"\bwalk(s|ed|ing)?\b|\blexical\b", re.IGNORECASE)
+        offenders = [
+            probe.name
+            for probes in (
+                FILES_OUT_PROBES,
+                FILES_IN_PROBES,
+                EXEC_PROBES,
+                FILES_DELETE_PROBES,
+                RECLAIM_PROBES,
+            )
+            for probe in probes
+            if retired.search(probe.why)
+        ]
+        assert offenders == []
 
 
 class TestTheLayout:
@@ -500,13 +524,13 @@ class _SimulatedGuest:
             raise ValueError(f"path {path!r} resolves outside working directory {base!r}")
         if guest == posixpath.normpath(working_directory):
             raise ValueError("refusing to write the working directory")
-        walked = ""
+        so_far = ""
         for part in (part for part in posixpath.dirname(guest).split("/") if part):
-            walked = f"{walked}/{part}"
-            if walked in self.symlinks:
-                raise ValueError(f"{walked!r} is a link")
-            if walked in self.contents:
-                raise NotADirectoryError(f"{walked!r} is not a directory")
+            so_far = f"{so_far}/{part}"
+            if so_far in self.symlinks:
+                raise ValueError(f"{so_far!r} is a link")
+            if so_far in self.contents:
+                raise NotADirectoryError(f"{so_far!r} is not a directory")
         if guest in self.symlinks:
             raise ValueError(f"{guest!r} is a link")
         self.contents[guest] = content.encode("utf-8") if isinstance(content, str) else content
@@ -516,13 +540,13 @@ class _SimulatedGuest:
         guest = posixpath.normpath(posixpath.join(base, path))
         if guest != base and not guest.startswith(base + "/"):
             raise ValueError(f"path {path!r} resolves outside working directory {base!r}")
-        # The component walk, decided from the reported kind — a link standing in any parent
+        # The filesystem path check, decided from the reported kind — a link standing in any parent
         # is the escape a real backend has to refuse.
-        walked = ""
+        so_far = ""
         for part in (part for part in posixpath.dirname(guest).split("/") if part):
-            walked = f"{walked}/{part}"
-            if walked in self.symlinks:
-                raise ValueError(f"{walked!r} is a link rather than a real directory")
+            so_far = f"{so_far}/{part}"
+            if so_far in self.symlinks:
+                raise ValueError(f"{so_far!r} is a link rather than a real directory")
         if guest in self.symlinks:
             # A link named here is the thing being removed; removing it never follows it.
             self.symlinks.pop(guest)
@@ -566,11 +590,11 @@ class _SimulatedGuest:
         while changed:
             changed = False
             parts = [part for part in resolved.split("/") if part]
-            walked = ""
+            so_far = ""
             for index, part in enumerate(parts):
-                walked = f"{walked}/{part}"
-                if walked in self.symlinks and index < len(parts) - 1:
-                    resolved = self.symlinks[walked] + resolved[len(walked) :]
+                so_far = f"{so_far}/{part}"
+                if so_far in self.symlinks and index < len(parts) - 1:
+                    resolved = self.symlinks[so_far] + resolved[len(so_far) :]
                     changed = True
                     break
         return resolved
@@ -1032,7 +1056,7 @@ class TestFilesDeleteConformance:
                     )
                     return
                 # The recursive branch resolves the final component and deletes what it names,
-                # with no confinement walk at all: the shape of a backend whose tree delete is
+                # with no confinement check at all: the shape of a backend whose tree delete is
                 # a different code path from its file delete.
                 guest = posixpath.normpath(posixpath.join(working_directory, path))
                 resolved = guest

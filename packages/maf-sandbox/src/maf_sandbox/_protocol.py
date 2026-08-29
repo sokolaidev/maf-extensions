@@ -259,7 +259,7 @@ class EntryKind(StrEnum):
     ``ModeSymlink`` bit and an explicit link target.  One vocabulary covers both.
 
     The four members are the four answers
-    :func:`~maf_sandbox.paths.refuse_symlinked_parents` needs per ancestor: keep checking, or
+    :func:`~maf_sandbox.paths.refuse_symlinked_ancestors` needs per ancestor: keep checking, or
     refuse — as an escape for :data:`SYMLINK`, as ``ENOTDIR`` for anything else non-regular.
     Both are refused either way, so what the split buys is the *reason*, which is the part a
     caller above the backend cannot reconstruct.  A backend that cannot recognise a link
@@ -637,7 +637,7 @@ class Sandbox(Protocol):
     path whose *parent* is a link passes the file name check and still reads outside: with
     ``out -> /etc``, ``out/hostname`` stats as a regular 12-byte file.  The filesystem path
     check is what catches it, so discharge that half with
-    :func:`~maf_sandbox.paths.refuse_symlinked_parents` rather than by writing that check again —
+    :func:`~maf_sandbox.paths.refuse_symlinked_ancestors` rather than by writing that check again —
     it is where the two refusals a caller must be able to tell apart are defined, and
     :mod:`maf_sandbox.conformance` is the same duty as probes, for holding a backend that
     writes its own.  **The stat you hand it must not be answered by the guest** wherever your

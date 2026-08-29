@@ -14,7 +14,7 @@ module decides only *what* reaches it and *when*.  Two of those decisions are lo
   reaches host state, so every declared name is held to a narrow invariant — checked in the
   spelling that will actually be delivered — and case-only collisions within one collection
   are refused before the host sees either half.  What is *legal* at the destination stays the
-  host's own rule — :func:`portable_name` helps with the Windows part of it, and is never
+  host's own rule — :func:`portable_file_name` helps with the Windows part of it, and is never
   applied for you.
 """
 
@@ -23,6 +23,7 @@ from __future__ import annotations
 import contextlib
 import posixpath
 import unicodedata
+import warnings
 from collections.abc import Awaitable, Callable, Generator
 from dataclasses import dataclass
 from enum import StrEnum
@@ -58,7 +59,7 @@ __all__ = [
     "landing_outputs",
     "make_file_system_sink",
     "missing_sink_refusal",
-    "portable_name",
+    "portable_file_name",
     "spec_lands_artifacts",
     "validate_artifact_name",
 ]
@@ -351,7 +352,7 @@ def validate_artifact_name(name: str) -> None:
         )
 
 
-def portable_name(name: str) -> str:
+def portable_file_name(name: str) -> str:
     """Rewrite ``name`` into one Windows will accept — opt-in, and never applied for you.
 
     Per path segment: Windows's reserved device names (``CON``, ``PRN``, ``AUX``, ``NUL``, and
@@ -362,6 +363,16 @@ def portable_name(name: str) -> str:
     no longer the name the workload said it produced.
     """
     return _SEPARATOR.join(_portable_segment(segment) for segment in name.split(_SEPARATOR))
+
+
+def portable_name(name: str) -> str:
+    """Deprecated. Use :func:`portable_file_name`."""
+    warnings.warn(
+        "portable_name is deprecated and is removed in the next minor; use portable_file_name.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return portable_file_name(name)
 
 
 def _portable_segment(segment: str) -> str:

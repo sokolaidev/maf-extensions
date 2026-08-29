@@ -21,7 +21,7 @@ from typing import Literal
 
 from ._error_detail import error_detail
 from ._protocol import Sandbox, SandboxKey
-from .paths import confine_guest_path
+from .paths import confine_resolve_guest_path
 
 __all__ = [
     "DEFAULT_RECLAIM_CONFIG",
@@ -146,7 +146,7 @@ async def reclaim_guest_path(
     the backend is the mechanism, not the policy.
     """
     try:
-        resolved = confine_guest_path(path, working_directory)
+        resolved = confine_resolve_guest_path(path, working_directory)
     except ValueError as outside:
         return str(outside)
     # Both guards stand on their own, because a recursive delete is irreversible and neither

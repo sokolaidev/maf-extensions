@@ -839,7 +839,7 @@ class TestInProcessSandboxConfinement:
             asyncio.run(sandbox.list_dir("..", working_directory="/maf-sandbox/work"))
 
 
-class TestInProcessSandboxWalksTheComponents:
+class TestInProcessSandboxChecksTheComponents:
     """The rule a lexical check cannot see: a path whose *parent* is a link leaves the work dir.
 
     A fake that cannot express the scenario lets every kind's tests pass it without exercising
@@ -874,12 +874,12 @@ class TestInProcessSandboxWalksTheComponents:
             )
 
     def test_a_listing_of_a_linked_directory_is_refused(self):
-        """`list_dir` walks one deeper than the other two: enumeration follows a link as well."""
+        """`list_dir` checks one deeper than the other two: enumeration follows a link as well."""
         with pytest.raises(ValueError, match="real directory"):
             asyncio.run(self._sandbox().list_dir("link-dir", working_directory="/maf-sandbox/work"))
 
     def test_a_linked_working_directory_is_refused_too(self):
-        """The walk starts above the working directory, not at it — the `/maf-sandbox -> /` case."""
+        """The check starts above the working directory, not at it — the `/maf-sandbox -> /` case."""
         with pytest.raises(ValueError, match="real directory"):
             asyncio.run(
                 self._sandbox().stat_file(
@@ -919,7 +919,7 @@ class TestInProcessSandboxWalksTheComponents:
             )
 
     def test_a_missing_component_leaves_the_refusal_to_the_call_itself(self):
-        """A walk that finds nothing must not turn a missing output into a confinement failure."""
+        """A check that finds nothing must not turn a missing output into a confinement failure."""
         with pytest.raises(FileNotFoundError):
             asyncio.run(
                 self._sandbox().read_file(

@@ -525,7 +525,8 @@ FILES_OUT_PROBES: tuple[Probe, ...] = (
         name="a-link-is-named-a-link",
         why=(
             "a caller above the backend has to tell an escape from a fifo, and EntryKind.OTHER "
-            "cannot say which. This is the discriminator the walk below is written against."
+            "cannot say which. This is the discriminator the filesystem path check below "
+            "is written against."
         ),
         requires=frozenset({Capability.FILES_OUT}),
         run=_probe_a_link_is_named_a_link,
@@ -569,10 +570,10 @@ FILES_OUT_PROBES: tuple[Probe, ...] = (
     Probe(
         name="a-linked-ancestor-of-the-working-directory",
         why=(
-            "the walk starts above the working directory, not at it: a nested work dir has "
-            "ancestors the guest can replace, and an implementation beginning at the work dir "
-            "stats straight through them. This is the /maf-sandbox -> / case, the one the "
-            "probe above does not reach."
+            "the filesystem path check starts above the working directory, not at it: a "
+            "nested work dir has ancestors the guest can replace, and an implementation "
+            "beginning at the work dir stats straight through them. This is the "
+            "/maf-sandbox -> / case, the one the probe above does not reach."
         ),
         requires=frozenset({Capability.FILES_OUT}),
         run=_probe_a_linked_ancestor_of_the_working_directory,
@@ -590,7 +591,7 @@ FILES_OUT_PROBES: tuple[Probe, ...] = (
     Probe(
         name="listing-a-linked-directory",
         why=(
-            "enumeration passes through a link as readily as a read does, so list_dir walks "
+            "enumeration passes through a link as readily as a read does, so list_dir checks "
             "one component deeper than the other two — the directory being listed included."
         ),
         requires=frozenset({Capability.FILES_OUT, Capability.FILES_LIST}),
@@ -1477,8 +1478,8 @@ FILES_DELETE_PROBES: tuple[Probe, ...] = (
     ),
     Probe(
         name="a-path-through-a-linked-parent-is-refused",
-        why="the same walk the pull surface keeps: a path whose parent is a link satisfies "
-        "every lexical test and still reaches outside the working directory.",
+        why="the same filesystem path check the pull surface keeps: a path whose parent is a "
+        "link passes the file name check and still reaches outside the working directory.",
         requires=frozenset({Capability.FILES_DELETE}),
         run=_probe_a_path_through_a_linked_parent_is_refused,
     ),
