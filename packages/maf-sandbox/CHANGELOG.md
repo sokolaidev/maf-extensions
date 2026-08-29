@@ -2,6 +2,13 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.27.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.26.0...maf-sandbox-v0.27.0) (2026-08-29)
+
+
+### Documentation
+
+* maf-sandbox 0.26.0 never reached PyPI; its five breaking changes ship in 0.27.0 ([#749](https://github.com/sokolaidev/maf-extensions/issues/749)) ([4383115](https://github.com/sokolaidev/maf-extensions/commit/438311575d1ee906a3427aa3e01730a0ca4eff91))
+
 ## [0.26.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.25.0...maf-sandbox-v0.26.0) (2026-08-29)
 
 > **Correction, added after the release.** This version was tagged and a GitHub Release was created for it, but **it never reached PyPI** — so there is no `maf-sandbox` 0.26.0 to install. The publish run failed before the upload, on `check_core_against_dependents.py`, which runs the suite of every published dependent whose ceiling admits the candidate. Four of the five failed against it: `maf-sandbox-acas` 0.14.0 (5), `maf-sandbox-codeact` 0.7.6 (243, most of them collection errors), `maf-sandbox-docker` 0.9.0 (6) and `maf-sandbox-wslc` 0.12.0 (2); only `maf-sandbox-bicep` 0.9.8 passed. The same run passed all five dependents as this repository has them, which is the gate saying the break is real and already handled here rather than that the change is wrong.
