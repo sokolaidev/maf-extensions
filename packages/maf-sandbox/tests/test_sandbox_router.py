@@ -509,31 +509,85 @@ class TestTheDeclarationsObject:
         """`hasattr` runs the descriptor and answers False when it raises, which waves through
         exactly the backend this guard exists for: every superseded declaration was written as
         a `property`, so a leftover one whose backing field is gone is the likely shape."""
-        backend = InProcessSandboxBackend(isolation=Isolation.MICROVM)
-        type(backend).limits = property(  # type: ignore[attr-defined]
-            lambda self: self._gone  # pyright: ignore[reportAttributeAccessIssue]
-        )
-        try:
-            assert hasattr(backend, "limits") is False
-            with pytest.raises(SandboxBackendNotPermitted, match="limits"):
-                SandboxRouter([backend])
-        finally:
-            del type(backend).limits  # type: ignore[attr-defined]
+
+        class LeftoverRaises(_BackendDeclaringNothing):
+            declarations = BackendDeclarations(egress_modes=frozenset({Egress.CLOSED}))
+
+            @property
+            def limits(self) -> SandboxLimits:
+                raise AttributeError("the backing field moved into `declarations`")
+
+        backend = LeftoverRaises()
+        assert hasattr(backend, "limits") is False
+        with pytest.raises(SandboxBackendNotPermitted, match="limits"):
+            SandboxRouter([backend])
 
     def test_a_leftover_declaration_is_never_executed_to_find_it(self):
         """A declaration this package has stopped reading should not be run to learn it is
         there — a property with a side effect, or a network call, is not the router's to make."""
         ran: list[int] = []
-        backend = InProcessSandboxBackend(isolation=Isolation.MICROVM)
-        type(backend).capabilities = property(  # type: ignore[attr-defined]
-            lambda self: ran.append(1) or frozenset()
+
+        class LeftoverWithSideEffect(_BackendDeclaringNothing):
+            declarations = BackendDeclarations(egress_modes=frozenset({Egress.CLOSED}))
+
+            @property
+            def capabilities(self) -> frozenset[Capability]:
+                ran.append(1)
+                return frozenset()
+
+        with pytest.raises(SandboxBackendNotPermitted, match="capabilities"):
+            SandboxRouter([LeftoverWithSideEffect()])
+        assert ran == []
+
+    def test_a_forwarded_declarations_is_read_rather_than_defaulted(self):
+        """A wrapper delegating to an inner backend declares through `__getattr__`, which a
+        static lookup does not see. Reading that as silence substitutes the defaults for what
+        the backend actually said — and the defaults are *wider* than a narrow inner one on
+        `capabilities` and on `limits`."""
+        inner = InProcessSandboxBackend(
+            isolation=Isolation.MICROVM,
+            declarations=BackendDeclarations(
+                capabilities=frozenset({Capability.EXEC}),
+                egress_modes=frozenset({Egress.CLOSED}),
+            ),
         )
-        try:
-            with pytest.raises(SandboxBackendNotPermitted, match="capabilities"):
-                SandboxRouter([backend])
-            assert ran == []
-        finally:
-            del type(backend).capabilities  # type: ignore[attr-defined]
+
+        class Forwarding:
+            name = "forwarding"
+            isolation = Isolation.MICROVM
+
+            def __getattr__(self, item: str) -> object:
+                return getattr(inner, item)
+
+            async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> object:
+                return object()
+
+            async def dispose(self, key: SandboxKey) -> None:
+                return None
+
+            async def dispose_scope(self, scope: str, thread_id: str) -> int:
+                return 0
+
+        router = SandboxRouter([Forwarding()])  # pyright: ignore[reportArgumentType]
+        # The inner backend's own set, not `DEFAULT_CAPABILITIES`, which holds FILES_IN.
+        with pytest.raises(SandboxCapabilityNotSupported):
+            router.ensure_can_serve(
+                SandboxSpec(kind="test", requires=frozenset({Capability.FILES_IN}))
+            )
+        router.ensure_can_serve(SandboxSpec(kind="test", requires=frozenset({Capability.EXEC})))
+
+    def test_a_declarations_that_raises_is_refused_rather_than_read_as_silence(self):
+        """Absent and unreadable look identical to `getattr`; only the static lookup separates
+        them, and a backend that states its declarations and cannot produce them has not
+        declared nothing."""
+
+        class RaisingDeclarations(_BackendDeclaringNothing):
+            @property
+            def declarations(self) -> BackendDeclarations:
+                raise AttributeError("built from configuration this instance never got")
+
+        with pytest.raises(SandboxBackendNotPermitted, match="raised AttributeError"):
+            SandboxRouter([RaisingDeclarations()])
 
     def test_an_explicit_none_is_refused_rather_than_read_as_silence(self):
         """Absent means "declared nothing" and is legal; `declarations = None` is a stated value

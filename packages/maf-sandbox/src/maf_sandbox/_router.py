@@ -268,8 +268,9 @@ def _declared_isolation(backend: SandboxBackend) -> Isolation:
 _SUPERSEDED_DECLARATIONS = ("capabilities", "limits", "egress_modes", "os_families")
 
 
-#: Sentinel for :func:`_has_attribute`. ``None`` cannot serve as one: an attribute explicitly set
-#: to ``None`` is a declaration to refuse, not an absent one to read as silence.
+#: Sentinel for the two lookups in :func:`_declarations`. ``None`` cannot serve as one: an
+#: attribute explicitly set to ``None`` is a declaration to refuse, not an absent one to read as
+#: silence.
 _MISSING = object()
 
 
@@ -289,7 +290,9 @@ def _declarations(backend: SandboxBackend) -> BackendDeclarations:
     """The one object every optional declaration is read from: one ``getattr``, four fields.
 
     Not a Protocol member, so declaring nothing is legal and reads as
-    :data:`~maf_sandbox.DEFAULT_BACKEND_DECLARATIONS`.
+    :data:`~maf_sandbox.DEFAULT_BACKEND_DECLARATIONS`.  *Declaring nothing* is narrower than it
+    looks: an attribute set to ``None``, and one whose descriptor raises, are both declarations
+    this package cannot read, and each is refused rather than defaulted.
 
     A backend still carrying one of the attributes this object replaced is refused, **whether or
     not it also declares the object** — moving three fields and leaving the fourth behind is the
@@ -307,9 +310,21 @@ def _declarations(backend: SandboxBackend) -> BackendDeclarations:
             "attribute. Refused rather than ignored: nothing reads those attributes now, so "
             "each one left behind is silently replaced by that field's default."
         )
-    if not _has_attribute(backend, "declarations"):
+    # `getattr`, not the static lookup, because this one wants the **value**: a backend that
+    # forwards `declarations` through `__getattr__` — a wrapper delegating to an inner backend —
+    # has declared it, and a static lookup does not see it. Reading it as silence there would
+    # substitute the defaults for what that backend actually said.
+    declared: object = getattr(backend, "declarations", _MISSING)
+    if declared is _MISSING:
+        # Absent, or defined and raised. Only the static lookup tells those apart, and they are
+        # not the same answer: silence is legal, a declaration that cannot be read is not.
+        if _has_attribute(backend, "declarations"):
+            raise SandboxBackendNotPermitted(
+                f"sandbox backend {backend.name!r} defines `declarations` and reading it "
+                "raised AttributeError. Refused rather than read as silence: a backend that "
+                "states its declarations and cannot produce them has not declared nothing."
+            )
         return DEFAULT_BACKEND_DECLARATIONS
-    declared: object = getattr(backend, "declarations", None)
     if isinstance(declared, BackendDeclarations):
         return declared
     kind = type(declared)
