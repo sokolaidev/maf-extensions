@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.13.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.12.0...maf-sandbox-wslc-v0.13.0) (2026-08-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** a backend's four optional declarations become one BackendDeclarations ([#737](https://github.com/sokolaidev/maf-extensions/issues/737))
+* a scope purge reports what it could not delete ([#681](https://github.com/sokolaidev/maf-extensions/issues/681))
+
+### Features
+
+* a scope purge reports what it could not delete ([#681](https://github.com/sokolaidev/maf-extensions/issues/681)) ([739481d](https://github.com/sokolaidev/maf-extensions/commit/739481df3b7903c7f0015fee81282027666bc1ba))
+* **sandbox:** a backend's four optional declarations become one BackendDeclarations ([#737](https://github.com/sokolaidev/maf-extensions/issues/737)) ([934c7e4](https://github.com/sokolaidev/maf-extensions/commit/934c7e48bc7731eb2b67ca81f5c6cae46c262467))
+
+
+### Fixes
+
+* admit maf-sandbox 0.27 in the dependents' range, and require 0.26 in the samples ([#748](https://github.com/sokolaidev/maf-extensions/issues/748)) ([f905461](https://github.com/sokolaidev/maf-extensions/commit/f9054614f061ffacf53abbbc174501f2d5be5a74))
+* **backends:** a scope purge subtracts nothing from the retry record ([#705](https://github.com/sokolaidev/maf-extensions/issues/705)) ([6fdeb7a](https://github.com/sokolaidev/maf-extensions/commit/6fdeb7a02f308dd1adc5040413859928c3cf197f))
+* require maf-sandbox 0.27.0 in the dependents and 0.27 in the samples, and admit 0.28 ([#751](https://github.com/sokolaidev/maf-extensions/issues/751)) ([49d2a75](https://github.com/sokolaidev/maf-extensions/commit/49d2a758f60f3ffd503e5a94ea2b082c4d36ce9e))
+* **wslc:** raise authority for reclaim on a non-root image ([#706](https://github.com/sokolaidev/maf-extensions/issues/706)) ([12eed5a](https://github.com/sokolaidev/maf-extensions/commit/12eed5af554067c6f6d4be049a600b02a85a0714))
+* **wslc:** refuse to reclaim a relative path or one too close to the root ([#715](https://github.com/sokolaidev/maf-extensions/issues/715)) ([82f52f8](https://github.com/sokolaidev/maf-extensions/commit/82f52f83db028a58512b11b167d7d13367390500))
+
+
+### Documentation
+
+* **sandbox:** a confinement stat may not be answered by the guest, and wslc records that its is ([#739](https://github.com/sokolaidev/maf-extensions/issues/739)) ([e4f6566](https://github.com/sokolaidev/maf-extensions/commit/e4f65668e3cfd5d2012df52cac25c4c0d893fdab))
+* **sandbox:** confinement is the file name check and the filesystem path check, and "walk" is retired ([#740](https://github.com/sokolaidev/maf-extensions/issues/740)) ([52ead17](https://github.com/sokolaidev/maf-extensions/commit/52ead1719d3cb523ce67ef58f38115b558a830e8))
+
 ## [0.12.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.11.3...maf-sandbox-wslc-v0.12.0) (2026-08-26)
 
 
