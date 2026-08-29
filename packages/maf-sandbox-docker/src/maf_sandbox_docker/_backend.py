@@ -820,10 +820,10 @@ class DockerSandboxBackend:
     async def _container_facts(self, name: str, spec: SandboxSpec) -> _ContainerFacts:
         """Read what ``name`` says about itself, once per container.
 
-        Here rather than in :meth:`_DockerSandbox.reclaim` because the ancestor chain is fixed
-        before any guest runs: one answer per container, not one check per call.  **Fails
-        closed** — an unreadable component leaves removals at the guest's authority.  See
-        ``docs/sandbox/backends/docker.md``.
+        Here rather than in :meth:`_DockerSandbox.reclaim` because the ancestors above
+        ``work_dir`` are fixed before any guest runs: one answer per container, not one check
+        per call.  **Fails closed** — an unreadable component leaves removals at the guest's
+        authority.  See ``docs/sandbox/backends/docker.md``.
         """
         key = (name, _image_reference(spec), spec.work_dir)
         cached = self._facts.get(key)
