@@ -250,8 +250,8 @@ class TestAGuestThatIsNotRoot:
             )
             assert mine == b"mine\n"
 
-            # The delete half, on the file the host wrote — the one thing the old
-            # ownership made impossible for a non-root guest.
+            # The delete half, on the file the host wrote: a non-root guest has to be able
+            # to remove what the host shared in.
             removed = await sandbox.exec(
                 ["sh", "-c", f"rm {shared}"], working_directory="/", timeout=60
             )

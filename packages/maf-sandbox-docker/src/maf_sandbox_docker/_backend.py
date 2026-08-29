@@ -769,9 +769,9 @@ class DockerSandboxBackend:
         #
         # It is *not* a claim about the image. The shipped launcher wants `sh`, `nohup`,
         # `printf`, `mv`, `mkdir`, `rm` and `kill` — and `setsid` where the image has it —
-        # and a run directory it can write; #680's write half stamps the run directory
-        # with the container user, so on an image that identifies its user that half is
-        # covered, and a kind wants whatever interpreter it names — codeact wants
+        # and a run directory it can write, which the write plane stamps with the container
+        # user on an image that identifies one; and a kind wants whatever interpreter it
+        # names — codeact wants
         # `python3` — none of which this backend chooses, since `spec.image` does. That gap is
         # #111's axis, and it is the same gap `EXEC` already has: a kind execing `python3`
         # against a distroless image fails inside the sandbox today.
@@ -875,8 +875,8 @@ class DockerSandboxBackend:
         ``/etc/group``) and is not the uid's to guess — a bare ``0`` no more implies gid
         ``0`` than ``10001`` implies ``10001``.  ``id`` inside the container answers when
         the account files cannot be read.  When nothing answers, the write falls back to
-        root's ``0:0`` — the pre-#680 behavior for an image that positively identifies
-        nothing, rather than a guess that could stamp a stranger's ownership.
+        root's ``0:0`` for an image that positively identifies nothing, rather than a guess
+        that could stamp a stranger's ownership.
 
         Only the ``id`` step's ``TimeoutError`` propagates, because only it runs a guest
         command and ``_exec`` removes the container on its way out: that is a dying sandbox
@@ -937,16 +937,12 @@ class DockerSandboxBackend:
                 groups = await self._group_entry(name)
                 gid = groups.get(group_name)
         except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
-            # Everything above is host-side — one `inspect` and two `docker cp` pulls — so a
-            # timeout among them killed a CLI process and left the container alone.  It is an
-            # unreadable answer like any other and joins the fallback below.
             logger.debug("docker: could not read %s's guest identity (%s)", name, unreadable)
-        # `id` last, and outside that `except` on purpose: it is the only step that runs a
-        # guest command, and `_exec` removes the container when it times out.  That is a dying
-        # sandbox rather than an unreadable identity, so it propagates instead of being cached
-        # as a fallback fact for a container that no longer exists.
+        # Outside that `except` deliberately; the docstring says why.
         if named_a_user and (uid is None or gid is None):
-            u_res, g_res = await self._effective_ids(name, probe)
+            u_res, g_res = await self._effective_ids(
+                probe, want_uid=uid is None, want_gid=gid is None
+            )
             uid = uid if uid is not None else u_res
             gid = gid if gid is not None else g_res
         if uid is not None and gid is not None:
@@ -964,24 +960,29 @@ class DockerSandboxBackend:
         return 0, 0
 
     async def _effective_ids(
-        self, name: str, probe: _DockerSandbox
+        self, probe: _DockerSandbox, *, want_uid: bool, want_gid: bool
     ) -> tuple[int | None, int | None]:
-        """The container process's effective uid and gid from ``id``, or ``(None, None)``."""
-        u_res = await probe.exec(
-            ["id", "-u"],
+        """What ``id`` says, asked only for the halves the account files left open.
+
+        Each half is asked for and kept on its own.  A spec like ``app:20001`` names the gid
+        already, so asking for it spends a guest command on an answer that is in hand — and
+        an ``id -g`` that hangs would take the container with it, over a uid the other half
+        was about to resolve.
+        """
+        return (
+            await self._one_effective_id(probe, "-u") if want_uid else None,
+            await self._one_effective_id(probe, "-g") if want_gid else None,
+        )
+
+    async def _one_effective_id(self, probe: _DockerSandbox, flag: str) -> int | None:
+        """One half of ``id``, or ``None`` when the guest will not answer it."""
+        result = await probe.exec(
+            ["id", flag],
             working_directory="/",
             timeout=self._config.command_timeout_seconds,
         )
-        g_res = await probe.exec(
-            ["id", "-g"],
-            working_directory="/",
-            timeout=self._config.command_timeout_seconds,
-        )
-        if u_res.exit_code == 0 and g_res.exit_code == 0:
-            u, g = u_res.stdout.strip(), g_res.stdout.strip()
-            if u.isdigit() and g.isdigit():
-                return int(u), int(g)
-        return None, None
+        answer = result.stdout.strip()
+        return int(answer) if result.exit_code == 0 and answer.isdigit() else None
 
     async def _passwd_entry(self, name: str) -> str | None:
         """The container's ``/etc/passwd``, over the pull surface, or ``None`` when unreadable.

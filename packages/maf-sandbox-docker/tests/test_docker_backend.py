@@ -1668,8 +1668,8 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         """
         facts, fake = self._facts(b"10001\n")
         assert (facts.guest_uid, facts.guest_gid) == (10001, 0)
+        # `Config.User` already gave the uid, so only the open half is asked for.
         assert [c.args for c in fake.matching("exec")] == [
-            ("exec", "-w", "/", _NAME, "id", "-u"),
             ("exec", "-w", "/", _NAME, "id", "-g"),
         ]
 
@@ -1687,6 +1687,46 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
         facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
         assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
+
+    def test_a_known_gid_is_never_asked_for_even_if_id_would_hang(self):
+        """`app:20001` leaves only the uid open, so `id -g` is never run — and an image
+        whose `id -g` hangs must not cost the acquire a gid `Config.User` already named.
+        A timed-out `exec` removes the container, so the wasted call is not merely wasted.
+        """
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"app:20001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(0, b"10001\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+
+        def respond(args):
+            if args[:6] == ("exec", "-w", "/", _NAME, "id", "-g"):
+                raise TimeoutError("an image whose `id -g` hangs")
+            return _machine(running=[_NAME], overrides=overrides)(args)
+
+        fake._responder = respond
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
+        assert [c.args for c in fake.matching("exec")] == [
+            ("exec", "-w", "/", _NAME, "id", "-u"),
+        ]
+
+    def test_a_half_that_answers_is_kept_when_the_other_refuses(self):
+        """Each half of `id` stands alone: a guest that answers `id -u` and refuses `id -g`
+        resolves the uid, and only the gid falls to the 0 remainder.  Discarding both would
+        throw away an answer the guest gave.
+        """
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"ghost\n", ""),
+            ("cp", f"{_NAME}:/etc/passwd"): _DockerResult(1, b"", "no such file"),
+            ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(0, b"10001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(1, b"", "id: cannot"),
+        }
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 0)
 
     def test_a_uid_gid_pair_is_split(self):
         facts, _ = self._facts(b"10001:20001\n")
@@ -1744,8 +1784,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
     )
     def test_a_mixed_user_group_pair_resolves_each_side(self, user, expected):
         """`Config.User` accepts `user:group` with either side numeric or named; each half
-        resolves from its own account file, and an unparsed pair used to fall back to
-        `0:0` with both sides resolvable.
+        resolves from its own account file.
         """
         passwd = b"root:x:0:0:root:/root:/bin/bash\napp:x:10001:20001::/home/app:/bin/sh\n"
         group = b"root:x:0:\ndevs:x:30001:\n"
@@ -1797,9 +1836,9 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         assert fake.matching("cp", f"{_NAME}:/etc/passwd") == []
 
     def test_an_unresolvable_identity_fails_open_to_root(self, caplog):
-        """A named user with neither a passwd answer nor `id` keeps the pre-#680 behavior:
-        root-owned entries, and the reach rule deciding the removals.  Guessing an
-        arbitrary ownership could stamp a stranger's identity on the files.
+        """A named user with neither a passwd answer nor `id` leaves root-owned entries, and
+        the reach rule decides the removals.  Guessing an arbitrary ownership could stamp a
+        stranger's identity on the files.
         """
         passwd = b"root:x:0:0:root:/root:/bin/bash\n"
         overrides = {
