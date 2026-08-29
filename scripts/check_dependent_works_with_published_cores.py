@@ -128,6 +128,23 @@ def sibling_wheels(wheel: Path) -> list[Path]:
     return [found[0] for found in by_distribution.values()]
 
 
+def throwaway_interpreter(directory: Path) -> Path | str:
+    """Build a virtual environment under ``directory``; answer its interpreter.
+
+    A string comes back in place of a path when the environment would not build, and it is the
+    reason. Shared with `check_samples_against_declared_core.py`, which needs the same
+    environment and the same platform-dependent interpreter path.
+    """
+    environment = directory / "venv"
+    created = subprocess.run(
+        ["uv", "venv", str(environment)], capture_output=True, text=True, check=False
+    )
+    if created.returncode != 0:
+        return created.stderr.strip()
+    windows = sys.platform == "win32"
+    return environment / ("Scripts" if windows else "bin") / ("python.exe" if windows else "python")
+
+
 def run_suite(wheel: Path, core: str | Path, tests: Path) -> tuple[bool, str]:
     """Install ``wheel`` beside ``core`` in a throwaway environment and run ``tests`` there.
 
@@ -137,18 +154,9 @@ def run_suite(wheel: Path, core: str | Path, tests: Path) -> tuple[bool, str]:
     code rather than the number.
     """
     with tempfile.TemporaryDirectory() as directory:
-        environment = Path(directory) / "venv"
-        created = subprocess.run(
-            ["uv", "venv", str(environment)], capture_output=True, text=True, check=False
-        )
-        if created.returncode != 0:
-            return False, created.stderr.strip()
-        windows = sys.platform == "win32"
-        python = (
-            environment
-            / ("Scripts" if windows else "bin")
-            / ("python.exe" if windows else "python")
-        )
+        python = throwaway_interpreter(Path(directory))
+        if isinstance(python, str):
+            return False, python
         if isinstance(core, Path):
             override = Path(directory) / "override.txt"
             override.write_text(f"{_CORE} @ {core.as_uri()}\n", encoding="utf-8")

@@ -323,6 +323,20 @@ jobs:
             fi
           done
 
+      # The same question asked of `samples/`, which declares a PEP 723 block rather than a
+      # range and so is reached by no gate above (#725).
+      #
+      # `--local-core` on the same terms as the step above, and it substitutes every wheel
+      # `dist/` holds rather than the core alone. Passing it unconditionally means the second
+      # refusal — a floor no published core satisfies — is not reachable here; a Release PR
+      # merged and never published is `report_stuck_releases.py`'s signal, not this one's.
+      # docs/release-compatibility.md carries both, and `poe sample-floors` is the flagless run.
+      - name: Each sample against the core its own block names
+        if: needs.changes.outputs.code == 'true'
+        run: |
+          set -euo pipefail
+          python3 scripts/check_samples_against_declared_core.py --local-core "$CORE_WHEEL"
+
   # The required context, and the only job here whose name `main`'s ruleset knows. It runs no
   # checks of its own: it fails unless every shard above succeeded, so the shards stay free to
   # be renamed or resharded without a ruleset edit.
