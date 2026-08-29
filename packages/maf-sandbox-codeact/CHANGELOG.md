@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.8.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.7.6...maf-sandbox-codeact-v0.8.0) (2026-08-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** a spec's identities are its surface's own, not a second declaration ([#720](https://github.com/sokolaidev/maf-extensions/issues/720))
+* a scope purge reports what it could not delete ([#681](https://github.com/sokolaidev/maf-extensions/issues/681))
+
+### Features
+
+* a scope purge reports what it could not delete ([#681](https://github.com/sokolaidev/maf-extensions/issues/681)) ([739481d](https://github.com/sokolaidev/maf-extensions/commit/739481df3b7903c7f0015fee81282027666bc1ba))
+* **sandbox:** a spec's identities are its surface's own, not a second declaration ([#720](https://github.com/sokolaidev/maf-extensions/issues/720)) ([5f08ca6](https://github.com/sokolaidev/maf-extensions/commit/5f08ca66f40b6460d3e660d4b4080b9ff03b0f56))
+
+
+### Fixes
+
+* admit maf-sandbox 0.27 in the dependents' range, and require 0.26 in the samples ([#748](https://github.com/sokolaidev/maf-extensions/issues/748)) ([f905461](https://github.com/sokolaidev/maf-extensions/commit/f9054614f061ffacf53abbbc174501f2d5be5a74))
+* require maf-sandbox 0.27.0 in the dependents and 0.27 in the samples, and admit 0.28 ([#751](https://github.com/sokolaidev/maf-extensions/issues/751)) ([49d2a75](https://github.com/sokolaidev/maf-extensions/commit/49d2a758f60f3ffd503e5a94ea2b082c4d36ce9e))
+
 ## [0.7.6](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.7.5...maf-sandbox-codeact-v0.7.6) (2026-08-26)
 
 
