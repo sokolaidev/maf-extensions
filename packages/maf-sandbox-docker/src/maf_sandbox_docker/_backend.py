@@ -241,12 +241,12 @@ def _proxy_name(container: str) -> str:
 def _single_rooted(guest_path: str) -> str:
     """``guest_directory_chain``'s normal form: the segments, under exactly one leading slash.
 
-    That chain rebuilds every entry from segments, so whatever it is handed comes back
+    That helper rebuilds every ancestor from segments, so whatever it is handed comes back
     ``/``-rooted and single-slashed.  Two spellings reach here that ``normpath`` alone leaves
     alone — ``//maf-sandbox/work``, since POSIX lets it keep *exactly* two leading slashes, and
-    a relative ``workspace`` — and either one compared against the chain matches nothing, which
-    drops every directory the write needs and hands it back to docker to create as root.
-    Deriving the form the same way the chain does is what keeps the two from drifting again.
+    a relative ``workspace`` — and either one compared against those ancestors matches nothing,
+    which drops every directory the write needs and hands it back to docker to create as root.
+    Deriving the form the same way it does is what keeps the two from drifting again.
     """
     segments = [s for s in posixpath.normpath(guest_path).split("/") if s and s != "."]
     return "/" + "/".join(segments)
@@ -287,7 +287,7 @@ def _stat_from_tar_header(info: tarfile.TarInfo, rel_path: str) -> SandboxEntry:
 def _no_component_was_the_guests(walked: Mapping[str, tuple[int, int]]) -> bool:
     """Could the guest program have swapped any directory on this path?
 
-    Not where every one is root's and writable by nobody else.  Empty is ``True``: a walk that
+    Not where every one is root's and writable by nobody else.  Empty is ``True``: a check that
     reached nothing found nothing writable.  See ``docs/sandbox/backends/docker.md``.
     """
     return all(uid == 0 and not mode & 0o022 for uid, mode in walked.values())
@@ -410,8 +410,8 @@ class _DockerSandbox:
         **implicit** intermediate as ``root`` whatever the file entry's ownership says, so
         a missing directory has to travel as its own explicit entry under the container's
         user; and an entry naming a directory that already exists re-stamps its mode, so an
-        existing one must not.  Which is which comes from the confinement walk this call
-        already paid for, rather than a second stat.
+        existing one must not.  Which is which comes from the filesystem path check this
+        call already paid for, rather than a second stat.
 
         The entries stop at ``working_directory``: an absent ancestor above it is docker's
         to create as root, since a guest-owned entry there would be a redirect the reach
@@ -596,7 +596,7 @@ class _DockerSandbox:
         makes a missing path succeed and refuses a directory without ``-r``. The image
         dependency is the one :attr:`capabilities` already names for ``EXEC``.
 
-        Runs as root only where no component of the path was the guest's, which the walk this
+        Runs as root only where no component of the path was the guest's, which the check this
         already owes answers.  See ``docs/sandbox/backends/docker.md``.
         """
         guest = confine_guest_path(path, working_directory)
@@ -628,7 +628,8 @@ class _DockerSandbox:
         where that policy lives.  The floor below re-refuses a subset of it, because this
         command runs from ``/`` and can carry root's authority.
 
-        Why root is allowed without a walk, and which half of the argument is checked at
+        Why root is allowed without the filesystem path check — the file name check still runs,
+        in :func:`~maf_sandbox.reclaim_guest_path` — and which half of the argument is settled at
         acquire rather than asserted: ``docs/sandbox/backends/docker.md``.
         """
         del working_directory
@@ -653,8 +654,9 @@ class _DockerSandbox:
     ) -> SandboxEntry | None:
         """Stat an absolute guest path, with no confinement check of its own.
 
-        Split out because the component walk stats the working directory's own ancestors, which
-        by definition sit outside it — confining here would refuse the very check being made.
+        Split out because the filesystem path check stats the working directory's own
+        ancestors, which by definition sit outside it — confining here would refuse the
+        very check being made.
         """
         result = await self._run(
             "cp", f"{self._name}:{guest}", "-", timeout=self._command_timeout, read_limit=_TAR_BLOCK
@@ -669,7 +671,7 @@ class _DockerSandbox:
             result.stdout[:_TAR_BLOCK], encoding="utf-8", errors="surrogateescape"
         )
         if walked is not None:
-            # The same header answers ownership, so a walk that wants both parses it once.
+            # The same header answers ownership, so a check that wants both parses it once.
             walked[guest] = (info.uid, info.mode)
         return _stat_from_tar_header(info, rel)
 
@@ -680,13 +682,13 @@ class _DockerSandbox:
         working_directory: str,
         walked: dict[str, tuple[int, int]] | None = None,
     ) -> None:
-        """The protocol's component walk, over this backend's own unconfined stat.
+        """The protocol's filesystem path check, over this backend's own unconfined stat.
 
         The :func:`~maf_sandbox.paths.confine_guest_path` paired with it at every call site is
         lexical, so a symlinked *parent* satisfies that one; this is what catches it.  A link
         is only visible when it is the entry being tarred —
         the engine resolves the rest of the path daemon-side — so a symlinked component has to
-        be found by walking rather than by judging the path that was asked for.  One header
+        be found by checking each rather than by judging the path that was asked for.  One header
         read per component.
         """
         await refuse_symlinked_parents(
@@ -705,8 +707,8 @@ class _DockerSandbox:
         (a symlink tars as a link *entry*, not its target's bytes) is refused on the header
         type, and every parent, from the filesystem root down, is classified first.
 
-        The residual that walk cannot close: a guest that turns a stat-ed component into a link
-        between the walk and the read wins, since ``docker cp`` has no no-follow form.
+        The residual that the check cannot close: a guest that turns a stat-ed component into a link
+        between the check and the read wins, since ``docker cp`` has no no-follow form.
         """
         guest = confine_guest_path(path, working_directory)
         await self._refuse_symlinked_parents(guest, working_directory=working_directory)
@@ -1083,10 +1085,10 @@ class DockerSandboxBackend:
     async def _container_facts(self, name: str, spec: SandboxSpec) -> _ContainerFacts:
         """Read what ``name`` says about itself, once per container.
 
-        Here rather than in :meth:`_DockerSandbox.reclaim` because the ancestor chain is fixed
-        before any guest runs: one answer per container, not one walk per call.  **Fails
-        closed** — an unreadable component leaves removals at the guest's authority.  See
-        ``docs/sandbox/backends/docker.md``.
+        Here rather than in :meth:`_DockerSandbox.reclaim` because the ancestors above
+        ``work_dir`` are fixed before any guest runs: one answer per container, not one check
+        per call.  **Fails closed** — an unreadable component leaves removals at the guest's
+        authority.  See ``docs/sandbox/backends/docker.md``.
         """
         key = (name, _image_reference(spec), spec.work_dir)
         cached = self._facts.get(key)

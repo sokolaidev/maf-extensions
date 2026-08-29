@@ -223,8 +223,8 @@ class InProcessSandbox:
     def _kind_at(self, full_path: str) -> tuple[EntryKind, int | None] | None:
         """What is stored at an absolute guest path, unconfined and following nothing.
 
-        Unconfined because the component walk classifies the working directory's own ancestors,
-        which sit outside it by definition.
+        Unconfined because the filesystem path check classifies the working directory's own
+        ancestors, which sit outside it by definition.
         """
         if full_path in self.contents:
             return EntryKind.FILE, len(self.contents[full_path])
@@ -276,7 +276,7 @@ class InProcessSandbox:
         full_path = confine_guest_path(path, working_directory)
         # `include_self=False`: a link named here is the thing being removed, and removing it
         # is the one operation on the pull surface that must *not* resolve it. Its parents are
-        # walked exactly as a read walks them.
+        # checked exactly as a read checks them.
         await refuse_symlinked_parents(
             self._stat_unconfined, full_path, working_directory, include_self=False
         )

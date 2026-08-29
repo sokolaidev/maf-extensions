@@ -5,6 +5,16 @@ A guest path is POSIX whatever the host runs, so everything here goes through ``
 never ``os.path``, and a backslash is refused rather than read as a separator.  For a *host*
 filesystem path this module is the wrong answer — use :meth:`pathlib.Path.resolve` and
 :meth:`pathlib.Path.is_relative_to`, which know the host's grammar and follow its symlinks.
+
+Confinement has two halves and one function each, and the names are worth keeping straight.
+**The file name check** is :func:`confine_guest_path`: text arithmetic over a whole guest path
+— join, normalise, refuse anything resolving outside — and it cannot see a symlink, which is
+why the other exists.  It is not :func:`~maf_sandbox.portable_name`, which rewrites the
+*segments* of a name for a hostile filesystem and confines nothing.
+**The filesystem path check** is :func:`refuse_symlinked_parents`: it looks at the guest's real
+filesystem, one directory at a time from the root down, and refuses a path whose ancestors are
+not real directories.  :func:`confine_guest_write_path` is both, plus the two refusals a write
+owes on top.
 """
 
 from __future__ import annotations
@@ -24,7 +34,7 @@ __all__ = [
 
 
 def confine_guest_path(path: str, working_directory: str) -> str:
-    """POSIX-join ``path`` onto ``working_directory`` and refuse anything that escapes it.
+    """The file name check: POSIX-join ``path`` onto ``working_directory`` and refuse an escape.
 
     Raises a bare :class:`ValueError`, which ``maf_sandbox`` translates into
     ``SandboxOutputNotConfined`` only on the pull surface — a kind calling this directly gets
@@ -62,7 +72,7 @@ def guest_path_relative_to(path: str, base: str) -> str | None:
     """``path`` relative to ``base``, or ``None`` when it does not sit inside ``base``.
 
     Both are normalised first, so a caller using this as its own containment check cannot be
-    walked out of by a ``..`` the string comparison would otherwise carry:
+    escaped by a ``..`` the string comparison would otherwise carry:
     ``/maf-sandbox/work/../etc`` is outside ``/maf-sandbox/work`` and answers ``None``.
     Comparison is against ``base + "/"`` rather than ``base``, so a sibling sharing a string
     prefix — ``/maf-sandbox/work/sub2`` under ``/maf-sandbox/work/sub`` — is not read as a
@@ -81,9 +91,9 @@ def guest_path_relative_to(path: str, base: str) -> str | None:
 def guest_directory_chain(guest_path: str, working_directory: str) -> tuple[str, ...]:
     """Every directory from the filesystem root down to ``guest_path``, outermost first.
 
-    The walk starts *above* ``working_directory`` rather than at it, because a nested work dir
-    has ancestors the guest can replace and stat-ing only the work dir follows straight through
-    them.  ``guest_path`` must already be confined.
+    The filesystem path check starts *above* ``working_directory`` rather than at it, because a
+    nested work dir has ancestors the guest can replace, and stat-ing only the work dir
+    follows straight through them.  ``guest_path`` must already be confined.
     """
     base = posixpath.normpath(working_directory)
     chain: list[str] = []
@@ -105,21 +115,21 @@ async def refuse_symlinked_parents(
     *,
     include_self: bool = False,
 ) -> None:
-    """Refuse ``guest_path`` unless every directory above it is a real one.
+    """The filesystem path check: refuse ``guest_path`` unless every directory above it is real.
 
-    A link found in the chain raises :class:`ValueError`, the same refusal an unconfined path
+    A link found among them raises :class:`ValueError`, the same refusal an unconfined path
     gets; any other non-directory raises :class:`NotADirectoryError`, because a fifo where a
     directory was expected is the guest tripping rather than escaping.  A component that is not
-    there ends the walk — there is nothing below it to reach.
+    there ends the check — there is nothing below it to reach.
 
     Three things ``stat`` must be, or this answers about the wrong filesystem: **unconfined**,
-    since the chain covers the working directory's own ancestors; **no-follow**, since a stat
+    since the ancestors include the working directory's own; **no-follow**, since a stat
     that resolves a link describes its target and hides the escape; and **not answered by the
     guest** wherever the backend has any other mechanism, since a workload asked to describe
     its own filesystem can answer falsely — a root guest replaces ``test`` in its own image.
     A backend with no other mechanism says so in its README, and the repository's own
     ``tests/test_confinement_stat_source.py`` is what holds it to that.  ``include_self``
-    extends the walk to ``guest_path`` itself, which an enumeration needs — a listing passes
+    extends the check to ``guest_path`` itself, which an enumeration needs — a listing passes
     through a link as readily as a read does.
     """
     deepest = guest_path if include_self else posixpath.dirname(guest_path)

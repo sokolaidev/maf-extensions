@@ -485,8 +485,11 @@ class _WslcSandbox:
         """Not supported: this backend declares no
         :data:`~maf_sandbox.Capability.FILES_DELETE`.
 
-        Not for want of ``rm``: confining a removal means walking parents, and
-        :meth:`stat_file` is the walk this backend has none of (#125).
+        Not for want of ``rm``: confining a removal means checking every ancestor, and this
+        backend does run that check for :meth:`write_file`, over its private ``_stat_guest``.
+        What that stat cannot do is classify a link without asking the container (#495), which
+        is a different thing to rest a recursive delete on than a write. Which of that and the
+        absent pull surface (#125) is the blocker is #743.
         """
         raise NotImplementedError(
             "the wslc backend does not support FILES_DELETE: confining a removal needs the "
@@ -499,8 +502,9 @@ class _WslcSandbox:
 
         The file plane (:meth:`write_file`) writes as the host authority, so on a non-root image
         the image's user cannot remove what a call left behind.  Root is always correct here
-        because the caller made ``directory``: no parent walk is owed, and that walk is what this
-        backend cannot build (#125). Runs from ``/`` because ``working_directory`` may not exist.
+        because the caller made ``directory``: no filesystem path check is owed at all here,
+        which is why this member is served where :meth:`remove` is not. Runs from ``/`` because
+        ``working_directory`` may not exist.
 
         Raises:
             ValueError: A path that is not absolute, or fewer than two components from the
