@@ -12,6 +12,10 @@ on:
   push:
     branches: [main]
   pull_request:
+    # `edited` names a body edit: the tracker check reads the request's promises live, so a
+    # body that gains `Fixes #N` after the last push re-runs the gate rather than leaving the
+    # push's green attached to the same head.
+    types: [opened, synchronize, reopened, edited]
     paths:
       - "**/*.md"
       # The reference check resolves against the *whole tracked tree*, so anything that moves
