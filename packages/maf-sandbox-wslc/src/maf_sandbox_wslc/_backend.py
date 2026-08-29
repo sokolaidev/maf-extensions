@@ -498,8 +498,8 @@ class _WslcSandbox:
 
         The file plane (:meth:`write_file`) writes as the host authority, so on a non-root image
         the image's user cannot remove what a call left behind.  Root is always correct here
-        because the caller made ``directory``: no filesystem path check is owed, and that
-        check is what this backend cannot build (#125). Runs from ``/`` because
+        because the caller made ``directory``: no filesystem path check is owed at all here,
+        which is why this member is served where :meth:`remove` is not. Runs from ``/`` because
         ``working_directory`` may not exist.
 
         Raises:
