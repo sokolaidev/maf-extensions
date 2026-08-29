@@ -220,7 +220,7 @@ def _subject(live: _Live) -> PosixGuestSubject:
         working_directory=_WORK,
         # The backend's own frozenset, not a narrower one: passing less is how a run skips the
         # probes that matter and reports success anyway.
-        capabilities=live.backend.capabilities,
+        capabilities=live.backend.declarations.capabilities,
         exec_timeout=_EXEC_TIMEOUT,
     )
 

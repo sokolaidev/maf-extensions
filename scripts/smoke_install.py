@@ -16,6 +16,7 @@ built wheel and its dependencies exist.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import pathlib
 import sys
@@ -136,7 +137,7 @@ def _smoke_maf_sandbox_acas() -> str:
     # HOST_TOOLS specifically, because a sample resolves this package from PyPI rather than from
     # the workspace: a codeact sample wiring a host-tool registry against this backend is refused
     # at attach unless the *published* wheel carries the declaration.
-    if backend.capabilities != frozenset(
+    if backend.declarations.capabilities != frozenset(
         {
             Capability.EXEC,
             Capability.FILES_IN,
@@ -146,7 +147,9 @@ def _smoke_maf_sandbox_acas() -> str:
             Capability.HOST_TOOLS,
         }
     ):
-        raise SystemExit(f"FAIL: acas backend declares {sorted(backend.capabilities)!r}")
+        raise SystemExit(
+            f"FAIL: acas backend declares {sorted(backend.declarations.capabilities)!r}"
+        )
     return (
         "backend constructs, meets the default minimum-isolation floor, and declares the pull "
         "surface and HOST_TOOLS"
@@ -238,6 +241,7 @@ def _smoke_maf_sandbox_codeact() -> str:
         SandboxRouter,
     )
     from maf_sandbox.testing import (
+        FAKE_BACKEND_DECLARATIONS,
         InMemoryStore,
         InProcessSandbox,
         InProcessSandboxBackend,
@@ -330,7 +334,9 @@ def _smoke_maf_sandbox_codeact() -> str:
 
     producing = InProcessSandboxBackend(
         _Producing(default_stdout="done\n"),
-        capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT},
+        declarations=dataclasses.replace(
+            FAKE_BACKEND_DECLARATIONS, capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
+        ),
     )
     with_outputs = _body(
         make_codeact_tools(
@@ -348,7 +354,11 @@ def _smoke_maf_sandbox_codeact() -> str:
 
     # The spec's `requires` has to travel in the wheel: a backend that cannot run a command
     # is refused as the tool attaches, not when the model first calls it.
-    weak = InProcessSandboxBackend(capabilities=frozenset({Capability.FILES_IN}))
+    weak = InProcessSandboxBackend(
+        declarations=dataclasses.replace(
+            FAKE_BACKEND_DECLARATIONS, capabilities=frozenset({Capability.FILES_IN})
+        )
+    )
     try:
         make_codeact_tools(_router(weak), "data-analyst", context)
     except SandboxCapabilityNotSupported:
@@ -376,10 +386,12 @@ def _smoke_maf_sandbox_wslc() -> str:
     if backend.isolation != Isolation.CONTAINER:
         raise SystemExit(f"FAIL: wslc backend declares {backend.isolation!r}, expected container")
     allowlisting = WslcSandboxBackend(WslcSandboxConfig(egress_proxy_image="x:1"))
-    if backend.egress_modes != frozenset({Egress.CLOSED}) or allowlisting.egress_modes != frozenset(
-        {Egress.ALLOWLIST, Egress.CLOSED}
-    ):
-        raise SystemExit(f"FAIL: egress {backend.egress_modes!r}/{allowlisting.egress_modes!r}")
+    if backend.declarations.egress_modes != frozenset(
+        {Egress.CLOSED}
+    ) or allowlisting.declarations.egress_modes != frozenset({Egress.ALLOWLIST, Egress.CLOSED}):
+        raise SystemExit(
+            f"FAIL: egress {backend.declarations.egress_modes!r}/{allowlisting.declarations.egress_modes!r}"
+        )
     # The proxy recipe is data, not code: a wheel that drops it breaks allowlist mode only here.
     dockerfile = proxy_build_context() / "Dockerfile"
     if not dockerfile.is_file():
@@ -400,7 +412,7 @@ def _smoke_maf_sandbox_docker() -> str:
     backend = DockerSandboxBackend(DockerSandboxConfig())
     if backend.isolation != Isolation.CONTAINER:
         raise SystemExit(f"FAIL: docker backend declares {backend.isolation!r}, expected container")
-    if backend.capabilities != frozenset(
+    if backend.declarations.capabilities != frozenset(
         {
             Capability.EXEC,
             Capability.FILES_IN,
@@ -409,12 +421,16 @@ def _smoke_maf_sandbox_docker() -> str:
             Capability.HOST_TOOLS,
         }
     ):
-        raise SystemExit(f"FAIL: docker backend declares {sorted(backend.capabilities)!r}")
+        raise SystemExit(
+            f"FAIL: docker backend declares {sorted(backend.declarations.capabilities)!r}"
+        )
     allowlisting = DockerSandboxBackend(DockerSandboxConfig(egress_proxy_image="x:1"))
-    if backend.egress_modes != frozenset({Egress.CLOSED}) or allowlisting.egress_modes != frozenset(
-        {Egress.ALLOWLIST, Egress.CLOSED}
-    ):
-        raise SystemExit(f"FAIL: egress {backend.egress_modes!r}/{allowlisting.egress_modes!r}")
+    if backend.declarations.egress_modes != frozenset(
+        {Egress.CLOSED}
+    ) or allowlisting.declarations.egress_modes != frozenset({Egress.ALLOWLIST, Egress.CLOSED}):
+        raise SystemExit(
+            f"FAIL: egress {backend.declarations.egress_modes!r}/{allowlisting.declarations.egress_modes!r}"
+        )
     # The proxy recipe is data, not code: a wheel that drops it breaks allowlist mode only here.
     dockerfile = proxy_build_context() / "Dockerfile"
     if not dockerfile.is_file():

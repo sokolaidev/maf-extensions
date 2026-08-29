@@ -24,11 +24,13 @@ import typing
 import pytest
 
 from maf_sandbox import (
+    DEFAULT_BACKEND_DECLARATIONS,
     DEFAULT_CAPABILITIES,
     DEFAULT_RECLAIM_CONFIG,
     DEFAULT_SANDBOX_LIMITS,
     DEFAULT_TRANSFER_LIMITS,
     ISOLATION_RANK,
+    BackendDeclarations,
     Capability,
     DeclaredOutput,
     DisposalFailure,
@@ -63,7 +65,11 @@ from maf_sandbox import (
     fold_host_tool_call_transfer_limits,
     meets_floor,
 )
-from maf_sandbox.testing import InProcessSandbox, InProcessSandboxBackend
+from maf_sandbox.testing import (
+    FAKE_BACKEND_DECLARATIONS,
+    InProcessSandbox,
+    InProcessSandboxBackend,
+)
 
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
 _SPEC = SandboxSpec(kind="test")
@@ -368,17 +374,17 @@ class TestSpecFloorRaise:
         self._router(Isolation.NONE, Isolation.NONE).ensure_can_serve(_SPEC)
 
 
-class _BackendWithoutCapabilities:
-    """A backend written before the capability axis existed: it declares what it had.
+class _BackendDeclaringOnlyEgress:
+    """A third-party backend stating one field and leaving the other three to their defaults.
 
-    Written out rather than subclassed, because the fake now always has the property. It has no
-    ``limits`` either, which makes it the only fixture here that exercises *both* of the
-    router's `getattr` fallbacks — see `TestTransferLimitMatch`.
+    Written out rather than subclassed, because the fake supplies a whole declarations object
+    of its own. ``egress_modes`` is stated because its silence rule refuses every spec; what
+    this fixture is *for* is the three fields it does not state.
     """
 
     name = "legacy"
     isolation = Isolation.MICROVM
-    egress_modes = frozenset({Egress.ALLOWLIST, Egress.CLOSED})
+    declarations = BackendDeclarations(egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED}))
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> object:
         return object()
@@ -388,6 +394,219 @@ class _BackendWithoutCapabilities:
 
     async def dispose_scope(self, scope: str, thread_id: str) -> int:
         return 0
+
+
+class TestTheDeclarationsObject:
+    """One object, one `getattr`, four silence rules that did not merge into one.
+
+    The collapse is only correct if an unstated *field* means exactly what an absent
+    *attribute* used to, and the four meanings differ — so each is pinned against the constant
+    the router used to reach for.
+    """
+
+    def test_each_unstated_field_is_the_silence_rule_it_replaced(self):
+        declared = BackendDeclarations()
+        assert declared.capabilities == DEFAULT_CAPABILITIES
+        assert declared.limits == DEFAULT_SANDBOX_LIMITS
+        assert declared.egress_modes == frozenset()
+        assert declared.os_families == frozenset()
+
+    def test_a_backend_declaring_nothing_enforces_no_egress_so_every_ask_is_refused(self):
+        assert not hasattr(_BackendDeclaringNothing(), "declarations")
+        router = SandboxRouter([_BackendDeclaringNothing()])
+        for mode in Egress:
+            with pytest.raises(SandboxEgressNotEnforced):
+                router.ensure_can_serve(SandboxSpec(kind="test", egress=mode))
+
+    def test_the_two_charitable_fields_are_still_read_charitably(self):
+        """Which gate a nothing-declaring backend reaches says how each field was read: the
+        capability match passes for the default set and refuses beyond it, so silence is still
+        `DEFAULT_CAPABILITIES` rather than nothing — the egress rule is what stops it after."""
+        router = SandboxRouter([_BackendDeclaringNothing()])
+        with pytest.raises(SandboxEgressNotEnforced):
+            router.ensure_can_serve(SandboxSpec(kind="test", requires=DEFAULT_CAPABILITIES))
+        with pytest.raises(SandboxCapabilityNotSupported):
+            router.ensure_can_serve(
+                SandboxSpec(kind="test", requires=frozenset({Capability.FILES_OUT}))
+            )
+        with pytest.raises(SandboxTransferLimitsNotPermitted):
+            router.ensure_can_serve(
+                SandboxSpec(
+                    kind="test",
+                    files_out=dataclasses.replace(
+                        DEFAULT_TRANSFER_LIMITS, max_files=DEFAULT_TRANSFER_LIMITS.max_files + 1
+                    ),
+                )
+            )
+
+    @pytest.mark.parametrize(
+        "superseded", ["capabilities", "limits", "egress_modes", "os_families"]
+    )
+    def test_a_backend_still_declaring_one_of_the_four_is_refused_and_it_is_named(self, superseded):
+        """Nothing else can catch this: none of the four was ever a Protocol member, so
+        `isinstance` holds either way and no type checker sees the backend half-migrated."""
+        backend = _BackendDeclaringNothing()
+        setattr(backend, superseded, frozenset())
+        assert isinstance(backend, SandboxBackend)
+        with pytest.raises(SandboxBackendNotPermitted, match=superseded):
+            SandboxRouter([backend])
+
+    @pytest.mark.parametrize(
+        "superseded", ["capabilities", "limits", "egress_modes", "os_families"]
+    )
+    def test_one_left_behind_beside_a_declared_object_is_refused_too(self, superseded):
+        """The likelier half-migration, and the silent one: three fields moved and the fourth
+        left as an attribute, which nothing reads, so that field falls back to its default. On
+        `limits` that *widens* a ceiling the backend declared to be narrow."""
+        backend = InProcessSandboxBackend(isolation=Isolation.MICROVM)
+        setattr(backend, superseded, frozenset())
+        with pytest.raises(SandboxBackendNotPermitted, match=superseded):
+            SandboxRouter([backend])
+
+    def test_a_left_behind_limits_would_otherwise_widen_the_ceiling(self):
+        """The consequence spelled out, so the guard is not read as tidiness."""
+        tight = TransferLimits(max_bytes_per_file=1, max_total_bytes=1, max_files=1)
+        backend = InProcessSandboxBackend(isolation=Isolation.MICROVM)
+        setattr(backend, "limits", SandboxLimits(files_in=tight, files_out=tight))
+        with pytest.raises(SandboxBackendNotPermitted, match="limits"):
+            SandboxRouter([backend]).ensure_can_serve(_SPEC)
+        # Without the guard the stray attribute is ignored and `_SPEC` is served at the
+        # default ceilings, which is what the backend's own declaration refuses.
+        assert backend.declarations.limits == DEFAULT_SANDBOX_LIMITS
+
+    @pytest.mark.parametrize("field", ["capabilities", "egress_modes"])
+    @pytest.mark.parametrize("declared", ["exec", ["closed"], None], ids=["str", "list", "None"])
+    def test_a_set_valued_declaration_of_another_shape_is_refused_and_named(self, field, declared):
+        """`spec.requires - x` and `spec.egress in x` need a set; handed a string these used to
+        raise a bare TypeError out of a host's agent factory."""
+        backend = InProcessSandboxBackend(
+            isolation=Isolation.MICROVM,
+            declarations=dataclasses.replace(FAKE_BACKEND_DECLARATIONS, **{field: declared}),
+        )
+        with pytest.raises(SandboxBackendNotPermitted, match=field):
+            SandboxRouter([backend]).ensure_can_serve(_SPEC)
+
+    def test_a_set_of_plain_strings_is_still_served(self):
+        """The shape is checked and the members are not: `Capability` and `Egress` are StrEnum,
+        so a backend declaring strings matches exactly as the members would."""
+        backend = InProcessSandboxBackend(
+            isolation=Isolation.MICROVM,
+            declarations=BackendDeclarations(
+                capabilities=frozenset({"exec", "files_in"}),  # type: ignore[arg-type]
+                egress_modes=frozenset({"closed"}),  # type: ignore[arg-type]
+            ),
+        )
+        SandboxRouter([backend]).ensure_can_serve(_SPEC)
+
+    def test_the_refusal_lands_at_construction_not_at_the_first_workload(self):
+        """A half-migrated deployment fails at startup, where a misconfiguration belongs."""
+        backend = _BackendDeclaringNothing()
+        setattr(backend, "egress_modes", frozenset({Egress.CLOSED}))
+        with pytest.raises(SandboxBackendNotPermitted, match="egress_modes"):
+            SandboxRouter([backend], min_isolation=Isolation.NONE)
+
+    def test_a_leftover_property_that_raises_is_still_caught(self):
+        """`hasattr` runs the descriptor and answers False when it raises, which waves through
+        exactly the backend this guard exists for: every superseded declaration was written as
+        a `property`, so a leftover one whose backing field is gone is the likely shape."""
+
+        class LeftoverRaises(_BackendDeclaringNothing):
+            declarations = BackendDeclarations(egress_modes=frozenset({Egress.CLOSED}))
+
+            @property
+            def limits(self) -> SandboxLimits:
+                raise AttributeError("the backing field moved into `declarations`")
+
+        backend = LeftoverRaises()
+        assert hasattr(backend, "limits") is False
+        with pytest.raises(SandboxBackendNotPermitted, match="limits"):
+            SandboxRouter([backend])
+
+    def test_a_leftover_declaration_is_never_executed_to_find_it(self):
+        """A declaration this package has stopped reading should not be run to learn it is
+        there — a property with a side effect, or a network call, is not the router's to make."""
+        ran: list[int] = []
+
+        class LeftoverWithSideEffect(_BackendDeclaringNothing):
+            declarations = BackendDeclarations(egress_modes=frozenset({Egress.CLOSED}))
+
+            @property
+            def capabilities(self) -> frozenset[Capability]:
+                ran.append(1)
+                return frozenset()
+
+        with pytest.raises(SandboxBackendNotPermitted, match="capabilities"):
+            SandboxRouter([LeftoverWithSideEffect()])
+        assert ran == []
+
+    def test_a_forwarded_declarations_is_read_rather_than_defaulted(self):
+        """A wrapper delegating to an inner backend declares through `__getattr__`, which a
+        static lookup does not see. Reading that as silence substitutes the defaults for what
+        the backend actually said — and the defaults are *wider* than a narrow inner one on
+        `capabilities` and on `limits`."""
+        inner = InProcessSandboxBackend(
+            isolation=Isolation.MICROVM,
+            declarations=BackendDeclarations(
+                capabilities=frozenset({Capability.EXEC}),
+                egress_modes=frozenset({Egress.CLOSED}),
+            ),
+        )
+
+        class Forwarding:
+            name = "forwarding"
+            isolation = Isolation.MICROVM
+
+            def __getattr__(self, item: str) -> object:
+                return getattr(inner, item)
+
+            async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> object:
+                return object()
+
+            async def dispose(self, key: SandboxKey) -> None:
+                return None
+
+            async def dispose_scope(self, scope: str, thread_id: str) -> int:
+                return 0
+
+        router = SandboxRouter([Forwarding()])  # pyright: ignore[reportArgumentType]
+        # The inner backend's own set, not `DEFAULT_CAPABILITIES`, which holds FILES_IN.
+        with pytest.raises(SandboxCapabilityNotSupported):
+            router.ensure_can_serve(
+                SandboxSpec(kind="test", requires=frozenset({Capability.FILES_IN}))
+            )
+        router.ensure_can_serve(SandboxSpec(kind="test", requires=frozenset({Capability.EXEC})))
+
+    def test_a_declarations_that_raises_is_refused_rather_than_read_as_silence(self):
+        """Absent and unreadable look identical to `getattr`; only the static lookup separates
+        them, and a backend that states its declarations and cannot produce them has not
+        declared nothing."""
+
+        class RaisingDeclarations(_BackendDeclaringNothing):
+            @property
+            def declarations(self) -> BackendDeclarations:
+                raise AttributeError("built from configuration this instance never got")
+
+        with pytest.raises(SandboxBackendNotPermitted, match="raised AttributeError"):
+            SandboxRouter([RaisingDeclarations()])
+
+    def test_an_explicit_none_is_refused_rather_than_read_as_silence(self):
+        """Absent means "declared nothing" and is legal; `declarations = None` is a stated value
+        this package cannot read. Conflating them answers a declaration error with whatever the
+        defaults refuse next — an egress message for a backend whose egress was never the
+        problem."""
+        backend = _BackendDeclaringNothing()
+        setattr(backend, "declarations", None)
+        with pytest.raises(SandboxBackendNotPermitted, match="NoneType"):
+            SandboxRouter([backend])
+
+    def test_a_declarations_of_the_wrong_shape_is_refused_and_named(self):
+        backend = _BackendDeclaringNothing()
+        setattr(backend, "declarations", frozenset({Egress.CLOSED}))
+        with pytest.raises(SandboxBackendNotPermitted, match="BackendDeclarations"):
+            SandboxRouter([backend])
+
+    def test_the_default_object_is_what_every_unstated_field_adds_up_to(self):
+        assert DEFAULT_BACKEND_DECLARATIONS == BackendDeclarations()
 
 
 class TestCapabilityMatch:
@@ -407,7 +626,12 @@ class TestCapabilityMatch:
         assert DEFAULT_CAPABILITIES == frozenset({Capability.EXEC, Capability.FILES_IN})
 
     def test_a_backend_declaring_a_superset_serves_the_spec(self):
-        router = self._router(capabilities=DEFAULT_CAPABILITIES | {Capability.RUN_CODE})
+        router = self._router(
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                capabilities=DEFAULT_CAPABILITIES | {Capability.RUN_CODE},
+            )
+        )
         router.ensure_can_serve(
             SandboxSpec(kind="codeact", requires=frozenset({Capability.RUN_CODE}))
         )
@@ -422,7 +646,7 @@ class TestCapabilityMatch:
 
     def test_a_backend_that_declares_nothing_is_read_as_the_default_set(self):
         """Silence is a functionality claim, not a safety one — `Sandbox` already owes both."""
-        router = SandboxRouter([_BackendWithoutCapabilities()])
+        router = SandboxRouter([_BackendDeclaringOnlyEgress()])
         router.ensure_can_serve(SandboxSpec(kind="test"))
         with pytest.raises(SandboxCapabilityNotSupported):
             router.ensure_can_serve(
@@ -460,8 +684,11 @@ class TestRouterDenials:
         # these tests are about, so the ceiling must not refuse first.
         roomy = TransferLimits(1 << 26, 1 << 31, 4096)
         backend = InProcessSandboxBackend(
-            capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
-            limits=SandboxLimits(files_in=roomy, files_out=roomy),
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+                limits=SandboxLimits(files_in=roomy, files_out=roomy),
+            )
         )
         return SandboxRouter([backend], min_isolation=Isolation.NONE, **kwargs)
 
@@ -634,14 +861,12 @@ class TestTransferLimits:
         assert over.within(DEFAULT_TRANSFER_LIMITS) is False
 
 
-#: The two ways a backend ends up on the default ceiling: declaring it, and declaring nothing
-#: at all.  The router's `getattr` fallback is the only thing that makes those the same, so
-#: every leg below that says "the default ceiling" runs against both — a fallback pointed at a
-#: different constant would pass the first and fail the second.  Classes, not instances, so the
+#: The two ways a backend ends up on the default ceiling: the shared fake's declarations, and a
+#: third-party object that leaves the field unstated.  Classes, not instances, so the
 #: parametrized cases do not share one object.
 _DEFAULT_CEILING_BACKENDS = [
-    pytest.param(InProcessSandboxBackend, id="declares-the-default"),
-    pytest.param(_BackendWithoutCapabilities, id="declares-nothing"),
+    pytest.param(InProcessSandboxBackend, id="the-shared-fake"),
+    pytest.param(_BackendDeclaringOnlyEgress, id="a-third-party-object"),
 ]
 
 
@@ -658,15 +883,10 @@ class TestTransferLimitMatch:
     def _router(self, backend) -> SandboxRouter:
         return SandboxRouter([backend], min_isolation=Isolation.NONE)
 
-    def test_the_two_fixtures_really_are_one_declared_and_one_silent(self):
-        """A `getattr` fallback nobody is on the far side of would pass by accident forever.
-
-        The shared fake grew a `limits` property, so it stopped being evidence about silence;
-        if the legacy fake ever grows one too, both parametrized cases below become the same
-        case and stop covering the fallback at all.
-        """
-        assert InProcessSandboxBackend().limits == DEFAULT_SANDBOX_LIMITS
-        assert not hasattr(_BackendWithoutCapabilities(), "limits")
+    def test_neither_fixture_states_the_ceiling_it_is_read_as(self):
+        """A default nobody is on the far side of would pass by accident forever."""
+        for backend in (InProcessSandboxBackend(), _BackendDeclaringOnlyEgress()):
+            assert backend.declarations.limits == DEFAULT_SANDBOX_LIMITS
 
     @pytest.mark.parametrize("backend_class", _DEFAULT_CEILING_BACKENDS)
     def test_the_default_ceiling_serves_every_existing_spec(self, backend_class):
@@ -687,14 +907,22 @@ class TestTransferLimitMatch:
             )
 
     def test_a_spec_within_the_declared_ceilings_is_served(self):
-        router = self._router(InProcessSandboxBackend(limits=self._CEILING))
+        router = self._router(
+            InProcessSandboxBackend(
+                declarations=dataclasses.replace(FAKE_BACKEND_DECLARATIONS, limits=self._CEILING)
+            )
+        )
         router.ensure_can_serve(
             SandboxSpec(kind="diagram", files_in=_TIGHT_LIMITS, files_out=_TIGHT_LIMITS)
         )
 
     @pytest.mark.parametrize("direction", ["files_in", "files_out"])
     def test_a_spec_above_the_ceiling_is_refused_and_the_direction_named(self, direction: str):
-        router = self._router(InProcessSandboxBackend(limits=self._CEILING))
+        router = self._router(
+            InProcessSandboxBackend(
+                declarations=dataclasses.replace(FAKE_BACKEND_DECLARATIONS, limits=self._CEILING)
+            )
+        )
         spec = dataclasses.replace(
             SandboxSpec(kind="diagram", files_in=_TIGHT_LIMITS, files_out=_TIGHT_LIMITS),
             **{direction: DEFAULT_TRANSFER_LIMITS},
@@ -704,7 +932,11 @@ class TestTransferLimitMatch:
 
     def test_acquire_refuses_it_too(self):
         """`acquire` runs the same checks, so a caller that skips `ensure_can_serve` is caught."""
-        router = self._router(InProcessSandboxBackend(limits=self._CEILING))
+        router = self._router(
+            InProcessSandboxBackend(
+                declarations=dataclasses.replace(FAKE_BACKEND_DECLARATIONS, limits=self._CEILING)
+            )
+        )
         spec = SandboxSpec(
             kind="diagram", files_in=_TIGHT_LIMITS, files_out=DEFAULT_TRANSFER_LIMITS
         )
@@ -740,8 +972,11 @@ class TestTheRouterFoldsADispatchSurface:
         return SandboxRouter(
             [
                 InProcessSandboxBackend(
-                    limits=ceiling,
-                    capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+                    declarations=dataclasses.replace(
+                        FAKE_BACKEND_DECLARATIONS,
+                        limits=ceiling,
+                        capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+                    )
                 )
             ],
             min_isolation=Isolation.NONE,
@@ -870,8 +1105,11 @@ class TestASpecMustAdmitTheSurfaceItCarries:
         router = SandboxRouter(
             [
                 InProcessSandboxBackend(
-                    limits=SandboxLimits(files_in=wide, files_out=wide),
-                    capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+                    declarations=dataclasses.replace(
+                        FAKE_BACKEND_DECLARATIONS,
+                        limits=SandboxLimits(files_in=wide, files_out=wide),
+                        capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+                    )
                 )
             ],
             min_isolation=Isolation.NONE,
@@ -894,15 +1132,20 @@ class TestASpecMustAdmitTheSurfaceItCarries:
 
 
 class _BackendDeclaringTheWrongLimits(InProcessSandboxBackend):
-    """A third party that reached for the adjacent type, or left the field unfilled."""
+    """A third party that reached for the adjacent type, or left the field unfilled.
+
+    The field is typed, so this mistake is a type error in-tree — and a dataclass validates
+    nothing at runtime, which is why the router still checks the shape for backends pyright
+    never saw.
+    """
 
     def __init__(self, declared, **kwargs):
         super().__init__(**kwargs)
-        self._declared = declared
+        self._declared_limits = declared
 
     @property
-    def limits(self):
-        return self._declared
+    def declarations(self) -> BackendDeclarations:
+        return dataclasses.replace(FAKE_BACKEND_DECLARATIONS, limits=self._declared_limits)
 
 
 class TestAMalformedLimitsDeclarationIsRefused:
@@ -929,18 +1172,19 @@ class TestAMalformedLimitsDeclarationIsRefused:
         with pytest.raises(SandboxTransferLimitsNotPermitted):
             asyncio.run(router.acquire(_KEY, _SPEC))
 
-    def test_the_default_ceilings_are_still_what_silence_means(self):
+    def test_the_default_ceilings_are_still_what_an_unstated_field_means(self):
         """The guard refuses a declaration it cannot read — it does not make one mandatory."""
         SandboxRouter(
-            [_BackendWithoutCapabilities()], min_isolation=Isolation.NONE
+            [_BackendDeclaringOnlyEgress()], min_isolation=Isolation.NONE
         ).ensure_can_serve(_SPEC)
 
 
-class _BackendWithoutEgress:
-    """A third-party backend one property short: no `egress_modes` at all.
+class _BackendDeclaringNothing:
+    """A third-party backend with no `declarations` at all.
 
-    Read as the empty set — enforces nothing — so every ask is refused. Written out rather than
-    subclassed, because the fake now always has the property.
+    Read as :data:`DEFAULT_BACKEND_DECLARATIONS`, whose ``egress_modes`` is the empty set —
+    enforces nothing — so every ask is refused. Written out rather than subclassed, because the
+    fake always has the attribute.
     """
 
     name = "legacy"
@@ -969,7 +1213,12 @@ class TestEgressRule:
 
     def _router(self, *modes: Egress) -> SandboxRouter:
         return SandboxRouter(
-            [InProcessSandboxBackend(egress_modes=frozenset(modes))], min_isolation=Isolation.NONE
+            [
+                InProcessSandboxBackend(
+                    declarations=BackendDeclarations(egress_modes=frozenset(modes))
+                )
+            ],
+            min_isolation=Isolation.NONE,
         )
 
     def test_a_backend_serves_a_mode_it_enforces(self):
@@ -980,7 +1229,11 @@ class TestEgressRule:
         """Backends outside this repository declare strings; `StrEnum` keeps them matching."""
         assert Egress.CLOSED == "closed"
         SandboxRouter(
-            [InProcessSandboxBackend(egress_modes=frozenset({"closed"}))],  # type: ignore[arg-type]
+            [
+                InProcessSandboxBackend(
+                    declarations=BackendDeclarations(egress_modes=frozenset({"closed"}))  # type: ignore[arg-type]
+                )
+            ],
             min_isolation=Isolation.NONE,
         ).ensure_can_serve(self._CLOSED_SPEC)
 
@@ -1009,7 +1262,7 @@ class TestEgressRule:
 
     def test_a_backend_without_the_property_enforces_nothing(self):
         """A backend one property short is the empty set: refused, and told what it enforces."""
-        router = SandboxRouter([_BackendWithoutEgress()])
+        router = SandboxRouter([_BackendDeclaringNothing()])
         with pytest.raises(SandboxEgressNotEnforced, match="it enforces nothing"):
             router.ensure_can_serve(self._ALLOWLIST_SPEC)
 
@@ -1045,7 +1298,11 @@ class TestAcquireEnforcesPolicy:
     def test_acquire_refuses_a_backend_that_cannot_enforce_the_mode(self):
         # _SPEC runs CLOSED (the default); an unrestricted-only backend cannot enforce it.
         router = SandboxRouter(
-            [InProcessSandboxBackend(egress_modes=frozenset({Egress.UNRESTRICTED}))],
+            [
+                InProcessSandboxBackend(
+                    declarations=BackendDeclarations(egress_modes=frozenset({Egress.UNRESTRICTED}))
+                )
+            ],
             min_isolation=Isolation.NONE,
         )
         with pytest.raises(SandboxEgressNotEnforced, match="cannot enforce the 'closed'"):
@@ -1054,7 +1311,11 @@ class TestAcquireEnforcesPolicy:
     def test_acquire_refuses_an_allowlist_run_a_closed_backend_cannot_serve(self, caplog):
         # Refuse, never degrade — and no warning on either path, since nothing is served.
         router = SandboxRouter(
-            [InProcessSandboxBackend(egress_modes=frozenset({Egress.CLOSED}))],
+            [
+                InProcessSandboxBackend(
+                    declarations=BackendDeclarations(egress_modes=frozenset({Egress.CLOSED}))
+                )
+            ],
             min_isolation=Isolation.NONE,
         )
         spec = SandboxSpec(kind="bicep", egress=Egress.ALLOWLIST, egress_allow=("example.invalid",))
@@ -2012,7 +2273,10 @@ class TestWorkDirStaysGuestNative:
         path was never the ask. A router that guessed here would refuse a working deployment
         on the strength of a string the host chose for its own reasons."""
         backend = InProcessSandboxBackend(
-            isolation=Isolation.MICROVM, os_families=frozenset({OsFamily.POSIX})
+            isolation=Isolation.MICROVM,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS, os_families=frozenset({OsFamily.POSIX})
+            ),
         )
         SandboxRouter([backend]).ensure_can_serve(SandboxSpec(kind="test", work_dir=work_dir))
 
@@ -2021,7 +2285,7 @@ class TestWorkDirStaysGuestNative:
         refusal rather than a default: a backend written before `os_families` existed declares
         nothing, and every spec that asks nothing is served by it exactly as before."""
         backend = InProcessSandboxBackend(isolation=Isolation.MICROVM)
-        assert backend.os_families == frozenset()
+        assert backend.declarations.os_families == frozenset()
         SandboxRouter([backend]).ensure_can_serve(SandboxSpec(kind="test"))
 
 
@@ -2035,7 +2299,10 @@ class TestTheGuestShapeMatch:
 
     def test_a_backend_serving_the_asked_family_serves_the_workload(self):
         backend = InProcessSandboxBackend(
-            isolation=Isolation.MICROVM, os_families=frozenset({OsFamily.POSIX})
+            isolation=Isolation.MICROVM,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS, os_families=frozenset({OsFamily.POSIX})
+            ),
         )
         SandboxRouter([backend]).ensure_can_serve(
             SandboxSpec(kind="test", requires_os_family=OsFamily.POSIX)
@@ -2043,7 +2310,10 @@ class TestTheGuestShapeMatch:
 
     def test_a_backend_serving_another_family_is_refused(self):
         backend = InProcessSandboxBackend(
-            isolation=Isolation.MICROVM, os_families=frozenset({OsFamily.WINDOWS})
+            isolation=Isolation.MICROVM,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS, os_families=frozenset({OsFamily.WINDOWS})
+            ),
         )
         with pytest.raises(SandboxOsFamilyNotSupported) as caught:
             SandboxRouter([backend]).ensure_can_serve(
@@ -2057,7 +2327,10 @@ class TestTheGuestShapeMatch:
         one guest family, and a scalar could not say so without a later redefinition."""
         backend = InProcessSandboxBackend(
             isolation=Isolation.MICROVM,
-            os_families=frozenset({OsFamily.POSIX, OsFamily.WINDOWS}),
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                os_families=frozenset({OsFamily.POSIX, OsFamily.WINDOWS}),
+            ),
         )
         router = SandboxRouter([backend])
         for family in (OsFamily.POSIX, OsFamily.WINDOWS):
@@ -2077,8 +2350,10 @@ class TestTheGuestShapeMatch:
     def test_a_declaration_of_the_wrong_shape_refuses_rather_than_admits(self):
         """A mis-shaped declaration cannot widen anything: it is read as empty, so the ask is
         refused. The opposite reading would let a typo serve a workload on any guest at all."""
-        backend = InProcessSandboxBackend(isolation=Isolation.MICROVM)
-        backend._os_families = "posix"  # pyright: ignore[reportAttributeAccessIssue]
+        backend = InProcessSandboxBackend(
+            isolation=Isolation.MICROVM,
+            declarations=dataclasses.replace(FAKE_BACKEND_DECLARATIONS, os_families="posix"),  # type: ignore[arg-type]
+        )
         with pytest.raises(SandboxOsFamilyNotSupported):
             SandboxRouter([backend]).ensure_can_serve(
                 SandboxSpec(kind="test", requires_os_family=OsFamily.POSIX)
@@ -2088,7 +2363,10 @@ class TestTheGuestShapeMatch:
         """`acquire` runs the same checks, so a caller that skipped the attach gate is refused
         rather than served behind a guest its commands cannot run on."""
         backend = InProcessSandboxBackend(
-            isolation=Isolation.MICROVM, os_families=frozenset({OsFamily.WINDOWS})
+            isolation=Isolation.MICROVM,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS, os_families=frozenset({OsFamily.WINDOWS})
+            ),
         )
         router = SandboxRouter([backend])
         with pytest.raises(SandboxOsFamilyNotSupported):

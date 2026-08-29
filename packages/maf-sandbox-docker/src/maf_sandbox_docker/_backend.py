@@ -34,6 +34,7 @@ from hashlib import sha256
 from typing import TYPE_CHECKING, Protocol, cast
 
 from maf_sandbox import (
+    BackendDeclarations,
     Capability,
     DisposalFailure,
     Egress,
@@ -137,6 +138,33 @@ _FILES_LIMITS = TransferLimits(
     max_bytes_per_file=64 * _MIB, max_total_bytes=256 * _MIB, max_files=256
 )
 _LIMITS = SandboxLimits(files_in=_FILES_LIMITS, files_out=_FILES_LIMITS)
+
+# FILES_OUT from day one — the pull surface is native (stat from the first tar header, read from
+# the same stream). Never FILES_LIST: no engine-level enumeration primitive.
+#
+# HOST_TOOLS is the one member with no method behind it, so what it asserts is narrower than the
+# others and worth stating: `exec` **detaches**. A process started by one call outlives it and is
+# observable from the next, because the container is the sandbox and it stays up between calls —
+# which is what `host_tool_calls_over_exec` is built on, its launcher returning at once and the
+# exit-code file being the run's only witness. `test_docker_e2e.py` measures it rather than
+# assuming it.
+#
+# It is *not* a claim about the image. The shipped launcher wants `sh`, `nohup`, `printf`, `mv`,
+# `mkdir`, `rm` and `kill` — and `setsid` where the image has it — and a run directory it can
+# write, which the write plane stamps with the container user on an image that identifies one;
+# and a kind wants whatever interpreter it names — codeact wants `python3` — none of which this
+# backend chooses, since `spec.image` does. That gap is #111's axis, and it is the same gap
+# `EXEC` already has: a kind execing `python3` against a distroless image fails inside the
+# sandbox today.
+_CAPABILITIES = frozenset(
+    {
+        Capability.EXEC,
+        Capability.FILES_IN,
+        Capability.FILES_OUT,
+        Capability.FILES_DELETE,
+        Capability.HOST_TOOLS,
+    }
+)
 
 
 def _label_value(raw: str) -> str:
@@ -727,6 +755,18 @@ class DockerSandboxBackend:
 
     def __init__(self, config: DockerSandboxConfig) -> None:
         self._config = config
+        # Built once: every input is fixed here, and the router reads the object on each
+        # `ensure_can_serve` and each `acquire`. Only `egress_modes` reads the config at all —
+        # with a proxy image this backend can allowlist named hosts or deny all, and without
+        # one it can only run `--network none`. Never UNRESTRICTED: a container backend always
+        # cuts or proxies, so it cannot offer a workload that asked to run open.
+        self._declarations = BackendDeclarations(
+            capabilities=_CAPABILITIES,
+            limits=_LIMITS,
+            egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED})
+            if config.egress_proxy_image
+            else frozenset({Egress.CLOSED}),
+        )
         # (scope, thread_id, agent_dir, kind) -> name: a purge fallback for when the listing
         # fails, never the truth. Holds the last name acquired per key and kind.
         self._registry: dict[tuple[str, str, str, str], str] = {}
@@ -761,47 +801,8 @@ class DockerSandboxBackend:
         return Isolation.CONTAINER
 
     @property
-    def egress_modes(self) -> frozenset[Egress]:
-        # With a proxy image it can allowlist named hosts or deny all; without one it can only
-        # run `--network none`. Never UNRESTRICTED: a container backend always cuts or proxies,
-        # so it cannot offer a workload that asked to run open.
-        if self._config.egress_proxy_image:
-            return frozenset({Egress.ALLOWLIST, Egress.CLOSED})
-        return frozenset({Egress.CLOSED})
-
-    @property
-    def capabilities(self) -> frozenset[Capability]:
-        # FILES_OUT from day one — the pull surface is native (stat from the first tar header,
-        # read from the same stream). Never FILES_LIST: no engine-level enumeration primitive.
-        #
-        # HOST_TOOLS is the one member with no method behind it, so what it asserts here is
-        # narrower than the others and worth stating: `exec` **detaches**. A process started by
-        # one call outlives it and is observable from the next, because the container is the
-        # sandbox and it stays up between calls — which is what `host_tool_calls_over_exec` is
-        # built on, its launcher returning at once and the exit-code file being the run's only
-        # witness. `test_docker_e2e.py` measures it rather than assuming it.
-        #
-        # It is *not* a claim about the image. The shipped launcher wants `sh`, `nohup`,
-        # `printf`, `mv`, `mkdir`, `rm` and `kill` — and `setsid` where the image has it —
-        # and a run directory it can write, which the write plane stamps with the container
-        # user on an image that identifies one; and a kind wants whatever interpreter it
-        # names — codeact wants
-        # `python3` — none of which this backend chooses, since `spec.image` does. That gap is
-        # #111's axis, and it is the same gap `EXEC` already has: a kind execing `python3`
-        # against a distroless image fails inside the sandbox today.
-        return frozenset(
-            {
-                Capability.EXEC,
-                Capability.FILES_IN,
-                Capability.FILES_OUT,
-                Capability.FILES_DELETE,
-                Capability.HOST_TOOLS,
-            }
-        )
-
-    @property
-    def limits(self) -> SandboxLimits:
-        return _LIMITS
+    def declarations(self) -> BackendDeclarations:
+        return self._declarations
 
     # -- SandboxBackend -----------------------------------------------------------
 

@@ -503,7 +503,7 @@ def test_backend_declares_the_floor_and_honest_egress():
     b = NoIsolationBackend()
     assert b.isolation is Isolation.NONE
     # Honest: a no-boundary backend enforces only UNRESTRICTED, and says so.
-    assert b.egress_modes == frozenset({Egress.UNRESTRICTED})
+    assert b.declarations.egress_modes == frozenset({Egress.UNRESTRICTED})
 
 
 def test_seed_files_reject_a_key_that_escapes_the_root():

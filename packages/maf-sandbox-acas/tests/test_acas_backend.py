@@ -145,13 +145,13 @@ class TestBackendIdentity:
 
     def test_declares_allowlist_egress(self):
         """A workload's tool attaches because of this; `TestEgressPolicy` pins that it is true."""
-        assert AcasSandboxBackend(_config()).egress_modes == frozenset(
+        assert AcasSandboxBackend(_config()).declarations.egress_modes == frozenset(
             {Egress.ALLOWLIST, Egress.CLOSED}
         )
 
     def test_declares_exec_files_in_the_whole_pull_surface_and_host_tools(self):
         """Declares only what it implements today — no ATTACHED_IDENTITY and no SNAPSHOT."""
-        assert AcasSandboxBackend(_config()).capabilities == frozenset(
+        assert AcasSandboxBackend(_config()).declarations.capabilities == frozenset(
             {
                 Capability.EXEC,
                 Capability.FILES_IN,
@@ -163,17 +163,17 @@ class TestBackendIdentity:
         )
 
     def test_declares_files_delete(self):
-        assert Capability.FILES_DELETE in AcasSandboxBackend(_config()).capabilities
+        assert Capability.FILES_DELETE in AcasSandboxBackend(_config()).declarations.capabilities
 
     def test_is_the_only_backend_that_can_declare_files_list(self):
         """Native enumeration is the split's own test — name the backend that lacks it."""
-        assert Capability.FILES_LIST in AcasSandboxBackend(_config()).capabilities
+        assert Capability.FILES_LIST in AcasSandboxBackend(_config()).declarations.capabilities
 
     def test_declares_transfer_ceilings_that_admit_a_spec_saying_nothing(self):
         """The spec-side default must stay within them, or every existing spec fails at attach."""
         from maf_sandbox import DEFAULT_TRANSFER_LIMITS
 
-        limits = AcasSandboxBackend(_config()).limits
+        limits = AcasSandboxBackend(_config()).declarations.limits
         assert DEFAULT_TRANSFER_LIMITS.within(limits.files_in)
         assert DEFAULT_TRANSFER_LIMITS.within(limits.files_out)
 
@@ -217,7 +217,7 @@ class TestBackendIdentity:
         from maf_sandbox import SandboxSpec, SandboxTransferLimitsNotPermitted, TransferLimits
 
         backend = AcasSandboxBackend(_config())
-        ceiling = backend.limits.files_out
+        ceiling = backend.declarations.limits.files_out
         spec = SandboxSpec(
             kind="k",
             requires=frozenset({Capability.EXEC, Capability.FILES_OUT}),
@@ -2546,7 +2546,7 @@ class TestTheSharedConformanceSuite:
 
     def test_the_capabilities_it_is_probed_against_are_the_ones_it_declares(self):
         """The suite skips what a backend never claimed, so the claim has to be the real one."""
-        declared = AcasSandboxBackend(_config()).capabilities
+        declared = AcasSandboxBackend(_config()).declarations.capabilities
         assert self._subject().capabilities <= declared
 
 
