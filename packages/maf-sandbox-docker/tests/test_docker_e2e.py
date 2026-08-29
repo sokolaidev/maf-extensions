@@ -75,10 +75,13 @@ _GUEST_OWNED_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_GUEST_OWNED_IMAGE")
 #: The same again, but with the directory *above* `work_dir` given to that user — which is
 #: what `reclaim` checks at acquire, because it owes no walk of its own.
 _LOOSE_PARENT_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_LOOSE_PARENT_IMAGE")
-#: An image whose `USER` is a *name* rather than a numeric pair, the shape #680 was reported
-#: against: uid and gid come from the container's own `/etc/passwd`, and its gid differs from
-#: its uid so a gid that was read cannot be mistaken for one guessed to equal the uid.
+#: An image whose `USER` is a *name* rather than a numeric pair, so uid and gid come from the
+#: container's own `/etc/passwd`. Its gid is not its uid, which is what lets a gid that was read
+#: be told apart from one guessed to equal the uid.
 _NAMED_USER_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_NAMED_USER_IMAGE")
+#: The same named user, but carrying `/maf-sandbox` with no `work_dir` under it: the one shape
+#: where `write_file` has to send `work_dir` itself as an entry rather than let docker make it.
+_ABSENT_WORK_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_ABSENT_WORK_IMAGE")
 #: What the images above put in `work_dir` at build time: the control for a reclaim.
 _CARRIED = "carried.json"
 
@@ -365,6 +368,75 @@ class TestAGuestNamedRatherThanNumbered:
             )
             assert listed.exit_code == 0, listed.stderr
             assert listed.stdout.split() == [_CARRIED]
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+
+@pytest.mark.skipif(
+    not _ABSENT_WORK_IMAGE,
+    reason="needs MAF_SANDBOX_DOCKER_E2E_ABSENT_WORK_IMAGE naming an image carrying no work_dir",
+)
+class TestAnImageThatDoesNotCarryItsWorkDir:
+    """`work_dir` absent at build time, against a real engine.
+
+    Docker creates an intermediate the entries do not name as root whatever the file entry
+    says, so this is the shape where `work_dir` itself has to travel as an explicit entry.
+    Every other live image builds `work_dir` in, so the branch runs only here.
+    """
+
+    def _spec(self) -> SandboxSpec:
+        return SandboxSpec(kind="e2e-absent", image=_ABSENT_WORK_IMAGE, work_dir=_WORK)
+
+    def test_the_work_dir_itself_arrives_owned_by_the_image_user(self):
+        """`/maf-sandbox` exists and is root's; `work_dir` does not exist at all. It has to
+        arrive as the guest's, or the call directory under it is root's and cannot be emptied.
+        """
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), self._spec())
+            call_directory = f"{_WORK}/abc123def456"
+            await sandbox.write_file(
+                f"{call_directory}/note", "written by the host\n", working_directory=_WORK
+            )
+            owners = await sandbox.exec(
+                ["sh", "-c", f"stat -c '%u:%g' {_WORK} {call_directory}"],
+                working_directory="/",
+                timeout=60,
+            )
+            assert owners.exit_code == 0, owners.stderr
+            assert owners.stdout.split() == ["10001:20001", "10001:20001"]
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+    def test_the_guest_can_empty_a_call_directory_under_a_work_dir_it_was_given(self):
+        """The consequence of the entry above: the principal the image names removes what the
+        host wrote, in a `work_dir` that did not exist until the write created it.
+        """
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), self._spec())
+            call_directory = f"{_WORK}/abc123def456"
+            await sandbox.write_file(
+                f"{call_directory}/note", "left behind\n", working_directory=_WORK
+            )
+
+            await sandbox.reclaim(call_directory, working_directory=_WORK, timeout=60)
+
+            listed = await sandbox.exec(
+                ["sh", "-c", f"ls -A {_WORK}"], working_directory="/", timeout=60
+            )
+            assert listed.exit_code == 0, listed.stderr
+            assert listed.stdout.split() == []
 
         try:
             asyncio.run(scenario())

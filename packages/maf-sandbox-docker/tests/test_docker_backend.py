@@ -1312,6 +1312,31 @@ class TestWriteFile:
             work_dir = archive.getmember("maf-sandbox/work")
             assert work_dir.isdir() and (work_dir.uid, work_dir.gid) == (10001, 10001)
 
+    def test_a_double_rooted_work_dir_still_stamps_its_directories(self):
+        """`posixpath.normpath` keeps exactly two leading slashes, which POSIX permits, while
+        the directory chain is rebuilt from segments and is always single-rooted.  Comparing
+        the two spellings matches nothing, so the subtree filter drops every directory and
+        hands them back to docker to create as root — the leak this rule exists to close.
+        """
+        work = "//maf-sandbox/work"
+        spec = SandboxSpec(kind="e2e", image="img", work_dir=work)
+        overrides = {
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001:20001\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, spec))
+        asyncio.run(sandbox.write_file(f"{work}/call-a1/note", "x", working_directory=work))
+        stdin = fake.only("cp", "-").stdin
+        assert stdin is not None
+        with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
+            assert archive.getnames() == [
+                "maf-sandbox/work",
+                "maf-sandbox/work/call-a1",
+                "maf-sandbox/work/call-a1/note",
+            ]
+            stamped = archive.getmember("maf-sandbox/work/call-a1")
+            assert stamped.isdir() and (stamped.uid, stamped.gid) == (10001, 20001)
+
     def test_a_root_working_directory_keeps_its_components_whole(self):
         """The subtree rule on `working_directory = "/"`: `/` is the cp destination and
         needs no entry, and `tmp` under it is a `working_directory` descendant here, so

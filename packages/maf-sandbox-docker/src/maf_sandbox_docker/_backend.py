@@ -210,6 +210,19 @@ def _proxy_name(container: str) -> str:
     return f"{container}{_PROXY_SUFFIX}"
 
 
+def _single_rooted(guest_path: str) -> str:
+    """``normpath``, with the double-root spelling POSIX permits collapsed to one slash.
+
+    ``posixpath.normpath`` keeps *exactly* two leading slashes and collapses three or more, so
+    ``//maf-sandbox/work`` survives as itself.  ``guest_directory_chain`` rebuilds its entries
+    from segments and is always single-rooted, so the two spellings have to be reconciled
+    before they are compared — an unreconciled pair matches nothing, and every directory the
+    write needs goes back to being docker's to create as root.
+    """
+    normalised = posixpath.normpath(guest_path)
+    return "/" + normalised.lstrip("/") if normalised.startswith("//") else normalised
+
+
 def _image_reference(spec: SandboxSpec) -> str:
     """The reference this backend will actually run, or ``""`` when the spec names none.
 
@@ -380,8 +393,8 @@ class _DockerSandbox:
             lambda p: self._stat_guest(p, p, walked), path, working_directory
         )
         data = content.encode("utf-8") if isinstance(content, str) else content
-        guest_work_dir = posixpath.normpath(working_directory)
-        guest_leaf_dir = posixpath.dirname(guest)
+        guest_work_dir = _single_rooted(working_directory)
+        guest_leaf_dir = _single_rooted(posixpath.dirname(guest))
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w") as archive:
             missing = [
