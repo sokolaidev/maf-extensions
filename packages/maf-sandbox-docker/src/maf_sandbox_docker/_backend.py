@@ -213,12 +213,12 @@ def _proxy_name(container: str) -> str:
 def _single_rooted(guest_path: str) -> str:
     """``guest_directory_chain``'s normal form: the segments, under exactly one leading slash.
 
-    That chain rebuilds every entry from segments, so whatever it is handed comes back
+    That helper rebuilds every ancestor from segments, so whatever it is handed comes back
     ``/``-rooted and single-slashed.  Two spellings reach here that ``normpath`` alone leaves
     alone — ``//maf-sandbox/work``, since POSIX lets it keep *exactly* two leading slashes, and
-    a relative ``workspace`` — and either one compared against the chain matches nothing, which
-    drops every directory the write needs and hands it back to docker to create as root.
-    Deriving the form the same way the chain does is what keeps the two from drifting again.
+    a relative ``workspace`` — and either one compared against those ancestors matches nothing,
+    which drops every directory the write needs and hands it back to docker to create as root.
+    Deriving the form the same way it does is what keeps the two from drifting again.
     """
     segments = [s for s in posixpath.normpath(guest_path).split("/") if s and s != "."]
     return "/" + "/".join(segments)
