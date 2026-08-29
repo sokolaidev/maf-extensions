@@ -50,6 +50,7 @@ from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
 from diagram_kind import make_diagram_tools
 from maf_sandbox import (
+    DisposalOutcome,
     FailedReclaimPolicy,
     Isolation,
     ReclaimConfig,
@@ -120,7 +121,7 @@ async def run() -> int:
 
     # One phrasing per `DisposalOutcome`, because the bare word does not read as a sentence:
     # `failed` is the disposal's outcome, not something done to the sandbox.
-    disposal_said = {
+    disposal_said: dict[DisposalOutcome, str] = {
         "disposed": "disposed the sandbox",
         "failed": "could not dispose the sandbox",
         "kept": "kept the sandbox",
