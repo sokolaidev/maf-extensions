@@ -347,9 +347,14 @@ class TestAGuestNamedRatherThanNumbered:
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
-    def test_the_guest_can_empty_the_call_directory_it_was_given(self):
-        """The point of the ownership, end to end: the principal named by `USER app` removes
-        what the host wrote beside it, which is what `reclaim` will be asked to do.
+    def test_the_guest_can_delete_what_the_host_wrote_beside_it(self):
+        """The ownership, exercised by the principal it names rather than by `reclaim`.
+
+        `reclaim` would raise authority here — this image leaves `/maf-sandbox` root's, so the
+        acquire-time check clears a root removal and the assertion would hold however the
+        entries were stamped.  Unlinking the call directory itself needs write on `work_dir`,
+        which is the image's build and root's (measured), so what the ownership buys on *this*
+        shape is the guest emptying the directory's contents.  That is what is asked of it.
         """
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
@@ -361,13 +366,16 @@ class TestAGuestNamedRatherThanNumbered:
                 f"{call_directory}/note", "left behind\n", working_directory=_WORK
             )
 
-            await sandbox.reclaim(call_directory, working_directory=_WORK, timeout=60)
+            removed = await sandbox.exec(
+                ["sh", "-c", f"rm {call_directory}/note"], working_directory="/", timeout=60
+            )
+            assert removed.exit_code == 0, removed.stderr
 
             listed = await sandbox.exec(
-                ["sh", "-c", f"ls -A {_WORK}"], working_directory="/", timeout=60
+                ["sh", "-c", f"ls -A {call_directory}"], working_directory="/", timeout=60
             )
             assert listed.exit_code == 0, listed.stderr
-            assert listed.stdout.split() == [_CARRIED]
+            assert listed.stdout.split() == []
 
         try:
             asyncio.run(scenario())
@@ -416,9 +424,14 @@ class TestAnImageThatDoesNotCarryItsWorkDir:
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
-    def test_the_guest_can_empty_a_call_directory_under_a_work_dir_it_was_given(self):
-        """The consequence of the entry above: the principal the image names removes what the
-        host wrote, in a `work_dir` that did not exist until the write created it.
+    def test_the_guest_removes_the_call_directory_the_write_created(self):
+        """The consequence of the entry above, and the removal `reclaim` would be asked for —
+        run as the image's user rather than through `reclaim`, which would raise authority here
+        and pass whatever the entries said.
+
+        Unlinking the call directory needs write on `work_dir`, and on this shape `work_dir` is
+        not the image's build but the write's own explicit entry, so it is the guest's.  That
+        is the difference from the image that carries `work_dir` already.
         """
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
@@ -430,7 +443,10 @@ class TestAnImageThatDoesNotCarryItsWorkDir:
                 f"{call_directory}/note", "left behind\n", working_directory=_WORK
             )
 
-            await sandbox.reclaim(call_directory, working_directory=_WORK, timeout=60)
+            removed = await sandbox.exec(
+                ["sh", "-c", f"rm -rf {call_directory}"], working_directory="/", timeout=60
+            )
+            assert removed.exit_code == 0, removed.stderr
 
             listed = await sandbox.exec(
                 ["sh", "-c", f"ls -A {_WORK}"], working_directory="/", timeout=60

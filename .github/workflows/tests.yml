@@ -375,13 +375,16 @@ jobs:
       # these two variables is what turns the module's skip guard off.
       MAF_SANDBOX_DOCKER_E2E_IMAGE: mcr.microsoft.com/azurelinux/base/core:3.0
       MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE: maf-sandbox-docker-proxy:ci
-      # Three non-root guests, built below, differing only in who owns what around
-      # `work_dir`: the image's build (as `images/bicep-sandbox/Dockerfile` leaves it), the
+      # Five non-root guests, built below, varying along two axes. **Who owns what around
+      # `work_dir`**: the image's build (as `images/bicep-sandbox/Dockerfile` leaves it), the
       # image's user (as the hardening advice that produces a non-root `USER` also asks for),
       # or that user all the way up to `/maf-sandbox` — which is the shape `reclaim` checks
-      # for, since a guest that can write *above* `work_dir` can swap it. Their own column
-      # because every other image this repository runs — here, in the samples, in verify-live —
-      # is root's, and which principal a file-plane call acts as is invisible against those.
+      # for, since a guest that can write *above* `work_dir` can swap it. **How `USER` is
+      # spelled**: a numeric pair is taken from `Config.User` as-is, while a name has to be
+      # resolved against the container's own account files. The last carries no `work_dir` at
+      # all, so the write has to send it. Their own column because every other image this
+      # repository runs — here, in the samples, in verify-live — is root's, and which principal
+      # a file-plane call acts as is invisible against those.
       MAF_SANDBOX_DOCKER_E2E_NONROOT_IMAGE: maf-sandbox-docker-nonroot:ci
       MAF_SANDBOX_DOCKER_E2E_GUEST_OWNED_IMAGE: maf-sandbox-docker-guest-owned:ci
       MAF_SANDBOX_DOCKER_E2E_LOOSE_PARENT_IMAGE: maf-sandbox-docker-loose-parent:ci
