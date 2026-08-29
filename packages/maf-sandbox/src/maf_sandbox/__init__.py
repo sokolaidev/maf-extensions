@@ -113,11 +113,13 @@ from ._outputs import (
     validate_artifact_name,
 )
 from ._protocol import (
+    DEFAULT_BACKEND_DECLARATIONS,
     DEFAULT_CAPABILITIES,
     DEFAULT_SANDBOX_LIMITS,
     DEFAULT_TRANSFER_LIMITS,
     INTEGRITY_RANK,
     ISOLATION_RANK,
+    BackendDeclarations,
     CallerContext,
     Capability,
     DeclaredOutput,
@@ -168,6 +170,7 @@ from ._shim import host_tool_shim
 
 __all__ = [
     "CALLS_DIRECTORY",
+    "DEFAULT_BACKEND_DECLARATIONS",
     "DEFAULT_CAPABILITIES",
     "DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN",
     "DEFAULT_RECLAIM_CONFIG",
@@ -180,6 +183,7 @@ __all__ = [
     "SHIM_MODULE",
     "WORK_DIRECTORY",
     "Artifact",
+    "BackendDeclarations",
     "Capability",
     "DeclaredOutput",
     "DisposalCode",

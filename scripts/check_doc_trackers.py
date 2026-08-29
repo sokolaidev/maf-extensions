@@ -15,6 +15,12 @@ Two findings, and they are different mistakes:
 - A row still **outstanding** — `open`, `partial`, `parked` — whose every reference has closed.
   That decision is now tracked by nothing, which is the state the convention exists to prevent.
 
+A run that belongs to a pull request judges the state at *merge* rather than the state today:
+what the request promises to close — read from GitHub's own closing references — counts as
+`CLOSED`, and the row a merge is about to invalidate can be flipped in the request that earns
+the flip. A run with no request to its name — the one on `main` — judges live state, which is
+what catches a promise that never landed.
+
 A reference to another repository is reported as unchecked rather than guessed at: upstream
 issues close on somebody else's schedule and this check has no standing to read them.
 
@@ -137,17 +143,48 @@ def references(cell: str) -> list[Reference]:
     return found
 
 
+def promised_numbers(nodes: list[dict], slug: str) -> frozenset[int]:
+    """The numbers this repository's issues appear as in what GitHub says the request closes.
+
+    A reference into another repository is a real promise, just not one this check has
+    standing to score, the same way `ask` refuses to read another repository's numbers.
+    """
+    return frozenset(
+        node["number"]
+        for node in nodes
+        if (node.get("repository") or {}).get("nameWithOwner") == slug
+    )
+
+
 def is_outstanding(state: str) -> bool:
     """Whether the row says the work is still to do."""
     return _OUTSTANDING.match(state) is not None
 
 
-def findings(rows: list[Row], states: dict[int, str | None], slug: str) -> list[str]:
+def state_at_merge(state: str | None, number: int, promised: frozenset[int]) -> str | None:
+    """The state a merge leaves behind: a number this request promises to close is `CLOSED`.
+
+    Only `OPEN` changes — a tracker already closed or merged keeps what it is, and a number this
+    repository does not have stays missing, so no promise can invent one.
+    """
+    return "CLOSED" if number in promised and state == "OPEN" else state
+
+
+def findings(
+    rows: list[Row],
+    states: dict[int, str | None],
+    slug: str,
+    promised: frozenset[int] = frozenset(),
+) -> list[str]:
     """Every stale annotation and every outstanding row nothing tracks, newest problem first.
 
     ``states`` maps a reference number to `OPEN`/`CLOSED`/`MERGED`, or to ``None`` for a number
     this repository does not have. A number missing from the mapping was never asked about —
     another repository's — and is not judged here.
+
+    ``promised`` is the numbers the current request's closing keywords close, counted as `CLOSED`
+    so a row is judged against the merge it belongs to rather than the moment the run happens.
+    Leave it empty and the comparison is live state, exactly as the run without a request sees it.
     """
     problems = []
     for row in rows:
@@ -156,15 +193,35 @@ def findings(rows: list[Row], states: dict[int, str | None], slug: str) -> list[
             live = states.get(ref.number, "")
             if live is None:
                 problems.append(f"{row.path}:{row.line}: #{ref.number} does not exist in {slug}")
-            elif ref.claimed and live and ref.claimed != live:
+                continue
+            at_merge = state_at_merge(live, ref.number, promised)
+            if not ref.claimed or not at_merge or ref.claimed == at_merge:
+                continue
+            if at_merge != live:
+                problems.append(
+                    f"{row.path}:{row.line}: names #{ref.number} as ({ref.claimed.lower()}), "
+                    f"and this PR closes it — {row.decision[:60]}"
+                )
+            else:
                 problems.append(
                     f"{row.path}:{row.line}: names #{ref.number} as ({ref.claimed.lower()}), "
                     f"and it is {live.lower()} — {row.decision[:60]}"
                 )
         if not is_outstanding(row.state) or not mine:
             continue
-        if all(states.get(ref.number) in ("CLOSED", "MERGED") for ref in mine):
-            closed = ", ".join(f"#{ref.number}" for ref in mine)
+        tracked = [states.get(ref.number) for ref in mine]
+        at_merge = [
+            state_at_merge(state, ref.number, promised) for state, ref in zip(tracked, mine)
+        ]
+        if not all(state in ("CLOSED", "MERGED") for state in at_merge):
+            continue
+        closed = ", ".join(f"#{ref.number}" for ref in mine)
+        if at_merge != tracked:
+            problems.append(
+                f"{row.path}:{row.line}: says {row.state.split(' ')[0]!r} and nothing will "
+                f"track it once this PR merges ({closed}) — {row.decision[:60]}"
+            )
+        else:
             problems.append(
                 f"{row.path}:{row.line}: says {row.state.split(' ')[0]!r} and every tracker it "
                 f"names has closed ({closed}) — {row.decision[:60]}"
@@ -233,23 +290,112 @@ def query(slug: str, numbers: list[int]) -> str:
     return f'query {{ repository(owner: "{owner}", name: "{name}") {{ {fields} }} }}'
 
 
+class GraphQLRefusal(Exception):
+    """A query GitHub answered with errors inside a 200, which is a refusal, not an answer."""
+
+
+def answered(body: dict) -> dict:
+    """The `data` of one GraphQL answer, refusing one that carries errors.
+
+    GraphQL reports a refused query inside a 200, and `urlopen` does not raise for it; an
+    error swallowed here reads downstream as an empty answer — every state missing, every
+    promise empty — which for this check is a green it must never report.
+    """
+    errors = body.get("errors") or []
+    if errors:
+        raise GraphQLRefusal(str(errors[0].get("message", "GitHub answered with errors")))
+    return body.get("data") or {}
+
+
+def _post(document: str, auth: str) -> dict:
+    """One GraphQL document's data, or the refusal the transport or the answer raised."""
+    request = urllib.request.Request(
+        _API,
+        data=json.dumps({"query": document}).encode(),
+        headers={"Authorization": f"bearer {auth}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
+        return answered(json.loads(response.read()))
+
+
 def ask(slug: str, numbers: list[int], auth: str) -> dict[int, str | None]:
     """The live state of each number, or ``None`` for one this repository does not have."""
     states: dict[int, str | None] = {}
     for start in range(0, len(numbers), _BATCH):
         batch = numbers[start : start + _BATCH]
-        request = urllib.request.Request(
-            _API,
-            data=json.dumps({"query": query(slug, batch)}).encode(),
-            headers={"Authorization": f"bearer {auth}", "Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
-            body = json.loads(response.read())
-        repository = (body.get("data") or {}).get("repository") or {}
+        repository = _post(query(slug, batch), auth).get("repository") or {}
         for number in batch:
-            answered = repository.get(f"n{number}")
-            states[number] = answered.get("state") if answered else None
+            entry = repository.get(f"n{number}")
+            states[number] = entry.get("state") if entry else None
     return states
+
+
+def pull_request_number() -> int | None:
+    """The number the run names for its pull request, when it names one; `push` has no request."""
+    raw = os.environ.get("PR_NUMBER", "")
+    return int(raw) if raw.isdigit() else None
+
+
+def closures_query(slug: str, number: int, cursor: str | None) -> str:
+    """One GraphQL document asking for one page of what the request itself says it closes.
+
+    `closingIssuesReferences` is GitHub's own reading of the closing keywords, which is the
+    question this check is asking: what a merge closes is decided by GitHub, not reproduced
+    here. The cursor asks for the page after the first hundred, so a growing list never
+    silently truncates.
+    """
+    owner, name = slug.split("/")
+    after = f', after: "{cursor}"' if cursor else ""
+    return (
+        f'query {{ repository(owner: "{owner}", name: "{name}") '
+        f"{{ pullRequest(number: {number}) {{ closingIssuesReferences(first: 100{after}) "
+        f"{{ pageInfo {{ hasNextPage endCursor }} nodes {{ number repository {{ nameWithOwner }} }} }} }} }} }}"
+    )
+
+
+def closing_issues(slug: str, number: int, auth: str) -> list[dict]:
+    """Every issue GitHub says this request closes, every repository's list included.
+
+    Keeping this repository's only happens in `promised_numbers`, which stays pure and so
+    testable offline; this half pages the way `ask` batches, so a growing list never
+    silently truncates. A request that is gone answers with an empty list, which is a fact
+    about the repository rather than a refusal.
+    """
+    issues: list[dict] = []
+    cursor: str | None = None
+    while True:
+        repository = _post(closures_query(slug, number, cursor), auth).get("repository") or {}
+        references = (repository.get("pullRequest") or {}).get("closingIssuesReferences") or {}
+        issues.extend(references.get("nodes") or [])
+        page = references.get("pageInfo") or {}
+        if not (page.get("hasNextPage") and page.get("endCursor")):
+            return issues
+        cursor = page["endCursor"]
+
+
+def branch_pull_request_number(root: Path) -> int | None:
+    """The request for the current branch, or ``None`` when there is none.
+
+    `gh pr view` reads the number off the branch, which is the only place a local run can find
+    one — and why this stays optional: before the request exists there is nothing to promise,
+    and the check runs exactly as it did before.
+    """
+    try:
+        answered = subprocess.run(
+            ["gh", "pr", "view", "--json", "number"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if answered.returncode != 0:
+        return None
+    try:
+        return json.loads(answered.stdout).get("number")
+    except json.JSONDecodeError:
+        return None
 
 
 def repo_root() -> Path:
@@ -282,22 +428,32 @@ def main(argv: list[str]) -> int:
         return 0
     try:
         states = ask(slug, wanted, auth)
-    except urllib.error.HTTPError as refused:
-        # Asked and turned away — a rejected token or a spent rate limit. Not the same as being
-        # offline and not skippable: in CI the token is always there, so a silent pass here would
-        # be the check reporting green on the one failure it cannot see past.
-        print(f"GitHub refused the query: {refused.code} {refused.reason}", file=sys.stderr)
+        number = pull_request_number()
+        if number is None:
+            number = branch_pull_request_number(root)
+        promised: frozenset[int] = frozenset()
+        if number is not None:
+            promised = promised_numbers(closing_issues(slug, number, auth), slug)
+    except (urllib.error.HTTPError, GraphQLRefusal) as refused:
+        # Asked and turned away — a rejected token, a spent rate limit, a query answered with
+        # errors. Not the same as being offline and not skippable: in CI the token is always
+        # there, so a silent pass here would be the check reporting green on the one failure
+        # it cannot see past.
+        print(f"GitHub refused the query: {refused}", file=sys.stderr)
         return 1
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as unreachable:
         print(f"skipped: could not reach GitHub ({unreachable})")
         return 0
 
-    problems = findings(rows, states, slug)
+    problems = findings(rows, states, slug, promised)
     unchecked = {ref.slug for row in rows for ref in references(row.tracking) if ref.slug != slug}
     if not problems:
         print(
             f"every tracker named in a Status row still says what the row says ({len(wanted)} checked)"
         )
+        scored = ", ".join(f"#{n}" for n in sorted(promised & set(wanted)))
+        if scored:
+            print(f"promised by this request, scored as closed: {scored}")
         if unchecked:
             print(f"not checked, another repository's: {', '.join(sorted(unchecked))}")
         return 0

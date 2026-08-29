@@ -1,0 +1,53 @@
+name: Trackers
+
+# The Status-row check, unfiltered where `docs.yml` cannot be: what it reads is the request's
+# promises and live GitHub state, neither of which is a changed file, so a paths filter would
+# leave a request touching only uncovered files unaudited — including the body edit that gains
+# a closing keyword after the last push. The file-dependent checks stay in `docs.yml`, which
+# keeps its filter because its inputs are the working tree.
+#
+# Not a required context, like `docs.yml`: a red here is a sentence in a shipped document that
+# has stopped being true, and the convention — not branch protection — holds the author to it.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    # `edited` names a body edit: a body that gains `Fixes #N` after the last push re-runs the
+    # check rather than leaving the push's green attached to the same head.
+    types: [opened, synchronize, reopened, edited]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # The check reads the pull request's closing references.
+  pull-requests: read
+
+concurrency:
+  group: trackers-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  trackers:
+    name: Status trackers (rows against live GitHub)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install uv
+        # Pinned to the commit v5 resolves to, as everywhere else here: a moving tag is a
+        # supply-chain hole, since whoever can move it can run code in this workflow.
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Sync workspace
+        run: uv sync --locked
+
+      - name: Status trackers still say what the rows say
+        # The structure test holds every row to pinning *something*; nothing held it to pinning
+        # something still open, so a row went stale the day its issue closed and no check failed.
+        # This reads the trackers themselves. Gating: the token is always present here, and a
+        # finding is a sentence in a shipped document that has stopped being true.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: uv run python scripts/check_doc_trackers.py

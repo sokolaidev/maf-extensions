@@ -144,10 +144,12 @@ class TestBackendIdentity:
         assert WslcSandboxBackend(WslcSandboxConfig()).isolation == Isolation.CONTAINER
 
     def test_declares_closed_egress(self):
-        assert WslcSandboxBackend(WslcSandboxConfig()).egress_modes == frozenset({Egress.CLOSED})
+        assert WslcSandboxBackend(WslcSandboxConfig()).declarations.egress_modes == frozenset(
+            {Egress.CLOSED}
+        )
 
     def test_declares_exec_and_files_in_only(self):
-        assert WslcSandboxBackend(WslcSandboxConfig()).capabilities == frozenset(
+        assert WslcSandboxBackend(WslcSandboxConfig()).declarations.capabilities == frozenset(
             {Capability.EXEC, Capability.FILES_IN}
         )
 
@@ -1444,8 +1446,8 @@ class TestAllowlistTopology:
     """With `egress_proxy_image` set, `--network none` becomes an internal net plus a proxy."""
 
     def test_the_declaration_follows_the_configuration(self):
-        assert _backend_with()[0].egress_modes == frozenset({Egress.CLOSED})
-        assert _backend_with(config=_ALLOW_CONFIG)[0].egress_modes == frozenset(
+        assert _backend_with()[0].declarations.egress_modes == frozenset({Egress.CLOSED})
+        assert _backend_with(config=_ALLOW_CONFIG)[0].declarations.egress_modes == frozenset(
             {Egress.ALLOWLIST, Egress.CLOSED}
         )
 

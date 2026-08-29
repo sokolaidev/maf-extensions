@@ -39,7 +39,7 @@ Every call spawns the `docker` client, so the host's event loop has to be one th
 
 **`Isolation.CONTAINER`.** A container shares the host kernel, below `SandboxRouter`'s default `min_isolation=Isolation.MICROVM` floor — construct the router with `min_isolation=Isolation.CONTAINER` and it admits this backend; leave the floor at its default and construction raises `SandboxBackendNotPermitted`. A Docker Desktop or Colima VM does not lift the rung: one shared VM kernel serves every container, the same shape `wslc`'s WSL 2 utility VM has, and the ladder classifies that at `container`. The declaration is a **constant** — no configuration raises it, because a security level the backend cannot verify must not become one the router repeats.
 
-**`egress_modes = {closed}` by default, `{allowlist, closed}` with a proxy configured.** With no proxy configured every container is created `--network none`: a network namespace with only loopback, enforced by whichever kernel runs the container. That serves a workload declaring `Egress.CLOSED`, and **refuses** one declaring `Egress.ALLOWLIST` — the router never substitutes a mode, so denying everything is no longer offered as a stricter stand-in for a host list. Never `UNRESTRICTED`: a container backend always cuts or proxies, so it cannot serve a workload that asked to run open.
+**`declarations.egress_modes = {closed}` by default, `{allowlist, closed}` with a proxy configured.** With no proxy configured every container is created `--network none`: a network namespace with only loopback, enforced by whichever kernel runs the container. That serves a workload declaring `Egress.CLOSED`, and **refuses** one declaring `Egress.ALLOWLIST` — the router never substitutes a mode, so denying everything is no longer offered as a stricter stand-in for a host list. Never `UNRESTRICTED`: a container backend always cuts or proxies, so it cannot serve a workload that asked to run open.
 
 Set `egress_proxy_image` and `ALLOWLIST` joins the set: each sandbox gets its own internal network and a dual-homed filtering proxy, and the spec's allowlist is enforced by topology — the container has no route out except the proxy, which opens a CONNECT tunnel only to the hosts the spec names. The `HTTP_PROXY`/`HTTPS_PROXY` variables set on the workload are how ordinary clients find the proxy, not what enforces the allowlist; the topology is. TLS is not decrypted, and the sandbox never resolves an external name itself. The proxy is shipped as source, not as an image you must trust: build it from the packaged recipe, whose only pinned dependency is its Azure Linux base.
 
@@ -68,15 +68,27 @@ Whether that is actually enforced is not this package's own claim either. `maf_s
 | `dispose(key)` | `rm -f` on every kind's container the key names, with the proxy and network of an allowlisted one |
 | `dispose_scope(scope, thread)` | delete every container for a conversation — **by label, read back from docker**, not from process memory |
 | `isolation` | `container`, unconditionally |
-| `egress` | `closed`, or `allowlist` when `egress_proxy_image` is set |
-| `capabilities` | `{EXEC, FILES_IN, FILES_OUT, FILES_DELETE, HOST_TOOLS}` |
-| `limits` | the transfer ceilings a spec may not exceed, per direction |
+| `declarations.egress_modes` | `{closed}`, or `{closed, allowlist}` when `egress_proxy_image` is set |
+| `declarations.capabilities` | `{EXEC, FILES_IN, FILES_OUT, FILES_DELETE, HOST_TOOLS}` |
+| `declarations.limits` | the transfer ceilings a spec may not exceed, per direction |
 
 Container names are derived from the key and kind rather than remembered, so `acquire` and `dispose` agree on one without a registry to keep in sync. Labels are the durable record `dispose_scope` selects on, and their values are digested when they are long or carry a separator — the same mapping on both sides, because transforming one and not the other makes a purge quietly select nothing.
 
 No bind mounts, no host paths, and never the Docker socket cross into a sandbox — files go in and out only through `docker cp`. The hardening flags `--security-opt no-new-privileges` and `--pids-limit` go on every container; `--cap-drop ALL`, `--memory` and `--cpus` are opt-in through the config.
 
 `stop` is never used. A container whose init process ignores `SIGTERM` takes ten seconds to stop and a fraction of a second to remove, and there is nothing in a sandbox worth waiting for.
+
+## Upgrading to 0.10
+
+**The four optional declarations moved into one `BackendDeclarations`.** `maf-sandbox` 0.26 replaced `capabilities`, `limits`, `egress_modes` and `os_families` as backend attributes with one `declarations` object holding them as fields, and this backend follows it. A host that read them off the backend gets an `AttributeError`:
+
+| Was | Is |
+| --- | --- |
+| `backend.capabilities` | `backend.declarations.capabilities` |
+| `backend.limits` | `backend.declarations.limits` |
+| `backend.egress_modes` | `backend.declarations.egress_modes` |
+
+Nothing about what this backend declares changed — the values, and how they are derived from the config, are exactly as they were. `maf-sandbox`'s own README carries the reasoning and what a backend author has to do.
 
 ## Upgrading to 0.7
 

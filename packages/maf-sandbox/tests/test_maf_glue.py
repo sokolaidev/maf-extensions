@@ -21,6 +21,7 @@ import pytest
 from maf_sandbox import (
     DEFAULT_CAPABILITIES,
     Artifact,
+    BackendDeclarations,
     CallerContext,
     Capability,
     DeclaredOutput,
@@ -54,7 +55,12 @@ from maf_sandbox.maf import (
     sandbox_tool_declarations,
     sandboxed_tool,
 )
-from maf_sandbox.testing import InMemoryStore, InProcessSandbox, InProcessSandboxBackend
+from maf_sandbox.testing import (
+    FAKE_BACKEND_DECLARATIONS,
+    InMemoryStore,
+    InProcessSandbox,
+    InProcessSandboxBackend,
+)
 
 _SPEC = SandboxSpec(
     kind="test",
@@ -109,7 +115,9 @@ def _pulling_backend():
     The fake defaults to what every `Sandbox` already owes, so a spec requiring `FILES_OUT`
     would be refused by the capability match before any of the sink rules below were reached.
     """
-    return InProcessSandboxBackend(capabilities=_PULLS)
+    return InProcessSandboxBackend(
+        declarations=dataclasses.replace(FAKE_BACKEND_DECLARATIONS, capabilities=_PULLS)
+    )
 
 
 def _context(scope="scope-a", thread_id="thread-1", lister=None):
@@ -710,7 +718,11 @@ class TestEgressIsCheckedWhereTheToolAttaches:
         # _SPEC runs ALLOWLIST; an unrestricted-only backend cannot enforce it.
         modes = frozenset({Egress.UNRESTRICTED})
         with pytest.raises(SandboxEgressNotEnforced):
-            _attach(_router(InProcessSandboxBackend(egress_modes=modes)))
+            _attach(
+                _router(
+                    InProcessSandboxBackend(declarations=BackendDeclarations(egress_modes=modes))
+                )
+            )
 
     def test_nothing_configured_still_returns_an_empty_list(self):
         assert _attach(SandboxRouter([])) == []

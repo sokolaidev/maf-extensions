@@ -58,8 +58,8 @@ config = WslcSandboxConfig(egress_proxy_image="maf-egress-proxy:local")
 | `dispose(key)` | `remove -f` on the one container the key names |
 | `dispose_scope(scope, thread)` | delete every container for a conversation — **by label, read back from wslc**, not from process memory |
 | `isolation` | `container` — below the router's default `microvm` floor, so a host opts down explicitly with `min_isolation=Isolation.CONTAINER` |
-| `egress` | `closed`, or `allowlist` when `egress_proxy_image` is set — an internal network behind a filtering proxy, torn down with the sandbox |
-| `capabilities` | `{EXEC, FILES_IN}` — a command line and files written in; nothing more |
+| `declarations.egress_modes` | `{closed}`, or `{closed, allowlist}` when `egress_proxy_image` is set — an internal network behind a filtering proxy, torn down with the sandbox |
+| `declarations.capabilities` | `{EXEC, FILES_IN}` — a command line and files written in; nothing more |
 
 **The filesystem path check on a write is answered inside the guest — the file name check is host-side text arithmetic and is not, and that is the residual to know about before choosing this backend.** `write_file` refuses a path whose parents are links, which takes classifying every component from the filesystem root down. The `cp` tar header settles a directory and a missing path, and streams nothing for a regular file or a link — the two kinds that rule exists to catch — so those are settled by `test -L`, `-d` and `-f` run in the container being confined. A workload running as root can replace `test` in its own image and be believed, so the refusal is worth what the guest is. `maf-sandbox-docker` answers the same question out of its engine and this one has no equivalent until it can read an entry type without asking; [#495](https://github.com/sokolaidev/maf-extensions/issues/495) carries that decision.
 
@@ -70,3 +70,16 @@ Container names are derived from the key rather than remembered, so `acquire` an
 ---
 
 Maintained by [SOKOLAI BV](https://www.sokol.ai).
+
+## Upgrading to 0.13
+
+**The four optional declarations moved into one `BackendDeclarations`.** `maf-sandbox` 0.26 replaced `capabilities`, `limits`, `egress_modes` and `os_families` as backend attributes with one `declarations` object holding them as fields, and this backend follows it. A host that read them off the backend gets an `AttributeError`:
+
+| Was | Is |
+| --- | --- |
+| `backend.capabilities` | `backend.declarations.capabilities` |
+| `backend.egress_modes` | `backend.declarations.egress_modes` |
+
+`limits` is not in that table because this backend never declared one — the router read its silence as `DEFAULT_SANDBOX_LIMITS`, and there was no `backend.limits` to read. `backend.declarations.limits` now answers with that same constant, so the ceiling is unchanged and the value is newly *reachable* rather than renamed.
+
+Nothing about what this backend declares changed — the values, and how they are derived from the config, are exactly as they were. `maf-sandbox`'s own README carries the reasoning and what a backend author has to do.

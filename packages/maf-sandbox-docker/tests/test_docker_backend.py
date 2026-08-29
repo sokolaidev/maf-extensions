@@ -250,18 +250,18 @@ class TestBackendIdentity:
         assert DockerSandboxBackend(hardened).isolation == Isolation.CONTAINER
 
     def test_declares_closed_only_without_a_proxy(self):
-        assert DockerSandboxBackend(DockerSandboxConfig()).egress_modes == frozenset(
+        assert DockerSandboxBackend(DockerSandboxConfig()).declarations.egress_modes == frozenset(
             {Egress.CLOSED}
         )
 
     def test_declares_allowlist_and_closed_with_a_proxy(self):
         config = DockerSandboxConfig(egress_proxy_image="proxy:local")
-        assert DockerSandboxBackend(config).egress_modes == frozenset(
+        assert DockerSandboxBackend(config).declarations.egress_modes == frozenset(
             {Egress.ALLOWLIST, Egress.CLOSED}
         )
 
     def test_declares_exec_files_in_files_out_and_host_tools(self):
-        caps = DockerSandboxBackend(DockerSandboxConfig()).capabilities
+        caps = DockerSandboxBackend(DockerSandboxConfig()).declarations.capabilities
         assert caps == frozenset(
             {
                 Capability.EXEC,
@@ -273,7 +273,10 @@ class TestBackendIdentity:
         )
 
     def test_does_not_declare_files_list(self):
-        assert Capability.FILES_LIST not in DockerSandboxBackend(DockerSandboxConfig()).capabilities
+        assert (
+            Capability.FILES_LIST
+            not in DockerSandboxBackend(DockerSandboxConfig()).declarations.capabilities
+        )
 
     def test_is_named_docker(self):
         # The literal, on purpose. `name == BACKEND_NAME` below pins them to each other and
@@ -296,7 +299,7 @@ class TestBackendIdentity:
         assert router.backend is backend
 
     def test_declares_transfer_limits(self):
-        limits = DockerSandboxBackend(DockerSandboxConfig()).limits
+        limits = DockerSandboxBackend(DockerSandboxConfig()).declarations.limits
         assert limits.files_out.max_files >= 1
         assert limits.files_in.max_bytes_per_file >= 1
 
@@ -363,9 +366,9 @@ class TestRouterFloor:
         backend = DockerSandboxBackend(DockerSandboxConfig())
         router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
         huge = TransferLimits(
-            max_bytes_per_file=backend.limits.files_out.max_bytes_per_file + 1,
-            max_total_bytes=backend.limits.files_out.max_total_bytes,
-            max_files=backend.limits.files_out.max_files,
+            max_bytes_per_file=backend.declarations.limits.files_out.max_bytes_per_file + 1,
+            max_total_bytes=backend.declarations.limits.files_out.max_total_bytes,
+            max_files=backend.declarations.limits.files_out.max_files,
         )
         spec = SandboxSpec(
             kind="k", requires=frozenset({Capability.EXEC, Capability.FILES_OUT}), files_out=huge
@@ -2401,8 +2404,8 @@ def _run_named(fake: _FakeDocker, name: str) -> _Recorded:
 
 class TestAllowlistTopology:
     def test_the_declaration_follows_the_configuration(self):
-        assert _backend_with()[0].egress_modes == frozenset({Egress.CLOSED})
-        assert _backend_with(config=_ALLOW_CONFIG)[0].egress_modes == frozenset(
+        assert _backend_with()[0].declarations.egress_modes == frozenset({Egress.CLOSED})
+        assert _backend_with(config=_ALLOW_CONFIG)[0].declarations.egress_modes == frozenset(
             {Egress.ALLOWLIST, Egress.CLOSED}
         )
 
@@ -2476,7 +2479,7 @@ class TestAnEmptyProxyImageIsNoProxyConfigured:
     """
 
     def test_the_declaration_is_closed(self):
-        assert _backend_with(config=_EMPTY_PROXY_CONFIG)[0].egress_modes == frozenset(
+        assert _backend_with(config=_EMPTY_PROXY_CONFIG)[0].declarations.egress_modes == frozenset(
             {Egress.CLOSED}
         )
 

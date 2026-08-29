@@ -4,6 +4,8 @@
 
 ## What it declares
 
+The four below `isolation` are fields of this backend's `declarations`.
+
 | Declaration | Value |
 |---|---|
 | `isolation` | `Isolation.MICROVM` |

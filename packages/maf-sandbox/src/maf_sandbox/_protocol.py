@@ -18,11 +18,13 @@ from enum import StrEnum
 from typing import Any, Literal, Protocol, runtime_checkable
 
 __all__ = [
+    "DEFAULT_BACKEND_DECLARATIONS",
     "DEFAULT_CAPABILITIES",
     "DEFAULT_SANDBOX_LIMITS",
     "DEFAULT_TRANSFER_LIMITS",
     "INTEGRITY_RANK",
     "ISOLATION_RANK",
+    "BackendDeclarations",
     "Capability",
     "DeclaredOutput",
     "DisposalCode",
@@ -122,7 +124,8 @@ class Egress(StrEnum):
     ``CLOSED``.
 
     It is both what a **workload runs in** (:attr:`SandboxSpec.egress`, one mode, default
-    ``CLOSED``) and what a **backend can enforce** (:attr:`SandboxBackend.egress_modes`, a set).
+    ``CLOSED``) and what a **backend can enforce** (:attr:`BackendDeclarations.egress_modes`, a
+    set).
     The router serves a workload iff its mode is in the backend's set, and refuses otherwise —
     never substituting a different mode.  Confining **less** than asked silently widens what the
     workload reaches; confining **more** hands it a posture it was not built for; so neither is
@@ -908,6 +911,49 @@ class ScopePurge:
     undisposed: DisposalFailure | None = None
 
 
+@dataclass(frozen=True)
+class BackendDeclarations:
+    """What a backend tells the router about itself, in one object read with one ``getattr``.
+
+    Every field's default **is** its silence rule, so a backend that omits one is read exactly
+    as a backend that declared nothing at all.  The four rules differ and are not
+    interchangeable: :attr:`capabilities` is a functionality claim read charitably,
+    :attr:`limits` is a safety claim read conservatively, and the two sets are the *absence of
+    an answer* — which refuses every ask on :attr:`egress_modes`, where a backend enforcing no
+    mode can serve none, and only an asking spec on :attr:`os_families`.
+
+    The router reads this synchronously, before any sandbox exists, so it must be settled by
+    the time it asks: a plain attribute or a property over configuration, never an ``async``
+    query and never something only a running guest could answer.
+
+    ``isolation`` is not here.  It is a member of :class:`SandboxBackend` itself, because a
+    backend with no rung at all cannot be placed against a floor, and stating it twice would
+    give a reader two places to look.
+    """
+
+    #: What the backend can do, matched against a spec's ``requires``.  Silence is read
+    #: charitably: a backend that never heard of the vocabulary still does what
+    #: :class:`Sandbox` obligates.
+    capabilities: frozenset[Capability] = DEFAULT_CAPABILITIES
+    #: The transfer ceilings a spec may not ask above.  Silence is read conservatively — an
+    #: undeclared ceiling is the default ceiling, and a bigger ask is refused.
+    limits: SandboxLimits = DEFAULT_SANDBOX_LIMITS
+    #: The modes the backend can *enforce*, resolved against a spec's
+    #: :attr:`SandboxSpec.egress` (see ``docs/sandbox/research/egress-resolution.md``).  Empty
+    #: refuses every spec, which is the honest reading: a backend declaring no mode enforces
+    #: none.
+    egress_modes: frozenset[Egress] = frozenset()
+    #: The guest shapes the backend hands out, matched against a spec's
+    #: :attr:`SandboxSpec.requires_os_family`.  Empty refuses a spec that asks for a family and
+    #: leaves every spec that does not exactly as it was: a backend with no guest in the
+    #: operating-system sense — a language runtime, a data-plane API — has no answer to give.
+    os_families: frozenset[OsFamily] = frozenset()
+
+
+#: What a backend declaring no ``declarations`` is read as: every field at its own silence rule.
+DEFAULT_BACKEND_DECLARATIONS: BackendDeclarations = BackendDeclarations()
+
+
 @runtime_checkable
 class SandboxBackend(Protocol):
     """A provider that can hand out sandboxes.
@@ -924,29 +970,20 @@ class SandboxBackend(Protocol):
     wherever it lands.  A backend that only consults its own memory there leaves billable
     sandboxes running.
 
-    A backend may also declare ``capabilities: frozenset[Capability]``, matched by the router
-    against a spec's ``requires``; ``limits: SandboxLimits``, the transfer ceilings a spec may
-    not ask above; its egress — ``egress_modes: frozenset[Egress]``, the set of modes it can
-    enforce, resolved against a spec's :attr:`SandboxSpec.egress` (see
-    ``docs/sandbox/research/egress-resolution.md``); and ``os_families: frozenset[OsFamily]``,
-    the guest shapes it can hand out, matched against a spec's
-    :attr:`SandboxSpec.requires_os_family`.
-    None is a member of this Protocol, deliberately: :func:`~typing.runtime_checkable` enforces
-    member *presence*, so declaring them here would stop every backend written before them from
-    being a ``SandboxBackend`` at all.
+    A backend may also declare ``declarations: BackendDeclarations`` — what it can do, what it
+    will carry, which egress modes it enforces and which guest shapes it hands out.  It is not
+    a member of this Protocol, deliberately: :func:`~typing.runtime_checkable` enforces member
+    *presence*, so declaring it here would stop every backend written before it from being a
+    ``SandboxBackend`` at all.  Declaring neither it nor any of the four
+    attributes it replaced is read as :data:`DEFAULT_BACKEND_DECLARATIONS`, and
+    :class:`BackendDeclarations` is where each field's silence rule is written down.
 
-    ``os_families`` is what a backend was *constructed* to serve, not what its package could
-    serve — the router reads it synchronously, before any sandbox exists, so it cannot be a
-    question asked of a running guest.  A backend serving one guest family per instance states
-    one member; a deployment serving two registers two backends.  Saying nothing is read as
-    ``frozenset()``, which refuses a spec that asks and nothing else: a backend with no guest
-    in the operating-system sense — a language runtime, a data-plane API — has no answer to
-    give, and inventing one for it would be a claim it never made.
-
-    That makes **four** optional declarations read by ``getattr``, which is the count this
-    docstring already named as the signal to collapse them into one declarations object.  The
-    collapse is owed and is not this change: it rewrites every backend's declaration surface at
-    once, and the axis that tripped the count is additive by construction.
+    ``declarations`` replaced four separate attributes — ``capabilities``, ``limits``,
+    ``egress_modes`` and ``os_families`` — and a backend still carrying any of them is refused
+    when the router resolves it, rather than read as silent.  Nothing in the type system can
+    catch that migration: none of the four was ever a member here, so ``isinstance`` still
+    holds either way, and an unnoticed ``egress_modes`` would turn a working backend into one
+    that refuses every spec.
     """
 
     @property
