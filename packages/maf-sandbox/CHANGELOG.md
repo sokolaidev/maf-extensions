@@ -4,6 +4,12 @@ All notable changes to `maf-sandbox` are documented here. The format follows [Ke
 
 ## [0.26.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.25.0...maf-sandbox-v0.26.0) (2026-08-29)
 
+> **Correction, added after the release.** This version was tagged and a GitHub Release was created for it, but **it never reached PyPI** — so there is no `maf-sandbox` 0.26.0 to install. The publish run failed before the upload, on `check_core_against_dependents.py`, which runs the suite of every published dependent whose ceiling admits the candidate. Four of the five failed against it: `maf-sandbox-acas` 0.14.0 (5), `maf-sandbox-codeact` 0.7.6 (243, most of them collection errors), `maf-sandbox-docker` 0.9.0 (6) and `maf-sandbox-wslc` 0.12.0 (2); only `maf-sandbox-bicep` 0.9.8 passed. The same run passed all five dependents as this repository has them, which is the gate saying the break is real and already handled here rather than that the change is wrong.
+>
+> The run cannot be repeated to a different end. Every published dependent declares `maf-sandbox<0.27`, so all five admit this version and are tested against it, and a published wheel is immutable — that set and its verdict are the same on every attempt. The tag and its GitHub Release are immutable too, so the number cannot be reused. **The code these entries describe ships in 0.27.0**, which sits outside every published ceiling: nothing already installed can reach it, the gate has no published half to run, and each dependent adopts the release when it republishes.
+>
+> The entries below are left in place: they are accurate about the commit, and deleting them would hide why this version exists at all.
+
 
 ### ⚠ BREAKING CHANGES
 
