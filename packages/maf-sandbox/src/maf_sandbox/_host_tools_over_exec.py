@@ -65,7 +65,7 @@ from ._protocol import (
     TransferLimits,
 )
 from ._reclaim import note_unclean
-from .paths import confine_guest_path, guest_path_relative_to
+from .paths import confine_resolve_guest_path, guest_path_relative_to
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Mapping
@@ -509,7 +509,8 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
     A kind writes ``program`` and :attr:`GuestRunLayout.shim`; everything else is written here.
 
     ``run_directory`` must be absolute, free of backslashes — the grammar
-    :func:`~maf_sandbox.paths.confine_guest_path` enforces on every pull call — free of ``:``,
+    :func:`~maf_sandbox.paths.confine_resolve_guest_path` enforces on every pull call —
+    free of ``:``,
     which ``PYTHONPATH`` uses to separate entries and cannot quote, and fresh per run, on which
     see this module's docstring. The directory comes back normalised, so ``..`` is fine to pass
     and one spelling reaches every call.
@@ -543,7 +544,7 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
         )
     # Twice on purpose: containment against itself is trivially true, so only the spelling
     # is under test.
-    run_directory = confine_guest_path(run_directory, run_directory)
+    run_directory = confine_resolve_guest_path(run_directory, run_directory)
     if program != posixpath.basename(program) or program in {"", ".", ".."}:
         raise ValueError(
             f"program must be a plain file name, not {program!r}: it is written beside the "

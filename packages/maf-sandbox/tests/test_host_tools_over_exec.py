@@ -62,7 +62,7 @@ from maf_sandbox._shim_wire_contract import (
     assert_calls_conform,
     assert_request_conforms,
 )
-from maf_sandbox.paths import confine_guest_path, guest_path_relative_to
+from maf_sandbox.paths import confine_resolve_guest_path, guest_path_relative_to
 
 #: Fast enough for a suite, and still an interval — the API refuses zero, because
 #: `sleep(0)` is not a throttle.
@@ -139,12 +139,12 @@ class _ScriptedGuest:
     # -- Sandbox ------------------------------------------------------------------------
 
     def _resolved(self, path: str, working_directory: str) -> str:
-        """What a backend would make of this path — `confine_guest_path`, as they all use.
+        """What a backend would make of this path — `confine_resolve_guest_path`, as they all use.
 
         A double keying on the string it was handed cannot tell a path a real backend
         accepts from one it refuses, which is most of what these tests are for.
         """
-        return confine_guest_path(path, working_directory)
+        return confine_resolve_guest_path(path, working_directory)
 
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
         await asyncio.sleep(0)  # as in `stat_file`: a bound is only a bound against a yield
@@ -745,7 +745,7 @@ class _StatTable:
 
     async def stat_file(self, path: str, *, working_directory: str):
         await asyncio.sleep(0)
-        resolved = confine_guest_path(path, working_directory)
+        resolved = confine_resolve_guest_path(path, working_directory)
         name = posixpath.basename(resolved)
         if name not in self._sizes:
             return None
@@ -2078,7 +2078,7 @@ class TestTheLaunchersExitMarker:
 
 class TestThePathsTheSupervisorPasses:
     def test_every_pull_call_names_a_path_a_backend_accepts(self):
-        """The double resolves through `confine_guest_path`, so a refused path fails here too.
+        """The double resolves through `confine_resolve_guest_path`, so a refused path fails here too.
 
         Absolute paths inside the working directory are what the layout holds, and
         `posixpath.join` makes those resolve to themselves — which is why both shipped
@@ -2095,7 +2095,7 @@ class TestThePathsTheSupervisorPasses:
         _run(guest, HostToolRun(_registry()))
         assert seen, "nothing was stat-ed"
         for path in seen:
-            assert confine_guest_path(path, _LAYOUT.directory).startswith(_LAYOUT.directory)
+            assert confine_resolve_guest_path(path, _LAYOUT.directory).startswith(_LAYOUT.directory)
 
 
 class TestTheResponseCeiling:
@@ -2246,7 +2246,7 @@ class TestWhatSurvivesTheDeadline:
 class TestTheLayoutsOwnPromise:
     @pytest.mark.parametrize("directory", ["work/run-1", "", "run-1"])
     def test_a_run_directory_that_is_not_absolute_is_refused(self, directory: str):
-        """`confine_guest_path` joins a relative one against itself, and nothing looks wrong.
+        """`confine_resolve_guest_path` joins a relative one against itself, and nothing looks wrong.
 
         The requests then land under `work/run-1/work/run-1/`, where the supervisor is not
         polling — a run that simply never sees a call, with no error anywhere.
@@ -2295,7 +2295,7 @@ class TestTheLayoutsOwnPromise:
 
     @pytest.mark.parametrize("directory", [r"/work/run\1", r"/work\run"])
     def test_a_run_directory_the_backends_cannot_resolve_is_refused(self, directory: str):
-        """Absolute is not the same as valid: `confine_guest_path` refuses a backslash.
+        """Absolute is not the same as valid: `confine_resolve_guest_path` refuses a backslash.
 
         Without this the layout builds and every pull call raises instead — after the
         launcher has started a detached program that outlives the failure.
@@ -2445,7 +2445,7 @@ class TestTheLayoutsOwnPromise:
     def test_a_directory_spelled_the_long_way_round_is_kept_the_short_way(self):
         """One directory, two spellings, is a difference waiting to matter.
 
-        `confine_guest_path` normalises, so the pull calls address `/work/run-1` whatever the
+        `confine_resolve_guest_path` normalises, so the pull calls address `/work/run-1` whatever the
         caller wrote — while the launcher's `cd` and every path the layout built would still
         carry the original. Keeping the normalised result is what makes those the same string.
         """

@@ -1363,7 +1363,7 @@ class TestAWorkDirThatIsNotPosixShaped:
     """`SandboxSpec` accepts any `work_dir` and infers no guest OS — see the router's own
     `test_the_spec_imposes_no_platform_constraint_on_work_dir`. So the reclaim addresses a call
     by *name* against that directory rather than composing one string: a composed path carries
-    the directory's separators into `confine_guest_path`, which refuses a backslash outright."""
+    the directory's separators into `confine_resolve_guest_path`, which refuses a backslash outright."""
 
     _WINDOWS = dataclasses.replace(_SPEC, work_dir=r"D:\agent\work")
 

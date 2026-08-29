@@ -7,12 +7,16 @@ filesystem path this module is the wrong answer — use :meth:`pathlib.Path.reso
 :meth:`pathlib.Path.is_relative_to`, which know the host's grammar and follow its symlinks.
 
 Confinement has two halves and one function each, and the names are worth keeping straight.
-**The file name check** is :func:`confine_guest_path`: text arithmetic only — join, normalise,
-refuse anything resolving outside — and it cannot see a symlink, which is why the other exists.
-**The filesystem path check** is :func:`refuse_symlinked_parents`: it looks at the guest's real
-filesystem, one directory at a time from the root down, and refuses a path whose ancestors are
-not real directories.  :func:`confine_guest_write_path` is both, plus the two refusals a write
-owes on top.
+**The file name check** is :func:`confine_resolve_guest_path`: text arithmetic only — join,
+normalise, refuse anything resolving outside — and it cannot see a symlink, which is why the
+other exists.  **The filesystem path check** is :func:`refuse_symlinked_ancestors`: it looks at
+the guest's real filesystem, one directory at a time from the root down, and refuses a path
+whose ancestors are not real directories.  :func:`confine_resolve_guest_write_path` is both,
+plus the two refusals a write owes on top.
+
+**The prefix says what a function hands back.**  ``confine_resolve_*`` returns the resolved
+guest path or raises; ``refuse_*`` returns nothing and raises.  Nothing here answers a
+``bool``, so a name in the shape of a predicate would be read as one and is not used.
 """
 
 from __future__ import annotations
@@ -25,13 +29,17 @@ from ._protocol import EntryKind, SandboxEntry
 __all__ = [
     "confine_guest_path",
     "confine_guest_write_path",
+    "confine_resolve_guest_path",
+    "confine_resolve_guest_write_path",
     "guest_directory_chain",
+    "guest_path_and_ancestors",
     "guest_path_relative_to",
+    "refuse_symlinked_ancestors",
     "refuse_symlinked_parents",
 ]
 
 
-def confine_guest_path(path: str, working_directory: str) -> str:
+def confine_resolve_guest_path(path: str, working_directory: str) -> str:
     """The file name check: POSIX-join ``path`` onto ``working_directory`` and refuse an escape.
 
     Raises a bare :class:`ValueError`, which ``maf_sandbox`` translates into
@@ -47,16 +55,16 @@ def confine_guest_path(path: str, working_directory: str) -> str:
     return resolved
 
 
-async def confine_guest_write_path(
+async def confine_resolve_guest_write_path(
     stat: Callable[[str], Awaitable[SandboxEntry | None]],
     path: str,
     working_directory: str,
 ) -> str:
     """Confine a write using an unconfined, no-follow stat; refuse a link at the leaf."""
-    resolved = confine_guest_path(path, working_directory)
+    resolved = confine_resolve_guest_path(path, working_directory)
     if resolved == posixpath.normpath(working_directory):
         raise ValueError(f"refusing to write over the working directory itself: {resolved!r}")
-    await refuse_symlinked_parents(stat, resolved, working_directory)
+    await refuse_symlinked_ancestors(stat, resolved, working_directory)
     entry = await stat(resolved)
     if entry is not None and entry.kind is EntryKind.SYMLINK:
         raise ValueError(
@@ -86,7 +94,7 @@ def guest_path_relative_to(path: str, base: str) -> str | None:
     return resolved[len(prefix) :]
 
 
-def guest_directory_chain(guest_path: str, working_directory: str) -> tuple[str, ...]:
+def guest_path_and_ancestors(guest_path: str, working_directory: str) -> tuple[str, ...]:
     """Every directory from the filesystem root down to ``guest_path``, outermost first.
 
     The check starts *above* ``working_directory`` rather than at it, because a nested work dir
@@ -94,19 +102,19 @@ def guest_directory_chain(guest_path: str, working_directory: str) -> tuple[str,
     them.  ``guest_path`` must already be confined.
     """
     base = posixpath.normpath(working_directory)
-    chain: list[str] = []
-    walked = ""
+    ancestors: list[str] = []
+    so_far = ""
     for segment in (s for s in base.split("/") if s):
-        walked = f"{walked}/{segment}"
-        chain.append(walked)
+        so_far = f"{so_far}/{segment}"
+        ancestors.append(so_far)
     relative = guest_path_relative_to(guest_path, base)
     if relative:
         for segment in relative.split("/"):
-            chain.append(posixpath.join(chain[-1] if chain else "/", segment))
-    return tuple(chain)
+            ancestors.append(posixpath.join(ancestors[-1] if ancestors else "/", segment))
+    return tuple(ancestors)
 
 
-async def refuse_symlinked_parents(
+async def refuse_symlinked_ancestors(
     stat: Callable[[str], Awaitable[SandboxEntry | None]],
     guest_path: str,
     working_directory: str,
@@ -131,7 +139,7 @@ async def refuse_symlinked_parents(
     through a link as readily as a read does.
     """
     deepest = guest_path if include_self else posixpath.dirname(guest_path)
-    for directory in guest_directory_chain(deepest, working_directory):
+    for directory in guest_path_and_ancestors(deepest, working_directory):
         entry = await stat(directory)
         if entry is None:
             return
@@ -142,3 +150,13 @@ async def refuse_symlinked_parents(
             )
         if entry.kind is not EntryKind.DIRECTORY:
             raise NotADirectoryError(f"{directory!r} is not a directory")
+
+
+# The names these four had before the vocabulary in the module docstring was settled, kept so a
+# backend written against the old ones keeps importing and calling them while it moves. Aliases
+# rather than wrappers: they are the same objects, so `is` holds and a traceback names the new
+# one. They go in the next minor (#734); a backend still on them is a backend that has not moved.
+confine_guest_path = confine_resolve_guest_path
+confine_guest_write_path = confine_resolve_guest_write_path
+guest_directory_chain = guest_path_and_ancestors
+refuse_symlinked_parents = refuse_symlinked_ancestors

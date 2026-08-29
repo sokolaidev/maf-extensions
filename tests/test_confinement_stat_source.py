@@ -29,7 +29,13 @@ PACKAGES = REPO_ROOT / "packages"
 
 #: The two entry points that take a backend's stat as their first argument. Both are the same
 #: duty: `confine_guest_write_path` is `refuse_symlinked_parents` plus the write-path refusals.
-ENTRY_POINTS = ("refuse_symlinked_parents", "confine_guest_write_path")
+ENTRY_POINTS = (
+    "refuse_symlinked_ancestors",
+    "confine_resolve_guest_write_path",
+    # The spellings these had before #734, still exported as aliases while the backends move.
+    "refuse_symlinked_parents",
+    "confine_guest_write_path",
+)
 
 #: Where those entry points live, absolute and relative — `maf_sandbox`'s own modules import
 #: them as `.paths`.

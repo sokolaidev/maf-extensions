@@ -43,10 +43,10 @@ from ._protocol import (
     ScopePurge,
 )
 from .paths import (
-    confine_guest_path,
-    confine_guest_write_path,
+    confine_resolve_guest_path,
+    confine_resolve_guest_write_path,
     guest_path_relative_to,
-    refuse_symlinked_parents,
+    refuse_symlinked_ancestors,
 )
 
 __all__ = ["InMemoryStore", "InProcessSandbox", "InProcessSandboxBackend"]
@@ -111,7 +111,7 @@ class InProcessSandbox:
     ``OSError`` for a seeded non-regular entry — and it **refuses** rather than truncates a
     file over its ``max_bytes``, as the protocol requires.
 
-    All four also run :func:`~maf_sandbox.paths.refuse_symlinked_parents` over the components,
+    All four also run :func:`~maf_sandbox.paths.refuse_symlinked_ancestors` over the components,
     so a seeded link standing where a directory was expected is refused here as it is on a real
     backend. What this fake cannot model is the **escape** itself: a seeded link has no target,
     so nothing reads through one and a test going green here has asserted shape, not safety.
@@ -176,7 +176,9 @@ class InProcessSandbox:
         )
 
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
-        full_path = await confine_guest_write_path(self._stat_unconfined, path, working_directory)
+        full_path = await confine_resolve_guest_write_path(
+            self._stat_unconfined, path, working_directory
+        )
         self.contents[full_path] = content.encode("utf-8") if isinstance(content, str) else content
 
     async def exec(
@@ -243,10 +245,10 @@ class InProcessSandbox:
         return SandboxEntry(path=full_path, kind=kind, size_bytes=size_bytes)
 
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
-        full_path = confine_guest_path(path, working_directory)
-        await refuse_symlinked_parents(self._stat_unconfined, full_path, working_directory)
+        full_path = confine_resolve_guest_path(path, working_directory)
+        await refuse_symlinked_ancestors(self._stat_unconfined, full_path, working_directory)
         rel = guest_path_relative_to(full_path, posixpath.normpath(working_directory))
-        assert rel is not None  # confine_guest_path already refused anything outside it
+        assert rel is not None  # confine_resolve_guest_path already refused anything outside it
         found = self._kind_at(full_path)
         if found is None:
             return None
@@ -254,8 +256,8 @@ class InProcessSandbox:
         return SandboxEntry(path=rel, kind=kind, size_bytes=size_bytes)
 
     async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
-        full_path = confine_guest_path(path, working_directory)
-        await refuse_symlinked_parents(self._stat_unconfined, full_path, working_directory)
+        full_path = confine_resolve_guest_path(path, working_directory)
+        await refuse_symlinked_ancestors(self._stat_unconfined, full_path, working_directory)
         if full_path in self.contents:
             content = self.contents[full_path]
             if len(content) > max_bytes:
@@ -272,11 +274,11 @@ class InProcessSandbox:
         raise FileNotFoundError(f"no such file: {path!r}")
 
     async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
-        full_path = confine_guest_path(path, working_directory)
+        full_path = confine_resolve_guest_path(path, working_directory)
         # `include_self=False`: a link named here is the thing being removed, and removing it
         # is the one operation on the pull surface that must *not* resolve it. Its parents are
         # checked exactly as a read checks them.
-        await refuse_symlinked_parents(
+        await refuse_symlinked_ancestors(
             self._stat_unconfined, full_path, working_directory, include_self=False
         )
         base = posixpath.normpath(working_directory)
@@ -322,13 +324,15 @@ class InProcessSandbox:
             self.directories.discard(stored)
 
     async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
-        full_path = confine_guest_path(path, working_directory)
-        await refuse_symlinked_parents(
+        full_path = confine_resolve_guest_path(path, working_directory)
+        await refuse_symlinked_ancestors(
             self._stat_unconfined, full_path, working_directory, include_self=True
         )
         base = posixpath.normpath(working_directory)
         directory_rel = guest_path_relative_to(full_path, base)
-        assert directory_rel is not None  # confine_guest_path already refused anything outside it
+        assert (
+            directory_rel is not None
+        )  # confine_resolve_guest_path already refused anything outside it
 
         names: set[str] = set()
         for stored_path in self._stored():

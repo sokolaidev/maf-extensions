@@ -38,7 +38,7 @@ from maf_sandbox import (
     TransferLimits,
     collect_outputs,
     make_file_system_sink,
-    portable_name,
+    portable_file_name,
     validate_artifact_name,
 )
 from maf_sandbox.testing import InProcessSandbox
@@ -260,7 +260,7 @@ class TestValidateArtifactName:
 
     def test_it_does_not_reach_for_the_destination_rules(self):
         """`CON` is unusable on Windows and perfectly fine in a blob container — which is why
-        `portable_name` is a separate, opt-in helper."""
+        `portable_file_name` is a separate, opt-in helper."""
         assert validate_artifact_name("CON") is None
 
 
@@ -286,7 +286,7 @@ class TestPortableName:
     def test_a_reserved_device_name_is_rewritten_with_or_without_an_extension(
         self, name: str, expected: str
     ):
-        assert portable_name(name) == expected
+        assert portable_file_name(name) == expected
 
     @pytest.mark.parametrize(
         ("name", "expected"),
@@ -304,7 +304,7 @@ class TestPortableName:
         """Not a typo, and the entry a reader is most likely to delete as one: Windows reads the
         ISO/IEC 8859-1 superscript digits as digits, so `echo test > COM¹` fails to create a
         file exactly as `COM1` does. Microsoft's naming rules list all six."""
-        assert portable_name(name) == expected
+        assert portable_file_name(name) == expected
 
     @pytest.mark.parametrize(
         "name",
@@ -313,31 +313,31 @@ class TestPortableName:
     def test_a_name_that_merely_resembles_a_device_is_left_alone(self, name: str):
         """Nothing beyond the authoritative list: `COM⁴` is a legitimate name — Windows treats
         only ¹, ² and ³ as digits — and a helper that guessed would mangle it."""
-        assert portable_name(name) == name
+        assert portable_file_name(name) == name
 
     def test_the_forbidden_set_is_replaced(self):
-        assert portable_name('a<b>c:d"e|f?g*h.png') == "a_b_c_d_e_f_g_h.png"
+        assert portable_file_name('a<b>c:d"e|f?g*h.png') == "a_b_c_d_e_f_g_h.png"
 
     def test_ascii_control_characters_are_replaced_too(self):
         """Microsoft's rules list ASCII 0-31 in the same breath as the punctuation above, so a
         helper covering only the visible half hands Windows a name it still refuses."""
-        assert portable_name("a\x00b\x1fc\nd.png") == "a_b_c_d.png"
+        assert portable_file_name("a\x00b\x1fc\nd.png") == "a_b_c_d.png"
 
     @pytest.mark.parametrize(
         ("name", "expected"),
         [("report.", "report"), ("report ", "report"), ("report. .", "report")],
     )
     def test_trailing_dots_and_spaces_are_stripped(self, name: str, expected: str):
-        assert portable_name(name) == expected
+        assert portable_file_name(name) == expected
 
     def test_every_segment_is_treated_as_a_name(self):
-        assert portable_name("out/CON.txt") == "out/CON_.txt"
+        assert portable_file_name("out/CON.txt") == "out/CON_.txt"
 
     def test_a_segment_left_empty_becomes_the_replacement(self):
-        assert portable_name("...") == "_"
+        assert portable_file_name("...") == "_"
 
     def test_an_ordinary_name_survives_unchanged(self):
-        assert portable_name("out/diagram.png") == "out/diagram.png"
+        assert portable_file_name("out/diagram.png") == "out/diagram.png"
 
     def test_it_is_never_applied_for_you(self):
         """The library's own invariant accepts `CON`; only a host that asks gets it rewritten."""
@@ -1345,3 +1345,13 @@ class TestMakeFileSystemSink:
 
         assert [a.name for a in landed] == ["report.md"]
         assert (tmp_path / "out" / "report.md").read_bytes() == b"# hi"
+
+
+class TestTheNameThisHadBefore:
+    """`portable_name` still resolves, and is the same object as `portable_file_name` (#734)."""
+
+    def test_the_old_spelling_still_resolves(self):
+        import maf_sandbox
+
+        assert maf_sandbox.portable_name is maf_sandbox.portable_file_name
+        assert "portable_name" in maf_sandbox.__all__

@@ -14,7 +14,7 @@ module decides only *what* reaches it and *when*.  Two of those decisions are lo
   reaches host state, so every declared name is held to a narrow invariant — checked in the
   spelling that will actually be delivered — and case-only collisions within one collection
   are refused before the host sees either half.  What is *legal* at the destination stays the
-  host's own rule — :func:`portable_name` helps with the Windows part of it, and is never
+  host's own rule — :func:`portable_file_name` helps with the Windows part of it, and is never
   applied for you.
 """
 
@@ -58,6 +58,7 @@ __all__ = [
     "landing_outputs",
     "make_file_system_sink",
     "missing_sink_refusal",
+    "portable_file_name",
     "portable_name",
     "spec_lands_artifacts",
     "validate_artifact_name",
@@ -351,7 +352,7 @@ def validate_artifact_name(name: str) -> None:
         )
 
 
-def portable_name(name: str) -> str:
+def portable_file_name(name: str) -> str:
     """Rewrite ``name`` into one Windows will accept — opt-in, and never applied for you.
 
     Per path segment: Windows's reserved device names (``CON``, ``PRN``, ``AUX``, ``NUL``, and
@@ -362,6 +363,12 @@ def portable_name(name: str) -> str:
     no longer the name the workload said it produced.
     """
     return _SEPARATOR.join(_portable_segment(segment) for segment in name.split(_SEPARATOR))
+
+
+#: The name this had before it was clear which "name" it meant — a *file* name, against the
+#: file name check in `maf_sandbox.paths`, which confines a whole guest path. Goes in the next
+#: minor (#734); it is the same object, not a wrapper.
+portable_name = portable_file_name
 
 
 def _portable_segment(segment: str) -> str:
