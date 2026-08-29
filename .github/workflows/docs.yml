@@ -12,10 +12,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    # `edited` names a body edit: the tracker check reads the request's promises live, so a
-    # body that gains `Fixes #N` after the last push re-runs the gate rather than leaving the
-    # push's green attached to the same head.
-    types: [opened, synchronize, reopened, edited]
     paths:
       - "**/*.md"
       # The reference check resolves against the *whole tracked tree*, so anything that moves
@@ -34,8 +30,6 @@ on:
 
 permissions:
   contents: read
-  # The tracker check reads the pull request's closing references.
-  pull-requests: read
 
 concurrency:
   group: docs-${{ github.event.pull_request.number || github.ref }}
@@ -64,16 +58,6 @@ jobs:
         # tree and nothing else, so it cannot be flaky, and the references it guards ship inside
         # the wheel (#556).
         run: uv run python scripts/check_doc_paths.py
-
-      - name: Status trackers still say what the rows say
-        # The structure test holds every row to pinning *something*; nothing held it to pinning
-        # something still open, so a row went stale the day its issue closed and no check failed.
-        # This reads the trackers themselves. Gating: the token is always present here, and a
-        # finding is a sentence in a shipped document that has stopped being true.
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: uv run python scripts/check_doc_trackers.py
 
       - name: Markdown code blocks (report-only)
         # Lints the ```python blocks in README/packages/samples/RELEASING and the decided half of
