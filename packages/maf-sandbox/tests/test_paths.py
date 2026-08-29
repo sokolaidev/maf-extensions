@@ -9,6 +9,8 @@ contained and is not.
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
 
 import pytest
 
@@ -332,23 +334,48 @@ class TestRefuseSymlinkedParents:
 
 
 class TestTheNamesTheseHadBefore:
-    """The old spellings still import, and are the same objects rather than copies."""
+    """Each spelling from before the rename warns on lookup and hands back the replacement."""
 
-    def test_the_four_path_names_still_resolve(self):
-        assert paths.confine_guest_path is paths.confine_resolve_guest_path
-        assert paths.confine_guest_write_path is paths.confine_resolve_guest_write_path
-        assert paths.guest_directory_chain is paths.guest_path_and_ancestors
-        assert paths.refuse_symlinked_parents is paths.refuse_symlinked_ancestors
+    RENAMED = [
+        ("confine_guest_path", "confine_resolve_guest_path"),
+        ("confine_guest_write_path", "confine_resolve_guest_write_path"),
+        ("guest_directory_chain", "guest_path_and_ancestors"),
+        ("refuse_symlinked_parents", "refuse_symlinked_ancestors"),
+    ]
 
-    def test_both_spellings_are_exported(self):
-        for name in (
-            "confine_guest_path",
-            "confine_guest_write_path",
-            "guest_directory_chain",
-            "refuse_symlinked_parents",
-            "confine_resolve_guest_path",
-            "confine_resolve_guest_write_path",
-            "guest_path_and_ancestors",
-            "refuse_symlinked_ancestors",
-        ):
-            assert name in paths.__all__, name
+    def test_the_sync_pair_warns_and_delegates(self):
+        with pytest.warns(DeprecationWarning, match="confine_resolve_guest_path"):
+            confined = paths.confine_guest_path("out/a.png", _WORK_DIR)
+        assert confined == paths.confine_resolve_guest_path("out/a.png", _WORK_DIR)
+
+        with pytest.warns(DeprecationWarning, match="guest_path_and_ancestors"):
+            chain = paths.guest_directory_chain("/maf-sandbox/work/out", _WORK_DIR)
+        assert chain == paths.guest_path_and_ancestors("/maf-sandbox/work/out", _WORK_DIR)
+
+    def test_the_async_pair_warns_and_delegates(self):
+        stat, _ = TestRefuseSymlinkedParents._stat(
+            {"/maf-sandbox": EntryKind.DIRECTORY, "/maf-sandbox/work": EntryKind.DIRECTORY}
+        )
+
+        with pytest.warns(DeprecationWarning, match="refuse_symlinked_ancestors"):
+            asyncio.run(paths.refuse_symlinked_parents(stat, "/maf-sandbox/work/a.png", _WORK_DIR))
+
+        with pytest.warns(DeprecationWarning, match="confine_resolve_guest_write_path"):
+            written = asyncio.run(paths.confine_guest_write_path(stat, "a.png", _WORK_DIR))
+        assert written == "/maf-sandbox/work/a.png"
+
+    def test_importing_the_old_spelling_does_not_warn(self):
+        """The three shipped backends import these; warning here fails them under `-W error`."""
+        source = "from maf_sandbox.paths import refuse_symlinked_parents, confine_guest_path"
+        completed = subprocess.run(
+            [sys.executable, "-W", "error::DeprecationWarning", "-c", source],
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode == 0, completed.stderr
+
+    @pytest.mark.parametrize(("old", "new"), RENAMED)
+    def test_both_spellings_stay_importable_for_the_cycle(self, old: str, new: str):
+        """Keeping the old name means keeping it in `__all__` too, until the removal minor."""
+        assert old in paths.__all__
+        assert new in paths.__all__

@@ -22,6 +22,7 @@ guest path or raises; ``refuse_*`` returns nothing and raises.  Nothing here ans
 from __future__ import annotations
 
 import posixpath
+import warnings
 from collections.abc import Awaitable, Callable
 
 from ._protocol import EntryKind, SandboxEntry
@@ -152,9 +153,50 @@ async def refuse_symlinked_ancestors(
             raise NotADirectoryError(f"{directory!r} is not a directory")
 
 
-# The spellings these four had before the rename, kept while callers move to the new ones.
-# Aliases rather than wrappers: the same objects, so `is` holds.
-confine_guest_path = confine_resolve_guest_path
-confine_guest_write_path = confine_resolve_guest_write_path
-guest_directory_chain = guest_path_and_ancestors
-refuse_symlinked_parents = refuse_symlinked_ancestors
+def _warn_renamed(old: str, new: str) -> None:
+    """The notice a caller still on the old spelling gets, once per call."""
+    warnings.warn(
+        f"maf_sandbox.paths.{old} is deprecated and is removed in the next minor; use {new}.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
+
+# The spellings these four had before the rename, served for one minor. Delegating wrappers
+# rather than a module ``__getattr__``: the hook fires on *import*, and the three shipped
+# backends import these names, so under ``-W error`` it stopped them loading at all. A wrapper
+# warns when the function is called, which is the notice without the breakage.
+
+
+def confine_guest_path(path: str, working_directory: str) -> str:
+    """Deprecated. Use :func:`confine_resolve_guest_path`."""
+    _warn_renamed("confine_guest_path", "confine_resolve_guest_path")
+    return confine_resolve_guest_path(path, working_directory)
+
+
+async def confine_guest_write_path(
+    stat: Callable[[str], Awaitable[SandboxEntry | None]],
+    path: str,
+    working_directory: str,
+) -> str:
+    """Deprecated. Use :func:`confine_resolve_guest_write_path`."""
+    _warn_renamed("confine_guest_write_path", "confine_resolve_guest_write_path")
+    return await confine_resolve_guest_write_path(stat, path, working_directory)
+
+
+def guest_directory_chain(guest_path: str, working_directory: str) -> tuple[str, ...]:
+    """Deprecated. Use :func:`guest_path_and_ancestors`."""
+    _warn_renamed("guest_directory_chain", "guest_path_and_ancestors")
+    return guest_path_and_ancestors(guest_path, working_directory)
+
+
+async def refuse_symlinked_parents(
+    stat: Callable[[str], Awaitable[SandboxEntry | None]],
+    guest_path: str,
+    working_directory: str,
+    *,
+    include_self: bool = False,
+) -> None:
+    """Deprecated. Use :func:`refuse_symlinked_ancestors`."""
+    _warn_renamed("refuse_symlinked_parents", "refuse_symlinked_ancestors")
+    await refuse_symlinked_ancestors(stat, guest_path, working_directory, include_self=include_self)

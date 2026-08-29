@@ -1348,10 +1348,18 @@ class TestMakeFileSystemSink:
 
 
 class TestTheNameThisHadBefore:
-    """`portable_name` still resolves, and is the same object as `portable_file_name`."""
+    """`portable_name` warns on lookup and hands back `portable_file_name`."""
 
-    def test_the_old_spelling_still_resolves(self):
+    def test_it_warns_and_delegates(self):
         import maf_sandbox
 
-        assert maf_sandbox.portable_name is maf_sandbox.portable_file_name
+        with pytest.warns(DeprecationWarning, match="portable_file_name"):
+            rewritten = maf_sandbox.portable_name("NUL.txt")
+
+        assert rewritten == maf_sandbox.portable_file_name("NUL.txt")
+
+    def test_both_spellings_stay_importable_for_the_cycle(self):
+        import maf_sandbox
+
         assert "portable_name" in maf_sandbox.__all__
+        assert "portable_file_name" in maf_sandbox.__all__

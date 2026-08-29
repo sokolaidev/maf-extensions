@@ -23,6 +23,7 @@ from __future__ import annotations
 import contextlib
 import posixpath
 import unicodedata
+import warnings
 from collections.abc import Awaitable, Callable, Generator
 from dataclasses import dataclass
 from enum import StrEnum
@@ -59,7 +60,6 @@ __all__ = [
     "make_file_system_sink",
     "missing_sink_refusal",
     "portable_file_name",
-    "portable_name",
     "spec_lands_artifacts",
     "validate_artifact_name",
 ]
@@ -365,8 +365,14 @@ def portable_file_name(name: str) -> str:
     return _SEPARATOR.join(_portable_segment(segment) for segment in name.split(_SEPARATOR))
 
 
-#: The spelling this had before the rename, kept while callers move. The same object.
-portable_name = portable_file_name
+def portable_name(name: str) -> str:
+    """Deprecated. Use :func:`portable_file_name`."""
+    warnings.warn(
+        "portable_name is deprecated and is removed in the next minor; use portable_file_name.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return portable_file_name(name)
 
 
 def _portable_segment(segment: str) -> str:
