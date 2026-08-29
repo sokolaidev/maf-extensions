@@ -78,7 +78,8 @@ Maintained by [SOKOLAI BV](https://www.sokol.ai).
 | Was | Is |
 | --- | --- |
 | `backend.capabilities` | `backend.declarations.capabilities` |
-| `backend.limits` | `backend.declarations.limits` |
 | `backend.egress_modes` | `backend.declarations.egress_modes` |
+
+`limits` is not in that table because this backend never declared one — the router read its silence as `DEFAULT_SANDBOX_LIMITS`, and there was no `backend.limits` to read. `backend.declarations.limits` now answers with that same constant, so the ceiling is unchanged and the value is newly *reachable* rather than renamed.
 
 Nothing about what this backend declares changed — the values, and how they are derived from the config, are exactly as they were. `maf-sandbox`'s own README carries the reasoning and what a backend author has to do.

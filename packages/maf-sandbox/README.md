@@ -178,9 +178,13 @@ class MyBackend:
 **`maf_sandbox.testing.InProcessSandboxBackend` lost its `capabilities=`, `limits=`, `egress_modes=` and `os_families=` keyword arguments**, replaced by one `declarations=`. Override with `dataclasses.replace(FAKE_BACKEND_DECLARATIONS, ...)` rather than constructing a bare `BackendDeclarations`: the fake's default states `egress_modes={ALLOWLIST, CLOSED}` so a workload under test attaches, and a bare object resets it to the rule that enforces nothing.
 
 ```python
-# was
-InProcessSandboxBackend(capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT})
-# is
+import dataclasses
+
+from maf_sandbox import DEFAULT_CAPABILITIES, Capability
+from maf_sandbox.testing import FAKE_BACKEND_DECLARATIONS, InProcessSandboxBackend
+
+# was: InProcessSandboxBackend(capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT})
+# is:
 InProcessSandboxBackend(
     declarations=dataclasses.replace(
         FAKE_BACKEND_DECLARATIONS, capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
