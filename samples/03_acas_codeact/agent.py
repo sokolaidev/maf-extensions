@@ -25,7 +25,7 @@ see this directory's README for the prerequisites and the environment variables.
 #     "agent-framework-openai",
 #     "maf-sandbox-acas>=0.10.0",
 #     "maf-sandbox-codeact",
-#     "maf-sandbox>=0.25",
+#     "maf-sandbox>=0.26",
 # ]
 # ///
 
