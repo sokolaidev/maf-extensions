@@ -907,7 +907,11 @@ class DockerSandboxBackend:
                 return 0, 0
             named_a_user = True
             user_spec, _, group_spec = raw.partition(":")
-            uid = int(user_spec) if user_spec.isdigit() else None
+            # An empty user half is docker's own shorthand for root: `:20001` runs as
+            # `0:20001` and a bare `:` as `0:0` (both measured).  Reading it here is what
+            # keeps a gid the field already stated from being discarded on an image with no
+            # `id` to answer the uid.
+            uid = 0 if not user_spec else (int(user_spec) if user_spec.isdigit() else None)
             gid = int(group_spec) if group_spec.isdigit() else None
             group_name = group_spec if group_spec and not group_spec.isdigit() else None
             # `/etc/passwd` answers a uid, and a gid only when the group half is not

@@ -1774,6 +1774,46 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         assert (facts.guest_uid, facts.guest_gid) == (10001, 30001)
         assert fake.matching("exec") == []
 
+    def test_an_empty_user_half_is_dockers_shorthand_for_root(self):
+        """`USER :20001` runs as `0:20001` — measured against a real engine, which resolves
+        the empty half to root itself.  Reading it as unknown cost the gid the field had
+        already stated: with no `id` to answer the uid, the pair fell back to `0:0`.
+        """
+        facts, fake = self._facts(b":20001\n")
+        assert (facts.guest_uid, facts.guest_gid) == (0, 20001)
+        # Both halves are known from `Config.User` alone, so the guest is not asked at all.
+        assert fake.matching("exec") == []
+
+    def test_a_bare_colon_is_root_with_the_group_its_passwd_entry_names(self):
+        """`USER :` runs as `0:0` (measured).  The uid half is root by the same rule, and
+        the gid then comes from root's own passwd entry rather than from the guest.
+        """
+        passwd = b"root:x:0:0:root:/root:/bin/bash\napp:x:10001:20001::/home/app:/bin/sh\n"
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b":\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        fake._responder = _passwd_responder([_NAME], overrides, passwd)
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (0, 0)
+        assert fake.matching("exec") == []
+
+    def test_an_empty_group_half_takes_the_gid_the_passwd_entry_names(self):
+        """`USER 10001:` runs as `10001:20001` (measured): docker resolves the empty group
+        half from the passwd entry, and so does this.
+        """
+        passwd = b"root:x:0:0:root:/root:/bin/bash\napp:x:10001:20001::/home/app:/bin/sh\n"
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001:\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        fake._responder = _passwd_responder([_NAME], overrides, passwd)
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
+        assert fake.matching("exec") == []
+
     def test_a_uid_gid_pair_is_split(self):
         facts, _ = self._facts(b"10001:20001\n")
         assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
