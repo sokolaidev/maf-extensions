@@ -4,6 +4,33 @@ All notable changes to `maf-sandbox-acas` are documented here. The format follow
 
 Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, and the entries below name it as it was — their tags and compare links point at real history and are left as they were written. `maf-sandbox-aca` is not maintained past `0.2.3`; PyPI names cannot be reused, so the rename is a new distribution rather than a continuation of that one.
 
+## [0.15.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.14.0...maf-sandbox-acas-v0.15.0) (2026-08-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** a backend's four optional declarations become one BackendDeclarations ([#737](https://github.com/sokolaidev/maf-extensions/issues/737))
+* a scope purge reports what it could not delete ([#681](https://github.com/sokolaidev/maf-extensions/issues/681))
+
+### Features
+
+* a scope purge reports what it could not delete ([#681](https://github.com/sokolaidev/maf-extensions/issues/681)) ([739481d](https://github.com/sokolaidev/maf-extensions/commit/739481df3b7903c7f0015fee81282027666bc1ba))
+* **sandbox-acas:** adding file deletion capability ([#709](https://github.com/sokolaidev/maf-extensions/issues/709)) ([c61efb7](https://github.com/sokolaidev/maf-extensions/commit/c61efb7ebbf487b1af6e49c33f50c8f8cb612a83))
+* **sandbox:** a backend's four optional declarations become one BackendDeclarations ([#737](https://github.com/sokolaidev/maf-extensions/issues/737)) ([934c7e4](https://github.com/sokolaidev/maf-extensions/commit/934c7e48bc7731eb2b67ca81f5c6cae46c262467))
+
+
+### Fixes
+
+* **acas:** refuse a non-root image for FILES_OUT and HOST_TOOLS, warn for EXEC ([#724](https://github.com/sokolaidev/maf-extensions/issues/724)) ([d9f4ffa](https://github.com/sokolaidev/maf-extensions/commit/d9f4ffa35b78cca52511ae65dde21835513f0f2f))
+* admit maf-sandbox 0.27 in the dependents' range, and require 0.26 in the samples ([#748](https://github.com/sokolaidev/maf-extensions/issues/748)) ([f905461](https://github.com/sokolaidev/maf-extensions/commit/f9054614f061ffacf53abbbc174501f2d5be5a74))
+* require maf-sandbox 0.27.0 in the dependents and 0.27 in the samples, and admit 0.28 ([#751](https://github.com/sokolaidev/maf-extensions/issues/751)) ([49d2a75](https://github.com/sokolaidev/maf-extensions/commit/49d2a758f60f3ffd503e5a94ea2b082c4d36ce9e))
+* **sandbox-acas:** reclaim removes through the data plane ([#707](https://github.com/sokolaidev/maf-extensions/issues/707)) ([96c7e4e](https://github.com/sokolaidev/maf-extensions/commit/96c7e4eb6d268048eb39ebe69486350c6e7c256c))
+
+
+### Documentation
+
+* **sandbox:** confinement is the file name check and the filesystem path check, and "walk" is retired ([#740](https://github.com/sokolaidev/maf-extensions/issues/740)) ([52ead17](https://github.com/sokolaidev/maf-extensions/commit/52ead1719d3cb523ce67ef58f38115b558a830e8))
+
 ## [0.14.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.13.1...maf-sandbox-acas-v0.14.0) (2026-08-26)
 
 
