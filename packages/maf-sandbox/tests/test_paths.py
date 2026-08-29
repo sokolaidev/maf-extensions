@@ -371,11 +371,9 @@ class TestTheNamesTheseHadBefore:
         assert written == "/maf-sandbox/work/a.png"
 
     def test_the_warning_names_the_caller_and_not_asyncio(self):
-        """RELEASING.md wants the notice at the call site, which an `async def` shim loses.
+        """The warning names this file, not `asyncio/events.py`.
 
-        Its body runs only once the loop has the coroutine, so the warning is attributed to
-        `asyncio/events.py`. The shims are sync functions returning the replacement's
-        coroutine for exactly this reason.
+        `confine_guest_write_path` gives the reason the shims are sync and return a coroutine.
         """
         stat, _ = TestRefuseSymlinkedParents._stat(
             {"/maf-sandbox": EntryKind.DIRECTORY, "/maf-sandbox/work": EntryKind.DIRECTORY}
