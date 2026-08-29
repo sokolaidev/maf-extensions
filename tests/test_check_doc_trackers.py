@@ -1,10 +1,10 @@
 """Tests for the checker that reads a Status row's tracker against the live issue.
 
-Every test here is offline. The script's network calls live behind `ask` and `pull_request_body`
-and its `gh` call behind `branch_pull_request_body`, and nothing below touches them: what is
+Every test here is offline. The script's network calls live behind `ask` and `closing_issues`
+and its `gh` call behind `branch_pull_request_number`, and nothing below touches them: what is
 worth pinning is the reading — which rows count, which references belong to this repository,
-what a request's closing keywords promise, and which of the two mistakes each finding is. A
-test that reached GitHub would fail on a train and prove nothing about the parsing that goes
+what GitHub says the request closes, and which of the two mistakes each finding is. A test
+that reached GitHub would fail on a train and prove nothing about the parsing that goes
 wrong.
 """
 
@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from check_doc_trackers import (  # noqa: E402
     Row,
+    closures_query,
     findings,
     is_outstanding,
     promised_numbers,
@@ -90,34 +91,28 @@ class TestReadingTheReferences:
 
 
 class TestPromisedNumbers:
-    """The numbers a request's closing keywords promise to close, as GitHub's own set writes them."""
+    """What GitHub itself says the request closes, filtered to this repository's issues."""
 
-    @pytest.mark.parametrize(
-        "word",
-        ["close", "closes", "closed", "fix", "fixes", "fixed", "resolve", "resolves", "resolved"],
-    )
-    def test_every_keyword_promises(self, word: str):
-        assert promised_numbers(f"{word} #591", _SLUG) == frozenset({591})
+    @staticmethod
+    def _nodes(*pairs: tuple[str, int]) -> list[dict]:
+        return [
+            {"number": number, "repository": {"nameWithOwner": owner}} for owner, number in pairs
+        ]
 
-    def test_capitalisation_is_githubs_behaviour_too(self):
-        assert promised_numbers("Fixes #591", _SLUG) == frozenset({591})
-
-    def test_the_slug_and_url_forms_name_this_repository(self):
-        body = f"fixes {_SLUG}#591, closes https://github.com/{_SLUG}/issues/592 and resolves #593"
-        assert promised_numbers(body, _SLUG) == frozenset({591, 592, 593})
+    def test_this_repositorys_promises_count(self):
+        nodes = self._nodes((_SLUG, 591), (_SLUG, 592))
+        assert promised_numbers(nodes, _SLUG) == frozenset({591, 592})
 
     def test_another_repositorys_promises_do_not_count(self):
-        body = (
-            "fixes microsoft/azure-container-apps#1807 and closes "
-            "https://github.com/microsoft/azure-container-apps/issues/1808"
-        )
-        assert promised_numbers(body, _SLUG) == frozenset()
+        """A cross-repository reference is a real promise, just not one this check may score."""
+        nodes = self._nodes((_SLUG, 591), ("microsoft/azure-container-apps", 1807))
+        assert promised_numbers(nodes, _SLUG) == frozenset({591})
 
-    def test_a_promise_aimed_at_a_pull_request_closes_nothing(self):
-        assert promised_numbers(f"fixes https://github.com/{_SLUG}/pull/532", _SLUG) == frozenset()
+    def test_a_request_closing_nothing_promises_nothing(self):
+        assert promised_numbers([], _SLUG) == frozenset()
 
-    def test_a_keyword_without_a_reference_promises_nothing(self):
-        assert promised_numbers("this fixes the flaky test once and for all", _SLUG) == frozenset()
+    def test_a_node_without_a_repository_is_not_ours_to_guess(self):
+        assert promised_numbers([{"number": 591}], _SLUG) == frozenset()
 
 
 class TestWhichRowsAreOutstanding:
@@ -252,6 +247,15 @@ class TestTheQuery:
         """A tracking cell names merged pull requests as often as issues."""
         assert "... on Issue { state }" in query(_SLUG, [1])
         assert "... on PullRequest { state }" in query(_SLUG, [1])
+
+
+class TestTheClosuresQuery:
+    def test_it_asks_githubs_own_reading_of_the_closing_keywords(self):
+        """Not a re-parse of the body: what GitHub ignores or accepts is already decided."""
+        asked = closures_query(_SLUG, 737)
+        assert "pullRequest(number: 737)" in asked
+        assert "closingIssuesReferences(first: 100)" in asked
+        assert "nameWithOwner" in asked
 
 
 class TestTheRemoteSlug:

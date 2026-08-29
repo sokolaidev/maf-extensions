@@ -16,10 +16,10 @@ Two findings, and they are different mistakes:
   That decision is now tracked by nothing, which is the state the convention exists to prevent.
 
 A run that belongs to a pull request judges the state at *merge* rather than the state today:
-the request's closing keywords promise what it closes, a promised number counts as `CLOSED`,
-and the row a merge is about to invalidate can be flipped in the request that earns the flip.
-A run with no request to its name — the one on `main` — judges live state, which is what
-catches a promise that never landed.
+what the request promises to close — read from GitHub's own closing references, never parsed
+back out of the body — counts as `CLOSED`, and the row a merge is about to invalidate can be
+flipped in the request that earns the flip. A run with no request to its name — the one on
+`main` — judges live state, which is what catches a promise that never landed.
 
 A reference to another repository is reported as unchecked rather than guessed at: upstream
 issues close on somebody else's schedule and this check has no standing to read them.
@@ -63,19 +63,6 @@ _REFERENCE = re.compile(
 #: merged)` label a group; attaching one to the reference it follows checks fewer references
 #: than it labels, which is the safe direction to be wrong in.
 _ANNOTATION = re.compile(r"\A\)?\s*\((?:both |all |either )?(open|closed|merged)\)", re.IGNORECASE)
-
-#: GitHub's closing keywords, followed by the reference they close. `#N` means this repository;
-#: `owner/repo#N` and the `issues/` URL name one in full, and a reference into another repository
-#: promises nothing here. Only `/issues/` closes — a keyword aimed at a pull request closes
-#: nothing when the request merges.
-_CLOSING = re.compile(
-    r"\b(?:clos(?:e|es|ed)|fix(?:es|ed)?|resolv(?:e|es|ed))\s+"
-    r"(?:"
-    r"https://github\.com/(?P<owner>[\w.-]+)/(?P<repo>[\w.-]+)/issues/(?P<url_number>\d+)"
-    r"|(?:(?P<ref>[\w.-]+/[\w.-]+))?#(?P<number>\d+)"
-    r")",
-    re.IGNORECASE,
-)
 
 
 @dataclass(frozen=True)
@@ -156,20 +143,17 @@ def references(cell: str) -> list[Reference]:
     return found
 
 
-def promised_numbers(body: str, slug: str) -> frozenset[int]:
-    """The numbers this request's closing keywords promise to close — this repository's only.
+def promised_numbers(nodes: list[dict], slug: str) -> frozenset[int]:
+    """The numbers this repository's issues appear as in what GitHub says the request closes.
 
-    A keyword without a reference promises nothing, and a reference into another repository
-    stays out, the same way `ask` refuses to read another repository's numbers.
+    A reference into another repository is a real promise, just not one this check has
+    standing to score, the same way `ask` refuses to read another repository's numbers.
     """
-    promised: set[int] = set()
-    for match in _CLOSING.finditer(body):
-        if match["url_number"] is not None:
-            if f"{match['owner']}/{match['repo']}" == slug:
-                promised.add(int(match["url_number"]))
-        elif match["ref"] is None or match["ref"] == slug:
-            promised.add(int(match["number"]))
-    return frozenset(promised)
+    return frozenset(
+        node["number"]
+        for node in nodes
+        if (node.get("repository") or {}).get("nameWithOwner") == slug
+    )
 
 
 def is_outstanding(state: str) -> bool:
@@ -336,33 +320,47 @@ def pull_request_number() -> int | None:
     return int(raw) if raw.isdigit() else None
 
 
-def pull_request_body(slug: str, number: int, auth: str) -> str | None:
-    """One request's body, read live so the run sees edits its trigger did not.
+def closures_query(slug: str, number: int) -> str:
+    """One GraphQL document asking what the request itself says it closes.
 
-    ``None`` for a request with no body or one that is gone — a missing request is a fact about
-    the repository rather than a refusal, and the check falls back to live state.
+    `closingIssuesReferences` is GitHub's own reading of the closing keywords, which is the
+    question this check is asking. A hand-rolled parser would have to reproduce every context
+    GitHub ignores and every spelling it accepts — a colon after the keyword, code blocks, a
+    request targeting a branch other than the default — and it is wrong the first time either
+    list moves.
     """
     owner, name = slug.split("/")
-    document = (
+    return (
         f'query {{ repository(owner: "{owner}", name: "{name}") '
-        f"{{ pullRequest(number: {number}) {{ body }} }} }}"
+        f"{{ pullRequest(number: {number}) {{ closingIssuesReferences(first: 100) "
+        f"{{ nodes {{ number repository {{ nameWithOwner }} }} }} }} }} }}"
     )
-    body = _post(document, auth)
-    repository = (body.get("data") or {}).get("repository") or {}
-    answered = repository.get("pullRequest") or {}
-    return answered.get("body")
 
 
-def branch_pull_request_body(root: Path) -> str | None:
-    """The body of the request for the current branch, or ``None`` when there is none.
+def closing_issues(slug: str, number: int, auth: str) -> list[dict]:
+    """The issues GitHub says this request closes, every repository's list included.
 
-    `gh pr view` reads the request from the branch, which is the only place a local run can find
+    Keeping this repository's only happens in `promised_numbers`, which stays pure and so
+    testable offline; this half is one query, like `ask`. A request that is gone answers with
+    an empty list, which is a fact about the repository rather than a refusal.
+    """
+    body = _post(closures_query(slug, number), auth)
+    pull = (body.get("data") or {}).get("repository") or {}
+    answered = (pull or {}).get("pullRequest") or {}
+    references = (answered or {}).get("closingIssuesReferences") or {}
+    return references.get("nodes") or []
+
+
+def branch_pull_request_number(root: Path) -> int | None:
+    """The request for the current branch, or ``None`` when there is none.
+
+    `gh pr view` reads the number off the branch, which is the only place a local run can find
     one — and why this stays optional: before the request exists there is nothing to promise,
     and the check runs exactly as it did before.
     """
     try:
         answered = subprocess.run(
-            ["gh", "pr", "view", "--json", "body"],
+            ["gh", "pr", "view", "--json", "number"],
             cwd=root,
             capture_output=True,
             text=True,
@@ -373,7 +371,7 @@ def branch_pull_request_body(root: Path) -> str | None:
     if answered.returncode != 0:
         return None
     try:
-        return (json.loads(answered.stdout) or {}).get("body")
+        return json.loads(answered.stdout).get("number")
     except json.JSONDecodeError:
         return None
 
@@ -409,14 +407,11 @@ def main(argv: list[str]) -> int:
     try:
         states = ask(slug, wanted, auth)
         number = pull_request_number()
-        body = (
-            pull_request_body(slug, number, auth)
-            if number is not None
-            else branch_pull_request_body(root)
-        )
+        if number is None:
+            number = branch_pull_request_number(root)
         promised: frozenset[int] = frozenset()
-        if body:
-            promised = promised_numbers(body, slug)
+        if number is not None:
+            promised = promised_numbers(closing_issues(slug, number, auth), slug)
     except urllib.error.HTTPError as refused:
         # Asked and turned away — a rejected token or a spent rate limit. Not the same as being
         # offline and not skippable: in CI the token is always there, so a silent pass here would
