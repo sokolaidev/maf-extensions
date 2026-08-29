@@ -617,7 +617,7 @@ class _DockerSandbox:
         (a symlink tars as a link *entry*, not its target's bytes) is refused on the header
         type, and every parent, from the filesystem root down, is classified first.
 
-        The residual that check cannot close: a guest that turns a stat-ed component into a link
+        The residual that the check cannot close: a guest that turns a stat-ed component into a link
         between the check and the read wins, since ``docker cp`` has no no-follow form.
         """
         guest = confine_guest_path(path, working_directory)
