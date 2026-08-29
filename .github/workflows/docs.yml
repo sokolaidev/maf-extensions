@@ -30,6 +30,8 @@ on:
 
 permissions:
   contents: read
+  # The tracker check reads the pull request's body for its closing keywords.
+  pull-requests: read
 
 concurrency:
   group: docs-${{ github.event.pull_request.number || github.ref }}
@@ -66,6 +68,9 @@ jobs:
         # finding is a sentence in a shipped document that has stopped being true.
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          # The check reads the request's body live by number, so an edit that gains `Fixes #N`
+          # after the last push is seen by the next run rather than frozen at trigger time.
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: uv run python scripts/check_doc_trackers.py
 
       - name: Markdown code blocks (report-only)
