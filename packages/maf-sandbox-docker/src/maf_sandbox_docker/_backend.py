@@ -211,16 +211,17 @@ def _proxy_name(container: str) -> str:
 
 
 def _single_rooted(guest_path: str) -> str:
-    """``normpath``, with the double-root spelling POSIX permits collapsed to one slash.
+    """``guest_directory_chain``'s normal form: the segments, under exactly one leading slash.
 
-    ``posixpath.normpath`` keeps *exactly* two leading slashes and collapses three or more, so
-    ``//maf-sandbox/work`` survives as itself.  ``guest_directory_chain`` rebuilds its entries
-    from segments and is always single-rooted, so the two spellings have to be reconciled
-    before they are compared — an unreconciled pair matches nothing, and every directory the
-    write needs goes back to being docker's to create as root.
+    That chain rebuilds every entry from segments, so whatever it is handed comes back
+    ``/``-rooted and single-slashed.  Two spellings reach here that ``normpath`` alone leaves
+    alone — ``//maf-sandbox/work``, since POSIX lets it keep *exactly* two leading slashes, and
+    a relative ``workspace`` — and either one compared against the chain matches nothing, which
+    drops every directory the write needs and hands it back to docker to create as root.
+    Deriving the form the same way the chain does is what keeps the two from drifting again.
     """
-    normalised = posixpath.normpath(guest_path)
-    return "/" + normalised.lstrip("/") if normalised.startswith("//") else normalised
+    segments = [s for s in posixpath.normpath(guest_path).split("/") if s and s != "."]
+    return "/" + "/".join(segments)
 
 
 def _image_reference(spec: SandboxSpec) -> str:

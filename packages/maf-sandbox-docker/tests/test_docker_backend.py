@@ -1312,6 +1312,31 @@ class TestWriteFile:
             work_dir = archive.getmember("maf-sandbox/work")
             assert work_dir.isdir() and (work_dir.uid, work_dir.gid) == (10001, 10001)
 
+    def test_a_relative_work_dir_still_stamps_its_directories(self):
+        """The other spelling `normpath` leaves alone.  `guest_directory_chain` roots what it
+        is handed — it already writes `/workspace` into the walk — so an unrooted
+        `working_directory` compared against it matches nothing, and every directory goes
+        back to docker to create as root.
+        """
+        work = "workspace"
+        spec = SandboxSpec(kind="e2e", image="img", work_dir=work)
+        overrides = {
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001:20001\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, spec))
+        asyncio.run(sandbox.write_file("call-a1/note", "x", working_directory=work))
+        stdin = fake.only("cp", "-").stdin
+        assert stdin is not None
+        with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
+            assert archive.getnames() == [
+                "workspace",
+                "workspace/call-a1",
+                "workspace/call-a1/note",
+            ]
+            stamped = archive.getmember("workspace/call-a1")
+            assert stamped.isdir() and (stamped.uid, stamped.gid) == (10001, 20001)
+
     def test_a_double_rooted_work_dir_still_stamps_its_directories(self):
         """`posixpath.normpath` keeps exactly two leading slashes, which POSIX permits, while
         the directory chain is rebuilt from segments and is always single-rooted.  Comparing
