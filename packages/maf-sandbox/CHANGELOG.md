@@ -2,6 +2,39 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.26.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.25.0...maf-sandbox-v0.26.0) (2026-08-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** a backend's four optional declarations become one BackendDeclarations ([#737](https://github.com/sokolaidev/maf-extensions/issues/737))
+* **sandbox:** verify reclaim conformance through the subject's own seams ([#723](https://github.com/sokolaidev/maf-extensions/issues/723))
+* **sandbox:** a spec's identities are its surface's own, not a second declaration ([#720](https://github.com/sokolaidev/maf-extensions/issues/720))
+* **sandbox:** configure reclaim and failure handling on the router ([#714](https://github.com/sokolaidev/maf-extensions/issues/714))
+* a scope purge reports what it could not delete ([#681](https://github.com/sokolaidev/maf-extensions/issues/681))
+
+### Features
+
+* a scope purge reports what it could not delete ([#681](https://github.com/sokolaidev/maf-extensions/issues/681)) ([739481d](https://github.com/sokolaidev/maf-extensions/commit/739481df3b7903c7f0015fee81282027666bc1ba))
+* **sandbox:** a backend's four optional declarations become one BackendDeclarations ([#737](https://github.com/sokolaidev/maf-extensions/issues/737)) ([934c7e4](https://github.com/sokolaidev/maf-extensions/commit/934c7e48bc7731eb2b67ca81f5c6cae46c262467))
+* **sandbox:** a spec's identities are its surface's own, not a second declaration ([#720](https://github.com/sokolaidev/maf-extensions/issues/720)) ([5f08ca6](https://github.com/sokolaidev/maf-extensions/commit/5f08ca66f40b6460d3e660d4b4080b9ff03b0f56))
+* **sandbox:** configure reclaim and failure handling on the router ([#714](https://github.com/sokolaidev/maf-extensions/issues/714)) ([f671417](https://github.com/sokolaidev/maf-extensions/commit/f67141725d9bf97b9c8f91d764e64cea7a1005e6))
+* **sandbox:** rename the confinement helpers to say what they do, keeping the old spellings for one minor ([#742](https://github.com/sokolaidev/maf-extensions/issues/742)) ([506ef63](https://github.com/sokolaidev/maf-extensions/commit/506ef639082edd093b7f21c0c93da1119d379b5b))
+* **sandbox:** verify reclaim conformance through the subject's own seams ([#723](https://github.com/sokolaidev/maf-extensions/issues/723)) ([957183e](https://github.com/sokolaidev/maf-extensions/commit/957183e2170429612a3acf6e32ea0643eadcc48d))
+
+
+### Fixes
+
+* **sandbox:** a refusal reaches the caller, instead of reading like an outage ([#727](https://github.com/sokolaidev/maf-extensions/issues/727)) ([193f638](https://github.com/sokolaidev/maf-extensions/commit/193f638fbf412071213099a7a44d6fc310dd6846))
+* **sandbox:** a speculative probe stats what it must not read ([#718](https://github.com/sokolaidev/maf-extensions/issues/718)) ([d13a8df](https://github.com/sokolaidev/maf-extensions/commit/d13a8df85abd1016f314a4b13b93c6478ea85a9e))
+* **sandbox:** disposals for one key run one at a time, and an acquire re-reads the ledger ([#703](https://github.com/sokolaidev/maf-extensions/issues/703)) ([9f9ad78](https://github.com/sokolaidev/maf-extensions/commit/9f9ad78b318d13826c71a551163e9cd7fb870a21))
+
+
+### Documentation
+
+* **sandbox:** a confinement stat may not be answered by the guest, and wslc records that its is ([#739](https://github.com/sokolaidev/maf-extensions/issues/739)) ([e4f6566](https://github.com/sokolaidev/maf-extensions/commit/e4f65668e3cfd5d2012df52cac25c4c0d893fdab))
+* **sandbox:** confinement is the file name check and the filesystem path check, and "walk" is retired ([#740](https://github.com/sokolaidev/maf-extensions/issues/740)) ([52ead17](https://github.com/sokolaidev/maf-extensions/commit/52ead1719d3cb523ce67ef58f38115b558a830e8))
+
 ## [0.25.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.24.0...maf-sandbox-v0.25.0) (2026-08-26)
 
 
