@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.10.0...maf-sandbox-docker-v0.11.0) (2026-08-30)
+
+
+### Features
+
+* **docker:** the daemon says which guest it runs, so the backend declares it ([#587](https://github.com/sokolaidev/maf-extensions/issues/587)) ([#747](https://github.com/sokolaidev/maf-extensions/issues/747)) ([7e78f1b](https://github.com/sokolaidev/maf-extensions/commit/7e78f1b9d825f7222e54a65807d0741a17eba6db))
+
 ## [0.10.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.9.0...maf-sandbox-docker-v0.10.0) (2026-08-29)
 
 
