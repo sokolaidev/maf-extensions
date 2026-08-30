@@ -969,11 +969,11 @@ class TestServingTheUsersIdentity:
         assert first.value_json == second.value_json == '"acting as token-1"'
 
     def test_a_run_whose_mint_keeps_failing_survives_a_second_event_loop(self):
-        """A contended `asyncio.Lock` binds to the loop that waited on it.
+        """A run with no cached identity serializes correctly in whichever loop drives it.
 
-        One built per run would raise "bound to a different event loop" the second time a
-        run with no cached identity is driven concurrently, which is a crash rather than a
-        refusal — and a failing mint is exactly what leaves the cache empty.
+        A contended `asyncio.Lock` binds to the loop that waited on it, so the lock is the
+        loop's rather than the run's; a failing mint is what leaves the cache empty long
+        enough for a second loop to contend.
         """
         attempts: list[str] = []
 
@@ -1044,9 +1044,9 @@ class TestServingTheUsersIdentity:
         assert "mid-effect" not in recorded[0], recorded
 
     def test_a_cancel_while_queued_behind_another_mint_is_recorded(self, caplog):
-        """The waiter's cancel lands in `__aenter__`, which neither handler used to cover.
+        """A cancel that lands while queued for the mint is recorded as what it is.
 
-        Its record must not claim a credential may have been issued: this call never reached
+        The record must not claim a credential may have been issued: this call never reached
         the minter, and an operator reading that would chase a token nobody minted.
         """
         holding = asyncio.Event()
@@ -1226,6 +1226,20 @@ class TestServingTheUsersIdentity:
         @sandbox_tool(source=None, sink=None, identity=Identity.USER)
         def as_user() -> str:
             return "never"
+
+        with pytest.raises(ValueError, match="user_identity"):
+            _minting_registry().register(as_user)
+
+    def test_a_var_positional_of_that_name_does_not_count(self):
+        """`*user_identity` carries the name and cannot be bound by it.
+
+        Registration exists to catch a USER tool no call could ever reach, so admitting this
+        shape would leave the gate passing exactly what it is for.
+        """
+
+        @sandbox_tool(source=None, sink=None, identity=Identity.USER)
+        def as_user(*user_identity: str) -> str:
+            return "never"  # pragma: no cover - registration refuses it first
 
         with pytest.raises(ValueError, match="user_identity"):
             _minting_registry().register(as_user)

@@ -119,9 +119,12 @@ def _accepts_user_identity(func: Callable[..., Any]) -> bool:
     for parameter in signature.parameters.values():
         if parameter.kind is inspect.Parameter.VAR_KEYWORD:
             return True
-        if (
-            parameter.name == _USER_IDENTITY_PARAMETER
-            and parameter.kind is not inspect.Parameter.POSITIONAL_ONLY
+        # The kinds a keyword actually reaches, named rather than excluded: `*user_identity`
+        # is neither positional-only nor bindable by that name, and a rule written as "not
+        # positional-only" admits it and registers a tool no call can ever bind.
+        if parameter.name == _USER_IDENTITY_PARAMETER and parameter.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
         ):
             return True
     return False
@@ -807,18 +810,16 @@ class HostToolRun:
         self._delivered = 0
         self._delivered_bytes = 0
         self._minted_user_identity: str | None = None
-        # Per running loop, not per run. A contended `asyncio.Lock` binds itself to the loop
-        # that waited on it, and contending again from a second loop raises "bound to a
-        # different event loop" — measured, not assumed. A run reused across sequential
-        # `asyncio.run` calls whose mint has not yet succeeded reaches exactly that.
         self._mint_lock: asyncio.Lock | None = None
         self._mint_lock_loop: asyncio.AbstractEventLoop | None = None
 
     def _lock_for_this_loop(self) -> asyncio.Lock:
         """This loop's mint lock, replacing one left bound to a loop that has gone.
 
-        No ``await`` between the check and the assignment, so two tasks of one loop cannot
-        both install a lock and serialize against different objects.
+        A contended :class:`asyncio.Lock` binds to the loop that waited on it and refuses a
+        second, so the lock belongs to the running loop rather than to the run.  No ``await``
+        between the check and the assignment, so two tasks of one loop cannot both install a
+        lock and serialize against different objects.
         """
         loop = asyncio.get_running_loop()
         if self._mint_lock is None or self._mint_lock_loop is not loop:
