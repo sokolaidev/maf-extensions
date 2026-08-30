@@ -114,7 +114,9 @@ That block is one real run, on 2026-08-26, and it is reproduced as it was record
 Rendered diagram.png (image/png); saved under out/.
 ```
 
-every time — a host-authored line, not the model's — and a valid PNG appears at `out/diagram.png` (`89 50 4E 47` — the PNG magic — as its first bytes). The disposal line prints only once `render_diagram` has actually created and torn down a container, so a `Disposed 0` beside `Reclaim failures this turn: 0` means the model answered without rendering anything — the T0 behaviour this sample exists to contrast with. The two lines have to be read together: a nonzero reclaim count means the sandbox was already disposed when that call could not be cleaned, so the nought at the end is the honest remainder rather than a turn that never ran.
+every time — a host-authored line, not the model's — and a valid PNG appears at `out/diagram.png` (`89 50 4E 47` — the PNG magic — as its first bytes).
+
+**`Disposed 0` has three causes, and only one of them is the model skipping the tool.** That reading — the T0 behaviour this sample exists to contrast with — holds only when the other two measured lines rule the rest out. A nonzero `Reclaim failures this turn` means a call the framework could not clean had its sandbox disposed early, so the nought at the end is the honest remainder. And a `Not fully disposed:` line means the purge itself failed, which needed a sandbox to fail on: `ScopeDisposal` puts it plainly — the count "reads the same whether there was nothing to reclaim or nothing worked". That last case is the worst of the three, because a sandbox outlived the conversation still holding what the turn wrote; `check_live_diagram_sample.py` reports it in its own right rather than folding it into the count.
 
 It carries `[measured]` because it is the sample's report rather than the model's, and the reply is filtered before printing so a line of it starting with that tag comes out quoted, `> [measured] …` — otherwise a reply writing "Disposed 1 sandbox(es)." would answer for the router ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)).
 

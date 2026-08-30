@@ -182,6 +182,50 @@ class TestTheSandboxHalf:
         assert any("no sandbox was ever created" in reason for reason in failures)
 
 
+class TestThePurgeThatDidNotLand:
+    """The third way `Disposed 0` arises, and the one core warns about by name.
+
+    `ScopeDisposal`: the count "reads the same whether there was nothing to reclaim or nothing
+    worked". The sample prints `Not fully disposed` when it happens, so the checker has the
+    signal and only has to read it.
+    """
+
+    def test_it_is_reported_in_its_own_right(self):
+        output = _HEALTHY.replace(
+            _DISPOSAL_LINE,
+            f"{scaffold.MEASURED}Disposed 0 sandbox(es).\n"
+            f"{scaffold.MEASURED}Not fully disposed: DisposalFailure(code=TIMEOUT)",
+        )
+        failures = check.assess(output, _png(640, 480))
+        assert any("the scope purge did not land" in reason for reason in failures)
+        assert any("DisposalFailure(code=TIMEOUT)" in reason for reason in failures)
+
+    def test_it_is_not_read_as_a_turn_that_never_ran(self):
+        """The false diagnosis: a container existed, so blaming the model is wrong and loud."""
+        output = _HEALTHY.replace(
+            _DISPOSAL_LINE,
+            f"{scaffold.MEASURED}Disposed 0 sandbox(es).\n"
+            f"{scaffold.MEASURED}Not fully disposed: DisposalFailure(code=TIMEOUT)",
+        )
+        failures = check.assess(output, _png(640, 480))
+        assert not any("no sandbox was ever created" in reason for reason in failures)
+        assert len(failures) == 1
+
+    def test_a_nonzero_count_does_not_hide_it(self):
+        """A scope can dispose one sandbox and still leave another; the count alone says fine."""
+        output = _HEALTHY.replace(
+            _DISPOSAL_LINE,
+            f"{_DISPOSAL_LINE}\n"
+            f"{scaffold.MEASURED}Not fully disposed: DisposalFailure(code=REFUSED)",
+        )
+        failures = check.assess(output, _png(640, 480))
+        assert any("the scope purge did not land" in reason for reason in failures)
+
+    def test_a_healthy_run_reports_nothing_here(self):
+        """The line is absent unless `dispose_scope` returned a failure."""
+        assert check.assess(_HEALTHY, _png(640, 480)) == []
+
+
 class TestTheTagIsWhatMakesTheDisposalLineTheHosts:
     """A model writes into the same stream, ahead of the sample, and this reads the first match.
 
