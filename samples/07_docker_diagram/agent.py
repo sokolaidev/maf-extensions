@@ -104,8 +104,10 @@ async def run() -> int:
     backend = DockerSandboxBackend(DockerSandboxConfig())
 
     # `on_failure` runs *after* the framework has acted on `failed_reclaim_policy`, so it
-    # reports rather than decides; the README says what each policy costs. `DISPOSE` is the
-    # default and is written out because leaving it unset is still a choice.
+    # reports rather than decides; the README says what each policy costs. `DISPOSE` and
+    # `timeout` are written out at their defaults because leaving them unset is still a
+    # choice, and `timeout` is the one whose cost is not obvious: it bounds the removal, the
+    # disposal and this callback separately, so one unclean call can spend three of them.
     reclaim_failures: list[ReclaimFailure] = []
 
     # One phrasing per `DisposalOutcome`, because the bare word does not read as a sentence:
@@ -132,6 +134,7 @@ async def run() -> int:
         [backend],
         min_isolation=Isolation.CONTAINER,
         reclaim=ReclaimConfig(
+            timeout=30.0,
             failed_reclaim_policy=FailedReclaimPolicy.DISPOSE,
             on_failure=note_reclaim_failure,
         ),

@@ -154,6 +154,18 @@ class TestTheReclaimHalf:
             "count it prints is nought whatever the framework reported"
         )
 
+    def test_the_sample_states_its_reclaim_timeout(self):
+        """#520 asks for the timeout too, and it is the field a run cannot show.
+
+        It equals the default, so dropping it changes no behaviour and no other check here
+        would notice — only the source says whether the host chose the bound or inherited it.
+        """
+        source = (_ROOT / "samples" / _SAMPLE / "agent.py").read_text(encoding="utf-8")
+        assert "timeout=" in source, (
+            f"samples/{_SAMPLE}/agent.py no longer states its `ReclaimConfig.timeout`, which "
+            "bounds the removal, the disposal and the callback separately"
+        )
+
 
 class TestTheSandboxHalf:
     def test_no_disposal_line_fails(self):

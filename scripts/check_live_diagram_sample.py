@@ -5,9 +5,14 @@
 
 Everything this sample prints except its own tagged lines is model prose, and prose is not
 evidence that a renderer ran: an agent describing the picture it would have drawn writes the
-same paragraph as one that drew it. So the assertion is what the host produced itself — the
-sample's own disposal line, which is non-zero only if a sandbox was created to serve a tool
-call, and the file the sink wrote.
+same paragraph as one that drew it. So the verdict rests on what the host produced itself, in
+three parts — the sample's own disposal line, its reclaim-failure count, and the file the sink
+wrote.
+
+The first two are read together rather than in turn. A disposal count of nought ordinarily
+means no sandbox was ever created, but this sample disposes what it could not clean, so a call
+whose reclaim failed has already lost its sandbox by the final purge; the reclaim count is what
+tells those two apart.
 
 The image is read structurally rather than compared: a PNG signature, then the dimensions out
 of the IHDR chunk. The model writes the DOT, so what the graph contains and how large it comes
