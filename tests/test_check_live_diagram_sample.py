@@ -12,6 +12,7 @@ empty has to fail by name.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import struct
 import zlib
@@ -152,6 +153,28 @@ class TestTheReclaimHalf:
         assert "reclaim_failures.append(failure)" in source, (
             f"samples/{_SAMPLE}/agent.py no longer records what the handler was told, so the "
             "count it prints is nought whatever the framework reported"
+        )
+
+    def test_the_handler_records_before_it_prints(self):
+        """Order is load-bearing here, because the framework swallows what this raises.
+
+        `on_reclaim_failure` runs inside an `except Exception` that logs and continues, so a
+        `print` that threw — a closed stderr, a guest path the console cannot encode — would
+        skip the append and leave the count at nought. The check reads that count, so the run
+        would go green over the failure it exists to report.
+        """
+        tree = ast.parse((_ROOT / "samples" / _SAMPLE / "agent.py").read_text(encoding="utf-8"))
+        handler = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "note_reclaim_failure"
+        )
+        dumped = [ast.dump(statement) for statement in handler.body]
+        records = next(i for i, s in enumerate(dumped) if "reclaim_failures" in s)
+        prints = next(i for i, s in enumerate(dumped) if "'print'" in s)
+        assert records < prints, (
+            f"samples/{_SAMPLE}/agent.py records the failure after printing it, so a print "
+            "that raises loses the count the live check reads"
         )
 
     def test_the_sample_states_its_reclaim_timeout(self):

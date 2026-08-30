@@ -119,6 +119,10 @@ async def run() -> int:
     }
 
     async def note_reclaim_failure(failure: ReclaimFailure) -> None:
+        # Recorded first, ahead of anything that can raise. The framework contains an exception
+        # from this callback rather than failing the call, so a `print` that threw would cost
+        # the count silently — and that count is the whole of what this turn reports.
+        reclaim_failures.append(failure)
         # `failure.path` is a guest path — host-side detail, and never model-facing. It names
         # what the call affected, not what is still there: a disposal that landed took the
         # whole sandbox with it.
@@ -127,7 +131,6 @@ async def run() -> int:
             f"({failure.reason}); the framework {disposal_said[failure.disposal]}",
             file=sys.stderr,
         )
-        reclaim_failures.append(failure)
 
     # Below the router's default `microvm` floor; opted down explicitly.
     router = SandboxRouter(
