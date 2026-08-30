@@ -3,8 +3,9 @@
 The contract is what has to exist before anything can call a host tool, so what is pinned here is
 the *shape of refusal* as much as the happy path: an unstamped function refused where the
 host can fix it, an undeclared name unreachable from inside, a cap that ends a run with a
-sentence rather than an exception, and a USER-identity tool that registers loudly and never
-serves.  Router-level denial — the sixth layer — is pinned in ``test_sandbox_router.py``
+sentence rather than an exception, and a USER-identity tool that registers loudly and serves
+only where the registry mints its authority.  Router-level denial — the sixth layer — is
+pinned in ``test_sandbox_router.py``
 beside the rest of the router's policy.
 """
 
@@ -874,8 +875,8 @@ class TestHostToolCall:
         assert not result.ok
         assert result.refusal is not None and "JSON object" in result.refusal
 
-    def test_a_user_identity_tool_is_refused_with_the_prerequisites_named(self):
-        """Declarable but not servable: the refusal says what serving would take."""
+    def test_a_user_identity_tool_is_refused_where_the_host_mints_nothing(self):
+        """Declarable without a minter, and the refusal names the one thing serving takes."""
 
         @sandbox_tool(source=None, sink=None, identity=Identity.USER)
         def as_user() -> str:
@@ -886,9 +887,395 @@ class TestHostToolCall:
         result = _call_host_tool(HostToolRun(registry), "as_user")
         assert not result.ok
         assert result.refusal is not None
-        assert "per-run token minting" in result.refusal
-        assert "audience-within-egress" in result.refusal
-        assert "env channel" in result.refusal
+        assert "mint_user_identity" in result.refusal
+
+
+def _as_user_tool():
+    """A USER-identity tool that reports the authority it was handed."""
+
+    @sandbox_tool(source=None, sink=None, identity=Identity.USER)
+    def whoami(user_identity: str) -> str:
+        return f"acting as {user_identity}"
+
+    return whoami
+
+
+def _minting_registry(mint=None, **overrides) -> HostToolRegistry:
+    async def _mint(run_id: str) -> str:
+        return f"token-for-{run_id}"
+
+    return HostToolRegistry(
+        allowed_identities=frozenset({Identity.APP, Identity.USER}),
+        mint_user_identity=_mint if mint is None else mint,
+        **overrides,
+    )
+
+
+class TestServingTheUsersIdentity:
+    """A `USER` tool is callable where the registry mints the authority, and refused where not.
+
+    One run holds one identity, and a guest cannot choose the one its own call runs under.
+    """
+
+    def test_a_minted_identity_reaches_the_body(self):
+        registry = _minting_registry()
+        registry.register(_as_user_tool())
+
+        result = _call_host_tool(HostToolRun(registry, run_id="run-7"), "whoami")
+
+        assert result.ok, result.refusal
+        assert result.value_json == '"acting as token-for-run-7"'
+
+    def test_the_identity_is_minted_once_for_the_run(self):
+        """One run, one identity: the bound the whole mechanism rests on."""
+        minted: list[str] = []
+
+        async def _mint(run_id: str) -> str:
+            minted.append(run_id)
+            return f"token-{len(minted)}"
+
+        registry = _minting_registry(_mint)
+        registry.register(_as_user_tool())
+        run = HostToolRun(registry, run_id="run-7")
+
+        first = _call_host_tool(run, "whoami")
+        second = _call_host_tool(run, "whoami")
+
+        assert minted == ["run-7"]
+        assert first.value_json == second.value_json == '"acting as token-1"'
+
+    def test_overlapping_calls_share_the_one_identity(self):
+        """Calls of one run may overlap, and two of them must not mint two authorities.
+
+        The mint is awaited, so without serialization both callers find the cache empty
+        before either finishes and the run ends up with two.
+        """
+        minted: list[str] = []
+
+        async def _mint(run_id: str) -> str:
+            minted.append(run_id)
+            await asyncio.sleep(0)  # let the other caller reach the same empty cache
+            return f"token-{len(minted)}"
+
+        registry = _minting_registry(_mint)
+        registry.register(_as_user_tool())
+        run = HostToolRun(registry, run_id="run-7")
+
+        async def _both():
+            return await asyncio.gather(run.call("whoami"), run.call("whoami"))
+
+        first, second = asyncio.run(_both())
+
+        assert minted == ["run-7"], f"minted {len(minted)} times for one run"
+        assert first.value_json == second.value_json == '"acting as token-1"'
+
+    def test_a_run_whose_mint_keeps_failing_survives_a_second_event_loop(self):
+        """A run with no cached identity serializes correctly in whichever loop drives it.
+
+        A contended `asyncio.Lock` binds to the loop that waited on it, so the lock is the
+        loop's rather than the run's; a failing mint is what leaves the cache empty long
+        enough for a second loop to contend.
+        """
+        attempts: list[str] = []
+
+        async def _mint(run_id: str) -> str:
+            attempts.append(run_id)
+            await asyncio.sleep(0)  # force the second caller to queue on the lock
+            raise RuntimeError("the token service is down")
+
+        registry = _minting_registry(_mint)
+        registry.register(_as_user_tool())
+        run = HostToolRun(registry, run_id="run-7")
+
+        async def _both():
+            return await asyncio.gather(run.call("whoami"), run.call("whoami"))
+
+        first = asyncio.run(_both())
+        second = asyncio.run(_both())
+
+        assert [r.ok for r in (*first, *second)] == [False] * 4
+        assert len(attempts) == 4, attempts
+
+    def test_a_synchronous_minter_is_named_as_a_configuration_error(self, caplog):
+        """A minter that is not async is named as misconfigured, not as a service failure."""
+
+        def _mint(run_id: str):  # not async, which the annotation forbids and nothing enforces
+            return "a-token"
+
+        registry = _minting_registry(_mint)
+        registry.register(_as_user_tool())
+
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox._host_tools"):
+            result = _call_host_tool(HostToolRun(registry), "whoami")
+
+        assert not result.ok
+        assert "must be an async callable" in caplog.text, caplog.text
+        assert "a-token" not in caplog.text, "the credential a sync minter already returned"
+
+    def test_a_cancel_while_minting_is_recorded(self, caplog):
+        """A cancel inside the minter leaves one record, and it is the minter's.
+
+        No `mid-effect` warning belongs here: the body never ran.
+        """
+        started = asyncio.Event()
+
+        async def _mint(run_id: str) -> str:
+            started.set()
+            await asyncio.sleep(3600)
+            return "never"  # pragma: no cover - the sleep is cancelled first
+
+        registry = _minting_registry(_mint)
+        registry.register(_as_user_tool())
+        run = HostToolRun(registry, run_id="run-7")
+
+        async def _cancel_mid_mint():
+            call = asyncio.ensure_future(run.call("whoami"))
+            await started.wait()
+            call.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                # `_ =` because the await is the point and its value is not: a bare name
+                # expression reads to a checker as a statement with no effect.
+                _ = await call
+
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox._host_tools"):
+            asyncio.run(_cancel_mid_mint())
+
+        # The whole set, not the first match: the body never ran, so a second record claiming
+        # an outward effect may have completed would be telling an operator something false.
+        recorded = [r.getMessage() for r in caplog.records if "was cancelled" in r.getMessage()]
+        assert len(recorded) == 1, recorded
+        assert "inside the host's minter" in recorded[0], recorded
+        assert "mid-effect" not in recorded[0], recorded
+
+    def test_a_cancel_while_queued_behind_another_mint_is_recorded(self, caplog):
+        """A cancel that lands while queued for the mint is recorded as what it is.
+
+        The record must not claim a credential may have been issued: this call never reached
+        the minter, and an operator reading that would chase a token nobody minted.
+        """
+        holding = asyncio.Event()
+
+        async def _mint(run_id: str) -> str:
+            holding.set()
+            await asyncio.sleep(3600)
+            return "never"  # pragma: no cover - the sleep is cancelled first
+
+        registry = _minting_registry(_mint)
+        registry.register(_as_user_tool())
+        run = HostToolRun(registry, run_id="run-7")
+
+        async def _cancel_the_waiter():
+            first = asyncio.ensure_future(run.call("whoami"))
+            await holding.wait()  # the lock is held by `first`'s mint
+            waiter = asyncio.ensure_future(run.call("whoami"))
+            await asyncio.sleep(0)  # let the waiter reach __aenter__ and queue behind it
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                _ = await waiter
+            first.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                _ = await first
+
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox._host_tools"):
+            asyncio.run(_cancel_the_waiter())
+
+        queued = [r.getMessage() for r in caplog.records if "while it waited" in r.getMessage()]
+        assert len(queued) == 1, queued
+        assert "credential may already have been issued" not in queued[0], queued
+        # Neither cancel here reached a body, so nothing may claim an outward effect.
+        assert [r for r in caplog.records if "mid-effect" in r.getMessage()] == [], caplog.text
+
+    def test_a_rejected_mint_is_logged_by_type_rather_than_value(self, caplog):
+        """A misconfigured minter answering with `bytes` is answering with a real token."""
+
+        async def _mint(run_id: str):
+            return b"super-secret-token"
+
+        registry = _minting_registry(_mint)
+        registry.register(_as_user_tool())
+
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox._host_tools"):
+            result = _call_host_tool(HostToolRun(registry), "whoami")
+
+        assert not result.ok
+        assert "super-secret-token" not in caplog.text, caplog.text
+        assert "bytes" in caplog.text, caplog.text
+
+    def test_each_run_mints_its_own(self):
+        registry = _minting_registry()
+        registry.register(_as_user_tool())
+
+        one = _call_host_tool(HostToolRun(registry, run_id="run-a"), "whoami")
+        two = _call_host_tool(HostToolRun(registry, run_id="run-b"), "whoami")
+
+        assert one.value_json == '"acting as token-for-run-a"'
+        assert two.value_json == '"acting as token-for-run-b"'
+
+    def test_a_call_that_cannot_bind_mints_nothing(self):
+        """Minting is a real exchange, so it waits until nothing deterministic can refuse."""
+        minted: list[str] = []
+
+        async def _mint(run_id: str) -> str:
+            minted.append(run_id)
+            return "token"
+
+        registry = _minting_registry(_mint)
+        registry.register(_as_user_tool())
+
+        result = _call_host_tool(HostToolRun(registry), "whoami", {"nonesuch": 1})
+
+        assert not result.ok
+        assert result.refusal is not None and "do not bind" in result.refusal
+        assert minted == [], "a malformed call spent a credential it could never use"
+
+    def test_a_call_refused_by_the_response_ledger_mints_nothing(self):
+        """The other pre-body refusal: the run's delivered-response cap is already spent."""
+        minted: list[str] = []
+
+        async def _mint(run_id: str) -> str:
+            minted.append(run_id)
+            return "token"
+
+        registry = _minting_registry(_mint, response_limits=TransferLimits(1024, 1024, 1))
+        registry.register(_as_user_tool())
+        registry.register(_stamped_pure(), name="doubled")
+        run = HostToolRun(registry)
+
+        spent = _call_host_tool(run, "doubled", {"x": 2})
+        refused = _call_host_tool(run, "whoami")
+
+        assert spent.ok, spent.refusal
+        assert not refused.ok
+        assert refused.refusal is not None and "exhausted" in refused.refusal
+        assert minted == [], "a call the ledger had already refused spent a credential"
+
+    def test_a_guest_cannot_choose_the_authority_it_runs_under(self):
+        """The refusal a spoofing attempt gets, rather than a silent overwrite."""
+        registry = _minting_registry()
+        registry.register(_as_user_tool())
+
+        result = _call_host_tool(
+            HostToolRun(registry), "whoami", {"user_identity": "token-i-picked"}
+        )
+
+        assert not result.ok
+        assert result.refusal is not None and "not an argument a caller may send" in result.refusal
+
+    def test_a_spoofed_argument_is_refused_before_anything_is_minted(self):
+        """Refused before the mint, so an attempt costs the host no token at all."""
+        minted: list[str] = []
+
+        async def _mint(run_id: str) -> str:
+            minted.append(run_id)
+            return "token"
+
+        registry = _minting_registry(_mint)
+        registry.register(_as_user_tool())
+
+        _call_host_tool(HostToolRun(registry), "whoami", {"user_identity": "mine"})
+
+        assert minted == []
+
+    def test_a_mint_that_raises_refuses_the_call(self):
+        async def _mint(run_id: str) -> str:
+            raise RuntimeError("the token service said no")
+
+        registry = _minting_registry(_mint)
+        registry.register(_as_user_tool())
+
+        result = _call_host_tool(HostToolRun(registry), "whoami")
+
+        assert not result.ok
+        assert result.refusal is not None and "could not be minted" in result.refusal
+        assert "token service" not in result.refusal, "the host's detail stays in the host's log"
+
+    def test_a_mint_that_answers_with_nothing_usable_refuses_too(self):
+        """An empty string reaching a body as its authority is a call with none, unnoticed."""
+
+        async def _mint(run_id: str) -> str:
+            return ""
+
+        registry = _minting_registry(_mint)
+        registry.register(_as_user_tool())
+
+        result = _call_host_tool(HostToolRun(registry), "whoami")
+
+        assert not result.ok
+        assert result.refusal is not None and "could not be minted" in result.refusal
+
+    def test_a_failed_mint_is_not_cached(self):
+        """A transient the next call may survive, unlike a success, which must not repeat."""
+        attempts: list[str] = []
+
+        async def _mint(run_id: str) -> str:
+            attempts.append(run_id)
+            if len(attempts) == 1:
+                raise RuntimeError("transient")
+            return "token-2"
+
+        registry = _minting_registry(_mint)
+        registry.register(_as_user_tool())
+        run = HostToolRun(registry, run_id="run-7")
+
+        first = _call_host_tool(run, "whoami")
+        second = _call_host_tool(run, "whoami")
+
+        assert not first.ok
+        assert second.ok, second.refusal
+        assert second.value_json == '"acting as token-2"'
+
+    def test_a_user_tool_that_cannot_receive_the_identity_is_refused_at_registration(self):
+        """At the host's own configuration site, where the fix is one parameter away."""
+
+        @sandbox_tool(source=None, sink=None, identity=Identity.USER)
+        def as_user() -> str:
+            return "never"
+
+        with pytest.raises(ValueError, match="user_identity"):
+            _minting_registry().register(as_user)
+
+    def test_a_var_positional_of_that_name_does_not_count(self):
+        """`*user_identity` carries the name and cannot be bound by it.
+
+        Registration exists to catch a USER tool no call could ever reach, so admitting this
+        shape would leave the gate passing exactly what it is for.
+        """
+
+        @sandbox_tool(source=None, sink=None, identity=Identity.USER)
+        def as_user(*user_identity: str) -> str:
+            return "never"  # pragma: no cover - registration refuses it first
+
+        with pytest.raises(ValueError, match="user_identity"):
+            _minting_registry().register(as_user)
+
+    def test_kwargs_counts_as_receiving_it(self):
+        """A body may fan its arguments out rather than name each one."""
+
+        @sandbox_tool(source=None, sink=None, identity=Identity.USER)
+        def as_user(**given: object) -> str:
+            return f"acting as {given['user_identity']}"
+
+        registry = _minting_registry()
+        registry.register(as_user)
+
+        result = _call_host_tool(HostToolRun(registry, run_id="run-7"), "as_user")
+
+        assert result.ok, result.refusal
+        assert result.value_json == '"acting as token-for-run-7"'
+
+    def test_a_tool_of_another_identity_is_never_handed_one(self):
+        """The injection is the USER leg's, not every tool's."""
+        registry = _minting_registry()
+        registry.register(_stamped_pure(), name="doubled")
+
+        result = _call_host_tool(HostToolRun(registry), "doubled", {"x": 2})
+
+        assert result.ok, result.refusal
+        assert result.value_json == "4"
+
+    def test_a_minter_that_is_not_callable_is_refused_at_construction(self):
+        with pytest.raises(TypeError, match="mint_user_identity must be callable"):
+            HostToolRegistry(mint_user_identity="a token")  # type: ignore[arg-type]
 
     def test_a_host_tool_call_uses_the_declaration_registration_captured(self):
         """A stamp removed after registration neither refuses nor widens: it is not read."""

@@ -35,7 +35,7 @@ import json
 import logging
 import uuid
 import warnings
-from collections.abc import Callable, Generator, Mapping
+from collections.abc import Awaitable, Callable, Generator, Mapping
 from dataclasses import dataclass
 from typing import Any, TypeVar, cast
 
@@ -86,11 +86,47 @@ DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN = 16
 #: "no room left" answerable before a tool runs rather than only after its size is known.
 _SMALLEST_RESPONSE = 1
 
-#: What serving a USER-identity tool would need, named once — the refusal and the docs must
-#: tell the same story.
+#: What a host owes before a USER-identity tool can be served, named once so the refusal and
+#: the docs cannot drift apart.
 _USER_IDENTITY_PREREQUISITES = (
-    "per-run token minting, an audience-within-egress check, and an ephemeral exec env channel"
+    "a host serves one by giving its registry a mint_user_identity callback, which mints that "
+    "run's authority"
 )
+
+#: The keyword a minted identity reaches a tool body by.  Reserved: a guest sending one would
+#: be choosing the authority its own call runs under, so an argument of this name is refused
+#: before binding rather than quietly overwritten by the injection.
+_USER_IDENTITY_PARAMETER = "user_identity"
+
+#: Stands in that argument's place while the refusals between admission and the body still
+#: have their say. Its own object, never ``None``: ``None`` is what a failed mint returns, and
+#: a sentinel a real answer could equal is one that eventually reaches a body as its authority.
+_UNMINTED = object()
+
+
+def _accepts_user_identity(func: Callable[..., Any]) -> bool:
+    """Whether ``func`` can be handed the minted identity by keyword.
+
+    ``**kwargs`` counts, since a body may fan its arguments out rather than name each one, and
+    so does a signature that cannot be read: nothing is provable about one here, and the call
+    is refused later by the same guard that validates the guest's arguments.
+    """
+    try:
+        signature = inspect.signature(func)
+    except Exception:  # noqa: BLE001 - unprovable here, and refused at call time
+        return True
+    for parameter in signature.parameters.values():
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        # The kinds a keyword actually reaches, named rather than excluded: `*user_identity`
+        # is neither positional-only nor bindable by that name, and a rule written as "not
+        # positional-only" admits it and registers a tool no call can ever bind.
+        if parameter.name == _USER_IDENTITY_PARAMETER and parameter.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            return True
+    return False
 
 
 class MafSandboxHostToolsWarning(UserWarning):
@@ -292,6 +328,15 @@ class HostToolRegistry:
         response_limits: The per-response and per-run byte ceilings, reusing
             :class:`~maf_sandbox.TransferLimits` — its per-file leg caps one response, its
             total leg the run, its count leg the delivered responses.
+        mint_user_identity: An async callback returning the authority an
+            :data:`~maf_sandbox.Identity.USER` tool acts under, called with that run's
+            ``run_id`` and handed to the body as ``user_identity``.  **One success per**
+            :class:`HostToolRun`: the first usable answer is cached and reused for every later
+            call of that run, while an attempt that raised or answered unusably is not, so a
+            later call asks again rather than inheriting a transient.  Default ``None``, in
+            which case such a tool registers and its call is refused: a registry stays writable
+            honestly on a host that serves no user authority.  Where one is given, a ``USER``
+            tool taking no ``user_identity`` parameter is refused at registration.
         host_tool_calls_observer: A host's callback that sees each call and the run that made
             it, so the host can attribute the call to the program. Takes the run and the
             name and returns a context manager the call enters and exits
@@ -312,6 +357,7 @@ class HostToolRegistry:
         host_tool_calls_observer: (
             Callable[[HostToolRun, object], contextlib.AbstractContextManager[object]] | None
         ) = None,
+        mint_user_identity: Callable[[str], Awaitable[str]] | None = None,
     ) -> None:
         _refuse_non_integer("max_host_tool_calls_per_run", max_host_tool_calls_per_run)
         if max_host_tool_calls_per_run < 1:
@@ -373,7 +419,17 @@ class HostToolRegistry:
                     "allowed_identities may hold only Identity members, not "
                     f"{type(member).__name__}: {member!r}"
                 )
+        if mint_user_identity is not None:
+            # Refused at construction for the observer's reason: a minter this registry cannot
+            # call is a USER tool that refuses at call time, where only a sanitized sentence
+            # comes back and the host cannot see which of its arguments was wrong.
+            given_minter = cast(object, mint_user_identity)
+            if not callable(given_minter):
+                raise TypeError(
+                    f"mint_user_identity must be callable, not {type(mint_user_identity).__name__}"
+                )
         self._require_declared = require_declared
+        self._mint_user_identity = mint_user_identity
         self._allowed_identities = frozenset(allowed_identities)
         self._max_host_tool_calls_per_run = max_host_tool_calls_per_run
         self._response_limits = response_limits
@@ -387,6 +443,18 @@ class HostToolRegistry:
     def require_declared(self) -> bool:
         """Whether unstamped functions are refused rather than degraded."""
         return self._require_declared
+
+    @property
+    def mint_user_identity(self) -> Callable[[str], Awaitable[str]] | None:
+        """Mints this run's user authority, or ``None`` where the host serves none.
+
+        Called with that run's ``run_id`` when a :data:`~maf_sandbox.Identity.USER` tool is
+        reached, and its result handed to the body as ``user_identity`` and never persisted.
+        One *success* per :class:`HostToolRun` — a failed or unusable attempt is not cached, so
+        a later call asks again.  Without a minter, such a tool registers and its call is
+        refused.
+        """
+        return self._mint_user_identity
 
     @property
     def allowed_identities(self) -> frozenset[Identity]:
@@ -492,6 +560,22 @@ class HostToolRegistry:
                 "construction with allowed_identities=frozenset({Identity.APP, "
                 "Identity.USER}); a tool declaring identity=None exercises no authority and is "
                 "always allowed. denied_identities on the router stays the attach-time backstop."
+            )
+        # Only where the host means to serve one. A registry with no minter keeps refusing
+        # USER tools at call time, and declaring one there must stay possible: a registry has
+        # to be writable honestly on a host that serves no user authority, which is the whole
+        # reason the principal is declarable before it is servable.
+        if (
+            effective_identity is Identity.USER
+            and self._mint_user_identity is not None
+            and not _accepts_user_identity(func)
+        ):
+            raise ValueError(
+                f"host tool {tool_name!r} exercises the user's authority but takes no "
+                f"{_USER_IDENTITY_PARAMETER!r} parameter, so this registry has nowhere to hand "
+                "the identity it mints for the run. Give it one — a tool acting as the user "
+                "receives that authority explicitly rather than reaching for an ambient "
+                "credential, which is what makes the per-run bound structural."
             )
         _warn_host_tools_once()
         self._tools[tool_name] = func
@@ -724,6 +808,114 @@ class HostToolRun:
         self._calls = 0
         self._delivered = 0
         self._delivered_bytes = 0
+        self._minted_user_identity: str | None = None
+        self._mint_lock: asyncio.Lock | None = None
+        self._mint_lock_loop: asyncio.AbstractEventLoop | None = None
+
+    def _lock_for_this_loop(self) -> asyncio.Lock:
+        """This loop's mint lock, replacing one left bound to a loop that has gone.
+
+        A contended :class:`asyncio.Lock` binds to the loop that waited on it and refuses a
+        second, so the lock belongs to the running loop rather than to the run.  No ``await``
+        between the check and the assignment, so two tasks of one loop cannot both install a
+        lock and serialize against different objects.
+        """
+        loop = asyncio.get_running_loop()
+        if self._mint_lock is None or self._mint_lock_loop is not loop:
+            self._mint_lock = asyncio.Lock()
+            self._mint_lock_loop = loop
+        return self._mint_lock
+
+    async def _user_identity(self) -> str | None:
+        """This run's user authority, minted once successfully, or ``None`` if it could not be.
+
+        Cached on success only: a mint that failed is a transient the next call may survive,
+        while a mint that succeeded must not be repeated — one run, one identity is the bound
+        the whole mechanism rests on.  Calls of one run may overlap, so the mint is serialized
+        and the cache re-read inside the lock: without that, two callers both find it empty,
+        both mint, and two authorities exist for the run that promised one.
+        """
+        if self._minted_user_identity is not None:
+            return self._minted_user_identity
+        mint = self._registry.mint_user_identity
+        if mint is None:  # pragma: no cover - `call` refuses before reaching this
+            return None
+        # Both awaits below are cancellable, and `call` promises a cancelled call leaves a
+        # record, so the boundary covers the lock as well as the minter — a waiter cancelled
+        # while queued behind another call's mint reaches neither handler otherwise.
+        reached_the_minter = False
+        try:
+            async with self._lock_for_this_loop():
+                # The second read. Whoever held the lock may have filled it, and that identity
+                # is this run's — minting a second beside it is the failure this method exists
+                # to avoid, not a cache miss to satisfy.
+                if self._minted_user_identity is not None:
+                    return self._minted_user_identity
+                try:
+                    reached_the_minter = True
+                    pending = cast(object, mint(self._run_id))
+                    if not inspect.isawaitable(pending):
+                        # A configuration error, and worth saying so rather than letting
+                        # `await` raise a TypeError this folds into "the token service
+                        # failed". The two send a host to different places. By type, never
+                        # value: a synchronous minter has already returned its credential.
+                        self._logger.warning(
+                            "mint_user_identity returned %s rather than an awaitable, so the "
+                            "user's identity for run %r cannot be used: it must be an async "
+                            "callable",
+                            type(pending).__name__,
+                            self._run_id,
+                        )
+                        return None
+                    minted = await pending
+                except Exception as exc:  # noqa: BLE001 - the guest gets a sentence, the log the rest
+                    # `CancelledError` is a `BaseException` and passes straight through this
+                    # to the boundary below, which is where the two cancels are told apart.
+                    self._logger.warning(
+                        "minting the user's identity for run %r failed: %s",
+                        self._run_id,
+                        error_detail(exc),
+                    )
+                    return None
+                # A minter that answers with something unusable is the same failure as one
+                # that raised, and worth the same refusal: an empty string or a non-string
+                # reaching a tool body as its authority is how a call runs with no authority
+                # at all and nobody notices.
+                answered = cast(object, minted)
+                if not isinstance(answered, str) or not answered:
+                    # The type, never the value. A misconfigured minter that answers with
+                    # `bytes` is answering with a real token, and `%r` would write it to the
+                    # host's log — a secret is sensitive whether or not it satisfies this
+                    # contract.
+                    self._logger.warning(
+                        "minting the user's identity for run %r answered with %s, which is "
+                        "not a usable identity",
+                        self._run_id,
+                        (
+                            "an empty string"
+                            if isinstance(answered, str)
+                            else type(answered).__name__
+                        ),
+                    )
+                    return None
+                self._minted_user_identity = answered
+                return answered
+        except asyncio.CancelledError:
+            # Two cancels, and only one of them may have spent anything: a call cut off inside
+            # the host's minter can leave a credential nobody will use, while one cut off
+            # waiting for the lock never reached it. Saying so is the difference between a
+            # record an operator must chase and one they can read past.
+            self._logger.warning(
+                "host tools: minting the user's identity for run %r was cancelled %s",
+                self._run_id,
+                (
+                    "inside the host's minter — a credential may already have been issued for "
+                    "a call that will not run"
+                    if reached_the_minter
+                    else "while it waited for this run's mint, so no minter ran"
+                ),
+            )
+            raise
 
     @property
     def run_id(self) -> str:
@@ -757,15 +949,21 @@ class HostToolRun:
         Exhaustion is a refusal rather than an exception so the guest program finishes and
         reports what it has, instead of dying mid-way with the reason lost.
 
-        **Cancellation is prompt, and a cancelled call is recorded** (#355). A cancelled turn
-        raises ``CancelledError`` at the tool's innermost await — inside the body — and this does
-        not shield it: a host tool is unbounded here, so an uncancellable section would honour a
+        **Cancellation is prompt, and a cancelled call is recorded** (#355).  Nothing here
+        shields a cancel: a host tool is unbounded, so an uncancellable section would honour a
         caller's cancel only after arbitrary third-party code chose to return. The ledger stays
-        consistent — nothing was delivered, the slot is returned — but a sink tool's outward
-        effect may already have fired, so the interruption is logged rather than left as the one
-        outcome with no trace. A host that needs to *act* on it — retry, compensate — keys on the
-        registry's ``host_tool_calls_observer``, whose context exit receives the same
-        ``CancelledError``.
+        consistent whichever await it lands on — nothing was delivered, the slot is returned —
+        and each is logged rather than left as the one outcome with no trace.
+
+        **Two awaits can take it, and they leave different things behind.** Inside the tool's
+        body, a sink's outward effect may already have fired. Inside
+        ``mint_user_identity``, for a :data:`~maf_sandbox.Identity.USER` tool, the body has not
+        run at all but a credential may already have been issued for a call that never will —
+        including for a call that was only queued behind another's mint, which spends nothing.
+        The record says which, because an operator chasing the wrong one wastes the trail.
+
+        A host that needs to *act* on it — retry, compensate — keys on the registry's
+        ``host_tool_calls_observer``, whose context exit receives the same ``CancelledError``.
 
         Args:
             name: The registered tool to call. Guest text — checked, never trusted.
@@ -831,10 +1029,11 @@ class HostToolRun:
                 f"Error: {name!r} carries no complete information-flow declaration, and "
                 "this host calls declared tools only"
             )
-        if declaration is not None and declaration.identity is Identity.USER:
+        acts_as_user = declaration is not None and declaration.identity is Identity.USER
+        if acts_as_user and self._registry.mint_user_identity is None:
             return _refused(
-                f"Error: {name!r} exercises the user's identity, which cannot be served "
-                f"yet — serving it needs {_USER_IDENTITY_PREREQUISITES}"
+                f"Error: {name!r} exercises the user's identity, which this host cannot serve "
+                f"— {_USER_IDENTITY_PREREQUISITES}"
             )
         # Cast to `object` because a transport hands over whatever the guest's JSON
         # parsed to — the annotation describes the contract, this check enforces it.
@@ -844,6 +1043,21 @@ class HostToolRun:
                 f"Error: arguments for {name!r} must be a JSON object of keyword arguments"
             )
         provided: dict[str, Any] = dict(arguments) if arguments is not None else {}
+        if acts_as_user:
+            if _USER_IDENTITY_PARAMETER in provided:
+                # Before the mint, and a refusal rather than an overwrite: a guest naming this
+                # argument is trying to choose the authority its own call runs under, and that
+                # attempt is worth surfacing rather than silently correcting.
+                return _refused(
+                    f"Error: {_USER_IDENTITY_PARAMETER!r} is not an argument a caller may send "
+                    f"to {name!r} — the host mints the identity this tool acts under"
+                )
+            # A placeholder, not the identity: minting is a real exchange with the host's
+            # token service, and every refusal between here and the body — the ledgers below,
+            # the signature, the binding — is one this call cannot come back from. Binding
+            # still has to see the argument, or a body that requires it fails arity against
+            # the guest. `_deliver` swaps it for the minted one once nothing is left to refuse.
+            provided[_USER_IDENTITY_PARAMETER] = _UNMINTED
         limits = self._registry.response_limits
         # Both ledgers, before the call rather than after it. A sink tool's body runs in the
         # host process and does its work there; refusing once it has already run means the
@@ -879,30 +1093,15 @@ class HostToolRun:
                 "Error: no host-tool response can fit this run's per-response cap — report "
                 "this and carry on without host tools"
             )
-        # Taken now and held across the call, because the tool body is the one place this
-        # method awaits: two concurrent calls would otherwise both read a ledger that
-        # still said zero, both run, and both deliver against a cap of one.
+        # Taken now and held across everything that can suspend — the mint and the body both —
+        # because two concurrent calls would otherwise read a ledger that still said zero,
+        # both run, and both deliver against a cap of one.
         self._delivered += 1
         delivered = False
         try:
             outcome = await self._deliver(name, func, provided, limits, framing_bytes)
             delivered = outcome.ok
             return outcome
-        except asyncio.CancelledError:
-            # The one outcome that otherwise leaves no trace (#355). A refusal and a tool that
-            # raises are both logged (below and in `_deliver`); a success is deliberately quiet;
-            # a cancel is neither — the turn was cut off at the body's innermost await. The ledger
-            # is consistent (nothing delivered, the slot returned in `finally`), but that says
-            # nothing was *delivered*, not that nothing was *done*: a sink tool may already have
-            # acted. Say which tool was interrupted, so a host that wired no
-            # `host_tool_calls_observer`
-            # still has a record; one that did receives this same error at its context exit.
-            self._logger.warning(
-                "host tools: the call of %r was cancelled mid-effect — nothing was delivered, "
-                "but any outward effect the tool had begun is not recorded and may have completed",
-                name,
-            )
-            raise
         finally:
             # `finally` rather than a check on the outcome, because a cancelled call has no
             # outcome to check: `CancelledError` is a `BaseException` and walks straight past
@@ -952,10 +1151,30 @@ class HostToolRun:
             return _refused(
                 f"Error: arguments do not bind to host tool {name!r}: {_bounded(str(exc))}"
             )
+        if provided.get(_USER_IDENTITY_PARAMETER) is _UNMINTED:
+            # The last thing before the body, so the credential is spent only once nothing
+            # deterministic can still refuse this call.
+            minted = await self._user_identity()
+            if minted is None:
+                return _refused(
+                    f"Error: the user's identity could not be minted for this run, so {name!r} "
+                    "was not called — the reason is in the host's log"
+                )
+            provided[_USER_IDENTITY_PARAMETER] = minted
         try:
             result = func(**provided)
             if inspect.isawaitable(result):
                 result = await result
+        except asyncio.CancelledError:
+            # Only a cancel past this line can have begun an outward effect, so only this one
+            # is mid-effect. Nothing was delivered either way.
+            self._logger.warning(
+                "host tools: the call of %r was cancelled mid-effect — nothing was delivered, "
+                "but any outward effect the tool had begun is not recorded and may have "
+                "completed",
+                name,
+            )
+            raise
         except Exception as exc:  # noqa: BLE001 - the guest gets a sentence, the log the rest
             self._logger.warning("host tool %r failed: %s", name, error_detail(exc))
             return _refused(f"Error: host tool {name!r} failed — the reason is in the host's log")

@@ -66,11 +66,13 @@ So narrowing means going back to the registration site and building the smaller 
 
 Least privilege here comes from what a host **registers**, never from what it declares — and the three rows above are what that costs in practice.
 
-## `Identity.USER` is declarable and not servable
+## `Identity.USER` is declarable, and served only where a host mints it
 
-`publish_release_note` declares `Identity.USER` and could never run. That is deliberate on both sides: declaring it must be possible so a registry can be written honestly and refused loudly, and serving it must not be until per-run token minting, an audience-within-egress check and an ephemeral exec env channel exist.
+`publish_release_note` declares `Identity.USER` and never runs here. That is deliberate on both sides: declaring it must be possible so a registry can be written honestly and refused loudly, and this sample's registry mints nothing, so the call is refused.
 
-"Refused loudly" now has three moments, earliest first: a default registry refuses it **at registration** (`allowed_identities` is APP-only), a router with `denied_identities={Identity.USER}` refuses it **at attach** (act 4), and a host-tool call would be refused **at call** with those prerequisites named. A host that means to declare user-authority tools opts the registry into `Identity.USER`; the router still has the final say.
+A host that means to serve such a tool gives its registry `mint_user_identity` — an async callback returning that run's authority, handed to the body as `user_identity`, with one successfully minted authority reused for the whole run. This sample does not, which is the ordinary case: a registry has to stay writable honestly on a host that serves no user authority at all.
+
+"Refused loudly" has three moments, earliest first: a default registry refuses it **at registration** (`allowed_identities` is APP-only), a router with `denied_identities={Identity.USER}` refuses it **at attach** (act 4), and with neither of those in the way a host that mints nothing refuses it **at call**. A host that means to declare user-authority tools opts the registry into `Identity.USER`; the router still has the final say.
 
 Declaring it as `APP` to make the refusal go away is exactly the lie the leg exists to prevent — and `APP` is not the safe option either. It is the application's full authority, every grant the deployed process holds.
 

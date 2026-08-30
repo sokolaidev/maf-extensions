@@ -45,9 +45,9 @@ def publish_release_note(text: str) -> str:
     host's own confidentiality vocabulary — the library never orders or folds those, so the
     string stays opaque and is carried verbatim into the aggregate.
 
-    ``Identity.USER`` is declarable and deliberately not servable: registering it raises the
-    whole ``execute_code`` surface to approval-gated, and calling it as a host tool is refused
-    with the prerequisites named. Declaring it honestly is what lets a router refuse it (see
+    ``Identity.USER`` is served only where the registry mints it, and this one mints nothing:
+    registering it raises the whole ``execute_code`` surface to approval-gated, and calling it
+    is refused. Declaring it honestly is what lets a router refuse it (see
     ``agent.py``'s fourth act); declaring it as ``APP`` to make the refusal go away would be
     the lie the leg exists to prevent.
     """

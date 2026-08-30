@@ -237,17 +237,24 @@ class Identity(StrEnum):
     Least privilege for host tools comes from what a host registers, never from what it
     declares.
 
-    :data:`USER` is **declarable but not servable**: declaring it must be possible so a
-    registry can be written honestly and refused loudly, and serving it must not be until
-    per-run token minting, an audience-within-egress check, and the ephemeral ``exec`` env
-    channel exist — or a host ships model-orchestrated user authority before anything bounds
-    it.  Registering a ``USER`` tool raises the whole ``execute_code`` surface to
-    approval-gated; calling one is refused with the prerequisites named.
+    :data:`USER` is **served only where a host mints it**.  A registry given
+    ``mint_user_identity`` asks it when a ``USER`` call is reached and passes what it answers
+    to the body as ``user_identity``, keeping the first usable answer for the rest of the run
+    and asking again after one that failed; a registry without one keeps refusing the call,
+    which is what lets a
+    registry be written honestly on a host that serves no user authority at all.  Registering
+    a ``USER`` tool raises the whole ``execute_code`` surface to approval-gated either way.
+
+    What the library enforces is *where* the authority comes from and *how often* it is asked
+    for — not what it is worth.  A callback free to answer with the same long-lived credential
+    every time satisfies every check here, so scoping the authority to the run it is asked for
+    is the host's to keep, and ``run_id`` is passed so it can.
     """
 
     #: The host application's own authority — everything its process can already do.
     APP = "app"
-    #: The end user's delegated authority (on-behalf-of). Declarable, refused at call time.
+    #: The end user's delegated authority (on-behalf-of). Declarable always; served only by a
+    #: registry that mints it, and refused at call time by one that does not.
     USER = "user"
 
 
