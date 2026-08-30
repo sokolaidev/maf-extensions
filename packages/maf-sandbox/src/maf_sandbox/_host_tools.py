@@ -950,15 +950,21 @@ class HostToolRun:
         Exhaustion is a refusal rather than an exception so the guest program finishes and
         reports what it has, instead of dying mid-way with the reason lost.
 
-        **Cancellation is prompt, and a cancelled call is recorded** (#355). A cancelled turn
-        raises ``CancelledError`` at the tool's innermost await — inside the body — and this does
-        not shield it: a host tool is unbounded here, so an uncancellable section would honour a
+        **Cancellation is prompt, and a cancelled call is recorded** (#355).  Nothing here
+        shields a cancel: a host tool is unbounded, so an uncancellable section would honour a
         caller's cancel only after arbitrary third-party code chose to return. The ledger stays
-        consistent — nothing was delivered, the slot is returned — but a sink tool's outward
-        effect may already have fired, so the interruption is logged rather than left as the one
-        outcome with no trace. A host that needs to *act* on it — retry, compensate — keys on the
-        registry's ``host_tool_calls_observer``, whose context exit receives the same
-        ``CancelledError``.
+        consistent whichever await it lands on — nothing was delivered, the slot is returned —
+        and each is logged rather than left as the one outcome with no trace.
+
+        **Two awaits can take it, and they leave different things behind.** Inside the tool's
+        body, a sink's outward effect may already have fired. Inside
+        ``mint_user_identity``, for a :data:`~maf_sandbox.Identity.USER` tool, the body has not
+        run at all but a credential may already have been issued for a call that never will —
+        including for a call that was only queued behind another's mint, which spends nothing.
+        The record says which, because an operator chasing the wrong one wastes the trail.
+
+        A host that needs to *act* on it — retry, compensate — keys on the registry's
+        ``host_tool_calls_observer``, whose context exit receives the same ``CancelledError``.
 
         Args:
             name: The registered tool to call. Guest text — checked, never trusted.
@@ -1088,9 +1094,9 @@ class HostToolRun:
                 "Error: no host-tool response can fit this run's per-response cap — report "
                 "this and carry on without host tools"
             )
-        # Taken now and held across the call, because the tool body is the one place this
-        # method awaits: two concurrent calls would otherwise both read a ledger that
-        # still said zero, both run, and both deliver against a cap of one.
+        # Taken now and held across everything that can suspend — the mint and the body both —
+        # because two concurrent calls would otherwise read a ledger that still said zero,
+        # both run, and both deliver against a cap of one.
         self._delivered += 1
         delivered = False
         try:

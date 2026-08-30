@@ -238,8 +238,10 @@ class Identity(StrEnum):
     declares.
 
     :data:`USER` is **served only where a host mints it**.  A registry given
-    ``mint_user_identity`` asks it once per run and passes what it answers to the body as
-    ``user_identity``; a registry without one keeps refusing the call, which is what lets a
+    ``mint_user_identity`` asks it when a ``USER`` call is reached and passes what it answers
+    to the body as ``user_identity``, keeping the first usable answer for the rest of the run
+    and asking again after one that failed; a registry without one keeps refusing the call,
+    which is what lets a
     registry be written honestly on a host that serves no user authority at all.  Registering
     a ``USER`` tool raises the whole ``execute_code`` surface to approval-gated either way.
 

@@ -996,7 +996,7 @@ class TestServingTheUsersIdentity:
         assert len(attempts) == 4, attempts
 
     def test_a_synchronous_minter_is_named_as_a_configuration_error(self, caplog):
-        """`await`ing a plain value raises a TypeError that reads like the token service."""
+        """A minter that is not async is named as misconfigured, not as a service failure."""
 
         def _mint(run_id: str):  # not async, which the annotation forbids and nothing enforces
             return "a-token"
@@ -1012,7 +1012,10 @@ class TestServingTheUsersIdentity:
         assert "a-token" not in caplog.text, "the credential a sync minter already returned"
 
     def test_a_cancel_while_minting_is_recorded(self, caplog):
-        """The record `call` promises (#355), at an await the mint added."""
+        """A cancel inside the minter leaves one record, and it is the minter's.
+
+        No `mid-effect` warning belongs here: the body never ran.
+        """
         started = asyncio.Event()
 
         async def _mint(run_id: str) -> str:
