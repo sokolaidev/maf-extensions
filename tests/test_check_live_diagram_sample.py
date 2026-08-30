@@ -245,12 +245,12 @@ class TestThePurgeThatCouldNotProveItself:
         assert any("could not prove it disposed everything" in reason for reason in failures)
         assert any("DisposalFailure(code=TIMEOUT)" in reason for reason in failures)
 
-    def test_it_does_not_excuse_a_turn_that_never_ran(self):
-        """A failed listing is not evidence of a sandbox, so it cannot answer the T0 question.
+    def test_it_makes_the_nought_inconclusive_rather_than_excused(self):
+        """Neither reading can be asserted, so the check reports that instead of picking.
 
-        Docker's `unlisted` fires on a daemon that would not answer, with no container and an
-        empty registry fallback. Reading it as proof of one would let the failure this check
-        exists for pass as a cleanup problem.
+        The same line is raised by a removal that failed with a sandbox — `_purge` counts only
+        what it removed — and by a label query that failed without one. So it can neither
+        excuse the nought nor be read past it.
         """
         output = _HEALTHY.replace(
             _DISPOSAL_LINE,
@@ -258,9 +258,17 @@ class TestThePurgeThatCouldNotProveItself:
             f"{scaffold.MEASURED}Not fully disposed: DisposalFailure(code=unlisted)",
         )
         failures = check.assess(output, _png(640, 480))
-        assert any("no sandbox was ever created" in reason for reason in failures)
+        assert not any("no sandbox was ever created" in reason for reason in failures)
+        assert any("cannot say whether" in reason for reason in failures)
         assert any("could not prove it disposed everything" in reason for reason in failures)
         assert len(failures) == 2
+
+    def test_a_clean_purge_still_names_the_model(self):
+        """Without that line the nought is not ambiguous, and the check must still say so."""
+        output = _HEALTHY.replace(_DISPOSAL_LINE, f"{scaffold.MEASURED}Disposed 0 sandbox(es).")
+        failures = check.assess(output, _png(640, 480))
+        assert any("no sandbox was ever created" in reason for reason in failures)
+        assert not any("cannot say whether" in reason for reason in failures)
 
     def test_a_nonzero_count_does_not_hide_it(self):
         """A scope can dispose one sandbox and still fail on another; the count alone says fine."""

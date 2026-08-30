@@ -9,15 +9,17 @@ same paragraph as one that drew it. So the verdict rests on what the host produc
 sample's own disposal line, its reclaim-failure count, the purge failure it prints when there is
 one, and the file the sink wrote.
 
-A nought at the final purge does not mean on its own that the turn never ran: this sample
-disposes what it could not clean, so a call whose reclaim failed lost its sandbox before the
-purge looked. The reclaim count is what tells those two apart, and it is the only thing that
-does.
+A nought at the final purge is the interesting one, because three different runs produce it and
+only the first is the failure this check exists for. A turn that never called the tool made no
+sandbox. A call whose reclaim failed had its sandbox disposed before the purge looked, which the
+reclaim count reports and is the one line that settles the question. And a sandbox whose removal
+failed is still there, uncounted, which is a purge failure rather than an absence.
 
-A `Not fully disposed` line is **not** the other thing. It says the sweep could not account for
-everything, not that anything survived — docker raises `unlisted` whenever its label query
-fails, which happens whether or not there was a container to find. So it is reported on its own
-terms, as data that may remain, and it excuses nothing about the count.
+So a `Not fully disposed` line makes the nought **inconclusive** rather than excusing it: the
+same line is raised by a removal that failed with a sandbox and by a label query that failed
+without one — docker's `unlisted` fires on the query alone. Neither reading can be asserted, so
+the check says so instead of picking. It is also reported in its own right, whatever the count,
+as data that may remain.
 
 The image is read structurally rather than compared: a PNG signature, then the dimensions out
 of the IHDR chunk. The model writes the DOT, so what the graph contains and how large it comes
@@ -95,25 +97,23 @@ def assess(output: str, image: bytes | None) -> list[str]:
     reclaim_failures = _RECLAIM_FAILURES.search(output)
     undisposed = _NOT_DISPOSED.search(output)
 
-    # What makes a nought at the final purge honest rather than a turn that never ran: a reclaim
-    # that failed had its sandbox disposed early, so the purge found nothing left to take. A
-    # purge *failure* is not such a thing and is deliberately not read as one — see below.
     acquired = reclaim_failures is not None and int(reclaim_failures.group(1)) > 0
 
     if disposed is None:
         failures.append(
             "no measured 'Disposed N sandbox(es)' line — the sample did not run to completion"
         )
-    elif int(disposed.group(1)) < 1 and not acquired:
+    elif int(disposed.group(1)) < 1 and not acquired and undisposed is None:
         failures.append(
             "'Disposed 0 sandbox(es)' — no sandbox was ever created, so the model answered "
             "without calling render_diagram"
         )
+    elif int(disposed.group(1)) < 1 and not acquired:
+        failures.append(
+            "'Disposed 0 sandbox(es)' beside a purge that failed — this cannot say whether the "
+            "model skipped render_diagram or a sandbox was made and could not be removed"
+        )
 
-    # Reported whatever the count says, because a scope can dispose one sandbox and still fail on
-    # another. Worded as what it is: a purge that could not *prove* it finished. Docker raises
-    # `unlisted` whenever the label query fails, which happens whether or not anything was there
-    # to sweep, so this says data may remain rather than that a sandbox survived.
     if undisposed is not None:
         failures.append(
             f"the scope purge could not prove it disposed everything "
