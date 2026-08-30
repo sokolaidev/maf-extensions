@@ -968,6 +968,49 @@ class TestServingTheUsersIdentity:
         assert minted == ["run-7"], f"minted {len(minted)} times for one run"
         assert first.value_json == second.value_json == '"acting as token-1"'
 
+    def test_a_run_whose_mint_keeps_failing_survives_a_second_event_loop(self):
+        """A contended `asyncio.Lock` binds to the loop that waited on it.
+
+        One built per run would raise "bound to a different event loop" the second time a
+        run with no cached identity is driven concurrently, which is a crash rather than a
+        refusal — and a failing mint is exactly what leaves the cache empty.
+        """
+        attempts: list[str] = []
+
+        async def _mint(run_id: str) -> str:
+            attempts.append(run_id)
+            await asyncio.sleep(0)  # force the second caller to queue on the lock
+            raise RuntimeError("the token service is down")
+
+        registry = _minting_registry(_mint)
+        registry.register(_as_user_tool())
+        run = HostToolRun(registry, run_id="run-7")
+
+        async def _both():
+            return await asyncio.gather(run.call("whoami"), run.call("whoami"))
+
+        first = asyncio.run(_both())
+        second = asyncio.run(_both())
+
+        assert [r.ok for r in (*first, *second)] == [False] * 4
+        assert len(attempts) == 4, attempts
+
+    def test_a_synchronous_minter_is_named_as_a_configuration_error(self, caplog):
+        """`await`ing a plain value raises a TypeError that reads like the token service."""
+
+        def _mint(run_id: str):  # not async, which the annotation forbids and nothing enforces
+            return "a-token"
+
+        registry = _minting_registry(_mint)
+        registry.register(_as_user_tool())
+
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox._host_tools"):
+            result = _call_host_tool(HostToolRun(registry), "whoami")
+
+        assert not result.ok
+        assert "must be an async callable" in caplog.text, caplog.text
+        assert "a-token" not in caplog.text, "the credential a sync minter already returned"
+
     def test_a_cancel_while_minting_is_recorded(self, caplog):
         """The record `call` promises (#355), at an await the mint added."""
         started = asyncio.Event()

@@ -89,7 +89,10 @@ _SMALLEST_RESPONSE = 1
 #: What serving a USER-identity tool still needs, named once — the refusal and the docs must
 #: tell the same story.  Only per-run minting: the body runs host-side, so the in-guest half of
 #: two-axis C′ (an `exec` env channel, audience ⊆ egress) bounds a different mechanism.
-_USER_IDENTITY_PREREQUISITES = "a per-run mint_user_identity the registry can call"
+_USER_IDENTITY_PREREQUISITES = (
+    "a host serves one by giving its registry a mint_user_identity callback, which mints that "
+    "run's authority"
+)
 
 #: The keyword a minted identity reaches a tool body by.  Reserved: a guest sending one would
 #: be choosing the authority its own call runs under, so an argument of this name is refused
@@ -804,10 +807,24 @@ class HostToolRun:
         self._delivered = 0
         self._delivered_bytes = 0
         self._minted_user_identity: str | None = None
-        # Constructed here rather than lazily: an uncontended `asyncio.Lock` touches no loop,
-        # so one built outside a loop — or reused across the sequential ones a test drives —
-        # is fine, and only genuine contention needs the running loop it then has.
-        self._mint_lock = asyncio.Lock()
+        # Per running loop, not per run. A contended `asyncio.Lock` binds itself to the loop
+        # that waited on it, and contending again from a second loop raises "bound to a
+        # different event loop" — measured, not assumed. A run reused across sequential
+        # `asyncio.run` calls whose mint has not yet succeeded reaches exactly that.
+        self._mint_lock: asyncio.Lock | None = None
+        self._mint_lock_loop: asyncio.AbstractEventLoop | None = None
+
+    def _lock_for_this_loop(self) -> asyncio.Lock:
+        """This loop's mint lock, replacing one left bound to a loop that has gone.
+
+        No ``await`` between the check and the assignment, so two tasks of one loop cannot
+        both install a lock and serialize against different objects.
+        """
+        loop = asyncio.get_running_loop()
+        if self._mint_lock is None or self._mint_lock_loop is not loop:
+            self._mint_lock = asyncio.Lock()
+            self._mint_lock_loop = loop
+        return self._mint_lock
 
     async def _user_identity(self) -> str | None:
         """This run's user authority, minted once successfully, or ``None`` if it could not be.
@@ -828,7 +845,7 @@ class HostToolRun:
         # while queued behind another call's mint reaches neither handler otherwise.
         reached_the_minter = False
         try:
-            async with self._mint_lock:
+            async with self._lock_for_this_loop():
                 # The second read. Whoever held the lock may have filled it, and that identity
                 # is this run's — minting a second beside it is the failure this method exists
                 # to avoid, not a cache miss to satisfy.
@@ -836,7 +853,21 @@ class HostToolRun:
                     return self._minted_user_identity
                 try:
                     reached_the_minter = True
-                    minted = await mint(self._run_id)
+                    pending = cast(object, mint(self._run_id))
+                    if not inspect.isawaitable(pending):
+                        # A configuration error, and worth saying so rather than letting
+                        # `await` raise a TypeError this folds into "the token service
+                        # failed". The two send a host to different places. By type, never
+                        # value: a synchronous minter has already returned its credential.
+                        self._logger.warning(
+                            "mint_user_identity returned %s rather than an awaitable, so the "
+                            "user's identity for run %r cannot be used: it must be an async "
+                            "callable",
+                            type(pending).__name__,
+                            self._run_id,
+                        )
+                        return None
+                    minted = await pending
                 except Exception as exc:  # noqa: BLE001 - the guest gets a sentence, the log the rest
                     # `CancelledError` is a `BaseException` and passes straight through this
                     # to the boundary below, which is where the two cancels are told apart.
@@ -996,7 +1027,7 @@ class HostToolRun:
         if acts_as_user and self._registry.mint_user_identity is None:
             return _refused(
                 f"Error: {name!r} exercises the user's identity, which this host cannot serve "
-                f"— serving it needs {_USER_IDENTITY_PREREQUISITES}"
+                f"— {_USER_IDENTITY_PREREQUISITES}"
             )
         # Cast to `object` because a transport hands over whatever the guest's JSON
         # parsed to — the annotation describes the contract, this check enforces it.
