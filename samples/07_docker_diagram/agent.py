@@ -50,7 +50,11 @@ from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
 from diagram_kind import make_diagram_tools
 from maf_sandbox import (
+    DisposalOutcome,
+    FailedReclaimPolicy,
     Isolation,
+    ReclaimConfig,
+    ReclaimFailure,
     SandboxRouter,
     make_file_system_sink,
 )
@@ -99,8 +103,45 @@ async def run() -> int:
 
     backend = DockerSandboxBackend(DockerSandboxConfig())
 
+    # `on_failure` runs *after* the framework has acted on `failed_reclaim_policy`, so it
+    # reports rather than decides; the README says what each policy costs. `DISPOSE` and
+    # `timeout` are written out at their defaults because leaving them unset is still a
+    # choice, and `timeout` is the one whose cost is not obvious: it bounds the removal, the
+    # disposal and this callback separately, so one unclean call can spend three of them.
+    reclaim_failures: list[ReclaimFailure] = []
+
+    # One phrasing per `DisposalOutcome`, because the bare word does not read as a sentence:
+    # `failed` is the disposal's outcome, not something done to the sandbox.
+    disposal_said: dict[DisposalOutcome, str] = {
+        "disposed": "disposed the sandbox",
+        "failed": "could not dispose the sandbox",
+        "kept": "kept the sandbox",
+    }
+
+    async def note_reclaim_failure(failure: ReclaimFailure) -> None:
+        # Recorded first, ahead of anything that can raise. The framework contains an exception
+        # from this callback rather than failing the call, so a `print` that threw would cost
+        # the count silently — and that count is the whole of what this turn reports.
+        reclaim_failures.append(failure)
+        # `failure.path` is a guest path — host-side detail, and never model-facing. It names
+        # what the call affected, not what is still there: a disposal that landed took the
+        # whole sandbox with it.
+        print(
+            f"\n{MEASURED}a call could not be cleaned: {failure.path} "
+            f"({failure.reason}); the framework {disposal_said[failure.disposal]}",
+            file=sys.stderr,
+        )
+
     # Below the router's default `microvm` floor; opted down explicitly.
-    router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
+    router = SandboxRouter(
+        [backend],
+        min_isolation=Isolation.CONTAINER,
+        reclaim=ReclaimConfig(
+            timeout=30.0,
+            failed_reclaim_policy=FailedReclaimPolicy.DISPOSE,
+            on_failure=note_reclaim_failure,
+        ),
+    )
 
     context = make_caller_context(
         list_no_files,
@@ -149,11 +190,19 @@ async def run() -> int:
         # check trusts the `[measured]` tag completely (#314).
         print(quoted(response.text))
     finally:
+        # Cleanup first, reporting after, and the order is the point: a `print` can raise on a
+        # stream that has gone, and this `finally` is the only thing that takes the container
+        # down. Nothing that merely says what happened may run before the things that make it
+        # happen.
         purge = await router.dispose_scope(SCOPE, THREAD_ID)
-        print(f"\n{MEASURED}Disposed {purge.disposed} sandbox(es).")
+        await credential.close()
+        # The framework's own answer about the call directories this turn made, rather
+        # than a probe of the guest: the handler above is called once per reclaim that
+        # did not land, so nought is the whole of the claim that every one of them did.
+        print(f"\n{MEASURED}Reclaim failures this turn: {len(reclaim_failures)}")
+        print(f"{MEASURED}Disposed {purge.disposed} sandbox(es).")
         if purge.undisposed is not None:
             print(f"{MEASURED}Not fully disposed: {purge.undisposed}")
-        await credential.close()
 
     return 0
 

@@ -44,7 +44,19 @@ A call directory that `write_file` created is the **container user's** on every 
 
 **One limitation remains, and it is why this kind writes through the file plane.** An image that hands the guest a directory *above* `work_dir` drops its removals back to the guest's authority; the writes are the guest's now, so that costs nothing on the images this suite runs. And an image that names its user but answers no identity probe — no readable `/etc/passwd`, no `id` — leaves the writes at root's, where the old behavior lives; the backend logs that fallback at acquire. `wslc` and `acas` have the same two-principal split, and both settled it the way this backend did — `wslc` raises authority for its removals ([#706](https://github.com/sokolaidev/maf-extensions/pull/706)), `acas` moves `reclaim` to its data plane, which already acts as the host ([#707](https://github.com/sokolaidev/maf-extensions/pull/707)).
 
-**And it wires no `on_reclaim_failure`.** `sandboxed_tool` takes a host callback for a removal that did not happen, and this sample passes none. The callback is a notification and not a control point: the body has returned by the time it runs, so the answer has already gone to the model, and a handler that raises is logged and contained. With the reclaim above now landing on this backend, there is nothing left here for one to report. What a deployment does with the fact where it still happens — count it, page when `ReclaimFailure.disposal` is `"failed"` and the router is refusing the conversation until a disposal lands — is operations code, and `packages/maf-sandbox/README.md` is where that surface is described.
+**And it wires the failure path, which is the half with a decision in it.** `agent.py` builds its router with a `ReclaimConfig`: a `timeout`, a `failed_reclaim_policy` and an `on_failure` handler. All three are decisions, and a host leaving them at their defaults has still made them.
+
+The policy is the one with a blast radius, and the two halves fail in opposite directions. `DISPOSE` — the default, stated explicitly here rather than inherited — has the framework *try* to end the sandbox when a call's directory could not be removed, so the conversation's next call starts cold; a disposal that does not land is reported as `failed`, and the router then refuses that key with `SandboxUnclean` rather than handing on what it could not clean. That refusal is **this process's** knowledge and no further: the docstring says so — *"another replica holds no such record"* — and this backend derives a stable container name it will reuse, so a fresh run of this sample, or another replica, can reacquire the same dirty sandbox. The refusal buys the rest of the conversation, not the data; what actually removes it is a disposal that lands, which is why the router keeps trying.
+
+`KEEP` does not try. It leaves the sandbox warm with the unremovable data still in it, and that is where the directory nobody could remove stays readable by every later call in the conversation — `acquire` is get-or-create, so it is handed back rather than rebuilt, and disposal is the only thing that would have removed it. The conversation continues; the data is what pays for it.
+
+The handler is **not** where that is decided, and the order is what a reader gets wrong first: the framework acts, *then* calls it, and `ReclaimFailure.disposal` says which of `disposed`, `failed` or `kept` already happened. So it is where a host logs, counts and pages — nothing more. It writes to stderr here, because `ReclaimFailure.path` is a guest path and host-side detail rather than something the model should see; and a handler that raises is caught and logged rather than replacing the call's own answer, since it runs in a `finally`.
+
+Where safety actually lives is neither: a disposal that does not land leaves the router refusing that key with `SandboxUnclean` until one does.
+
+The `timeout` is the decision whose cost is easy to miss. It is not one bound on cleanup but the same number applied three times over — the removal gets it, the disposal that follows a failed removal gets it again, and the handler above gets it a third time — so a single unclean call can hold the turn for three times what the field appears to say. 30 seconds is the default, written out here for that reason. And the wait is not free: `sandboxed_tool` awaits all three in the `finally` of the tool call itself, so the body has produced its answer but the call has not returned it yet. The model is still waiting, and so is whoever is waiting on the model. A host tuning this is tuning tool-call latency, in units of three.
+
+The run prints `Reclaim failures this turn: N` from that handler's own count, and the live check requires nought. That is the framework's answer about the directories this turn made, rather than a probe of the guest: a kind spelling OS commands to prove a framework guarantee teaches the wrong thing. What it does not show is the handler *firing* — a healthy run reports nought every time, and forcing one needs a removal that can be made to fail on demand, which only the in-process backend offers.
 
 ## The boundary is weaker, and the refusal is the feature
 
@@ -87,7 +99,7 @@ With `DIAGRAM_SANDBOX_IMAGE` or either required model variable unset, the progra
 
 ## Run
 
-The first call pays for creating and starting the container — a few seconds, against the minutes a microVM-isolated sandbox needs. `agent.py` prints the model's reply and its own two tagged lines — what it resolved, and what it disposed — and never `render_diagram`'s own result, so what you see looks something like this:
+The first call pays for creating and starting the container — a few seconds, against the minutes a microVM-isolated sandbox needs. `agent.py` prints the model's reply and its own three tagged lines — what it resolved, how many call directories it could not clean, and what it disposed — and never `render_diagram`'s own result, so what you see looks something like this:
 
 ```
   [measured] installed: maf-sandbox 0.24.0, maf-sandbox-docker 0.8.1
@@ -96,15 +108,21 @@ The image was saved under `out/diagram.png`.
   [measured] Disposed 1 sandbox(es).
 ```
 
-That block is one real run, on 2026-08-26. **What the model says varies** — the DOT it writes, whether it labels the edges, how it phrases the reply, and whether it repeats the tool's own sentence or writes its own as it did here. **What does not vary** is the tool result underneath it and the file on disk: `render_diagram` returns exactly
+That block is one real run, on 2026-08-26, and it is reproduced as it was recorded — which is why the reclaim line is absent from it: that run predates the handler this sample now wires. A run today prints `[measured] Reclaim failures this turn: 0` between the reply and the disposal line. Nothing else about it has changed, and the line was not pasted in after the fact, because a transcript this sample invites you to compare your own output against is worth no more than its accuracy.
+
+**What the model says varies** — the DOT it writes, whether it labels the edges, how it phrases the reply, and whether it repeats the tool's own sentence or writes its own as it did here. **What does not vary** is the tool result underneath it and the file on disk: `render_diagram` returns exactly
 
 ```
 Rendered diagram.png (image/png); saved under out/.
 ```
 
-every time — a host-authored line, not the model's — and a valid PNG appears at `out/diagram.png` (`89 50 4E 47` — the PNG magic — as its first bytes). The disposal line prints only once `render_diagram` has actually created and torn down a container; a `Disposed 0` would mean the model answered without rendering anything, the T0 behaviour this sample exists to contrast with.
+every time — a host-authored line, not the model's — and a valid PNG appears at `out/diagram.png` (`89 50 4E 47` — the PNG magic — as its first bytes).
 
-It carries `[measured]` because it is the sample's report rather than the model's, and the reply is filtered before printing so a line of it starting with that tag comes out quoted, `> [measured] …` — otherwise a reply writing "Disposed 1 sandbox(es)." would answer for the router ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)).
+**`Disposed 0` does not by itself mean the model skipped the tool.** Three different runs produce that nought, and only the first is the T0 behaviour this sample exists to contrast with. A turn that never called the tool made no sandbox. A call whose reclaim failed had its sandbox disposed before the purge looked — `Reclaim failures this turn` reports that, and it is the one line that settles the question. And a sandbox whose removal failed is still there, uncounted, because `dispose_scope` counts what it removed rather than what it found. `dispose_scope` returns a `ScopePurge`, and its count cannot be read alone: nought reads the same whether there was nothing to take or nothing worked.
+
+**So a `Not fully disposed:` line leaves that nought inconclusive rather than explaining it**, and it is weaker than it looks: it reports only that the sweep could not account for everything, never that something survived. A removal that failed leaves a container behind that was never counted, and this backend raises `unlisted` whenever its label query fails — which happens whether or not there was anything to find, so the line appears on a turn that created nothing at all. Nothing in the output separates those two, so `check_live_diagram_sample.py` says the run cannot tell rather than picking one, and reports the purge failure in its own right besides, as data that may remain.
+
+Each of those lines carries `[measured]` because it is the sample's report rather than the model's, and the reply is filtered before printing so a line of it starting with that tag comes out quoted, `> [measured] …` — otherwise a reply writing "Disposed 1 sandbox(es)." would answer for the router ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)).
 
 The PNG is git-ignored (`out/`), so a run leaves no tracked file behind.
 

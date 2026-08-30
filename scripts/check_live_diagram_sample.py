@@ -5,9 +5,21 @@
 
 Everything this sample prints except its own tagged lines is model prose, and prose is not
 evidence that a renderer ran: an agent describing the picture it would have drawn writes the
-same paragraph as one that drew it. So the assertion is what the host produced itself — the
-sample's own disposal line, which is non-zero only if a sandbox was created to serve a tool
-call, and the file the sink wrote.
+same paragraph as one that drew it. So the verdict rests on what the host produced itself — the
+sample's own disposal line, its reclaim-failure count, the purge failure it prints when there is
+one, and the file the sink wrote.
+
+A nought at the final purge is the interesting one, because three different runs produce it and
+only the first is the failure this check exists for. A turn that never called the tool made no
+sandbox. A call whose reclaim failed had its sandbox disposed before the purge looked, which the
+reclaim count reports and is the one line that settles the question. And a sandbox whose removal
+failed is still there, uncounted, which is a purge failure rather than an absence.
+
+So a `Not fully disposed` line makes the nought **inconclusive** rather than excusing it: the
+same line is raised by a removal that failed with a sandbox and by a label query that failed
+without one — docker's `unlisted` fires on the query alone. Neither reading can be asserted, so
+the check says so instead of picking. It is also reported in its own right, whatever the count,
+as data that may remain.
 
 The image is read structurally rather than compared: a PNG signature, then the dimensions out
 of the IHDR chunk. The model writes the DOT, so what the graph contains and how large it comes
@@ -31,6 +43,23 @@ from pathlib import Path
 #: hole rather than tolerance (#314).
 _DISPOSED = re.compile(
     r"^  (?-i:\[measured\]) Disposed\s+(\d+)\s+sandbox", re.MULTILINE | re.IGNORECASE
+)
+
+#: The framework's own count of call directories it could not remove, from the handler the
+#: sample wires on the router. Nought is the claim; anything else cost the conversation its
+#: sandbox, since this sample's policy disposes what it could not clean. Tagged like the line
+#: above, so a model writing "no reclaim failures" into its reply cannot answer for the
+#: framework.
+_RECLAIM_FAILURES = re.compile(
+    r"^  (?-i:\[measured\]) Reclaim failures this turn:\s+(\d+)", re.MULTILINE | re.IGNORECASE
+)
+
+#: The sweep that could not account for itself, printed only when `dispose_scope` reports a
+#: failure. Weaker than it sounds, and read that way: docker raises `unlisted` when its label
+#: query fails, with or without a container to find, so this is grounds for saying data may
+#: remain and never grounds for saying a sandbox existed.
+_NOT_DISPOSED = re.compile(
+    r"^  (?-i:\[measured\]) Not fully disposed:\s*(.+)$", re.MULTILINE | re.IGNORECASE
 )
 
 #: The 8-byte PNG signature, and the fixed layout that must follow it: a 4-byte chunk length,
@@ -65,14 +94,42 @@ def assess(output: str, image: bytes | None) -> list[str]:
     failures: list[str] = []
 
     disposed = _DISPOSED.search(output)
+    reclaim_failures = _RECLAIM_FAILURES.search(output)
+    undisposed = _NOT_DISPOSED.search(output)
+
+    acquired = reclaim_failures is not None and int(reclaim_failures.group(1)) > 0
+
     if disposed is None:
         failures.append(
             "no measured 'Disposed N sandbox(es)' line — the sample did not run to completion"
         )
-    elif int(disposed.group(1)) < 1:
+    elif int(disposed.group(1)) < 1 and not acquired and undisposed is None:
         failures.append(
             "'Disposed 0 sandbox(es)' — no sandbox was ever created, so the model answered "
             "without calling render_diagram"
+        )
+    elif int(disposed.group(1)) < 1 and not acquired:
+        failures.append(
+            "'Disposed 0 sandbox(es)' beside a purge that failed — this cannot say whether the "
+            "model skipped render_diagram or a sandbox was made and could not be removed"
+        )
+
+    if undisposed is not None:
+        failures.append(
+            f"the scope purge could not prove it disposed everything "
+            f"({undisposed.group(1).strip()}) — data from this conversation may remain"
+        )
+
+    if reclaim_failures is None:
+        failures.append(
+            "no measured 'Reclaim failures this turn' line — the sample did not reach its "
+            "`finally`, so nothing vouches for the call directories it made"
+        )
+    elif (unreclaimed := int(reclaim_failures.group(1))) > 0:
+        failures.append(
+            f"{unreclaimed} call {'directory' if unreclaimed == 1 else 'directories'} could "
+            "not be reclaimed — each one cost the conversation its sandbox, and where the "
+            "disposal did not land either, those files stay readable by the next call"
         )
 
     if image is None:
