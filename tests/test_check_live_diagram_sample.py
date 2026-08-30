@@ -177,6 +177,28 @@ class TestTheReclaimHalf:
             "that raises loses the count the live check reads"
         )
 
+    def test_cleanup_runs_before_anything_reports_it(self):
+        """The `finally` is the only thing that takes the container down, so it goes first.
+
+        A `print` on a stream that has gone raises, and an exception in a `finally` abandons
+        the rest of it. Reporting ahead of `dispose_scope` therefore risks trading the whole
+        sandbox for a line of output about it.
+        """
+        tree = ast.parse((_ROOT / "samples" / _SAMPLE / "agent.py").read_text(encoding="utf-8"))
+        run = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "run"
+        )
+        block = next(handler.finalbody for handler in ast.walk(run) if isinstance(handler, ast.Try))
+        dumped = [ast.dump(statement) for statement in block]
+        disposes = next(i for i, s in enumerate(dumped) if "dispose_scope" in s)
+        reports = next(i for i, s in enumerate(dumped) if "'print'" in s)
+        assert disposes < reports, (
+            f"samples/{_SAMPLE}/agent.py reports before it disposes, so a print that raises "
+            "leaves the container running"
+        )
+
     def test_the_sample_states_its_reclaim_timeout(self):
         """#520 asks for the timeout too, and it is the field a run cannot show.
 

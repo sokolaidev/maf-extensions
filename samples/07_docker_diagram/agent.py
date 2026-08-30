@@ -190,15 +190,19 @@ async def run() -> int:
         # check trusts the `[measured]` tag completely (#314).
         print(quoted(response.text))
     finally:
+        # Cleanup first, reporting after, and the order is the point: a `print` can raise on a
+        # stream that has gone, and this `finally` is the only thing that takes the container
+        # down. Nothing that merely says what happened may run before the things that make it
+        # happen.
+        purge = await router.dispose_scope(SCOPE, THREAD_ID)
+        await credential.close()
         # The framework's own answer about the call directories this turn made, rather
         # than a probe of the guest: the handler above is called once per reclaim that
         # did not land, so nought is the whole of the claim that every one of them did.
         print(f"\n{MEASURED}Reclaim failures this turn: {len(reclaim_failures)}")
-        purge = await router.dispose_scope(SCOPE, THREAD_ID)
         print(f"{MEASURED}Disposed {purge.disposed} sandbox(es).")
         if purge.undisposed is not None:
             print(f"{MEASURED}Not fully disposed: {purge.undisposed}")
-        await credential.close()
 
     return 0
 
