@@ -44,10 +44,12 @@ from maf_sandbox import (
     fold_disposal_failures,
 )
 from maf_sandbox.paths import (
-    confine_guest_path,
-    confine_guest_write_path,
+    confine_resolve_guest_delete_path,
+    confine_resolve_guest_list_path,
+    confine_resolve_guest_path,
+    confine_resolve_guest_read_path,
+    confine_resolve_guest_write_path,
     guest_path_relative_to,
-    refuse_symlinked_parents,
 )
 
 from ._config import AcasSandboxConfig
@@ -256,16 +258,13 @@ _FIELD_IS_DIR = "isDir"
 _FIELD_IS_SYMLINK = "isSymlink"
 
 
-def _confined(path: str, working_directory: str) -> tuple[str, str]:
-    """Resolve ``path`` against ``working_directory``: the guest path, and the relative one.
+def _entry_path(guest: str, working_directory: str) -> str:
+    """Where ``guest`` sits relative to ``working_directory``, as a ``SandboxEntry`` reports it.
 
-    Paired because every caller here wants the relative half for a
-    :class:`~maf_sandbox.SandboxEntry` as soon as the absolute one is confined.  That half is
-    never ``None`` — :func:`~maf_sandbox.paths.confine_guest_path` has already refused anything
+    Never ``None`` — the file name check every caller here has already run refused anything
     outside — so the ``or ""`` narrows a type rather than covering a case.
     """
-    resolved = confine_guest_path(path, working_directory)
-    return resolved, guest_path_relative_to(resolved, working_directory) or ""
+    return guest_path_relative_to(guest, working_directory) or ""
 
 
 def _stat_from_payload(payload: Mapping[str, Any], relative_path: str) -> SandboxEntry:
@@ -346,13 +345,13 @@ def _listed_entry_path(payload: Mapping[str, Any], *, listed: str, working_direc
             f"the sandbox service listed an entry with no {_FIELD_PATH!r}, so where it sits "
             "cannot be told"
         )
-    resolved, relative = _confined(reported, working_directory)
+    resolved = confine_resolve_guest_path(reported, working_directory)
     if posixpath.dirname(resolved) != listed:
         raise AcasEntryPayloadIncomplete(
             f"the sandbox service listed {reported!r} as an entry of {listed!r}, which is not "
             "its parent, and a listing enumerates one level only"
         )
-    return relative
+    return _entry_path(resolved, working_directory)
 
 
 @dataclass(frozen=True)
@@ -385,9 +384,7 @@ class _AcasSandbox:
         # parent. The file API docs do not mention the behaviour at all, so it is the SDK
         # signature that is load-bearing here; relying silently on a `0.1.0bN` default is how
         # `DiskImage.image` got missed. Stating it costs nothing and pins the intent.
-        guest = await confine_guest_write_path(
-            lambda p: self._stat_guest(p, p), path, working_directory
-        )
+        guest = await confine_resolve_guest_write_path(self._stat_guest, path, working_directory)
         await self._sc.write_file(guest, content, create_dirs=True)
 
     async def exec(
@@ -441,9 +438,8 @@ class _AcasSandbox:
         The **final** component is described rather than refused: a link reported as
         :data:`~maf_sandbox.EntryKind.SYMLINK` is how a caller learns it is one.
         """
-        guest, relative = _confined(path, working_directory)
-        await self._refuse_symlinked_parents(guest, working_directory=working_directory)
-        return await self._stat_guest(guest, relative)
+        guest = await confine_resolve_guest_read_path(self._stat_guest, path, working_directory)
+        return await self._stat_guest(guest, _entry_path(guest, working_directory))
 
     async def run_code(self, code: str, *, timeout: float) -> ExecResult:
         """Not supported: this backend declares no :data:`~maf_sandbox.Capability.RUN_CODE`.
@@ -471,12 +467,7 @@ class _AcasSandbox:
         """
         from azure.core.exceptions import ResourceNotFoundError
 
-        guest = confine_guest_path(path, working_directory)
-        await self._refuse_symlinked_parents(guest, working_directory=working_directory)
-        if posixpath.normpath(guest) == posixpath.normpath(working_directory):
-            raise ValueError(
-                f"refusing to remove the working directory itself: {working_directory}"
-            )
+        guest = await confine_resolve_guest_delete_path(self._stat_guest, path, working_directory)
         planted = await self._stat_guest(guest, posixpath.normpath(path))
         if planted is not None and planted.kind is EntryKind.DIRECTORY and not recursive:
             raise OSError(f"refusing to remove a directory without recursive: {path}")
@@ -538,12 +529,14 @@ class _AcasSandbox:
             # traversing `__cause__`, so the detail has to ride in the message itself.
             raise OSError(f"could not reclaim {directory}: {error_detail(refused)}") from refused
 
-    async def _stat_guest(self, guest: str, relative: str) -> SandboxEntry | None:
+    async def _stat_guest(self, guest: str, relative: str | None = None) -> SandboxEntry | None:
         """Stat an absolute guest path, with no confinement check of its own.
 
         Split out because the filesystem path check stats the working directory's own
-        ancestors, which by definition sit outside it — confining here would refuse the
-        very check being made.
+        ancestors, which by definition sit outside it — confining here would refuse the very
+        check being made, and it is this method the confinement bundles are handed.
+        ``relative`` is what a :class:`~maf_sandbox.SandboxEntry` and a refusal report; the
+        check has no relative path to give, so the guest path stands in.
         """
         from azure.core.exceptions import ResourceNotFoundError
 
@@ -551,26 +544,7 @@ class _AcasSandbox:
             payload = await self._files_payload(_STAT_ROUTE, guest)
         except ResourceNotFoundError:
             return None
-        return _stat_from_payload(payload, relative)
-
-    async def _refuse_symlinked_parents(
-        self, guest: str, *, working_directory: str, include_guest: bool = False
-    ) -> None:
-        """The protocol's filesystem path check, over this backend's own unconfined stat.
-
-        A symlinked *parent* is invisible in the final entry's stat — with
-        ``/maf-sandbox/work/out -> /etc``, ``out/hostname`` stats as a regular 12-byte file and
-        reads ``/etc/hostname`` — and this API offers no no-follow read and no realpath to
-        settle it in one call, so it costs one stat per component.  ``include_guest`` is what
-        :meth:`list_dir` needs: the service enumerates through a symlinked directory as readily
-        as it reads through one.
-        """
-        await refuse_symlinked_parents(
-            lambda directory: self._stat_guest(directory, directory),
-            guest,
-            working_directory,
-            include_self=include_guest,
-        )
+        return _stat_from_payload(payload, guest if relative is None else relative)
 
     async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
         """Read the regular file at ``path``, refusing anything over ``max_bytes``.
@@ -590,10 +564,9 @@ class _AcasSandbox:
         """
         from azure.core.exceptions import ResourceNotFoundError
 
-        guest, relative = _confined(path, working_directory)
-        await self._refuse_symlinked_parents(guest, working_directory=working_directory)
+        guest = await confine_resolve_guest_read_path(self._stat_guest, path, working_directory)
         # `_stat_guest` rather than `stat_file`, which would check the same ancestors a second time.
-        entry = await self._stat_guest(guest, relative)
+        entry = await self._stat_guest(guest, _entry_path(guest, working_directory))
         if entry is None:
             raise FileNotFoundError(f"no such file: {path!r}")
         if entry.kind is not EntryKind.FILE:
@@ -646,10 +619,7 @@ class _AcasSandbox:
         """
         from azure.core.exceptions import ResourceNotFoundError
 
-        guest, _ = _confined(path, working_directory)
-        await self._refuse_symlinked_parents(
-            guest, working_directory=working_directory, include_guest=True
-        )
+        guest = await confine_resolve_guest_list_path(self._stat_guest, path, working_directory)
         try:
             payload = await self._files_payload(_LIST_ROUTE, guest)
         except ResourceNotFoundError as exc:

@@ -27,11 +27,14 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PACKAGES = REPO_ROOT / "packages"
 
-#: The entry points that take a backend's stat as their first argument. Both are the same duty:
-#: `confine_resolve_guest_write_path` is `refuse_symlinked_ancestors` plus the write refusals.
+#: The entry points that take a backend's stat as their first argument. All the same duty: each
+#: `confine_resolve_guest_*_path` bundle is `refuse_symlinked_ancestors` plus what its method owes.
 ENTRY_POINTS = (
     "refuse_symlinked_ancestors",
     "confine_resolve_guest_write_path",
+    "confine_resolve_guest_read_path",
+    "confine_resolve_guest_list_path",
+    "confine_resolve_guest_delete_path",
     # Both spellings are exported, so a caller on either is matched.
     "refuse_symlinked_parents",
     "confine_guest_write_path",

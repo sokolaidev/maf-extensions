@@ -29,12 +29,12 @@ classifiers = [
 dependencies = [
     # The backend protocol and the router this backend registers with — the only dependency
     # there is. Everything else is the standard library driving the `docker` CLI. The floor
-    # tracks the release carrying the FILES_OUT pull surface this backend declares and
-    # implements from day one — the number is below and the bump script moves it, so naming
+    # tracks the release carrying the per-method confinement bundles this backend's file
+    # surface calls — the number is below and the bump script moves it, so naming
     # it here would only go stale; upper-bounded because maf-sandbox has not yet reached a stable
     # API, so every release before 1.0.0 may include breaking changes (see its CHANGELOG);
     # moving either end of this range has an order to it — see RELEASING.md.
-    "maf-sandbox>=0.27.0,<0.29",
+    "maf-sandbox>=0.28.0,<0.29",
 ]
 
 [project.urls]
