@@ -32,8 +32,9 @@ to *"this works beside the core it ships with"*, which is the only one a pull re
 settle. `publish-packages.yml` passes no flag, so an upload still requires a published core
 the range admits.
 
-A network failure is fatal rather than skipped, the same stance as the admit and work checks:
-passing because PyPI could not be reached is the one outcome that would make this worthless.
+An index still unreachable after `pypi_index`'s retries is fatal rather than skipped, the same
+stance as the admit and work checks: passing because PyPI could not be reached is the one outcome
+that would make this worthless.
 """
 
 from __future__ import annotations
@@ -47,6 +48,7 @@ from pathlib import Path
 
 from check_published_dependents_work import fetch_requires_dist_for_version
 from check_release_order import admits, fetch_published_versions, version
+from pypi_index import run_check
 
 _CORE = "maf-sandbox"
 _ROOT = Path(__file__).resolve().parent.parent
@@ -270,4 +272,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv))
+    raise SystemExit(run_check(main, sys.argv))

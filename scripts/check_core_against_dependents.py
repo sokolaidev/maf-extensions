@@ -29,7 +29,8 @@ A sibling comes from this checkout in both halves. Two suites import one, and a 
 sibling would drag its own bound on the core into the resolution — which is a constraint about
 that sibling's release, not about the core under test.
 
-A network failure is fatal rather than skipped, the same stance as the admit and import checks.
+An index still unreachable after `pypi_index`'s retries is fatal rather than skipped, the same
+stance as the admit and import checks.
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ from pathlib import Path
 from check_published_dependents_admit import dependent_distributions
 from check_published_dependents_work import at_risk, fetch_version_requirements
 from check_release_order import version
+from pypi_index import run_check
 
 _CORE = "maf-sandbox"
 _ROOT = Path(__file__).resolve().parent.parent
@@ -229,4 +231,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv))
+    raise SystemExit(run_check(main, sys.argv))

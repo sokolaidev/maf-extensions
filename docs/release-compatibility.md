@@ -51,6 +51,8 @@ It refuses two things: a sample that does not type-check against the core its bl
 
 An override rewrites a requirement and never adds one, so the core is named as an install operand in both modes. Left to the override alone, a block declaring only the core asks `uv pip install` for nothing at all, and a block declaring a backend gets the core only because the backend requires it.
 
+**Every gate here reads the published index, and one reset must not decide a release.** A 404 is an answer and comes back at once, as does any other 4xx; a reset, a timeout or a 5xx is the index having a moment and is retried with a widening pause, in [`pypi_index.py`](../scripts/pypi_index.py), which every fetch goes through. Passing when the index cannot be reached is not on offer — these gates exist to prove a range or a floor resolves against what *is* published, and one that passed without asking would let an unresolvable floor through, to be discovered after the release. So a gate that exhausts its retries fails, and distinguishes itself: the annotation names the document it could not read and says the red is not a verdict on any version.
+
 What it does not check is a sample's other floors. Most sample requirements on this repository's backends carry no floor at all, and the few that do would need the core unpinned to exercise; that those name a released version is `tests/test_sample_metadata.py`'s question, and whether the sample *runs* is `verify-live.yml`'s, after a release, with a model in the loop. This gate is the cheap pre-merge half: it settles the core, offline, in under a minute.
 
 ## What the ranges cost, and why that matters here

@@ -31,6 +31,9 @@ assert _spec and _spec.loader
 check = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(check)
 
+# The retry the fetches inherit; `_patch_urlopen` zeroes its pause so no test waits.
+import pypi_index  # noqa: E402
+
 _ARGV0 = "scripts/check_published_dependents_work.py"
 
 
@@ -148,10 +151,12 @@ def _patch_urlopen(
     monkeypatch: pytest.MonkeyPatch,
     routes: dict[str, object],
 ) -> None:
-    """Route a URL to a payload dict (success) or an ``HTTPError`` (raise).
+    """Route a URL to a payload dict (success) or an error to raise.
 
     Keys are matched as substrings, longest first, so a per-version segment like
-    ``bicep/0.2.0/json`` is not shadowed by the top-level ``bicep/json``.
+    ``bicep/0.2.0/json`` is not shadowed by the top-level ``bicep/json``. A list value is
+    consumed one reply per call and its last entry repeats, which is how a retried failure is
+    written.
     """
 
     def fake_urlopen(url: str | urllib.request.Request, timeout: int | None = None) -> _Response:
@@ -159,12 +164,16 @@ def _patch_urlopen(
         for key in sorted(routes, key=len, reverse=True):
             if key in target:
                 result = routes[key]
-                if isinstance(result, urllib.error.HTTPError):
+                if isinstance(result, list):
+                    result = result.pop(0) if len(result) > 1 else result[0]
+                if isinstance(result, BaseException):
                     raise result
                 return _Response(result)
         raise AssertionError(f"unexpected url {target}")
 
-    monkeypatch.setattr(check.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    # The retry is pinned in tests/test_pypi_index.py; here it only has to cost no seconds.
+    monkeypatch.setattr(pypi_index, "FIRST_PAUSE_SECONDS", 0.0)
 
 
 class TestFetchRequiresDistForVersion:
@@ -201,10 +210,24 @@ class TestFetchRequiresDistForVersion:
         _patch_urlopen(monkeypatch, {"maf-sandbox-bicep/0.2.0/json": _http_error(404)})
         assert check.fetch_requires_dist_for_version("maf-sandbox-bicep", "0.2.0") is None
 
-    def test_a_non_404_error_is_fatal(self, monkeypatch):
+    def test_a_5xx_that_outlasts_the_retries_is_fatal(self, monkeypatch):
         _patch_urlopen(monkeypatch, {"maf-sandbox-bicep/0.2.0/json": _http_error(500)})
-        with pytest.raises(urllib.error.HTTPError):
+        with pytest.raises(pypi_index.IndexUnreachable):
             check.fetch_requires_dist_for_version("maf-sandbox-bicep", "0.2.0")
+
+    def test_one_reset_costs_a_retry_rather_than_the_run(self, monkeypatch):
+        _patch_urlopen(
+            monkeypatch,
+            {
+                "maf-sandbox-bicep/0.2.0/json": [
+                    urllib.error.URLError(ConnectionResetError(104, "Connection reset by peer")),
+                    {"info": {"requires_dist": ["maf-sandbox<0.12"], "yanked": False}},
+                ]
+            },
+        )
+        assert check.fetch_requires_dist_for_version("maf-sandbox-bicep", "0.2.0") == [
+            "maf-sandbox<0.12"
+        ]
 
 
 class TestFetchVersionRequirements:
@@ -292,12 +315,12 @@ class TestFetchVersionRequirements:
         _patch_urlopen(monkeypatch, {"simple/maf-sandbox-bicep/": _http_error(404)})
         assert check.fetch_version_requirements("maf-sandbox-bicep") is None
 
-    def test_a_non_404_error_on_the_simple_index_is_fatal(self, monkeypatch):
+    def test_a_5xx_on_the_simple_index_that_outlasts_the_retries_is_fatal(self, monkeypatch):
         _patch_urlopen(monkeypatch, {"simple/maf-sandbox-bicep/": _http_error(500)})
-        with pytest.raises(urllib.error.HTTPError):
+        with pytest.raises(pypi_index.IndexUnreachable):
             check.fetch_version_requirements("maf-sandbox-bicep")
 
-    def test_a_non_404_error_on_a_per_version_fetch_is_fatal(self, monkeypatch):
+    def test_a_5xx_on_a_per_version_fetch_that_outlasts_the_retries_is_fatal(self, monkeypatch):
         _patch_urlopen(
             monkeypatch,
             {
@@ -308,7 +331,7 @@ class TestFetchVersionRequirements:
                 "maf-sandbox-bicep/0.2.0/json": _http_error(500),
             },
         )
-        with pytest.raises(urllib.error.HTTPError):
+        with pytest.raises(pypi_index.IndexUnreachable):
             check.fetch_version_requirements("maf-sandbox-bicep")
 
 

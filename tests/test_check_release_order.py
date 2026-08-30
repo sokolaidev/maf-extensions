@@ -10,13 +10,16 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 import pytest
 
-_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "check_release_order.py"
+_SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
+sys.path.insert(0, str(_SCRIPTS))  # the script imports `pypi_index` for the retrying reader
+_SCRIPT = _SCRIPTS / "check_release_order.py"
 _spec = importlib.util.spec_from_file_location("check_release_order", _SCRIPT)
 assert _spec and _spec.loader
 check = importlib.util.module_from_spec(_spec)
@@ -61,7 +64,7 @@ def _patch_urlopen(
                 return _Response(result)
         raise AssertionError(f"unexpected url {target}")
 
-    monkeypatch.setattr(check.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
 
 
 def _repo(tmp_path: Path, version: str, ceilings: dict[str, str]) -> Path:
