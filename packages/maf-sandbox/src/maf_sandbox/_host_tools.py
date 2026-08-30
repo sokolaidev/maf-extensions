@@ -86,9 +86,8 @@ DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN = 16
 #: "no room left" answerable before a tool runs rather than only after its size is known.
 _SMALLEST_RESPONSE = 1
 
-#: What serving a USER-identity tool still needs, named once — the refusal and the docs must
-#: tell the same story.  Only per-run minting: the body runs host-side, so the in-guest half of
-#: two-axis C′ (an `exec` env channel, audience ⊆ egress) bounds a different mechanism.
+#: What a host owes before a USER-identity tool can be served, named once so the refusal and
+#: the docs cannot drift apart.
 _USER_IDENTITY_PREREQUISITES = (
     "a host serves one by giving its registry a mint_user_identity callback, which mints that "
     "run's authority"
@@ -1167,13 +1166,8 @@ class HostToolRun:
             if inspect.isawaitable(result):
                 result = await result
         except asyncio.CancelledError:
-            # The one outcome that otherwise leaves no trace (#355), recorded here rather than
-            # around the whole call because only here is the body known to have started. The
-            # ledger is consistent — nothing delivered, the slot returned by the caller's
-            # `finally` — but that says nothing was *delivered*, not that nothing was *done*: a
-            # sink tool may already have acted. Say which tool was interrupted, so a host that
-            # wired no `host_tool_calls_observer` still has a record; one that did receives
-            # this same error at its context exit.
+            # Only a cancel past this line can have begun an outward effect, so only this one
+            # is mid-effect. Nothing was delivered either way.
             self._logger.warning(
                 "host tools: the call of %r was cancelled mid-effect — nothing was delivered, "
                 "but any outward effect the tool had begun is not recorded and may have "
