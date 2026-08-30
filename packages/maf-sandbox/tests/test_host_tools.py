@@ -993,9 +993,12 @@ class TestServingTheUsersIdentity:
         with caplog.at_level(logging.WARNING, logger="maf_sandbox._host_tools"):
             asyncio.run(_cancel_mid_mint())
 
+        # The whole set, not the first match: the body never ran, so a second record claiming
+        # an outward effect may have completed would be telling an operator something false.
         recorded = [r.getMessage() for r in caplog.records if "was cancelled" in r.getMessage()]
-        assert recorded, caplog.text
+        assert len(recorded) == 1, recorded
         assert "inside the host's minter" in recorded[0], recorded
+        assert "mid-effect" not in recorded[0], recorded
 
     def test_a_cancel_while_queued_behind_another_mint_is_recorded(self, caplog):
         """The waiter's cancel lands in `__aenter__`, which neither handler used to cover.
@@ -1030,8 +1033,10 @@ class TestServingTheUsersIdentity:
             asyncio.run(_cancel_the_waiter())
 
         queued = [r.getMessage() for r in caplog.records if "while it waited" in r.getMessage()]
-        assert queued, caplog.text
+        assert len(queued) == 1, queued
         assert "credential may already have been issued" not in queued[0], queued
+        # Neither cancel here reached a body, so nothing may claim an outward effect.
+        assert [r for r in caplog.records if "mid-effect" in r.getMessage()] == [], caplog.text
 
     def test_a_rejected_mint_is_logged_by_type_rather_than_value(self, caplog):
         """A misconfigured minter answering with `bytes` is answering with a real token."""

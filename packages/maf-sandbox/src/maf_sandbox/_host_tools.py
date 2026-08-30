@@ -1065,21 +1065,6 @@ class HostToolRun:
             outcome = await self._deliver(name, func, provided, limits, framing_bytes)
             delivered = outcome.ok
             return outcome
-        except asyncio.CancelledError:
-            # The one outcome that otherwise leaves no trace (#355). A refusal and a tool that
-            # raises are both logged (below and in `_deliver`); a success is deliberately quiet;
-            # a cancel is neither — the turn was cut off at the body's innermost await. The ledger
-            # is consistent (nothing delivered, the slot returned in `finally`), but that says
-            # nothing was *delivered*, not that nothing was *done*: a sink tool may already have
-            # acted. Say which tool was interrupted, so a host that wired no
-            # `host_tool_calls_observer`
-            # still has a record; one that did receives this same error at its context exit.
-            self._logger.warning(
-                "host tools: the call of %r was cancelled mid-effect — nothing was delivered, "
-                "but any outward effect the tool had begun is not recorded and may have completed",
-                name,
-            )
-            raise
         finally:
             # `finally` rather than a check on the outcome, because a cancelled call has no
             # outcome to check: `CancelledError` is a `BaseException` and walks straight past
@@ -1143,6 +1128,21 @@ class HostToolRun:
             result = func(**provided)
             if inspect.isawaitable(result):
                 result = await result
+        except asyncio.CancelledError:
+            # The one outcome that otherwise leaves no trace (#355), recorded here rather than
+            # around the whole call because only here is the body known to have started. The
+            # ledger is consistent — nothing delivered, the slot returned by the caller's
+            # `finally` — but that says nothing was *delivered*, not that nothing was *done*: a
+            # sink tool may already have acted. Say which tool was interrupted, so a host that
+            # wired no `host_tool_calls_observer` still has a record; one that did receives
+            # this same error at its context exit.
+            self._logger.warning(
+                "host tools: the call of %r was cancelled mid-effect — nothing was delivered, "
+                "but any outward effect the tool had begun is not recorded and may have "
+                "completed",
+                name,
+            )
+            raise
         except Exception as exc:  # noqa: BLE001 - the guest gets a sentence, the log the rest
             self._logger.warning("host tool %r failed: %s", name, error_detail(exc))
             return _refused(f"Error: host tool {name!r} failed — the reason is in the host's log")
