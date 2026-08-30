@@ -52,7 +52,7 @@ The handler is **not** where that is decided, and the order is what a reader get
 
 Where safety actually lives is neither: a disposal that does not land leaves the router refusing that key with `SandboxUnclean` until one does.
 
-The `timeout` is the decision whose cost is easy to miss. It is not one bound on cleanup but the same number applied three times over — the removal gets it, the disposal that follows a failed removal gets it again, and the handler above gets it a third time — so a single unclean call can hold the turn for three times what the field appears to say. 30 seconds is the default, written out here for that reason. A host that shortens it is bounding a `finally` that runs after the model already has its answer; one that lengthens it should know it is doing so three times.
+The `timeout` is the decision whose cost is easy to miss. It is not one bound on cleanup but the same number applied three times over — the removal gets it, the disposal that follows a failed removal gets it again, and the handler above gets it a third time — so a single unclean call can hold the turn for three times what the field appears to say. 30 seconds is the default, written out here for that reason. And the wait is not free: `sandboxed_tool` awaits all three in the `finally` of the tool call itself, so the body has produced its answer but the call has not returned it yet. The model is still waiting, and so is whoever is waiting on the model. A host tuning this is tuning tool-call latency, in units of three.
 
 The run prints `Reclaim failures this turn: N` from that handler's own count, and the live check requires nought. That is the framework's answer about the directories this turn made, rather than a probe of the guest: a kind spelling OS commands to prove a framework guarantee teaches the wrong thing. What it does not show is the handler *firing* — a healthy run reports nought every time, and forcing one needs a removal that can be made to fail on demand, which only the in-process backend offers.
 
@@ -97,7 +97,7 @@ With `DIAGRAM_SANDBOX_IMAGE` or either required model variable unset, the progra
 
 ## Run
 
-The first call pays for creating and starting the container — a few seconds, against the minutes a microVM-isolated sandbox needs. `agent.py` prints the model's reply and its own two tagged lines — what it resolved, and what it disposed — and never `render_diagram`'s own result, so what you see looks something like this:
+The first call pays for creating and starting the container — a few seconds, against the minutes a microVM-isolated sandbox needs. `agent.py` prints the model's reply and its own three tagged lines — what it resolved, how many call directories it could not clean, and what it disposed — and never `render_diagram`'s own result, so what you see looks something like this:
 
 ```
   [measured] installed: maf-sandbox 0.24.0, maf-sandbox-docker 0.8.1
@@ -106,13 +106,15 @@ The image was saved under `out/diagram.png`.
   [measured] Disposed 1 sandbox(es).
 ```
 
-That block is one real run, on 2026-08-26. **What the model says varies** — the DOT it writes, whether it labels the edges, how it phrases the reply, and whether it repeats the tool's own sentence or writes its own as it did here. **What does not vary** is the tool result underneath it and the file on disk: `render_diagram` returns exactly
+That block is one real run, on 2026-08-26, and it is reproduced as it was recorded — which is why the reclaim line is absent from it: that run predates the handler this sample now wires. A run today prints `[measured] Reclaim failures this turn: 0` between the reply and the disposal line. Nothing else about it has changed, and the line was not pasted in after the fact, because a transcript this sample invites you to compare your own output against is worth no more than its accuracy.
+
+**What the model says varies** — the DOT it writes, whether it labels the edges, how it phrases the reply, and whether it repeats the tool's own sentence or writes its own as it did here. **What does not vary** is the tool result underneath it and the file on disk: `render_diagram` returns exactly
 
 ```
 Rendered diagram.png (image/png); saved under out/.
 ```
 
-every time — a host-authored line, not the model's — and a valid PNG appears at `out/diagram.png` (`89 50 4E 47` — the PNG magic — as its first bytes). The disposal line prints only once `render_diagram` has actually created and torn down a container; a `Disposed 0` would mean the model answered without rendering anything, the T0 behaviour this sample exists to contrast with.
+every time — a host-authored line, not the model's — and a valid PNG appears at `out/diagram.png` (`89 50 4E 47` — the PNG magic — as its first bytes). The disposal line prints only once `render_diagram` has actually created and torn down a container, so a `Disposed 0` beside `Reclaim failures this turn: 0` means the model answered without rendering anything — the T0 behaviour this sample exists to contrast with. The two lines have to be read together: a nonzero reclaim count means the sandbox was already disposed when that call could not be cleaned, so the nought at the end is the honest remainder rather than a turn that never ran.
 
 It carries `[measured]` because it is the sample's report rather than the model's, and the reply is filtered before printing so a line of it starting with that tag comes out quoted, `> [measured] …` — otherwise a reply writing "Disposed 1 sandbox(es)." would answer for the router ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)).
 

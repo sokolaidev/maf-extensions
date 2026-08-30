@@ -79,12 +79,12 @@ def assess(output: str, image: bytes | None) -> list[str]:
     failures: list[str] = []
 
     disposed = _DISPOSED.search(output)
-    left_behind = _RECLAIM_FAILURES.search(output)
+    reclaim_failures = _RECLAIM_FAILURES.search(output)
 
     # A reported reclaim failure is proof a call held a sandbox — one is raised for no other
     # kind of call. This sample disposes what it could not clean, so that sandbox is already
     # gone by the final purge: a zero there means cleanup ran early, not that nothing ran.
-    acquired = left_behind is not None and int(left_behind.group(1)) > 0
+    acquired = reclaim_failures is not None and int(reclaim_failures.group(1)) > 0
 
     if disposed is None:
         failures.append(
@@ -96,12 +96,12 @@ def assess(output: str, image: bytes | None) -> list[str]:
             "without calling render_diagram"
         )
 
-    if left_behind is None:
+    if reclaim_failures is None:
         failures.append(
             "no measured 'Reclaim failures this turn' line — the sample did not reach its "
             "`finally`, so nothing vouches for the call directories it made"
         )
-    elif (unreclaimed := int(left_behind.group(1))) > 0:
+    elif (unreclaimed := int(reclaim_failures.group(1))) > 0:
         failures.append(
             f"{unreclaimed} call {'directory' if unreclaimed == 1 else 'directories'} could "
             "not be reclaimed — each one cost the conversation its sandbox, and where the "
