@@ -3,8 +3,9 @@
 The contract is what has to exist before anything can call a host tool, so what is pinned here is
 the *shape of refusal* as much as the happy path: an unstamped function refused where the
 host can fix it, an undeclared name unreachable from inside, a cap that ends a run with a
-sentence rather than an exception, and a USER-identity tool that registers loudly and never
-serves.  Router-level denial — the sixth layer — is pinned in ``test_sandbox_router.py``
+sentence rather than an exception, and a USER-identity tool that registers loudly and serves
+only where the registry mints its authority.  Router-level denial — the sixth layer — is
+pinned in ``test_sandbox_router.py``
 beside the rest of the router's policy.
 """
 
