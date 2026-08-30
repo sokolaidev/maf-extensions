@@ -1059,6 +1059,44 @@ class TestServingTheUsersIdentity:
         assert one.value_json == '"acting as token-for-run-a"'
         assert two.value_json == '"acting as token-for-run-b"'
 
+    def test_a_call_that_cannot_bind_mints_nothing(self):
+        """Minting is a real exchange, so it waits until nothing deterministic can refuse."""
+        minted: list[str] = []
+
+        async def _mint(run_id: str) -> str:
+            minted.append(run_id)
+            return "token"
+
+        registry = _minting_registry(_mint)
+        registry.register(_as_user_tool())
+
+        result = _call_host_tool(HostToolRun(registry), "whoami", {"nonesuch": 1})
+
+        assert not result.ok
+        assert result.refusal is not None and "do not bind" in result.refusal
+        assert minted == [], "a malformed call spent a credential it could never use"
+
+    def test_a_call_refused_by_the_response_ledger_mints_nothing(self):
+        """The other pre-body refusal: the run's delivered-response cap is already spent."""
+        minted: list[str] = []
+
+        async def _mint(run_id: str) -> str:
+            minted.append(run_id)
+            return "token"
+
+        registry = _minting_registry(_mint, response_limits=TransferLimits(1024, 1024, 1))
+        registry.register(_as_user_tool())
+        registry.register(_stamped_pure(), name="doubled")
+        run = HostToolRun(registry)
+
+        spent = _call_host_tool(run, "doubled", {"x": 2})
+        refused = _call_host_tool(run, "whoami")
+
+        assert spent.ok, spent.refusal
+        assert not refused.ok
+        assert refused.refusal is not None and "exhausted" in refused.refusal
+        assert minted == [], "a call the ledger had already refused spent a credential"
+
     def test_a_guest_cannot_choose_the_authority_it_runs_under(self):
         """The refusal a spoofing attempt gets, rather than a silent overwrite."""
         registry = _minting_registry()

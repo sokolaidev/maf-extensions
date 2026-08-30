@@ -96,6 +96,11 @@ _USER_IDENTITY_PREREQUISITES = "a per-run mint_user_identity the registry can ca
 #: before binding rather than quietly overwritten by the injection.
 _USER_IDENTITY_PARAMETER = "user_identity"
 
+#: Stands in that argument's place while the refusals between admission and the body still
+#: have their say. Its own object, never ``None``: ``None`` is what a failed mint returns, and
+#: a sentinel a real answer could equal is one that eventually reaches a body as its authority.
+_UNMINTED = object()
+
 
 def _accepts_user_identity(func: Callable[..., Any]) -> bool:
     """Whether ``func`` can be handed the minted identity by keyword.
@@ -1010,13 +1015,12 @@ class HostToolRun:
                     f"Error: {_USER_IDENTITY_PARAMETER!r} is not an argument a caller may send "
                     f"to {name!r} — the host mints the identity this tool acts under"
                 )
-            minted = await self._user_identity()
-            if minted is None:
-                return _refused(
-                    f"Error: the user's identity could not be minted for this run, so {name!r} "
-                    "was not called — the reason is in the host's log"
-                )
-            provided[_USER_IDENTITY_PARAMETER] = minted
+            # A placeholder, not the identity: minting is a real exchange with the host's
+            # token service, and every refusal between here and the body — the ledgers below,
+            # the signature, the binding — is one this call cannot come back from. Binding
+            # still has to see the argument, or a body that requires it fails arity against
+            # the guest. `_deliver` swaps it for the minted one once nothing is left to refuse.
+            provided[_USER_IDENTITY_PARAMETER] = _UNMINTED
         limits = self._registry.response_limits
         # Both ledgers, before the call rather than after it. A sink tool's body runs in the
         # host process and does its work there; refusing once it has already run means the
@@ -1125,6 +1129,16 @@ class HostToolRun:
             return _refused(
                 f"Error: arguments do not bind to host tool {name!r}: {_bounded(str(exc))}"
             )
+        if provided.get(_USER_IDENTITY_PARAMETER) is _UNMINTED:
+            # The last thing before the body, so the credential is spent only once nothing
+            # deterministic can still refuse this call.
+            minted = await self._user_identity()
+            if minted is None:
+                return _refused(
+                    f"Error: the user's identity could not be minted for this run, so {name!r} "
+                    "was not called — the reason is in the host's log"
+                )
+            provided[_USER_IDENTITY_PARAMETER] = minted
         try:
             result = func(**provided)
             if inspect.isawaitable(result):
