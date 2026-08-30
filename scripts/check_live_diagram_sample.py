@@ -9,13 +9,15 @@ same paragraph as one that drew it. So the verdict rests on what the host produc
 sample's own disposal line, its reclaim-failure count, the purge failure it prints when there is
 one, and the file the sink wrote.
 
-The three measured lines are read together rather than in turn, because a nought at the final
-purge has three causes and only one of them is the failure this check exists for. Ordinarily it
-means no sandbox was ever created. But this sample disposes what it could not clean, so a call
-whose reclaim failed lost its sandbox before that purge; and a purge that did not land reports
-nought having had a sandbox to fail on — `ScopeDisposal` says the count "reads the same whether
-there was nothing to reclaim or nothing worked". The other two lines are what tell those apart,
-and a purge that did not land is reported in its own right besides.
+A nought at the final purge does not mean on its own that the turn never ran: this sample
+disposes what it could not clean, so a call whose reclaim failed lost its sandbox before the
+purge looked. The reclaim count is what tells those two apart, and it is the only thing that
+does.
+
+A `Not fully disposed` line is **not** the other thing. It says the sweep could not account for
+everything, not that anything survived — docker raises `unlisted` whenever its label query
+fails, which happens whether or not there was a container to find. So it is reported on its own
+terms, as data that may remain, and it excuses nothing about the count.
 
 The image is read structurally rather than compared: a PNG signature, then the dimensions out
 of the IHDR chunk. The model writes the DOT, so what the graph contains and how large it comes
@@ -50,10 +52,10 @@ _RECLAIM_FAILURES = re.compile(
     r"^  (?-i:\[measured\]) Reclaim failures this turn:\s+(\d+)", re.MULTILINE | re.IGNORECASE
 )
 
-#: The purge that did not land, printed only when `dispose_scope` reports one. `ScopeDisposal`
-#: says why the count cannot be read without it: "zero reclaimed reads the same whether there
-#: was nothing to reclaim or nothing worked". It is the failure a host most needs to hear, so
-#: it is reported in its own right rather than only read as context for the count.
+#: The sweep that could not account for itself, printed only when `dispose_scope` reports a
+#: failure. Weaker than it sounds, and read that way: docker raises `unlisted` when its label
+#: query fails, with or without a container to find, so this is grounds for saying data may
+#: remain and never grounds for saying a sandbox existed.
 _NOT_DISPOSED = re.compile(
     r"^  (?-i:\[measured\]) Not fully disposed:\s*(.+)$", re.MULTILINE | re.IGNORECASE
 )
@@ -93,13 +95,10 @@ def assess(output: str, image: bytes | None) -> list[str]:
     reclaim_failures = _RECLAIM_FAILURES.search(output)
     undisposed = _NOT_DISPOSED.search(output)
 
-    # Two things make a nought at the final purge honest rather than a turn that never ran, and
-    # both are proof a sandbox existed: a reclaim that failed had one disposed early, and a
-    # purge that did not land had one to fail on. `ScopeDisposal` states the second — the count
-    # alone "reads the same whether there was nothing to reclaim or nothing worked".
-    acquired = (reclaim_failures is not None and int(reclaim_failures.group(1)) > 0) or (
-        undisposed is not None
-    )
+    # What makes a nought at the final purge honest rather than a turn that never ran: a reclaim
+    # that failed had its sandbox disposed early, so the purge found nothing left to take. A
+    # purge *failure* is not such a thing and is deliberately not read as one — see below.
+    acquired = reclaim_failures is not None and int(reclaim_failures.group(1)) > 0
 
     if disposed is None:
         failures.append(
@@ -111,12 +110,14 @@ def assess(output: str, image: bytes | None) -> list[str]:
             "without calling render_diagram"
         )
 
-    # Read whatever the count says, not only when it is nought: a scope holding more than one
-    # sandbox can dispose some and still leave one behind.
+    # Reported whatever the count says, because a scope can dispose one sandbox and still fail on
+    # another. Worded as what it is: a purge that could not *prove* it finished. Docker raises
+    # `unlisted` whenever the label query fails, which happens whether or not anything was there
+    # to sweep, so this says data may remain rather than that a sandbox survived.
     if undisposed is not None:
         failures.append(
-            f"the scope purge did not land ({undisposed.group(1).strip()}) — a sandbox "
-            "outlived the conversation, holding everything this turn wrote into it"
+            f"the scope purge could not prove it disposed everything "
+            f"({undisposed.group(1).strip()}) — data from this conversation may remain"
         )
 
     if reclaim_failures is None:

@@ -182,44 +182,58 @@ class TestTheSandboxHalf:
         assert any("no sandbox was ever created" in reason for reason in failures)
 
 
-class TestThePurgeThatDidNotLand:
-    """The third way `Disposed 0` arises, and the one core warns about by name.
+class TestThePurgeThatCouldNotProveItself:
+    """What `Not fully disposed` does and does not say.
 
-    `ScopeDisposal`: the count "reads the same whether there was nothing to reclaim or nothing
-    worked". The sample prints `Not fully disposed` when it happens, so the checker has the
-    signal and only has to read it.
+    It says the sweep could not account for everything, not that something survived: docker
+    raises `unlisted` whenever the label query fails, which happens whether or not there was
+    anything to sweep. So it is reported on its own terms and answers for nothing else.
     """
 
     def test_it_is_reported_in_its_own_right(self):
         output = _HEALTHY.replace(
             _DISPOSAL_LINE,
-            f"{scaffold.MEASURED}Disposed 0 sandbox(es).\n"
+            f"{_DISPOSAL_LINE}\n"
             f"{scaffold.MEASURED}Not fully disposed: DisposalFailure(code=TIMEOUT)",
         )
         failures = check.assess(output, _png(640, 480))
-        assert any("the scope purge did not land" in reason for reason in failures)
+        assert any("could not prove it disposed everything" in reason for reason in failures)
         assert any("DisposalFailure(code=TIMEOUT)" in reason for reason in failures)
 
-    def test_it_is_not_read_as_a_turn_that_never_ran(self):
-        """The false diagnosis: a container existed, so blaming the model is wrong and loud."""
+    def test_it_does_not_excuse_a_turn_that_never_ran(self):
+        """A failed listing is not evidence of a sandbox, so it cannot answer the T0 question.
+
+        Docker's `unlisted` fires on a daemon that would not answer, with no container and an
+        empty registry fallback. Reading it as proof of one would let the failure this check
+        exists for pass as a cleanup problem.
+        """
         output = _HEALTHY.replace(
             _DISPOSAL_LINE,
             f"{scaffold.MEASURED}Disposed 0 sandbox(es).\n"
-            f"{scaffold.MEASURED}Not fully disposed: DisposalFailure(code=TIMEOUT)",
+            f"{scaffold.MEASURED}Not fully disposed: DisposalFailure(code=unlisted)",
         )
         failures = check.assess(output, _png(640, 480))
-        assert not any("no sandbox was ever created" in reason for reason in failures)
-        assert len(failures) == 1
+        assert any("no sandbox was ever created" in reason for reason in failures)
+        assert any("could not prove it disposed everything" in reason for reason in failures)
+        assert len(failures) == 2
 
     def test_a_nonzero_count_does_not_hide_it(self):
-        """A scope can dispose one sandbox and still leave another; the count alone says fine."""
+        """A scope can dispose one sandbox and still fail on another; the count alone says fine."""
         output = _HEALTHY.replace(
             _DISPOSAL_LINE,
             f"{_DISPOSAL_LINE}\n"
             f"{scaffold.MEASURED}Not fully disposed: DisposalFailure(code=REFUSED)",
         )
         failures = check.assess(output, _png(640, 480))
-        assert any("the scope purge did not land" in reason for reason in failures)
+        assert any("could not prove it disposed everything" in reason for reason in failures)
+
+    def test_a_reclaim_failure_still_excuses_the_nought(self):
+        """The one thing that does: its sandbox was disposed before the purge looked."""
+        output = _HEALTHY.replace(
+            _RECLAIM_LINE, f"{scaffold.MEASURED}Reclaim failures this turn: 1"
+        ).replace(_DISPOSAL_LINE, f"{scaffold.MEASURED}Disposed 0 sandbox(es).")
+        failures = check.assess(output, _png(640, 480))
+        assert not any("no sandbox was ever created" in reason for reason in failures)
 
     def test_a_healthy_run_reports_nothing_here(self):
         """The line is absent unless `dispose_scope` returned a failure."""
