@@ -238,11 +238,15 @@ class Identity(StrEnum):
     declares.
 
     :data:`USER` is **served only where a host mints it**.  A registry given
-    ``mint_user_identity`` hands each run one freshly minted authority and passes it to the
-    body as ``user_identity``; a registry without one keeps refusing the call, which is what
-    lets a registry be written honestly on a host that serves no user authority at all.
-    Registering a ``USER`` tool raises the whole ``execute_code`` surface to approval-gated
-    either way: the mint bounds where the authority comes from, not what a tool does with it.
+    ``mint_user_identity`` asks it once per run and passes what it answers to the body as
+    ``user_identity``; a registry without one keeps refusing the call, which is what lets a
+    registry be written honestly on a host that serves no user authority at all.  Registering
+    a ``USER`` tool raises the whole ``execute_code`` surface to approval-gated either way.
+
+    What the library enforces is *where* the authority comes from and *how often* it is asked
+    for — not what it is worth.  A callback free to answer with the same long-lived credential
+    every time satisfies every check here, so scoping the authority to the run it is asked for
+    is the host's to keep, and ``run_id`` is passed so it can.
     """
 
     #: The host application's own authority — everything its process can already do.
