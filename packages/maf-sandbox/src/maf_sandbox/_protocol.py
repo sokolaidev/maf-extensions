@@ -247,7 +247,8 @@ class Identity(StrEnum):
 
     #: The host application's own authority — everything its process can already do.
     APP = "app"
-    #: The end user's delegated authority (on-behalf-of). Declarable, refused at call time.
+    #: The end user's delegated authority (on-behalf-of). Declarable always; served only by a
+    #: registry that mints it, and refused at call time by one that does not.
     USER = "user"
 
 

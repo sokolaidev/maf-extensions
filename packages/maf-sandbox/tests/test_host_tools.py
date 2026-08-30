@@ -991,7 +991,45 @@ class TestServingTheUsersIdentity:
         with caplog.at_level(logging.WARNING, logger="maf_sandbox._host_tools"):
             asyncio.run(_cancel_mid_mint())
 
-        assert [r for r in caplog.records if "was cancelled" in r.getMessage()], caplog.text
+        recorded = [r.getMessage() for r in caplog.records if "was cancelled" in r.getMessage()]
+        assert recorded, caplog.text
+        assert "inside the host's minter" in recorded[0], recorded
+
+    def test_a_cancel_while_queued_behind_another_mint_is_recorded(self, caplog):
+        """The waiter's cancel lands in `__aenter__`, which neither handler used to cover.
+
+        Its record must not claim a credential may have been issued: this call never reached
+        the minter, and an operator reading that would chase a token nobody minted.
+        """
+        holding = asyncio.Event()
+
+        async def _mint(run_id: str) -> str:
+            holding.set()
+            await asyncio.sleep(3600)
+            return "never"  # pragma: no cover - the sleep is cancelled first
+
+        registry = _minting_registry(_mint)
+        registry.register(_as_user_tool())
+        run = HostToolRun(registry, run_id="run-7")
+
+        async def _cancel_the_waiter():
+            first = asyncio.ensure_future(run.call("whoami"))
+            await holding.wait()  # the lock is held by `first`'s mint
+            waiter = asyncio.ensure_future(run.call("whoami"))
+            await asyncio.sleep(0)  # let the waiter reach __aenter__ and queue behind it
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+            first.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await first
+
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox._host_tools"):
+            asyncio.run(_cancel_the_waiter())
+
+        queued = [r.getMessage() for r in caplog.records if "while it waited" in r.getMessage()]
+        assert queued, caplog.text
+        assert "credential may already have been issued" not in queued[0], queued
 
     def test_a_rejected_mint_is_logged_by_type_rather_than_value(self, caplog):
         """A misconfigured minter answering with `bytes` is answering with a real token."""
