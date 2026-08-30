@@ -986,7 +986,9 @@ class TestServingTheUsersIdentity:
             await started.wait()
             call.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await call
+                # `_ =` because the await is the point and its value is not: a bare name
+                # expression reads to a checker as a statement with no effect.
+                _ = await call
 
         with caplog.at_level(logging.WARNING, logger="maf_sandbox._host_tools"):
             asyncio.run(_cancel_mid_mint())
@@ -1019,10 +1021,10 @@ class TestServingTheUsersIdentity:
             await asyncio.sleep(0)  # let the waiter reach __aenter__ and queue behind it
             waiter.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await waiter
+                _ = await waiter
             first.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await first
+                _ = await first
 
         with caplog.at_level(logging.WARNING, logger="maf_sandbox._host_tools"):
             asyncio.run(_cancel_the_waiter())
