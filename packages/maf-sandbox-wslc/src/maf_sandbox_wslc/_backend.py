@@ -344,11 +344,11 @@ class _WslcSandbox:
                 return None
             if _DIRECTORY_COPY_ERROR in error_text:
                 return SandboxEntry(path=rel, kind=EntryKind.DIRECTORY, size_bytes=None)
-            # fall through to the probe: a bounded read that answered short is a shape question,
-            # and `test` can still settle it, where a message here could not
+            raise RuntimeError(f"wslc could not stat {rel}: {result.stderr_text.strip()}")
         if len(result.stdout) < _TAR_BLOCK:
-            # WSLC streams an empty response for regular files and links. Probe the entry type
-            # without following it; the tar header remains the fast path where the CLI provides one.
+            # WSLC streams an empty response for regular files and links, which is a shape
+            # question `test` can still settle; the tar header remains the fast path where the
+            # CLI provides one.
             for flag, kind in (
                 ("-L", EntryKind.SYMLINK),
                 ("-d", EntryKind.DIRECTORY),

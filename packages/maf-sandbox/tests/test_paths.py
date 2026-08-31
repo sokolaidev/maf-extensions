@@ -468,15 +468,26 @@ class TestTarHeaderHelpers:
 
     def test_the_header_parses_with_the_pinned_encoding_and_errors(self, monkeypatch):
         arguments: dict[object, object] = {}
-        real = tarfile.TarInfo.frombuf
+        bound = tarfile.TarInfo.frombuf  # the bound classmethod the real call goes through
+        descriptor = tarfile.TarInfo.__dict__["frombuf"]
 
-        def spy(block, encoding=None, errors=None):
-            arguments.update(encoding=encoding, errors=errors)
-            return real(block, encoding=encoding, errors=errors)
+        def spy(block, **kwargs):
+            # Keyword-only on the recorder: a positional `frombuf(block, "utf-8", ...)` drift
+            # raises here instead of binding silently and reading as pinned.
+            arguments.update(kwargs)
+            return bound(block, **kwargs)
 
+        # Restored to the descriptor rather than to whatever `getattr` recorded —
+        # `monkeypatch` undoes with the bound method, and a class attribute holding that would
+        # dispatch subclasses to `TarInfo` for the rest of the session.
         monkeypatch.setattr(tarfile.TarInfo, "frombuf", staticmethod(spy))
-        tar_header_from_block(self._block(tarfile.TarInfo("a.txt")))
+        try:
+            tar_header_from_block(self._block(tarfile.TarInfo("a.txt")))
+        finally:
+            monkeypatch.undo()
+            tarfile.TarInfo.frombuf = descriptor
         assert arguments == {"encoding": "utf-8", "errors": "surrogateescape"}
+        assert tarfile.TarInfo.__dict__["frombuf"] is descriptor
 
     def test_an_undecodable_name_survives_the_parse(self):
         buffer = io.BytesIO()

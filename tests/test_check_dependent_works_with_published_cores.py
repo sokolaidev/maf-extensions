@@ -2,12 +2,15 @@
 
 What is exercised here is everything the gate decides *before* it spawns anything: which range
 the wheel declares, which published cores that admits, and which sibling wheels come along.
-`run_suite` builds an environment and runs pytest in it, so it is left to the live runs.
+The install commands themselves are asserted here too — the sibling pass is where a dropped
+argument would silently empty every throwaway environment — while the `uv` runs are left to
+the live gate.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -183,9 +186,7 @@ class TestTheCoreThisCheckoutBuilt:
     ):
         wheel, core = self._wheel_and_index(tmp_path, monkeypatch, "maf-sandbox>=0.26.0,<0.28")
         seen: list[object] = []
-        monkeypatch.setattr(
-            check, "run_suite", lambda w, c, t, d: (seen.append(c), (True, "12 passed"))[1]
-        )
+        monkeypatch.setattr(check, "run_suite", lambda *_: seen.append(core) or (True, "12 passed"))
         code = check.main(["prog", "maf-sandbox-bicep", str(wheel), "--local-core", str(core)])
         assert code == 0
         assert seen == [core], "the wheel this checkout built, not a version to resolve"
@@ -217,29 +218,9 @@ class TestTheCoreThisCheckoutBuilt:
         """The flag adds a fallback, it does not replace the index."""
         wheel, core = self._wheel_and_index(tmp_path, monkeypatch, "maf-sandbox>=0.25.0,<0.28")
         seen: list[object] = []
-        monkeypatch.setattr(
-            check, "run_suite", lambda w, c, t, d: (seen.append(c), (True, "ok"))[1]
-        )
+        monkeypatch.setattr(check, "run_suite", lambda w, c, t: (seen.append(c), (True, "ok"))[1])
         assert check.main(["prog", "maf-sandbox-bicep", str(wheel), "--local-core", str(core)]) == 0
         assert seen == ["0.25.0"], "resolved from the index, not the local wheel"
-
-    def test_the_local_override_forces_the_siblings_too(self, tmp_path: Path):
-        """A sibling's floor names a version of the core that is not published yet, so leaving
-        the siblings to the index would refuse the environment over a number — the question
-        this fallback exists to set aside. Every wheel this checkout built is forced."""
-        subject = _wheel(
-            tmp_path, "maf_sandbox_bicep-0.9.3-py3-none-any.whl", ["maf-sandbox>=0.28.0,<0.29"]
-        )
-        sibling = _wheel(
-            tmp_path, "maf_sandbox_docker-0.11.0-py3-none-any.whl", ["maf-sandbox>=0.28.0,<0.29"]
-        )
-        core = tmp_path / "maf_sandbox-0.27.0-py3-none-any.whl"
-        core.write_bytes(b"")
-        with zipfile.ZipFile(core, "w") as archive:
-            archive.writestr("maf_sandbox-0.27.0.dist-info/METADATA", "Metadata-Version: 2.1")
-        forced = check.built_family(subject)
-        assert [name for name, _ in forced] == ["maf-sandbox-bicep", "maf-sandbox-docker"]
-        assert [path for _, path in forced] == [subject, sibling]
 
     def test_a_relative_path_is_accepted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """The workflow passes `dist/...`, and the override needs a file URI, which a relative
@@ -247,9 +228,7 @@ class TestTheCoreThisCheckoutBuilt:
         wheel, core = self._wheel_and_index(tmp_path, monkeypatch, "maf-sandbox>=0.26.0,<0.28")
         monkeypatch.chdir(tmp_path)
         seen: list[Path] = []
-        monkeypatch.setattr(
-            check, "run_suite", lambda w, c, t, d: (seen.append(c), (True, "ok"))[1]
-        )
+        monkeypatch.setattr(check, "run_suite", lambda w, c, t: (seen.append(c), (True, "ok"))[1])
         code = check.main(["prog", "maf-sandbox-bicep", str(wheel), "--local-core", core.name])
         assert code == 0
         assert seen[0].is_absolute() and seen[0].as_uri()
@@ -262,6 +241,105 @@ class TestTheCoreThisCheckoutBuilt:
         )
         assert code == 2
         assert "no core wheel at" in capsys.readouterr().err
+
+    def test_a_missing_path_after_the_flag_is_a_usage_error(
+        self, capsys: pytest.CaptureFixture[str]
+    ):
+        assert check.main(["prog", "maf-sandbox-bicep", "w.whl", "--local-core"]) == 2
+        assert "--local-core <wheel>" in capsys.readouterr().err
+
+
+class TestTheInstallCommands:
+    """What `run_suite` asks `uv` for, read off the subprocess call.
+
+    This is the half a green live run cannot prove: every command here installs successfully
+    even when it installs the wrong thing, and the failure mode that motivates each argument
+    — a sibling floor refusing the resolver, an override that answers it — shows up as a red
+    gate against the index, hours after the commit that emptied the environment. The index is
+    faked to the one version each test needs, so the verdict does not move with what PyPI
+    happens to hold.
+    """
+
+    @staticmethod
+    def _capture(monkeypatch: pytest.MonkeyPatch, published: list[str]) -> list[list[str]]:
+        seen: list[list[str]] = []
+        monkeypatch.setattr(check, "fetch_published_versions", lambda _: published)
+        monkeypatch.setattr(check, "fetch_requires_dist_for_version", lambda *_: [])
+        monkeypatch.setattr(
+            check.subprocess,
+            "run",
+            lambda argv, **_: (
+                seen.append(list(argv)) or subprocess.CompletedProcess(argv, 0, "", "")
+            ),
+        )
+        return seen
+
+    def test_dockers_suite_gets_wslc_when_tested_against_a_published_core(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The pairing the gate exists to prove includes the sibling a suite names outright:
+        docker's parity check hard-asserts `maf_sandbox_wslc` imports, so an environment
+        without it fails for the wrong reason — or, with the assert quietly dropped, passes
+        without testing the parity at all. Here the core is the checkout's own artifact, the
+        window the flag exists for."""
+        wheel = _wheel(
+            tmp_path, "maf_sandbox_docker-0.11.0-py3-none-any.whl", ["maf-sandbox>=0.28.0,<0.29"]
+        )
+        _wheel(tmp_path, "maf_sandbox_wslc-0.13.0-py3-none-any.whl", ["maf-sandbox>=0.28.0,<0.29"])
+        core = _wheel(tmp_path, "maf_sandbox-0.27.0-py3-none-any.whl", [])
+        seen = self._capture(monkeypatch, published=[])
+        code = check.main(["prog", "maf-sandbox-docker", str(wheel), "--local-core", str(core)])
+        assert code == 0
+        installs = [a for a in seen if a[:2] == ["uv", "pip"]]
+        no_deps = [a for a in installs if "--no-deps" in a]
+        assert no_deps, "the siblings ride a --no-deps pass, or their floors reach the resolver"
+        assert any("maf_sandbox_wslc-0.13.0-py3-none-any.whl" in " ".join(a) for a in no_deps), (
+            "docker's suite asserts its wslc sibling is importable; the install must carry it"
+        )
+        assert not any("maf_sandbox_docker-0.11.0" in " ".join(a) for a in no_deps), (
+            "the candidate rides the resolving pass, its siblings the forced one"
+        )
+
+    def test_the_no_deps_pass_runs_for_a_published_core_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Every published core the wheel admits gets the same environment: the moment 0.28.0
+        is on the index, docker's suite runs the published branch, and the guard above runs
+        with it."""
+        wheel = _wheel(
+            tmp_path, "maf_sandbox_docker-0.11.0-py3-none-any.whl", ["maf-sandbox>=0.28.0,<0.29"]
+        )
+        _wheel(tmp_path, "maf_sandbox_wslc-0.13.0-py3-none-any.whl", ["maf-sandbox>=0.28.0,<0.29"])
+        seen = self._capture(monkeypatch, published=["0.28.0"])
+        code = check.main(["prog", "maf-sandbox-docker", str(wheel)])
+        assert code == 0
+        installs = [a for a in seen if a[:2] == ["uv", "pip"]]
+        no_deps = [a for a in installs if "--no-deps" in a]
+        assert no_deps, "the published-core pairing installs the siblings all the same"
+        assert any("maf_sandbox_wslc-0.13.0-py3-none-any.whl" in " ".join(a) for a in no_deps)
+
+    def test_the_core_is_pinned_by_the_override_and_answered_by_an_operand(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """An override rewrites a requirement and never adds one, so the core is also named as
+        an operand — and the wheel that satisfies it is the forced artifact, not the index."""
+        wheel = _wheel(
+            tmp_path, "maf_sandbox_bicep-0.9.3-py3-none-any.whl", ["maf-sandbox>=0.26.0,<0.28"]
+        )
+        core = _wheel(tmp_path, "maf_sandbox-0.27.0-py3-none-any.whl", [])
+        seen = self._capture(monkeypatch, published=[])  # nothing published admits the range
+        check.main(["prog", "maf-sandbox-bicep", str(wheel), "--local-core", str(core)])
+        first = next(
+            a
+            for a in seen
+            if a[:2] == ["uv", "pip"] and "--no-deps" not in a and "--overrides" in a
+        )
+        assert "maf-sandbox" in first[first.index("--overrides") + 2 :], (
+            "the core is requested, or the override answers nothing"
+        )
+        assert any("maf_sandbox-0.27.0-py3-none-any.whl" in part for part in first), (
+            "the operand is the artifact, so the pin cannot resolve down to the index"
+        )
 
     def test_a_missing_path_after_the_flag_is_a_usage_error(
         self, capsys: pytest.CaptureFixture[str]

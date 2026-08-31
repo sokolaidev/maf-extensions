@@ -746,8 +746,6 @@ class TestStatGuestTarHeader:
         return asyncio.run(backend.acquire(_KEY, _SPEC))
 
     def _tar_block(self, entry: tarfile.TarInfo, data: bytes = b"") -> bytes:
-        if entry.type == tarfile.REGTYPE and entry.size and not data:
-            entry.size = 0  # a header-only block; the classifier reads size off the header
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w") as archive:
             archive.addfile(entry, io.BytesIO(data) if data else None)
@@ -772,25 +770,39 @@ class TestStatGuestTarHeader:
         assert result.kind is EntryKind.SYMLINK
         assert result.size_bytes is None
 
+    def test_an_unrecognised_failure_raises_with_the_engines_message(self):
+        """A `cp` that failed with bytes nobody can classify reports what the CLI said, not a
+        header it never sent — the same rule docker's stat reads by. The error names the path
+        so the caller can tell which component tripped."""
+        overrides = {("container", "cp"): _WslcResult(1, b"", b"container is stopped")}
+        sandbox = self._sandbox(overrides=overrides)
+        with pytest.raises(RuntimeError, match="container is stopped"):
+            asyncio.run(sandbox._stat_guest("/w/main.bicep", "main.bicep"))
+
     def test_a_failed_copy_that_streamed_bytes_still_classifies_the_header(self):
         """A bounded read kills the child once the cap is reached, so a nonzero code with bytes
         in hand means the stream ran past it — the same rule docker's stat reads by. The header
         is classified, not discarded as a failure."""
-        entry = tarfile.TarInfo("maf-sandbox/work/main.bicep")
-        entry.size = 999
-        payload = self._tar_block(entry)  # header only; the cap cut the body before this test
+        header = tarfile.TarInfo("maf-sandbox/work/main.bicep")
+        header.size = 999
+        payload = header.tobuf(
+            format=tarfile.GNU_FORMAT, encoding="utf-8", errors="surrogateescape"
+        )[:_TAR_BLOCK]
         overrides = {("container", "cp"): _WslcResult(1, payload, b"")}
         sandbox = self._sandbox(overrides=overrides)
         result = asyncio.run(sandbox._stat_guest("/w/main.bicep", "main.bicep"))
         assert result is not None
         assert result.kind is EntryKind.FILE
+        assert result.size_bytes == 999
 
     def test_a_failed_copy_without_bytes_probes_the_entry_type(self):
         """An empty stream for a regular file or a link is how the CLI answers today, so the
-        `test -L/-d/-f` probe is the path that saves the stat; a real error message still
-        reaches it. (`container exec test -L` answers 0 for this fixture's container.)"""
+        `test -L/-d/-f` probe is the path that saves the stat. The `cp` stdout carries one
+        byte: the fake rewrites a byte-less success on a non-`-` copy into `no such file`,
+        and a one-byte stream lands in the same short-answer probe branch as an empty one.
+        (`container exec test -L` answers 0 for this fixture's container.)"""
         overrides = {
-            ("container", "cp"): _WslcResult(1, b"", b"stream broke"),
+            ("container", "cp"): _WslcResult(0, b"x", b""),
             ("container", "exec", _NAME, "test", "-L"): _WslcResult(0, b"", b""),
         }
         sandbox = self._sandbox(overrides=overrides)
@@ -802,7 +814,7 @@ class TestStatGuestTarHeader:
         """No header and no probe answer leaves the stat nothing to report, and the runtime
         error names the path rather than the flag that tripped."""
         overrides = {
-            ("container", "cp"): _WslcResult(1, b"", b"stream broke"),
+            ("container", "cp"): _WslcResult(0, b"x", b""),
             ("container", "exec", _NAME, "test", "-L"): _WslcResult(1, b"", b""),
             ("container", "exec", _NAME, "test", "-d"): _WslcResult(1, b"", b""),
             ("container", "exec", _NAME, "test", "-f"): _WslcResult(1, b"", b""),

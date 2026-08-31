@@ -109,12 +109,13 @@ def admitted_published_cores(floor: tuple[int, ...], ceiling: tuple[int, ...]) -
 def sibling_wheels(wheel: Path) -> list[Path]:
     """The other dependents' wheels built beside ``wheel``.
 
-    Two suites reach for a sibling: `maf-sandbox-codeact`'s e2e module imports
+    Two suites reach for a sibling outright: `maf-sandbox-codeact`'s e2e module imports
     `maf_sandbox_docker`, and `maf-sandbox-docker`'s proxy-parity test asserts outright that
-    `maf-sandbox-wslc` is importable so a skip cannot make it vacuous. Both are right to; the
-    pairing under test here is *this repository's code* against a core that is published, and a
-    sibling is this repository's code. Whether a wheel stands up alone is `smoke_install.py`'s
-    question, asked per package in its own environment.
+    `maf-sandbox-wslc` is importable so a skip cannot make it vacuous. Every suite gets the
+    siblings all the same: they are installed without their dependencies (see
+    :func:`run_suite`), so a sibling's own floor on the core never enters resolution, and a
+    suite that needs no sibling pays one extra file copy. Whether a wheel stands up alone is
+    `smoke_install.py`'s question, asked per package in its own environment.
     """
     by_distribution: dict[str, list[Path]] = {}
     for candidate in sorted(wheel.parent.glob("maf_sandbox_*.whl")):
@@ -128,52 +129,6 @@ def sibling_wheels(wheel: Path) -> list[Path]:
         )
         raise SystemExit(f"more than one wheel for a distribution in {wheel.parent} — {listed}")
     return [found[0] for found in by_distribution.values()]
-
-
-def built_family(wheel: Path) -> list[tuple[str, Path]]:
-    """The wheel under test and its siblings, as ``(distribution name, wheel)`` pairs.
-
-    The same shape `check_samples_against_declared_core.py` derives for its own override;
-    kept here so the sibling relationship stays one function's answer.
-    """
-    return [
-        (candidate.name.split("-", 1)[0].replace("_", "-"), candidate)
-        for candidate in [wheel, *sibling_wheels(wheel)]
-    ]
-
-
-def suite_reach_for_siblings(distribution: str) -> bool:
-    """Whether ``distribution``'s suite imports a sibling's package outright.
-
-    Two do: `maf-sandbox-codeact`'s e2e module imports `maf_sandbox_docker`, and
-    `maf-sandbox-docker`'s proxy-parity test asserts `maf_sandbox_wslc` is importable so a skip
-    cannot make it vacuous. For those, the siblings ride the install as ordinary operands —
-    their requirements are real, not an artifact of how the environment is built. Every other
-    suite names only its own package and the core, and there the siblings stay out: an operand
-    pins its requirements against the resolver, and a sibling floored on a not-yet-released
-    core would refuse the build — the override is what answers those floors with this
-    checkout's artifact instead.
-    """
-    return distribution in {"maf-sandbox-codeact", "maf-sandbox-docker"}
-
-
-def siblings_for(distribution: str, wheel: Path, core: str | Path) -> list[Path]:
-    """The sibling wheels this suite's install carries, if any.
-
-    With the core this checkout built under test, a suite that names a sibling gets it as an
-    operand: the override rewrites every requirement on the core — the sibling's floor on a
-    not-yet-released release included — to the artifact, so the build cannot be refused over a
-    number. With a published core under test, the siblings stay out in both cases: a sibling
-    operand pins its own floor against the resolver, and a sibling floored above the published
-    version being tested would refuse a pairing the suite never asks for. Whether a suite that
-    needs a sibling can be tested at all when the core below its floor is the candidate is the
-    release's own question, not this check's.
-    """
-    if not isinstance(core, Path):
-        return []
-    if not suite_reach_for_siblings(distribution):
-        return []
-    return sibling_wheels(wheel)
 
 
 def throwaway_interpreter(directory: Path) -> Path | str:
@@ -193,40 +148,38 @@ def throwaway_interpreter(directory: Path) -> Path | str:
     return environment / ("Scripts" if windows else "bin") / ("python.exe" if windows else "python")
 
 
-def run_suite(
-    wheel: Path, core: str | Path, tests: Path, distribution: str = ""
-) -> tuple[bool, str]:
+def run_suite(wheel: Path, core: str | Path, tests: Path) -> tuple[bool, str]:
     """Install ``wheel`` beside ``core`` in a throwaway environment and run ``tests`` there.
 
     ``core`` is a published version to resolve, or a wheel this checkout built. The wheel is
     forced with ``--overrides``: it carries the version it had before release-please bumped it,
     which is by definition below a floor waiting on the release, and the point is to test the
-    code rather than the number. The override rewrites every requirement on the core in the
-    install — a sibling operand's own floor included — so a dependent floored on a
-    not-yet-released core builds beside its siblings instead of being refused by them.
+    code rather than the number.
 
-    ``distribution`` decides whether the siblings ride along as operands
-    (:func:`suite_reach_for_siblings`); a suite that names none of them installs none of them.
+    The siblings come in a second, `--no-deps` pass: present on disk for the suites that import
+    one, with their requirements never entering resolution — a sibling's floor on the core is a
+    claim about published artifacts, and here the core under test is a wheel being forced past
+    the range, which is the one question this check exists to set aside. The candidate wheel's
+    own dependencies still resolve normally.
     """
     with tempfile.TemporaryDirectory() as directory:
         python = throwaway_interpreter(Path(directory))
         if isinstance(python, str):
             return False, python
         if isinstance(core, Path):
-            core_version = ".".join(map(str, version(core.name.split("-")[1])))
             override = Path(directory) / "override.txt"
             override.write_text(f"{_CORE} @ {core.as_uri()}\n", encoding="utf-8")
             # The core is named as an operand too, not only by the override: an override
             # rewrites a requirement, it never adds one, and a suite needing nothing but the
-            # core and pytest would otherwise install nothing at all.
-            pinned = ["--overrides", str(override), f"{_CORE}=={core_version}", str(core)]
+            # core and pytest would otherwise install nothing at all. The bare distribution
+            # name, as `check_samples_against_declared_core.py` spells it — the wheel itself
+            # carries its own version, so no second spelling of that number is wanted.
+            pinned = ["--overrides", str(override), _CORE, str(core)]
         else:
             # A published core under test: no forcing is needed, and the core is named as a
             # requirement so the install has something to resolve even when the suite needs
             # nothing but the core and pytest.
             pinned = [f"{_CORE}=={core}"]
-        operands = [str(wheel)]
-        operands += [str(sibling) for sibling in siblings_for(distribution, wheel, core)]
         installed = subprocess.run(
             [
                 "uv",
@@ -234,7 +187,7 @@ def run_suite(
                 "install",
                 "--python",
                 str(python),
-                *operands,
+                str(wheel),
                 *pinned,
                 *_TEST_REQUIREMENTS,
             ],
@@ -244,6 +197,28 @@ def run_suite(
         )
         if installed.returncode != 0:
             return False, f"the environment would not build:\n{installed.stderr.strip()}"
+        # Without their dependencies: a sibling's floor on the core is a claim about what the
+        # index offers, and the pairing under test here answers it with the core this checkout
+        # built or the published one named. Resolution would refuse the number. Everything the
+        # siblings need at run time arrived with the candidate wheel.
+        siblings = sibling_wheels(wheel)
+        if siblings:
+            with_siblings = subprocess.run(
+                [
+                    "uv",
+                    "pip",
+                    "install",
+                    "--python",
+                    str(python),
+                    "--no-deps",
+                    *(str(sibling) for sibling in siblings),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if with_siblings.returncode != 0:
+                return False, f"the siblings would not install:\n{with_siblings.stderr.strip()}"
         # `-p no:cacheprovider` keeps the run from writing a .pytest_cache into the checkout, and
         # the tests are read from this repository because no sdist ships them (see #628).
         ran = subprocess.run(
@@ -297,7 +272,7 @@ def main(argv: list[str]) -> int:
                 file=sys.stderr,
             )
             return 1
-        passed, output = run_suite(wheel, local_core, tests, distribution)
+        passed, output = run_suite(wheel, local_core, tests)
         tail = output.splitlines()[-1] if output else ""
         print(
             f"{'ok  ' if passed else 'FAIL'} {distribution} on the {_CORE} this checkout built "
@@ -314,7 +289,7 @@ def main(argv: list[str]) -> int:
 
     failures = 0
     for core in cores:
-        passed, output = run_suite(wheel, core, tests, distribution)
+        passed, output = run_suite(wheel, core, tests)
         tail = output.splitlines()[-1] if output else ""
         print(f"{'ok  ' if passed else 'FAIL'} {distribution} on {_CORE} {core}: {tail}")
         if not passed:
