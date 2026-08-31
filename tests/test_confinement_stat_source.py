@@ -14,10 +14,11 @@ no `test` would catch that — recorded as the upgrade on #729, not shipped here
 
 **A listing is a declaration, not a mute button.** A package in `ANSWERED_INSIDE_THE_GUEST`
 must also say so in its own README, and an entry that stops being true fails as loudly as a
-missing one, so the list cannot outlive the backend it describes. Importing core's own
+missing one, so the list cannot outlive the backend it describes. Reaching for core's own
 `stat_by_asking_the_guest` is read exactly like reaching the guest by hand: core spells the
 probe so nobody invents a fourth one, and the posture that spelling carries is the same either
-way.
+way. Both ways of reaching it count — the direct import, and the module form the repository's
+own reach-by-name rule asks for.
 """
 
 from __future__ import annotations
@@ -47,8 +48,16 @@ ENTRY_POINTS = (
 #: them as `.paths`.
 ENTRY_MODULES = frozenset({"maf_sandbox.paths", "paths"})
 
-#: The guest-side stat core ships for a backend whose engine answers nothing. Importing one is
-#: what this reads — there is no argv to follow, and none is needed: the name is the declaration.
+#: The other half of how that module is reached. `maf_sandbox.paths` is reach-by-name, so
+#: `from maf_sandbox import paths` and `import maf_sandbox.paths` are ordinary spellings rather
+#: than exotic ones, and a scanner that read only `from … import <name>` would clear a backend
+#: for writing `paths.stat_by_asking_the_guest(…)`.
+ENTRY_PACKAGE = "maf_sandbox"
+ENTRY_MODULE_LEAF = "paths"
+
+#: The guest-side stat core ships for a backend whose engine answers nothing. Reaching for one
+#: is what this reads — there is no argv to follow, and none is needed: the name is the
+#: declaration. Both spellings count, since the module is reach-by-name.
 GUEST_STAT_HELPERS = frozenset({"stat_by_asking_the_guest", "stat_by_asking_the_guest_as_root"})
 
 #: How a backend spawns a command in its guest. `exec` and `_exec` are the method names; the
@@ -99,12 +108,60 @@ def _entry_names(tree: ast.Module) -> frozenset[str]:
     return frozenset(names)
 
 
-def _imported_guest_stats(tree: ast.Module) -> tuple[str, ...]:
-    """The guest-side stats core ships that this module imports, by their canonical names."""
+def _module_aliases(tree: ast.Module) -> frozenset[str]:
+    """Every bare name this module can reach `maf_sandbox.paths` by as a *module*.
+
+    `from maf_sandbox import paths` and `import maf_sandbox.paths as p` both bind one. Plain
+    `import maf_sandbox.paths` binds no short name and is matched by :func:`_is_entry_module`
+    on the dotted form instead.
+    """
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (
+            node.module == ENTRY_PACKAGE or (node.module is None and node.level)
+        ):
+            names |= {
+                alias.asname or alias.name
+                for alias in node.names
+                if alias.name == ENTRY_MODULE_LEAF
+            }
+        elif isinstance(node, ast.Import):
+            names |= {
+                alias.asname for alias in node.names if alias.name in ENTRY_MODULES and alias.asname
+            }
+    return frozenset(names)
+
+
+def _is_entry_module(node: ast.expr, aliases: frozenset[str]) -> bool:
+    """Whether ``node`` names `maf_sandbox.paths` — as a bound alias, or spelled out in full."""
+    if isinstance(node, ast.Name):
+        return node.id in aliases
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == ENTRY_MODULE_LEAF
+        and isinstance(node.value, ast.Name)
+        and node.value.id == ENTRY_PACKAGE
+    )
+
+
+def _guest_stat_uses(tree: ast.Module, aliases: frozenset[str]) -> tuple[str, ...]:
+    """The guest-side stats core ships that this module reaches, by their canonical names.
+
+    An import is one way and an attribute access through the module is the other. The module
+    import alone is *not* read as a use — `from maf_sandbox import paths` is how half this
+    repository reaches the confinement helpers, and reading it as a declaration would flag
+    every one of them.
+    """
     found: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module in ENTRY_MODULES:
             found |= {alias.name for alias in node.names if alias.name in GUEST_STAT_HELPERS}
+        elif (
+            isinstance(node, ast.Attribute)
+            and node.attr in GUEST_STAT_HELPERS
+            and _is_entry_module(node.value, aliases)
+        ):
+            found.add(node.attr)
     return tuple(sorted(found))
 
 
@@ -159,12 +216,21 @@ def _is_self(node: ast.expr) -> bool:
     return isinstance(node, ast.Name) and node.id == "self"
 
 
-def _entry_calls(node: ast.AST, names: frozenset[str]) -> list[ast.Call]:
-    """Every call to an entry point under ``node``, by any of the names it is imported as."""
+def _entry_calls(node: ast.AST, names: frozenset[str], aliases: frozenset[str]) -> list[ast.Call]:
+    """Every call to an entry point under ``node``, by either spelling that reaches one."""
     return [
         found
         for found in ast.walk(node)
-        if isinstance(found, ast.Call) and _callee_name(found.func) in names and found.args
+        if isinstance(found, ast.Call)
+        and found.args
+        and (
+            _callee_name(found.func) in names
+            or (
+                isinstance(found.func, ast.Attribute)
+                and found.func.attr in ENTRY_POINTS
+                and _is_entry_module(found.func.value, aliases)
+            )
+        )
     ]
 
 
@@ -177,8 +243,8 @@ class Sites:
     to prevent.
 
     ``reaching`` has two sources and one meaning. A stat that walks to a command in the guest is
-    one; an import of core's own guest-side stat is the other, and it needs no walk because the
-    import already says where the answer comes from.
+    one; a reach for core's own guest-side stat is the other, and it needs no walk because the
+    name already says where the answer comes from.
     """
 
     def __init__(self) -> None:
@@ -195,8 +261,9 @@ def _sites() -> Sites:
             continue
         tree = ast.parse(module.read_text(encoding="utf-8"))
         names = _entry_names(tree)
-        helpers = _imported_guest_stats(tree)
-        if not names and not helpers:
+        aliases = _module_aliases(tree)
+        helpers = _guest_stat_uses(tree, aliases)
+        if not names and not aliases and not helpers:
             continue
         package = module.relative_to(PACKAGES).parts[0]
         where = module.relative_to(REPO_ROOT).as_posix()
@@ -209,7 +276,7 @@ def _sites() -> Sites:
                 for node in klass.body
                 if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
             }
-            for call in _entry_calls(klass, names):
+            for call in _entry_calls(klass, names, aliases):
                 found.scanned.add(package)
                 stat = _stat_method(call.args[0])
                 if stat is None:
@@ -221,7 +288,9 @@ def _sites() -> Sites:
                         f"{where}: {klass.name}.{reached}"
                     )
         found.unmodelled += [
-            f"{where}:{call.lineno}" for call in _entry_calls(tree, names) if id(call) not in read
+            f"{where}:{call.lineno}"
+            for call in _entry_calls(tree, names, aliases)
+            if id(call) not in read
         ]
     return found
 
@@ -229,6 +298,44 @@ def _sites() -> Sites:
 @pytest.fixture(scope="module")
 def sites() -> Sites:
     return _sites()
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from maf_sandbox.paths import stat_by_asking_the_guest",
+        """from maf_sandbox import paths
+paths.stat_by_asking_the_guest(run, guest, rel)""",
+        """import maf_sandbox.paths
+maf_sandbox.paths.stat_by_asking_the_guest_as_root(run, guest, rel)""",
+        """import maf_sandbox.paths as p
+p.stat_by_asking_the_guest(run, guest, rel)""",
+    ],
+    ids=["from-import", "module-attribute", "dotted", "aliased-module"],
+)
+def test_every_spelling_that_reaches_the_guest_side_stat_is_read(source: str) -> None:
+    """`maf_sandbox.paths` is reach-by-name, so the module forms are ordinary rather than
+    exotic. A scanner reading only `from ... import <name>` would clear a backend that wrote
+    any of the other three, and the README requirement would go unenforced."""
+    tree = ast.parse(source)
+    assert _guest_stat_uses(tree, _module_aliases(tree))
+
+
+def test_reaching_the_module_alone_is_not_a_declaration() -> None:
+    """`from maf_sandbox import paths` is how a module reaches the confinement helpers at
+    all. Read as a declaration it would flag every one of them, so the *use* is what counts.
+    """
+    source = """from maf_sandbox import paths
+paths.refuse_symlinked_ancestors(stat, guest, work)"""
+    tree = ast.parse(source)
+    assert not _guest_stat_uses(tree, _module_aliases(tree))
+
+
+def test_a_confinement_call_through_the_module_is_a_call_site_this_reads() -> None:
+    source = """from maf_sandbox import paths
+paths.refuse_symlinked_ancestors(self._stat_guest, guest, work)"""
+    tree = ast.parse(source)
+    assert _entry_calls(tree, _entry_names(tree), _module_aliases(tree))
 
 
 def test_every_package_with_a_confinement_check_is_scanned(sites: Sites) -> None:

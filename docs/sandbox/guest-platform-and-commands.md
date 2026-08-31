@@ -74,9 +74,9 @@ Everything in this table is a live claim about the guest, made by code that has 
 | `maf-sandbox-codeact` | The interpreter is spelled `python3` |
 | `maf-sandbox-bicep` | POSIX command templates |
 | `maf-sandbox-wslc` | The write-path filesystem path check is answered by `test` run inside the guest, through core's spelling of it |
-| `maf-sandbox`, `paths.py`, `stat_by_asking_the_guest` | The guest has `test`, and it answers 0, 1, or an error. Offered rather than used: nothing in core calls it, and the claim belongs to whichever backend imports it |
+| `maf-sandbox`, `paths.py`, `stat_by_asking_the_guest` | The guest has `test`, and it answers 0, 1, or an error. Offered rather than used: nothing in core calls it, and the claim belongs to whichever backend reaches for it |
 
-**Core's two removals are not in the table**, and Decision 2 below is why. `reclaim_guest_path` and `_remove_tree` spell no command at all: both dispatch to `Sandbox.reclaim`, so the claim about the guest lands one layer down, on the backend rows above, where it is a claim the backend is in a position to make. The `paths.py` row is the one place core does spell a command, and it is spelled without being made: core writes the argv and the parser, calls neither, and the claim still lands on the importing backend — which is why importing it is a declared posture with a README requirement rather than a helper like any other ([#733](https://github.com/sokolaidev/maf-extensions/issues/733)).
+**Core's two removals are not in the table**, and Decision 2 below is why. `reclaim_guest_path` and `_remove_tree` spell no command at all: both dispatch to `Sandbox.reclaim`, so the claim about the guest lands one layer down, on the backend rows above, where it is a claim the backend is in a position to make. The `paths.py` row is the one place core does spell a command, and it is spelled without being made: core writes the argv and the parser, calls neither, and the claim still lands on the backend that reaches for it — which is why reaching for it is a declared posture with a README requirement rather than a helper like any other ([#733](https://github.com/sokolaidev/maf-extensions/issues/733)).
 
 `launcher_script` already concedes the whole problem in its own docstring:
 

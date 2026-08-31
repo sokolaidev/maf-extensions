@@ -21,8 +21,8 @@ it once.**  :func:`stat_by_asking_the_guest` and :func:`stat_by_asking_the_guest
 ``test`` inside the guest, which transfers the question to the thing being confined — the name
 says so because the cost is the whole of what a reader has to weigh.  They exist so that a
 backend in that position picks a reviewed spelling instead of inventing a fourth one, not
-because the technique is a good one, and importing either is a declared posture the repository's
-own ``tests/test_confinement_stat_source.py`` holds a backend's README to.
+because the technique is a good one, and reaching for either is a declared posture the
+repository's own ``tests/test_confinement_stat_source.py`` holds a backend's README to.
 
 **Reach for a bundle rather than for either half.**  Four of them pair the two checks, one per
 confinement policy, and the file surface's five methods map onto them:
@@ -217,7 +217,7 @@ _GUEST_STAT_PROBES: tuple[tuple[str, EntryKind], ...] = (
 #: through.
 _GUEST_STAT_EXISTS = "-e"
 
-#: Asked of the *parent*, to tell an absent path from one the asking principal cannot see.
+#: Asked of an *ancestor*, to tell an absent path from one the asking principal cannot see.
 _GUEST_STAT_SEARCHABLE = "-x"
 
 #: What ``test`` answers. Anything above false is an error rather than a no — a missing binary,
@@ -249,6 +249,28 @@ async def _kind_the_guest_reports(
     return None
 
 
+async def _ancestor_blocking_the_view(
+    run_in_guest: Callable[[Sequence[str]], Awaitable[int]], guest_path: str
+) -> str | None:
+    """The nearest ancestor that is there and cannot be searched, or ``None`` when none is.
+
+    Climbing is the point.  A parent that is not there yet answers no to everything exactly as
+    an unsearchable one does, and a write creates its parents, so asking the immediate parent
+    alone would refuse every ordinary write into a chain that does not exist.  The first
+    ancestor that answers ``-e`` is the deepest one whose word can be taken, and its search bit
+    is what decides whether the silence below it was an answer.  The filesystem root has nothing
+    above it, so its own search bit is the last question there is.
+    """
+    ancestor = posixpath.dirname(guest_path)
+    while True:
+        above = posixpath.dirname(ancestor)
+        if above == ancestor or await _guest_answers(run_in_guest, _GUEST_STAT_EXISTS, ancestor):
+            if await _guest_answers(run_in_guest, _GUEST_STAT_SEARCHABLE, ancestor):
+                return None
+            return ancestor
+        ancestor = above
+
+
 async def stat_by_asking_the_guest(
     run_in_guest: Callable[[Sequence[str]], Awaitable[int]],
     guest_path: str,
@@ -259,7 +281,7 @@ async def stat_by_asking_the_guest(
     **This asks the thing being confined to describe itself**, and a root workload replaces
     ``test`` in its own filesystem and is believed. Reach for it only where the engine answers
     nothing, and say so in the backend's README — ``tests/test_confinement_stat_source.py``
-    requires that of any package importing this. ``run_in_guest`` runs one argv there and
+    requires that of any package reaching for this. ``run_in_guest`` runs one argv there and
     answers its exit status.
 
     The two variants differ in reach and not in trust: :func:`stat_by_asking_the_guest_as_root`
@@ -269,19 +291,18 @@ async def stat_by_asking_the_guest(
 
     What the narrower reach costs is stated rather than guessed. A path every probe answers no to
     is either absent or under a directory this principal cannot search, and ``test`` cannot tell
-    those apart; absent ends the filesystem path check, so the parent's search bit is asked and a
-    :class:`PermissionError` is raised where it is not set. The entry carries a kind and no size,
-    which is what the check reads and is not enough to serve ``stat_file``.
+    those apart; absent ends the filesystem path check, so the nearest ancestor that is there is
+    asked for its search bit and a :class:`PermissionError` is raised where it is not set. The
+    entry carries a kind and no size, which is what the check reads and is not enough to serve
+    ``stat_file``.
     """
     kind = await _kind_the_guest_reports(run_in_guest, guest_path)
     if kind is not None:
         return SandboxEntry(path=rel_path, kind=kind, size_bytes=None)
-    parent = posixpath.dirname(guest_path)
-    if parent != guest_path and not await _guest_answers(
-        run_in_guest, _GUEST_STAT_SEARCHABLE, parent
-    ):
+    blocked = await _ancestor_blocking_the_view(run_in_guest, guest_path)
+    if blocked is not None:
         raise PermissionError(
-            f"nothing is visible at {guest_path!r} and {parent!r} is not searchable by the "
+            f"nothing is visible at {guest_path!r} and {blocked!r} is not searchable by the "
             f"principal that asked, so an absent path and a hidden one cannot be told apart"
         )
     return None
