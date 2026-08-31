@@ -39,10 +39,11 @@ from ._protocol import (
     ScopePurge,
 )
 from .paths import (
-    confine_resolve_guest_path,
+    confine_resolve_guest_delete_path,
+    confine_resolve_guest_list_path,
+    confine_resolve_guest_read_path,
     confine_resolve_guest_write_path,
     guest_path_relative_to,
-    refuse_symlinked_ancestors,
 )
 
 __all__ = [
@@ -105,17 +106,18 @@ class InProcessSandbox:
     into :attr:`commands`, and ``reclaim`` records ``(directory, working_directory, timeout)``
     into :attr:`reclaims` and really removes.
 
-    ``stat_file``, ``read_file`` and ``list_dir`` confine every ``path`` to the
-    ``working_directory`` a call names: a backslash or a resolved path outside it raises
-    ``ValueError``. ``read_file`` serves only :data:`~maf_sandbox.EntryKind.FILE`, raising
+    ``write_file``, ``stat_file``, ``read_file``, ``remove`` and ``list_dir`` confine every
+    ``path`` to the ``working_directory`` a call names: a backslash or a resolved path outside
+    it raises ``ValueError``. ``read_file`` serves only :data:`~maf_sandbox.EntryKind.FILE`, raising
     ``FileNotFoundError`` for nothing there, ``IsADirectoryError`` for a directory and
     ``OSError`` for a seeded non-regular entry — and it **refuses** rather than truncates a
     file over its ``max_bytes``, as the protocol requires.
 
-    All four also run :func:`~maf_sandbox.paths.refuse_symlinked_ancestors` over the components,
-    so a seeded link standing where a directory was expected is refused here as it is on a real
-    backend. What this fake cannot model is the **escape** itself: a seeded link has no target,
-    so nothing reads through one and a test going green here has asserted shape, not safety.
+    All five confine through the :mod:`maf_sandbox.paths` bundle their policy calls for — the
+    stat and the read share one — so a seeded link standing where a directory was expected is
+    refused here as it is on a real backend.
+    What this fake cannot model is the **escape** itself: a seeded link has no target, so
+    nothing reads through one and a test going green here has asserted shape, not safety.
     Both backend suites carry their own premise test for that reason.
 
     ``exec`` accepts a plain string or an argv sequence (mirroring
@@ -246,10 +248,11 @@ class InProcessSandbox:
         return SandboxEntry(path=full_path, kind=kind, size_bytes=size_bytes)
 
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
-        full_path = confine_resolve_guest_path(path, working_directory)
-        await refuse_symlinked_ancestors(self._stat_unconfined, full_path, working_directory)
+        full_path = await confine_resolve_guest_read_path(
+            self._stat_unconfined, path, working_directory
+        )
         rel = guest_path_relative_to(full_path, posixpath.normpath(working_directory))
-        assert rel is not None  # confine_resolve_guest_path already refused anything outside it
+        assert rel is not None  # the bundle already refused anything outside the work dir
         found = self._kind_at(full_path)
         if found is None:
             return None
@@ -257,8 +260,9 @@ class InProcessSandbox:
         return SandboxEntry(path=rel, kind=kind, size_bytes=size_bytes)
 
     async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
-        full_path = confine_resolve_guest_path(path, working_directory)
-        await refuse_symlinked_ancestors(self._stat_unconfined, full_path, working_directory)
+        full_path = await confine_resolve_guest_read_path(
+            self._stat_unconfined, path, working_directory
+        )
         if full_path in self.contents:
             content = self.contents[full_path]
             if len(content) > max_bytes:
@@ -275,18 +279,9 @@ class InProcessSandbox:
         raise FileNotFoundError(f"no such file: {path!r}")
 
     async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
-        full_path = confine_resolve_guest_path(path, working_directory)
-        # `include_self=False`: a link named here is the thing being removed, and removing it
-        # is the one operation on the pull surface that must *not* resolve it. Its parents are
-        # checked exactly as a read checks them.
-        await refuse_symlinked_ancestors(
-            self._stat_unconfined, full_path, working_directory, include_self=False
+        full_path = await confine_resolve_guest_delete_path(
+            self._stat_unconfined, path, working_directory
         )
-        base = posixpath.normpath(working_directory)
-        if posixpath.normpath(full_path) == base:
-            raise ValueError(
-                f"refusing to remove the working directory itself: {working_directory}"
-            )
         # A link's children are the target's, so a link has none here — otherwise `recursive`
         # would follow one, in the fake that exists to forbid it.
         children = (
@@ -325,15 +320,12 @@ class InProcessSandbox:
             self.directories.discard(stored)
 
     async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
-        full_path = confine_resolve_guest_path(path, working_directory)
-        await refuse_symlinked_ancestors(
-            self._stat_unconfined, full_path, working_directory, include_self=True
+        full_path = await confine_resolve_guest_list_path(
+            self._stat_unconfined, path, working_directory
         )
         base = posixpath.normpath(working_directory)
         directory_rel = guest_path_relative_to(full_path, base)
-        assert (
-            directory_rel is not None
-        )  # confine_resolve_guest_path already refused anything outside it
+        assert directory_rel is not None  # the bundle already refused anything outside the work dir
 
         names: set[str] = set()
         for stored_path in self._stored():

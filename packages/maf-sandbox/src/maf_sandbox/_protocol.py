@@ -643,15 +643,19 @@ class Sandbox(Protocol):
     **Confinement is a duty of all five, and it is not a check on the argument string.**  A
     path whose *parent* is a link passes the file name check and still reads outside: with
     ``out -> /etc``, ``out/hostname`` stats as a regular 12-byte file.  The filesystem path
-    check is what catches it, so discharge that half with
-    :func:`~maf_sandbox.paths.refuse_symlinked_ancestors` rather than by writing that check again —
-    it is where the two refusals a caller must be able to tell apart are defined, and
-    :mod:`maf_sandbox.conformance` is the same duty as probes, for holding a backend that
-    writes its own.  **The stat you hand it must not be answered by the guest** wherever your
-    engine offers anything else: a workload asked to describe its own filesystem can answer
-    falsely, and that answer is the one this trusts.  The five are :meth:`write_file`, the pull
-    surface and :meth:`remove`; :meth:`reclaim` is outside the count, for the reason its own
-    docstring gives.
+    check is what catches it, so discharge both halves through the bundle for the policy your
+    method owes: :func:`~maf_sandbox.paths.confine_resolve_guest_write_path` for
+    :meth:`write_file`, :func:`~maf_sandbox.paths.confine_resolve_guest_read_path` for
+    :meth:`stat_file` and :meth:`read_file` both,
+    :func:`~maf_sandbox.paths.confine_resolve_guest_list_path` for :meth:`list_dir`, and
+    :func:`~maf_sandbox.paths.confine_resolve_guest_delete_path` for :meth:`remove`.  Each
+    carries what its own policy owes about the final component and about the working directory,
+    and the two refusals a caller must be able to tell apart are defined there.
+    :mod:`maf_sandbox.conformance` is the same duty as probes, for holding a backend that writes
+    its own.  **The stat you hand it must not be answered by the guest** wherever your engine
+    offers anything else: a workload asked to describe its own filesystem can answer falsely,
+    and that answer is the one this trusts.  :meth:`reclaim` is outside the count of five, for
+    the reason its own docstring gives.
     """
 
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:

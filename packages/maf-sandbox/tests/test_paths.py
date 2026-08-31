@@ -19,7 +19,10 @@ import pytest
 
 from maf_sandbox import EntryKind, SandboxEntry, paths
 from maf_sandbox.paths import (
+    confine_resolve_guest_delete_path,
+    confine_resolve_guest_list_path,
     confine_resolve_guest_path,
+    confine_resolve_guest_read_path,
     confine_resolve_guest_write_path,
     guest_path_and_ancestors,
     guest_path_relative_to,
@@ -193,6 +196,118 @@ class TestConfineResolveGuestWritePath:
                     "/maf-sandbox/work/victim.txt": EntryKind.SYMLINK,
                 },
             )
+
+
+#: A work dir whose own ancestors are real, so a case can plant one link and mean it.
+_REAL_WORK_DIR = {"/maf-sandbox": EntryKind.DIRECTORY, "/maf-sandbox/work": EntryKind.DIRECTORY}
+
+
+def _confine(bundle, path, kinds=None, working_directory=_WORK_DIR):
+    """Run one bundle over a guest filesystem described as ``{guest path: kind}``."""
+    planted = kinds or {}
+
+    async def stat(guest):
+        kind = planted.get(guest)
+        return None if kind is None else SandboxEntry(guest, kind, None)
+
+    return asyncio.run(bundle(stat, path, working_directory))
+
+
+class TestConfineResolveGuestReadPath:
+    def test_a_plain_nested_path_passes(self):
+        assert (
+            _confine(confine_resolve_guest_read_path, "sub/a.txt") == "/maf-sandbox/work/sub/a.txt"
+        )
+
+    def test_a_path_outside_is_refused(self):
+        with pytest.raises(ValueError, match="outside"):
+            _confine(confine_resolve_guest_read_path, "../a.txt")
+
+    def test_a_linked_ancestor_is_refused(self):
+        with pytest.raises(ValueError, match="real directory"):
+            _confine(
+                confine_resolve_guest_read_path,
+                "link/a.txt",
+                {**_REAL_WORK_DIR, "/maf-sandbox/work/link": EntryKind.SYMLINK},
+            )
+
+    def test_a_linked_final_component_is_left_to_the_caller(self):
+        """What separates this bundle from the others: a stat describes the link, and a read
+        refuses it on the kind that comes back."""
+        assert (
+            _confine(
+                confine_resolve_guest_read_path,
+                "a.txt",
+                {**_REAL_WORK_DIR, "/maf-sandbox/work/a.txt": EntryKind.SYMLINK},
+            )
+            == "/maf-sandbox/work/a.txt"
+        )
+
+    def test_the_working_directory_itself_passes(self):
+        """A read owes no refusal there — `stat_file(".")` describes the directory."""
+        assert _confine(confine_resolve_guest_read_path, ".", _REAL_WORK_DIR) == _WORK_DIR
+
+
+class TestConfineResolveGuestListPath:
+    def test_a_plain_directory_passes(self):
+        assert (
+            _confine(confine_resolve_guest_list_path, "sub", _REAL_WORK_DIR)
+            == "/maf-sandbox/work/sub"
+        )
+
+    def test_a_linked_ancestor_is_refused(self):
+        with pytest.raises(ValueError, match="real directory"):
+            _confine(
+                confine_resolve_guest_list_path,
+                "link/sub",
+                {**_REAL_WORK_DIR, "/maf-sandbox/work/link": EntryKind.SYMLINK},
+            )
+
+    def test_the_listed_directory_itself_is_refused_when_it_is_a_link(self):
+        """What separates this bundle from the read: an enumeration passes through a link as
+        readily as a read does, so the directory named here is checked too."""
+        with pytest.raises(ValueError, match="real directory"):
+            _confine(
+                confine_resolve_guest_list_path,
+                "link",
+                {**_REAL_WORK_DIR, "/maf-sandbox/work/link": EntryKind.SYMLINK},
+            )
+
+
+class TestConfineResolveGuestDeletePath:
+    def test_a_plain_nested_path_passes(self):
+        assert (
+            _confine(confine_resolve_guest_delete_path, "sub/a.txt")
+            == "/maf-sandbox/work/sub/a.txt"
+        )
+
+    def test_a_path_outside_is_refused(self):
+        with pytest.raises(ValueError, match="outside"):
+            _confine(confine_resolve_guest_delete_path, "../a.txt")
+
+    def test_the_working_directory_itself_is_refused(self):
+        with pytest.raises(ValueError, match="working directory"):
+            _confine(confine_resolve_guest_delete_path, ".", _REAL_WORK_DIR)
+
+    def test_a_linked_ancestor_is_refused(self):
+        with pytest.raises(ValueError, match="real directory"):
+            _confine(
+                confine_resolve_guest_delete_path,
+                "link/a.txt",
+                {**_REAL_WORK_DIR, "/maf-sandbox/work/link": EntryKind.SYMLINK},
+            )
+
+    def test_the_target_itself_is_never_resolved(self):
+        """What separates this bundle from the list: a link named here is the thing being
+        unlinked, so resolving it would remove whatever it points at instead."""
+        assert (
+            _confine(
+                confine_resolve_guest_delete_path,
+                "link",
+                {**_REAL_WORK_DIR, "/maf-sandbox/work/link": EntryKind.SYMLINK},
+            )
+            == "/maf-sandbox/work/link"
+        )
 
 
 class TestGuestPathAndAncestors:

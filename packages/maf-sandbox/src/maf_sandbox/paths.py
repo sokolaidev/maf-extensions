@@ -13,8 +13,18 @@ which is why the other exists.  It is not :func:`~maf_sandbox.portable_file_name
 rewrites the *segments* of a name for a hostile filesystem and confines nothing.
 **The filesystem path check** is :func:`refuse_symlinked_ancestors`: it looks at the guest's
 real filesystem, one directory at a time from the root down, and refuses a path whose ancestors
-are not real directories.  :func:`confine_resolve_guest_write_path` is both, plus the two
-refusals a write owes on top.
+are not real directories.
+
+**Reach for a bundle rather than for either half.**  Four of them pair the two checks, one per
+confinement policy, and the file surface's five methods map onto them:
+:func:`confine_resolve_guest_write_path` for ``write_file``,
+:func:`confine_resolve_guest_read_path` for ``stat_file`` and ``read_file`` — one policy for
+both, since leaving the final component to the caller is what lets a stat describe a link and a
+read refuse one on kind — :func:`confine_resolve_guest_list_path` for ``list_dir`` and
+:func:`confine_resolve_guest_delete_path` for ``remove``.  What separates them is what each does
+about the final component and about the working directory itself, and that belongs to the policy
+rather than to a keyword argument: a caller that picked the wrong bundle named the wrong method
+out loud, where one that omitted an argument would have got a default in silence.
 
 **The prefix says what a function hands back.**  ``confine_resolve_*`` returns the resolved
 guest path or raises; ``refuse_*`` returns nothing and raises.  Nothing here answers a
@@ -34,7 +44,10 @@ from ._protocol import EntryKind, SandboxEntry
 __all__ = [
     "confine_guest_path",
     "confine_guest_write_path",
+    "confine_resolve_guest_delete_path",
+    "confine_resolve_guest_list_path",
     "confine_resolve_guest_path",
+    "confine_resolve_guest_read_path",
     "confine_resolve_guest_write_path",
     "guest_directory_chain",
     "guest_path_and_ancestors",
@@ -76,6 +89,53 @@ async def confine_resolve_guest_write_path(
             f"{resolved!r} is a link, so writing to it would land the bytes wherever it points, "
             f"outside working directory {working_directory!r}"
         )
+    return resolved
+
+
+async def confine_resolve_guest_read_path(
+    stat: Callable[[str], Awaitable[SandboxEntry | None]],
+    path: str,
+    working_directory: str,
+) -> str:
+    """Confine a stat or a read using an unconfined, no-follow stat; the leaf is the caller's.
+
+    Left there deliberately: a stat describes a link, which is how a caller learns it is one,
+    and a read refuses it on the kind it got back.
+    """
+    resolved = confine_resolve_guest_path(path, working_directory)
+    await refuse_symlinked_ancestors(stat, resolved, working_directory)
+    return resolved
+
+
+async def confine_resolve_guest_list_path(
+    stat: Callable[[str], Awaitable[SandboxEntry | None]],
+    path: str,
+    working_directory: str,
+) -> str:
+    """Confine an enumeration using an unconfined, no-follow stat; the directory itself included.
+
+    An enumeration passes through a link as readily as a read does, so the directory named here
+    is checked as well as its ancestors.
+    """
+    resolved = confine_resolve_guest_path(path, working_directory)
+    await refuse_symlinked_ancestors(stat, resolved, working_directory, include_self=True)
+    return resolved
+
+
+async def confine_resolve_guest_delete_path(
+    stat: Callable[[str], Awaitable[SandboxEntry | None]],
+    path: str,
+    working_directory: str,
+) -> str:
+    """Confine a removal using an unconfined, no-follow stat; the target is never resolved.
+
+    A link named here is the thing being unlinked, so the check stops above it — a removal is
+    the one operation on the file surface that must not resolve its own final component.
+    """
+    resolved = confine_resolve_guest_path(path, working_directory)
+    if resolved == posixpath.normpath(working_directory):
+        raise ValueError(f"refusing to remove the working directory itself: {resolved!r}")
+    await refuse_symlinked_ancestors(stat, resolved, working_directory)
     return resolved
 
 
