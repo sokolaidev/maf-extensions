@@ -62,6 +62,7 @@ from maf_sandbox.paths import (
     confine_guest_path,
     confine_guest_write_path,
     guest_directory_chain,
+    path_ancestors_are_host_owned,
     refuse_symlinked_parents,
     sandbox_entry_from_tar_header,
     tar_header_from_block,
@@ -281,15 +282,6 @@ def _image_reference(spec: SandboxSpec) -> str:
     return spec.image_id or spec.image or ""
 
 
-def _no_component_was_the_guests(walked: Mapping[str, tuple[int, int]]) -> bool:
-    """Could the guest program have swapped any directory on this path?
-
-    Not where every one is root's and writable by nobody else.  Empty is ``True``: a check that
-    reached nothing found nothing writable.  See ``docs/sandbox/backends/docker.md``.
-    """
-    return all(uid == 0 and not mode & 0o022 for uid, mode in walked.values())
-
-
 @dataclass(frozen=True)
 class _ContainerFacts:
     """What a running container says about itself, as against what this backend asked for.
@@ -505,12 +497,13 @@ class _DockerSandbox:
         """Is every directory *above* ``work_dir`` one the guest program cannot write?
 
         One tar header per component.  Raises whatever the stat raises; the caller decides what
-        an unreadable component means.
+        an unreadable component means.  A work dir straight under ``/`` has no ancestors above
+        it, so an empty walk is the host's.
         """
         walked: dict[str, tuple[int, int]] = {}
         for directory in guest_directory_chain(posixpath.dirname(work_dir), "/"):
             await self._stat_guest(directory, directory, walked)
-        return _no_component_was_the_guests(walked)
+        return path_ancestors_are_host_owned(walked, empty_means_host_owned=True)
 
     async def _removal(
         self,
@@ -609,7 +602,7 @@ class _DockerSandbox:
             ["rm", "-rf" if recursive else "-f", "--", guest],
             working_directory=working_directory,
             timeout=self._command_timeout,
-            raise_authority=_no_component_was_the_guests(walked),
+            raise_authority=path_ancestors_are_host_owned(walked, empty_means_host_owned=True),
         )
         if removed.exit_code != 0:
             raise OSError(

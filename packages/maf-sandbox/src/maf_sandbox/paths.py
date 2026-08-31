@@ -29,8 +29,10 @@ out loud, where one that omitted an argument would have got a default in silence
 
 **The prefix says what a function hands back.**  ``confine_resolve_*`` returns the resolved
 guest path or raises; ``refuse_*`` returns nothing and raises; ``tar_header_from_block`` and
-``sandbox_entry_from_tar_header`` name their returns the same way.  Nothing here answers a
-``bool``, so a name in the shape of a predicate would be read as one and is not used.
+``sandbox_entry_from_tar_header`` name their returns the same way.  The one that answers a
+``bool`` does the naming differently: :func:`path_ancestors_are_host_owned` is named as the
+fact it states rather than as a question, because a caller reads its answer as permission to
+raise authority rather than as an outcome to await.
 """
 
 from __future__ import annotations
@@ -39,7 +41,7 @@ import inspect
 import posixpath
 import tarfile
 import warnings
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from typing import Any
 
 from ._protocol import EntryKind, SandboxEntry
@@ -55,6 +57,7 @@ __all__ = [
     "guest_directory_chain",
     "guest_path_and_ancestors",
     "guest_path_relative_to",
+    "path_ancestors_are_host_owned",
     "refuse_symlinked_ancestors",
     "refuse_symlinked_parents",
     "sandbox_entry_from_tar_header",
@@ -262,6 +265,28 @@ async def refuse_symlinked_ancestors(
             )
         if entry.kind is not EntryKind.DIRECTORY:
             raise NotADirectoryError(f"{directory!r} is not a directory")
+
+
+def path_ancestors_are_host_owned(
+    walked: Mapping[str, tuple[int, int]], *, empty_means_host_owned: bool
+) -> bool:
+    """Whether every directory on the walked path is root's and writable by nobody else.
+
+    The reach rule: a removal may run with more authority than the guest program had only
+    where nothing on the path was that program's to replace.  ``walked`` holds ``(uid,
+    mode)`` per component the caller's check on the path collected, and the caller must hand
+    every component the rule is to bind — a missing one is a question for the caller, not a
+    pass.
+
+    An empty mapping is not decided here: it can mean nothing lies above the working
+    directory, or that the walk reached nothing, and the caller names what that means by
+    passing ``empty_means_host_owned``.  Running a *stat* as root buys reach, not trust — the
+    binary answering is the image's either way.  Running a *removal* as root is what needs
+    licensing, and this is what licenses it.
+    """
+    if not walked:
+        return empty_means_host_owned
+    return all(uid == 0 and not mode & 0o022 for uid, mode in walked.values())
 
 
 def _warn_renamed(old: str, new: str) -> None:
