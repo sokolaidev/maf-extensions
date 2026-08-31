@@ -39,7 +39,13 @@ from maf_sandbox import (
     SandboxRouter,
     TransferLimits,
 )
-from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
+
+pytest.importorskip(
+    "maf_sandbox_docker",
+    reason="the e2e drives a real docker backend, and this environment carries no sibling wheel",
+)
+
+from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig  # noqa: E402
 
 from maf_sandbox_codeact import CodeactOutputs, make_codeact_tools
 

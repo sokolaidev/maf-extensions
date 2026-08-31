@@ -184,7 +184,7 @@ class TestTheCoreThisCheckoutBuilt:
         wheel, core = self._wheel_and_index(tmp_path, monkeypatch, "maf-sandbox>=0.26.0,<0.28")
         seen: list[object] = []
         monkeypatch.setattr(
-            check, "run_suite", lambda w, c, t: (seen.append(c), (True, "12 passed"))[1]
+            check, "run_suite", lambda w, c, t, d: (seen.append(c), (True, "12 passed"))[1]
         )
         code = check.main(["prog", "maf-sandbox-bicep", str(wheel), "--local-core", str(core)])
         assert code == 0
@@ -217,7 +217,9 @@ class TestTheCoreThisCheckoutBuilt:
         """The flag adds a fallback, it does not replace the index."""
         wheel, core = self._wheel_and_index(tmp_path, monkeypatch, "maf-sandbox>=0.25.0,<0.28")
         seen: list[object] = []
-        monkeypatch.setattr(check, "run_suite", lambda w, c, t: (seen.append(c), (True, "ok"))[1])
+        monkeypatch.setattr(
+            check, "run_suite", lambda w, c, t, d: (seen.append(c), (True, "ok"))[1]
+        )
         assert check.main(["prog", "maf-sandbox-bicep", str(wheel), "--local-core", str(core)]) == 0
         assert seen == ["0.25.0"], "resolved from the index, not the local wheel"
 
@@ -245,7 +247,9 @@ class TestTheCoreThisCheckoutBuilt:
         wheel, core = self._wheel_and_index(tmp_path, monkeypatch, "maf-sandbox>=0.26.0,<0.28")
         monkeypatch.chdir(tmp_path)
         seen: list[Path] = []
-        monkeypatch.setattr(check, "run_suite", lambda w, c, t: (seen.append(c), (True, "ok"))[1])
+        monkeypatch.setattr(
+            check, "run_suite", lambda w, c, t, d: (seen.append(c), (True, "ok"))[1]
+        )
         code = check.main(["prog", "maf-sandbox-bicep", str(wheel), "--local-core", core.name])
         assert code == 0
         assert seen[0].is_absolute() and seen[0].as_uri()
