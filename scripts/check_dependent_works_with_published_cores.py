@@ -130,6 +130,20 @@ def sibling_wheels(wheel: Path) -> list[Path]:
     return [found[0] for found in by_distribution.values()]
 
 
+def built_family(wheel: Path) -> list[tuple[str, Path]]:
+    """The wheel under test and its siblings, as ``(distribution name, wheel)`` pairs.
+
+    The shape `--local-core`'s override is written from, matching
+    `check_samples_against_declared_core.py`'s `built_here`: one forced line per wheel this
+    checkout built, so a sibling's floor on a not-yet-released core is answered by the artifact
+    rather than by the index.
+    """
+    return [
+        (candidate.name.split("-", 1)[0].replace("_", "-"), candidate)
+        for candidate in [wheel, *sibling_wheels(wheel)]
+    ]
+
+
 def throwaway_interpreter(directory: Path) -> Path | str:
     """Build a virtual environment under ``directory``; answer its interpreter.
 
@@ -153,7 +167,13 @@ def run_suite(wheel: Path, core: str | Path, tests: Path) -> tuple[bool, str]:
     ``core`` is a published version to resolve, or a wheel this checkout built. The wheel is
     forced with ``--overrides``: it carries the version it had before release-please bumped it,
     which is by definition below a floor waiting on the release, and the point is to test the
-    code rather than the number.
+    code rather than the number. When the core is forced this way the sibling dependents are
+    forced too, the way `check_samples_against_declared_core.py` forces the whole family: their
+    floors on the core are ranges about published artifacts, and the core under test here is
+    not one of those yet. With siblings left to the index, `maf-sandbox-acas` beside a
+    not-yet-released core drags in published `maf-sandbox-docker`, whose floor names a version
+    above the core being tested — and the environment refuses to build over a number, which is
+    the question this check exists to set aside.
     """
     with tempfile.TemporaryDirectory() as directory:
         python = throwaway_interpreter(Path(directory))
@@ -161,7 +181,12 @@ def run_suite(wheel: Path, core: str | Path, tests: Path) -> tuple[bool, str]:
             return False, python
         if isinstance(core, Path):
             override = Path(directory) / "override.txt"
-            override.write_text(f"{_CORE} @ {core.as_uri()}\n", encoding="utf-8")
+            override.write_text(
+                "".join(
+                    f"{name} @ {candidate.as_uri()}\n" for name, candidate in built_family(wheel)
+                ),
+                encoding="utf-8",
+            )
             pinned = ["--overrides", str(override)]
         else:
             pinned = [f"{_CORE}=={core}"]

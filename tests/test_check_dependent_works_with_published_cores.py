@@ -221,6 +221,24 @@ class TestTheCoreThisCheckoutBuilt:
         assert check.main(["prog", "maf-sandbox-bicep", str(wheel), "--local-core", str(core)]) == 0
         assert seen == ["0.25.0"], "resolved from the index, not the local wheel"
 
+    def test_the_local_override_forces_the_siblings_too(self, tmp_path: Path):
+        """A sibling's floor names a version of the core that is not published yet, so leaving
+        the siblings to the index would refuse the environment over a number — the question
+        this fallback exists to set aside. Every wheel this checkout built is forced."""
+        subject = _wheel(
+            tmp_path, "maf_sandbox_bicep-0.9.3-py3-none-any.whl", ["maf-sandbox>=0.28.0,<0.29"]
+        )
+        sibling = _wheel(
+            tmp_path, "maf_sandbox_docker-0.11.0-py3-none-any.whl", ["maf-sandbox>=0.28.0,<0.29"]
+        )
+        core = tmp_path / "maf_sandbox-0.27.0-py3-none-any.whl"
+        core.write_bytes(b"")
+        with zipfile.ZipFile(core, "w") as archive:
+            archive.writestr("maf_sandbox-0.27.0.dist-info/METADATA", "Metadata-Version: 2.1")
+        forced = check.built_family(subject)
+        assert [name for name, _ in forced] == ["maf-sandbox-bicep", "maf-sandbox-docker"]
+        assert [path for _, path in forced] == [subject, sibling]
+
     def test_a_relative_path_is_accepted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """The workflow passes `dist/...`, and the override needs a file URI, which a relative
         path cannot express — it reached CI as a `ValueError` rather than a verdict."""
