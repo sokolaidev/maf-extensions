@@ -82,14 +82,6 @@ _SIBLING_DISTRIBUTIONS = (
     "maf-sandbox-wslc",
 )
 
-#: The versions of those siblings published at the moment the gate runs. For each core under
-#: test the published-core install pins, per sibling, the *newest published version whose own
-#: metadata admits that core* — the pairing a consumer capping elsewhere would resolve, not
-#: necessarily the newest release. A sibling with no version admitting the core is left out
-#: entirely: its absence cannot break the candidate, and forcing its floor would fail the
-#: environment over a pairing nothing installs.
-_PUBLISHED_SIBLING_VERSIONS: dict[str, str] = {}
-
 
 def _admits_core(requires_dist: list[str] | None, core: str) -> bool:
     """Whether a published sibling's own requirements admit ``core``.
