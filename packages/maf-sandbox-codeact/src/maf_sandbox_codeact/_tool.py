@@ -608,6 +608,24 @@ _DESCRIPTION_HEAD = """Run a short Python program inside a sandbox and return wh
         Write a complete, self-contained program every time.  Each call gets a fresh working
         directory: nothing you did not pass in to *this* call is in it."""
 
+#: The withholding head. The paragraph above it is not merely untrue in that mode — it
+#: instructs the one behaviour the mode exists to redirect, and it is the first thing the model
+#: reads, so a withheld tool built on it argues with its own `Returns:` section.
+_DESCRIPTION_HEAD_WITHHELD = """Run a short Python program inside a sandbox and report what it
+        did.
+
+        Use this to compute rather than to reason: parse, transform, count, check, simulate —
+        anything where running the code beats predicting what it would do.  The program runs
+        as ``python3 program.py`` in a sandbox with {network}
+
+        **What you print is not read back.**  You get the exit code and how many bytes each
+        stream received, never what was in them — so ``print(...)`` is for your own debugging
+        and never a way to return a value.  Write anything you need to see into a declared
+        output instead.
+
+        Write a complete, self-contained program every time.  Each call gets a fresh working
+        directory: nothing you did not pass in to *this* call is in it."""
+
 #: The claim this kind can always make on its own: nothing callable means nothing leaves.
 _DESCRIPTION_NO_NETWORK = """**no network access**, so it can compute
         but cannot fetch."""
@@ -751,7 +769,8 @@ def _tool_description(
         network = (
             _DESCRIPTION_NO_NETWORK_WITH_HOST_TOOLS if host_tool_names else _DESCRIPTION_NO_NETWORK
         )
-    body = [_DESCRIPTION_HEAD.format(network=network)]
+    head = _DESCRIPTION_HEAD_WITHHELD if withhold else _DESCRIPTION_HEAD
+    body = [head.format(network=network)]
     if host_tool_names:
         names = ", ".join(f"``{name}``" for name in sorted(host_tool_names))
         body.append(_DESCRIPTION_HOST_TOOLS.format(names=names))
@@ -946,7 +965,9 @@ async def _execute(
     if over_cap is not None:
         return over_cap
     if store is not None:
-        resolved = await _resolve_listed_files(session, store, files, reserved=reserved)
+        resolved = await _resolve_listed_files(
+            session, store, files, reserved=reserved, withhold=withhold
+        )
         if isinstance(resolved, str):
             return resolved
         read = await _read_listed_files(store, resolved, tally)
@@ -1087,6 +1108,7 @@ async def _resolve_listed_files(
     files: list[str],
     *,
     reserved: Mapping[str, str],
+    withhold: bool = False,
 ) -> list[str] | str:
     """Match each requested name against the caller's listing, or answer with the refusal.
 
@@ -1098,6 +1120,11 @@ async def _resolve_listed_files(
         return []
     listing = await session.list_files(store)
     if isinstance(listing, str):
+        # The host's own sentence about its store. Withheld it is dropped for the reason the
+        # names below are: `list_files` is a host callback with no integrity contract.
+        if withhold:
+            logger.warning("execute_code: the file listing could not be read: %s", listing)
+            return "Error: this tool's file listing could not be read, so nothing was shared."
         return listing
     known = set(listing)
     resolved: list[str] = []
@@ -1128,7 +1155,7 @@ async def _resolve_listed_files(
             )
             return (
                 f"Error: {name!r} is not in this tool's file listing, so it was not shared. "
-                f"{_listing_hint(name, listing)}"
+                f"{_listing_hint(name, listing, withhold=withhold)}"
             )
         resolved.append(name)
     return resolved
@@ -1138,10 +1165,19 @@ async def _resolve_listed_files(
 _LISTING_HINT_MAX = 20
 
 
-def _listing_hint(name: str, listing: list[str]) -> str:
-    """The listing, or its near misses — what resolves a typo without another round trip."""
+def _listing_hint(name: str, listing: list[str], *, withhold: bool = False) -> str:
+    """The listing, or its near misses — what resolves a typo without another round trip.
+
+    ``withhold`` names none of them. A store's filenames are the host's to supply through
+    ``list_files`` and carry no integrity contract of their own — an agent that saved something
+    it fetched may have named it from that content — so echoing up to
+    :data:`_LISTING_HINT_MAX` of them would put unclassified text into a result declared
+    :data:`~maf_sandbox.SourceIntegrity.TRUSTED`, for a name the model never asked about.
+    """
     if not listing:
         return "This tool's listing is empty — no files were shared with it."
+    if withhold:
+        return f"This tool can see {len(listing)} file(s); their names are not repeated here."
     near = [known for known in listing if known.rsplit("/", 1)[-1] == name.rsplit("/", 1)[-1]]
     if near and near != [name]:
         return f"Did you mean: {', '.join(sorted(near)[:_LISTING_HINT_MAX])}?"

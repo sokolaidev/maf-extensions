@@ -1141,6 +1141,22 @@ class TestTheModelIsToldUpFront:
         description = _callable(_tool(_backend())).__doc__ or ""
         assert "The program's stdout" in description
 
+    def test_the_head_does_not_tell_the_model_to_print_what_it_needs(self):
+        """The first paragraph the model reads. Left as the shown one it instructs exactly the
+        behaviour this mode redirects, and argues with its own `Returns:` section."""
+        description = _callable(_withholding_tool(_ScriptedSandbox())).__doc__ or ""
+
+        assert "return what it printed" not in description
+        assert "Only what you print is read back as text" not in description
+        assert "print(...)`` of\n        everything you need to see" not in description
+        assert "What you print is not read back" in description
+
+    def test_the_shown_head_is_unchanged(self):
+        description = _callable(_tool(_backend())).__doc__ or ""
+
+        assert "return what it printed" in description
+        assert "Only what you print is read back as text" in description
+
     def test_it_does_not_promise_a_reference_to_where_a_file_landed(self):
         """Withheld, the result names the file and not its landing place, so the declared-output
         paragraph may not offer one."""
@@ -1574,6 +1590,47 @@ class TestFilesIn:
         out = _run(tool, "print('hi')", files=["data/secrets.csv"])
         assert "not in this tool's file listing" in out
         assert "data/sales.csv" in out
+
+    def test_a_withheld_refusal_names_no_file_from_the_store(self):
+        """A store's filenames come from `list_files` and carry no integrity contract of their
+        own — an agent that saved something it fetched may have named it from that content. In
+        a result declared trusted they would be unclassified text about a file the model never
+        asked for."""
+        sandbox = _ScriptedSandbox()
+        store = InMemoryStore({"exfiltrated-<script>.csv": "x"})
+        tool = _withholding_tool(sandbox, file_store=store)
+
+        out = _run(tool, "print('hi')", files=["data/secrets.csv"], outputs=[])
+        assert "not in this tool's file listing" in out
+        assert "exfiltrated" not in out, "a store-provided name reached a trusted result"
+        assert "1 file(s)" in out
+
+    def test_a_withheld_listing_failure_is_not_quoted(self):
+        """`list_files` is a host callback and its message is the host's, not this kind's."""
+
+        def failing(_store):
+            raise RuntimeError("store says: <injected>")
+
+        sandbox = _ScriptedSandbox()
+        context = CallerContext(
+            current_scope=lambda: "scope-a",
+            current_thread_id=lambda: "thread-1",
+            list_files=failing,
+        )
+        backend = _backend(sandbox, capabilities=_PULLS)
+        tools = make_codeact_tools(
+            SandboxRouter([backend], min_isolation=backend.isolation),
+            "data-analyst",
+            context,
+            file_store=InMemoryStore({"a.csv": "x"}),
+            **_landing(CodeactOutputs.DECLARED),
+            withhold_guest_output=True,
+            image="registry.invalid/python:3.13",
+        )
+        out = asyncio.run(_callable(tools[0])(code="print('hi')", files=["a.csv"], outputs=[]))
+
+        assert "injected" not in out, "the host callback's message reached a trusted result"
+        assert "could not be read" in out
         assert sandbox.written_files == {}
 
     @pytest.mark.parametrize("name", ["../../etc/passwd", "/etc/passwd", "a/../../b"])
