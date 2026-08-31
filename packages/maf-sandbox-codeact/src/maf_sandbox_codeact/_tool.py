@@ -264,12 +264,16 @@ def make_codeact_tools(
             printed nothing.
 
             **What "trusted" claims, exactly.** The prose and the shape are this package's, and
-            the artifact names are the model's own — but three values are the program's to
-            choose: the exit code and the stream sizes. A program can signal through them, an
-            exit status being 8 bits and a padded output a few more. That is a narrow per-call
-            channel rather than the open one a rendered ``stdout`` is, and a host that must
-            close it should not attach this workload at all. The sink's ``display`` is
-            deliberately *not* rendered here — see :func:`_format_landed`.
+            the artifact names are the model's own — but what fills them is the program's to
+            choose, and it is a channel rather than a leak-free boundary. The exit status is 8
+            bits; each stream's size is a few more, chosen by padding; and **each declared
+            output is one further bit**, since the program decides whether to write it and the
+            result says of every declared name whether it landed — up to ``files_out.max_files``
+            of them. So the claim is that no guest-authored *text* crosses, not that no
+            guest-chosen *bit* does. That is a narrow per-call channel rather than the open one
+            a rendered ``stdout`` is, and a host that must close it should not attach this
+            workload at all. The sink's ``display`` is deliberately *not* rendered here — see
+            :func:`_format_landed`.
         outbound_max_confidentiality: The host's cap for tools that carry something out, in the
             host's own vocabulary. Off by default and written only when something can actually
             leave: an artifact landing in the sink, a host tool that carries something out, or
@@ -1368,6 +1372,11 @@ async def _collect(
         landed = await collect_outputs(sandbox, spec, sink=sink, outputs=call_time)
     except SandboxOutputError as exc:
         logger.warning("execute_code: could not save this run's files: %s", error_detail(exc))
+        if withhold:
+            # A sink refuses by raising, and it composes that sentence having been handed the
+            # artifact's own bytes — nothing constrains it to leave them out. Dropped here for
+            # the reason the branch below drops every message it catches.
+            return f"Error: the program ran but its files could not be saved. {_MAY_HAVE_LANDED}"
         return (
             f"Error: the program ran but its files could not be saved — {exc}. {_MAY_HAVE_LANDED}"
         )
@@ -1460,7 +1469,7 @@ async def _read_manifest(
 def _format_landed(
     landed: Sequence[LandedArtifact], declared: Sequence[str], *, withhold: bool = False
 ) -> str:
-    """What the model is told about the files: the host's own references, and what is absent.
+    """What the model is told about the files: what landed, and what is absent.
 
     The two sides are compared in NFC, because a landing name is normalized before the sink
     sees it: a declared ``e`` + combining acute comes back as the precomposed ``é``, and an

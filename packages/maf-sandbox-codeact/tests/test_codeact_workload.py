@@ -45,6 +45,7 @@ from maf_sandbox import (
     SandboxCapabilityNotSupported,
     SandboxEntry,
     SandboxLimits,
+    SandboxOutputError,
     SandboxOutputSinkRequired,
     SandboxProgramTimeout,
     SandboxRouter,
@@ -319,6 +320,17 @@ class _LeakyDisplaySink(_RecordingSink):
             display=f"{artifact.name}: {artifact.content.decode()}",
             handle=f"blob://{artifact.name}?sig=secret",
         )
+
+
+class _RefusingSink(_RecordingSink):
+    """A host sink that refuses by raising, quoting the artifact's bytes in the reason.
+
+    Permitted the same way `_LeakyDisplaySink`'s `display` is: `deliver` is handed the
+    `Artifact`, and nothing constrains the text it raises with.
+    """
+
+    async def deliver(self, artifact: Artifact) -> LandedArtifact:
+        raise SandboxOutputError(f"{artifact.name} rejected: {artifact.content.decode()}")
 
 
 class _ShrinkingManifestSandbox(_ProducingSandbox):
@@ -932,6 +944,24 @@ class TestWithholdingStillLandsFiles:
         assert sink.names == ["answer.txt"], "the artifact still landed"
         assert "THE-SECRET" not in out, "the sink's content-derived display reached the result"
         assert "- answer.txt" in out
+
+    def test_a_sinks_refusal_text_does_not_reach_a_withheld_result(self):
+        """`deliver` refuses by raising and nothing constrains what it puts in the message —
+        the same opening `display` was, one branch further out."""
+        sandbox = _ProducingSandbox()
+        tool = _withholding_tool(sandbox, _RefusingSink())
+        out = _run_producing(tool, sandbox, {"answer.txt": b"THE-SECRET"}, outputs=["answer.txt"])
+
+        assert "THE-SECRET" not in out, "the sink's refusal text reached a trusted result"
+        assert "could not be saved" in out
+
+    def test_the_shown_path_still_quotes_a_sinks_refusal(self):
+        """Unchanged where the result is not claiming to hold no guest text."""
+        sandbox = _ProducingSandbox()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, _RefusingSink())
+        out = _run_producing(tool, sandbox, {"answer.txt": b"THE-SECRET"}, outputs=["answer.txt"])
+
+        assert "THE-SECRET" in out
 
     def test_the_shown_path_still_renders_the_sinks_display(self):
         """The host's own reference is the better string wherever the claim does not depend on
