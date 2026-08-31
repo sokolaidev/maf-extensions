@@ -17,7 +17,8 @@ the floor. It substitutes every wheel `dist/` holds, not the core alone.
 `docs/release-compatibility.md` carries the reasoning, the boundaries and when each refusal is
 reachable. `check_dependent_works_with_published_cores.py` is the packages' counterpart.
 
-A network failure is fatal rather than skipped, the same stance as the checks it sits beside.
+An index still unreachable after `pypi_index`'s retries is fatal rather than skipped, the same
+stance as the checks it sits beside.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from pathlib import Path
 from check_dependent_works_with_published_cores import sibling_wheels, throwaway_interpreter
 from check_published_dependents_work import fetch_requires_dist_for_version
 from check_release_order import fetch_published_versions, version
+from pypi_index import run_check
 from sample_blocks import declared, distribution, sample_directories
 
 _CORE = "maf-sandbox"
@@ -413,4 +415,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv))
+    raise SystemExit(run_check(main, sys.argv))

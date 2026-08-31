@@ -56,6 +56,7 @@ from check_published_dependents_admit import (
     fetch_requires_dist,
 )
 from check_release_order import admits, fetch_published_versions, version
+from pypi_index import run_check
 
 #: uv paints its diagnostics, and the colour survives a pipe into a log or a job summary.
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -319,4 +320,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv))
+    raise SystemExit(run_check(main, sys.argv))

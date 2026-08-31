@@ -184,7 +184,7 @@ Two gates can refuse a release for a reason that is about *another* package's ar
 
 **The import check red on a core** means a *published* dependent no longer imports the candidate core. That one is not an edit to anything: the failing artifact is on PyPI and cannot be changed. Either the break is unintended and the core changes, or it is intended and that dependent has to publish an adapted version before the core can go out. Read it beside the ordinary suite — the same dependent's tests run against the in-tree core on every pull request, so a green there and a red here says the break lands only on what is already shipped.
 
-A gate that cannot reach PyPI fails rather than passes, in both directions and on purpose. A pass because the index was unreachable is the one outcome that would make either check worthless.
+A gate that cannot reach PyPI fails rather than passes, in both directions and on purpose. A pass because the index was unreachable is the one outcome that would make either check worthless. One reset is not that, though: every read of the index retries a transient reply before giving up, and a gate that does give up says so in an annotation beginning *pypi.org did not answer*, naming the document it could not read. That is the third red, and it is one to re-run rather than diagnose.
 
 The reasoning behind the whole arrangement, and what it still does not cover, is in [`release-compatibility.md`](release-compatibility.md).
 

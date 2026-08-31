@@ -19,9 +19,10 @@ build already tested imports the same at upload and needs no re-run; the only ne
 approval window is a version that was not testable at build — one uploaded in the window, or a
 yanked version unyanked in it — and the diff catches exactly those. The common case, where nothing
 new appeared, installs nothing. A dependent whose ceiling excludes the version is the admit
-check's concern and is skipped here, and one not yet on PyPI is skipped too. A network failure is
-fatal rather than skipped: passing because PyPI could not be reached is the one outcome that would
-make this check worthless — the same stance as the admit check.
+check's concern and is skipped here, and one not yet on PyPI is skipped too. An index that stays
+unreachable through `pypi_index`'s retries is fatal rather than skipped: passing because PyPI could
+not be reached is the one outcome that would make this check worthless — the same stance as the
+admit check.
 
 Both runs print a ``live_check=`` verdict on stdout: ``live_check=run`` when at least one
 admitting dependent was tested and every one imported, and ``live_check=skip`` when none admits the
@@ -45,15 +46,12 @@ import os
 import subprocess
 import sys
 import tempfile
-import urllib.error
-import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
 from check_published_dependents_admit import ceiling_of, dependent_distributions
 from check_release_order import admits, fetch_published_versions, version
-
-_TIMEOUT_SECONDS = 30
+from pypi_index import read_json, run_check
 
 
 def import_module(distribution: str) -> str:
@@ -70,14 +68,9 @@ def fetch_requires_dist_for_version(distribution: str, version_str: str) -> list
     (PEP 592 allows that, with a warning) but because normal unpinned resolution never selects a
     yanked release, so a user does not land on one and a break there is not a real-user break.
     """
-    url = f"https://pypi.org/pypi/{distribution}/{version_str}/json"
-    try:
-        with urllib.request.urlopen(url, timeout=_TIMEOUT_SECONDS) as response:
-            payload = json.load(response)
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return None
-        raise
+    payload = read_json(f"https://pypi.org/pypi/{distribution}/{version_str}/json")
+    if payload is None:
+        return None
     info = payload["info"]
     if info.get("yanked"):
         return None
@@ -385,4 +378,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv))
+    raise SystemExit(run_check(main, sys.argv))

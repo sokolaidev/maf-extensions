@@ -591,10 +591,19 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
+          status=0
           output="$(python3 release-guard/scripts/check_published_dependents_work.py "$VERSION" \
             dist/maf_sandbox-${VERSION}-py3-none-any.whl \
-            --since-snapshot admitting-snapshot.json --dispatch 2>dispatch-break.txt)"
+            --since-snapshot admitting-snapshot.json --dispatch 2>dispatch-break.txt)" || status=$?
           echo "$output"
+          # A break exits 0 under `--dispatch`, so a non-zero status is the check unable to
+          # answer at all — an unreachable index, a missing wheel, an unreadable snapshot.
+          # Its reason is on stderr, which this step redirects into the file below, so
+          # replaying it is all that stands between that red and a step failing silently.
+          if [ "$status" -ne 0 ]; then
+            cat dispatch-break.txt >&2
+            exit "$status"
+          fi
           verdict="$(printf '%s\n' "$output" | grep -m1 '^live_check=' || true)"
           case "$verdict" in
             live_check=run|live_check=skip) ;;

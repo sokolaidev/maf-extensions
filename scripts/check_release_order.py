@@ -29,13 +29,12 @@ the Release PR, where the version has stopped being a prediction.
 
 from __future__ import annotations
 
-import json
 import re
 import sys
 import tomllib
-import urllib.error
-import urllib.request
 from pathlib import Path
+
+from pypi_index import read_json
 
 _CORE = "maf-sandbox"
 _CORE_DIR = f"packages/{_CORE}/"
@@ -46,7 +45,6 @@ _DIST_NAME = re.compile(r"[A-Za-z0-9._-]+")
 _PATCH_TYPES = frozenset({"fix", "perf", "revert", "docs"})
 
 _SIMPLE_ACCEPT = "application/vnd.pypi.simple.v1+json"
-_TIMEOUT_SECONDS = 30
 
 
 def version(text: str) -> tuple[int, ...]:
@@ -65,18 +63,9 @@ def fetch_simple(distribution: str) -> dict | None:
     """``distribution``'s PEP 691 simple document, or None if it was never released.
 
     The simple index is fresher than the CDN-cached top-level JSON document, and it is what
-    ``uv`` resolves from. A 404 means never released; any other HTTP error is fatal.
+    ``uv`` resolves from. A 404 means never released; `pypi_index` decides the rest.
     """
-    url = f"https://pypi.org/simple/{distribution}/"
-    request = urllib.request.Request(url, headers={"Accept": _SIMPLE_ACCEPT})
-    try:
-        with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
-            payload = json.load(response)
-    except urllib.error.HTTPError as error:
-        if error.code == 404:
-            return None
-        raise
-    return payload
+    return read_json(f"https://pypi.org/simple/{distribution}/", accept=_SIMPLE_ACCEPT)
 
 
 def fetch_published_versions(distribution: str) -> list[str] | None:

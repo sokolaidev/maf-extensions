@@ -21,6 +21,7 @@ import urllib.request
 from pathlib import Path
 
 import pytest
+import yaml
 
 _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(_SCRIPTS))  # the script imports its siblings for shared comparisons
@@ -31,7 +32,20 @@ assert _spec and _spec.loader
 check = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(check)
 
+import pypi_index  # noqa: E402
+
 _ARGV0 = "scripts/check_published_dependents_work.py"
+
+_PUBLISH = yaml.safe_load(
+    (_SCRIPTS.parent / ".github" / "workflows" / "publish-packages.yml").read_text("utf-8")
+)
+#: The post-upload dispatch step, the one call site that redirects this script's stderr.
+_DISPATCH = next(
+    step
+    for job in _PUBLISH["jobs"].values()
+    for step in job.get("steps", [])
+    if step.get("id") == "decide"
+)["run"]
 
 
 class TestImportModule:
@@ -148,10 +162,12 @@ def _patch_urlopen(
     monkeypatch: pytest.MonkeyPatch,
     routes: dict[str, object],
 ) -> None:
-    """Route a URL to a payload dict (success) or an ``HTTPError`` (raise).
+    """Route a URL to a payload dict (success) or an error to raise.
 
     Keys are matched as substrings, longest first, so a per-version segment like
-    ``bicep/0.2.0/json`` is not shadowed by the top-level ``bicep/json``.
+    ``bicep/0.2.0/json`` is not shadowed by the top-level ``bicep/json``. A list value is
+    consumed one reply per call and its last entry repeats, which is how a retried failure is
+    written.
     """
 
     def fake_urlopen(url: str | urllib.request.Request, timeout: int | None = None) -> _Response:
@@ -159,12 +175,16 @@ def _patch_urlopen(
         for key in sorted(routes, key=len, reverse=True):
             if key in target:
                 result = routes[key]
-                if isinstance(result, urllib.error.HTTPError):
+                if isinstance(result, list):
+                    result = result.pop(0) if len(result) > 1 else result[0]
+                if isinstance(result, BaseException):
                     raise result
                 return _Response(result)
         raise AssertionError(f"unexpected url {target}")
 
-    monkeypatch.setattr(check.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    # The retry is pinned in tests/test_pypi_index.py; here it only has to cost no seconds.
+    monkeypatch.setattr(pypi_index, "FIRST_PAUSE_SECONDS", 0.0)
 
 
 class TestFetchRequiresDistForVersion:
@@ -201,10 +221,24 @@ class TestFetchRequiresDistForVersion:
         _patch_urlopen(monkeypatch, {"maf-sandbox-bicep/0.2.0/json": _http_error(404)})
         assert check.fetch_requires_dist_for_version("maf-sandbox-bicep", "0.2.0") is None
 
-    def test_a_non_404_error_is_fatal(self, monkeypatch):
+    def test_a_5xx_that_outlasts_the_retries_is_fatal(self, monkeypatch):
         _patch_urlopen(monkeypatch, {"maf-sandbox-bicep/0.2.0/json": _http_error(500)})
-        with pytest.raises(urllib.error.HTTPError):
+        with pytest.raises(pypi_index.IndexUnreachable):
             check.fetch_requires_dist_for_version("maf-sandbox-bicep", "0.2.0")
+
+    def test_one_reset_costs_a_retry_rather_than_the_run(self, monkeypatch):
+        _patch_urlopen(
+            monkeypatch,
+            {
+                "maf-sandbox-bicep/0.2.0/json": [
+                    urllib.error.URLError(ConnectionResetError(104, "Connection reset by peer")),
+                    {"info": {"requires_dist": ["maf-sandbox<0.12"], "yanked": False}},
+                ]
+            },
+        )
+        assert check.fetch_requires_dist_for_version("maf-sandbox-bicep", "0.2.0") == [
+            "maf-sandbox<0.12"
+        ]
 
 
 class TestFetchVersionRequirements:
@@ -292,12 +326,12 @@ class TestFetchVersionRequirements:
         _patch_urlopen(monkeypatch, {"simple/maf-sandbox-bicep/": _http_error(404)})
         assert check.fetch_version_requirements("maf-sandbox-bicep") is None
 
-    def test_a_non_404_error_on_the_simple_index_is_fatal(self, monkeypatch):
+    def test_a_5xx_on_the_simple_index_that_outlasts_the_retries_is_fatal(self, monkeypatch):
         _patch_urlopen(monkeypatch, {"simple/maf-sandbox-bicep/": _http_error(500)})
-        with pytest.raises(urllib.error.HTTPError):
+        with pytest.raises(pypi_index.IndexUnreachable):
             check.fetch_version_requirements("maf-sandbox-bicep")
 
-    def test_a_non_404_error_on_a_per_version_fetch_is_fatal(self, monkeypatch):
+    def test_a_5xx_on_a_per_version_fetch_that_outlasts_the_retries_is_fatal(self, monkeypatch):
         _patch_urlopen(
             monkeypatch,
             {
@@ -308,7 +342,7 @@ class TestFetchVersionRequirements:
                 "maf-sandbox-bicep/0.2.0/json": _http_error(500),
             },
         )
-        with pytest.raises(urllib.error.HTTPError):
+        with pytest.raises(pypi_index.IndexUnreachable):
             check.fetch_version_requirements("maf-sandbox-bicep")
 
 
@@ -1041,3 +1075,35 @@ class TestMain:
             == 2
         )
         assert "usage:" in capsys.readouterr().err
+
+
+class TestTheDispatchStepDoesNotSwallowARefusal:
+    """A refusal reaches the checks page only if that step replays the stderr it redirects.
+
+    `--dispatch` exits 0 on a break, so a non-zero status is this script unable to answer at
+    all — an unreachable index above the rest. The reason for that, `run_check`'s annotation
+    included, goes to stderr, and this step sends stderr to a file so the break lines can be
+    replayed into the job summary. Left to `set -e`, the assignment ends the step before
+    anything reads that file, and a red arrives carrying nothing at all.
+    """
+
+    def test_the_redirect_is_still_what_makes_this_necessary(self):
+        assert "2>dispatch-break.txt" in _DISPATCH, (
+            "the step no longer redirects stderr; this class guards a hazard that redirect "
+            "creates, and it should be revisited rather than deleted"
+        )
+
+    def test_the_status_is_captured_rather_than_left_to_errexit(self):
+        assert "set -euo pipefail" in _DISPATCH
+        assert "|| status=$?" in _DISPATCH, (
+            "under `set -e` the assignment's own failure ends the step, so nothing below runs"
+        )
+
+    def test_a_refusal_replays_the_redirected_stderr_before_the_verdict_is_read(self):
+        replay = _DISPATCH.find("cat dispatch-break.txt >&2")
+        assert replay != -1, "a non-zero status has to put the reason back on stderr"
+        assert _DISPATCH.find('exit "$status"', replay) != -1
+        assert replay < _DISPATCH.find('verdict="$('), (
+            "the replay has to happen before the verdict is parsed out of stdout the refusal "
+            "never produced"
+        )

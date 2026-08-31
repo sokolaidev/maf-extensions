@@ -23,8 +23,9 @@ the new core until each dependent widens and republishes, so the live samples ex
 below it and the dispatch reports a skip. See `docs/release-compatibility.md`.
 
 A dependent that is not on PyPI yet is skipped — a first release has nothing to contradict.
-A network failure is fatal rather than skipped: passing because PyPI could not be reached is
-the one outcome that would make this check worthless.
+An index that stays unreachable through `pypi_index`'s retries is fatal rather than skipped:
+passing because PyPI could not be reached is the one outcome that would make this check
+worthless.
 
 Constraints are parsed order-independently. PyPI normalises `maf-sandbox>=0.6.0,<0.7` to
 `maf-sandbox<0.7,>=0.6.0`, and a parser written against the shape the tree uses finds nothing
@@ -33,20 +34,17 @@ in the shape the index returns — passing every time, for the wrong reason.
 
 from __future__ import annotations
 
-import json
 import re
 import sys
 import tomllib
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 from check_release_order import admits, fetch_published_versions, version
+from pypi_index import read_json, run_check
 
 _CORE = "maf-sandbox"
 #: A distribution name and its optional extras, at the head of a requirement.
 _LEADING_NAME = re.compile(r"^[A-Za-z0-9._-]+(?:\[[^\]]*\])?")
-_TIMEOUT_SECONDS = 30
 
 
 def _requirement_name(requirement: str) -> str:
@@ -107,14 +105,9 @@ def exclusions(published: dict[str, list[str] | None], released: tuple[int, ...]
 
 def _requires_dist_for_version(distribution: str, version_str: str) -> list[str] | None:
     """One version's ``requires_dist``, or None if that version is gone or yanked."""
-    url = f"https://pypi.org/pypi/{distribution}/{version_str}/json"
-    try:
-        with urllib.request.urlopen(url, timeout=_TIMEOUT_SECONDS) as response:
-            payload = json.load(response)
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return None
-        raise
+    payload = read_json(f"https://pypi.org/pypi/{distribution}/{version_str}/json")
+    if payload is None:
+        return None
     info = payload["info"]
     if info.get("yanked"):
         return None
@@ -175,4 +168,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv))
+    raise SystemExit(run_check(main, sys.argv))
