@@ -50,6 +50,7 @@ from maf_sandbox import (
     SandboxProgramTimeout,
     SandboxRouter,
     SandboxSpec,
+    SourceIntegrity,
     TransferLimits,
     collect_outputs,
     error_detail,
@@ -122,6 +123,16 @@ _DEFAULT_FILES_OUT = replace(DEFAULT_TRANSFER_LIMITS, max_files=8)
 _NO_OUTPUT = (
     "The program ran and printed nothing. Only what you print is read back as text — end the "
     "program with print(...) of what you need to see."
+)
+
+#: Closes every result a withholding host returns, and the reason it is a sentence rather than
+#: a silence: with the streams gone and nothing said, a failing program's whole result is its
+#: exit code, and a model handed that debugs blind rather than reaching for the channel that
+#: still works. It names the route without promising a reader — whether the model can read a
+#: landed artifact back is the host's wiring, not this kind's to claim.
+_WITHHELD_ROUTE = (
+    "What the program printed is not read back as text. To surface a value, write it into a "
+    "declared output rather than printing it."
 )
 
 
@@ -212,6 +223,7 @@ def make_codeact_tools(
     file_store: AgentFileStore | None = None,
     output_sink: OutputSink | None = None,
     outputs: CodeactOutputs = CodeactOutputs.NONE,
+    withhold_guest_output: bool = False,
     outbound_max_confidentiality: str | None = None,
     host_tools: HostToolRegistry | None = None,
     image: str | None = None,
@@ -238,6 +250,19 @@ def make_codeact_tools(
         output_sink: Where produced files land. Required by any mode but
             :data:`CodeactOutputs.NONE`, and refused at attach without one.
         outputs: How a program's output files are named. See :class:`CodeactOutputs`.
+        withhold_guest_output: Keep what the program printed out of the tool result, and answer
+            with host observations instead — the exit code, how many bytes reached each stream,
+            what landed, and the route to the channel that still carries content. **This is the
+            switch that makes the result classifiable.** Left off, the result mixes host facts
+            with guest-authored ``stdout``, so a host doing information-flow control has to
+            label the whole string either trusted (stamping attacker-controlled bytes read out
+            of a ``files=`` input as trusted) or untrusted (tainting the conversation, which
+            gates the privileged sinks and ends the author-run-fix loop). Turned on, nothing in
+            the result was authored inside the sandbox, so this tool declares
+            :data:`~maf_sandbox.SourceIntegrity.TRUSTED` and the host does not have to
+            re-derive that by parsing a rendering this package is free to change. Requires
+            :data:`CodeactOutputs.DECLARED`, since that is the one mode where content can still
+            reach the model and no guest-chosen name reaches the result.
         outbound_max_confidentiality: The host's cap for tools that carry something out, in the
             host's own vocabulary. Off by default and written only when something can actually
             leave: an artifact landing in the sink, a host tool that carries something out, or
@@ -270,8 +295,10 @@ def make_codeact_tools(
 
     Raises:
         ValueError: when a sink is supplied with nothing to send down it — an output mode of
-            :data:`CodeactOutputs.NONE` — or when an ``egress_allow`` entry is not a single
-            hostname (blank, or holding whitespace or a comma), where a sandbox is configured.
+            :data:`CodeactOutputs.NONE` — when ``withhold_guest_output`` is paired with any
+            output mode but :data:`CodeactOutputs.DECLARED`, or when an ``egress_allow`` entry
+            is not a single hostname (blank, or holding whitespace or a comma), where a sandbox
+            is configured.
         TypeError: when ``egress_allow`` is a bare ``str`` rather than a sequence of hostnames
             (which would otherwise be read one character at a time), again only where a sandbox
             is configured.
@@ -348,6 +375,24 @@ def make_codeact_tools(
                 f"at least {_SMALLEST_MANIFEST} bytes of files_out — the smallest "
                 f"{_MANIFEST_FILENAME} naming one file — and this host allows {room}."
             )
+    if configured and withhold_guest_output and outputs is not CodeactOutputs.DECLARED:
+        # Two pairings, two reasons, so two sentences: one could never return anything, and the
+        # other would return guest text while claiming it had none.
+        if outputs is CodeactOutputs.NONE:
+            raise ValueError(
+                f"{EXECUTE_CODE_TOOL_NAME}: withhold_guest_output=True with outputs="
+                f"{str(CodeactOutputs.NONE)!r} leaves the model no way to read anything back — "
+                f"what the program prints is withheld and there is no declared output to write "
+                f"instead — so no call could return a result it can use. Pass "
+                f"outputs={str(CodeactOutputs.DECLARED)!r}."
+            )
+        raise ValueError(
+            f"{EXECUTE_CODE_TOOL_NAME}: withhold_guest_output=True with outputs="
+            f"{str(CodeactOutputs.MANIFEST)!r} would still carry guest-authored text out: the "
+            f"program names its own files in {_MANIFEST_FILENAME}, and a name it chose is "
+            f"rendered back into the result. Pass outputs={str(CodeactOutputs.DECLARED)!r}, "
+            f"where the model names the files and nothing the program wrote reaches the result."
+        )
     if configured and outputs is CodeactOutputs.NONE and output_sink is not None:
         raise ValueError(
             f"{EXECUTE_CODE_TOOL_NAME}: an output sink was supplied with outputs="
@@ -382,7 +427,12 @@ def make_codeact_tools(
     )
     return sandboxed_tool(
         lambda session: _execute_code_tool(
-            session, file_store, outputs, exec_timeout_seconds, host_tool_call
+            session,
+            file_store,
+            outputs,
+            exec_timeout_seconds,
+            host_tool_call,
+            withhold=withhold_guest_output,
         ),
         router=router,
         context=context,
@@ -394,7 +444,13 @@ def make_codeact_tools(
         # The library's "trusted" default is right for a compiler's diagnostics and wrong here:
         # what comes back is whatever a model-written `print(...)` chose to emit. Undeclared,
         # the tracker's untrusted default applies and the result taints the conversation.
-        source_integrity=None,
+        #
+        # Withholding removes the premise. Every line of a withheld result is a host
+        # observation — the exit code, two byte counts, the sink's own references, and names
+        # the model itself supplied — so "trusted" is the honest reading rather than a
+        # concession, and declaring it here is what spares the host re-deriving it from a
+        # rendering this package owns.
+        source_integrity=SourceIntegrity.TRUSTED if withhold_guest_output else None,
         outbound_max_confidentiality=outbound_max_confidentiality,
         output_sink=output_sink,
         logger=logger,
@@ -604,6 +660,15 @@ _DESCRIPTION_RETURNS_HOST_TOOL_CALLED = """The program's output — stdout and s
             A ``stderr`` section is the host's note about the run, not something your program
             wrote."""
 
+#: Replaces both of the above where the host withholds guest output — neither is true then, and
+#: the host-tool-call distinction the second draws is moot once no stream is shown at all. It
+#: names the route in the description rather than only in the result, because a model told
+#: up front writes its answer to a declared output on the first call instead of discovering
+#: the withholding from a result it cannot use.
+_DESCRIPTION_RETURNS_WITHHELD = """How many bytes of stdout and of stderr came back, and the
+            exit code — **never what the program printed, which does not come back.**  Write
+            anything you need to see into a declared output instead."""
+
 #: Appended to whichever of the two above applies.  Where it wraps is model-facing text, so the
 #: break sits where the plain sentence needs it, not where this fragment reads best.
 _DESCRIPTION_RETURNS_DEGRADES = """  If the sandbox is unavailable the tool returns an
@@ -618,6 +683,7 @@ def _tool_description(
     outputs: CodeactOutputs,
     host_tool_names: frozenset[str] = frozenset(),
     egress_allow: Sequence[str] = (),
+    withheld: bool = False,
 ) -> str:
     """The description the model reads, for the channels this host actually wired.
 
@@ -648,9 +714,11 @@ def _tool_description(
         arguments.append(_DESCRIPTION_ARG_OUTPUTS)
     elif outputs is CodeactOutputs.MANIFEST:
         body.append(_DESCRIPTION_MANIFEST)
-    returns = (
-        _DESCRIPTION_RETURNS_HOST_TOOL_CALLED if host_tool_names else _DESCRIPTION_RETURNS
-    ) + _DESCRIPTION_RETURNS_DEGRADES
+    if withheld:
+        returns = _DESCRIPTION_RETURNS_WITHHELD
+    else:
+        returns = _DESCRIPTION_RETURNS_HOST_TOOL_CALLED if host_tool_names else _DESCRIPTION_RETURNS
+    returns += _DESCRIPTION_RETURNS_DEGRADES
     if outputs is not CodeactOutputs.NONE:
         returns += _DESCRIPTION_RETURNS_SAVED
     return (
@@ -681,6 +749,8 @@ def _execute_code_tool(
     outputs: CodeactOutputs,
     timeout: int,
     host_tool_call: _HostToolCall | None,
+    *,
+    withhold: bool = False,
 ) -> Callable[..., Awaitable[str]]:
     """Build the ``execute_code`` body for one attached tool.
 
@@ -690,7 +760,15 @@ def _execute_code_tool(
 
     async def run(code: str, files: list[str] | None, declared: list[str] | None) -> str:
         return await _execute(
-            session, store, outputs, timeout, host_tool_call, code, files or [], declared or []
+            session,
+            store,
+            outputs,
+            timeout,
+            host_tool_call,
+            code,
+            files or [],
+            declared or [],
+            withhold=withhold,
         )
 
     async def with_files_and_outputs(
@@ -728,6 +806,7 @@ def _execute_code_tool(
         # union the router matched, so what the model is told cannot drift from what the
         # sandbox actually got.
         egress_allow=session.spec.egress_allow,
+        withheld=withhold,
     )
     return body
 
@@ -741,6 +820,8 @@ async def _execute(
     code: str,
     files: list[str],
     declared: list[str],
+    *,
+    withhold: bool = False,
 ) -> str:
     """One ``execute_code`` call: share, run, and collect."""
     # Scope and thread come from the host's request context, never from model input.
@@ -893,6 +974,15 @@ async def _execute(
         # Surfaced whole rather than quoted from: the transport writes these model-safe, with
         # a backend's own text kept to the log, which is the same rule this kind follows.
         logger.warning("execute_code: %s", expired)
+        if withhold:
+            # The output clause the paragraph above prizes is exactly what may not be surfaced
+            # here, and it is embedded in the message rather than fenced off in `output`. So
+            # this answers from the attributes instead: `signal` is what the transport says to
+            # branch on, and `"absent"` is its one value that asserts a program was never
+            # started — every other value is a degree of not knowing, so the sentence claims
+            # nothing about whether this one ran.
+            never_started = " before the program was started" if expired.signal == "absent" else ""
+            return f"Error: the run's {timeout}s expired{never_started}. {_WITHHELD_ROUTE}"
         return f"Error: {expired}"
     except TimeoutError as unfinished:
         if host_tool_call is None:
@@ -910,7 +1000,7 @@ async def _execute(
         return "Error: could not run the program in the sandbox"
 
     logger.info("execute_code: ran exit_code=%d shared=%d", result.exit_code, len(shared))
-    report = _format_result(result)
+    report = _format_withheld(result) if withhold else _format_result(result)
     nothing_to_collect = outputs is CodeactOutputs.NONE or (
         outputs is CodeactOutputs.DECLARED and not names
     )
@@ -1369,3 +1459,34 @@ def _format_result(result: ExecResult) -> str:
     if result.exit_code:
         sections.append(f"exit code: {result.exit_code}")
     return "\n\n".join(sections) if sections else _NO_OUTPUT
+
+
+def _stream_bytes(text: str | None) -> int:
+    """How much of one stream came back, in bytes of UTF-8.
+
+    That something was written is a host observation; what was written is not. The count is of
+    what the host received, which a backend may already have capped — so it is reported as the
+    stream's size and never as a claim about how much the program wrote.
+    """
+    return len((text or "").encode("utf-8"))
+
+
+def _format_withheld(result: ExecResult) -> str:
+    """Render one run as host observations alone, for a host that withholds guest text.
+
+    Every line is something the host saw rather than something the program wrote, which is what
+    lets this tool declare :data:`~maf_sandbox.SourceIntegrity.TRUSTED`. Fixed shape and fixed
+    order, empty streams included: a model reading this has nothing else to go on, and a
+    section that disappears when it is zero is a section it cannot rely on.
+
+    The exit code is named on every run, unlike :func:`_format_result`'s. With the streams gone
+    it is the only thing left that says whether the program worked at all.
+    """
+    return "\n".join(
+        (
+            f"exit code: {result.exit_code}",
+            f"stdout: {_stream_bytes(result.stdout)} bytes",
+            f"stderr: {_stream_bytes(result.stderr)} bytes",
+            _WITHHELD_ROUTE,
+        )
+    )
