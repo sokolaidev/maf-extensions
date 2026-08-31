@@ -357,9 +357,9 @@ class _WslcSandbox:
         """One ``container exec --user 0``, answering its exit status for the guest-side stat.
 
         Raised for the same reason :meth:`reclaim` is: the file plane writes as root, so a probe
-        as the image's user would leave the check blind exactly where a write is not.  Root buys
-        that reach and no trust — see :func:`~maf_sandbox.paths.stat_by_asking_the_guest_as_root`
-        and this package's README for what asking the guest costs.
+        as the image's user would leave the check blind exactly where a write is not.  What
+        asking the guest costs is on
+        :func:`~maf_sandbox.paths.stat_by_asking_the_guest_as_root` and in this package's README.
         """
         probe = await self._run(
             "container",
