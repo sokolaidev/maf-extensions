@@ -304,6 +304,23 @@ class _RecordingSink:
         return [artifact.media_type for artifact in self.delivered]
 
 
+class _LeakyDisplaySink(_RecordingSink):
+    """A host sink whose ``display`` quotes the artifact's own bytes.
+
+    Permitted: ``deliver`` is handed the :class:`~maf_sandbox.Artifact`, and no protocol rule
+    says ``display`` may not be derived from its ``content``. So a kind that renders ``display``
+    renders whatever the guest wrote, however the kind labels its own result.
+    """
+
+    async def deliver(self, artifact: Artifact) -> LandedArtifact:
+        await super().deliver(artifact)
+        return LandedArtifact(
+            name=artifact.name,
+            display=f"{artifact.name}: {artifact.content.decode()}",
+            handle=f"blob://{artifact.name}?sig=secret",
+        )
+
+
 class _ShrinkingManifestSandbox(_ProducingSandbox):
     """Reports the manifest as tiny once it has been read — a guest still running after `exec`.
 
@@ -894,13 +911,36 @@ class TestWithholdingStillLandsFiles:
     """Withholding closes the printing road; the declared-output road is what replaces it, so
     it has to keep working and keep being reported."""
 
-    def test_a_landed_file_is_still_named_by_the_hosts_own_reference(self):
+    def test_a_landed_file_is_named_by_the_spelling_the_model_declared(self):
         sink = _RecordingSink()
         sandbox = _ProducingSandbox()
         tool = _withholding_tool(sandbox, sink)
         out = _run_producing(tool, sandbox, {"answer.txt": b"12 resources"}, outputs=["answer.txt"])
 
         assert sink.names == ["answer.txt"]
+        assert "- answer.txt" in out
+
+    def test_the_sinks_display_does_not_reach_a_withheld_result(self):
+        """`display` is composed from an `Artifact` whose `content` is the guest's bytes, and
+        no protocol rule keeps the two apart — so a sink that derives one from the other would
+        put guest-authored text inside a result declaring trusted integrity."""
+        sink = _LeakyDisplaySink()
+        sandbox = _ProducingSandbox()
+        tool = _withholding_tool(sandbox, sink)
+        out = _run_producing(tool, sandbox, {"answer.txt": b"THE-SECRET"}, outputs=["answer.txt"])
+
+        assert sink.names == ["answer.txt"], "the artifact still landed"
+        assert "THE-SECRET" not in out, "the sink's content-derived display reached the result"
+        assert "- answer.txt" in out
+
+    def test_the_shown_path_still_renders_the_sinks_display(self):
+        """The host's own reference is the better string wherever the claim does not depend on
+        it, so withholding is the only thing that gives it up."""
+        sink = _RecordingSink()
+        sandbox = _ProducingSandbox()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink)
+        out = _run_producing(tool, sandbox, {"answer.txt": b"12 resources"}, outputs=["answer.txt"])
+
         assert "saved answer.txt" in out
 
     def test_a_landed_files_contents_still_do_not_reach_the_result(self):
@@ -939,7 +979,7 @@ class TestWithholdingStillLandsFiles:
         out = _run_producing(tool, sandbox, {"why.txt": b"ValueError"}, outputs=["why.txt"])
 
         assert sink.names == ["why.txt"], "the one channel left was skipped on a failed run"
-        assert "saved why.txt" in out
+        assert "- why.txt" in out
         assert "exit code: 1" in out
 
     def test_a_failed_program_showing_its_streams_still_skips_collection(self):
@@ -2862,13 +2902,10 @@ class TestOnTheTransportStderrIsTheHosts:
 
 
 class TestAWithheldTimeoutQuotesNothing:
-    """The one path where guest text rides in an *exception message* rather than an
-    `ExecResult`.
+    """A withheld timeout carries the bound and the fate, and nothing the program printed.
 
-    `SandboxProgramTimeout` embeds the output clause in its message — the very thing the test
-    above pins — so surfacing it whole here would carry the program's stdout out under a result
-    declaring trusted integrity. That is the fail-open shape the option exists to prevent, and
-    it is invisible unless something asserts on it.
+    `SandboxProgramTimeout` holds that output in its message rather than only in `output`, so
+    the sentence is rebuilt from the attributes instead of quoted.
     """
 
     def _withholding_calling_tool(self, sandbox: InProcessSandbox, **kw: Any):

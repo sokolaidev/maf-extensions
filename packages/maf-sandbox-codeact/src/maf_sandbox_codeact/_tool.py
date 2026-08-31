@@ -249,20 +249,27 @@ def make_codeact_tools(
             :data:`CodeactOutputs.NONE`, and refused at attach without one.
         outputs: How a program's output files are named. See :class:`CodeactOutputs`.
         withhold_guest_output: Keep what the program printed out of the tool result, and answer
-            with sizes and the host's own references instead. No guest-authored *text* survives
-            into the result, so this tool declares
+            with sizes and the model's own declared names instead. No guest-authored text
+            survives into the result, so this tool declares
             :data:`~maf_sandbox.SourceIntegrity.TRUSTED` — unless a wired registry's
             ``result_integrity`` says otherwise, which is core's fold to make and is honoured
             here. Requires :data:`CodeactOutputs.DECLARED`: the one mode where content can still
             reach the model and no guest-chosen name reaches the result.
 
-            **What "trusted" claims, exactly.** The result's *shape* is this package's and its
-            prose is fixed, but three of its values are integers the program chooses — the exit
-            code and the two stream sizes, plus whatever a sink puts in ``display``. A program
-            can signal through them: an exit status is 8 bits, and padding output to a length
-            carries a few more. That is a narrow per-call channel rather than the open one a
-            rendered ``stdout`` is, and a host that must close it should not attach this
-            workload at all.
+            The rendering follows the transport. Off the host-tool-call transport the result
+            names the exit code and a size for ``stdout`` and for ``stderr`` separately. On it,
+            the launcher merges the program's stderr into its stdout, so there is one ``output``
+            size and ``stderr`` is the host's — its note about the run is surfaced whole under
+            ``note:``, since withholding it would report a dropped output as a program that
+            printed nothing.
+
+            **What "trusted" claims, exactly.** The prose and the shape are this package's, and
+            the artifact names are the model's own — but three values are the program's to
+            choose: the exit code and the stream sizes. A program can signal through them, an
+            exit status being 8 bits and a padded output a few more. That is a narrow per-call
+            channel rather than the open one a rendered ``stdout`` is, and a host that must
+            close it should not attach this workload at all. The sink's ``display`` is
+            deliberately *not* rendered here — see :func:`_format_landed`.
         outbound_max_confidentiality: The host's cap for tools that carry something out, in the
             host's own vocabulary. Off by default and written only when something can actually
             leave: an artifact landing in the sink, a host tool that carries something out, or
@@ -1034,7 +1041,9 @@ async def _execute(
         # no traceback to bury, and the declared output is the only channel left — including for
         # a program that caught its own error and wrote the diagnosis into one.
         return report
-    collected = await _collect(session, sandbox, guest_prefix, outputs, names, reserved)
+    collected = await _collect(
+        session, sandbox, guest_prefix, outputs, names, reserved, withhold=withhold
+    )
     return f"{report}\n\n{collected}" if collected else report
 
 
@@ -1309,6 +1318,8 @@ async def _collect(
     outputs: CodeactOutputs,
     declared: list[str],
     reserved: Mapping[str, str],
+    *,
+    withhold: bool = False,
 ) -> str:
     """Land whatever this run produced, and say what happened — never raising into the model."""
     sink = session.output_sink
@@ -1363,7 +1374,7 @@ async def _collect(
     except Exception as exc:  # noqa: BLE001
         logger.warning("execute_code: saving this run's files failed: %s", error_detail(exc))
         return f"Error: the program ran but its files could not be saved. {_MAY_HAVE_LANDED}"
-    return _format_landed(landed, declared)
+    return _format_landed(landed, declared, withhold=withhold)
 
 
 async def _read_manifest(
@@ -1446,7 +1457,9 @@ async def _read_manifest(
     return entries, len(raw)
 
 
-def _format_landed(landed: Sequence[LandedArtifact], declared: Sequence[str]) -> str:
+def _format_landed(
+    landed: Sequence[LandedArtifact], declared: Sequence[str], *, withhold: bool = False
+) -> str:
     """What the model is told about the files: the host's own references, and what is absent.
 
     The two sides are compared in NFC, because a landing name is normalized before the sink
@@ -1454,12 +1467,24 @@ def _format_landed(landed: Sequence[LandedArtifact], declared: Sequence[str]) ->
     exact-string comparison would report a file that landed perfectly well as never written.
     Normalizing **both** sides is right whichever normalization the sink chose — under
     ``NameNormalization.NONE`` the two are already the same string.
+
+    ``withhold`` drops ``display`` in favour of the name the model itself declared. The sink
+    composes ``display`` from an :class:`~maf_sandbox.Artifact` whose ``content`` is the guest's
+    bytes, and nothing in the protocol requires the two to be independent — so a sink that puts
+    any of that content in the string would be putting guest-authored text into a result this
+    kind has declared :data:`~maf_sandbox.SourceIntegrity.TRUSTED`. Naming the declared spelling
+    costs the sink's own detail and needs no promise from the host to stay honest.
     """
+    delivered = {unicodedata.normalize("NFC", item.name) for item in landed}
     lines: list[str] = []
     if landed:
         lines.append("Saved:")
-        lines.extend(f"- {item.display}" for item in landed)
-    delivered = {unicodedata.normalize("NFC", item.name) for item in landed}
+        if withhold:
+            lines.extend(
+                f"- {name}" for name in declared if unicodedata.normalize("NFC", name) in delivered
+            )
+        else:
+            lines.extend(f"- {item.display}" for item in landed)
     missing = [name for name in declared if unicodedata.normalize("NFC", name) not in delivered]
     if missing:
         lines.append(
