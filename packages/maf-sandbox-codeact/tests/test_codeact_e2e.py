@@ -42,7 +42,9 @@ from maf_sandbox import (
 
 pytest.importorskip(
     "maf_sandbox_docker",
-    reason="the e2e drives a real docker backend, and this environment carries no sibling wheel",
+    exc_type=ImportError,
+    reason="the e2e drives a real docker backend; the sibling wheel may be absent, or paired "
+    "with a core below its own floor by the published-cores gate's --no-deps pass",
 )
 
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig  # noqa: E402

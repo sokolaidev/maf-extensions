@@ -534,6 +534,15 @@ class TestTarHeaderHelpers:
         parsed = sandbox_entry_from_tar_header(tar_header_from_block(self._block(entry)), "pipe")
         assert parsed == SandboxEntry(path="pipe", kind=EntryKind.OTHER, size_bytes=None)
 
+    def test_an_extended_header_block_is_other(self):
+        """A GNU long-name header (`L`) is metadata ahead of an entry, not an entry: classify
+        it `OTHER` with no size, so a caller refuses rather than follows it. Reaching long
+        names is the pull surface's question, not the classifier's."""
+        long_name = tarfile.TarInfo("x" * 120)
+        long_name.type = tarfile.GNUTYPE_LONGNAME
+        parsed = sandbox_entry_from_tar_header(long_name, "a.txt")
+        assert parsed == SandboxEntry(path="a.txt", kind=EntryKind.OTHER, size_bytes=None)
+
     def test_the_classifier_takes_the_parsed_header_docker_already_holds(self):
         info = tarfile.TarInfo("kept.txt")
         info.size = 3

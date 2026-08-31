@@ -186,7 +186,9 @@ class TestTheCoreThisCheckoutBuilt:
     ):
         wheel, core = self._wheel_and_index(tmp_path, monkeypatch, "maf-sandbox>=0.26.0,<0.28")
         seen: list[object] = []
-        monkeypatch.setattr(check, "run_suite", lambda *_: seen.append(core) or (True, "12 passed"))
+        monkeypatch.setattr(
+            check, "run_suite", lambda w, c, t: (seen.append(c), (True, "12 passed"))[1]
+        )
         code = check.main(["prog", "maf-sandbox-bicep", str(wheel), "--local-core", str(core)])
         assert code == 0
         assert seen == [core], "the wheel this checkout built, not a version to resolve"
@@ -274,14 +276,14 @@ class TestTheInstallCommands:
         )
         return seen
 
-    def test_dockers_suite_gets_wslc_when_tested_against_a_published_core(
+    def test_dockers_suite_gets_wslc_when_tested_against_the_local_core(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         """The pairing the gate exists to prove includes the sibling a suite names outright:
         docker's parity check hard-asserts `maf_sandbox_wslc` imports, so an environment
         without it fails for the wrong reason — or, with the assert quietly dropped, passes
         without testing the parity at all. Here the core is the checkout's own artifact, the
-        window the flag exists for."""
+        window the flag exists for, so the sibling rides the `--no-deps` pass."""
         wheel = _wheel(
             tmp_path, "maf_sandbox_docker-0.11.0-py3-none-any.whl", ["maf-sandbox>=0.28.0,<0.29"]
         )
@@ -300,23 +302,29 @@ class TestTheInstallCommands:
             "the candidate rides the resolving pass, its siblings the forced one"
         )
 
-    def test_the_no_deps_pass_runs_for_a_published_core_too(
+    def test_the_published_core_path_resolves_the_siblings_from_the_index(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """Every published core the wheel admits gets the same environment: the moment 0.28.0
-        is on the index, docker's suite runs the published branch, and the guard above runs
-        with it."""
+        """The published-core pairing installs only what a consumer could install: the
+        candidate beside the published core it admits, with the published siblings that admit
+        the same core resolving normally. A branch-built sibling forced beside an older core
+        is a pairing no user can have — its imports need the new names the candidate's floor
+        is waiting on — so no `--no-deps` pass runs here to smuggle one in."""
         wheel = _wheel(
+            tmp_path, "maf_sandbox_codeact-0.8.0-py3-none-any.whl", ["maf-sandbox>=0.27.0,<0.29"]
+        )
+        _wheel(
             tmp_path, "maf_sandbox_docker-0.11.0-py3-none-any.whl", ["maf-sandbox>=0.28.0,<0.29"]
         )
-        _wheel(tmp_path, "maf_sandbox_wslc-0.13.0-py3-none-any.whl", ["maf-sandbox>=0.28.0,<0.29"])
-        seen = self._capture(monkeypatch, published=["0.28.0"])
-        code = check.main(["prog", "maf-sandbox-docker", str(wheel)])
+        seen = self._capture(monkeypatch, published=["0.27.0"])
+        code = check.main(["prog", "maf-sandbox-codeact", str(wheel)])
         assert code == 0
         installs = [a for a in seen if a[:2] == ["uv", "pip"]]
-        no_deps = [a for a in installs if "--no-deps" in a]
-        assert no_deps, "the published-core pairing installs the siblings all the same"
-        assert any("maf_sandbox_wslc-0.13.0-py3-none-any.whl" in " ".join(a) for a in no_deps)
+        assert len(installs) == 1, "one resolving install, not a candidate pass plus a forced one"
+        assert "--no-deps" not in installs[0]
+        assert any("maf_sandbox_docker" in part for part in installs[0]) is False, (
+            "a branch-built sibling whose floor excludes the core under test must not be forced"
+        )
 
     def test_the_core_is_pinned_by_the_override_and_answered_by_an_operand(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -334,10 +342,7 @@ class TestTheInstallCommands:
             for a in seen
             if a[:2] == ["uv", "pip"] and "--no-deps" not in a and "--overrides" in a
         )
-        assert "maf-sandbox" in first[first.index("--overrides") + 2 :], (
-            "the core is requested, or the override answers nothing"
-        )
-        assert any("maf_sandbox-0.27.0-py3-none-any.whl" in part for part in first), (
+        assert "maf_sandbox-0.27.0-py3-none-any.whl" in " ".join(first), (
             "the operand is the artifact, so the pin cannot resolve down to the index"
         )
 

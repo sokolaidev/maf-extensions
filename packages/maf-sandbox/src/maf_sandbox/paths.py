@@ -167,6 +167,13 @@ def sandbox_entry_from_tar_header(info: tarfile.TarInfo, rel_path: str) -> Sandb
     A **hard** link stays :data:`~maf_sandbox.EntryKind.OTHER`: it names an inode rather than a
     path, so it is not a way out of the working directory, and it is refused as non-regular
     regardless.
+
+    An extended header (GNU or PAX, what a writer emits ahead of an entry whose name exceeds
+    100 bytes) is not classified: it maps to :data:`~maf_sandbox.EntryKind.OTHER` like any
+    other non-regular block, and the caller refuses it. A caller that can reach long names
+    must skip the extended block itself — the pair of backends this serves names entries short
+    enough to stat, and extending the protocol to carry them is a change to the pull surface,
+    not to this classifier.
     """
     if info.isreg():
         return SandboxEntry(path=rel_path, kind=EntryKind.FILE, size_bytes=info.size)

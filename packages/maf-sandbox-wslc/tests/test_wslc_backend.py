@@ -771,13 +771,26 @@ class TestStatGuestTarHeader:
         assert result.size_bytes is None
 
     def test_an_unrecognised_failure_raises_with_the_engines_message(self):
-        """A `cp` that failed with bytes nobody can classify reports what the CLI said, not a
-        header it never sent — the same rule docker's stat reads by. The error names the path
-        so the caller can tell which component tripped."""
+        """A `cp` that failed with nothing to classify reports what the CLI said. The error
+        names the path so the caller can tell which component tripped."""
         overrides = {("container", "cp"): _WslcResult(1, b"", b"container is stopped")}
         sandbox = self._sandbox(overrides=overrides)
         with pytest.raises(RuntimeError, match="container is stopped"):
             asyncio.run(sandbox._stat_guest("/w/main.bicep", "main.bicep"))
+
+    def test_a_failed_copy_with_a_short_stream_still_probes(self):
+        """A failed copy that streamed a few bytes reaches the probe rather than raising: the
+        first branch is guarded by `not result.stdout`, so rc 1 with 1..511 bytes in hand falls
+        through to `test`, which can still settle the entry's shape. (`test -L` answers 0 for
+        this fixture's container.)"""
+        overrides = {
+            ("container", "cp"): _WslcResult(1, b"x", b""),
+            ("container", "exec", _NAME, "test", "-L"): _WslcResult(0, b"", b""),
+        }
+        sandbox = self._sandbox(overrides=overrides)
+        result = asyncio.run(sandbox._stat_guest("/w/main.bicep", "main.bicep"))
+        assert result is not None
+        assert result.kind is EntryKind.SYMLINK
 
     def test_a_failed_copy_that_streamed_bytes_still_classifies_the_header(self):
         """A bounded read kills the child once the cap is reached, so a nonzero code with bytes
@@ -796,11 +809,11 @@ class TestStatGuestTarHeader:
         assert result.size_bytes == 999
 
     def test_a_failed_copy_without_bytes_probes_the_entry_type(self):
-        """An empty stream for a regular file or a link is how the CLI answers today, so the
-        `test -L/-d/-f` probe is the path that saves the stat. The `cp` stdout carries one
-        byte: the fake rewrites a byte-less success on a non-`-` copy into `no such file`,
-        and a one-byte stream lands in the same short-answer probe branch as an empty one.
-        (`container exec test -L` answers 0 for this fixture's container.)"""
+        """A short *successful* stream — how the CLI answers a regular file or a link today —
+        is a shape question `test` can still settle. The `cp` stdout carries one byte: the fake
+        rewrites a byte-less success on a non-`-` copy into `no such file`, and a one-byte
+        stream lands in the same short-answer probe branch as an empty one. (`container exec
+        test -L` answers 0 for this fixture's container.)"""
         overrides = {
             ("container", "cp"): _WslcResult(0, b"x", b""),
             ("container", "exec", _NAME, "test", "-L"): _WslcResult(0, b"", b""),
@@ -810,7 +823,7 @@ class TestStatGuestTarHeader:
         assert result is not None
         assert result.kind is EntryKind.SYMLINK
 
-    def test_a_failed_copy_without_bytes_and_no_probe_answer_raises(self):
+    def test_a_short_successful_stream_with_no_probe_answer_raises(self):
         """No header and no probe answer leaves the stat nothing to report, and the runtime
         error names the path rather than the flag that tripped."""
         overrides = {
