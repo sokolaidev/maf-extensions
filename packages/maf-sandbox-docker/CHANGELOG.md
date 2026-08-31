@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.12.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.11.0...maf-sandbox-docker-v0.12.0) (2026-08-31)
+
+
+### Features
+
+* **sandbox:** core offers a container-cp tar header helper, and two backends (docker & wslc) use it ([#766](https://github.com/sokolaidev/maf-extensions/issues/766)) ([f34218e](https://github.com/sokolaidev/maf-extensions/commit/f34218ef599301bfacf7fa99ef62c82fd9c164b5))
+* **sandbox:** the check that licenses as-root file removals moves from the docker backend into maf-sandbox ([#770](https://github.com/sokolaidev/maf-extensions/issues/770)) ([53820a8](https://github.com/sokolaidev/maf-extensions/commit/53820a84ca23f24a3af311c809f2110eb7e2edad))
+
+
+### Fixes
+
+* **docker:** hold the maf-sandbox ceiling one minor below the bump script's target ([#778](https://github.com/sokolaidev/maf-extensions/issues/778)) ([366f3bc](https://github.com/sokolaidev/maf-extensions/commit/366f3bc89e591236f7b17f757216a8b3fbe92770))
+* **docker:** require maf-sandbox 0.28.0, the release that carries the helpers this backend calls ([#776](https://github.com/sokolaidev/maf-extensions/issues/776)) ([10700db](https://github.com/sokolaidev/maf-extensions/commit/10700db1b59c51bb4dd3755d6e8f8fea10c824bf))
+
 ## [0.11.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.10.0...maf-sandbox-docker-v0.11.0) (2026-08-30)
 
 
