@@ -34,7 +34,12 @@ dependencies = [
     # because maf-sandbox has not yet reached a stable API, so every release before 1.0.0 may
     # include breaking changes (see its CHANGELOG); moving either end of this range has an
     # order to it — see RELEASING.md.
-    "maf-sandbox>=0.28.0,<0.30",
+    #
+    # The ceiling is held one minor below what the bump script targets: this backend still
+    # calls the deprecated path helpers, and a published wheel that admits the next minor is
+    # one the core gate runs against the release that removes them. Widen it once the calls
+    # have moved.
+    "maf-sandbox>=0.28.0,<0.29",
 ]
 
 [project.urls]
