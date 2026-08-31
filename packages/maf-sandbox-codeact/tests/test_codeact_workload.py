@@ -46,6 +46,7 @@ from maf_sandbox import (
     SandboxEntry,
     SandboxLimits,
     SandboxOutputSinkRequired,
+    SandboxProgramTimeout,
     SandboxRouter,
     SandboxTransferLimitsNotPermitted,
     SourceIntegrity,
@@ -75,6 +76,7 @@ from maf_sandbox_codeact._tool import (
     _PROGRAM_FILENAME,
     _SMALLEST_MANIFEST,
     _WORK_DIR,
+    _format_withheld,
 )
 
 #: What a backend must declare before this kind may collect anything.
@@ -871,8 +873,7 @@ class TestWithheldResultFormat:
         assert "exit code: 1" in self._out(ExecResult(stdout="", stderr="boom\n", exit_code=1))
 
     def test_every_result_names_the_route_that_still_carries_content(self):
-        """Measured on the issue this closes: a failing program whose whole result was
-        `exit code: 1` sent the agent debugging blind for two further calls."""
+        """An exit code on its own leaves a model nothing it can act on."""
         out = self._out(ExecResult(stdout="", stderr="boom\n", exit_code=1))
         assert "declared output" in out
         assert "not read back as text" in out
@@ -927,6 +928,44 @@ class TestWithholdingStillLandsFiles:
 
         assert "answer.txt" in out
 
+    def test_a_failed_program_still_gets_its_files_landed(self):
+        """Showing the streams, a non-zero exit skips collection so a missing-file report does
+        not bury the traceback. Withheld there is no traceback, and this is the only channel
+        left — including for a program that caught its own error and wrote the diagnosis out.
+        """
+        sink = _RecordingSink()
+        sandbox = _ProducingSandbox(result=ExecResult(stdout="", stderr="boom\n", exit_code=1))
+        tool = _withholding_tool(sandbox, sink)
+        out = _run_producing(tool, sandbox, {"why.txt": b"ValueError"}, outputs=["why.txt"])
+
+        assert sink.names == ["why.txt"], "the one channel left was skipped on a failed run"
+        assert "saved why.txt" in out
+        assert "exit code: 1" in out
+
+    def test_a_failed_program_showing_its_streams_still_skips_collection(self):
+        """The pre-existing rule is unchanged where the traceback does come back."""
+        sink = _RecordingSink()
+        sandbox = _ProducingSandbox(result=ExecResult(stdout="", stderr="boom\n", exit_code=1))
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink)
+        _run_producing(tool, sandbox, {"why.txt": b"ValueError"}, outputs=["why.txt"])
+
+        assert sink.names == []
+
+
+class TestAWithheldStreamIsSizedNotDecoded:
+    """`_stream_bytes` runs outside every guarded block in `_execute`, so anything it raises
+    escapes the tool body and kills the caller's turn rather than answering the model."""
+
+    def test_a_lone_surrogate_is_counted_rather_than_raising(self):
+        """A backend's JSON carries one through as a `str` a plain encode refuses — the trap
+        `_InboundTally.add` already guards on the way in."""
+        out = _run(
+            _withholding_tool(_ScriptedSandbox(ExecResult(stdout="ok\udcff"))), "print('hi')"
+        )
+
+        assert "stdout: 5 bytes" in out
+        assert "exit code: 0" in out
+
 
 class TestWithholdingIsRefusedWhereItCouldNotBeHonest:
     """Both refusals are at construction, like every other impossible pairing here: a tool the
@@ -979,21 +1018,43 @@ class TestWithholdingDeclaresTrustedIntegrity:
         tool = _tool(_backend(capabilities=_PULLS), **_landing(CodeactOutputs.DECLARED))
         assert "source_integrity" not in dict(tool.additional_properties or {})
 
-    def test_a_registry_carrying_untrusted_sources_does_not_change_it(self):
-        """A host tool's data reaches the model by being printed or landed, and withholding
-        closes the first road while the second returns the sink's own reference."""
-        tool = _tool(
+    def _with_registry(self, *tools: Callable[..., Any]):
+        return _tool(
             _backend(capabilities=_CALLS),
-            host_tools=_registry(_exchange_rate),
+            host_tools=_registry(*tools),
             **_landing(CodeactOutputs.DECLARED),
             withhold_guest_output=True,
         )
-        assert dict(tool.additional_properties or {})["source_integrity"] == "trusted"
+
+    def test_a_registry_of_trusted_sources_leaves_it_trusted(self):
+        assert (
+            dict(self._with_registry(_exchange_rate).additional_properties or {})[
+                "source_integrity"
+            ]
+            == "trusted"
+        )
+
+    def test_an_unstamped_registry_takes_the_declaration_away(self):
+        """`result_integrity` folds an unstamped tool to untrusted, and that fold is core's to
+        make: withholding is about this kind's rendering, not about where a host tool's data
+        came from."""
+        registry = _registry(_unstamped_lookup)
+        assert registry.aggregate().result_integrity is SourceIntegrity.UNTRUSTED
+        tool = self._with_registry(_unstamped_lookup)
+        assert "source_integrity" not in dict(tool.additional_properties or {})
+
+    def test_a_sink_only_registry_keeps_it(self):
+        """A tool that carries something out has no opinion about integrity coming in."""
+        assert _registry(_log_to_crm).aggregate().result_integrity is None
+        assert (
+            dict(self._with_registry(_log_to_crm).additional_properties or {})["source_integrity"]
+            == "trusted"
+        )
 
 
 class TestTheModelIsToldUpFront:
-    """Told in the description, a model writes to a declared output on its first call. Left to
-    discover the withholding from a result it cannot use, it prints, fails and debugs blind."""
+    """The description has to say printing does not come back, or a model writes its answer to
+    a channel that discards it."""
 
     def test_the_description_says_the_printed_output_does_not_come_back(self):
         description = _callable(_withholding_tool(_ScriptedSandbox())).__doc__ or ""
@@ -2734,6 +2795,72 @@ class TestATimeoutSaysWhoseItWas:
         assert out == "Error: the program timed out after 7s"
 
 
+class TestOnTheTransportStderrIsTheHosts:
+    """The launcher merges the guest's stderr into its output file, so on that transport
+    `ExecResult.stderr` is the *host's* field and carries its note about the run.
+
+    Reducing it to a byte count reports the one thing the note exists to prevent: a program
+    whose output was dropped for its size reads back as one that printed nothing.
+    """
+
+    def test_the_hosts_note_is_surfaced_whole(self):
+        note = "the program's output was larger than the host will read and was not returned"
+        out = _format_withheld(ExecResult(stdout="", stderr=note), over_transport=True)
+
+        assert f"note: {note}" in out
+        assert "exit code: 0" in out
+
+    def test_the_merged_stream_is_one_count_not_two(self):
+        """Naming `stderr` there would tell a model its stderr write vanished."""
+        out = _format_withheld(ExecResult(stdout="a\nb", stderr=""), over_transport=True)
+
+        assert "output: 3 bytes" in out
+        assert "stdout:" not in out
+        assert "stderr:" not in out
+
+    def test_a_run_with_no_note_says_nothing_in_its_place(self):
+        out = _format_withheld(ExecResult(stdout="hi", stderr=""), over_transport=True)
+
+        assert "note:" not in out
+
+    def test_the_plain_path_keeps_both_counts(self):
+        """Off the transport `stderr` is the program's own, and is withheld like `stdout`."""
+        out = _format_withheld(ExecResult(stdout="a", stderr="boom"), over_transport=False)
+
+        assert "stdout: 1 bytes" in out
+        assert "stderr: 4 bytes" in out
+
+    def test_a_wired_registry_selects_the_transport_rendering(self):
+        """The wiring, not just the renderer: a tool built with host tools has to pass it."""
+        sandbox = _CallingSandbox("_round_half_up", {"value": 3.6})
+        out = _run(
+            _calling_tool(
+                sandbox,
+                _round_half_up,
+                **_landing(CodeactOutputs.DECLARED),
+                withhold_guest_output=True,
+            ),
+            "print(_round_half_up(value=3.6))",
+        )
+
+        assert "output:" in out, out
+        assert "the host said 4" not in out
+
+    def test_the_description_names_one_stream_where_the_transport_merges_them(self):
+        sandbox = _CallingSandbox("_round_half_up", {"value": 3.6})
+        tool = _calling_tool(
+            sandbox,
+            _round_half_up,
+            **_landing(CodeactOutputs.DECLARED),
+            withhold_guest_output=True,
+        )
+        description = _callable(tool).__doc__ or ""
+
+        assert "and stderr together" in description
+        assert "``note`` line is the host's" in description
+        assert "How many bytes of stdout and of stderr" not in description
+
+
 class TestAWithheldTimeoutQuotesNothing:
     """The one path where guest text rides in an *exception message* rather than an
     `ExecResult`.
@@ -2787,6 +2914,29 @@ class TestAWithheldTimeoutQuotesNothing:
         out = _run(self._withholding_calling_tool(sandbox, exec_timeout_seconds=1), "print('x')")
 
         assert "before the program was started" not in out
+
+    def test_off_the_transport_it_names_neither_a_run_nor_a_bound(self):
+        """`SandboxProgramTimeout` is public and a backend may raise one from a call of its
+        own, whose bound is not the number handed to `exec` — and a call with no host tool has
+        no *run* to attribute it to either."""
+        sandbox = _ScriptedSandbox(
+            raises=SandboxProgramTimeout("the backend's own 5s call bound expired")
+        )
+        tool = _withholding_tool(sandbox, exec_timeout_seconds=90)
+        out = _run(tool, "print('hi')")
+
+        assert "90s" not in out, "this kind's bound was reported as the one that expired"
+        assert "the run's" not in out, "a call with no host tool has no run"
+        assert "did not finish" in out
+        assert "declared output" in out
+
+    def test_off_the_transport_it_quotes_no_part_of_the_message(self):
+        sandbox = _ScriptedSandbox(
+            raises=SandboxProgramTimeout("gave up — the program had printed: the secret is 42")
+        )
+        out = _run(_withholding_tool(sandbox), "print('hi')")
+
+        assert "the secret is 42" not in out
 
 
 class TestOnlyAnAttachedToolSealsTheRegistry:
