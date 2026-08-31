@@ -1140,6 +1140,29 @@ class TestTheModelIsToldUpFront:
         description = _callable(_tool(_backend())).__doc__ or ""
         assert "The program's stdout" in description
 
+    def test_it_does_not_promise_a_reference_to_where_a_file_landed(self):
+        """Withheld, the result names the file and not its landing place, so the declared-output
+        paragraph may not offer one."""
+        description = _callable(_withholding_tool(_ScriptedSandbox())).__doc__ or ""
+
+        assert "reference to where each one landed" not in description
+        assert "names where each one landed" not in description
+
+    def test_it_tells_the_model_a_failed_program_still_saves(self):
+        """The recovery route this mode rests on. Told the shown rule — that a failed program
+        saves nothing — a model would not write its diagnosis out and then fail, which is
+        exactly the move withholding leaves it."""
+        description = _callable(_withholding_tool(_ScriptedSandbox())).__doc__ or ""
+
+        assert "still saves what it wrote" in description
+        assert "A program that fails saves nothing at all" not in description
+
+    def test_the_shown_format_still_states_the_opposite(self):
+        tool = _tool(_backend(capabilities=_PULLS), **_landing(CodeactOutputs.DECLARED))
+        description = _callable(tool).__doc__ or ""
+
+        assert "A program that fails saves nothing at all" in description
+
 
 # ---------------------------------------------------------------------------
 # Attach / do not attach
@@ -2954,11 +2977,16 @@ class TestAWithheldTimeoutQuotesNothing:
         assert "step 1 done" not in out, "the program's own output rode out on the timeout"
         assert "step 2 done" not in out
 
-    def test_it_still_says_the_run_expired_and_names_its_bound(self):
+    def test_it_says_the_program_did_not_finish_without_naming_whose_bound(self):
+        """A backend may raise the public `SandboxProgramTimeout` from a call of its own and the
+        transport propagates it untranslated, so on the transport too the origin is unknown —
+        the subtype that would settle it is core's private one."""
         sandbox = _StallingSandbox(printed=b"step 1 done")
         out = _run(self._withholding_calling_tool(sandbox, exec_timeout_seconds=1), "print('x')")
 
-        assert "the run's 1s expired" in out, out
+        assert "did not finish in the time it was given" in out, out
+        assert "1s" not in out, "a bound this kind cannot attribute was named anyway"
+        assert "the run's" not in out
 
     def test_it_still_names_the_route(self):
         sandbox = _StallingSandbox(printed=b"step 1 done")

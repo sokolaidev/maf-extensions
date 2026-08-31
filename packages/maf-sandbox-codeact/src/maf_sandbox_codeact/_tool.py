@@ -256,6 +256,11 @@ def make_codeact_tools(
             here. Requires :data:`CodeactOutputs.DECLARED`: the one mode where content can still
             reach the model and no guest-chosen name reaches the result.
 
+            A size here is the UTF-8 length of the text the stream came back as, not the count
+            of bytes the program wrote: ``ExecResult`` states no decoding contract, so a
+            backend replacing an undecodable byte changes the number and none of them can be
+            un-done (#465). See :func:`_stream_bytes`.
+
             The rendering follows the transport. Off the host-tool-call transport the result
             names the exit code and a size for ``stdout`` and for ``stderr`` separately. On it,
             the launcher merges the program's stderr into its stdout, so there is one ``output``
@@ -702,6 +707,25 @@ _DESCRIPTION_RETURNS_DEGRADES = """  If the sandbox is unavailable the tool retu
 
 _DESCRIPTION_RETURNS_SAVED = """  A run that saved files also names where each one landed."""
 
+#: The withholding pair. Three sentences above stop being true in that mode: nothing names
+#: *where* a file landed, and a failed program's files are collected rather than discarded —
+#: which is the recovery route this mode depends on, so a model told the opposite will not take
+#: it after the failure that is exactly when it needs to.
+_DESCRIPTION_DECLARED_WITHHELD = """**To produce files, name them in ``outputs`` and write them
+        into the working directory.**  They are saved to host storage after the program exits
+        and the result confirms each name that landed — not where it landed, and not what is in
+        it, so do not claim to have read a file you only produced.  A name you declare and do
+        not write is reported to you rather than silently dropped, and a file you write without
+        declaring is not saved at all.  **A program that fails still saves what it wrote**, so
+        writing what you need into a declared output and then failing still gets it out.
+
+        Naming a file in both ``files`` and ``outputs`` is how you edit one in place.  It is the
+        one case where "declared and not written" cannot be reported, because the copy you were
+        given is already there — and since a failed run still saves, a program that dies part
+        way through rewriting one saves whatever it had written by then."""
+
+_DESCRIPTION_RETURNS_SAVED_WITHHELD = """  A run that saved files also names each one."""
+
 
 def _tool_description(
     *,
@@ -736,7 +760,7 @@ def _tool_description(
         body.append(_DESCRIPTION_FILES)
         arguments.append(_DESCRIPTION_ARG_FILES)
     if outputs is CodeactOutputs.DECLARED:
-        body.append(_DESCRIPTION_DECLARED)
+        body.append(_DESCRIPTION_DECLARED_WITHHELD if withhold else _DESCRIPTION_DECLARED)
         arguments.append(_DESCRIPTION_ARG_OUTPUTS)
     elif outputs is CodeactOutputs.MANIFEST:
         body.append(_DESCRIPTION_MANIFEST)
@@ -750,7 +774,7 @@ def _tool_description(
         returns = _DESCRIPTION_RETURNS_HOST_TOOL_CALLED if host_tool_names else _DESCRIPTION_RETURNS
     returns += _DESCRIPTION_RETURNS_DEGRADES
     if outputs is not CodeactOutputs.NONE:
-        returns += _DESCRIPTION_RETURNS_SAVED
+        returns += _DESCRIPTION_RETURNS_SAVED_WITHHELD if withhold else _DESCRIPTION_RETURNS_SAVED
     return (
         "\n\n        ".join(body)
         + "\n\n        Args:\n            "
@@ -1006,13 +1030,13 @@ async def _execute(
         logger.warning("execute_code: %s", expired)
         if withhold:
             # The output clause is in the message rather than fenced off in `output`, so the
-            # sentence is rebuilt from the attributes instead. `signal` is what the transport
-            # says to branch on, and `"absent"` alone asserts a program was never started.
-            if host_tool_call is not None:
-                started = " before the program was started" if expired.signal == "absent" else ""
-                return f"Error: the run's {timeout}s expired{started}. {_WITHHELD_ROUTE}"
-            # No run here, and no bound of this kind's either: a backend may raise this type
-            # from a call of its own, whose timeout is not the number handed to `exec`.
+            # sentence is rebuilt from the attributes instead — and it names no bound, because
+            # *whose* expired is not knowable here. A backend may raise this public type from a
+            # call of its own, the transport propagates that untranslated, and the subtype that
+            # tells the two apart is core's private one. `signal` is the discriminator the
+            # exception does carry, and `"absent"` is its one value asserting nothing started.
+            if expired.signal == "absent":
+                return f"Error: the time ran out before the program was started. {_WITHHELD_ROUTE}"
             return f"Error: the program did not finish in the time it was given. {_WITHHELD_ROUTE}"
         return f"Error: {expired}"
     except TimeoutError as unfinished:
@@ -1522,7 +1546,15 @@ def _format_result(result: ExecResult) -> str:
 
 
 def _stream_bytes(text: str | None) -> int:
-    """The size of what came back on one stream, never a claim about what the program wrote.
+    """The UTF-8 size of the text a stream came back as — **not** the bytes the program wrote.
+
+    The two differ, and by a backend-dependent amount, because ``ExecResult`` states no
+    decoding contract (#465): docker decodes with ``errors="replace"``, so one invalid byte
+    becomes ``U+FFFD`` and counts as three. Measured on the same program writing four bytes,
+    ``b"ok\\xff\\xfe"``, docker reports 8 and ACA Sandboxes 5. Nothing here can recover the
+    original count — ``ExecResult`` carries neither the bytes nor a length — so this reports
+    what it can measure and says so rather than implying the other number. Exactness waits on
+    the lossless reading #465 proposes.
 
     ``surrogatepass`` because a lone surrogate survives a backend's JSON and reaches here as a
     ``str`` a plain encode refuses. This runs outside every guarded block, so a raise escapes
