@@ -25,6 +25,7 @@ from maf_sandbox import (
     Capability,
     DisposalFailure,
     Egress,
+    EntryKind,
     ExecResult,
     Isolation,
     SandboxBackend,
@@ -36,6 +37,7 @@ from maf_sandbox import (
 
 from maf_sandbox_wslc import BACKEND_NAME, WslcSandboxBackend, WslcSandboxConfig
 from maf_sandbox_wslc._backend import (
+    _TAR_BLOCK,
     _container_name,
     _network_name,
     _proxy_name,
@@ -732,6 +734,124 @@ class TestPullSurfaceRefusal:
         sandbox = self._sandbox()
         with pytest.raises(NotImplementedError, match="RUN_CODE"):
             asyncio.run(sandbox.run_code("print(1)", timeout=5.0))
+
+
+class TestStatGuestTarHeader:
+    """The tar-header fast path of `_WslcSandbox._stat_guest`, at the `_wslc` fake."""
+
+    def _sandbox(self, payload: bytes | None = None, overrides: dict | None = None):
+        if overrides is None:
+            overrides = {("container", "cp"): _WslcResult(0, payload or b"", b"")}
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        return asyncio.run(backend.acquire(_KEY, _SPEC))
+
+    def _tar_block(self, entry: tarfile.TarInfo, data: bytes = b"") -> bytes:
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w") as archive:
+            archive.addfile(entry, io.BytesIO(data) if data else None)
+        return buffer.getvalue()[:_TAR_BLOCK]
+
+    def test_a_regular_file_comes_back_as_a_file_with_its_size(self):
+        entry = tarfile.TarInfo("maf-sandbox/work/main.bicep")
+        entry.size = 5
+        sandbox = self._sandbox(self._tar_block(entry, b"hello"))
+        result = asyncio.run(sandbox._stat_guest("/w/main.bicep", "main.bicep"))
+        assert result is not None
+        assert result.kind is EntryKind.FILE
+        assert result.size_bytes == 5
+
+    def test_a_symlink_header_comes_back_as_a_symlink(self):
+        entry = tarfile.TarInfo("maf-sandbox/work/out")
+        entry.type = tarfile.SYMTYPE
+        entry.linkname = "/etc"
+        sandbox = self._sandbox(self._tar_block(entry))
+        result = asyncio.run(sandbox._stat_guest("/w/out", "out"))
+        assert result is not None
+        assert result.kind is EntryKind.SYMLINK
+        assert result.size_bytes is None
+
+    def test_an_unrecognised_failure_raises_with_the_engines_message(self):
+        """A `cp` that failed with nothing to classify reports what the CLI said. The error
+        names the path so the caller can tell which component tripped."""
+        overrides = {("container", "cp"): _WslcResult(1, b"", b"container is stopped")}
+        sandbox = self._sandbox(overrides=overrides)
+        with pytest.raises(RuntimeError, match="container is stopped"):
+            asyncio.run(sandbox._stat_guest("/w/main.bicep", "main.bicep"))
+
+    def test_a_failed_copy_with_a_short_stream_still_probes(self):
+        """A failed copy that streamed a few bytes reaches the probe rather than raising: the
+        first branch is guarded by `not result.stdout`, so rc 1 with 1..511 bytes in hand falls
+        through to `test`, which can still settle the entry's shape. (`test -L` answers 0 for
+        this fixture's container.)"""
+        overrides = {
+            ("container", "cp"): _WslcResult(1, b"x", b""),
+            ("container", "exec", _NAME, "test", "-L"): _WslcResult(0, b"", b""),
+        }
+        sandbox = self._sandbox(overrides=overrides)
+        result = asyncio.run(sandbox._stat_guest("/w/main.bicep", "main.bicep"))
+        assert result is not None
+        assert result.kind is EntryKind.SYMLINK
+
+    def test_a_failed_copy_that_streamed_bytes_still_classifies_the_header(self):
+        """A bounded read kills the child once the cap is reached, so a nonzero code with bytes
+        in hand means the stream ran past it — the same rule docker's stat reads by. The header
+        is classified, not discarded as a failure."""
+        header = tarfile.TarInfo("maf-sandbox/work/main.bicep")
+        header.size = 999
+        payload = header.tobuf(
+            format=tarfile.GNU_FORMAT, encoding="utf-8", errors="surrogateescape"
+        )[:_TAR_BLOCK]
+        overrides = {("container", "cp"): _WslcResult(1, payload, b"")}
+        sandbox = self._sandbox(overrides=overrides)
+        result = asyncio.run(sandbox._stat_guest("/w/main.bicep", "main.bicep"))
+        assert result is not None
+        assert result.kind is EntryKind.FILE
+        assert result.size_bytes == 999
+
+    def test_a_short_successful_stream_probes_the_entry_type(self):
+        """A short *successful* stream — how the CLI answers a regular file or a link today —
+        is a shape question `test` can still settle. The `cp` stdout carries one byte: the fake
+        rewrites a byte-less success on a non-`-` copy into `no such file`, and a one-byte
+        stream lands in the same short-answer probe branch as an empty one. (`container exec
+        test -L` answers 0 for this fixture's container.)"""
+        overrides = {
+            ("container", "cp"): _WslcResult(0, b"x", b""),
+            ("container", "exec", _NAME, "test", "-L"): _WslcResult(0, b"", b""),
+        }
+        sandbox = self._sandbox(overrides=overrides)
+        result = asyncio.run(sandbox._stat_guest("/w/missing", "missing"))
+        assert result is not None
+        assert result.kind is EntryKind.SYMLINK
+
+    def test_a_short_successful_stream_with_no_probe_answer_raises(self):
+        """A short successful stream and no probe answer leaves the stat nothing to report,
+        and the runtime error names the path rather than the flag that tripped."""
+        overrides = {
+            ("container", "cp"): _WslcResult(0, b"x", b""),
+            ("container", "exec", _NAME, "test", "-L"): _WslcResult(1, b"", b""),
+            ("container", "exec", _NAME, "test", "-d"): _WslcResult(1, b"", b""),
+            ("container", "exec", _NAME, "test", "-f"): _WslcResult(1, b"", b""),
+        }
+        sandbox = self._sandbox(overrides=overrides)
+        with pytest.raises(RuntimeError, match="no tar header"):
+            asyncio.run(sandbox._stat_guest("/w/missing", "missing"))
+
+    def test_a_directory_header_comes_back_as_a_directory(self):
+        entry = tarfile.TarInfo("maf-sandbox/work/sub/")
+        entry.type = tarfile.DIRTYPE
+        sandbox = self._sandbox(self._tar_block(entry))
+        result = asyncio.run(sandbox._stat_guest("/w/sub", "sub"))
+        assert result is not None
+        assert result.kind is EntryKind.DIRECTORY
+
+    def test_a_hard_link_header_is_other(self):
+        entry = tarfile.TarInfo("maf-sandbox/work/dup")
+        entry.type = tarfile.LNKTYPE
+        entry.linkname = "main.bicep"
+        sandbox = self._sandbox(self._tar_block(entry))
+        result = asyncio.run(sandbox._stat_guest("/w/dup", "dup"))
+        assert result is not None
+        assert result.kind is EntryKind.OTHER
 
 
 # ---------------------------------------------------------------------------

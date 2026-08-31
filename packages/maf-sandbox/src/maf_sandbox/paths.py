@@ -1,5 +1,6 @@
 """Guest-path arithmetic for the protocol's one path grammar, shared by kinds and backends,
-and the one confinement rule written on top of it that a backend cannot express without a stat.
+the confinement rule written on top of it, and the tar-header stat a container backend reads
+off its copy stream.
 
 A guest path is POSIX whatever the host runs, so everything here goes through ``posixpath``,
 never ``os.path``, and a backslash is refused rather than read as a separator.  For a *host*
@@ -27,7 +28,8 @@ rather than to a keyword argument: a caller that picked the wrong bundle named t
 out loud, where one that omitted an argument would have got a default in silence.
 
 **The prefix says what a function hands back.**  ``confine_resolve_*`` returns the resolved
-guest path or raises; ``refuse_*`` returns nothing and raises.  Nothing here answers a
+guest path or raises; ``refuse_*`` returns nothing and raises; ``tar_header_from_block`` and
+``sandbox_entry_from_tar_header`` name their returns the same way.  Nothing here answers a
 ``bool``, so a name in the shape of a predicate would be read as one and is not used.
 """
 
@@ -35,6 +37,7 @@ from __future__ import annotations
 
 import inspect
 import posixpath
+import tarfile
 import warnings
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any
@@ -54,6 +57,8 @@ __all__ = [
     "guest_path_relative_to",
     "refuse_symlinked_ancestors",
     "refuse_symlinked_parents",
+    "sandbox_entry_from_tar_header",
+    "tar_header_from_block",
 ]
 
 
@@ -137,6 +142,46 @@ async def confine_resolve_guest_delete_path(
         raise ValueError(f"refusing to remove the working directory itself: {resolved!r}")
     await refuse_symlinked_ancestors(stat, resolved, working_directory)
     return resolved
+
+
+def tar_header_from_block(block: bytes) -> tarfile.TarInfo:
+    """Parse the first 512-byte tar block of a container ``cp`` stream into a tar header.
+
+    The block is what a container engine streams before any content byte, and it carries the
+    size, the entry-type flag and the link target — everything a stat needs and how a backend
+    stats a guest with no shell. The decoding arguments are pinned here rather than spelled per
+    caller, so two backends cannot drift apart on how a header's names are read.
+    """
+    return tarfile.TarInfo.frombuf(block, encoding="utf-8", errors="surrogateescape")
+
+
+def sandbox_entry_from_tar_header(info: tarfile.TarInfo, rel_path: str) -> SandboxEntry:
+    """Classify a tar header into a :class:`~maf_sandbox.SandboxEntry` at ``rel_path``.
+
+    A regular file maps to :data:`~maf_sandbox.EntryKind.FILE` with its size, a directory to
+    :data:`~maf_sandbox.EntryKind.DIRECTORY`, a symlink to :data:`~maf_sandbox.EntryKind.SYMLINK`
+    and every other entry — a hard link, a fifo, a device node — to
+    :data:`~maf_sandbox.EntryKind.OTHER`. Non-regular entries answer a ``None`` size, so a
+    caller refuses them before ever reading a byte.
+
+    A **hard** link stays :data:`~maf_sandbox.EntryKind.OTHER`: it names an inode rather than a
+    path, so it is not a way out of the working directory, and it is refused as non-regular
+    regardless.
+
+    An extended header (GNU or PAX, what a writer emits ahead of an entry whose name exceeds
+    100 bytes) is not classified: it maps to :data:`~maf_sandbox.EntryKind.OTHER` like any
+    other non-regular block, and the caller refuses it. A caller that can reach long names
+    must skip the extended block itself — the pair of backends this serves names entries short
+    enough to stat, and extending the protocol to carry them is a change to the pull surface,
+    not to this classifier.
+    """
+    if info.isreg():
+        return SandboxEntry(path=rel_path, kind=EntryKind.FILE, size_bytes=info.size)
+    if info.isdir():
+        return SandboxEntry(path=rel_path, kind=EntryKind.DIRECTORY, size_bytes=None)
+    if info.issym():
+        return SandboxEntry(path=rel_path, kind=EntryKind.SYMLINK, size_bytes=None)
+    return SandboxEntry(path=rel_path, kind=EntryKind.OTHER, size_bytes=None)
 
 
 def guest_path_relative_to(path: str, base: str) -> str | None:

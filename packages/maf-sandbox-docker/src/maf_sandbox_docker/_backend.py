@@ -43,7 +43,6 @@ from maf_sandbox import (
     Capability,
     DisposalFailure,
     Egress,
-    EntryKind,
     ExecResult,
     Isolation,
     OsFamily,
@@ -64,6 +63,8 @@ from maf_sandbox.paths import (
     confine_guest_write_path,
     guest_directory_chain,
     refuse_symlinked_parents,
+    sandbox_entry_from_tar_header,
+    tar_header_from_block,
 )
 
 from ._config import DockerSandboxConfig
@@ -278,29 +279,6 @@ def _image_reference(spec: SandboxSpec) -> str:
     image a container holds keys on this.
     """
     return spec.image_id or spec.image or ""
-
-
-def _stat_from_tar_header(info: tarfile.TarInfo, rel_path: str) -> SandboxEntry:
-    """Read one ``docker cp`` tar header into a :class:`~maf_sandbox.SandboxEntry`.
-
-    The first 512-byte block of ``docker cp <name>:<path> -`` is the entry's tar header: it
-    carries the size, the entry-type flag and the link target, which is everything a stat needs
-    and how this backend stats without a stat command.  A symlink maps to
-    :data:`~maf_sandbox.EntryKind.SYMLINK` and every other non-regular entry to
-    :data:`~maf_sandbox.EntryKind.OTHER`, both with a ``None`` size, so a caller refuses either
-    before ever reading a byte.
-
-    A **hard** link stays :data:`~maf_sandbox.EntryKind.OTHER`: it names an inode rather than a
-    path, so it is not a way out of the working directory, and it is refused as non-regular
-    regardless.
-    """
-    if info.isreg():
-        return SandboxEntry(path=rel_path, kind=EntryKind.FILE, size_bytes=info.size)
-    if info.isdir():
-        return SandboxEntry(path=rel_path, kind=EntryKind.DIRECTORY, size_bytes=None)
-    if info.issym():
-        return SandboxEntry(path=rel_path, kind=EntryKind.SYMLINK, size_bytes=None)
-    return SandboxEntry(path=rel_path, kind=EntryKind.OTHER, size_bytes=None)
 
 
 def _no_component_was_the_guests(walked: Mapping[str, tuple[int, int]]) -> bool:
@@ -686,13 +664,11 @@ class _DockerSandbox:
             raise RuntimeError(f"docker could not stat {rel}: {result.stderr.strip()}")
         if len(result.stdout) < _TAR_BLOCK:
             raise RuntimeError(f"docker returned no tar header for {rel}")
-        info = tarfile.TarInfo.frombuf(
-            result.stdout[:_TAR_BLOCK], encoding="utf-8", errors="surrogateescape"
-        )
+        info = tar_header_from_block(result.stdout[:_TAR_BLOCK])
         if walked is not None:
             # The same header answers ownership, so a check that wants both parses it once.
             walked[guest] = (info.uid, info.mode)
-        return _stat_from_tar_header(info, rel)
+        return sandbox_entry_from_tar_header(info, rel)
 
     async def _refuse_symlinked_parents(
         self,
@@ -746,9 +722,7 @@ class _DockerSandbox:
             raise RuntimeError(f"docker could not read {path}: {result.stderr.strip()}")
         if len(result.stdout) < _TAR_BLOCK:
             raise RuntimeError(f"docker returned no tar header for {path}")
-        info = tarfile.TarInfo.frombuf(
-            result.stdout[:_TAR_BLOCK], encoding="utf-8", errors="surrogateescape"
-        )
+        info = tar_header_from_block(result.stdout[:_TAR_BLOCK])
         if not info.isreg():
             raise OSError(f"{path!r} is not a regular file and is refused")
         if info.size > max_bytes:
@@ -1177,9 +1151,7 @@ class DockerSandboxBackend:
         if len(result.stdout) < _TAR_BLOCK:
             return None
         try:
-            info = tarfile.TarInfo.frombuf(
-                result.stdout[:_TAR_BLOCK], encoding="utf-8", errors="surrogateescape"
-            )
+            info = tar_header_from_block(result.stdout[:_TAR_BLOCK])
         except (tarfile.TarError, EOFError, ValueError):
             return None
         if not info.isreg():
@@ -1211,9 +1183,7 @@ class DockerSandboxBackend:
         if len(result.stdout) < _TAR_BLOCK:
             return {}
         try:
-            info = tarfile.TarInfo.frombuf(
-                result.stdout[:_TAR_BLOCK], encoding="utf-8", errors="surrogateescape"
-            )
+            info = tar_header_from_block(result.stdout[:_TAR_BLOCK])
         except (tarfile.TarError, EOFError, ValueError):
             return {}
         if not info.isreg():
