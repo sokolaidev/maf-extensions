@@ -50,8 +50,9 @@ from maf_sandbox import (
     fold_disposal_failures,
 )
 from maf_sandbox.paths import (
-    confine_guest_write_path,
+    confine_resolve_guest_write_path,
     sandbox_entry_from_tar_header,
+    stat_by_asking_the_guest_as_root,
     tar_header_from_block,
 )
 
@@ -306,7 +307,7 @@ class _WslcSandbox:
         given, and is what an in-door carrying a PNG or a spreadsheet needs — the shape the
         :class:`~maf_sandbox.Sandbox` protocol promises and the docker backend already takes.
         """
-        guest = await confine_guest_write_path(
+        guest = await confine_resolve_guest_write_path(
             lambda p: self._stat_guest(p, p), path, working_directory
         )
         data = content.encode("utf-8") if isinstance(content, str) else content
@@ -347,26 +348,29 @@ class _WslcSandbox:
             raise RuntimeError(f"wslc could not stat {rel}: {result.stderr_text.strip()}")
         if len(result.stdout) < _TAR_BLOCK:
             # WSLC streams an empty response for regular files and links, which is a shape
-            # question `test` can still settle; the tar header remains the fast path where the
-            # CLI provides one.
-            for flag, kind in (
-                ("-L", EntryKind.SYMLINK),
-                ("-d", EntryKind.DIRECTORY),
-                ("-f", EntryKind.FILE),
-            ):
-                probe = await self._run(
-                    "container",
-                    "exec",
-                    self._name,
-                    "test",
-                    flag,
-                    guest,
-                    timeout=self._command_timeout,
-                )
-                if probe.returncode == 0:
-                    return SandboxEntry(path=rel, kind=kind, size_bytes=None)
-            raise RuntimeError(f"wslc returned no tar header for {rel}")
+            # question the guest can still settle; the tar header remains the fast path where
+            # the CLI provides one.
+            return await stat_by_asking_the_guest_as_root(self._test_in_guest, guest, rel)
         return sandbox_entry_from_tar_header(tar_header_from_block(result.stdout[:_TAR_BLOCK]), rel)
+
+    async def _test_in_guest(self, argv: Sequence[str]) -> int:
+        """One ``container exec --user 0``, answering its exit status for the guest-side stat.
+
+        Raised for the same reason :meth:`reclaim` is: the file plane writes as root, so a probe
+        as the image's user would leave the check blind exactly where a write is not.  What
+        asking the guest costs is on
+        :func:`~maf_sandbox.paths.stat_by_asking_the_guest_as_root` and in this package's README.
+        """
+        probe = await self._run(
+            "container",
+            "exec",
+            "--user",
+            "0",
+            self._name,
+            *argv,
+            timeout=self._command_timeout,
+        )
+        return probe.returncode
 
     async def exec(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float

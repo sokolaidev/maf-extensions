@@ -16,6 +16,16 @@ rewrites the *segments* of a name for a hostile filesystem and confines nothing.
 real filesystem, one directory at a time from the root down, and refuses a path whose ancestors
 are not real directories.
 
+**A backend whose engine cannot answer the check has one mechanism left, and this module spells
+it once.**  :func:`stat_by_asking_the_guest` and :func:`stat_by_asking_the_guest_as_root` run
+``test`` inside the guest, which transfers the question to the thing being confined — the name
+says so because the cost is the whole of what a reader has to weigh.  They exist so that a
+backend in that position picks a reviewed spelling instead of inventing a fourth one, not
+because the technique is a good one, and reaching for either is a declared posture the
+repository's own ``tests/test_confinement_stat_source.py`` holds a backend's README to.  The
+pair splits on **reach, not trust**: the raised one reads paths the guest's own principal
+cannot, and is no more trustworthy for it, the binary answering being the image's either way.
+
 **Reach for a bundle rather than for either half.**  Four of them pair the two checks, one per
 confinement policy, and the file surface's five methods map onto them:
 :func:`confine_resolve_guest_write_path` for ``write_file``,
@@ -28,11 +38,13 @@ rather than to a keyword argument: a caller that picked the wrong bundle named t
 out loud, where one that omitted an argument would have got a default in silence.
 
 **The prefix says what a function hands back.**  ``confine_resolve_*`` returns the resolved
-guest path or raises; ``refuse_*`` returns nothing and raises; ``tar_header_from_block`` and
-``sandbox_entry_from_tar_header`` name their returns the same way.  The one that answers a
+guest path or raises; ``refuse_*`` returns nothing and raises; ``stat_*``,
+``tar_header_from_block`` and ``sandbox_entry_from_tar_header`` name their returns the same
+way.  The one that answers a
 ``bool`` does the naming differently: :func:`path_ancestors_are_host_owned` is named as the
 fact it states rather than as a question, because a caller reads its answer as permission to
-raise authority rather than as an outcome to await.
+raise authority rather than as an outcome to await.  The guest-side pair spends the rest of its
+name on where the answer comes from, since that is what a caller is choosing.
 """
 
 from __future__ import annotations
@@ -41,7 +53,7 @@ import inspect
 import posixpath
 import tarfile
 import warnings
-from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from typing import Any
 
 from ._protocol import EntryKind, SandboxEntry
@@ -61,6 +73,8 @@ __all__ = [
     "refuse_symlinked_ancestors",
     "refuse_symlinked_parents",
     "sandbox_entry_from_tar_header",
+    "stat_by_asking_the_guest",
+    "stat_by_asking_the_guest_as_root",
     "tar_header_from_block",
 ]
 
@@ -187,6 +201,139 @@ def sandbox_entry_from_tar_header(info: tarfile.TarInfo, rel_path: str) -> Sandb
     return SandboxEntry(path=rel_path, kind=EntryKind.OTHER, size_bytes=None)
 
 
+#: How a guest-side stat asks its question. ``test`` takes one flag and one operand, so it needs
+#: no shell and nothing quoted.
+_GUEST_STAT_COMMAND = "test"
+
+#: The flags and the kind each proves, in the order they must be asked. ``-L`` first is
+#: load-bearing: ``-d`` and ``-f`` follow links, so a link to a directory answers ``-d`` and the
+#: escape the filesystem path check exists to catch never appears.
+_GUEST_STAT_PROBES: tuple[tuple[str, EntryKind], ...] = (
+    ("-L", EntryKind.SYMLINK),
+    ("-d", EntryKind.DIRECTORY),
+    ("-f", EntryKind.FILE),
+)
+
+#: Asked last, and only to separate an entry that is there from one that is not: a fifo, a socket
+#: or a device node answers no to all three above and is still an ancestor a path cannot go
+#: through.
+_GUEST_STAT_EXISTS = "-e"
+
+#: Asked of an *ancestor*, to tell an absent path from one the asking principal cannot see.
+_GUEST_STAT_SEARCHABLE = "-x"
+
+#: What ``test`` answers. Anything above false is an error rather than a no — a missing binary,
+#: an engine that would not start the command — and reading one as a no ends the check.
+_TEST_TRUE = 0
+_TEST_FALSE = 1
+
+
+async def _guest_answers(
+    ask_the_guest: Callable[[Sequence[str]], Awaitable[int]], flag: str, guest_path: str
+) -> bool:
+    """One ``test`` in the guest, with any exit status above false refused rather than read.
+
+    The argv is reported as the tuple it is: a guest path may hold a backtick or a newline, and
+    a shell-shaped sentence is neither what ran nor safe to render one into.
+    """
+    argv = (_GUEST_STAT_COMMAND, flag, guest_path)
+    status = await ask_the_guest(argv)
+    if status not in (_TEST_TRUE, _TEST_FALSE):
+        raise RuntimeError(
+            f"the guest could not answer {argv!r}: exit {status}. Read as a no it would end "
+            f"the filesystem path check."
+        )
+    return status == _TEST_TRUE
+
+
+async def _kind_the_guest_reports(
+    ask_the_guest: Callable[[Sequence[str]], Awaitable[int]], guest_path: str
+) -> EntryKind | None:
+    """The kind ``test`` reports at ``guest_path``, or ``None`` when it reports nothing there."""
+    for flag, kind in (*_GUEST_STAT_PROBES, (_GUEST_STAT_EXISTS, EntryKind.OTHER)):
+        if await _guest_answers(ask_the_guest, flag, guest_path):
+            return kind
+    return None
+
+
+async def _ancestor_blocking_the_view(
+    ask_the_guest: Callable[[Sequence[str]], Awaitable[int]], guest_path: str
+) -> str | None:
+    """The nearest ancestor that is there and cannot be searched, or ``None`` when none is.
+
+    It climbs because a parent that is not there yet answers no exactly as an unsearchable one
+    does, and a write creates its parents: the first ancestor answering ``-e`` is the deepest
+    whose word can be taken.  The filesystem root has nothing above it, so its own search bit is
+    the last question there is.
+    """
+    ancestor = posixpath.dirname(guest_path)
+    while True:
+        above = posixpath.dirname(ancestor)
+        if above == ancestor or await _guest_answers(ask_the_guest, _GUEST_STAT_EXISTS, ancestor):
+            if await _guest_answers(ask_the_guest, _GUEST_STAT_SEARCHABLE, ancestor):
+                return None
+            return ancestor
+        ancestor = above
+
+
+async def stat_by_asking_the_guest(
+    ask_the_guest: Callable[[Sequence[str]], Awaitable[int]],
+    guest_path: str,
+    rel_path: str,
+) -> SandboxEntry | None:
+    """Stat ``guest_path`` by running ``test`` in the guest, as the guest's own principal.
+
+    This asks the thing being confined to describe itself, and a root workload replaces ``test``
+    in its own filesystem and is believed. ``ask_the_guest`` puts one argv to the guest and
+    answers its exit status; the principal it runs under is the backend's to choose, and a
+    backend whose *file plane* runs raised wants :func:`stat_by_asking_the_guest_as_root`
+    instead, or its check is blind where its writes are not.
+
+    A full miss is absent only where the asker could have seen it, so a
+    :class:`PermissionError` is raised where the nearest existing ancestor cannot be searched.
+    The entry carries a kind and no size, which is what the check reads and is not enough to
+    serve ``stat_file``.
+    """
+    kind = await _kind_the_guest_reports(ask_the_guest, guest_path)
+    if kind is not None:
+        return SandboxEntry(path=rel_path, kind=kind, size_bytes=None)
+    blocked = await _ancestor_blocking_the_view(ask_the_guest, guest_path)
+    if blocked is not None:
+        raise PermissionError(
+            f"nothing is visible at {guest_path!r} and {blocked!r} is not searchable by the "
+            f"principal that asked, so an absent path and a hidden one cannot be told apart"
+        )
+    return None
+
+
+async def stat_by_asking_the_guest_as_root(
+    ask_the_guest: Callable[[Sequence[str]], Awaitable[int]],
+    guest_path: str,
+    rel_path: str,
+) -> SandboxEntry | None:
+    """Stat ``guest_path`` by running ``test`` in the guest, raised to root.
+
+    Raising is the backend's own doing, in the ``ask_the_guest`` it hands over: this spells the
+    probe, not the privilege, and it carries :func:`stat_by_asking_the_guest`'s cost unchanged.
+
+    **The reach is checked rather than assumed**, since a uid is not a capability set, so this
+    climbs exactly as that one does. What differs is the refusal: a blocked view here is a raise
+    that did not deliver what its name claims, which is a backend configuration to look at
+    rather than a confinement outcome.
+    """
+    kind = await _kind_the_guest_reports(ask_the_guest, guest_path)
+    if kind is not None:
+        return SandboxEntry(path=rel_path, kind=kind, size_bytes=None)
+    blocked = await _ancestor_blocking_the_view(ask_the_guest, guest_path)
+    if blocked is not None:
+        raise PermissionError(
+            f"nothing is visible at {guest_path!r} and the raised principal cannot search "
+            f"{blocked!r}, so the reach this variant is named for is not there — a uid is not a "
+            f"capability set, and a container dropping CAP_DAC_OVERRIDE reads exactly like this"
+        )
+    return None
+
+
 def guest_path_relative_to(path: str, base: str) -> str | None:
     """``path`` relative to ``base``, or ``None`` when it does not sit inside ``base``.
 
@@ -248,10 +395,11 @@ async def refuse_symlinked_ancestors(
     that resolves a link describes its target and hides the escape; and **not answered by the
     guest** wherever the backend has any other mechanism, since a workload asked to describe
     its own filesystem can answer falsely — a root guest replaces ``test`` in its own image.
-    A backend with no other mechanism says so in its README, and the repository's own
-    ``tests/test_confinement_stat_source.py`` is what holds it to that.  ``include_self``
-    extends the check to ``guest_path`` itself, which an enumeration needs — a listing passes
-    through a link as readily as a read does.
+    A backend with no other mechanism takes :func:`stat_by_asking_the_guest` or
+    :func:`stat_by_asking_the_guest_as_root` rather than spelling its own, and says so in its
+    README; the repository's own ``tests/test_confinement_stat_source.py`` is what holds it to
+    that.  ``include_self`` extends the check to ``guest_path`` itself, which an enumeration
+    needs — a listing passes through a link as readily as a read does.
     """
     deepest = guest_path if include_self else posixpath.dirname(guest_path)
     for directory in guest_path_and_ancestors(deepest, working_directory):

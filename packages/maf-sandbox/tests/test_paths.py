@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tarfile
 import warnings
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,8 @@ from maf_sandbox.paths import (
     path_ancestors_are_host_owned,
     refuse_symlinked_ancestors,
     sandbox_entry_from_tar_header,
+    stat_by_asking_the_guest,
+    stat_by_asking_the_guest_as_root,
     tar_header_from_block,
 )
 
@@ -587,6 +590,189 @@ class TestTarHeaderHelpers:
     def test_both_names_are_exported(self):
         assert "tar_header_from_block" in paths.__all__
         assert "sandbox_entry_from_tar_header" in paths.__all__
+
+
+class _Guest:
+    """A guest answering ``test``, from a planted table and recording what it was asked.
+
+    Keyed ``(flag, path)``, and anything unplanted answers false — which is what an absent path
+    and one under a directory the asker cannot search both look like, and is the whole of what
+    the two variants differ about.
+    """
+
+    def __init__(self, answers: dict[tuple[str, str], int] | None = None) -> None:
+        self.answers = answers or {}
+        self.asked: list[tuple[str, ...]] = []
+
+    async def __call__(self, argv: Sequence[str]) -> int:
+        self.asked.append(tuple(argv))
+        _, flag, path = argv
+        return self.answers.get((flag, path), 1)
+
+
+class TestStatByAskingTheGuestAsRoot:
+    """The raised variant: reach enough that a path nothing answers for is genuinely absent."""
+
+    def test_a_link_is_asked_about_before_anything_follows_one(self):
+        """The ordering the whole helper exists for. This guest answers yes to both `-L` and
+        `-d`, which is what a link to a directory does; asking `-d` first would classify it a
+        real directory and the escape would never appear."""
+        guest = _Guest({("-L", "/w/out"): 0, ("-d", "/w/out"): 0})
+        entry = asyncio.run(stat_by_asking_the_guest_as_root(guest, "/w/out", "out"))
+        assert entry == SandboxEntry(path="out", kind=EntryKind.SYMLINK, size_bytes=None)
+        assert guest.asked == [("test", "-L", "/w/out")]
+
+    def test_a_directory_comes_back_as_a_directory(self):
+        guest = _Guest({("-d", "/w/sub"): 0})
+        entry = asyncio.run(stat_by_asking_the_guest_as_root(guest, "/w/sub", "sub"))
+        assert entry == SandboxEntry(path="sub", kind=EntryKind.DIRECTORY, size_bytes=None)
+
+    def test_a_regular_file_comes_back_without_a_size(self):
+        """`test` reports no size. That is enough for the filesystem path check, which reads
+        only the kind, and is why this is not a `stat_file`."""
+        guest = _Guest({("-f", "/w/a.txt"): 0})
+        entry = asyncio.run(stat_by_asking_the_guest_as_root(guest, "/w/a.txt", "a.txt"))
+        assert entry == SandboxEntry(path="a.txt", kind=EntryKind.FILE, size_bytes=None)
+
+    def test_an_entry_no_shape_flag_matches_is_other_rather_than_absent(self):
+        """A fifo, a socket and a device node answer none of the three shape flags. `-e` is what
+        keeps one from reading as an absent component, which would end the check."""
+        guest = _Guest({("-e", "/w/pipe"): 0})
+        entry = asyncio.run(stat_by_asking_the_guest_as_root(guest, "/w/pipe", "pipe"))
+        assert entry == SandboxEntry(path="pipe", kind=EntryKind.OTHER, size_bytes=None)
+
+    def test_a_path_nothing_answers_for_is_absent(self):
+        guest = _Guest({("-e", "/w"): 0, ("-x", "/w"): 0})
+        assert asyncio.run(stat_by_asking_the_guest_as_root(guest, "/w/gone", "gone")) is None
+
+    def test_the_reach_is_checked_rather_than_assumed(self):
+        """A uid is not a capability set. A container that drops `CAP_DAC_OVERRIDE` gives uid 0
+        no search it was not already owed, so this variant climbs exactly as the other does
+        rather than reading a full miss as absence on the strength of its own name."""
+        guest = _Guest({("-e", "/w"): 0})
+        with pytest.raises(PermissionError, match="capability set"):
+            asyncio.run(stat_by_asking_the_guest_as_root(guest, "/w/gone", "gone"))
+
+    def test_a_blocked_view_is_named_as_a_raise_that_did_not_deliver(self):
+        """Both variants refuse, and the messages differ because the actions do: for the guest's
+        own principal a blocked view is its ordinary limit, and here it is a backend whose raise
+        bought less than the name claims."""
+        guest = _Guest({("-e", "/w"): 0})
+        with pytest.raises(PermissionError, match="the reach this variant is named for"):
+            asyncio.run(stat_by_asking_the_guest_as_root(guest, "/w/gone", "gone"))
+
+    def test_the_argv_is_test_one_flag_and_the_path(self):
+        """One flag and one operand, so no shell is needed and there is nothing to quote."""
+        guest = _Guest({("-e", "/w"): 0, ("-x", "/w"): 0})
+        asyncio.run(stat_by_asking_the_guest_as_root(guest, "/w/a b.txt", "a b.txt"))
+        assert guest.asked[0] == ("test", "-L", "/w/a b.txt")
+
+    def test_an_unrunnable_probe_reports_the_argv_as_a_tuple(self):
+        """A guest path may hold a newline or a backtick, and the call quotes nothing because it
+        is argv. Rendering it into a shell-shaped sentence would lose the argument boundaries and
+        let the path break the message across lines."""
+        odd = "/w/a" + chr(10) + "b`c"
+        guest = _Guest({("-L", odd): 127})
+        with pytest.raises(RuntimeError) as raised:
+            asyncio.run(stat_by_asking_the_guest_as_root(guest, odd, "odd"))
+        message = str(raised.value)
+        assert repr(("test", "-L", odd)) in message
+        assert chr(10) not in message
+
+    def test_an_exit_above_false_raises_rather_than_reading_as_a_no(self):
+        """126 is the engine refusing to start the command and 127 is a missing `test`. Either
+        read as a no ends the check over a path that was never classified."""
+        guest = _Guest({("-L", "/w/a.txt"): 126})
+        with pytest.raises(RuntimeError, match="exit 126"):
+            asyncio.run(stat_by_asking_the_guest_as_root(guest, "/w/a.txt", "a.txt"))
+
+
+class TestStatByAskingTheGuest:
+    """The guest's own principal: less reach, and the ambiguity that costs is stated not guessed."""
+
+    def test_a_planted_kind_answers_as_the_raised_variant_does(self):
+        guest = _Guest({("-L", "/w/out"): 0})
+        entry = asyncio.run(stat_by_asking_the_guest(guest, "/w/out", "out"))
+        assert entry == SandboxEntry(path="out", kind=EntryKind.SYMLINK, size_bytes=None)
+
+    def test_a_full_miss_under_a_searchable_parent_is_absent(self):
+        guest = _Guest({("-e", "/w"): 0, ("-x", "/w"): 0})
+        assert asyncio.run(stat_by_asking_the_guest(guest, "/w/gone", "gone")) is None
+
+    def test_a_full_miss_under_a_parent_it_cannot_search_is_refused(self):
+        """Absent and invisible answer identically here, and absent would end the check. The
+        refusal is what stops a path that is really there from passing as one that is not."""
+        guest = _Guest({("-e", "/w"): 0})
+        with pytest.raises(PermissionError, match="cannot be told apart"):
+            asyncio.run(stat_by_asking_the_guest(guest, "/w/gone", "gone"))
+
+    def test_the_parent_is_asked_about_only_after_every_probe_missed(self):
+        guest = _Guest({("-d", "/w/sub"): 0})
+        asyncio.run(stat_by_asking_the_guest(guest, "/w/sub", "sub"))
+        assert [argv[1] for argv in guest.asked] == ["-L", "-d"]
+
+    def test_a_parent_that_is_not_there_yet_is_not_a_refusal(self):
+        """`write_file` creates parents, so a path under a chain that does not exist yet is
+        ordinary — `test_parents_that_do_not_exist_yet_pass` is the contract. A missing parent
+        is not itself an answer, so this climbs to the nearest ancestor that is there and asks
+        *its* search bit."""
+        guest = _Guest({("-e", "/w"): 0, ("-x", "/w"): 0})
+        assert asyncio.run(stat_by_asking_the_guest(guest, "/w/new/deep/f.txt", "…")) is None
+
+    def test_the_ancestor_that_blocks_the_view_is_the_one_named(self):
+        """`/w/new` does not exist and `/w` cannot be searched, so nothing below `/w` is
+        knowable and the refusal names `/w` rather than the immediate parent."""
+        guest = _Guest({("-e", "/w"): 0})
+        with pytest.raises(PermissionError, match="'/w'"):
+            asyncio.run(stat_by_asking_the_guest(guest, "/w/new/f.txt", "…"))
+
+    def test_a_root_that_answers_nothing_is_refused_rather_than_read_as_absent(self):
+        """Nothing above `/` to climb to, so its own search bit is the last question. A `test`
+        that answers no to that is broken rather than reporting an absent root, and reading it
+        as absence would end the check."""
+        guest = _Guest()
+        with pytest.raises(PermissionError, match="cannot be told apart"):
+            asyncio.run(stat_by_asking_the_guest(guest, "/", "/"))
+
+
+class TestTheGuestSideStatUnderTheCheck:
+    def test_a_write_into_a_chain_that_does_not_exist_yet_is_confined_and_allowed(self):
+        """The whole bundle over the guest's own principal, which is where the absent-parent
+        reading actually bites: the check ends at the first missing component, then the write
+        bundle stats the leaf, whose parent is missing too."""
+        guest = _Guest(
+            {
+                ("-d", "/maf-sandbox"): 0,
+                ("-e", "/maf-sandbox"): 0,
+                ("-x", "/maf-sandbox"): 0,
+                ("-d", _WORK_DIR): 0,
+                ("-e", _WORK_DIR): 0,
+                ("-x", _WORK_DIR): 0,
+            }
+        )
+        resolved = asyncio.run(
+            confine_resolve_guest_write_path(
+                lambda directory: stat_by_asking_the_guest(guest, directory, directory),
+                "new/deeper/file.txt",
+                _WORK_DIR,
+            )
+        )
+        assert resolved == "/maf-sandbox/work/new/deeper/file.txt"
+
+    def test_a_linked_ancestor_is_refused(self):
+        guest = _Guest({("-d", "/maf-sandbox"): 0, ("-L", "/maf-sandbox/work"): 0})
+        with pytest.raises(ValueError, match="is a link rather than a real directory"):
+            asyncio.run(
+                refuse_symlinked_ancestors(
+                    lambda directory: stat_by_asking_the_guest_as_root(guest, directory, directory),
+                    "/maf-sandbox/work/a.txt",
+                    _WORK_DIR,
+                )
+            )
+
+    def test_both_names_are_exported(self):
+        assert "stat_by_asking_the_guest" in paths.__all__
+        assert "stat_by_asking_the_guest_as_root" in paths.__all__
 
 
 class TestTheNamesTheseHadBefore:
