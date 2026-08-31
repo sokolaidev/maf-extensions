@@ -109,10 +109,12 @@ def _cp(guest: str) -> tuple[str, ...]:
     return ("cp", f"{_NAME}:{guest}")
 
 
-#: Every stat and every read walks the components from the root down: `/maf-sandbox` then
-#: `/maf-sandbox/work`. A fake engine that cannot answer for either refuses both as a path
-#: through a non-directory, so both are seeded as directories here.
+#: Every stat and every read walks the components from the root down: the root itself,
+#: `/maf-sandbox`, then `/maf-sandbox/work`. A fake engine that cannot answer for either
+#: refuses both as a path through a non-directory, so all are seeded as directories here —
+#: the root root-owned and unwritable, which is what an image build leaves it as.
 _WORK_IS_A_DIRECTORY = {
+    _cp("/"): _DockerResult(0, _owned_directory_tar(".", 0, 0o755), ""),
     _cp("/maf-sandbox"): _DockerResult(0, _directory_tar("maf-sandbox"), ""),
     _cp(_WORK): _DockerResult(0, _directory_tar(_WORK.lstrip("/")), ""),
 }
@@ -204,6 +206,10 @@ def _machine(
             )
         if args[:3] == ("inspect", "-f", "{{.Config.User}}"):
             return _DockerResult(0, b"\n", "")
+        if args[0] == "cp" and args[1].endswith(":/"):
+            # Every walk now stats the root, and a real engine answers it with the root
+            # directory's own header — root's, writable by nobody else on any sane image.
+            return _DockerResult(0, _owned_directory_tar(".", 0, 0o755), "")
         if args[0] == "inspect":
             name = args[-1]
             if name not in present:
@@ -1079,6 +1085,7 @@ class TestTheReachRuleChoosesThePrincipal:
 
     def _sandbox(self, work_dir_entry: bytes):
         overrides = {
+            _cp("/"): _DockerResult(0, _owned_directory_tar(".", 0, 0o755), ""),
             _cp("/maf-sandbox"): _DockerResult(0, _directory_tar("maf-sandbox"), ""),
             _cp(_WORK): _DockerResult(0, work_dir_entry, ""),
             ("cp",): _DockerResult(1, b"", "Error: Could not find the file in container"),
@@ -1090,6 +1097,39 @@ class TestTheReachRuleChoosesThePrincipal:
         sandbox, fake = self._sandbox(_owned_directory_tar(_WORK.lstrip("/"), 0, 0o755))
         asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
         assert fake.only("exec").args[:3] == ("exec", "--user", "0")
+
+    def test_an_unreadable_root_keeps_the_removal_at_the_guest_s_and_running(self):
+        """The per-remove probe for `/` owes the removal an answer it cannot give when the
+        daemon will not describe it: the removal still runs, so a broken engine breaks no
+        delete, and stays at the guest's authority because nothing was verified."""
+
+        def refuses(args):
+            if args[:2] == ("cp", f"{_NAME}:/"):
+                raise RuntimeError("the daemon said no")
+            return _machine(running=[_NAME], overrides=_WORK_IS_A_DIRECTORY)(args)
+
+        backend, fake = _backend_with(refuses)
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
+        exec_args = fake.only("exec").args
+        assert "--user" not in exec_args
+        assert exec_args[-4:] == ("rm", "-f", "--", f"{_WORK}/a.txt")
+
+    def test_a_writable_root_withholds_root_from_the_removal_itself(self):
+        """The twin of the acquire-side probe: a root the guest could have written is the
+        swap the walk's own components cannot witness, so the removal borrows no root
+        however clean the directories below it are."""
+
+        writable = {
+            **_WORK_IS_A_DIRECTORY,
+            ("cp", f"{_NAME}:/"): _DockerResult(0, _owned_directory_tar(".", 0, 0o777), ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=writable))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
+        exec_args = fake.only("exec").args
+        assert "--user" not in exec_args
+        assert exec_args[-4:] == ("rm", "-f", "--", f"{_WORK}/a.txt")
 
     def test_a_component_the_guest_owns_keeps_the_removal_at_the_guest_authority(self):
         """The guest can swap what it owns, so root here would delete what it could not."""
@@ -1115,6 +1155,7 @@ class TestTheAncestorsAboveTheWorkDirAreChecked:
 
     def _backend(self, parent: bytes | None, image: str = _SPEC.image):
         overrides = {("cp",): _DockerResult(1, b"", "Error: Could not find the file in container")}
+        overrides[("cp", f"{_NAME}:/")] = _DockerResult(0, _owned_directory_tar(".", 0, 0o755), "")
         if parent is not None:
             overrides[_cp("/maf-sandbox")] = _DockerResult(0, parent, "")
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
@@ -1152,6 +1193,47 @@ class TestTheAncestorsAboveTheWorkDirAreChecked:
         backend, fake = _backend_with(refuses)
         assert "--user" not in self._reclaimed_as(backend, fake, _SPEC)
 
+    def test_an_unreadable_root_does_the_same(self):
+        """Nothing verified, nothing licensed: the root is the swap the directories below it
+        cannot witness, so a walk that cannot read it licenses no removal at all."""
+
+        def refuseless(args):
+            if args[:2] == ("cp", f"{_NAME}:/"):
+                raise RuntimeError("the daemon said no")
+            return _machine(running=[_NAME])(args)
+
+        backend, fake = _backend_with(refuseless)
+        assert "--user" not in self._reclaimed_as(backend, fake, _SPEC)
+
+    def test_a_writable_root_is_what_closes_licensing(self):
+        """A root the guest could have written is the swap the chain above the work dir cannot
+        see — its header, read by the same walk, is what the rule rests on."""
+
+        def writable(args):
+            if args[:2] == ("cp", f"{_NAME}:/"):
+                return _DockerResult(0, _owned_directory_tar(".", 0, 0o777), "")
+            return _machine(running=[_NAME])(args)
+
+        backend, fake = _backend_with(writable)
+        assert "--user" not in self._reclaimed_as(backend, fake, _SPEC)
+
+    def test_a_work_dir_straight_under_the_root_is_answered_by_the_root_alone(self):
+        """`/work` has no ancestors above it, so the walk is just ``/`` — the component the
+        chain never reached, and the one every other component's replacement relies on."""
+
+        def root_only(args):
+            if args[:2] == ("cp", f"{_NAME}:/maf-sandbox"):
+                raise RuntimeError("the daemon said no")
+            if args[:2] == ("cp", f"{_NAME}:/"):
+                return _DockerResult(0, _owned_directory_tar(".", 0, 0o755), "")
+            return _machine(running=[_NAME])(args)
+
+        backend, fake = _backend_with(root_only)
+        spec = SandboxSpec(kind=_SPEC.kind, image=_SPEC.image, work_dir="/work")
+        asyncio.run(backend.acquire(_KEY, spec))
+        assert [f.host_owned_ancestors for f in backend._facts.values()] == [True]
+        assert fake.matching("cp", f"{_NAME}:/maf-sandbox") == []
+
     def test_the_answer_is_read_once_per_container(self):
         backend, fake, spec = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))
         asyncio.run(backend.acquire(_KEY, spec))
@@ -1165,7 +1247,7 @@ class TestTheAncestorsAboveTheWorkDirAreChecked:
         asyncio.run(backend.acquire(_KEY, spec))
         fake.mark()
         asyncio.run(backend.acquire(_KEY, SandboxSpec(kind=_SPEC.kind, image="other:local")))
-        assert fake.cp_since_mark() == [(*_cp("/maf-sandbox"), "-")]
+        assert fake.cp_since_mark() == [(*_cp("/"), "-"), (*_cp("/maf-sandbox"), "-")]
 
     def test_a_changed_image_id_re_reads_even_where_the_image_name_holds_still(self):
         """`image_id` is what `_create_workload` runs when a spec carries one, so it is what
@@ -1180,7 +1262,7 @@ class TestTheAncestorsAboveTheWorkDirAreChecked:
                 _KEY, SandboxSpec(kind=_SPEC.kind, image="same:local", image_id="sha256:bbb")
             )
         )
-        assert fake.cp_since_mark() == [(*_cp("/maf-sandbox"), "-")]
+        assert fake.cp_since_mark() == [(*_cp("/"), "-"), (*_cp("/maf-sandbox"), "-")]
 
     def test_the_same_image_id_is_still_read_once(self):
         backend, fake, _ = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))
@@ -1196,7 +1278,7 @@ class TestTheAncestorsAboveTheWorkDirAreChecked:
         asyncio.run(backend.dispose(_KEY))
         fake.mark()
         asyncio.run(backend.acquire(_KEY, spec))
-        assert fake.cp_since_mark() == [(*_cp("/maf-sandbox"), "-")]
+        assert fake.cp_since_mark() == [(*_cp("/"), "-"), (*_cp("/maf-sandbox"), "-")]
 
 
 class TestTheHardeningIsReadFromTheContainer:
@@ -1298,7 +1380,7 @@ class TestAContainerThatVanishedBehindThisBackend:
         present.discard(_NAME)
         fake.mark()
         asyncio.run(backend.acquire(_KEY, _SPEC))
-        assert fake.cp_since_mark() == [(*_cp("/maf-sandbox"), "-")]
+        assert fake.cp_since_mark() == [(*_cp("/"), "-"), (*_cp("/maf-sandbox"), "-")]
 
 
 class TestReclaimKeepsAFloorUnderRoot:
