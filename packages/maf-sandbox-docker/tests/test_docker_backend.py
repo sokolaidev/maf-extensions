@@ -1098,6 +1098,39 @@ class TestTheReachRuleChoosesThePrincipal:
         asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
         assert fake.only("exec").args[:3] == ("exec", "--user", "0")
 
+    def test_an_unreadable_root_keeps_the_removal_at_the_guest_s_and_running(self):
+        """The per-remove probe for `/` owes the removal an answer it cannot give when the
+        daemon will not describe it: the removal still runs, so a broken engine breaks no
+        delete, and stays at the guest's authority because nothing was verified."""
+
+        def refuses(args):
+            if args[:2] == ("cp", f"{_NAME}:/"):
+                raise RuntimeError("the daemon said no")
+            return _machine(running=[_NAME], overrides=_WORK_IS_A_DIRECTORY)(args)
+
+        backend, fake = _backend_with(refuses)
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
+        exec_args = fake.only("exec").args
+        assert "--user" not in exec_args
+        assert exec_args[-4:] == ("rm", "-f", "--", f"{_WORK}/a.txt")
+
+    def test_a_writable_root_withholds_root_from_the_removal_itself(self):
+        """The twin of the acquire-side probe: a root the guest could have written is the
+        swap the walk's own components cannot witness, so the removal borrows no root
+        however clean the directories below it are."""
+
+        writable = {
+            **_WORK_IS_A_DIRECTORY,
+            ("cp", f"{_NAME}:/"): _DockerResult(0, _owned_directory_tar(".", 0, 0o777), ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=writable))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
+        exec_args = fake.only("exec").args
+        assert "--user" not in exec_args
+        assert exec_args[-4:] == ("rm", "-f", "--", f"{_WORK}/a.txt")
+
     def test_a_component_the_guest_owns_keeps_the_removal_at_the_guest_authority(self):
         """The guest can swap what it owns, so root here would delete what it could not."""
         sandbox, fake = self._sandbox(_owned_directory_tar(_WORK.lstrip("/"), 10001, 0o755))
