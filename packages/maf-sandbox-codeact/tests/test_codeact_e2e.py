@@ -101,6 +101,7 @@ def _run_in_a_container(
     mode: CodeactOutputs,
     sink: _RecordingSink,
     files_out: TransferLimits | None = None,
+    withhold: bool = False,
     **call_kwargs: Any,
 ) -> str:
     """Build the tool over a real Docker backend, run ``code`` in it, and dispose.
@@ -118,6 +119,7 @@ def _run_in_a_container(
         image=_IMAGE,
         outputs=mode,
         output_sink=sink.sink,
+        withhold_guest_output=withhold,
         **extra,
     )
     assert len(tools) == 1, f"expected one tool, got {len(tools)}"
@@ -293,3 +295,112 @@ print("wrote one of the two")
 
         assert sink.names == ["present.txt"]
         assert "absent.txt" in answer, answer
+
+
+class TestWithheldOutputAgainstARealInterpreter:
+    """`withhold_guest_output` against a real guest, because the fake cannot disagree with it.
+
+    Offline, the streams and the exit code are supplied from a dict by the same package that
+    renders them. Here a real interpreter writes them, the backend decodes them, and the sizes
+    are of whatever that produced — which is the one part of this mode's contract no in-process
+    fake can put under strain.
+    """
+
+    #: Printed by the programs below, and asserted absent. A distinctive string so its arrival
+    #: anywhere in a result is unambiguous rather than a substring coincidence.
+    _SECRET = "THE-SECRET-IS-42"
+
+    def test_a_real_programs_text_does_not_come_back(self):
+        sink = _RecordingSink()
+        answer = _run_in_a_container(
+            "import sys\n"
+            f"print('{self._SECRET}')\n"
+            "print('to stderr', file=sys.stderr)\n"
+            "open('answer.txt', 'w').write('12 resources')\n",
+            mode=CodeactOutputs.DECLARED,
+            sink=sink,
+            withhold=True,
+            outputs=["answer.txt"],
+        )
+
+        assert self._SECRET not in answer, answer
+        assert "to stderr" not in answer, answer
+
+    def test_the_same_program_shown_does_return_its_text(self):
+        """The control. Without it, the absence above could mean the program never ran."""
+        sink = _RecordingSink()
+        answer = _run_in_a_container(
+            "import sys\n"
+            f"print('{self._SECRET}')\n"
+            "print('to stderr', file=sys.stderr)\n"
+            "open('answer.txt', 'w').write('12 resources')\n",
+            mode=CodeactOutputs.DECLARED,
+            sink=sink,
+            outputs=["answer.txt"],
+        )
+
+        assert self._SECRET in answer, answer
+        assert "to stderr" in answer, answer
+
+    def test_the_shape_carries_the_exit_code_and_the_real_sizes(self):
+        """The sizes are of what the backend actually decoded, which is the number the offline
+        suite takes on trust."""
+        sink = _RecordingSink()
+        answer = _run_in_a_container(
+            f"import sys\nprint('{self._SECRET}')\nprint('to stderr', file=sys.stderr)\n",
+            mode=CodeactOutputs.DECLARED,
+            sink=sink,
+            withhold=True,
+            outputs=[],
+        )
+
+        assert "exit code: 0" in answer, answer
+        assert f"stdout: {len(self._SECRET) + 1} bytes" in answer, answer
+        assert "stderr: 10 bytes" in answer, answer
+
+    def test_a_declared_file_lands_and_is_named_by_the_declared_spelling(self):
+        sink = _RecordingSink()
+        answer = _run_in_a_container(
+            "open('answer.txt', 'w').write('12 resources')\n",
+            mode=CodeactOutputs.DECLARED,
+            sink=sink,
+            withhold=True,
+            outputs=["answer.txt"],
+        )
+
+        assert sink.names == ["answer.txt"]
+        assert sink.contents["answer.txt"] == b"12 resources"
+        assert "- answer.txt" in answer, answer
+        assert "saved answer.txt" not in answer, "the sink's display reached a withheld result"
+
+    def test_a_failing_program_still_lands_what_it_wrote(self):
+        """The collection rule this mode inverts, against a real non-zero exit: the shown path
+        skips collection there, and withheld it is the only channel the model has left."""
+        sink = _RecordingSink()
+        answer = _run_in_a_container(
+            "import sys\n"
+            "open('why.txt', 'w').write('ValueError: bad row 7')\n"
+            f"print('{self._SECRET}')\n"
+            "sys.exit(1)\n",
+            mode=CodeactOutputs.DECLARED,
+            sink=sink,
+            withhold=True,
+            outputs=["why.txt"],
+        )
+
+        assert "exit code: 1" in answer, answer
+        assert sink.names == ["why.txt"]
+        assert sink.contents["why.txt"] == b"ValueError: bad row 7"
+        assert self._SECRET not in answer, answer
+
+    def test_the_same_failure_shown_lands_nothing(self):
+        """The contrast that makes the rule above a decision rather than an accident."""
+        sink = _RecordingSink()
+        _run_in_a_container(
+            "import sys\nopen('why.txt', 'w').write('ValueError: bad row 7')\nsys.exit(1)\n",
+            mode=CodeactOutputs.DECLARED,
+            sink=sink,
+            outputs=["why.txt"],
+        )
+
+        assert sink.names == []
