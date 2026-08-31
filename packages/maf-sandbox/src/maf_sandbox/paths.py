@@ -227,10 +227,10 @@ _TEST_FALSE = 1
 
 
 async def _guest_answers(
-    run_in_guest: Callable[[Sequence[str]], Awaitable[int]], flag: str, guest_path: str
+    ask_the_guest: Callable[[Sequence[str]], Awaitable[int]], flag: str, guest_path: str
 ) -> bool:
     """One ``test`` in the guest, with any exit status above false refused rather than read."""
-    status = await run_in_guest((_GUEST_STAT_COMMAND, flag, guest_path))
+    status = await ask_the_guest((_GUEST_STAT_COMMAND, flag, guest_path))
     if status not in (_TEST_TRUE, _TEST_FALSE):
         raise RuntimeError(
             f"the guest could not answer `{_GUEST_STAT_COMMAND} {flag} {guest_path}`: exit "
@@ -240,17 +240,17 @@ async def _guest_answers(
 
 
 async def _kind_the_guest_reports(
-    run_in_guest: Callable[[Sequence[str]], Awaitable[int]], guest_path: str
+    ask_the_guest: Callable[[Sequence[str]], Awaitable[int]], guest_path: str
 ) -> EntryKind | None:
     """The kind ``test`` reports at ``guest_path``, or ``None`` when it reports nothing there."""
     for flag, kind in (*_GUEST_STAT_PROBES, (_GUEST_STAT_EXISTS, EntryKind.OTHER)):
-        if await _guest_answers(run_in_guest, flag, guest_path):
+        if await _guest_answers(ask_the_guest, flag, guest_path):
             return kind
     return None
 
 
 async def _ancestor_blocking_the_view(
-    run_in_guest: Callable[[Sequence[str]], Awaitable[int]], guest_path: str
+    ask_the_guest: Callable[[Sequence[str]], Awaitable[int]], guest_path: str
 ) -> str | None:
     """The nearest ancestor that is there and cannot be searched, or ``None`` when none is.
 
@@ -264,15 +264,15 @@ async def _ancestor_blocking_the_view(
     ancestor = posixpath.dirname(guest_path)
     while True:
         above = posixpath.dirname(ancestor)
-        if above == ancestor or await _guest_answers(run_in_guest, _GUEST_STAT_EXISTS, ancestor):
-            if await _guest_answers(run_in_guest, _GUEST_STAT_SEARCHABLE, ancestor):
+        if above == ancestor or await _guest_answers(ask_the_guest, _GUEST_STAT_EXISTS, ancestor):
+            if await _guest_answers(ask_the_guest, _GUEST_STAT_SEARCHABLE, ancestor):
                 return None
             return ancestor
         ancestor = above
 
 
 async def stat_by_asking_the_guest(
-    run_in_guest: Callable[[Sequence[str]], Awaitable[int]],
+    ask_the_guest: Callable[[Sequence[str]], Awaitable[int]],
     guest_path: str,
     rel_path: str,
 ) -> SandboxEntry | None:
@@ -281,8 +281,8 @@ async def stat_by_asking_the_guest(
     **This asks the thing being confined to describe itself**, and a root workload replaces
     ``test`` in its own filesystem and is believed. Reach for it only where the engine answers
     nothing, and say so in the backend's README — ``tests/test_confinement_stat_source.py``
-    requires that of any package reaching for this. ``run_in_guest`` runs one argv there and
-    answers its exit status.
+    requires that of any package reaching for this. ``ask_the_guest`` puts one argv to the guest
+    and answers its exit status; it is the backend's, and so is the principal it runs under.
 
     The two variants differ in reach and not in trust: :func:`stat_by_asking_the_guest_as_root`
     reads paths this one cannot and is no more trustworthy, the binary answering being the
@@ -296,10 +296,10 @@ async def stat_by_asking_the_guest(
     entry carries a kind and no size, which is what the check reads and is not enough to serve
     ``stat_file``.
     """
-    kind = await _kind_the_guest_reports(run_in_guest, guest_path)
+    kind = await _kind_the_guest_reports(ask_the_guest, guest_path)
     if kind is not None:
         return SandboxEntry(path=rel_path, kind=kind, size_bytes=None)
-    blocked = await _ancestor_blocking_the_view(run_in_guest, guest_path)
+    blocked = await _ancestor_blocking_the_view(ask_the_guest, guest_path)
     if blocked is not None:
         raise PermissionError(
             f"nothing is visible at {guest_path!r} and {blocked!r} is not searchable by the "
@@ -309,7 +309,7 @@ async def stat_by_asking_the_guest(
 
 
 async def stat_by_asking_the_guest_as_root(
-    run_in_guest: Callable[[Sequence[str]], Awaitable[int]],
+    ask_the_guest: Callable[[Sequence[str]], Awaitable[int]],
     guest_path: str,
     rel_path: str,
 ) -> SandboxEntry | None:
@@ -318,10 +318,10 @@ async def stat_by_asking_the_guest_as_root(
     The cost is :func:`stat_by_asking_the_guest`'s, unchanged: the question goes to the thing
     being confined. Raising buys **reach** — root searches every directory, so a path every probe
     answers no to is genuinely absent and needs none of the disambiguation that one owes — and it
-    buys no trust whatever. Raising is the backend's own doing, in the ``run_in_guest`` it hands
-    over; this spells the probe, not the privilege.
+    buys no trust whatever. Raising is the backend's own doing, in the ``ask_the_guest`` it hands
+    over: this spells the probe, not the privilege.
     """
-    kind = await _kind_the_guest_reports(run_in_guest, guest_path)
+    kind = await _kind_the_guest_reports(ask_the_guest, guest_path)
     if kind is None:
         return None
     return SandboxEntry(path=rel_path, kind=kind, size_bytes=None)
