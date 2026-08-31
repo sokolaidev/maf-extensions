@@ -82,20 +82,48 @@ _SIBLING_DISTRIBUTIONS = (
     "maf-sandbox-wslc",
 )
 
-#: The versions of those siblings published at the moment the gate runs, so the published-core
-#: install can name `sibling>=<published version>` — a floor at the published release, not at
-#: the core under test. A sibling whose *declared* floor excludes the core still refuses the
-#: build through its own metadata, which is the pairing-mismatch verdict; a sibling that admits
-#: the core resolves at its newest and the pairing is one a consumer could have.
+#: The versions of those siblings published at the moment the gate runs. For each core under
+#: test the published-core install pins, per sibling, the *newest published version whose own
+#: metadata admits that core* — the pairing a consumer capping elsewhere would resolve, not
+#: necessarily the newest release. A sibling with no version admitting the core is left out
+#: entirely: its absence cannot break the candidate, and forcing its floor would fail the
+#: environment over a pairing nothing installs.
 _PUBLISHED_SIBLING_VERSIONS: dict[str, str] = {}
 
 
-def _refresh_published_siblings() -> None:
-    """Snapshot the newest published version of each sibling distribution."""
+def _admits_core(requires_dist: list[str] | None, core: str) -> bool:
+    """Whether a published sibling's own requirements admit ``core``.
+
+    Reads the same `maf-sandbox>=X,<Y` shape the wheel metadata declares; a sibling with no
+    core requirement admits everything.
+    """
+    if requires_dist is None:
+        return False
+    for requirement in requires_dist:
+        head = requirement.split(";", 1)[0].strip()
+        if not head.startswith(_CORE):
+            continue
+        match = re.search(r">=\s*(\d+(?:\.\d+)*)", head)
+        floor = version(match.group(1)) if match else (0,)
+        match = re.search(r"<\s*(\d+(?:\.\d+)*)", head)
+        ceiling = version(match.group(1)) if match else (999,)
+        return version(core) >= floor and admits(version(core), ceiling)
+    return True
+
+
+def _select_published_siblings(core: str) -> dict[str, str]:
+    """Per sibling, the newest published version whose own metadata admits ``core``."""
+    selected: dict[str, str] = {}
     for sibling in _SIBLING_DISTRIBUTIONS:
         published = fetch_published_versions(sibling)
-        if published:
-            _PUBLISHED_SIBLING_VERSIONS[sibling] = published[0]
+        if not published:
+            continue
+        for candidate in published:  # newest first
+            requires = fetch_requires_dist_for_version(sibling, candidate)
+            if requires is not None and _admits_core(requires, core):
+                selected[sibling] = candidate
+                break
+    return selected
 
 
 def declared_range(wheel: Path) -> tuple[tuple[int, ...], tuple[int, ...]]:
@@ -201,10 +229,10 @@ def run_suite(wheel: Path, core: str | Path, tests: Path) -> tuple[bool, str]:
     The siblings follow the core. On the local-core path they are this branch's wheels and
     come in a second, `--no-deps` pass: their floors on the not-yet-released core are claims
     about published artifacts, and the pairing under test is the one a pull request can settle.
-    On the published-core path the newest published siblings ride the resolving install at
-    their own floors — a branch-built sibling forced beside an older published core is a
-    pairing no user can install, since the sibling imports the new core names the candidate's
-    floor is waiting on.
+    On the published-core path each sibling rides at the newest published version whose own
+    metadata admits the core under test — the pairing a consumer capping elsewhere would
+    resolve, not necessarily the newest release; a branch-built sibling is never forced beside
+    an older published core, because that pairing nothing can install.
     """
     with tempfile.TemporaryDirectory() as directory:
         python = throwaway_interpreter(Path(directory))
@@ -218,17 +246,15 @@ def run_suite(wheel: Path, core: str | Path, tests: Path) -> tuple[bool, str]:
             # pairing resolvable without a second spelling of the version.
             pinned = ["--overrides", str(override), str(core)]
         else:
-            # A published core under test: the newest published siblings ride the same
-            # resolving install, floored at their own published versions, so the suites that
-            # import one find it — docker's parity guard asserts its wslc sibling outright.
-            # Each sibling keeps its own declared range, so a sibling whose floor excludes
-            # the core under test refuses the build through its metadata: the
-            # pairing-mismatch verdict this gate exists to deliver, at the install rather
-            # than as an import failure three layers into the suite.
+            # A published core under test: each published sibling rides at the newest version
+            # whose own metadata admits this core — what a consumer capped to that core would
+            # resolve, not necessarily the newest release — so the suites that import a
+            # sibling find it, and a sibling that cannot pair with this core is simply absent
+            # rather than failing the environment over a floor that excludes it.
             pinned = [f"{_CORE}=={core}"]
             pinned += [
-                f"{sibling}>={version}"
-                for sibling, version in _PUBLISHED_SIBLING_VERSIONS.items()
+                f"{sibling}=={version}"
+                for sibling, version in _select_published_siblings(core).items()
                 if sibling != _distribution_of(wheel)
             ]
         installed = subprocess.run(
@@ -314,11 +340,6 @@ def main(argv: list[str]) -> int:
 
     floor, ceiling = declared_range(wheel)
     cores = admitted_published_cores(floor, ceiling)
-    if cores:
-        # The published-core install names the siblings at their published versions; the
-        # snapshot is taken once per run, before any suite, so every core under test pairs
-        # against the same set.
-        _refresh_published_siblings()
     span = f">={'.'.join(map(str, floor))},<{'.'.join(map(str, ceiling))}"
     if not cores:
         if local_core is None:

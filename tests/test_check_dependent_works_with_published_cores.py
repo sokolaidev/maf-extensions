@@ -263,7 +263,11 @@ class TestTheInstallCommands:
     @staticmethod
     def _capture(monkeypatch: pytest.MonkeyPatch, published: list[str]) -> list[list[str]]:
         seen: list[list[str]] = []
-        monkeypatch.setattr(check, "fetch_published_versions", lambda _: published)
+        monkeypatch.setattr(
+            check,
+            "fetch_published_versions",
+            lambda dist: published if dist == "maf-sandbox" else [],
+        )
         monkeypatch.setattr(check, "fetch_requires_dist_for_version", lambda *_: [])
         monkeypatch.setattr(
             check.subprocess,
@@ -300,18 +304,38 @@ class TestTheInstallCommands:
             "the candidate rides the resolving pass, its siblings the forced one"
         )
 
-    def test_the_published_core_path_pins_the_siblings_that_admit_it(
+    def test_the_published_core_path_pins_the_newest_sibling_admitting_each_core(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         """The published-core pairing installs what a consumer could assemble: the candidate,
-        the published core, and the published siblings pinned to the same core — docker's
-        parity guard asserts its wslc sibling outright, so an environment without one fails
-        for the wrong reason. A sibling whose floor excludes the core under test turns the
-        install into the resolution refusal that is the pairing-mismatch verdict."""
+        the published core, and per sibling the newest published version whose own metadata
+        admits that core — not the newest release unconditionally, which would fail the
+        candidate over an unrelated sibling's floor move. A sibling with no version admitting
+        the core stays out rather than failing the environment."""
         wheel = _wheel(
             tmp_path, "maf_sandbox_codeact-0.8.0-py3-none-any.whl", ["maf-sandbox>=0.27.0,<0.29"]
         )
         seen = self._capture(monkeypatch, published=["0.27.0"])
+        # docker 0.10.0 admits 0.27.0; a 0.11.0 floored on 0.28.0 does not and must not appear.
+        published_requires = {
+            ("maf-sandbox-docker", "0.11.0"): ["maf-sandbox>=0.28.0,<0.29"],
+            ("maf-sandbox-docker", "0.10.0"): ["maf-sandbox>=0.27.0,<0.29"],
+            ("maf-sandbox-wslc", "0.13.0"): ["maf-sandbox>=0.28.0,<0.29"],
+        }
+        monkeypatch.setattr(
+            check,
+            "fetch_requires_dist_for_version",
+            lambda dist, ver: published_requires.get((dist, ver), []),
+        )
+        monkeypatch.setattr(
+            check,
+            "fetch_published_versions",
+            lambda dist: (
+                ["0.27.0"]
+                if dist == "maf-sandbox"
+                else (["0.11.0", "0.10.0"] if dist == "maf-sandbox-docker" else ["0.13.0"])
+            ),
+        )
         code = check.main(["prog", "maf-sandbox-codeact", str(wheel)])
         assert code == 0
         installs = [a for a in seen if a[:2] == ["uv", "pip"]]
@@ -319,11 +343,14 @@ class TestTheInstallCommands:
         assert "--no-deps" not in installs[0]
         joined = " ".join(installs[0])
         assert "maf-sandbox==0.27.0" in joined
-        assert "maf-sandbox-docker>=0.27.0" in joined, (
-            "the sibling docker's suite imports is floored beside the core under test"
+        assert "maf-sandbox-docker==0.10.0" in joined, (
+            "the newest sibling admitting the core, not the newest release"
         )
-        assert "maf-sandbox-acas>=0.27.0" in joined and "maf-sandbox-wslc>=0.27.0" in joined, (
-            "every published sibling rides the pairing, not only the one a suite names"
+        assert "maf-sandbox-wslc" not in joined, (
+            "a sibling with no version admitting the core stays out"
+        )
+        assert "maf-sandbox-acas==0.13.0" in joined and "maf-sandbox-bicep==0.13.0" in joined, (
+            "siblings defaulting to an empty metadata admit the core at their newest"
         )
 
     def test_the_core_is_pinned_by_the_override_and_answered_by_an_operand(
