@@ -610,7 +610,9 @@ _DESCRIPTION_HEAD = """Run a short Python program inside a sandbox and return wh
 
 #: The withholding head. The paragraph above it is not merely untrue in that mode — it
 #: instructs the one behaviour the mode exists to redirect, and it is the first thing the model
-#: reads, so a withheld tool built on it argues with its own `Returns:` section.
+#: reads, so a withheld tool built on it argues with its own `Returns:` section. This one stays
+#: transport-neutral about the shape and says "how large" rather than a count of bytes written:
+#: `Returns:` is where one merged size is told from two, and neither is what the program wrote.
 _DESCRIPTION_HEAD_WITHHELD = """Run a short Python program inside a sandbox and report what it
         did.
 
@@ -618,10 +620,9 @@ _DESCRIPTION_HEAD_WITHHELD = """Run a short Python program inside a sandbox and 
         anything where running the code beats predicting what it would do.  The program runs
         as ``python3 program.py`` in a sandbox with {network}
 
-        **What you print is not read back.**  You get the exit code and how many bytes each
-        stream received, never what was in them — so ``print(...)`` is for your own debugging
-        and never a way to return a value.  Write anything you need to see into a declared
-        output instead.
+        **What you print is not read back.**  You get the exit code and how large the output
+        was, never what was in it — so ``print(...)`` is for your own debugging and never a way
+        to return a value.  Write anything you need to see into a declared output instead.
 
         Write a complete, self-contained program every time.  Each call gets a fresh working
         directory: nothing you did not pass in to *this* call is in it."""

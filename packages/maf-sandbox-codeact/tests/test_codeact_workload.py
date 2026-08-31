@@ -1151,6 +1151,30 @@ class TestTheModelIsToldUpFront:
         assert "print(...)`` of\n        everything you need to see" not in description
         assert "What you print is not read back" in description
 
+    def test_the_head_is_transport_neutral_about_the_shape(self):
+        """One head serves both renderings, and the transport's is a single merged `output`
+        count — so a head promising a size per stream contradicts the `Returns:` below it in
+        exactly the wiring where the model most needs them to agree."""
+        registry = _registry(_round_half_up)
+        merged = (
+            _callable(
+                _tool(
+                    _backend(capabilities=_CALLS),
+                    host_tools=registry,
+                    **_landing(CodeactOutputs.DECLARED),
+                    withhold_guest_output=True,
+                )
+            ).__doc__
+            or ""
+        )
+        split = _callable(_withholding_tool(_ScriptedSandbox())).__doc__ or ""
+
+        for description in (merged, split):
+            assert "how large the output" in description
+            assert "never what was in it" in description
+            assert "bytes each" not in description
+            assert "stream received" not in description
+
     def test_the_shown_head_is_unchanged(self):
         description = _callable(_tool(_backend())).__doc__ or ""
 
