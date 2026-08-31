@@ -1041,9 +1041,12 @@ async def _execute(
         return f"Error: {expired}"
     except TimeoutError as unfinished:
         if host_tool_call is None:
-            # One `exec`, one bound: a timeout here is that bound and nothing else.
+            # One `exec`, one bound: a timeout here is that bound and nothing else, so unlike
+            # the branch above this one may name it. The route still belongs on the end —
+            # every shipped backend reaches this line rather than that one.
             logger.warning("execute_code: the program timed out after %ss", timeout)
-            return f"Error: the program timed out after {timeout}s"
+            expiry = f"Error: the program timed out after {timeout}s"
+            return f"{expiry}. {_WITHHELD_ROUTE}" if withhold else expiry
         # A backend bounding one of its own control-plane calls, which the transport re-raises
         # untranslated. Blaming the program would be a guess about code the model is about to
         # rewrite — and the wrong one, since the run may have had most of its time left.
@@ -1548,18 +1551,11 @@ def _format_result(result: ExecResult) -> str:
 def _stream_bytes(text: str | None) -> int:
     """The UTF-8 size of the text a stream came back as — **not** the bytes the program wrote.
 
-    The two differ, and by a backend-dependent amount, because ``ExecResult`` states no
-    decoding contract (#465): docker decodes with ``errors="replace"``, so one invalid byte
-    becomes ``U+FFFD`` and counts as three. Measured on the same program writing four bytes,
-    ``b"ok\\xff\\xfe"``, docker reports 8 and ACA Sandboxes 5. Nothing here can recover the
-    original count — ``ExecResult`` carries neither the bytes nor a length — so this reports
-    what it can measure and says so rather than implying the other number. Exactness waits on
-    the lossless reading #465 proposes.
+    The two differ by a backend-dependent amount, since ``ExecResult`` states no decoding
+    contract, and nothing here can recover the original count.
 
-    ``surrogatepass`` because a lone surrogate survives a backend's JSON and reaches here as a
-    ``str`` a plain encode refuses. This runs outside every guarded block, so a raise escapes
-    the tool body and kills the caller's turn — the trap :meth:`_InboundTally.add` already
-    names on the way in.
+    ``surrogatepass`` because a lone surrogate arrives as a ``str`` a plain encode refuses, and
+    this runs outside every guarded block, where a raise would end the caller's turn.
     """
     return len((text or "").encode("utf-8", errors="surrogatepass"))
 

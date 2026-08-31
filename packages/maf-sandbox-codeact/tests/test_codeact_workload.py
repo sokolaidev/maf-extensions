@@ -76,6 +76,7 @@ from maf_sandbox_codeact._tool import (
     _MANIFEST_MAX_BYTES,
     _PROGRAM_FILENAME,
     _SMALLEST_MANIFEST,
+    _WITHHELD_ROUTE,
     _WORK_DIR,
     _format_withheld,
 )
@@ -2955,10 +2956,11 @@ class TestOnTheTransportStderrIsTheHosts:
 
 
 class TestAWithheldTimeoutQuotesNothing:
-    """A withheld timeout carries the bound and the fate, and nothing the program printed.
+    """A withheld timeout carries what the exception proves, and nothing the program printed.
 
     `SandboxProgramTimeout` holds that output in its message rather than only in `output`, so
-    the sentence is rebuilt from the attributes instead of quoted.
+    the sentence is rebuilt from the attributes — which is also why it names no bound: whose
+    expired is not knowable from the public type.
     """
 
     def _withholding_calling_tool(self, sandbox: InProcessSandbox, **kw: Any):
@@ -3024,6 +3026,21 @@ class TestAWithheldTimeoutQuotesNothing:
         assert "the run's" not in out, "a call with no host tool has no run"
         assert "did not finish" in out
         assert "declared output" in out
+
+    def test_a_bare_timeout_names_the_bound_and_the_route(self):
+        """The path every shipped backend takes: acas, docker and wslc all raise a bare
+        `TimeoutError` from plain `exec`, so this is the withheld timeout a host actually
+        meets. One `exec` and one bound here, so unlike the transport it may name it."""
+        sandbox = _ScriptedSandbox(raises=TimeoutError())
+        out = _run(_withholding_tool(sandbox, exec_timeout_seconds=7), "print('hi')")
+
+        assert out == f"Error: the program timed out after 7s. {_WITHHELD_ROUTE}"
+
+    def test_the_shown_bare_timeout_is_unchanged(self):
+        sandbox = _ScriptedSandbox(raises=TimeoutError())
+        out = _run(_tool(_backend(sandbox), exec_timeout_seconds=7), "print('hi')")
+
+        assert out == "Error: the program timed out after 7s"
 
     def test_off_the_transport_it_quotes_no_part_of_the_message(self):
         sandbox = _ScriptedSandbox(
