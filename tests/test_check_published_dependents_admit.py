@@ -32,7 +32,6 @@ assert _spec and _spec.loader
 check = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(check)
 
-# The retry the fetches inherit; `_patch_urlopen` zeroes its pause so no test waits.
 import pypi_index  # noqa: E402
 
 

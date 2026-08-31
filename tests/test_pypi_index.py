@@ -163,7 +163,10 @@ class TestWhatAnExhaustedRetryReports:
 
 class TestRunCheck:
     def test_it_passes_a_checks_own_exit_code_through(self):
-        assert index.run_check(lambda argv: len(argv), ["a", "b"]) == 2
+        def main(argv: list[str]) -> int:
+            return len(argv)
+
+        assert index.run_check(main, ["check", "--flag"]) == 2
 
     def test_an_unreachable_index_becomes_one_annotation_and_exit_one(self, capsys):
         def main(_argv: list[str]) -> int:
