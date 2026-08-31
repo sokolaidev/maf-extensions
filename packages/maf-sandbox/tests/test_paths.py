@@ -28,6 +28,7 @@ from maf_sandbox.paths import (
     confine_resolve_guest_write_path,
     guest_path_and_ancestors,
     guest_path_relative_to,
+    path_ancestors_are_host_owned,
     refuse_symlinked_ancestors,
     sandbox_entry_from_tar_header,
     tar_header_from_block,
@@ -360,6 +361,41 @@ class TestGuestPathAndAncestors:
             "/a/b/maf-sandbox/work",
             "/a/b/maf-sandbox/work/out",
         )
+
+
+class TestPathAncestorsAreHostOwned:
+    """Every part of the reach rule is load-bearing: the uid, the group write bit, the other
+    write bit, and what an empty walk means."""
+
+    def test_a_chain_only_root_can_write_is_host_owned(self):
+        assert path_ancestors_are_host_owned(
+            {"/a": (0, 0o755), "/a/b": (0, 0o755)},
+            empty_means_host_owned=True,
+        )
+
+    def test_a_component_owned_by_the_guest_is_not_host_owned(self):
+        assert not path_ancestors_are_host_owned(
+            {"/a": (0, 0o755), "/a/b": (10001, 0o755)},
+            empty_means_host_owned=True,
+        )
+
+    def test_a_group_writable_component_is_not_host_owned(self):
+        assert not path_ancestors_are_host_owned(
+            {"/a": (0, 0o755), "/a/b": (0, 0o775)},
+            empty_means_host_owned=True,
+        )
+
+    def test_an_other_writable_component_is_not_host_owned(self):
+        assert not path_ancestors_are_host_owned(
+            {"/a": (0, 0o755), "/a/b": (0, 0o757)},
+            empty_means_host_owned=True,
+        )
+
+    def test_an_empty_walk_answers_what_the_caller_named(self):
+        """Empty is not decided here — a work dir straight under ``/`` has no ancestors to
+        stat, but so would a walk that reached nothing, and the caller names that verdict."""
+        assert path_ancestors_are_host_owned({}, empty_means_host_owned=True)
+        assert not path_ancestors_are_host_owned({}, empty_means_host_owned=False)
 
 
 class TestRefuseSymlinkedAncestors:
