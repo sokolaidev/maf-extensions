@@ -48,6 +48,10 @@ _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engin
 _SPEC = SandboxSpec(kind="bicep", image="bicep-sandbox:local")
 _NAME = _container_name(_KEY, _SPEC.kind)
 _WORK = "/maf-sandbox/work"
+#: The argv a guest-side stat probe arrives on: raised, and `test` passed as argv with no
+#: shell. The fake matches overrides by prefix, so a key missing `--user 0` silently stops
+#: matching and every probe falls through to the responder's default success.
+_PROBE = ("container", "exec", "--user", "0", _NAME, "test")
 
 
 class _Recorded:
@@ -740,10 +744,14 @@ class TestStatGuestTarHeader:
     """The tar-header fast path of `_WslcSandbox._stat_guest`, at the `_wslc` fake."""
 
     def _sandbox(self, payload: bytes | None = None, overrides: dict | None = None):
+        return self._sandbox_and_fake(payload, overrides)[0]
+
+    def _sandbox_and_fake(self, payload: bytes | None = None, overrides: dict | None = None):
+        """The sandbox and the fake behind it, for a case asserting the argv it was handed."""
         if overrides is None:
             overrides = {("container", "cp"): _WslcResult(0, payload or b"", b"")}
-        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        return asyncio.run(backend.acquire(_KEY, _SPEC))
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
 
     def _tar_block(self, entry: tarfile.TarInfo, data: bytes = b"") -> bytes:
         buffer = io.BytesIO()
@@ -785,7 +793,7 @@ class TestStatGuestTarHeader:
         this fixture's container.)"""
         overrides = {
             ("container", "cp"): _WslcResult(1, b"x", b""),
-            ("container", "exec", _NAME, "test", "-L"): _WslcResult(0, b"", b""),
+            (*_PROBE, "-L"): _WslcResult(0, b"", b""),
         }
         sandbox = self._sandbox(overrides=overrides)
         result = asyncio.run(sandbox._stat_guest("/w/main.bicep", "main.bicep"))
@@ -816,24 +824,59 @@ class TestStatGuestTarHeader:
         test -L` answers 0 for this fixture's container.)"""
         overrides = {
             ("container", "cp"): _WslcResult(0, b"x", b""),
-            ("container", "exec", _NAME, "test", "-L"): _WslcResult(0, b"", b""),
+            (*_PROBE, "-L"): _WslcResult(0, b"", b""),
         }
         sandbox = self._sandbox(overrides=overrides)
         result = asyncio.run(sandbox._stat_guest("/w/missing", "missing"))
         assert result is not None
         assert result.kind is EntryKind.SYMLINK
 
-    def test_a_short_successful_stream_with_no_probe_answer_raises(self):
-        """A short successful stream and no probe answer leaves the stat nothing to report,
-        and the runtime error names the path rather than the flag that tripped."""
+    def test_the_probe_is_raised_to_root(self):
+        """The file plane writes as root, so the probe that guards it reads as root: a probe as
+        the image's user would be blind above a directory only root can search, which is exactly
+        where a `container cp` still lands bytes."""
         overrides = {
             ("container", "cp"): _WslcResult(0, b"x", b""),
-            ("container", "exec", _NAME, "test", "-L"): _WslcResult(1, b"", b""),
-            ("container", "exec", _NAME, "test", "-d"): _WslcResult(1, b"", b""),
-            ("container", "exec", _NAME, "test", "-f"): _WslcResult(1, b"", b""),
+            (*_PROBE, "-L"): _WslcResult(0, b"", b""),
+        }
+        sandbox, fake = self._sandbox_and_fake(overrides=overrides)
+        asyncio.run(sandbox._stat_guest("/w/out", "out"))
+        assert fake.only(*_PROBE, "-L").args == (*_PROBE, "-L", "/w/out")
+
+    def test_a_short_successful_stream_with_no_probe_answer_is_absent(self):
+        """Every probe answering no is an absent path, and the check ends there. Root searches
+        every directory, so there is no third reading in which the entry is present and this
+        principal cannot see it."""
+        overrides = {
+            ("container", "cp"): _WslcResult(0, b"x", b""),
+            ("container", "exec"): _WslcResult(1, b"", b""),
         }
         sandbox = self._sandbox(overrides=overrides)
-        with pytest.raises(RuntimeError, match="no tar header"):
+        assert asyncio.run(sandbox._stat_guest("/w/missing", "missing")) is None
+
+    def test_an_entry_no_shape_flag_matches_is_still_an_entry(self):
+        """A fifo answers no to `-L`, `-d` and `-f` and yes to `-e`. It is not a directory, so a
+        path through it is refused rather than read as an absent component."""
+        overrides = {
+            ("container", "cp"): _WslcResult(0, b"x", b""),
+            # The responder takes the first prefix that matches, so the narrow key leads.
+            (*_PROBE, "-e"): _WslcResult(0, b"", b""),
+            ("container", "exec"): _WslcResult(1, b"", b""),
+        }
+        sandbox = self._sandbox(overrides=overrides)
+        result = asyncio.run(sandbox._stat_guest("/w/pipe", "pipe"))
+        assert result is not None
+        assert result.kind is EntryKind.OTHER
+
+    def test_an_engine_that_could_not_run_the_probe_raises(self):
+        """`test` answers 0 or 1; 126 is the engine refusing to start it. Read as a no it would
+        end the check, so it raises instead."""
+        overrides = {
+            ("container", "cp"): _WslcResult(0, b"x", b""),
+            ("container", "exec"): _WslcResult(126, b"", b"exec user process failed"),
+        }
+        sandbox = self._sandbox(overrides=overrides)
+        with pytest.raises(RuntimeError, match="exit 126"):
             asyncio.run(sandbox._stat_guest("/w/missing", "missing"))
 
     def test_a_directory_header_comes_back_as_a_directory(self):

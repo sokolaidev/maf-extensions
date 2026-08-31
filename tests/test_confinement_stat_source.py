@@ -14,7 +14,10 @@ no `test` would catch that — recorded as the upgrade on #729, not shipped here
 
 **A listing is a declaration, not a mute button.** A package in `ANSWERED_INSIDE_THE_GUEST`
 must also say so in its own README, and an entry that stops being true fails as loudly as a
-missing one, so the list cannot outlive the backend it describes.
+missing one, so the list cannot outlive the backend it describes. Importing core's own
+`stat_by_asking_the_guest` is read exactly like reaching the guest by hand: core spells the
+probe so nobody invents a fourth one, and the posture that spelling carries is the same either
+way.
 """
 
 from __future__ import annotations
@@ -43,6 +46,10 @@ ENTRY_POINTS = (
 #: Where those entry points live, absolute and relative — `maf_sandbox`'s own modules import
 #: them as `.paths`.
 ENTRY_MODULES = frozenset({"maf_sandbox.paths", "paths"})
+
+#: The guest-side stat core ships for a backend whose engine answers nothing. Importing one is
+#: what this reads — there is no argv to follow, and none is needed: the name is the declaration.
+GUEST_STAT_HELPERS = frozenset({"stat_by_asking_the_guest", "stat_by_asking_the_guest_as_root"})
 
 #: How a backend spawns a command in its guest. `exec` and `_exec` are the method names; the
 #: bare string is the CLI subcommand both process backends pass positionally — `docker exec`
@@ -90,6 +97,15 @@ def _entry_names(tree: ast.Module) -> frozenset[str]:
                 alias.asname or alias.name for alias in node.names if alias.name in ENTRY_POINTS
             }
     return frozenset(names)
+
+
+def _imported_guest_stats(tree: ast.Module) -> tuple[str, ...]:
+    """The guest-side stats core ships that this module imports, by their canonical names."""
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in ENTRY_MODULES:
+            found |= {alias.name for alias in node.names if alias.name in GUEST_STAT_HELPERS}
+    return tuple(sorted(found))
 
 
 def _stat_method(argument: ast.expr) -> str | None:
@@ -159,6 +175,10 @@ class Sites:
     passed as a bare name, built by a helper, or made outside any class. Reported rather than
     skipped, because a site cleared by never having been read is the failure this check exists
     to prevent.
+
+    ``reaching`` has two sources and one meaning. A stat that walks to a command in the guest is
+    one; an import of core's own guest-side stat is the other, and it needs no walk because the
+    import already says where the answer comes from.
     """
 
     def __init__(self) -> None:
@@ -175,10 +195,13 @@ def _sites() -> Sites:
             continue
         tree = ast.parse(module.read_text(encoding="utf-8"))
         names = _entry_names(tree)
-        if not names:
+        helpers = _imported_guest_stats(tree)
+        if not names and not helpers:
             continue
         package = module.relative_to(PACKAGES).parts[0]
         where = module.relative_to(REPO_ROOT).as_posix()
+        for helper in helpers:
+            found.reaching.setdefault(package, []).append(f"{where}: imports {helper}")
         read: set[int] = set()
         for klass in (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)):
             methods: dict[str, ast.AST] = {
@@ -233,7 +256,9 @@ def test_no_undeclared_backend_answers_the_check_inside_its_guest(sites: Sites) 
     assert not undeclared, (
         "the stat these packages hand the confinement check reaches a command in their own "
         f"guest, which the guest can replace: {undeclared}. Answer it out of the engine, or "
-        "declare it in ANSWERED_INSIDE_THE_GUEST and say so in the package's README."
+        "declare it in ANSWERED_INSIDE_THE_GUEST and say so in the package's README. Importing "
+        "`maf_sandbox.paths.stat_by_asking_the_guest` counts: it is core's spelling of the same "
+        "posture, offered so nobody invents another, and it is not a way to stop declaring one."
     )
 
 
