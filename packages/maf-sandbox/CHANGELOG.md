@@ -2,6 +2,17 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.28.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.27.0...maf-sandbox-v0.28.0) (2026-08-31)
+
+
+### Features
+
+* core ships the guest-side stat ([#777](https://github.com/sokolaidev/maf-extensions/issues/777)) ([cd17235](https://github.com/sokolaidev/maf-extensions/commit/cd17235d7870cf9fa96c36867ff0a37c8f85f264))
+* **sandbox:** confinement bundles for read, list and delete ([#765](https://github.com/sokolaidev/maf-extensions/issues/765)) ([c9972a4](https://github.com/sokolaidev/maf-extensions/commit/c9972a458910ea05e73decc1ee458a0ce51224cc))
+* **sandbox:** core offers a container-cp tar header helper, and two backends (docker & wslc) use it ([#766](https://github.com/sokolaidev/maf-extensions/issues/766)) ([f34218e](https://github.com/sokolaidev/maf-extensions/commit/f34218ef599301bfacf7fa99ef62c82fd9c164b5))
+* **sandbox:** serve a USER-identity host tool where the host mints the authority ([#758](https://github.com/sokolaidev/maf-extensions/issues/758)) ([00af12c](https://github.com/sokolaidev/maf-extensions/commit/00af12ca5fff3ae86441cd0f0f8a41ebed6114f0))
+* **sandbox:** the check that licenses as-root file removals moves from the docker backend into maf-sandbox ([#770](https://github.com/sokolaidev/maf-extensions/issues/770)) ([53820a8](https://github.com/sokolaidev/maf-extensions/commit/53820a84ca23f24a3af311c809f2110eb7e2edad))
+
 ## [0.27.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.26.0...maf-sandbox-v0.27.0) (2026-08-29)
 
 
