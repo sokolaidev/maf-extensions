@@ -587,7 +587,9 @@ class _DockerSandbox:
         dependency is the one :attr:`capabilities` already names for ``EXEC``.
 
         Runs as root only where no component of the path was the guest's, which the check this
-        already owes answers.  See ``docs/sandbox/backends/docker.md``.
+        already owes answers.  An empty walk is the walk's first component being absent — the
+        operand under it is absent too, so the removal is a no-op whatever authority it runs
+        with.  See ``docs/sandbox/backends/docker.md``.
         """
         guest = confine_guest_path(path, working_directory)
         walked: dict[str, tuple[int, int]] = {}

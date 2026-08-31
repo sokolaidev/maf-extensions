@@ -1152,6 +1152,23 @@ class TestTheAncestorsAboveTheWorkDirAreChecked:
         backend, fake = _backend_with(refuses)
         assert "--user" not in self._reclaimed_as(backend, fake, _SPEC)
 
+    def test_a_work_dir_straight_under_the_root_walks_nothing_and_answers_the_host_s(self):
+        """`/work` has no ancestors above it: the chain is structurally empty before any stat
+        runs.  The predicate's required argument is what names that verdict the host's, where
+        docker's justification for the remove site (nothing below a missing component was ever
+        there) does not hold — this is the other reason a walk comes back empty."""
+
+        def refuses(args):
+            if args[:2] == ("cp", f"{_NAME}:/maf-sandbox"):
+                raise RuntimeError("the daemon said no")
+            return _machine(running=[_NAME])(args)
+
+        backend, fake = _backend_with(refuses)
+        spec = SandboxSpec(kind=_SPEC.kind, image=_SPEC.image, work_dir="/work")
+        asyncio.run(backend.acquire(_KEY, spec))
+        assert [f.host_owned_ancestors for f in backend._facts.values()] == [True]
+        assert fake.matching("cp", f"{_NAME}:/maf-sandbox") == []
+
     def test_the_answer_is_read_once_per_container(self):
         backend, fake, spec = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))
         asyncio.run(backend.acquire(_KEY, spec))
