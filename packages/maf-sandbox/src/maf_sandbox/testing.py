@@ -106,14 +106,14 @@ class InProcessSandbox:
     into :attr:`commands`, and ``reclaim`` records ``(directory, working_directory, timeout)``
     into :attr:`reclaims` and really removes.
 
-    ``stat_file``, ``read_file`` and ``list_dir`` confine every ``path`` to the
-    ``working_directory`` a call names: a backslash or a resolved path outside it raises
-    ``ValueError``. ``read_file`` serves only :data:`~maf_sandbox.EntryKind.FILE`, raising
+    ``write_file``, ``stat_file``, ``read_file``, ``remove`` and ``list_dir`` confine every
+    ``path`` to the ``working_directory`` a call names: a backslash or a resolved path outside
+    it raises ``ValueError``. ``read_file`` serves only :data:`~maf_sandbox.EntryKind.FILE`, raising
     ``FileNotFoundError`` for nothing there, ``IsADirectoryError`` for a directory and
     ``OSError`` for a seeded non-regular entry — and it **refuses** rather than truncates a
     file over its ``max_bytes``, as the protocol requires.
 
-    All four confine through the :mod:`maf_sandbox.paths` bundle their policy calls for — the
+    All five confine through the :mod:`maf_sandbox.paths` bundle their policy calls for — the
     stat and the read share one — so a seeded link standing where a directory was expected is
     refused here as it is on a real backend.
     What this fake cannot model is the **escape** itself: a seeded link has no target, so
