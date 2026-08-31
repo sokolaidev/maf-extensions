@@ -21,6 +21,7 @@ import urllib.request
 from pathlib import Path
 
 import pytest
+import yaml
 
 _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(_SCRIPTS))  # the script imports its siblings for shared comparisons
@@ -34,6 +35,17 @@ _spec.loader.exec_module(check)
 import pypi_index  # noqa: E402
 
 _ARGV0 = "scripts/check_published_dependents_work.py"
+
+_PUBLISH = yaml.safe_load(
+    (_SCRIPTS.parent / ".github" / "workflows" / "publish-packages.yml").read_text("utf-8")
+)
+#: The post-upload dispatch step, the one call site that redirects this script's stderr.
+_DISPATCH = next(
+    step
+    for job in _PUBLISH["jobs"].values()
+    for step in job.get("steps", [])
+    if step.get("id") == "decide"
+)["run"]
 
 
 class TestImportModule:
@@ -1063,3 +1075,35 @@ class TestMain:
             == 2
         )
         assert "usage:" in capsys.readouterr().err
+
+
+class TestTheDispatchStepDoesNotSwallowARefusal:
+    """A refusal reaches the checks page only if that step replays the stderr it redirects.
+
+    `--dispatch` exits 0 on a break, so a non-zero status is this script unable to answer at
+    all — an unreachable index above the rest. The reason for that, `run_check`'s annotation
+    included, goes to stderr, and this step sends stderr to a file so the break lines can be
+    replayed into the job summary. Left to `set -e`, the assignment ends the step before
+    anything reads that file, and a red arrives carrying nothing at all.
+    """
+
+    def test_the_redirect_is_still_what_makes_this_necessary(self):
+        assert "2>dispatch-break.txt" in _DISPATCH, (
+            "the step no longer redirects stderr; this class guards a hazard that redirect "
+            "creates, and it should be revisited rather than deleted"
+        )
+
+    def test_the_status_is_captured_rather_than_left_to_errexit(self):
+        assert "set -euo pipefail" in _DISPATCH
+        assert "|| status=$?" in _DISPATCH, (
+            "under `set -e` the assignment's own failure ends the step, so nothing below runs"
+        )
+
+    def test_a_refusal_replays_the_redirected_stderr_before_the_verdict_is_read(self):
+        replay = _DISPATCH.find("cat dispatch-break.txt >&2")
+        assert replay != -1, "a non-zero status has to put the reason back on stderr"
+        assert _DISPATCH.find('exit "$status"', replay) != -1
+        assert replay < _DISPATCH.find('verdict="$('), (
+            "the replay has to happen before the verdict is parsed out of stdout the refusal "
+            "never produced"
+        )

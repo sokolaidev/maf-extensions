@@ -74,7 +74,8 @@ def read_json(
         if attempt == ATTEMPTS:
             raise IndexUnreachable(
                 f"pypi.org did not answer {url} in {ATTEMPTS} attempts ({reason}). The index was "
-                "unreachable, so nothing was checked — this is not a verdict on any version."
+                "unreachable, so this check could not finish — this is not a verdict on any "
+                "version."
             ) from reason
         sleep(FIRST_PAUSE_SECONDS * 2 ** (attempt - 1))
 

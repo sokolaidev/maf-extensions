@@ -154,6 +154,21 @@ class TestWhatAnExhaustedRetryReports:
         assert "Connection reset by peer" in said
         assert raised.value.__cause__ is reset
 
+    def test_it_claims_only_that_the_check_stopped_not_that_nothing_ran(self, monkeypatch):
+        """A multi-document check reaches here with work already reported.
+
+        `check_samples_against_declared_core` prints each group's `ok`/`FAIL` lines as it goes,
+        so an unreachable index in the fifth group leaves four groups' results on the log. An
+        annotation saying nothing was checked contradicts what the reader can already see, and
+        being believed at a glance is this message's whole job.
+        """
+        pauses = _install(monkeypatch, _Index(*[_http_error(503)] * index.ATTEMPTS))
+        with pytest.raises(index.IndexUnreachable) as raised:
+            index.read_json(_URL, sleep=pauses.append)
+        said = str(raised.value)
+        assert "could not finish" in said
+        assert "nothing was checked" not in said
+
     def test_the_message_is_one_line_so_the_annotation_survives(self, monkeypatch):
         pauses = _install(monkeypatch, _Index(*[_http_error(503)] * 3))
         with pytest.raises(index.IndexUnreachable) as raised:
