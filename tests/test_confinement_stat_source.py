@@ -57,6 +57,10 @@ ENTRY_PACKAGE = "maf_sandbox"
 ENTRY_MODULE_LEAF = "paths"
 ENTRY_MODULE_DOTTED = "maf_sandbox.paths"
 
+#: The distribution `maf_sandbox` lives in. A relative `from . import paths` names core only
+#: inside it — anywhere else it names that package's own module, which is a different thing.
+CORE_PACKAGE_DIR = "maf-sandbox"
+
 #: The guest-side stat core ships for a backend whose engine answers nothing. Reaching for one
 #: is what this reads — there is no argv to follow, and none is needed: the name is the
 #: declaration. Both spellings count, since the module is reach-by-name.
@@ -125,13 +129,18 @@ class Aliases(NamedTuple):
     package: frozenset[str]
 
 
-def _aliases(tree: ast.Module) -> Aliases:
-    """Every name this module reaches `maf_sandbox.paths` by, split by what it is bound to."""
+def _aliases(tree: ast.Module, *, inside_core: bool) -> Aliases:
+    """Every name this module reaches `maf_sandbox.paths` by, split by what it is bound to.
+
+    ``inside_core`` is what makes the relative form safe to accept. `from . import paths` names
+    core only within `maf_sandbox` itself; in a backend it names that package's own module, and
+    reading it as core would fail the repository over a call on something unrelated.
+    """
     module: set[str] = set()
     package: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and (
-            node.module == ENTRY_PACKAGE or (node.module is None and node.level)
+            node.module == ENTRY_PACKAGE or (inside_core and node.module is None and node.level)
         ):
             module |= {
                 alias.asname or alias.name
@@ -280,11 +289,11 @@ def _sites() -> Sites:
             continue
         tree = ast.parse(module.read_text(encoding="utf-8"))
         names = _entry_names(tree)
-        aliases = _aliases(tree)
+        package = module.relative_to(PACKAGES).parts[0]
+        aliases = _aliases(tree, inside_core=package == CORE_PACKAGE_DIR)
         helpers = _guest_stat_uses(tree, aliases)
         if not names and not any(aliases) and not helpers:
             continue
-        package = module.relative_to(PACKAGES).parts[0]
         where = module.relative_to(REPO_ROOT).as_posix()
         for helper in helpers:
             found.reaching.setdefault(package, []).append(f"{where}: imports {helper}")
@@ -348,7 +357,18 @@ def test_every_spelling_that_reaches_the_guest_side_stat_is_read(source: str) ->
     exotic. A scanner reading only `from ... import <name>` would clear a backend that wrote
     any of the other three, and the README requirement would go unenforced."""
     tree = ast.parse(source)
-    assert _guest_stat_uses(tree, _aliases(tree))
+    assert _guest_stat_uses(tree, _aliases(tree, inside_core=True))
+
+
+def test_a_backends_own_relative_module_is_not_core() -> None:
+    """`from . import paths` names core only inside `maf_sandbox`. In a backend it names that
+    package's own module, and reading it as core would fail the repository over a call on
+    something unrelated."""
+    source = """from . import paths
+paths.stat_by_asking_the_guest(ask, guest, rel)"""
+    tree = ast.parse(source)
+    assert not _guest_stat_uses(tree, _aliases(tree, inside_core=False))
+    assert _guest_stat_uses(tree, _aliases(tree, inside_core=True))
 
 
 def test_reaching_the_module_alone_is_not_a_declaration() -> None:
@@ -358,14 +378,14 @@ def test_reaching_the_module_alone_is_not_a_declaration() -> None:
     source = """from maf_sandbox import paths
 paths.refuse_symlinked_ancestors(stat, guest, work)"""
     tree = ast.parse(source)
-    assert not _guest_stat_uses(tree, _aliases(tree))
+    assert not _guest_stat_uses(tree, _aliases(tree, inside_core=True))
 
 
 def test_a_confinement_call_through_the_module_is_a_call_site_this_reads() -> None:
     source = """from maf_sandbox import paths
 paths.refuse_symlinked_ancestors(self._stat_guest, guest, work)"""
     tree = ast.parse(source)
-    assert _entry_calls(tree, _entry_names(tree), _aliases(tree))
+    assert _entry_calls(tree, _entry_names(tree), _aliases(tree, inside_core=True))
 
 
 def test_every_package_with_a_confinement_check_is_scanned(sites: Sites) -> None:

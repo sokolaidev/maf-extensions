@@ -22,7 +22,9 @@ it once.**  :func:`stat_by_asking_the_guest` and :func:`stat_by_asking_the_guest
 says so because the cost is the whole of what a reader has to weigh.  They exist so that a
 backend in that position picks a reviewed spelling instead of inventing a fourth one, not
 because the technique is a good one, and reaching for either is a declared posture the
-repository's own ``tests/test_confinement_stat_source.py`` holds a backend's README to.
+repository's own ``tests/test_confinement_stat_source.py`` holds a backend's README to.  The
+pair splits on **reach, not trust**: the raised one reads paths the guest's own principal
+cannot, and is no more trustworthy for it, the binary answering being the image's either way.
 
 **Reach for a bundle rather than for either half.**  Four of them pair the two checks, one per
 confinement policy, and the file surface's five methods map onto them:
@@ -231,9 +233,8 @@ async def _guest_answers(
 ) -> bool:
     """One ``test`` in the guest, with any exit status above false refused rather than read.
 
-    The argv is reported as the tuple it is.  A guest path may hold a space, a backtick or a
-    newline, and rendering it into a shell-shaped sentence would both lose the argument
-    boundaries this call does not have to quote and let the path break the message across lines.
+    The argv is reported as the tuple it is: a guest path may hold a backtick or a newline, and
+    a shell-shaped sentence is neither what ran nor safe to render one into.
     """
     argv = (_GUEST_STAT_COMMAND, flag, guest_path)
     status = await ask_the_guest(argv)
@@ -260,12 +261,10 @@ async def _ancestor_blocking_the_view(
 ) -> str | None:
     """The nearest ancestor that is there and cannot be searched, or ``None`` when none is.
 
-    Climbing is the point.  A parent that is not there yet answers no to everything exactly as
-    an unsearchable one does, and a write creates its parents, so asking the immediate parent
-    alone would refuse every ordinary write into a chain that does not exist.  The first
-    ancestor that answers ``-e`` is the deepest one whose word can be taken, and its search bit
-    is what decides whether the silence below it was an answer.  The filesystem root has nothing
-    above it, so its own search bit is the last question there is.
+    It climbs because a parent that is not there yet answers no exactly as an unsearchable one
+    does, and a write creates its parents: the first ancestor answering ``-e`` is the deepest
+    whose word can be taken.  The filesystem root has nothing above it, so its own search bit is
+    the last question there is.
     """
     ancestor = posixpath.dirname(guest_path)
     while True:
@@ -284,23 +283,16 @@ async def stat_by_asking_the_guest(
 ) -> SandboxEntry | None:
     """Stat ``guest_path`` by running ``test`` in the guest, as the guest's own principal.
 
-    **This asks the thing being confined to describe itself**, and a root workload replaces
-    ``test`` in its own filesystem and is believed. Reach for it only where the engine answers
-    nothing, and say so in the backend's README — ``tests/test_confinement_stat_source.py``
-    requires that of any package reaching for this. ``ask_the_guest`` puts one argv to the guest
-    and answers its exit status; it is the backend's, and so is the principal it runs under.
+    This asks the thing being confined to describe itself, and a root workload replaces ``test``
+    in its own filesystem and is believed. ``ask_the_guest`` puts one argv to the guest and
+    answers its exit status; the principal it runs under is the backend's to choose, and a
+    backend whose *file plane* runs raised wants :func:`stat_by_asking_the_guest_as_root`
+    instead, or its check is blind where its writes are not.
 
-    The two variants differ in reach and not in trust: :func:`stat_by_asking_the_guest_as_root`
-    reads paths this one cannot and is no more trustworthy, the binary answering being the
-    image's either way. A backend whose *file plane* runs raised wants that one, or its check is
-    blind exactly where its writes are not.
-
-    What the narrower reach costs is stated rather than guessed. A path every probe answers no to
-    is either absent or under a directory this principal cannot search, and ``test`` cannot tell
-    those apart; absent ends the filesystem path check, so the nearest ancestor that is there is
-    asked for its search bit and a :class:`PermissionError` is raised where it is not set. The
-    entry carries a kind and no size, which is what the check reads and is not enough to serve
-    ``stat_file``.
+    A full miss is absent only where the asker could have seen it, so a
+    :class:`PermissionError` is raised where the nearest existing ancestor cannot be searched.
+    The entry carries a kind and no size, which is what the check reads and is not enough to
+    serve ``stat_file``.
     """
     kind = await _kind_the_guest_reports(ask_the_guest, guest_path)
     if kind is not None:
@@ -321,18 +313,13 @@ async def stat_by_asking_the_guest_as_root(
 ) -> SandboxEntry | None:
     """Stat ``guest_path`` by running ``test`` in the guest, raised to root.
 
-    The cost is :func:`stat_by_asking_the_guest`'s, unchanged: the question goes to the thing
-    being confined. Raising buys **reach** and no trust whatever, and it is the backend's own
-    doing — in the ``ask_the_guest`` it hands over. This spells the probe, not the privilege.
+    Raising is the backend's own doing, in the ``ask_the_guest`` it hands over: this spells the
+    probe, not the privilege, and it carries :func:`stat_by_asking_the_guest`'s cost unchanged.
 
-    **Raised is not the same as unblockable, so the reach is checked rather than assumed.** A
-    uid is not a capability set: a container that drops ``CAP_DAC_OVERRIDE`` gives uid 0 no
-    search it was not already owed, and ``test -x`` fails even for a real superuser on a
-    directory with no execute bit at all. So this runs the same climb the other variant does,
-    and what differs is what a blocked view *means*: there it is the principal's ordinary limit,
-    and here it is a raise that did not deliver what its name claims — a backend configuration
-    to look at rather than a confinement outcome. Both refuse; neither ends the check on a path
-    it could not see.
+    **The reach is checked rather than assumed**, since a uid is not a capability set, so this
+    climbs exactly as that one does. What differs is the refusal: a blocked view here is a raise
+    that did not deliver what its name claims, which is a backend configuration to look at
+    rather than a confinement outcome.
     """
     kind = await _kind_the_guest_reports(ask_the_guest, guest_path)
     if kind is not None:
