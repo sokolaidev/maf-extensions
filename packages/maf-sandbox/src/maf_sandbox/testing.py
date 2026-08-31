@@ -113,8 +113,9 @@ class InProcessSandbox:
     ``OSError`` for a seeded non-regular entry — and it **refuses** rather than truncates a
     file over its ``max_bytes``, as the protocol requires.
 
-    All four confine through their method's own bundle in :mod:`maf_sandbox.paths`, so a seeded
-    link standing where a directory was expected is refused here as it is on a real backend.
+    All four confine through the :mod:`maf_sandbox.paths` bundle their policy calls for — the
+    stat and the read share one — so a seeded link standing where a directory was expected is
+    refused here as it is on a real backend.
     What this fake cannot model is the **escape** itself: a seeded link has no target, so
     nothing reads through one and a test going green here has asserted shape, not safety.
     Both backend suites carry their own premise test for that reason.

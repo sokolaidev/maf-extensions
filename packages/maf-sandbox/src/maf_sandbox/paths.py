@@ -15,13 +15,16 @@ rewrites the *segments* of a name for a hostile filesystem and confines nothing.
 real filesystem, one directory at a time from the root down, and refuses a path whose ancestors
 are not real directories.
 
-**A backend calls neither of those directly.**  Four bundles pair them, one per method of the
-file surface — :func:`confine_resolve_guest_write_path`, :func:`confine_resolve_guest_read_path`,
-:func:`confine_resolve_guest_list_path` and :func:`confine_resolve_guest_delete_path`.  What
-separates them is what each does about the final component and about the working directory
-itself, and that belongs to the method rather than to a keyword argument: a caller that picked
-the wrong bundle named the wrong method out loud, where one that omitted an argument would have
-got a default in silence.
+**Reach for a bundle rather than for either half.**  Four of them pair the two checks, one per
+confinement policy, and the file surface's five methods map onto them:
+:func:`confine_resolve_guest_write_path` for ``write_file``,
+:func:`confine_resolve_guest_read_path` for ``stat_file`` and ``read_file`` — one policy for
+both, since leaving the final component to the caller is what lets a stat describe a link and a
+read refuse one on kind — :func:`confine_resolve_guest_list_path` for ``list_dir`` and
+:func:`confine_resolve_guest_delete_path` for ``remove``.  What separates them is what each does
+about the final component and about the working directory itself, and that belongs to the policy
+rather than to a keyword argument: a caller that picked the wrong bundle named the wrong method
+out loud, where one that omitted an argument would have got a default in silence.
 
 **The prefix says what a function hands back.**  ``confine_resolve_*`` returns the resolved
 guest path or raises; ``refuse_*`` returns nothing and raises.  Nothing here answers a
