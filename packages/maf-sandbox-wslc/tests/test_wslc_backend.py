@@ -844,12 +844,14 @@ class TestStatGuestTarHeader:
         assert fake.only(*_PROBE, "-L").args == (*_PROBE, "-L", "/w/out")
 
     def test_a_short_successful_stream_with_no_probe_answer_is_absent(self):
-        """Every probe answering no is an absent path, and the check ends there. Root searches
-        every directory, so there is no third reading in which the entry is present and this
-        principal cannot see it."""
+        """Every probe answering no, under an ancestor the probe can still search, is an absent
+        path and the check ends there. The searchable ancestor is not decoration: uid 0 is not a
+        capability set, so the helper confirms its reach rather than assuming it."""
         overrides = {
-            ("container", "cp"): _WslcResult(0, b"x", b""),
+            (*_PROBE, "-e", "/w"): _WslcResult(0, b"", b""),
+            (*_PROBE, "-x", "/w"): _WslcResult(0, b"", b""),
             ("container", "exec"): _WslcResult(1, b"", b""),
+            ("container", "cp"): _WslcResult(0, b"x", b""),
         }
         sandbox = self._sandbox(overrides=overrides)
         assert asyncio.run(sandbox._stat_guest("/w/missing", "missing")) is None

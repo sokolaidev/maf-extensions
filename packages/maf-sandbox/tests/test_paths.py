@@ -642,21 +642,42 @@ class TestStatByAskingTheGuestAsRoot:
         assert entry == SandboxEntry(path="pipe", kind=EntryKind.OTHER, size_bytes=None)
 
     def test_a_path_nothing_answers_for_is_absent(self):
-        guest = _Guest()
+        guest = _Guest({("-e", "/w"): 0, ("-x", "/w"): 0})
         assert asyncio.run(stat_by_asking_the_guest_as_root(guest, "/w/gone", "gone")) is None
 
-    def test_the_parents_search_bit_is_never_asked_about(self):
-        """Root searches every directory, so the disambiguation the other variant owes is not
-        one this variant has to pay for."""
-        guest = _Guest()
-        asyncio.run(stat_by_asking_the_guest_as_root(guest, "/w/gone", "gone"))
-        assert [argv[1] for argv in guest.asked] == ["-L", "-d", "-f", "-e"]
+    def test_the_reach_is_checked_rather_than_assumed(self):
+        """A uid is not a capability set. A container that drops `CAP_DAC_OVERRIDE` gives uid 0
+        no search it was not already owed, so this variant climbs exactly as the other does
+        rather than reading a full miss as absence on the strength of its own name."""
+        guest = _Guest({("-e", "/w"): 0})
+        with pytest.raises(PermissionError, match="capability set"):
+            asyncio.run(stat_by_asking_the_guest_as_root(guest, "/w/gone", "gone"))
+
+    def test_a_blocked_view_is_named_as_a_raise_that_did_not_deliver(self):
+        """Both variants refuse, and the messages differ because the actions do: for the guest's
+        own principal a blocked view is its ordinary limit, and here it is a backend whose raise
+        bought less than the name claims."""
+        guest = _Guest({("-e", "/w"): 0})
+        with pytest.raises(PermissionError, match="the reach this variant is named for"):
+            asyncio.run(stat_by_asking_the_guest_as_root(guest, "/w/gone", "gone"))
 
     def test_the_argv_is_test_one_flag_and_the_path(self):
         """One flag and one operand, so no shell is needed and there is nothing to quote."""
-        guest = _Guest()
+        guest = _Guest({("-e", "/w"): 0, ("-x", "/w"): 0})
         asyncio.run(stat_by_asking_the_guest_as_root(guest, "/w/a b.txt", "a b.txt"))
         assert guest.asked[0] == ("test", "-L", "/w/a b.txt")
+
+    def test_an_unrunnable_probe_reports_the_argv_as_a_tuple(self):
+        """A guest path may hold a newline or a backtick, and the call quotes nothing because it
+        is argv. Rendering it into a shell-shaped sentence would lose the argument boundaries and
+        let the path break the message across lines."""
+        odd = "/w/a" + chr(10) + "b`c"
+        guest = _Guest({("-L", odd): 127})
+        with pytest.raises(RuntimeError) as raised:
+            asyncio.run(stat_by_asking_the_guest_as_root(guest, odd, "odd"))
+        message = str(raised.value)
+        assert repr(("test", "-L", odd)) in message
+        assert chr(10) not in message
 
     def test_an_exit_above_false_raises_rather_than_reading_as_a_no(self):
         """126 is the engine refusing to start the command and 127 is a missing `test`. Either

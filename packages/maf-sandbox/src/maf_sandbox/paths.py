@@ -229,12 +229,18 @@ _TEST_FALSE = 1
 async def _guest_answers(
     ask_the_guest: Callable[[Sequence[str]], Awaitable[int]], flag: str, guest_path: str
 ) -> bool:
-    """One ``test`` in the guest, with any exit status above false refused rather than read."""
-    status = await ask_the_guest((_GUEST_STAT_COMMAND, flag, guest_path))
+    """One ``test`` in the guest, with any exit status above false refused rather than read.
+
+    The argv is reported as the tuple it is.  A guest path may hold a space, a backtick or a
+    newline, and rendering it into a shell-shaped sentence would both lose the argument
+    boundaries this call does not have to quote and let the path break the message across lines.
+    """
+    argv = (_GUEST_STAT_COMMAND, flag, guest_path)
+    status = await ask_the_guest(argv)
     if status not in (_TEST_TRUE, _TEST_FALSE):
         raise RuntimeError(
-            f"the guest could not answer `{_GUEST_STAT_COMMAND} {flag} {guest_path}`: exit "
-            f"{status}. Read as a no it would end the filesystem path check."
+            f"the guest could not answer {argv!r}: exit {status}. Read as a no it would end "
+            f"the filesystem path check."
         )
     return status == _TEST_TRUE
 
@@ -316,15 +322,29 @@ async def stat_by_asking_the_guest_as_root(
     """Stat ``guest_path`` by running ``test`` in the guest, raised to root.
 
     The cost is :func:`stat_by_asking_the_guest`'s, unchanged: the question goes to the thing
-    being confined. Raising buys **reach** — root searches every directory, so a path every probe
-    answers no to is genuinely absent and needs none of the disambiguation that one owes — and it
-    buys no trust whatever. Raising is the backend's own doing, in the ``ask_the_guest`` it hands
-    over: this spells the probe, not the privilege.
+    being confined. Raising buys **reach** and no trust whatever, and it is the backend's own
+    doing — in the ``ask_the_guest`` it hands over. This spells the probe, not the privilege.
+
+    **Raised is not the same as unblockable, so the reach is checked rather than assumed.** A
+    uid is not a capability set: a container that drops ``CAP_DAC_OVERRIDE`` gives uid 0 no
+    search it was not already owed, and ``test -x`` fails even for a real superuser on a
+    directory with no execute bit at all. So this runs the same climb the other variant does,
+    and what differs is what a blocked view *means*: there it is the principal's ordinary limit,
+    and here it is a raise that did not deliver what its name claims — a backend configuration
+    to look at rather than a confinement outcome. Both refuse; neither ends the check on a path
+    it could not see.
     """
     kind = await _kind_the_guest_reports(ask_the_guest, guest_path)
-    if kind is None:
-        return None
-    return SandboxEntry(path=rel_path, kind=kind, size_bytes=None)
+    if kind is not None:
+        return SandboxEntry(path=rel_path, kind=kind, size_bytes=None)
+    blocked = await _ancestor_blocking_the_view(ask_the_guest, guest_path)
+    if blocked is not None:
+        raise PermissionError(
+            f"nothing is visible at {guest_path!r} and the raised principal cannot search "
+            f"{blocked!r}, so the reach this variant is named for is not there — a uid is not a "
+            f"capability set, and a container dropping CAP_DAC_OVERRIDE reads exactly like this"
+        )
+    return None
 
 
 def guest_path_relative_to(path: str, base: str) -> str | None:
