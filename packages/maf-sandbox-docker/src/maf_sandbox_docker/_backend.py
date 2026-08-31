@@ -282,6 +282,16 @@ def _image_reference(spec: SandboxSpec) -> str:
     return spec.image_id or spec.image or ""
 
 
+def _reach_answer(walked: Mapping[str, tuple[int, int]]) -> bool:
+    """The removal-authority verdict the walks answer, and it refuses without the root.
+
+    Replacing the topmost checked component needs write on ``/``, so a ``walked`` that never
+    read the root has only verified the directories below it — nothing there may license
+    running the removal as root.
+    """
+    return "/" in walked and path_ancestors_are_host_owned(walked, empty_means_host_owned=False)
+
+
 @dataclass(frozen=True)
 class _ContainerFacts:
     """What a running container says about itself, as against what this backend asked for.
@@ -494,16 +504,18 @@ class _DockerSandbox:
         )
 
     async def ancestors_are_the_hosts(self, work_dir: str) -> bool:
-        """Is every directory *above* ``work_dir`` one the guest program cannot write?
+        """Is every directory *above* ``work_dir`` — the root included — one the guest cannot
+        write?
 
-        One tar header per component.  Raises whatever the stat raises; the caller decides what
-        an unreadable component means.  A work dir straight under ``/`` has no ancestors above
-        it, so an empty walk is the host's.
+        One tar header per component, ``/`` first: swapping the topmost checked component
+        needs write on the root, so a chain that stopped there would license root on an image
+        whose root the guest can write.  Raises whatever the stat raises; the caller decides
+        what an unreadable component means.
         """
         walked: dict[str, tuple[int, int]] = {}
-        for directory in guest_directory_chain(posixpath.dirname(work_dir), "/"):
+        for directory in ("/", *guest_directory_chain(posixpath.dirname(work_dir), "/")):
             await self._stat_guest(directory, directory, walked)
-        return path_ancestors_are_host_owned(walked, empty_means_host_owned=True)
+        return _reach_answer(walked)
 
     async def _removal(
         self,
@@ -587,12 +599,21 @@ class _DockerSandbox:
         dependency is the one :attr:`capabilities` already names for ``EXEC``.
 
         Runs as root only where no component of the path was the guest's, which the check this
-        already owes answers.  An empty walk is the walk's first component being absent — the
-        operand under it is absent too, so the removal is a no-op whatever authority it runs
-        with.  See ``docs/sandbox/backends/docker.md``.
+        already owes answers — read together with ``/``, whose write is what swapping the
+        topmost checked component takes.  Nothing verified, nothing licensed: a removal whose
+        walk could not read even the root stays at the guest's authority.
+        See ``docs/sandbox/backends/docker.md``.
         """
         guest = confine_guest_path(path, working_directory)
         walked: dict[str, tuple[int, int]] = {}
+        try:
+            await self._stat_guest("/", "/", walked)
+        except Exception as unreadable:  # noqa: BLE001 — the removal still runs, at the guest's
+            logger.debug(  # authority; only its principal is decided here
+                "docker: could not read / in %s (%s); removals stay at the guest's authority",
+                self._name,
+                unreadable,
+            )
         await self._refuse_symlinked_parents(
             guest, working_directory=working_directory, walked=walked
         )
@@ -604,7 +625,7 @@ class _DockerSandbox:
             ["rm", "-rf" if recursive else "-f", "--", guest],
             working_directory=working_directory,
             timeout=self._command_timeout,
-            raise_authority=path_ancestors_are_host_owned(walked, empty_means_host_owned=True),
+            raise_authority=_reach_answer(walked),
         )
         if removed.exit_code != 0:
             raise OSError(
