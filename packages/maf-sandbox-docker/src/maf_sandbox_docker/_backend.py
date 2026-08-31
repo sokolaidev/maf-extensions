@@ -64,6 +64,7 @@ from maf_sandbox.paths import (
     guest_directory_chain,
     refuse_symlinked_parents,
     sandbox_entry_from_tar_header,
+    tar_header_from_block,
 )
 
 from ._config import DockerSandboxConfig
@@ -663,9 +664,7 @@ class _DockerSandbox:
             raise RuntimeError(f"docker could not stat {rel}: {result.stderr.strip()}")
         if len(result.stdout) < _TAR_BLOCK:
             raise RuntimeError(f"docker returned no tar header for {rel}")
-        info = tarfile.TarInfo.frombuf(
-            result.stdout[:_TAR_BLOCK], encoding="utf-8", errors="surrogateescape"
-        )
+        info = tar_header_from_block(result.stdout[:_TAR_BLOCK])
         if walked is not None:
             # The same header answers ownership, so a check that wants both parses it once.
             walked[guest] = (info.uid, info.mode)
@@ -723,9 +722,7 @@ class _DockerSandbox:
             raise RuntimeError(f"docker could not read {path}: {result.stderr.strip()}")
         if len(result.stdout) < _TAR_BLOCK:
             raise RuntimeError(f"docker returned no tar header for {path}")
-        info = tarfile.TarInfo.frombuf(
-            result.stdout[:_TAR_BLOCK], encoding="utf-8", errors="surrogateescape"
-        )
+        info = tar_header_from_block(result.stdout[:_TAR_BLOCK])
         if not info.isreg():
             raise OSError(f"{path!r} is not a regular file and is refused")
         if info.size > max_bytes:
@@ -1154,9 +1151,7 @@ class DockerSandboxBackend:
         if len(result.stdout) < _TAR_BLOCK:
             return None
         try:
-            info = tarfile.TarInfo.frombuf(
-                result.stdout[:_TAR_BLOCK], encoding="utf-8", errors="surrogateescape"
-            )
+            info = tar_header_from_block(result.stdout[:_TAR_BLOCK])
         except (tarfile.TarError, EOFError, ValueError):
             return None
         if not info.isreg():
@@ -1188,9 +1183,7 @@ class DockerSandboxBackend:
         if len(result.stdout) < _TAR_BLOCK:
             return {}
         try:
-            info = tarfile.TarInfo.frombuf(
-                result.stdout[:_TAR_BLOCK], encoding="utf-8", errors="surrogateescape"
-            )
+            info = tar_header_from_block(result.stdout[:_TAR_BLOCK])
         except (tarfile.TarError, EOFError, ValueError):
             return {}
         if not info.isreg():

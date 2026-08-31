@@ -470,16 +470,15 @@ class TestTarHeaderHelpers:
         arguments: dict[object, object] = {}
         real = tarfile.TarInfo.frombuf
 
-        def spy(block, **kwargs):
-            arguments.update(kwargs)
-            return real(block, **kwargs)
+        def spy(block, encoding=None, errors=None):
+            arguments.update(encoding=encoding, errors=errors)
+            return real(block, encoding=encoding, errors=errors)
 
         monkeypatch.setattr(tarfile.TarInfo, "frombuf", staticmethod(spy))
         tar_header_from_block(self._block(tarfile.TarInfo("a.txt")))
         assert arguments == {"encoding": "utf-8", "errors": "surrogateescape"}
 
     def test_an_undecodable_name_survives_the_parse(self):
-        entry = tarfile.TarInfo("a.txt")
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w", format=tarfile.USTAR_FORMAT) as archive:
             entry = tarfile.TarInfo("\udcff\udcfe.txt")

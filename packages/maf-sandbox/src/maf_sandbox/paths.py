@@ -28,7 +28,8 @@ rather than to a keyword argument: a caller that picked the wrong bundle named t
 out loud, where one that omitted an argument would have got a default in silence.
 
 **The prefix says what a function hands back.**  ``confine_resolve_*`` returns the resolved
-guest path or raises; ``refuse_*`` returns nothing and raises.  Nothing here answers a
+guest path or raises; ``refuse_*`` returns nothing and raises; ``tar_header_from_block`` and
+``sandbox_entry_from_tar_header`` name their returns the same way.  Nothing here answers a
 ``bool``, so a name in the shape of a predicate would be read as one and is not used.
 """
 
@@ -143,11 +144,6 @@ async def confine_resolve_guest_delete_path(
     return resolved
 
 
-#: The arguments a container `cp` tar stream is decoded with, pinned once: a guest's bytes are
-#: not host text, so undecodable names survive as surrogates rather than raising mid-stat.
-_TAR_HEADER_KWARGS: dict[str, str] = {"encoding": "utf-8", "errors": "surrogateescape"}
-
-
 def tar_header_from_block(block: bytes) -> tarfile.TarInfo:
     """Parse the first 512-byte tar block of a container ``cp`` stream into a tar header.
 
@@ -156,7 +152,7 @@ def tar_header_from_block(block: bytes) -> tarfile.TarInfo:
     stats a guest with no shell. The decoding arguments are pinned here rather than spelled per
     caller, so two backends cannot drift apart on how a header's names are read.
     """
-    return tarfile.TarInfo.frombuf(block, **_TAR_HEADER_KWARGS)
+    return tarfile.TarInfo.frombuf(block, encoding="utf-8", errors="surrogateescape")
 
 
 def sandbox_entry_from_tar_header(info: tarfile.TarInfo, rel_path: str) -> SandboxEntry:

@@ -189,6 +189,8 @@ def _proxy_name(container: str) -> str:
     return f"{container}{_PROXY_SUFFIX}"
 
 
+# The 512-byte header block a container `cp` stream leads with — a stat reads only it, and
+# bounded reads stop there before any content byte.
 _TAR_BLOCK = 512
 
 
@@ -342,11 +344,8 @@ class _WslcSandbox:
                 return None
             if _DIRECTORY_COPY_ERROR in error_text:
                 return SandboxEntry(path=rel, kind=EntryKind.DIRECTORY, size_bytes=None)
-            raise RuntimeError(f"wslc could not stat {rel}: {result.stderr_text.strip()}")
-        if result.returncode != 0:
-            # A failed copy that streamed bytes is not a stat: the header would be a body's
-            # first 512 bytes read as tar, so refuse rather than classify them.
-            raise RuntimeError(f"wslc could not stat {rel}: {result.stderr_text.strip()}")
+            # fall through to the probe: a bounded read that answered short is a shape question,
+            # and `test` can still settle it, where a message here could not
         if len(result.stdout) < _TAR_BLOCK:
             # WSLC streams an empty response for regular files and links. Probe the entry type
             # without following it; the tar header remains the fast path where the CLI provides one.
