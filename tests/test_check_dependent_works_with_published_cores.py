@@ -254,12 +254,10 @@ class TestTheCoreThisCheckoutBuilt:
 class TestTheInstallCommands:
     """What `run_suite` asks `uv` for, read off the subprocess call.
 
-    This is the half a green live run cannot prove: every command here installs successfully
-    even when it installs the wrong thing, and the failure mode that motivates each argument
-    — a sibling floor refusing the resolver, an override that answers it — shows up as a red
-    gate against the index, hours after the commit that emptied the environment. The index is
-    faked to the one version each test needs, so the verdict does not move with what PyPI
-    happens to hold.
+    Each install succeeds whatever it installs, so the arguments are what decide the pairing:
+    the override naming the forced core, the sibling pass on the local-core path, the sibling
+    requirements on the published path. The index is faked to the one version each test needs,
+    so the verdict does not move with what PyPI happens to hold.
     """
 
     @staticmethod
@@ -302,19 +300,16 @@ class TestTheInstallCommands:
             "the candidate rides the resolving pass, its siblings the forced one"
         )
 
-    def test_the_published_core_path_resolves_the_siblings_from_the_index(
+    def test_the_published_core_path_pins_the_siblings_that_admit_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """The published-core pairing installs only what a consumer could install: the
-        candidate beside the published core it admits, with the published siblings that admit
-        the same core resolving normally. A branch-built sibling forced beside an older core
-        is a pairing no user can have — its imports need the new names the candidate's floor
-        is waiting on — so no `--no-deps` pass runs here to smuggle one in."""
+        """The published-core pairing installs what a consumer could assemble: the candidate,
+        the published core, and the published siblings pinned to the same core — docker's
+        parity guard asserts its wslc sibling outright, so an environment without one fails
+        for the wrong reason. A sibling whose floor excludes the core under test turns the
+        install into the resolution refusal that is the pairing-mismatch verdict."""
         wheel = _wheel(
             tmp_path, "maf_sandbox_codeact-0.8.0-py3-none-any.whl", ["maf-sandbox>=0.27.0,<0.29"]
-        )
-        _wheel(
-            tmp_path, "maf_sandbox_docker-0.11.0-py3-none-any.whl", ["maf-sandbox>=0.28.0,<0.29"]
         )
         seen = self._capture(monkeypatch, published=["0.27.0"])
         code = check.main(["prog", "maf-sandbox-codeact", str(wheel)])
@@ -322,8 +317,13 @@ class TestTheInstallCommands:
         installs = [a for a in seen if a[:2] == ["uv", "pip"]]
         assert len(installs) == 1, "one resolving install, not a candidate pass plus a forced one"
         assert "--no-deps" not in installs[0]
-        assert any("maf_sandbox_docker" in part for part in installs[0]) is False, (
-            "a branch-built sibling whose floor excludes the core under test must not be forced"
+        joined = " ".join(installs[0])
+        assert "maf-sandbox==0.27.0" in joined
+        assert "maf-sandbox-docker>=0.27.0" in joined, (
+            "the sibling docker's suite imports is floored beside the core under test"
+        )
+        assert "maf-sandbox-acas>=0.27.0" in joined and "maf-sandbox-wslc>=0.27.0" in joined, (
+            "every published sibling rides the pairing, not only the one a suite names"
         )
 
     def test_the_core_is_pinned_by_the_override_and_answered_by_an_operand(

@@ -808,7 +808,7 @@ class TestStatGuestTarHeader:
         assert result.kind is EntryKind.FILE
         assert result.size_bytes == 999
 
-    def test_a_failed_copy_without_bytes_probes_the_entry_type(self):
+    def test_a_short_successful_stream_probes_the_entry_type(self):
         """A short *successful* stream — how the CLI answers a regular file or a link today —
         is a shape question `test` can still settle. The `cp` stdout carries one byte: the fake
         rewrites a byte-less success on a non-`-` copy into `no such file`, and a one-byte
@@ -824,8 +824,8 @@ class TestStatGuestTarHeader:
         assert result.kind is EntryKind.SYMLINK
 
     def test_a_short_successful_stream_with_no_probe_answer_raises(self):
-        """No header and no probe answer leaves the stat nothing to report, and the runtime
-        error names the path rather than the flag that tripped."""
+        """A short successful stream and no probe answer leaves the stat nothing to report,
+        and the runtime error names the path rather than the flag that tripped."""
         overrides = {
             ("container", "cp"): _WslcResult(0, b"x", b""),
             ("container", "exec", _NAME, "test", "-L"): _WslcResult(1, b"", b""),

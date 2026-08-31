@@ -69,6 +69,34 @@ _USAGE = "usage: {program} <distribution> <wheel> [--local-core <wheel>]"
 #: async plugin, so pytest alone is the whole of it.
 _TEST_REQUIREMENTS = ("pytest",)
 
+#: The dependents a published-core install names explicitly, pinned to the core under test:
+#: two suites import a sibling outright (codeact's e2e, docker's parity guard), and a consumer
+#: assembling the candidate beside this core would have to resolve the siblings that admit it.
+#: Naming them turns a sibling whose floor excludes the core into a resolution refusal — the
+#: pairing-mismatch verdict — instead of an import failure three layers into the suite.
+_SIBLING_DISTRIBUTIONS = (
+    "maf-sandbox-acas",
+    "maf-sandbox-bicep",
+    "maf-sandbox-codeact",
+    "maf-sandbox-docker",
+    "maf-sandbox-wslc",
+)
+
+#: The versions of those siblings published at the moment the gate runs, so the published-core
+#: install can name `sibling>=<published version>` — a floor at the published release, not at
+#: the core under test. A sibling whose *declared* floor excludes the core still refuses the
+#: build through its own metadata, which is the pairing-mismatch verdict; a sibling that admits
+#: the core resolves at its newest and the pairing is one a consumer could have.
+_PUBLISHED_SIBLING_VERSIONS: dict[str, str] = {}
+
+
+def _refresh_published_siblings() -> None:
+    """Snapshot the newest published version of each sibling distribution."""
+    for sibling in _SIBLING_DISTRIBUTIONS:
+        published = fetch_published_versions(sibling)
+        if published:
+            _PUBLISHED_SIBLING_VERSIONS[sibling] = published[0]
+
 
 def declared_range(wheel: Path) -> tuple[tuple[int, ...], tuple[int, ...]]:
     """The floor and ceiling the wheel's own metadata declares on ``maf-sandbox``."""
@@ -106,6 +134,11 @@ def admitted_published_cores(floor: tuple[int, ...], ceiling: tuple[int, ...]) -
     return sorted(admitted, key=version)
 
 
+def _distribution_of(wheel: Path) -> str:
+    """The distribution name a wheel filename carries: ``maf_sandbox_x-1.0-py3...``."""
+    return wheel.name.split("-", 1)[0].replace("_", "-")
+
+
 def sibling_wheels(wheel: Path) -> list[Path]:
     """The other dependents' wheels built beside ``wheel``.
 
@@ -124,10 +157,10 @@ def sibling_wheels(wheel: Path) -> list[Path]:
     Whether a wheel stands up alone is `smoke_install.py`'s question, asked per package in its
     own environment.
     """
-    own_distribution = wheel.name.split("-", 1)[0]
+    own_distribution = _distribution_of(wheel)
     by_distribution: dict[str, list[Path]] = {}
     for candidate in sorted(wheel.parent.glob("maf_sandbox_*.whl")):
-        by_distribution.setdefault(candidate.name.split("-", 1)[0], []).append(candidate)
+        by_distribution.setdefault(_distribution_of(candidate), []).append(candidate)
     # Two wheels for one distribution means a stale artifact is lying around, and choosing
     # between them would decide silently what this run tested. The build job emits one each.
     # The candidate's own entry is excluded after the check, not before, so a stale copy of
@@ -168,9 +201,10 @@ def run_suite(wheel: Path, core: str | Path, tests: Path) -> tuple[bool, str]:
     The siblings follow the core. On the local-core path they are this branch's wheels and
     come in a second, `--no-deps` pass: their floors on the not-yet-released core are claims
     about published artifacts, and the pairing under test is the one a pull request can settle.
-    On the published-core path they resolve from the index like anything else — a branch-built
-    sibling forced beside an older published core is a pairing no user can install, since the
-    sibling imports the new core names the candidate's floor is waiting on.
+    On the published-core path the newest published siblings ride the resolving install at
+    their own floors — a branch-built sibling forced beside an older published core is a
+    pairing no user can install, since the sibling imports the new core names the candidate's
+    floor is waiting on.
     """
     with tempfile.TemporaryDirectory() as directory:
         python = throwaway_interpreter(Path(directory))
@@ -184,11 +218,19 @@ def run_suite(wheel: Path, core: str | Path, tests: Path) -> tuple[bool, str]:
             # pairing resolvable without a second spelling of the version.
             pinned = ["--overrides", str(override), str(core)]
         else:
-            # A published core under test: no forcing, and the published siblings are the
-            # ones a consumer of the candidate could actually have beside this core. `uv`
-            # refuses the build when none exists, which is the pairing-mismatch verdict
-            # this gate exists to deliver — not something to force past.
+            # A published core under test: the newest published siblings ride the same
+            # resolving install, floored at their own published versions, so the suites that
+            # import one find it — docker's parity guard asserts its wslc sibling outright.
+            # Each sibling keeps its own declared range, so a sibling whose floor excludes
+            # the core under test refuses the build through its metadata: the
+            # pairing-mismatch verdict this gate exists to deliver, at the install rather
+            # than as an import failure three layers into the suite.
             pinned = [f"{_CORE}=={core}"]
+            pinned += [
+                f"{sibling}>={version}"
+                for sibling, version in _PUBLISHED_SIBLING_VERSIONS.items()
+                if sibling != _distribution_of(wheel)
+            ]
         installed = subprocess.run(
             [
                 "uv",
@@ -272,6 +314,11 @@ def main(argv: list[str]) -> int:
 
     floor, ceiling = declared_range(wheel)
     cores = admitted_published_cores(floor, ceiling)
+    if cores:
+        # The published-core install names the siblings at their published versions; the
+        # snapshot is taken once per run, before any suite, so every core under test pairs
+        # against the same set.
+        _refresh_published_siblings()
     span = f">={'.'.join(map(str, floor))},<{'.'.join(map(str, ceiling))}"
     if not cores:
         if local_core is None:
