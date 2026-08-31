@@ -49,7 +49,11 @@ from maf_sandbox import (
     ScopePurge,
     fold_disposal_failures,
 )
-from maf_sandbox.paths import confine_guest_write_path
+from maf_sandbox.paths import (
+    confine_guest_write_path,
+    sandbox_entry_from_tar_header,
+    tar_header_from_block,
+)
 
 from ._config import WslcSandboxConfig
 from ._proxy import build_context
@@ -185,21 +189,7 @@ def _proxy_name(container: str) -> str:
     return f"{container}{_PROXY_SUFFIX}"
 
 
-# Duplicated from maf-sandbox-docker because backend packages must keep independent dependencies
-# (#125); both consume the shared container-engine tar stream.
 _TAR_BLOCK = 512
-
-
-def _stat_from_tar_header(block: bytes, rel_path: str) -> SandboxEntry:
-    """Read a container cp tar header into a sandbox entry."""
-    info = tarfile.TarInfo.frombuf(block, encoding="utf-8", errors="surrogateescape")
-    if info.isreg():
-        return SandboxEntry(path=rel_path, kind=EntryKind.FILE, size_bytes=info.size)
-    if info.isdir():
-        return SandboxEntry(path=rel_path, kind=EntryKind.DIRECTORY, size_bytes=None)
-    if info.issym():
-        return SandboxEntry(path=rel_path, kind=EntryKind.SYMLINK, size_bytes=None)
-    return SandboxEntry(path=rel_path, kind=EntryKind.OTHER, size_bytes=None)
 
 
 def _listed_names(payload: str) -> list[str]:
@@ -353,6 +343,10 @@ class _WslcSandbox:
             if _DIRECTORY_COPY_ERROR in error_text:
                 return SandboxEntry(path=rel, kind=EntryKind.DIRECTORY, size_bytes=None)
             raise RuntimeError(f"wslc could not stat {rel}: {result.stderr_text.strip()}")
+        if result.returncode != 0:
+            # A failed copy that streamed bytes is not a stat: the header would be a body's
+            # first 512 bytes read as tar, so refuse rather than classify them.
+            raise RuntimeError(f"wslc could not stat {rel}: {result.stderr_text.strip()}")
         if len(result.stdout) < _TAR_BLOCK:
             # WSLC streams an empty response for regular files and links. Probe the entry type
             # without following it; the tar header remains the fast path where the CLI provides one.
@@ -373,7 +367,7 @@ class _WslcSandbox:
                 if probe.returncode == 0:
                     return SandboxEntry(path=rel, kind=kind, size_bytes=None)
             raise RuntimeError(f"wslc returned no tar header for {rel}")
-        return _stat_from_tar_header(result.stdout[:_TAR_BLOCK], rel)
+        return sandbox_entry_from_tar_header(tar_header_from_block(result.stdout[:_TAR_BLOCK]), rel)
 
     async def exec(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float

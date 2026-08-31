@@ -25,6 +25,7 @@ from maf_sandbox import (
     Capability,
     DisposalFailure,
     Egress,
+    EntryKind,
     ExecResult,
     Isolation,
     SandboxBackend,
@@ -732,6 +733,57 @@ class TestPullSurfaceRefusal:
         sandbox = self._sandbox()
         with pytest.raises(NotImplementedError, match="RUN_CODE"):
             asyncio.run(sandbox.run_code("print(1)", timeout=5.0))
+
+
+class TestStatGuestTarHeader:
+    """The tar-header fast path of `_WslcSandbox._stat_guest`, driven at the seam like the rest of this file."""
+
+    def _sandbox(self, payload: bytes):
+        overrides = {("container", "cp"): _WslcResult(0, payload, b"")}
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        return asyncio.run(backend.acquire(_KEY, _SPEC))
+
+    def _tar_block(self, entry: tarfile.TarInfo, data: bytes = b"") -> bytes:
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w") as archive:
+            archive.addfile(entry, io.BytesIO(data) if data else None)
+        return buffer.getvalue()[:512]
+
+    def test_a_regular_file_comes_back_as_a_file_with_its_size(self):
+        entry = tarfile.TarInfo("maf-sandbox/work/main.bicep")
+        entry.size = 5
+        sandbox = self._sandbox(self._tar_block(entry, b"hello"))
+        result = asyncio.run(sandbox._stat_guest("/w/main.bicep", "main.bicep"))
+        assert result is not None
+        assert result.kind is EntryKind.FILE
+        assert result.size_bytes == 5
+
+    def test_a_symlink_header_comes_back_as_a_symlink(self):
+        entry = tarfile.TarInfo("maf-sandbox/work/out")
+        entry.type = tarfile.SYMTYPE
+        entry.linkname = "/etc"
+        sandbox = self._sandbox(self._tar_block(entry))
+        result = asyncio.run(sandbox._stat_guest("/w/out", "out"))
+        assert result is not None
+        assert result.kind is EntryKind.SYMLINK
+        assert result.size_bytes is None
+
+    def test_a_directory_header_comes_back_as_a_directory(self):
+        entry = tarfile.TarInfo("maf-sandbox/work/sub/")
+        entry.type = tarfile.DIRTYPE
+        sandbox = self._sandbox(self._tar_block(entry))
+        result = asyncio.run(sandbox._stat_guest("/w/sub", "sub"))
+        assert result is not None
+        assert result.kind is EntryKind.DIRECTORY
+
+    def test_a_hard_link_header_is_other(self):
+        entry = tarfile.TarInfo("maf-sandbox/work/dup")
+        entry.type = tarfile.LNKTYPE
+        entry.linkname = "main.bicep"
+        sandbox = self._sandbox(self._tar_block(entry))
+        result = asyncio.run(sandbox._stat_guest("/w/dup", "dup"))
+        assert result is not None
+        assert result.kind is EntryKind.OTHER
 
 
 # ---------------------------------------------------------------------------

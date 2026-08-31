@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import io
 import subprocess
 import sys
+import tarfile
 import warnings
 from pathlib import Path
 
@@ -27,7 +29,11 @@ from maf_sandbox.paths import (
     guest_path_and_ancestors,
     guest_path_relative_to,
     refuse_symlinked_ancestors,
+    sandbox_entry_from_tar_header,
+    tar_header_from_block,
 )
+
+_TAR_BLOCK = 512
 
 _WORK_DIR = "/maf-sandbox/work"
 
@@ -449,6 +455,83 @@ class TestRefuseSymlinkedAncestors:
                     stat, "/maf-sandbox/work/link", _WORK_DIR, include_self=True
                 )
             )
+
+
+class TestTarHeaderHelpers:
+    """The tar-header helpers core now owns, and the four branches the two backends used to write."""
+
+    def _block(self, entry: tarfile.TarInfo, data: bytes = b"") -> bytes:
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w") as archive:
+            archive.addfile(entry, io.BytesIO(data) if data else None)
+        return buffer.getvalue()[:_TAR_BLOCK]
+
+    def test_the_header_parses_with_the_pinned_encoding_and_errors(self, monkeypatch):
+        arguments: dict[object, object] = {}
+        real = tarfile.TarInfo.frombuf
+
+        def spy(block, **kwargs):
+            arguments.update(kwargs)
+            return real(block, **kwargs)
+
+        monkeypatch.setattr(tarfile.TarInfo, "frombuf", staticmethod(spy))
+        tar_header_from_block(self._block(tarfile.TarInfo("a.txt")))
+        assert arguments == {"encoding": "utf-8", "errors": "surrogateescape"}
+
+    def test_an_undecodable_name_survives_the_parse(self):
+        entry = tarfile.TarInfo("a.txt")
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+            entry = tarfile.TarInfo("\udcff\udcfe.txt")
+            entry.size = 0
+            archive.addfile(entry)
+        block = buffer.getvalue()[:_TAR_BLOCK]
+        parsed = tar_header_from_block(block)
+        assert parsed.name == "\udcff\udcfe.txt"
+        assert sandbox_entry_from_tar_header(parsed, "x").kind is EntryKind.FILE
+
+    def test_a_regular_file_keeps_its_size(self):
+        entry = tarfile.TarInfo("a.txt")
+        entry.size = 7
+        parsed = sandbox_entry_from_tar_header(
+            tar_header_from_block(self._block(entry, b"body123")), "a.txt"
+        )
+        assert parsed == SandboxEntry(path="a.txt", kind=EntryKind.FILE, size_bytes=7)
+
+    def test_a_directory_has_no_size(self):
+        entry = tarfile.TarInfo("sub/")
+        entry.type = tarfile.DIRTYPE
+        parsed = sandbox_entry_from_tar_header(tar_header_from_block(self._block(entry)), "sub")
+        assert parsed == SandboxEntry(path="sub", kind=EntryKind.DIRECTORY, size_bytes=None)
+
+    def test_a_symlink_has_no_size(self):
+        entry = tarfile.TarInfo("out")
+        entry.type = tarfile.SYMTYPE
+        entry.linkname = "/etc"
+        parsed = sandbox_entry_from_tar_header(tar_header_from_block(self._block(entry)), "out")
+        assert parsed == SandboxEntry(path="out", kind=EntryKind.SYMLINK, size_bytes=None)
+
+    def test_a_hard_link_is_other_with_no_size(self):
+        entry = tarfile.TarInfo("dup")
+        entry.type = tarfile.LNKTYPE
+        entry.linkname = "a.txt"
+        parsed = sandbox_entry_from_tar_header(tar_header_from_block(self._block(entry)), "dup")
+        assert parsed == SandboxEntry(path="dup", kind=EntryKind.OTHER, size_bytes=None)
+
+    def test_a_fifo_is_other_with_no_size(self):
+        entry = tarfile.TarInfo("pipe")
+        entry.type = tarfile.FIFOTYPE
+        parsed = sandbox_entry_from_tar_header(tar_header_from_block(self._block(entry)), "pipe")
+        assert parsed == SandboxEntry(path="pipe", kind=EntryKind.OTHER, size_bytes=None)
+
+    def test_the_classifier_takes_the_parsed_header_docker_already_holds(self):
+        info = tarfile.TarInfo("kept.txt")
+        info.size = 3
+        assert sandbox_entry_from_tar_header(info, "kept.txt").size_bytes == 3
+
+    def test_both_names_are_exported(self):
+        assert "tar_header_from_block" in paths.__all__
+        assert "sandbox_entry_from_tar_header" in paths.__all__
 
 
 class TestTheNamesTheseHadBefore:
