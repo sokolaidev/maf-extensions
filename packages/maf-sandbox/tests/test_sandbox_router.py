@@ -1547,6 +1547,95 @@ class TestDisposingACallScopedKey:
             asyncio.run(router.dispose_call(self._CALL_KEY, timeout=math.inf))
 
 
+class TestTheLedgerNeverCarriesAKeyNamingACall:
+    """A ledger entry closes a key against its *next* acquire, and a call-scoped key has none.
+
+    Writing one anyway is an unbounded map on a host that mints a key per call, so the rule lives
+    in one place rather than at each caller.
+    """
+
+    _CALL_KEY = SandboxKey(
+        scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer", call_id="7a1f"
+    )
+
+    def _router(self) -> SandboxRouter:
+        return SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE)
+
+    def test_marking_one_writes_nothing(self):
+        router = self._router()
+        router.mark_unclean(self._CALL_KEY, DisposalFailure("refused", "the service said no"))
+        # Observed through the refusal rather than the private map: an entry that exists refuses.
+        assert asyncio.run(router.acquire(self._CALL_KEY, _SPEC)) is not None
+
+    def test_a_conversation_key_is_still_marked(self):
+        """The positive control — the rule is about the call id, not about marking."""
+        router = self._router()
+        router.mark_unclean(_KEY, DisposalFailure("refused", "the service said no"))
+        with pytest.raises(SandboxUnclean):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_refused_acquire_that_cannot_dispose_leaves_no_entry(self):
+        """The one path that marks a key the caller never chose — `acquire`'s own refusal."""
+
+        class _Unreclaimable(InProcessSandboxBackend):
+            async def acquire(self, key, spec):
+                del key, spec
+                return object()  # no `reclaim`, so the router refuses and disposes
+
+            async def dispose(self, key):
+                del key
+                return DisposalFailure("refused", "and the disposal did not land either")
+
+        router = SandboxRouter([_Unreclaimable()], min_isolation=Isolation.NONE)
+        for round_ in range(3):
+            keyed = dataclasses.replace(self._CALL_KEY, call_id=f"call-{round_}")
+            with pytest.raises(TypeError):
+                asyncio.run(router.acquire(keyed, _SPEC))
+        # Not SandboxUnclean: the refusal above fires again from the check, not from a ledger
+        # that would have grown one entry per call and never shed one.
+        with pytest.raises(TypeError):
+            asyncio.run(
+                router.acquire(dataclasses.replace(self._CALL_KEY, call_id="call-0"), _SPEC)
+            )
+
+    def test_dispose_unclean_refuses_a_key_naming_a_call(self):
+        with pytest.raises(ValueError, match="naming a call"):
+            asyncio.run(self._router().dispose_unclean(self._CALL_KEY, timeout=5.0))
+
+
+class TestDisposeCallAsksTheServingBackendOnly:
+    """A key minted for one call was served by the selected backend and by nothing else.
+
+    Asking the others reports their failures as this call's leak, on every call.
+    """
+
+    _CALL_KEY = SandboxKey(
+        scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer", call_id="7a1f"
+    )
+
+    def test_another_backends_failure_is_not_this_calls_leak(self):
+        serving = InProcessSandboxBackend(name="serving")
+        other = InProcessSandboxBackend(
+            name="other", dispose_failure=DisposalFailure("refused", "unrelated")
+        )
+        router = SandboxRouter([serving, other], min_isolation=Isolation.NONE)
+        assert asyncio.run(router.dispose_call(self._CALL_KEY, timeout=5.0)) is True
+        assert serving.disposed == [self._CALL_KEY]
+        assert other.disposed == []
+
+    def test_a_delete_that_overruns_the_bound_answers_false(self):
+        """The report a hung provider produces — where a `True` would leak in silence."""
+        backend = _BlocksUntilReleased()
+        router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+
+        async def overrun():
+            landed = await router.dispose_call(self._CALL_KEY, timeout=0.05)
+            backend.release.set()
+            return landed
+
+        assert asyncio.run(overrun()) is False
+
+
 class TestAcquireEnforcesPolicy:
     """`acquire` refuses on the same grounds as `ensure_can_serve`.
 

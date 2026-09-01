@@ -519,7 +519,20 @@ class SandboxToolSession:
           that detail goes to the log — with :func:`~maf_sandbox.error_detail`, because
           ``str()`` on such an error is often just ``Operation returned an invalid status``
           — and the model gets a fixed sentence saying only that the run degraded.
+
+        Raises:
+            RuntimeError: called after the tool call returned, with a key naming that call —
+                the wiring mistake :meth:`guest_call_path` refuses for the same reason. Nothing
+                would delete what it created.
         """
+        call = _this_call(self)
+        if call is not None and call.closed and key.call_id:
+            raise RuntimeError(
+                f"{self._name}: acquire() was called after its tool call returned, with a key "
+                "naming that call. The sandbox it would create is one the cleanup has already "
+                "walked past, so nothing would delete it. A task outliving the call needs a key "
+                "of its own."
+            )
         try:
             sandbox = await self._router.acquire(key, self._spec)
         except ATTACH_REFUSALS as exc:
@@ -550,7 +563,6 @@ class SandboxToolSession:
             # tenant ids, so it goes to the log and never into the model's context.
             self._logger.warning(f"{self._log_prefix}: sandbox unavailable: %s", error_detail(exc))
             return _SANDBOX_UNAVAILABLE
-        call = _this_call(self)
         if call is not None and not call.closed:
             # Recorded on the way through rather than re-derived in the `finally`, where a
             # second `acquire` could fail on its own and report a reclaim failure for it. Not
@@ -735,13 +747,30 @@ async def _reclaim_the_call(
                     key, router=router, prefix=prefix, logger=logger, timeout=timeout
                 )
                 if undisposed is None:
+                    # The sandbox went, and every note about it went with it.
                     continue
                 logger.warning(f"{prefix}: the call's sandbox was not disposed: %s", undisposed)
+                left = [
+                    undisposed,
+                    *(
+                        reason
+                        for owner, reason in unclean
+                        if any(owner is held for held in sandboxes)
+                    ),
+                ]
+                if len(left) > 1:
+                    # It is still there, so a stop that did not reach everything the program
+                    # started is still true of it — and a host told only that data was left
+                    # would not know something may still be running in it.
+                    logger.warning(
+                        f"{prefix}: the sandbox that was not disposed is not clean either: %s",
+                        "; ".join(left[1:]),
+                    )
                 if on_failure is not None:
                     await _tell_the_host(
                         on_failure,
                         ReclaimFailure(
-                            tool=tool, key=key, path=path, reason=undisposed, disposal="failed"
+                            tool=tool, key=key, path=path, reason="; ".join(left), disposal="failed"
                         ),
                         prefix=prefix,
                         logger=logger,
@@ -919,7 +948,10 @@ def sandboxed_tool(
             the framework deleted the sandbox, ``kept`` where the host opted down, and
             ``failed`` where the delete did not land. A **call-scoped** sandbox reports only
             the last of those: deleting it is the cleanup rather than an escalation over a
-            failed one, so the callback runs exactly when that delete did not happen. This is
+            failed one, so the callback runs when that delete did not happen — except when the
+            call was cancelled *during* it, where the leak reaches the log and nothing else,
+            because the callback would be awaiting past a deadline that has already expired.
+            This is
             notification: where a host logs, alerts or counts. It is not where safety is
             wired; that is the router's, and a host opts down from it with
             ``ReclaimConfig(failed_reclaim_policy=FailedReclaimPolicy.KEEP)``, never from here.

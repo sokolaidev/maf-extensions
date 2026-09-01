@@ -1567,17 +1567,24 @@ class _StoreSubject(_FakeSubject):
         return entry is not None
 
 
+class _VanishingSubject(_StoreSubject):
+    """A subject whose plant lands nowhere — the harness failure the positive controls exist for."""
+
+    async def plant_file(self, path: str, content: bytes) -> None:
+        del path, content
+
+
 class TestCallScopeConformance:
     """The package that ships the suite answers it too, through two real acquires.
 
     Two keys differing only in `call_id`, served by the fake in its per-key mode: the shape a
-    backend's own test builds, and the one a backend keying on three fields of four fails.
+    backend's own test builds.
     """
 
     _SPEC = SandboxSpec(kind="test", isolation_scope=IsolationScope.CALL, work_dir=_WORK)
     _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-1", call_id="one")
 
-    def _two_calls(self) -> tuple[_StoreSubject, _StoreSubject]:
+    def _router(self) -> SandboxRouter:
         backend = InProcessSandboxBackend(
             sandbox_per_key=True,
             declarations=dataclasses.replace(
@@ -1586,41 +1593,102 @@ class TestCallScopeConformance:
                 isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
             ),
         )
-        router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+        return SandboxRouter([backend], min_isolation=Isolation.NONE)
 
-        async def acquire_both():
-            return (
-                await router.acquire(self._KEY, self._SPEC),
-                await router.acquire(dataclasses.replace(self._KEY, call_id="two"), self._SPEC),
-            )
+    def _served(self, capabilities: frozenset[Capability] = _EVERYTHING):
+        """The first subject and a factory that acquires the second — one loop, as the suite runs."""
+        router = self._router()
 
-        first, second = asyncio.run(acquire_both())
-        assert first is not second
-        return _StoreSubject(first, _EVERYTHING), _StoreSubject(second, _EVERYTHING)
+        async def acquire_another() -> _StoreSubject:
+            second = await router.acquire(dataclasses.replace(self._KEY, call_id="two"), self._SPEC)
+            return _StoreSubject(second, capabilities)
+
+        async def first() -> _StoreSubject:
+            return _StoreSubject(await router.acquire(self._KEY, self._SPEC), capabilities)
+
+        return first, acquire_another
 
     def test_two_sandboxes_answer_every_probe(self):
-        first, second = self._two_calls()
-        results = asyncio.run(assert_call_scope_conformance(first, second))
-        assert [result.failure for result in results] == [None] * 3
-        assert [result.skipped for result in results] == [None] * 3
+        first, acquire_another = self._served()
+
+        async def run():
+            return await assert_call_scope_conformance(await first(), acquire_another)
+
+        results = asyncio.run(run())
+        assert [result.failure for result in results] == [None] * 4
+        assert [result.skipped for result in results] == [None] * 4
 
     def test_one_filesystem_behind_two_keys_fails_every_probe(self):
         """The specimen the suite exists for: the sharing a declaration cannot be trusted about."""
         shared = InProcessSandbox()
+
+        async def acquire_another() -> _StoreSubject:
+            return _StoreSubject(shared, _EVERYTHING)
+
         with pytest.raises(ConformanceFailure) as raised:
             asyncio.run(
-                assert_call_scope_conformance(
-                    _StoreSubject(shared, _EVERYTHING), _StoreSubject(shared, _EVERYTHING)
-                )
+                assert_call_scope_conformance(_StoreSubject(shared, _EVERYTHING), acquire_another)
             )
-        assert len(raised.value.failures) == 3
+        assert len(raised.value.failures) == 4
         assert "CALL_SCOPE" in str(raised.value)
 
+    def test_a_sandbox_seeded_from_the_conversations_is_refused(self):
+        """Two filesystems, and the second opens holding the first's files.
+
+        A warm start that copies the conversation's sandbox satisfies every probe that writes
+        after both exist, which is why one of them plants before the second is acquired.
+        """
+        first = InProcessSandbox()
+
+        async def acquire_another() -> _StoreSubject:
+            seeded = InProcessSandbox()
+            seeded.contents.update(first.contents)
+            return _StoreSubject(seeded, _EVERYTHING)
+
+        with pytest.raises(ConformanceFailure) as raised:
+            asyncio.run(
+                assert_call_scope_conformance(_StoreSubject(first, _EVERYTHING), acquire_another)
+            )
+        assert [failure.probe.name for failure in raised.value.failures] == [
+            "arrives-without-the-other-calls-data"
+        ]
+
+    def test_a_plant_that_lands_nowhere_fails_rather_than_passes(self):
+        """The positive control: a subject whose writes vanish must not read as separation."""
+        _, acquire_another = self._served()
+
+        async def run():
+            return await assert_call_scope_conformance(
+                _VanishingSubject(InProcessSandbox(), _EVERYTHING), acquire_another
+            )
+
+        with pytest.raises(ConformanceFailure) as raised:
+            asyncio.run(run())
+        assert "attacked nothing" in str(raised.value)
+
+    def test_the_gate_is_files_in(self):
+        """A subject declaring no FILES_IN cannot plant, so the run is refused rather than green."""
+        first, acquire_another = self._served(frozenset({Capability.EXEC}))
+
+        async def run():
+            return await run_call_scope_probes(await first(), acquire_another)
+
+        with pytest.raises(ValueError, match="FILES_IN"):
+            asyncio.run(run())
+
     def test_two_roots_are_refused_rather_than_passing_vacuously(self):
-        first, second = self._two_calls()
-        second.working_directory = f"{_WORK}-elsewhere"
+        first, acquire_another = self._served()
+
+        async def run():
+            async def elsewhere() -> _StoreSubject:
+                second = await acquire_another()
+                second.working_directory = f"{_WORK}-elsewhere"
+                return second
+
+            return await run_call_scope_probes(await first(), elsewhere)
+
         with pytest.raises(ValueError, match="rooted at"):
-            asyncio.run(run_call_scope_probes(first, second))
+            asyncio.run(run())
 
 
 class TestEgressConformance:

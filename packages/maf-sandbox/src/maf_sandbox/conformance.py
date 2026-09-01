@@ -1873,25 +1873,42 @@ async def assert_egress_conformance(
 # CALL_SCOPE — that a sandbox per call is a boundary and not a name (#436)
 # ---------------------------------------------------------------------------
 #
-# Two subjects over two sandboxes, acquired with keys differing only in `call_id`. What these
-# check is the half of `IsolationScope.CALL` a backend can fail without anything noticing: one
-# deriving a sandbox's name from the other three fields of the key answers both acquires with
-# one sandbox, both calls succeed, and the separation the workload asked for was never there.
-# See docs/sandbox/tool-call.md.
+# Two sandboxes, acquired with keys differing only in `call_id`. The suite acquires the second
+# one itself, and that is load-bearing: the first thing it does is plant a file *before* that
+# acquire, so a backend serving `IsolationScope.CALL` by cloning the warm conversation sandbox
+# — a plausible warm-start — fails here rather than being certified. Probes that only write
+# after both sandboxes exist cannot see that: everything they plant post-dates the copy.
+#
+# The other half a backend can fail with nothing noticing: one deriving a sandbox's name from
+# three fields of the key answers both acquires with a single sandbox, both calls succeed, and
+# the separation the workload asked for was never there. See docs/sandbox/tool-call.md.
+
+#: Planted in the first sandbox before the second is acquired. The name says when, because the
+#: probe that reads it is the only one whose meaning depends on the order.
+_BEFORE_THE_SECOND_ACQUIRE = "planted-before-the-other-call-existed.txt"
 
 
 async def run_call_scope_probes(
-    subject: ConformanceSubject, other: ConformanceSubject
+    subject: ConformanceSubject,
+    acquire_another: Callable[[], Awaitable[ConformanceSubject]],
 ) -> tuple[ProbeResult, ...]:
-    """Run the CALL_SCOPE probes over two sandboxes that must not share a filesystem.
+    """Run the CALL_SCOPE probes over ``subject`` and a second sandbox this suite acquires.
 
-    Both subjects have to come from acquires whose keys differ **only** in
-    :attr:`~maf_sandbox.SandboxKey.call_id`. A pair differing in scope, thread or agent is kept
-    apart by fields every backend already folds, so it would pass here while saying nothing
-    about the call scope — and two subjects rooted at different working directories compare
-    paths that were never the same one, which passes vacuously. The second is refused below; the
-    first only the caller can hold to.
+    ``acquire_another`` must acquire with a key differing from ``subject``'s **only** in
+    :attr:`~maf_sandbox.SandboxKey.call_id`, and hand back a subject over it. A pair differing in
+    scope, thread or agent is kept apart by fields every backend already folds, so it would pass
+    here while saying nothing about the call scope.
+
+    The suite acquires rather than being handed both, because one probe has to plant before the
+    second sandbox exists: a backend that seeds each call from the conversation's sandbox passes
+    every post-acquire probe there is. Two subjects rooted at different working directories are
+    refused — each probe would compare paths that were never the same one, and pass having
+    attacked nothing.
     """
+    work = ConformancePaths.under(subject.working_directory).work
+    planted_first = f"{work}/{_BEFORE_THE_SECOND_ACQUIRE}"
+    await subject.plant_file(planted_first, _SECRET)
+    other = await acquire_another()
     if subject.working_directory != other.working_directory:
         raise ValueError(
             f"these subjects are rooted at {subject.working_directory!r} and "
@@ -1899,6 +1916,22 @@ async def run_call_scope_probes(
             "other, so different roots make each one pass without attacking anything. Acquire "
             "both sandboxes from one spec."
         )
+
+    async def _arrives_without_the_other_calls_data(
+        s: ConformanceSubject, paths: ConformancePaths
+    ) -> None:
+        del paths
+        if not await s.exists(planted_first):
+            raise AssertionError(
+                "the file did not land in the sandbox that planted it, so this probe attacked "
+                "nothing and a pass would mean nothing"
+            )
+        if await other.exists(planted_first):
+            raise AssertionError(
+                "a file written before this sandbox was acquired is already in it: the call was "
+                "served a copy of what the conversation held rather than a sandbox of its own, "
+                "so every earlier call's data arrives with it"
+            )
 
     async def _the_other_calls_file_is_not_here(
         s: ConformanceSubject, paths: ConformancePaths
@@ -1946,6 +1979,15 @@ async def run_call_scope_probes(
 
     probes = (
         Probe(
+            name="arrives-without-the-other-calls-data",
+            why=(
+                "a sandbox seeded from the conversation's carries every earlier call's files, "
+                "and passes every probe that only writes after both sandboxes exist."
+            ),
+            requires=frozenset(),
+            run=_arrives_without_the_other_calls_data,
+        ),
+        Probe(
             name="the-other-calls-file-is-not-here",
             why=(
                 "the property itself: what one call writes must not be in the sandbox the next "
@@ -1977,11 +2019,12 @@ async def run_call_scope_probes(
 
 
 async def assert_call_scope_conformance(
-    subject: ConformanceSubject, other: ConformanceSubject
+    subject: ConformanceSubject,
+    acquire_another: Callable[[], Awaitable[ConformanceSubject]],
 ) -> tuple[ProbeResult, ...]:
     """Run the CALL_SCOPE probes and raise :class:`ConformanceFailure` if any failed.
 
     What a backend owes before it declares :data:`~maf_sandbox.IsolationScope.CALL`: the
     declaration is what the router refuses on, and these are what make it true.
     """
-    return _assert_conformance(await run_call_scope_probes(subject, other), "CALL_SCOPE")
+    return _assert_conformance(await run_call_scope_probes(subject, acquire_another), "CALL_SCOPE")

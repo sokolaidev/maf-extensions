@@ -1077,6 +1077,128 @@ class TestADeleteThatDidNotLandIsReportedNotGuarded:
         assert any("was not disposed" in record.message for record in caplog.records)
 
 
+class TestWhatALeakedCallSandboxTellsTheHost:
+    """A delete that did not land leaves the sandbox — and everything still running in it."""
+
+    def _failing(self):
+        return _per_call_backend(dispose_failure=DisposalFailure("refused", "the service said no"))
+
+    def test_the_report_carries_the_transports_note_too(self):
+        """The sandbox is still there, so a stop that did not take everything is still true.
+
+        Reporting only the leak would tell a host its data was left and not that a program may
+        still be executing beside it — which the conversation-scoped branch has always said.
+        """
+        seen: list[ReclaimFailure] = []
+
+        async def record(failure: ReclaimFailure) -> None:
+            seen.append(failure)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Leave a note the transport would have left."""
+                key = session.key()
+                assert not isinstance(key, str)
+                sandbox = await session.acquire(key)
+                assert not isinstance(sandbox, str)
+                note_unclean(sandbox, "a stop did not provably take down the process tree")
+                return target
+
+            return widget_run
+
+        backend = self._failing()
+        tool = _attach_with(
+            build,
+            _router(backend),
+            spec=_CALL_SCOPED_SPEC,
+            on_reclaim_failure=record,
+        )[0]
+        _call(tool, target="x")
+        assert len(seen) == 1
+        assert "did not land" in seen[0].reason
+        assert "process tree" in seen[0].reason
+
+
+class TestASandboxNothingWouldDelete:
+    def test_a_task_outliving_the_call_cannot_acquire_on_its_key(self):
+        """A task started in the body keeps the call's context, so it can still reach the key.
+
+        `key()` and `guest_call_path()` both refuse once the call is closed. Acquiring would
+        create a live sandbox after the cleanup walked past, with nothing left to delete it.
+        """
+        outcome: dict[str, object] = {}
+        tasks: list[asyncio.Task[None]] = []
+        released = asyncio.Event()
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Leave a task holding this call's key."""
+                key = session.key()
+                assert not isinstance(key, str)
+                assert not isinstance(await session.acquire(key), str)
+
+                async def later() -> None:
+                    await released.wait()
+                    try:
+                        outcome["result"] = await session.acquire(key)
+                    except RuntimeError as raised:
+                        outcome["result"] = raised
+
+                tasks.append(asyncio.create_task(later()))
+                return target
+
+            return widget_run
+
+        backend = _per_call_backend()
+        fn = _fn(_reclaiming(backend, build, spec=_CALL_SCOPED_SPEC))
+
+        async def run() -> None:
+            await fn(target="x")
+            released.set()
+            await asyncio.gather(*tasks)
+
+        asyncio.run(run())
+        assert isinstance(outcome["result"], RuntimeError)
+        assert "after its tool call returned" in str(outcome["result"])
+        assert backend.disposed == backend.keys
+
+
+class TestTwoConcurrentCallsAtCallScope:
+    """The case the scope exists for: two function calls in one assistant message, in flight."""
+
+    def test_they_are_served_two_sandboxes_and_both_are_disposed(self):
+        backend = _per_call_backend()
+        barrier = asyncio.Barrier(2)
+        served: list[int] = []
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Hold a sandbox while the other call holds its own."""
+                key = session.key()
+                assert not isinstance(key, str)
+                sandbox = await session.acquire(key)
+                assert not isinstance(sandbox, str)
+                served.append(id(sandbox))
+                await sandbox.write_file(
+                    f"{session.guest_call_path()}/mine.txt", target, working_directory="/"
+                )
+                await barrier.wait()
+                return key.call_id
+
+            return widget_run
+
+        fn = _fn(_reclaiming(backend, build, spec=_CALL_SCOPED_SPEC))
+
+        async def both():
+            return await asyncio.gather(fn(target="a"), fn(target="b"))
+
+        first, second = asyncio.run(both())
+        assert first != second
+        # Two acquires, two distinct sandboxes, and each call's own key disposed.
+        assert len(set(served)) == 2
+        assert sorted(key.call_id for key in backend.disposed) == sorted([first, second])
+
+
 class TestTheFinallyReclaims:
     def test_the_path_goes_when_the_body_returns(self):
         backend = InProcessSandboxBackend()

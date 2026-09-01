@@ -906,8 +906,18 @@ class SandboxRouter:
         async with self._disposal_lock(key):
             await self._dispose_each(key)
 
-    async def _dispose_each(self, key: SandboxKey, *, refuse: bool = False) -> bool:
+    async def _dispose_each(
+        self,
+        key: SandboxKey,
+        *,
+        refuse: bool = False,
+        backends: Sequence[SandboxBackend] | None = None,
+    ) -> bool:
         """Ask every backend to dispose ``key``; ``True`` when none refused.
+
+        ``backends`` narrows the sweep, and only :meth:`dispose_call` passes it: every other
+        caller asks all of them, because a key may have been served by a backend this router no
+        longer selects.
 
         A landed disposal clears the key from the unclean set: whatever was in that sandbox
         went with it.  ``refuse`` closes the key when one does *not* land, and only
@@ -919,7 +929,7 @@ class SandboxRouter:
         raises, so silence is the only thing that may be read as success.
         """
         reasons: list[DisposalFailure] = []
-        for backend in self._backends:
+        for backend in self._backends if backends is None else backends:
             try:
                 undisposed = await backend.dispose(key)
             except Exception as exc:  # noqa: BLE001 - disposal must not fail a caller
@@ -982,7 +992,10 @@ class SandboxRouter:
         try:
             async with asyncio.timeout(timeout):
                 async with self._disposal_lock(key):
-                    return await self._dispose_each(key)
+                    # This backend alone. A key minted for one call was served by the backend
+                    # this router selected and by nothing else, and asking the others would
+                    # report their failures as this call's leak.
+                    return await self._dispose_each(key, backends=[self._backend])
         except TimeoutError:
             logger.warning(
                 "sandbox router: disposing the call sandbox %s/%s/%s/%s did not finish within %ss",
@@ -1011,11 +1024,20 @@ class SandboxRouter:
         refused.  ``FailedReclaimPolicy.KEEP`` suppresses the ledger writes, not the bound.
 
         Raises:
-            ValueError: when ``timeout`` is not a finite positive number of seconds. ``math.inf``
+            ValueError: when ``key`` names a call, which :meth:`dispose_call` serves and this
+                cannot protect; or when ``timeout`` is not a finite positive number of seconds.
+                ``math.inf``
                 would leave ``asyncio.timeout`` unable to expire, so the documented bound would
                 not hold and a hanging backend would hang the caller. Checked before the key is
                 marked, so a rejected call has no lingering effect on the ledger.
         """
+        if not self._may_be_refused(key):
+            raise ValueError(
+                f"dispose_unclean was given a key naming a call ({key.call_id}). Refusing it "
+                "afterwards protects nothing — that key has no next acquire — so this method has "
+                "nothing to offer over dispose_call(key, timeout=...), which deletes the "
+                "call's sandbox and reports whether it landed."
+            )
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError(f"timeout must be a finite positive number of seconds, not {timeout}")
         # The opt-down is from closing the key, not from the bound: this still runs after a
@@ -1055,6 +1077,17 @@ class SandboxRouter:
             )
             return False
 
+    def _may_be_refused(self, key: SandboxKey) -> bool:
+        """Whether the ledger can protect ``key`` at all.
+
+        It closes a key against its **next** acquire, and a call-scoped key has none — the entry
+        would be read by nobody and cleared by nothing, so writing one is an unbounded map on a
+        host that mints a key per call. What the entry would have refused is refused anyway: the
+        conditions that mark a key — a sandbox this backend cannot reclaim, a delete that did not
+        land — are re-read on the next acquire rather than remembered.
+        """
+        return not key.call_id
+
     def mark_unclean(self, key: SandboxKey, reason: DisposalFailure | None = None) -> None:
         """Refuse ``key`` without disposing — for a cleanup cancelled before it could dispose.
 
@@ -1066,7 +1099,11 @@ class SandboxRouter:
         The refusal carries ``reason``'s *code* only; the detail stays in the log.  A reason
         does not overwrite one a disposal already recorded: what a backend said about the
         sandbox says more than that a cleanup was cut short.
+
+        A key naming a call is not written at all — :meth:`_may_be_refused` carries why.
         """
+        if not self._may_be_refused(key):
+            return
         if self._unclean.get(key) is None:
             # Folded, not stored as given: one place decides what a legal code is.
             self._unclean[key] = None if reason is None else fold_disposal_failures([reason])
