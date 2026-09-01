@@ -2,13 +2,13 @@
 
 > The ordered path through what a backend owes: the declarations first, then each `Sandbox` method — what it owes, what to reach for, what never to do, and the probes that prove it.
 
-A new backend author has reference material and no sequence. The contracts are all written down — the `Sandbox` docstrings in [`_protocol.py`](../../../packages/maf-sandbox/src/maf_sandbox/_protocol.py) say what each method promises, `maf_sandbox.paths` carries the helpers, [`capabilities.md`](../capabilities.md) and [`policy-isolation.md`](../policy-isolation.md) carry the rules — but reference material answers a question you already know to ask. This page is the order you meet the work in, and four fixed lines per method are its shape: **Owes** what the protocol demands, **Use** the helper that already carries it, **Never** the mistake a shipped backend has made or nearly made, and **Proved by** the probes in [`maf_sandbox.conformance`](../../../packages/maf-sandbox/src/maf_sandbox/conformance.py) that fail without it — they hold the method to its whole Owes line, not only to its Never line.
+A new backend author has reference material and no sequence. The contracts are all written down — the `Sandbox` docstrings in [`_protocol.py`](../../../packages/maf-sandbox/src/maf_sandbox/_protocol.py) say what each method promises, `maf_sandbox.paths` carries the helpers, [`capabilities.md`](../capabilities.md) and [`policy-isolation.md`](../policy-isolation.md) carry the rules — but reference material answers a question you already know to ask. This page is the order you meet the work in, and four fixed lines per method are its shape: **Owes** what the protocol demands, **Use** the helper that already carries it, **Never** the mistake a shipped backend has made or nearly made, and **Proved by** the probes in [`maf_sandbox.conformance`](../../../packages/maf-sandbox/src/maf_sandbox/conformance.py) that fail without it — the slice of the contract its suite covers, which is neither only the Never line nor every clause of the Owes line: `read_file`'s `max_bytes` refusal and `reclaim`'s placement guards, for instance, are owed below and named, and no probe holds them.
 
 The boundary with the pages beside this one: each shipped backend's declarations, lifecycle and quirks are [`README.md`](README.md)'s comparison and the per-backend pages under it; a package's installation, configuration and usage are that package's own README. This page owns the sequence and the prohibitions — the thing none of the others can be, because each of them is organised by subject rather than by the order you build in.
 
 ## The order, and why
 
-`DEFAULT_CAPABILITIES` is `EXEC` and `FILES_IN`, so `write_file` and `exec` come first — a backend that serves neither is not a backend, and `write_file` is where confinement's vocabulary is learned. `reclaim` comes next: mandatory and gated by no capability, so there is no declare-or-raise escape from it and nothing to defer it behind. Everything after that is a door you add as you declare it — `stat_file` and `read_file` (`FILES_OUT`), `list_dir` (`FILES_LIST`), `remove` (`FILES_DELETE`), `run_code` (`RUN_CODE`) — and each declares honestly or not at all, because the router refuses a spec the backend cannot serve rather than handing it a degraded run of what it asked for.
+`DEFAULT_CAPABILITIES` is `EXEC` and `FILES_IN`, so `write_file` and `exec` come first — that is the set a silent `capabilities` field declares and the path most backends walk, and `write_file` is where confinement's vocabulary is learned. A backend may declare less than the defaults: a runtime-only one serves neither and is still a backend — the shape the conformance machinery holds open explicitly, its probes verifiable through a subject that owns no shell and no file surface — so it starts at `reclaim` and the doors it does declare. `reclaim` comes next for every backend: mandatory and gated by no capability, so there is no declare-or-raise escape from it and nothing to defer it behind. Everything after that is a door you add as you declare it — `stat_file` and `read_file` (`FILES_OUT`), `list_dir` (`FILES_LIST`), `remove` (`FILES_DELETE`), `run_code` (`RUN_CODE`) — and each declares honestly or not at all, because the router refuses a spec the backend cannot serve rather than handing it a degraded run of what it asked for.
 
 ## What you declare before the first method
 
@@ -43,7 +43,7 @@ The in-door every backend owes, and the method where two shipped backends indepe
 The framework's cleanup, running in a `finally`, gated by no capability — every backend genuinely implements it, and there is no declare-or-raise escape from it.
 
 - **Owes:** remove the directory and everything under it, within `timeout`. The operand is one the framework created under `working_directory` with an unguessable name, so no filesystem path check is owed — but the premise is not stable: the guest program can have swapped the path, or a parent, for a link before the call returned, and what the contract holds is **reach** — a swap must not let the removal delete anything that program could not have deleted itself. A directory that is not there is success. The operand is absolute, and the removal runs from `/`, not from `working_directory`, which may not exist.
-- **Use:** the same mechanism `exec` uses, as the principal the program ran under — that satisfies reach everywhere. A removal with **more** authority is licensed only by `path_ancestors_are_host_owned` over what your stat collected, and the empty case is yours to name through `empty_means_host_owned`, not the function's to assume — an empty walk can mean nothing lies above the working directory or that the walk reached nothing, and only you know which.
+- **Use:** removal over the same mechanism `exec` uses where you have one, as the principal the program ran under — that satisfies reach everywhere. A backend with no `exec` at all removes through its provider's native path, and the reach rule binds it identically. A removal with **more** authority than the program had is licensed only by `path_ancestors_are_host_owned` over what your own check collected, and the empty case is yours to name through `empty_means_host_owned`, not the function's to assume — an empty walk can mean nothing lies above the working directory or that the walk reached nothing, and only you know which.
 - **Never:** raise where the contract promises success — a directory that is not there is success, because this member runs in a `finally` and a second failure over the first buries it. Never run raised without the reach check: the raised removal is exactly what a guest that swapped a component is after, and the license is the check, not the uid. The placement guards — not absolute, fewer than two components from the root — are worth repeating on your side too: this removal is recursive and irreversible, and neither guard should depend on the caller having derived the path correctly.
 - **Proved by:** `a-created-directory-is-gone`, `nested-content-goes-with-it`, `a-link-inside-is-unlinked-not-followed`, `a-missing-directory-is-success`, `an-absent-working-directory-still-succeeds`.
 
@@ -92,21 +92,27 @@ The suites are the executable half of every Proved-by line above, and your packa
 
 ```python
 from maf_sandbox.conformance import (
+    PosixGuestSubject,
     assert_exec_conformance,
     assert_files_delete_conformance,
     assert_files_in_conformance,
-    assert_files_out_conformance,
     assert_reclaim_conformance,
 )
 
-await assert_files_in_conformance(subject)
-await assert_files_delete_conformance(subject)
-await assert_files_out_conformance(subject)
-await assert_reclaim_conformance(subject)
-await assert_exec_conformance(subject)
+subject = PosixGuestSubject(
+    sandbox=sandbox, working_directory=work_dir, capabilities=backend.declarations.capabilities
+)
+results = await assert_files_in_conformance(subject)  # green: this backend declares the gate
+assert not [r for r in results if r.skipped]  # a backend that quietly stopped declaring cannot hide
+await assert_reclaim_conformance(subject)  # ungated: green for every backend, shell or none
+await assert_exec_conformance(subject)  # last: its final probe may discard the sandbox
+with pytest.raises(ValueError, match="declares no FILES_DELETE"):
+    await assert_files_delete_conformance(subject)  # withheld: the gate itself, asserted
 ```
 
-Every backend owes the FILES_IN, EXEC and RECLAIM suites regardless of what it declares — a backend declaring none of the three is not a backend — and RECLAIM is gated by no capability at all, so there is no withheld answer for it: the assert itself is owed. FILES_OUT is owed the moment `stat_file` and `read_file` both have bodies rather than a `raise`. FILES_DELETE has a withheld-capability answer: a backend that implements `remove` without declaring it measures instead, with `measure_files_delete_probes` — findings, not promises — and where no mechanism exists behind the gate at all, the suite asserts the runner's refusal. A backend declaring an `Egress.ALLOWLIST` mode owes `assert_egress_conformance` too, which takes the allowed and denied URLs because a spec's hosts are the deployment's, not the module's.
+The block shows a backend that declares `FILES_IN` and `EXEC` and withholds `FILES_DELETE` — the shipped shape with the most in it. A backend declaring a gate runs the same call bare and asserts on the skipped probes instead; one implementing the pull surface adds `assert_files_out_conformance` in the same pattern; and one with no `exec` and no `FILES_IN` at all answers those two the same withheld way, because the suites refuse a subject that does not declare their gate — a green run that attacked nothing being worse than no run.
+
+Every backend answers the FILES_IN, EXEC and FILES_DELETE suites whatever it declares: green where the gate is declared, and the suite's own refusal, asserted, where the capability is withheld. RECLAIM is gated by no capability at all, so it has no withheld answer: the assert itself is owed, green, and the probes are written so a runtime-only backend can sit it. FILES_OUT is owed the moment `stat_file` and `read_file` both have bodies rather than a `raise`. FILES_DELETE has a second answer for a backend that implements `remove` without yet declaring it: measure with `measure_files_delete_probes` — findings, not promises, and how a withheld capability is evidenced into or out of declaration. A backend declaring an `Egress.ALLOWLIST` mode owes `assert_egress_conformance` too, which takes the allowed and denied URLs because a spec's hosts are the deployment's, not the module's.
 
 And the static binding: one `tuple[SandboxBackend, type[Sandbox]]` under `TYPE_CHECKING` per backend class. The annotation is what catches a narrowed signature or a missing protocol method — `isinstance` cannot, because both sides of it are runtime-shapes only.
 

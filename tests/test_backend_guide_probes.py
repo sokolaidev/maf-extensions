@@ -27,19 +27,19 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import maf_sandbox
-from maf_sandbox import conformance, paths
+import maf_sandbox.conformance
+import maf_sandbox.paths
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 GUIDE = REPO_ROOT / "docs" / "sandbox" / "backends" / "writing-a-backend.md"
 
 #: The five registries a **Proved by** line draws from.
 REGISTRIES = (
-    conformance.FILES_OUT_PROBES,
-    conformance.FILES_IN_PROBES,
-    conformance.EXEC_PROBES,
-    conformance.FILES_DELETE_PROBES,
-    conformance.RECLAIM_PROBES,
+    maf_sandbox.conformance.FILES_OUT_PROBES,
+    maf_sandbox.conformance.FILES_IN_PROBES,
+    maf_sandbox.conformance.EXEC_PROBES,
+    maf_sandbox.conformance.FILES_DELETE_PROBES,
+    maf_sandbox.conformance.RECLAIM_PROBES,
 )
 PROBE_NAMES = frozenset(probe.name for registry in REGISTRIES for probe in registry)
 
@@ -68,7 +68,11 @@ PROTOCOL_METHODS = frozenset(name for name in dir(maf_sandbox.Sandbox) if not na
 
 #: The exported vocabulary across the modules the guide cites, so a backticked class or
 #: constant is still exported somewhere it plausibly lives.
-EXPORTS = frozenset(maf_sandbox.__all__) | frozenset(conformance.__all__) | frozenset(paths.__all__)
+EXPORTS = (
+    frozenset(maf_sandbox.__all__)
+    | frozenset(maf_sandbox.conformance.__all__)
+    | frozenset(maf_sandbox.paths.__all__)
+)
 
 #: The shapes of that vocabulary as the guide spells it, matched on the first dotted segment —
 #: `EntryKind.SYMLINK` is a member of `EntryKind`, and the member is md-blocks' business.
@@ -107,8 +111,12 @@ def _method_sections(markdown: str) -> dict[str, str]:
             continue
         name = _CODE_SPAN.fullmatch(title.strip())
         assert name, f"method heading {title!r} does not name its method in backticks"
+        key = name.group(1)
+        assert key not in sections, (
+            f"method heading {key!r} appears twice; the second would overwrite the first"
+        )
         end = headings[index + 1][0] if index + 1 < len(headings) else len(markdown)
-        sections[name.group(1)] = markdown[start:end]
+        sections[key] = markdown[start:end]
     return sections
 
 
@@ -139,11 +147,11 @@ def test_the_guide_covers_the_protocol_and_each_entry_carries_the_four_lines() -
 def test_every_helper_the_guide_names_is_exported() -> None:
     for span in frozenset(_CODE_SPAN.findall(GUIDE.read_text(encoding="utf-8"))):
         if span.startswith(PATHS_SHAPES):
-            assert span in paths.__all__, (
+            assert span in maf_sandbox.paths.__all__, (
                 f"the guide names {span!r}, which maf_sandbox.paths no longer exports"
             )
         if span.startswith(CONFORMANCE_SHAPES) or span.endswith("_PROBES") or RUNNER.match(span):
-            assert span in conformance.__all__, (
+            assert span in maf_sandbox.conformance.__all__, (
                 f"the guide names {span!r}, which maf_sandbox.conformance no longer exports"
             )
         first = span.split(".")[0]
