@@ -51,7 +51,7 @@ It answers the conformance probes, and what a green means here is narrower than 
 | Decision | State | Tracking |
 |---|---|---|
 | One supported fake for both protocols, replacing the per-suite hand-rolled ones | shipped | — |
-| All five declarations constructor-overridable; the full pull surface implemented | shipped | — |
+| All six declarations constructor-overridable; the full pull surface implemented; one sandbox per key on request | shipped — `sandbox_per_key=True` is what lets it declare `IsolationScope.CALL` honestly | — |
 | `egress_modes` replaces the single `egress` default, at `{ALLOWLIST, CLOSED}` so an offline test attaches as it would against a proxy-capable backend | shipped | [#530](https://github.com/sokolaidev/maf-extensions/pull/530) (merged) under [#265](https://github.com/sokolaidev/maf-extensions/issues/265) (closed) |
 | `run_code` scripted rather than refused, recorded into `programs` | shipped — the fake is the only implementation that answers it with a result | [#532](https://github.com/sokolaidev/maf-extensions/pull/532) (merged), closing [#381](https://github.com/sokolaidev/maf-extensions/issues/381) (closed) |
 | `os_families` overridable, defaulting to `frozenset()` | shipped — the same silence the router reads from a backend that declares nothing | [#532](https://github.com/sokolaidev/maf-extensions/pull/532) (merged), closing [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (closed) |

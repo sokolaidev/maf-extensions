@@ -48,7 +48,7 @@ from maf_sandbox.maf import list_no_files, make_caller_context
 from maf_sandbox_codeact import make_codeact_tools
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
 
-# Keyed by (scope, thread_id, agent_dir) — see sample 03's agent.py.
+# Keyed by the caller's scope, thread and agent directory — see sample 03's agent.py.
 SCOPE = "samples"
 THREAD_ID = "04-wslc-codeact"
 AGENT_DIR = "data-analyst"

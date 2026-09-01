@@ -108,7 +108,8 @@ CALL_RECLAIMS = tuple(int(part) for part in version("maf-sandbox-codeact").split
 CALL_RECLAIMED = "reclaimed by the framework"
 CALL_KEPT = "left for the sandbox (an older CodeAct or core)"
 
-# Keyed by (scope, thread_id, agent_dir); constants here since this program serves one request.
+# Keyed by the caller's scope, thread and agent directory; constants here since this
+# program serves one request.
 SCOPE = "samples"
 AGENT_DIR = "analyst"
 

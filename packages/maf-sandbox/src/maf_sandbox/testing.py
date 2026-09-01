@@ -370,7 +370,7 @@ class InProcessSandboxBackend:
             proxy-capable live backend, rather than every offline test becoming a test of the
             attach refusal. A test of that refusal passes a narrower set (``frozenset()`` for
             "enforces nothing", ``{UNRESTRICTED}`` for the no-confinement backend). The other
-            three fields keep the router's own silence rules, so leaving them unset and stating
+            four fields keep the router's own silence rules, so leaving them unset and stating
             them explicitly serve one spec identically — which is why ``capabilities`` still
             defaults to :data:`~maf_sandbox.DEFAULT_CAPABILITIES` even though this sandbox
             genuinely implements the pull surface: a test that wants it asks for it.

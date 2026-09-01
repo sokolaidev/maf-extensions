@@ -1,10 +1,11 @@
 """Tests for the sandbox router.
 
-The router has exactly six jobs, and all of them are tested here rather than inferred:
+The router has exactly seven jobs, and all of them are tested here rather than inferred:
 
 - picking a backend from configuration;
 - refusing a backend below the minimum-isolation floor the host — or a spec — requires;
 - refusing a backend that cannot do what a workload's spec requires;
+- refusing a backend that hands out no guest of the shape the spec is written for;
 - refusing a spec whose transfer caps sit above what the backend allows;
 - refusing a backend that cannot confine egress to what a workload's spec allows;
 - refusing a backend that cannot serve the workload at the isolation scope it runs at.
@@ -1337,7 +1338,12 @@ class TestIsolationScopeRule:
         SandboxRouter([backend], min_isolation=Isolation.NONE).ensure_can_serve(self._CALL_SPEC)
 
     def test_a_malformed_declaration_reads_as_a_conversation(self):
-        """It can only refuse a workload that would have been served, and it refuses it loudly."""
+        """An unreadable declaration is served as the sharing every backend does.
+
+        It refuses a per-call workload loudly, and serves a conversation-scoped one that a
+        readable ``{CALL}`` would have turned away — the direction taken because refusing every
+        workload over a field nobody can read costs more.
+        """
         backend = InProcessSandboxBackend(
             declarations=dataclasses.replace(
                 FAKE_BACKEND_DECLARATIONS,
@@ -1410,13 +1416,27 @@ class TestSpecValuesAreNormalisedOnConstruction:
         with pytest.raises(ValueError, match="names no call"):
             asyncio.run(router.acquire(_KEY, spec))
 
+    def test_the_routers_answer_is_a_member_whoever_set_the_field(self):
+        """Every gate that makes the scope a boundary is an `is`, so the answer cannot be a string.
+
+        The constructor normalises what it is given; this holds for a spec whose field was set
+        past it, which is the one way a string still reaches the router.
+        """
+        router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE)
+        spec = SandboxSpec(kind="bicep")
+        object.__setattr__(spec, "isolation_scope", "call")
+        assert router.effective_isolation_scope(spec) is IsolationScope.CALL
+
     def test_a_scope_that_is_not_a_member_is_refused_where_it_is_written(self):
         with pytest.raises(ValueError, match="per-request"):
             SandboxSpec(kind="bicep", isolation_scope=typing.cast("typing.Any", "per-request"))
 
     def test_a_string_egress_becomes_the_member(self):
-        """Its own `__post_init__` compares with `is`, so the string used to fail the check it
-        satisfies: an allowlisted spec was refused for not being an allowlist."""
+        """A spec whose `egress_allow` names hosts must read as `ALLOWLIST`.
+
+        `__post_init__` compares the mode with `is`, so a string that satisfies the rule by
+        equality has to land as the member or be refused by the check it passes.
+        """
         spec = SandboxSpec(
             kind="bicep",
             egress=typing.cast("typing.Any", "allowlist"),

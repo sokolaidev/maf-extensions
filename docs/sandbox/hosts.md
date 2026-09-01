@@ -73,7 +73,7 @@ The two paths meet in exactly one place, and no longer by hand. A registry can c
 
 **It is not a second write path into the file store.** A kind that lands artifacts where the agent's own file tools write has given model-written code an unapproved `file_access_write`, and one that can overwrite has given it a way to influence a *different* kind on the next call. `(key, kind)` sandbox identity separates sandboxes; it does nothing about host state they both touch.
 
-**It does not change backend selection.** The router resolves a backend by name or position and checks the isolation floor; the capability match happens afterwards and **raises** rather than choosing a different backend. A host whose only backend lacks `FILES_OUT` gets an exception out of its agent factory, not a quietly-unattached tool. See [`policy-isolation.md`](policy-isolation.md) for the four checks and [`backends/README.md`](backends/README.md) for who serves what.
+**It does not change backend selection.** The router resolves a backend by name or position and checks the isolation floor; the capability match happens afterwards and **raises** rather than choosing a different backend. A host whose only backend lacks `FILES_OUT` gets an exception out of its agent factory, not a quietly-unattached tool. See [`policy-isolation.md`](policy-isolation.md) for the six checks and [`backends/README.md`](backends/README.md) for who serves what.
 
 ## Host tools: calling, outward
 

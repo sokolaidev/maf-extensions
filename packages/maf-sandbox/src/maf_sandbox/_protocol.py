@@ -443,7 +443,8 @@ class SandboxKey:
     filesystem.
 
     ``call_id`` is empty for a conversation-scoped sandbox and names one tool call for an
-    :data:`IsolationScope.CALL` one, where get-or-create is bypassed rather than warmed.  A
+    :data:`IsolationScope.CALL` one, which no acquire repeats — so get-or-create runs as it
+    always does and finds nothing to warm.  A
     backend folds it into whatever names a sandbox — the container name, the label set, its own
     registry — and one that does not must not declare that scope: two calls would resolve to one
     sandbox, which is the sharing the scope exists to end.
@@ -585,8 +586,8 @@ class SandboxSpec:
     than a setting, like ``min_isolation``: a host raises it for every workload it serves, a spec
     raises it further, and the router refuses a backend that cannot enforce what the two resolve
     to.  It buys that with a cold start per call, which is the whole of its cost and the reason
-    it is not the default.  Like ``egress`` it is normalised on construction, so a plain string
-    serves exactly as the member does and anything else raises here.
+    it is not the default.  Like ``egress`` it is normalised on construction: a plain string
+    serves exactly as the member does, and anything else raises here.
     """
 
     kind: str
@@ -989,9 +990,10 @@ class BackendDeclarations:
     Every field's default **is** its silence rule, so a backend that omits one is read exactly
     as a backend that declared nothing at all.  The rules differ and are not
     interchangeable: :attr:`capabilities` is a functionality claim read charitably,
-    :attr:`limits` is a safety claim read conservatively, and the two sets are the *absence of
-    an answer* — which refuses every ask on :attr:`egress_modes`, where a backend enforcing no
-    mode can serve none, and only an asking spec on :attr:`os_families`.
+    :attr:`limits` is a safety claim read conservatively, :attr:`egress_modes` and
+    :attr:`os_families` are the *absence of an answer* — which refuses every ask on the first,
+    where a backend enforcing no mode can serve none, and only an asking spec on the second —
+    and :attr:`isolation_scopes` is a claim, defaulting to the sharing every backend does.
 
     The router reads this synchronously, before any sandbox exists, so it must be settled by
     the time it asks: a plain attribute or a property over configuration, never an ``async``
@@ -1020,12 +1022,11 @@ class BackendDeclarations:
     #: operating-system sense — a language runtime, a data-plane API — has no answer to give.
     os_families: frozenset[OsFamily] = frozenset()
     #: How much of a conversation the backend can serve from one sandbox, resolved against a
-    #: spec's :attr:`SandboxSpec.isolation_scope`.  The one field whose silence is a claim
-    #: rather than the absence of one: empty reads as ``{IsolationScope.CONVERSATION}``, which
-    #: is what every backend written before this axis already did.
-    #: :data:`IsolationScope.CALL` belongs here only once the backend folds
-    #: :attr:`SandboxKey.call_id` into the name it gives a sandbox.
-    isolation_scopes: frozenset[IsolationScope] = frozenset()
+    #: spec's :attr:`SandboxSpec.isolation_scope`.  The one field whose silence is a *claim*
+    #: rather than the absence of one, and the default says so: get-or-create is what every
+    #: backend written before this axis already did.  :data:`IsolationScope.CALL` belongs here
+    #: only once the backend folds :attr:`SandboxKey.call_id` into the name it gives a sandbox.
+    isolation_scopes: frozenset[IsolationScope] = frozenset({IsolationScope.CONVERSATION})
 
 
 #: What a backend declaring no ``declarations`` is read as: every field at its own silence rule.

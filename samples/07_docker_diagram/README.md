@@ -24,7 +24,7 @@ A kind is two things plus the seam it leaves for the host, and `diagram_kind.py`
 
 ## Every call gets a directory, and the framework takes it away
 
-The sandbox outlives the call. `acquire` is get-or-create, keyed by `(scope, thread_id, agent_dir)`, so the container that served this render is the same one that serves the next — that is the point of it, and it is what makes *where a kind writes* a decision rather than a detail.
+The sandbox outlives the call. `acquire` is get-or-create, keyed by the caller's scope, thread and agent directory, so the container that served this render is the same one that serves the next — that is the point of it, and it is what makes *where a kind writes* a decision rather than a detail.
 
 Write at a fixed path under `work_dir` and both halves of that reuse work against you. Two `render_diagram` calls in one assistant message run **concurrently** — the framework does not serialise them — so both would write one `diagram.dot` and read one `diagram.png`, and one call could collect the other's image. And every call would leave its source and its render sitting there for every later call in the conversation to read: the model's own input, and the picture made from it, retained for the life of the thread by nothing more than an oversight.
 

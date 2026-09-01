@@ -30,7 +30,12 @@ suite costs even where no capability suite runs, so the image has to carry the P
 utilities, and what those suites assert is measured against the guest the image ships, which
 for the suites that run in CI is the image the workflow names.
 
-**One suite belongs to no capability.**  :func:`assert_reclaim_conformance` covers
+**Two suites belong to no capability.** ``assert_call_scope_conformance`` is gated by a
+declaration rather than a capability — a backend owes it once it declares
+:data:`~maf_sandbox.IsolationScope.CALL` — and it is the only one that acquires a sandbox of
+its own, because one of its probes has to plant before that sandbox exists.
+
+**One belongs to no capability and no declaration.**  :func:`assert_reclaim_conformance` covers
 :meth:`Sandbox.reclaim`, which is mandatory, so it runs with no declaration gate.  Its probes
 verify through the subject rather than through ``exec``: they plant with
 :meth:`ConformanceSubject.plant_file` and ask :meth:`ConformanceSubject.exists` what survived.

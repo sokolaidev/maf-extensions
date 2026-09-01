@@ -307,9 +307,8 @@ def sandbox_tool_declarations(
     carries_something_out = bool(spec.egress_allow) or lands_artifacts or also_carries_out
     if outbound_max_confidentiality is not None and carries_something_out:
         declarations["max_allowed_confidentiality"] = outbound_max_confidentiality
-    # Coerced for the reason `SandboxSpec.__post_init__` coerces its own: this argument is
-    # public, a `StrEnum` member equals its string, and the check below is `is` — a caller
-    # passing `"call"` would silently declare nothing at all.
+    # Coerced for the reason `SandboxSpec.__post_init__` coerces its own, and this argument is
+    # public where that one is a field: a caller passing the string would declare nothing at all.
     scope = (
         spec.isolation_scope if isolation_scope is None else IsolationScope(str(isolation_scope))
     )
