@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.8.0...maf-sandbox-codeact-v0.9.0) (2026-09-01)
+
+
+### Features
+
+* **codeact:** withhold guest stdout/stderr and answer with host-generated text instead ([#771](https://github.com/sokolaidev/maf-extensions/issues/771)) ([008ba38](https://github.com/sokolaidev/maf-extensions/commit/008ba38ed98435ac88c1e98ec4d5476cfbdcac9a))
+
 ## [0.8.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.7.6...maf-sandbox-codeact-v0.8.0) (2026-08-29)
 
 
