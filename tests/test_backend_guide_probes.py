@@ -140,8 +140,12 @@ def test_the_guide_covers_the_protocol_and_each_entry_carries_the_four_lines() -
         f"method entries {sorted(sections)} against the protocol's {sorted(PROTOCOL_METHODS)}"
     )
     for name, body in sections.items():
+        bullets = [line for line in body.splitlines() if line.lstrip().startswith(("- ", "* "))]
         for marker in FOUR_LINES:
-            assert marker in body, f"the {name} entry lacks {marker}"
+            hits = [line for line in bullets if line.lstrip()[2:].lstrip().startswith(marker)]
+            assert len(hits) == 1, (
+                f"the {name} entry carries {marker} {len(hits)} times as a bullet line, not exactly once"
+            )
 
 
 def test_every_helper_the_guide_names_is_exported() -> None:

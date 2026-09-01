@@ -35,7 +35,7 @@ The in-door every backend serving `FILES_IN` owes — which is every backend who
 
 - **Owes:** run the command bounded by `timeout`, honouring `working_directory`. A `TimeoutError` from this method means that bound expired and nothing else — callers derive the bound from a budget they own, and a backend borrowing the exception for a different limit makes that reading false.
 - **Use:** your engine's native argv form where it has one, and quote a sequence for the caller the way the protocol promises — that is the backend's job, not the caller's.
-- **Never:** surface an independent shorter ceiling of your own as the caller's `TimeoutError`; raise something else, or let `timeout` govern. Never treat a sequence as a shell line: the contract says it is quoted for the caller, so the guest must not see its elements as one sentence to reinterpret.
+- **Never:** surface an independent shorter ceiling of your own as the caller's `TimeoutError`; raise something else, or let `timeout` govern. Never hand a sequence to a shell unjoined: the contract says a sequence is quoted for the caller, and an unquoted join is the guest seeing its elements as one sentence to reinterpret.
 - **Proved by:** `an-argv-sequence-runs`, `exit-code-fidelity`, `argv-is-quoted`, `working-directory-is-honoured`, `a-timeout-raises-timeout-error`.
 
 ### `reclaim`
