@@ -63,7 +63,7 @@ The framework's cleanup, running in a `finally`, gated by no capability — ever
 
 ### `list_dir`
 
-- **Owes:** enumerate the entries directly under the path — the least trusted enumeration in the system, and the one a kind reaches for when it must look at what the guest produced. The filesystem path check runs one component deeper here: the directory named is checked as well as its ancestors, because an enumeration passes through a link as readily as a read does.
+- **Owes:** enumerate the entries directly under the path — the least trusted enumeration in the system, and the one a kind reaches for when it must look at what the guest produced. Each entry's `path` is relative to `working_directory`, not to the directory named: listing `sub` answers `sub/b.txt`, so a caller can hand any entry straight back to the other methods. The filesystem path check runs one component deeper here: the directory named is checked as well as its ancestors, because an enumeration passes through a link as readily as a read does.
 - **Use:** `confine_resolve_guest_list_path` — the `include_self` leg is the policy's own, not a keyword you could omit in silence.
 - **Never:** hide a link from the listing. A name with no warning attached is exactly what an escape wants, and never enumerate through a link — the directory the caller named is checked like its ancestors, so a link there is refused the same way as one above it.
 - **Proved by:** `listing-a-linked-directory`, `listing-through-a-linked-parent`, `listing-under-a-linked-ancestor`, `a-listing-names-its-links`.
