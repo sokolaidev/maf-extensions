@@ -554,14 +554,7 @@ class _AcasSandbox:
         return _stat_from_payload(payload, relative)
 
     async def _unconfined_stat(self, directory: str) -> SandboxEntry | None:
-        """The stat the confinement bundles run on: unconfined, and following nothing.
-
-        Unconfined by design — the bundles stat the working directory's own ancestors, which
-        sit outside it — and one call per component, because a symlinked *parent* is invisible
-        in the final entry's stat: with ``/maf-sandbox/work/out -> /etc``, ``out/hostname``
-        stats as a regular 12-byte file and reads ``/etc/hostname``.  This API offers no
-        no-follow read and no realpath to settle that in one call.
-        """
+        """The unconfined, no-follow stat used by the confinement bundles."""
         return await self._stat_guest(directory, directory)
 
     async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
