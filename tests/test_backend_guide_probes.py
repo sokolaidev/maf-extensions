@@ -91,7 +91,7 @@ VOCAB_SHAPES = (
     "DEFAULT_",
 )
 
-_CODE_SPAN = re.compile(r"`([^`]+)`")
+_CODE_SPAN = re.compile(r"(?<!`)`([^`]+)`(?!`)")
 _PROVED_BY_LINE = re.compile(r"^\s*[-*]\s*\*\*Proved by:\*\*\s*(.*)$", re.MULTILINE)
 _HEADING = re.compile(r"^(#{1,6}) (.*)$", re.MULTILINE)
 #: Probe names are kebab-cased, and the existence check reads only backticked spans — so a
