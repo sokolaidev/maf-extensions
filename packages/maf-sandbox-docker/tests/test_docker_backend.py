@@ -1642,7 +1642,7 @@ class TestWriteFile:
             assert work_dir.isdir() and (work_dir.uid, work_dir.gid) == (10001, 10001)
 
     def test_a_relative_work_dir_still_stamps_its_directories(self):
-        """The other spelling `normpath` leaves alone.  `guest_directory_chain` roots what it
+        """The other spelling `normpath` leaves alone.  `guest_path_and_ancestors` roots what it
         is handed — it already writes `/workspace` into the walk — so an unrooted
         `working_directory` compared against it matches nothing, and every directory goes
         back to docker to create as root.
