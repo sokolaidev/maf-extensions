@@ -2625,6 +2625,19 @@ class TestPolicyVocabularyExports:
         assert name in maf_sandbox.__all__
         assert hasattr(maf_sandbox, name)
 
+    def test_the_defining_module_lists_what_the_package_re_exports(self):
+        """A name public here and absent from its own module's `__all__` has drifted.
+
+        Nothing imports `_protocol` with a star, so that list is a statement of intent rather
+        than machinery — which is exactly why it goes stale unnoticed: `OsFamily` sat outside it
+        from the release that added it until this test.
+        """
+        import maf_sandbox
+        from maf_sandbox import _protocol
+
+        defined_here = {name for name in maf_sandbox.__all__ if hasattr(_protocol, name)}
+        assert defined_here - set(_protocol.__all__) == set()
+
     def test_the_deployed_isolation_set_is_gone(self):
         """Superseded by the minimum-isolation floor (two-axis sandbox policy, axis 1)."""
         import maf_sandbox
