@@ -33,8 +33,9 @@ import maf_sandbox.paths
 REPO_ROOT = Path(__file__).resolve().parent.parent
 GUIDE = REPO_ROOT / "docs" / "sandbox" / "backends" / "writing-a-backend.md"
 
-#: Proved-by lines draw from every registry, so a probe that moved suites is caught here
-#: rather than only by the suite that lost it.
+#: Proved-by lines draw from every registry together, because a probe's suite membership is
+#: not what this check reads — only that the name is a probe somewhere; the suite-to-method
+#: mapping stays editorial, as the module docstring says.
 REGISTRIES = (
     maf_sandbox.conformance.FILES_OUT_PROBES,
     maf_sandbox.conformance.FILES_IN_PROBES,
