@@ -40,7 +40,7 @@ explains it and the teardown disposes them.
 #     "maf-sandbox-acas>=0.9",
 #     "maf-sandbox-codeact>=0.5",
 #     "maf-sandbox-docker",
-#     "maf-sandbox>=0.27",
+#     "maf-sandbox>=0.28",
 # ]
 # ///
 
