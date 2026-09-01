@@ -307,7 +307,12 @@ def sandbox_tool_declarations(
     carries_something_out = bool(spec.egress_allow) or lands_artifacts or also_carries_out
     if outbound_max_confidentiality is not None and carries_something_out:
         declarations["max_allowed_confidentiality"] = outbound_max_confidentiality
-    scope = spec.isolation_scope if isolation_scope is None else isolation_scope
+    # Coerced for the reason `SandboxSpec.__post_init__` coerces its own: this argument is
+    # public, a `StrEnum` member equals its string, and the check below is `is` — a caller
+    # passing `"call"` would silently declare nothing at all.
+    scope = (
+        spec.isolation_scope if isolation_scope is None else IsolationScope(str(isolation_scope))
+    )
     if scope is IsolationScope.CALL:
         # This package's own vocabulary rather than the flow tracker's, and nothing in the
         # framework reads it: what it gives a host is the fact its confidentiality cap cannot
@@ -909,10 +914,14 @@ def sandboxed_tool(
             cap is derived by the one rule rather than hand-built into ``declarations=``.
         on_reclaim_failure: Called with a :class:`~maf_sandbox.ReclaimFailure` when the call
             left its sandbox unclean — its guest path could not be removed, or a program it
-            stopped may have left something running — **after** the framework has disposed
-            that sandbox. The failure says what the disposal did. This is notification: where
-            a host logs, alerts or counts. It is not where safety is wired; that is the
-            router's, and a host opts down from it with
+            stopped may have left something running — **after** the framework has acted on it.
+            :attr:`~maf_sandbox.ReclaimFailure.disposal` says what that was: ``disposed`` where
+            the framework deleted the sandbox, ``kept`` where the host opted down, and
+            ``failed`` where the delete did not land. A **call-scoped** sandbox reports only
+            the last of those: deleting it is the cleanup rather than an escalation over a
+            failed one, so the callback runs exactly when that delete did not happen. This is
+            notification: where a host logs, alerts or counts. It is not where safety is
+            wired; that is the router's, and a host opts down from it with
             ``ReclaimConfig(failed_reclaim_policy=FailedReclaimPolicy.KEEP)``, never from here.
             Default ``None`` falls back to the router's ``reclaim.on_failure``. Its own failure is
             logged and swallowed — it runs in a ``finally``, over a call that may already be

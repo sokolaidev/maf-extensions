@@ -1382,10 +1382,9 @@ class TestIsolationScopeRule:
 class TestSpecValuesAreNormalisedOnConstruction:
     """A `StrEnum` member equals its own string, so a string field satisfies `==` and fails `is`.
 
-    Both checks that make a per-call sandbox a boundary are `is`: the call id the key carries and
-    the router's refusal of a key without one. A spec built with `isolation_scope="call"` passed
-    the scope match by equality and failed both, so it was served a conversation-scoped sandbox
-    with nothing refused and nothing logged.
+    Both checks that make a per-call sandbox a boundary are `is` — the call id the key carries,
+    and the router's refusal of a key without one — so a field these tests let through as a
+    string is a workload served conversation-scoped with nothing refused.
     """
 
     def test_a_string_scope_becomes_the_member(self):
@@ -1530,6 +1529,17 @@ class TestDisposingACallScopedKey:
         )
         assert asyncio.run(router.dispose_call(self._CALL_KEY, timeout=5.0)) is True
         assert backend.disposed == [self._CALL_KEY]
+
+    def test_a_key_naming_no_call_is_refused(self):
+        """This method drops the ledger because a call-scoped key has no next acquire.
+
+        Handed a conversation's key it would take every kind's sandbox for that conversation and
+        leave the key open when the delete did not land — the one protection `dispose_unclean`
+        exists to apply.
+        """
+        router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE)
+        with pytest.raises(ValueError, match="naming no call"):
+            asyncio.run(router.dispose_call(_KEY, timeout=5.0))
 
     def test_an_unbounded_delete_is_refused(self):
         router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE)

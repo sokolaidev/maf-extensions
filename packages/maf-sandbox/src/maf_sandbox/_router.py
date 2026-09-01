@@ -964,9 +964,19 @@ class SandboxRouter:
         call's own cleanup and the separation the workload asked for.
 
         Raises:
-            ValueError: when ``timeout`` is not a finite positive number of seconds, for the
-                reason :meth:`dispose_unclean` gives.
+            ValueError: when ``key`` names no call, which is a conversation's key and not this
+                method's to delete; or when ``timeout`` is not a finite positive number of
+                seconds, for the reason :meth:`dispose_unclean` gives.
         """
+        if not key.call_id:
+            raise ValueError(
+                f"dispose_call was given a key naming no call ({key.scope}/{key.thread_id}/"
+                f"{key.agent_dir}), which is a conversation's. Deleting it here would take every "
+                "kind's sandbox for that conversation and skip the ledger that refuses the key "
+                "when the delete does not land — the protection this method drops precisely "
+                "because a call-scoped key has no next acquire. Use dispose(key), or "
+                "dispose_unclean(key, timeout=...) when a call could not leave it clean."
+            )
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError(f"timeout must be a finite positive number of seconds, not {timeout}")
         try:
