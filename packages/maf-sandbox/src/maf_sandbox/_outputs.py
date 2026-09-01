@@ -23,7 +23,6 @@ from __future__ import annotations
 import contextlib
 import posixpath
 import unicodedata
-import warnings
 from collections.abc import Awaitable, Callable, Generator
 from dataclasses import dataclass
 from enum import StrEnum
@@ -363,16 +362,6 @@ def portable_file_name(name: str) -> str:
     no longer the name the workload said it produced.
     """
     return _SEPARATOR.join(_portable_segment(segment) for segment in name.split(_SEPARATOR))
-
-
-def portable_name(name: str) -> str:
-    """Deprecated. Use :func:`portable_file_name`."""
-    warnings.warn(
-        "portable_name is deprecated and is removed in the next minor; use portable_file_name.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return portable_file_name(name)
 
 
 def _portable_segment(segment: str) -> str:

@@ -39,7 +39,6 @@ from maf_sandbox import (
     collect_outputs,
     make_file_system_sink,
     portable_file_name,
-    portable_name,
     validate_artifact_name,
 )
 from maf_sandbox.testing import InProcessSandbox
@@ -1346,21 +1345,3 @@ class TestMakeFileSystemSink:
 
         assert [a.name for a in landed] == ["report.md"]
         assert (tmp_path / "out" / "report.md").read_bytes() == b"# hi"
-
-
-class TestTheNameThisHadBefore:
-    """`portable_name` warns when called, and hands back what `portable_file_name` returns."""
-
-    def test_it_warns_and_delegates(self):
-        with pytest.warns(DeprecationWarning, match="portable_file_name"):
-            rewritten = portable_name("NUL.txt")
-
-        assert rewritten == portable_file_name("NUL.txt")
-
-    def test_both_spellings_stay_importable_for_the_cycle(self):
-        # The module itself, because `__all__` is the claim: keeping the old name means keeping
-        # it in the advertised surface, which asserting on the imported callables would not say.
-        import maf_sandbox
-
-        assert "portable_name" in maf_sandbox.__all__
-        assert "portable_file_name" in maf_sandbox.__all__
