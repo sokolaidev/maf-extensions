@@ -19,6 +19,7 @@ from maf_sandbox import (
     BackendDeclarations,
     CallerContext,
     Capability,
+    DisposalFailure,
     Egress,
     EntryKind,
     ExecResult,
@@ -1007,3 +1008,37 @@ class TestTheFakeCanHandOutOneSandboxPerKey:
         first = asyncio.run(backend.acquire(self._KEY, self._SPEC))
         asyncio.run(backend.dispose_scope(self._KEY.scope, self._KEY.thread_id))
         assert asyncio.run(backend.acquire(self._KEY, self._SPEC)) is not first
+
+    def test_a_dispose_that_failed_keeps_the_sandbox(self):
+        """A delete that did not land leaves the sandbox, so the next acquire finds it again.
+
+        Evicting on a reported failure would hand the next acquire a fresh filesystem, and a test
+        written against a failing dispose would then measure separation this fake never gave it.
+        """
+        backend = InProcessSandboxBackend(
+            sandbox_per_key=True,
+            dispose_failure=DisposalFailure("refused", "the service said no"),
+        )
+        first = asyncio.run(backend.acquire(self._KEY, self._SPEC))
+        assert asyncio.run(backend.dispose(self._KEY)) is not None
+        assert asyncio.run(backend.acquire(self._KEY, self._SPEC)) is first
+
+    def test_a_dispose_that_raised_keeps_the_sandbox(self):
+        backend = InProcessSandboxBackend(
+            sandbox_per_key=True, dispose_error=RuntimeError("the service is unreachable")
+        )
+        first = asyncio.run(backend.acquire(self._KEY, self._SPEC))
+        with pytest.raises(RuntimeError):
+            asyncio.run(backend.dispose(self._KEY))
+        assert asyncio.run(backend.acquire(self._KEY, self._SPEC)) is first
+
+    def test_a_purge_that_did_not_land_keeps_them(self):
+        """`ScopePurge.undisposed` says some sandbox may still be there — so all of them stay."""
+        backend = InProcessSandboxBackend(
+            sandbox_per_key=True,
+            purge_failure=DisposalFailure("unlisted", "the query failed"),
+        )
+        first = asyncio.run(backend.acquire(self._KEY, self._SPEC))
+        purge = asyncio.run(backend.dispose_scope(self._KEY.scope, self._KEY.thread_id))
+        assert purge.undisposed is not None
+        assert asyncio.run(backend.acquire(self._KEY, self._SPEC)) is first

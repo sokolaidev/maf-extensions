@@ -434,8 +434,9 @@ class InProcessSandboxBackend:
         self.purge_failure = purge_failure
         self.sandbox_per_key = sandbox_per_key
         #: What each ``(key, kind)`` was handed, when ``sandbox_per_key`` is set. Emptied for a
-        #: key a ``dispose`` takes, so reacquiring one starts from an empty filesystem the way
-        #: a real create does.
+        #: key a ``dispose`` **landed** on, so reacquiring one starts from an empty filesystem
+        #: the way a real create does — and kept when one was configured to fail, because a
+        #: sandbox that was not deleted is one the next acquire still finds.
         self.sandboxes: dict[tuple[SandboxKey, str], InProcessSandbox] = {}
         self._handed_out = False
         self.keys: list[SandboxKey] = []
@@ -475,14 +476,23 @@ class InProcessSandboxBackend:
 
     async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
         self.disposed.append(key)
-        for held in [entry for entry in self.sandboxes if entry[0] == key]:
-            del self.sandboxes[held]
         if self.dispose_error is not None:
             raise self.dispose_error
-        return self.dispose_failure
+        if self.dispose_failure is not None:
+            # A delete that did not land leaves the sandbox and everything in it. Dropping the
+            # mapping here would hand the next acquire a fresh filesystem, so a test written
+            # against a failing dispose would measure separation this fake had not given it.
+            return self.dispose_failure
+        for held in [entry for entry in self.sandboxes if entry[0] == key]:
+            del self.sandboxes[held]
+        return None
 
     async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
         self.purged.append((scope, thread_id))
+        if self.purge_failure is not None:
+            # Kept for the reason `dispose` keeps them, and this one reports a partial sweep:
+            # `undisposed` says some sandbox may still be there, so all of them stay reachable.
+            return ScopePurge(self.purge_count, self.purge_failure)
         for held in [
             entry
             for entry in self.sandboxes
