@@ -19,12 +19,24 @@ refused outright, which is the shell-less backend the subject's seams exist for 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import posixpath
 import re
 
 import pytest
 
-from maf_sandbox import Capability, EntryKind, ExecResult, Sandbox, SandboxEntry
+from maf_sandbox import (
+    Capability,
+    EntryKind,
+    ExecResult,
+    Isolation,
+    IsolationScope,
+    Sandbox,
+    SandboxEntry,
+    SandboxKey,
+    SandboxRouter,
+    SandboxSpec,
+)
 from maf_sandbox.conformance import (
     EXEC_PROBES,
     FILES_DELETE_PROBES,
@@ -34,6 +46,7 @@ from maf_sandbox.conformance import (
     ConformanceFailure,
     ConformancePaths,
     PosixGuestSubject,
+    assert_call_scope_conformance,
     assert_egress_conformance,
     assert_exec_conformance,
     assert_files_delete_conformance,
@@ -41,13 +54,18 @@ from maf_sandbox.conformance import (
     assert_files_out_conformance,
     assert_reclaim_conformance,
     measure_files_delete_probes,
+    run_call_scope_probes,
     run_exec_probes,
     run_files_delete_probes,
     run_files_in_probes,
     run_files_out_probes,
     run_reclaim_probes,
 )
-from maf_sandbox.testing import InProcessSandbox
+from maf_sandbox.testing import (
+    FAKE_BACKEND_DECLARATIONS,
+    InProcessSandbox,
+    InProcessSandboxBackend,
+)
 
 _WORK = "/maf-sandbox/work"
 _BOTH = frozenset({Capability.FILES_OUT, Capability.FILES_LIST})
@@ -1534,6 +1552,75 @@ class _EgressSubject:
 
     async def plant_file(self, path: str, content: bytes) -> None:
         await self.sandbox.write_file(path, content, working_directory=self.working_directory)
+
+
+class _StoreSubject(_FakeSubject):
+    """`_FakeSubject` whose `exists` reads the store rather than the scripted `exec`.
+
+    The shipped fake answers every command with success, so an `exec`-borne `exists` is true
+    everywhere. Right for the suites that verify through the store, wrong for the one probe that
+    asks whether a name is there at all.
+    """
+
+    async def exists(self, path: str) -> bool:
+        entry = await self.sandbox.stat_file(path, working_directory=posixpath.dirname(path) or "/")
+        return entry is not None
+
+
+class TestCallScopeConformance:
+    """The package that ships the suite answers it too, through two real acquires.
+
+    Two keys differing only in `call_id`, served by the fake in its per-key mode: the shape a
+    backend's own test builds, and the one a backend keying on three fields of four fails.
+    """
+
+    _SPEC = SandboxSpec(kind="test", isolation_scope=IsolationScope.CALL, work_dir=_WORK)
+    _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-1", call_id="one")
+
+    def _two_calls(self) -> tuple[_StoreSubject, _StoreSubject]:
+        backend = InProcessSandboxBackend(
+            sandbox_per_key=True,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                capabilities=_EVERYTHING,
+                isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
+            ),
+        )
+        router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+
+        async def acquire_both():
+            return (
+                await router.acquire(self._KEY, self._SPEC),
+                await router.acquire(dataclasses.replace(self._KEY, call_id="two"), self._SPEC),
+            )
+
+        first, second = asyncio.run(acquire_both())
+        assert first is not second
+        return _StoreSubject(first, _EVERYTHING), _StoreSubject(second, _EVERYTHING)
+
+    def test_two_sandboxes_answer_every_probe(self):
+        first, second = self._two_calls()
+        results = asyncio.run(assert_call_scope_conformance(first, second))
+        assert [result.failure for result in results] == [None] * 3
+        assert [result.skipped for result in results] == [None] * 3
+
+    def test_one_filesystem_behind_two_keys_fails_every_probe(self):
+        """The specimen the suite exists for: the sharing a declaration cannot be trusted about."""
+        shared = InProcessSandbox()
+        with pytest.raises(ConformanceFailure) as raised:
+            asyncio.run(
+                assert_call_scope_conformance(
+                    _StoreSubject(shared, _EVERYTHING), _StoreSubject(shared, _EVERYTHING)
+                )
+            )
+        assert len(raised.value.failures) == 3
+        assert "CALL_SCOPE" in str(raised.value)
+
+    def test_two_roots_are_refused_rather_than_passing_vacuously(self):
+        first, second = self._two_calls()
+        second.working_directory = f"{_WORK}-elsewhere"
+        with pytest.raises(ValueError, match="rooted at"):
+            asyncio.run(run_call_scope_probes(first, second))
 
 
 class TestEgressConformance:

@@ -35,12 +35,12 @@ This package draws no isolation boundary itself — it is protocol and policy ov
 
 | | |
 |---|---|
-| `SandboxKey` | `(scope, thread_id, agent_dir)` — the one sandbox a caller may reach |
-| `SandboxSpec` | what a sandbox of a given *kind* needs: image, egress allowlist, work dir, `requires` capabilities, and an optional `min_isolation` that may raise the host's floor |
+| `SandboxKey` | `(scope, thread_id, agent_dir, call_id)` — the one sandbox a caller may reach; `call_id` is empty unless the workload runs one sandbox per call |
+| `SandboxSpec` | what a sandbox of a given *kind* needs: image, egress allowlist, work dir, `requires` capabilities, and an optional `min_isolation` that may raise the host's floor, and an `isolation_scope` that may raise how little of the conversation one sandbox serves |
 | `Sandbox` | `write_file`, `exec` and `run_code`, the pull surface `stat_file` / `read_file` / `list_dir`, `remove`, and `reclaim` — what a workload gets, gated by what the backend declares, except `reclaim`, which is gated by nothing |
 | `SandboxBackend` | `acquire` / `dispose` / `dispose_scope`, plus the `isolation` it declares and the `BackendDeclarations` it hands the router |
-| `BackendDeclarations` | the four optional declarations in one object — `capabilities`, `limits`, `egress_modes`, `os_families` — each field's default being its own silence rule |
-| `SandboxRouter` | picks the backend, enforces the minimum-isolation floor, the capability match, and the egress rule |
+| `BackendDeclarations` | the five optional declarations in one object — `capabilities`, `limits`, `egress_modes`, `os_families`, `isolation_scopes` — each field's default being its own silence rule |
+| `SandboxRouter` | picks the backend, enforces the minimum-isolation floor, the capability match, the egress rule and the isolation scope |
 | `SandboxPurger` | duck-typed `purge_scoped_thread(scope, thread_id)` for a host's delete path |
 
 `Isolation`, weakest to strongest: `none < runtime < os_process < container < hardened_container < microvm < vm`. `SandboxRouter`'s default `min_isolation` is `microvm`; an unrecognised rung refuses rather than guesses which side of the floor it falls on.
@@ -49,7 +49,7 @@ This package draws no isolation boundary itself — it is protocol and policy ov
 
 `SandboxSpec.egress_allow` is an allowlist — everything not named is denied, so an empty tuple means no network. Stating it positively means a spec that forgets to mention egress gets the closed configuration rather than the open one.
 
-## Three axes, four checks that are not conveniences
+## Four axes, five checks that are not conveniences
 
 ```python
 router = SandboxRouter(backends)                                   # default floor: Isolation.MICROVM
@@ -69,7 +69,11 @@ Which direction a backend misses egress by decides the outcome, and it is not sy
 
 **4. The guest-shape match.** A backend declares `declarations.os_families` (a `frozenset[OsFamily]`) — the guest shapes it hands out, `posix` or `windows` — and a spec declares `requires_os_family`, the shape its commands and scripts are written for. `ensure_can_serve(spec)` raises `SandboxOsFamilyNotSupported` on a mismatch, so a POSIX workload meets a Windows guest at attach rather than at its first command. **The axis is path grammar and argv quoting, and nothing else**: a spec asking for `posix` and getting it can still meet an image with no shell, because what is *installed* in a guest is a property of the image, and one backend may be handed many. `docs/sandbox/guest-platform-and-commands.md` settles where that separate question is answered. Silence here is neither of the readings above — an unstated `os_families` is the *absence of an answer*, read as `frozenset()`, which refuses a spec that asks and leaves every spec that does not exactly as it was. A backend with no guest in the operating-system sense, such as one serving a language runtime, has nothing to declare and declares nothing.
 
-Note that the checks answer to different owners. How strong the boundary must be *here* is the *host's* policy, read from `min_isolation` — and a spec may raise that floor for itself, never lower it. What a sandbox may reach, and what it must be able to do, are properties of the *workload*, stated in its spec. Keeping the axes apart is deliberate: merging isolation into a "required capabilities" list would let a workload ask for a weaker boundary than the deployment mandates.
+**5. The isolation scope.** How much of a conversation one sandbox serves. A spec declares `isolation_scope` — `conversation`, the default, one sandbox reused across the conversation's calls; or `call`, one created for the call and deleted when it returns — and a backend declares `declarations.isolation_scopes`, the scopes it can serve. `SandboxRouter(min_isolation_scope=...)` is the host's floor on the same axis, and the effective scope is the stricter of the two, exactly as with `min_isolation`. `ensure_can_serve(spec)` raises `SandboxScopeNotEnforced` otherwise, because a backend cannot answer a per-call workload by sharing: every call would succeed with the separation absent. Silence here is the one declaration read as a *claim* rather than as the absence of one — an unstated `isolation_scopes` means `{conversation}`, the get-or-create every backend already did.
+
+`call` costs a cold start per call and buys what cleanup cannot: two calls of one conversation never meet in one filesystem, so a reclaim that failed, a program that would not stop, and anything a run left unnamed all stay where no later call can address them. A backend declares it once it folds `SandboxKey.call_id` into whatever names a sandbox — a container name, a label set, its own registry — and `maf_sandbox.conformance.assert_call_scope_conformance` is what holds it to that. None of it makes a removal an *erasure*: a snapshotted disk image can keep blocks an unlink released, which is a property of the backend's storage and not something the protocol states.
+
+Note that the checks answer to different owners. How strong the boundary must be *here*, and how little of a conversation one sandbox may serve, are the *host's* policy, read from `min_isolation` and `min_isolation_scope` — and a spec may raise either floor for itself, never lower it. What a sandbox may reach, and what it must be able to do, are properties of the *workload*, stated in its spec. Keeping the axes apart is deliberate: merging isolation into a "required capabilities" list would let a workload ask for a weaker boundary than the deployment mandates.
 
 `ensure_can_serve` is also the whole of a wiring test, in your own repository, against your own backend choice:
 

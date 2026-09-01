@@ -76,6 +76,7 @@ __all__ = [
     "PosixGuestSubject",
     "Probe",
     "ProbeResult",
+    "assert_call_scope_conformance",
     "assert_egress_conformance",
     "assert_exec_conformance",
     "assert_files_delete_conformance",
@@ -84,6 +85,7 @@ __all__ = [
     "assert_reclaim_conformance",
     "measure_files_delete_probes",
     "plant_layout",
+    "run_call_scope_probes",
     "run_egress_probes",
     "run_exec_probes",
     "run_files_delete_probes",
@@ -1865,3 +1867,121 @@ async def assert_egress_conformance(
         ),
         "EGRESS",
     )
+
+
+# ---------------------------------------------------------------------------
+# CALL_SCOPE — that a sandbox per call is a boundary and not a name (#436)
+# ---------------------------------------------------------------------------
+#
+# Two subjects over two sandboxes, acquired with keys differing only in `call_id`. What these
+# check is the half of `IsolationScope.CALL` a backend can fail without anything noticing: one
+# deriving a sandbox's name from the other three fields of the key answers both acquires with
+# one sandbox, both calls succeed, and the separation the workload asked for was never there.
+# See docs/sandbox/tool-call.md.
+
+
+async def run_call_scope_probes(
+    subject: ConformanceSubject, other: ConformanceSubject
+) -> tuple[ProbeResult, ...]:
+    """Run the CALL_SCOPE probes over two sandboxes that must not share a filesystem.
+
+    Both subjects have to come from acquires whose keys differ **only** in
+    :attr:`~maf_sandbox.SandboxKey.call_id`. A pair differing in scope, thread or agent is kept
+    apart by fields every backend already folds, so it would pass here while saying nothing
+    about the call scope — and two subjects rooted at different working directories compare
+    paths that were never the same one, which passes vacuously. The second is refused below; the
+    first only the caller can hold to.
+    """
+    if subject.working_directory != other.working_directory:
+        raise ValueError(
+            f"these subjects are rooted at {subject.working_directory!r} and "
+            f"{other.working_directory!r}. Every probe here plants under one and looks under the "
+            "other, so different roots make each one pass without attacking anything. Acquire "
+            "both sandboxes from one spec."
+        )
+
+    async def _the_other_calls_file_is_not_here(
+        s: ConformanceSubject, paths: ConformancePaths
+    ) -> None:
+        planted = f"{paths.work}/one-call-planted-this.txt"
+        await other.plant_file(planted, _SECRET)
+        if not await other.exists(planted):
+            raise AssertionError(
+                "the file did not land in the sandbox that planted it, so this probe attacked "
+                "nothing and a pass would mean nothing"
+            )
+        if await s.exists(planted):
+            raise AssertionError(
+                "a file one call planted is there in the other call's sandbox: the two acquires "
+                "were served one filesystem, so the per-call scope is a name and not a boundary"
+            )
+
+    async def _the_same_name_holds_this_calls_bytes(
+        s: ConformanceSubject, paths: ConformancePaths
+    ) -> None:
+        name = "both-calls-wrote-this.txt"
+        await s.plant_file(f"{paths.work}/{name}", _INSIDE)
+        await other.plant_file(f"{paths.work}/{name}", _SECRET)
+        content = await s.sandbox.read_file(
+            name, working_directory=s.working_directory, max_bytes=_READ_CAP
+        )
+        if content != _INSIDE:
+            raise AssertionError(
+                f"the file this call wrote reads back as {content!r}: the other call's write to "
+                "the same name replaced it, which is what one filesystem does and two do not"
+            )
+
+    async def _the_listing_holds_only_this_calls_files(
+        s: ConformanceSubject, paths: ConformancePaths
+    ) -> None:
+        name = "only-the-other-call-planted-this.txt"
+        await other.plant_file(f"{paths.work}/{name}", _SECRET)
+        entries = await s.sandbox.list_dir(".", working_directory=s.working_directory)
+        if any(posixpath.basename(entry.path) == name for entry in entries):
+            raise AssertionError(
+                f"listing this call's working directory named {name!r}, which only the other "
+                "call planted — a listing reaching another call's files is the discovery the "
+                "scope exists to close"
+            )
+
+    probes = (
+        Probe(
+            name="the-other-calls-file-is-not-here",
+            why=(
+                "the property itself: what one call writes must not be in the sandbox the next "
+                "one is served, whatever the reclaim did or did not manage afterwards."
+            ),
+            requires=frozenset(),
+            run=_the_other_calls_file_is_not_here,
+        ),
+        Probe(
+            name="the-same-name-holds-this-calls-bytes",
+            why=(
+                "two calls of one workload write the same paths; sharing shows up as one "
+                "silently overwriting the other rather than as an error either can see."
+            ),
+            requires=frozenset({Capability.FILES_OUT}),
+            run=_the_same_name_holds_this_calls_bytes,
+        ),
+        Probe(
+            name="the-listing-holds-only-this-calls-files",
+            why=(
+                "a workload that enumerates its directory finds the other call's artifacts and "
+                "reads them as its own, without either call naming a path the other wrote."
+            ),
+            requires=frozenset({Capability.FILES_LIST}),
+            run=_the_listing_holds_only_this_calls_files,
+        ),
+    )
+    return await _run_suite(subject, Capability.FILES_IN, _plant_nothing, probes)
+
+
+async def assert_call_scope_conformance(
+    subject: ConformanceSubject, other: ConformanceSubject
+) -> tuple[ProbeResult, ...]:
+    """Run the CALL_SCOPE probes and raise :class:`ConformanceFailure` if any failed.
+
+    What a backend owes before it declares :data:`~maf_sandbox.IsolationScope.CALL`: the
+    declaration is what the router refuses on, and these are what make it true.
+    """
+    return _assert_conformance(await run_call_scope_probes(subject, other), "CALL_SCOPE")

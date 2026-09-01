@@ -950,3 +950,60 @@ class TestInProcessSandboxBackendLimits:
             declarations=dataclasses.replace(FAKE_BACKEND_DECLARATIONS, limits=custom)
         )
         assert backend.declarations.limits == custom
+
+
+class TestTheFakeCanHandOutOneSandboxPerKey:
+    """Off by default, because every test written before it reads one sandbox back.
+
+    On, it is what a real backend does — and the only honest way for the fake to declare
+    `IsolationScope.CALL`, which is a claim about keys reaching different filesystems.
+    """
+
+    _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-1")
+    _SPEC = SandboxSpec(kind="test")
+
+    def test_by_default_every_key_gets_the_same_sandbox(self):
+        backend = InProcessSandboxBackend()
+        first = asyncio.run(backend.acquire(self._KEY, self._SPEC))
+        second = asyncio.run(
+            backend.acquire(dataclasses.replace(self._KEY, call_id="two"), self._SPEC)
+        )
+        assert first is second is backend.sandbox
+
+    def test_two_keys_get_two_sandboxes(self):
+        backend = InProcessSandboxBackend(sandbox_per_key=True)
+        first = asyncio.run(backend.acquire(self._KEY, self._SPEC))
+        second = asyncio.run(
+            backend.acquire(dataclasses.replace(self._KEY, call_id="two"), self._SPEC)
+        )
+        assert first is not second
+
+    def test_the_one_it_was_built_with_serves_the_first_key(self):
+        """So a test scripting this fake's outputs still reads them back."""
+        scripted = InProcessSandbox(outputs={"marker": "scripted"})
+        backend = InProcessSandboxBackend(scripted, sandbox_per_key=True)
+        assert asyncio.run(backend.acquire(self._KEY, self._SPEC)) is scripted
+
+    def test_one_key_asking_twice_gets_what_it_had(self):
+        backend = InProcessSandboxBackend(sandbox_per_key=True)
+        first = asyncio.run(backend.acquire(self._KEY, self._SPEC))
+        assert asyncio.run(backend.acquire(self._KEY, self._SPEC)) is first
+
+    def test_two_kinds_of_one_key_get_two_sandboxes(self):
+        """A sandbox's identity is `(key, kind)`: one image and one egress policy per kind."""
+        backend = InProcessSandboxBackend(sandbox_per_key=True)
+        first = asyncio.run(backend.acquire(self._KEY, self._SPEC))
+        second = asyncio.run(backend.acquire(self._KEY, SandboxSpec(kind="other")))
+        assert first is not second
+
+    def test_a_disposed_key_starts_from_an_empty_filesystem(self):
+        backend = InProcessSandboxBackend(sandbox_per_key=True)
+        first = asyncio.run(backend.acquire(self._KEY, self._SPEC))
+        asyncio.run(backend.dispose(self._KEY))
+        assert asyncio.run(backend.acquire(self._KEY, self._SPEC)) is not first
+
+    def test_a_purged_conversation_starts_from_an_empty_filesystem(self):
+        backend = InProcessSandboxBackend(sandbox_per_key=True)
+        first = asyncio.run(backend.acquire(self._KEY, self._SPEC))
+        asyncio.run(backend.dispose_scope(self._KEY.scope, self._KEY.thread_id))
+        assert asyncio.run(backend.acquire(self._KEY, self._SPEC)) is not first

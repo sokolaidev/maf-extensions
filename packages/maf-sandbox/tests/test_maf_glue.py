@@ -29,6 +29,7 @@ from maf_sandbox import (
     Egress,
     FailedReclaimPolicy,
     Isolation,
+    IsolationScope,
     LandedArtifact,
     NoSandboxBackend,
     OutputDisposition,
@@ -47,6 +48,7 @@ from maf_sandbox import (
 from maf_sandbox._reclaim import note_unclean
 from maf_sandbox._router import ATTACH_REFUSALS
 from maf_sandbox.maf import (
+    ISOLATION_SCOPE_KEY,
     SandboxPurger,
     SandboxToolSession,
     list_all_files,
@@ -225,6 +227,27 @@ class TestSandboxToolDeclarations:
         declarations = sandbox_tool_declarations(_SPEC)
         assert "confidentiality" not in declarations
         assert "max_allowed_confidentiality" not in declarations
+
+    def test_the_call_scope_is_written_only_when_there_is_something_to_say(self):
+        """The conversation-scoped sandbox is what a tool carrying no such key already means."""
+        assert ISOLATION_SCOPE_KEY not in sandbox_tool_declarations(_SPEC)
+        assert sandbox_tool_declarations(
+            dataclasses.replace(_SPEC, isolation_scope=IsolationScope.CALL)
+        ) == {"source_integrity": "trusted", ISOLATION_SCOPE_KEY: "call"}
+
+    def test_a_caller_that_knows_the_served_scope_states_it(self):
+        """A host floor raises the scope above the spec, and the tool says what it is served."""
+        assert sandbox_tool_declarations(_SPEC, isolation_scope=IsolationScope.CALL) == {
+            "source_integrity": "trusted",
+            ISOLATION_SCOPE_KEY: "call",
+        }
+
+    def test_the_attached_tool_declares_what_the_router_resolves(self):
+        tool = _attach_with(
+            _reclaiming_body,
+            _router(_per_call_backend(), min_isolation_scope=IsolationScope.CALL),
+        )[0]
+        assert tool.additional_properties[ISOLATION_SCOPE_KEY] == "call"
 
     def test_no_integrity_claim_is_expressible(self):
         """A workload whose sandbox fetches arbitrary content must be able to decline."""
@@ -891,6 +914,155 @@ class TestTheCallOwnsAGuestPath:
         """A wiring mistake in a kind, not something a model can cause or should be told."""
         with pytest.raises(RuntimeError, match="outside a tool call"):
             _session().guest_call_path()
+
+
+_CALL_SCOPED_SPEC = dataclasses.replace(_SPEC, isolation_scope=IsolationScope.CALL)
+
+
+def _per_call_backend(**kw):
+    """A fake honest enough to declare the scope: one sandbox per key, and it says so."""
+    return InProcessSandboxBackend(
+        sandbox_per_key=True,
+        declarations=dataclasses.replace(
+            FAKE_BACKEND_DECLARATIONS,
+            isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
+        ),
+        **kw,
+    )
+
+
+class TestACallScopedWorkloadGetsItsOwnSandbox:
+    """`IsolationScope.CALL` reaches the key, and the key is what the backend keys a sandbox by."""
+
+    def test_the_key_names_the_call(self):
+        backend = _per_call_backend()
+        _call(_reclaiming(backend, spec=_CALL_SCOPED_SPEC), target="x")
+        assert len(backend.keys) == 1
+        assert backend.keys[0].call_id
+        assert backend.keys[0].scope == "scope-a"
+
+    def test_a_conversation_scoped_workload_names_no_call(self):
+        backend = _per_call_backend()
+        _call(_reclaiming(backend), target="x")
+        assert backend.keys[0].call_id == ""
+
+    def test_the_call_names_itself_once_for_its_key_and_its_path(self):
+        """One id, so the sandbox and the directory inside it do not claim to be two calls."""
+        backend = _per_call_backend()
+        path = _call(_reclaiming(backend, spec=_CALL_SCOPED_SPEC), target="x")
+        assert path == f"/maf-sandbox/work/{backend.keys[0].call_id}"
+
+    def test_two_calls_never_meet_in_one_sandbox(self):
+        backend = _per_call_backend()
+        tool = _reclaiming(backend, spec=_CALL_SCOPED_SPEC)
+        _call(tool, target="a")
+        _call(tool, target="b")
+        first, second = backend.keys
+        assert first.call_id != second.call_id
+        assert (first.scope, first.thread_id, first.agent_dir) == (
+            second.scope,
+            second.thread_id,
+            second.agent_dir,
+        )
+
+    def test_a_host_floor_reaches_a_workload_that_asked_for_nothing(self):
+        backend = _per_call_backend()
+        tool = _attach_with(
+            _reclaiming_body,
+            _router(backend, min_isolation_scope=IsolationScope.CALL),
+        )[0]
+        _call(tool, target="x")
+        assert backend.keys[0].call_id
+
+    def test_asking_for_a_key_outside_a_tool_call_raises(self):
+        """The same wiring mistake `guest_call_path` refuses, and for the same reason."""
+        session = _session(_per_call_backend(), spec=_CALL_SCOPED_SPEC)
+        with pytest.raises(RuntimeError, match="outside a tool call"):
+            session.key()
+
+    def test_a_conversation_scoped_session_answers_outside_a_call(self):
+        assert not isinstance(_session().key(), str)
+
+
+class TestTheFinallyDisposesTheCallsSandbox:
+    """The whole sandbox goes, because the call is what it was created for."""
+
+    def test_the_sandbox_is_disposed_when_the_body_returns(self):
+        backend = _per_call_backend()
+        _call(_reclaiming(backend, spec=_CALL_SCOPED_SPEC), target="x")
+        assert backend.disposed == backend.keys
+
+    def test_nothing_is_reclaimed_from_inside_it(self):
+        """A round trip that buys nothing: the delete takes the directory with the sandbox."""
+        backend = _per_call_backend()
+        _call(_reclaiming(backend, spec=_CALL_SCOPED_SPEC), target="x")
+        assert _reclaimed(backend.sandbox) == []
+
+    def test_a_conversation_scoped_call_still_reclaims_and_keeps_its_sandbox(self):
+        backend = _per_call_backend()
+        path = _call(_reclaiming(backend), target="x")
+        assert _reclaimed(backend.sandbox) == [path]
+        assert backend.disposed == []
+
+    def test_the_opt_down_does_not_keep_it(self):
+        """`KEEP` loosens the escalation over a failed reclaim, not the call's own separation."""
+        backend = _per_call_backend()
+        tool = _attach_with(
+            _reclaiming_body,
+            _router(backend, reclaim=ReclaimConfig(failed_reclaim_policy=FailedReclaimPolicy.KEEP)),
+            spec=_CALL_SCOPED_SPEC,
+        )[0]
+        _call(tool, target="x")
+        assert backend.disposed == backend.keys
+
+
+class TestADeleteThatDidNotLandIsReportedNotGuarded:
+    """A leaked call sandbox is told to the host, and the conversation carries on.
+
+    The next call is keyed to itself, so it cannot reach what leaked — where a conversation
+    scoped key is refused precisely because its next acquire would be handed the same sandbox.
+    """
+
+    def _failing(self, **kw):
+        return _per_call_backend(
+            dispose_failure=DisposalFailure("refused", "the service said no"), **kw
+        )
+
+    def test_the_host_hears_that_it_failed(self):
+        seen: list[ReclaimFailure] = []
+
+        async def record(failure: ReclaimFailure) -> None:
+            seen.append(failure)
+
+        backend = self._failing()
+        tool = _attach_with(
+            _reclaiming_body,
+            _router(backend),
+            spec=_CALL_SCOPED_SPEC,
+            on_reclaim_failure=record,
+        )[0]
+        _call(tool, target="x")
+        assert len(seen) == 1
+        assert seen[0].disposal == "failed"
+        assert seen[0].key.call_id
+        assert "did not land" in seen[0].reason
+
+    def test_the_next_call_is_served(self):
+        backend = self._failing()
+        tool = _reclaiming(backend, spec=_CALL_SCOPED_SPEC)
+        _call(tool, target="a")
+        assert _call(tool, target="b")
+
+    def test_the_body_still_answers(self):
+        """The cleanup runs in a `finally`: a leak must not replace what the call returned."""
+        backend = self._failing()
+        assert _call(_reclaiming(backend, spec=_CALL_SCOPED_SPEC), target="x")
+
+    def test_a_failure_is_logged_even_with_no_host_listening(self, caplog):
+        backend = self._failing()
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            _call(_reclaiming(backend, spec=_CALL_SCOPED_SPEC), target="x")
+        assert any("was not disposed" in record.message for record in caplog.records)
 
 
 class TestTheFinallyReclaims:
