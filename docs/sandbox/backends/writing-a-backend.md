@@ -24,7 +24,7 @@ And the boundaries the repository's tests enforce: every top-level import is the
 
 ### `write_file`
 
-The in-door every backend owes, and the method where two shipped backends independently wrote the same escape ([#142](https://github.com/sokolaidev/maf-extensions/issues/142)): confinement here is not a check on the argument string, and reading the prose alone has not been enough to write it.
+The in-door every backend serving `FILES_IN` owes — which is every backend whose `capabilities` field is silent — and the method where two shipped backends independently wrote the same escape ([#142](https://github.com/sokolaidev/maf-extensions/issues/142)): confinement here is not a check on the argument string, and reading the prose alone has not been enough to write it.
 
 - **Owes:** the file name check, then the filesystem path check, then a refusal if the final component is a link — and a refusal of the working directory itself. `str` is written UTF-8 whatever the host's locale says; `bytes` goes through as given, which is what an in-door carrying a PNG or a spreadsheet needs. Parents are created as needed, and a missing component ends the filesystem path check, so nothing this call creates can be a link.
 - **Use:** `confine_resolve_guest_write_path` — it does all of the above and hands back the resolved guest path. What you supply is the stat it runs on: **unconfined**, since the ancestors include the working directory's own; **no-follow**, since a stat that resolves a link describes its target and hides the escape; and out of your engine where it offers anything — a data-plane stat, or `tar_header_from_block` and `sandbox_entry_from_tar_header` when what you can read is the first block of a container `cp` stream.
@@ -65,7 +65,7 @@ The framework's cleanup, running in a `finally`, gated by no capability — ever
 
 - **Owes:** enumerate the entries directly under the path — the least trusted enumeration in the system, and the one a kind reaches for when it must look at what the guest produced. The filesystem path check runs one component deeper here: the directory named is checked as well as its ancestors, because an enumeration passes through a link as readily as a read does.
 - **Use:** `confine_resolve_guest_list_path` — the `include_self` leg is the policy's own, not a keyword you could omit in silence.
-- **Never:** hide a link from the listing. A name with no warning attached is exactly what an escape wants, and never enumerate through a link the caller did not name.
+- **Never:** hide a link from the listing. A name with no warning attached is exactly what an escape wants, and never enumerate through a link — the directory the caller named is checked like its ancestors, so a link there is refused the same way as one above it.
 - **Proved by:** `listing-a-linked-directory`, `listing-through-a-linked-parent`, `listing-under-a-linked-ancestor`, `a-listing-names-its-links`.
 
 ### `remove`
