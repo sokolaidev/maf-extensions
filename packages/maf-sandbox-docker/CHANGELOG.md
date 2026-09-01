@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.12.1...maf-sandbox-docker-v0.13.0) (2026-09-01)
+
+
+### Features
+
+* acas and docker use core's bundles for confinement ([#790](https://github.com/sokolaidev/maf-extensions/issues/790)) ([d0ca685](https://github.com/sokolaidev/maf-extensions/commit/d0ca68589f8f73dc4e88b72dc4a9bb0104631bfa))
+
 ## [0.12.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.12.0...maf-sandbox-docker-v0.12.1) (2026-09-01)
 
 
