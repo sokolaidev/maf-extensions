@@ -1,0 +1,142 @@
+# Writing a backend
+
+> The ordered path through what a backend owes: the declarations first, then each `Sandbox` method — what it owes, what to reach for, what never to do, and the probes that prove it.
+
+A new backend author has reference material and no sequence. The contracts are all written down — the `Sandbox` docstrings in [`_protocol.py`](../../../packages/maf-sandbox/src/maf_sandbox/_protocol.py) say what each method promises, `maf_sandbox.paths` carries the helpers, [`capabilities.md`](../capabilities.md) and [`policy-isolation.md`](../policy-isolation.md) carry the rules — but reference material answers a question you already know to ask. This page is the order you meet the work in, and four fixed lines per method are its shape: **Owes** what the protocol demands, **Use** the helper that already carries it, **Never** the mistake a shipped backend has made or nearly made, and **Proved by** the probes in [`maf_sandbox.conformance`](../../../packages/maf-sandbox/src/maf_sandbox/conformance.py) that fail without it — the slice of the contract its suite covers, which is neither only the Never line nor every clause of the Owes line: `read_file`'s `max_bytes` refusal and `reclaim`'s placement guards, for instance, are owed below and named, and no probe holds them.
+
+The boundary with the pages beside this one: each shipped backend's declarations, lifecycle and quirks are [`README.md`](README.md)'s comparison and the per-backend pages under it; a package's installation, configuration and usage are that package's own README. This page owns the sequence and the prohibitions — the thing none of the others can be, because each of them is organised by subject rather than by the order you build in.
+
+## The order, and why
+
+`DEFAULT_CAPABILITIES` is `EXEC` and `FILES_IN`, so `write_file` and `exec` come first — that is the set a silent `capabilities` field declares and the path most backends walk, and `write_file` is where confinement's vocabulary is learned. A backend may declare less than the defaults: a runtime-only one serves neither and is still a backend — the shape the conformance machinery holds open explicitly, its probes verifiable through a subject that owns no shell and no file surface — so it starts at `reclaim` and the doors it does declare. `reclaim` comes next for every backend: mandatory and gated by no capability, so there is no declare-or-raise escape from it and nothing to defer it behind. Everything after that is a door you add as you declare it — `stat_file` and `read_file` (`FILES_OUT`), `list_dir` (`FILES_LIST`), `remove` (`FILES_DELETE`), `run_code` (`RUN_CODE`) — and each declares honestly or not at all, because the router refuses a spec the backend cannot serve rather than handing it a degraded run of what it asked for.
+
+## What you declare before the first method
+
+Five declarations, and the router acts on each before a workload ever runs. **`isolation`** is a rung on an ordered ladder, checked against the stricter of the host's floor and the spec's: the host's floor is checked when the router is constructed, and a spec that raises it is checked later, when `ensure_can_serve` admits the workload — a backend below the floor is refused rather than degraded, which is the point of the ladder rather than a limitation to work around. The other four are fields of one `BackendDeclarations` object, read with a single `getattr`, and **each field's silence is its own rule**: `capabilities` silence is read charitably as `DEFAULT_CAPABILITIES`; `egress_modes` silence is the empty set, because a backend that declares nothing enforces nothing and every ask is refused; `limits` silence resolves to `DEFAULT_SANDBOX_LIMITS` and never to "no ceiling", because a cap is a safety claim; `os_families` silence is `frozenset()`, which refuses a spec that asks and leaves every spec that does not exactly as it was. The map of all five is [`README.md`](README.md) § "The five declarations"; who owns each check is [`../policy-isolation.md`](../policy-isolation.md).
+
+Declare honestly or not at all. There is no router-side emulation of a capability a backend lacks — the whole value of the capability match is that a refusal at attach means the workload would genuinely not have run — and a protocol method a backend cannot serve raises, naming the backend and the reason, rather than being left out: `Sandbox` is `runtime_checkable`, so a member omitted would stop the object being a `Sandbox` at all.
+
+The lifecycle duties, which no declaration names and every backend owes: a sandbox's identity is **`(key, spec.kind)`** — two specs of different kinds must never share one sandbox, whatever their key, because a sandbox carries its kind's image and egress policy — and `dispose` takes a key alone and deletes **every** kind's sandbox for it, because a key may own one per kind and a caller releasing a key means all of it; the acquire race is real — two acquires for one key can be in flight at once, so serialize get-or-create or derive a name the provider rejects duplicates of; acquire is get-or-create in the first place, because a workload's fix-round loop calls it every iteration and a cold sandbox each time turns a seconds-long loop into a minutes-long one; labels are written **at create**, so a sandbox is reachable by the identity a later purge will select on; label values are hashed rather than truncated, so two scopes sharing a prefix cannot land on one label and one conversation's purge cannot delete another's sandboxes; purge consults the service, never process memory, because a conversation delete lands on whichever replica serves it; and both disposal members report rather than raise — `dispose` returns the reason, `dispose_scope` puts it beside the count — because they are best-effort by contract, and a delete that failed has no other way out. The reasoning is [`README.md`](README.md) § "What every backend is held to".
+
+And the boundaries the repository's tests enforce: every top-level import is the standard library, the package itself, or a dependency the package declares; no module imports `agent_framework`, since a backend must be usable by a host that does not run the framework at all; `isinstance(backend, SandboxBackend)` holds, the cheapest regression test there is for a renamed method; and the suite asserts the router interaction in both directions — `ensure_can_serve` admitting a spec the backend can serve and refusing one it cannot.
+
+## The methods
+
+### `write_file`
+
+The in-door every backend serving `FILES_IN` owes — which is every backend whose `capabilities` field is silent — and the method where two shipped backends independently wrote the same escape ([#142](https://github.com/sokolaidev/maf-extensions/issues/142)): confinement here is not a check on the argument string, and reading the prose alone has not been enough to write it.
+
+- **Owes:** the file name check, then the filesystem path check, then a refusal if the final component is a link — and a refusal of the working directory itself. `str` is written UTF-8 whatever the host's locale says; `bytes` goes through as given, which is what an in-door carrying a PNG or a spreadsheet needs. Parents are created as needed, and a missing component ends the filesystem path check, so nothing this call creates can be a link.
+- **Use:** `confine_resolve_guest_write_path` — it carries the confinement above, both checks and both refusals, and hands back the resolved guest path. It does not write: the UTF-8 encoding, the parent creation and the write itself are yours. What you supply the helper is the stat it runs on: **unconfined**, since the ancestors include the working directory's own; **no-follow**, since a stat that resolves a link describes its target and hides the escape; and out of your engine where it offers anything — a data-plane stat, or `tar_header_from_block` and `sandbox_entry_from_tar_header` when what you can read is the first block of a container `cp` stream.
+- **Never:** answer the filesystem path check by running anything inside the guest. A workload asked to describe its own filesystem can answer falsely, and that answer is the one the check trusts — the guest can replace what answers. Where the engine offers no alternative, `stat_by_asking_the_guest` and `stat_by_asking_the_guest_as_root` are the supported spelling and a **declared posture**: your package README says so, and [`tests/test_confinement_stat_source.py`](../../../tests/test_confinement_stat_source.py) holds it there. Never write the check yourself, and never spell the probe yourself — the `-L`-first ordering that keeps a link to a directory from answering `-d` is exactly the sort of thing nobody derives unaided.
+- **Proved by:** `a-write-lands-and-reads-back`, `bytes-survive-the-round-trip`, `str-content-is-utf8`, `a-second-write-replaces`, `parents-are-created`, `a-path-outside-is-refused`, `a-path-through-a-linked-parent-is-refused`, `a-linked-destination-is-refused-not-followed`, `the-working-directory-is-refused`, `a-backslash-is-refused`, `a-linked-working-directory`, `a-linked-ancestor-of-the-working-directory` — the FILES_IN suite in full.
+
+### `exec`
+
+- **Owes:** run the command bounded by `timeout`, honouring `working_directory`. A `TimeoutError` from this method means that bound expired and nothing else — callers derive the bound from a budget they own, and a backend borrowing the exception for a different limit makes that reading false.
+- **Use:** your engine's native argv form where it has one, and quote a sequence for the caller the way the protocol promises — that is the backend's job, not the caller's.
+- **Never:** surface an independent shorter ceiling of your own as the caller's `TimeoutError`; raise something else, or let `timeout` govern. Never hand a sequence to a shell unjoined: the contract says a sequence is quoted for the caller, and an unquoted join is the guest seeing its elements as one sentence to reinterpret.
+- **Proved by:** `an-argv-sequence-runs`, `exit-code-fidelity`, `argv-is-quoted`, `working-directory-is-honoured`, `a-timeout-raises-timeout-error`.
+
+### `reclaim`
+
+The framework's cleanup, running in a `finally`, gated by no capability — every backend genuinely implements it, and there is no declare-or-raise escape from it.
+
+- **Owes:** remove the directory and everything under it, within `timeout`. The operand is one the framework created under `working_directory` with an unguessable name, so no filesystem path check is owed — but the premise is not stable: the guest program can have swapped the path, or a parent, for a link before the call returned, and what the contract holds is **reach** — a swap must not let the removal delete anything that program could not have deleted itself. A directory that is not there is success. The operand is absolute, and the removal runs from `/`, not from `working_directory`, which may not exist.
+- **Use:** removal over the same mechanism `exec` uses where you have one, as the principal the program ran under — that satisfies reach everywhere. A backend with no `exec` at all removes through its provider's native path, and the reach rule binds it identically. A removal with **more** authority than the program had is licensed only by `path_ancestors_are_host_owned` over what your own check collected, and the empty case is yours to name through `empty_means_host_owned`, not the function's to assume — an empty walk can mean nothing lies above the working directory or that the walk reached nothing, and only you know which.
+- **Never:** raise where the contract promises success — a directory that is not there is success, because this member runs in a `finally` and a second failure over the first buries it. Never run raised without the reach check: the raised removal is exactly what a guest that swapped a component is after, and the license is the check, not the uid. The placement guards — not absolute, fewer than two components from the root — are worth repeating on your side too: this removal is recursive and irreversible, and neither guard should depend on the caller having derived the path correctly.
+- **Proved by:** `a-created-directory-is-gone`, `nested-content-goes-with-it`, `a-link-inside-is-unlinked-not-followed`, `a-missing-directory-is-success`, `an-absent-working-directory-still-succeeds`.
+
+### `stat_file`
+
+- **Owes:** describe the path, or `None` when nothing is there. The `SandboxEntry` you hand back carries `path` relative to `working_directory`, not your engine's resolved absolute — the same contract `list_dir` owes below. Stat is the contract, not an optimisation — the caller stats, refuses anything over its cap or whose `size_bytes` came back `None`, and only then reads. It is `lstat`-like: the **final** component is described rather than refused, because `EntryKind.SYMLINK` is how a caller learns it is a link; the parents are still checked, because a stat through one reports a type and a size from outside the working directory even though no byte crosses.
+- **Use:** `confine_resolve_guest_read_path` — one policy for both halves of the pull surface, and leaving the final component to you is what lets this method describe a link while `read_file` refuses one on kind. Your engine's stat, shaped the way `write_file`'s is.
+- **Never:** resolve the final component to decide what to report. A caller that cannot learn that a path names a link has a name with no warning attached — and never answer the check from the guest where the engine offers more.
+- **Proved by:** `a-legitimate-read-still-works`, `a-link-is-named-a-link`, `stat-through-a-linked-parent`, `a-linked-working-directory`, `a-linked-ancestor-of-the-working-directory`, `a-plain-parent-is-not-an-escape`.
+
+### `read_file`
+
+- **Owes:** bytes, never text — decoding here would corrupt every artifact that is not text, and the caller already declared the media type. Only `EntryKind.FILE` is served: a symlink is refused whether or not its target would have resolved somewhere legitimate. `max_bytes` is a refusal, never a truncation — half a PNG returned as success is an artifact the host cannot tell from a whole one — and it refuses with `SandboxTransferCapExceeded`.
+- **Use:** the same `confine_resolve_guest_read_path` policy as `stat_file`, then refuse on the kind you got back — `OSError` for anything that is not a regular file.
+- **Never:** decode, truncate, or hand back a short read as success. A backend whose SDK buffers the whole response before returning it can only refuse after the fact, which is why the caller re-counts what actually arrived — and that re-count is not yours to skip.
+- **Proved by:** `a-legitimate-read-still-works`, `a-link-is-never-read`, `read-through-a-linked-parent`, `a-linked-working-directory`, `a-linked-ancestor-of-the-working-directory`.
+
+### `list_dir`
+
+- **Owes:** enumerate the entries directly under the path — the least trusted enumeration in the system, and the one a kind reaches for when it must look at what the guest produced. Each entry's `path` is relative to `working_directory`, not to the directory named: listing `sub` answers `sub/b.txt`, so a caller can hand any entry straight back to the other methods. The filesystem path check runs one component deeper here: the directory named is checked as well as its ancestors, because an enumeration passes through a link as readily as a read does.
+- **Use:** `confine_resolve_guest_list_path` — the `include_self` leg is the policy's own, not a keyword you could omit in silence.
+- **Never:** hide a link from the listing. A name with no warning attached is exactly what an escape wants, and never enumerate through a link — the directory the caller named is checked like its ancestors, so a link there is refused the same way as one above it.
+- **Proved by:** `listing-a-linked-directory`, `listing-through-a-linked-parent`, `listing-under-a-linked-ancestor`, `a-listing-names-its-links`.
+
+### `remove`
+
+- **Owes:** three rules a caller depends on — a path that is not there is success, because cleanup runs in a `finally`; a link is removed, never followed, because resolving one would unlink a target outside the boundary; a directory is refused without `recursive`, because a backend with no enumeration primitive cannot tell an empty one from a full one. The reach rule stated on `reclaim` binds here too, and harder: this path names components a guest program may own.
+- **Use:** `confine_resolve_guest_delete_path` — it checks the ancestors stopping **above** the target, which is the whole difference from the read policy: a link named here is the thing being unlinked, and resolving it is the escape.
+- **Never:** resolve the final component. A read or a stat may describe their leaf — a stat reports a link, a read refuses it on kind — but a removal must not resolve its own, since the link being removed is the thing being unlinked; the bundle is what makes that difference a name you chose rather than a keyword argument you omitted.
+- **Proved by:** `a-removal-removes`, `a-missing-path-is-success`, `a-link-is-removed-never-followed`, `a-path-through-a-linked-parent-is-refused`, `a-directory-needs-recursive`, `an-empty-directory-needs-recursive`, `recursive-removes-the-tree`, `a-link-inside-a-recursive-removal-is-unlinked-not-followed`, `the-working-directory-is-refused`, `a-path-outside-is-refused`.
+
+### `run_code`
+
+A `Sandbox` method every backend answers — three of the four shipped ones by refusing.
+
+- **Owes:** the member exists, and one that does not serve it raises `NotImplementedError` naming the backend and the reason. One that serves it owes a wall-clock `timeout` from this call, not from the moment the program starts — queued time is the caller's budget too — with `SandboxQueuedTimeout` kept distinct from `TimeoutError`, because a program that never ran and one that overran mean different things to a caller. And it owes its runtime's semantics in its own documentation: whether the last expression's value comes back or only what the program printed, and what is importable inside — a kind assuming one shape works on one backend by accident.
+- **Use:** the honest refusal, unless the runtime an image carries is yours to claim. None of the three shipped backends parses the image reference it is handed, so none declares `RUN_CODE`.
+- **Never:** declare the capability as a claim about someone else's artifact — which runtime an image carries is the image's property, and a workload wanting an interpreter by name can `exec` it and own the assumption.
+- **Proved by:** none yet — no shipped backend declares the capability, and the fake that implements the member scripts its output rather than evaluating it, so the suite that would hold it does not exist. Say that, rather than inventing probes.
+
+## The wiring your own test suite owes
+
+The suites are the executable half of every Proved-by line above, and your package's own tests are where they run — [`tests/test_conformance_coverage.py`](../../../tests/test_conformance_coverage.py) holds every serving package to the call, and it is a wiring check: it proves the call is written, not that it ran, so disabling a conformance test is caught in review rather than there.
+
+**Run them against a real instance.** Your suite fakes the provider seam, and a faked seam agrees with whatever its author believed; the probes plant a hostile layout through the public surface and attack it there, so what passes is your provider's real behaviour. Filling in the subject is the backend's part: a `ConformanceSubject` is your sandbox, its working directory, and the planting and seeing the protocol has no word for, with `PosixGuestSubject` covering a Linux guest that has `ln` and `test`. The suites lean on the guest's shell beyond that — the FILES_IN, EXEC and FILES_DELETE probes invoke `cat`, `printf`, `pwd`, `sleep`, `sh` and `mkdir` directly — which is a requirement of this harness and not of the protocol, so a minimal image's missing commands read as probe failures, not as conformance verdicts. One sandbox serves them all, with `EXEC` last — its final probe asserts the `TimeoutError` contract and two shipped backends discard the whole sandbox when a call times out, which is the documented recovery rather than a defect:
+
+```python
+import pytest
+from maf_sandbox.conformance import (
+    PosixGuestSubject,
+    assert_exec_conformance,
+    assert_files_delete_conformance,
+    assert_files_in_conformance,
+    assert_reclaim_conformance,
+)
+
+subject = PosixGuestSubject(
+    sandbox=sandbox, working_directory=work_dir, capabilities=backend.declarations.capabilities
+)
+results = await assert_files_in_conformance(subject)  # green: this backend declares the gate
+assert not [r for r in results if r.skipped]  # a backend that quietly stopped declaring cannot hide
+await assert_reclaim_conformance(subject)  # ungated; green through this subject, which needs a shell
+await assert_exec_conformance(subject)  # last: its final probe may discard the sandbox
+with pytest.raises(ValueError, match="declares no FILES_DELETE"):
+    await assert_files_delete_conformance(subject)  # withheld: the gate itself, asserted
+```
+
+The block shows a backend that declares `FILES_IN` and `EXEC` and withholds `FILES_DELETE` — the shipped shape with the most in it. A backend declaring a gate runs the same call bare and asserts on the skipped probes instead; one implementing the pull surface adds `assert_files_out_conformance` in the same pattern; and one with no `exec` and no `FILES_IN` at all answers those two the same withheld way, because the suites refuse a subject that does not declare their gate — a green run that attacked nothing being worse than no run.
+
+Every backend answers the FILES_IN, EXEC and FILES_DELETE suites whatever it declares: green where the gate is declared, and the suite's own refusal, asserted, where the capability is withheld. One harness limitation the block cannot show: the probes verify through `exec` — and the FILES_DELETE ones through `write_file` as well — rather than through the subject's seam, so `PosixGuestSubject` needs a guest with a shell, and a backend serving a file capability while withholding `EXEC` cannot run its declared gates green today, through this subject or a subject of its own: the verification calls, not the declaration gate, are what need `exec`. Routing those calls behind new `ConformanceSubject` seams — the way the RECLAIM suite already verifies — is the suites' own refactor, owed to them and not to this guide. Until then such a backend answers the withheld surfaces with the asserted gate refusal and leaves the declared ones measured but not green. RECLAIM is gated by no capability at all, so it has no withheld answer: the assert itself is owed, and its probes are written so a runtime-only backend can sit them through its own subject. FILES_OUT is owed the moment `stat_file` and `read_file` both have bodies rather than a `raise`. FILES_DELETE has a second answer for a backend that implements `remove` without yet declaring it: measure with `measure_files_delete_probes` — findings, not promises, and how a withheld capability is evidenced into or out of declaration. A backend declaring an `Egress.ALLOWLIST` mode **and** `EXEC` owes `assert_egress_conformance` too, which takes the allowed and denied URLs because a spec's hosts are the deployment's, not the module's. The suite verifies with `sh` and `curl` over `exec`, so it is gated on `EXEC` as well — a backend enforcing an allowlist while withholding `EXEC` cannot run it today, which is the same harness gap the file suites above carry, not a licence to skip the enforcement claim.
+
+And the static binding: one `tuple[SandboxBackend, type[Sandbox]]` under `TYPE_CHECKING` per backend class. The annotation is what catches a narrowed signature or a missing protocol method — `isinstance` cannot, because both sides of it are runtime-shapes only.
+
+Two rules the probes reached for and the protocol has not written yet are filed rather than guessed: whether `exec` must carry non-UTF-8 bytes losslessly ([#465](https://github.com/sokolaidev/maf-extensions/issues/465)), and whether `acquire` should promise `work_dir` exists ([#466](https://github.com/sokolaidev/maf-extensions/issues/466)). Each surfaced on the suites' first live run — the suites working, not failing.
+
+## Where to read next
+
+- [`../capabilities.md`](../capabilities.md) — what each capability obligates, the caps, and the confinement rules in their own terms.
+- [`../policy-isolation.md`](../policy-isolation.md) — the isolation ladder, the host's floor, and who owns each of the five checks.
+- [`../network.md`](../network.md) — the egress axis, the allowlist, and what enforcing one takes.
+- [`../guest-platform-and-commands.md`](../guest-platform-and-commands.md) — what a kind may assume about the far side of the boundary, and how a backend finds out.
+- [`../kinds/README.md`](../kinds/README.md) — the workloads that run on all of this, and what they assume about you.
+- [`README.md`](README.md) and the per-backend pages under it — the shipped backends' declarations, lifecycle and quirks, side by side.
+- Each package's own README — installation, configuration and usage.
+
+## Status
+
+| Decision | State | Tracking |
+|---|---|---|
+| The ordered guide, four fixed lines per method, held to its probes | shipped — this document, with [`tests/test_backend_guide_probes.py`](../../../tests/test_backend_guide_probes.py) failing on any Proved-by name that is not a probe | [#735](https://github.com/sokolaidev/maf-extensions/issues/735) (closed) |
+| One bundle per confinement policy, one Use line per method | shipped — the four in `maf_sandbox.paths`, named per method by the `Sandbox` docstring itself | [#736](https://github.com/sokolaidev/maf-extensions/issues/736) (closed) |
+| The stat menu: the engine's answer, the tar-header pair, or the guest-side pair as a declared posture | shipped — `tar_header_from_block`, `sandbox_entry_from_tar_header`, `stat_by_asking_the_guest` and `stat_by_asking_the_guest_as_root` | [#731](https://github.com/sokolaidev/maf-extensions/issues/731), [#733](https://github.com/sokolaidev/maf-extensions/issues/733) (both closed) |
+| The reach rule in code, the empty case the caller's to name | shipped — `path_ancestors_are_host_owned`; what it measures on acas is that backend's to answer | [#732](https://github.com/sokolaidev/maf-extensions/issues/732) (closed), the acas half [#710](https://github.com/sokolaidev/maf-extensions/issues/710) (open) |
+| wslc keeps the guest probe, through the canonical spelling, and says so | shipped — the posture is declared; the decision it tracks stays open | [#495](https://github.com/sokolaidev/maf-extensions/issues/495) (open) |
+| The check-then-act window | open — the bundles bundle the assembly, not the atomicity: only a backend can make resolve and act one operation | [#456](https://github.com/sokolaidev/maf-extensions/issues/456) (open) |
+| run_code's Proved-by line names no probes | shipped — no shipped backend declares the capability, and the fake that implements the member scripts its output rather than evaluating it, so the suite that would hold it does not exist; the line says so rather than inventing one | untracked |

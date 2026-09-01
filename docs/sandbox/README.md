@@ -154,6 +154,7 @@ Two behaviours are worth knowing before the first call, because both are deliber
 - [`guest-platform-and-commands.md`](guest-platform-and-commands.md) — the guest-platform axis: what a kind may assume about the far side of the boundary, and how a backend finds out.
 - [`kinds/README.md`](kinds/README.md) — what a kind is, what it owes the protocol, and the two that ship.
 - [`backends/README.md`](backends/README.md) — the shipped backends side by side, and what each one honestly declares.
+- [`backends/writing-a-backend.md`](backends/writing-a-backend.md) — the ordered path for a new backend author: what each `Sandbox` method owes, what to reach for, what never to do, and the probes that prove it.
 - [`research/`](research/) — the records: the explorations and proposals the decisions came out of, kept in the tense they were written; how a new one graduates is [`../AUTHORING.md`](../AUTHORING.md).
 - Each package's own README, for its configuration, its guarantees and its limits.
 - [microsoft/agent-framework#7568](https://github.com/microsoft/agent-framework/issues/7568) — the upstream feature request this suite is the reference implementation of.

@@ -49,10 +49,11 @@ The four rows below `isolation` are fields of that backend's `declarations`. Eve
 
 ## What a new backend owes
 
-There is no shared backend base class and there is no conformance suite a backend inherits by subclassing — `maf_sandbox.testing` is a set of fakes, not a harness, and backends do not import it; each fakes its own provider seam. What a new package is held to instead, assembled from what the shipped ones are actually held to: that `isinstance(backend, SandboxBackend)` holds, the cheapest possible regression test for a renamed method; that the five declarations are asserted, **including the router interaction in both directions** — construction refused at the default floor and admitted below it, `egress_modes` in each configured shape and a spec refused for a mode outside it, `ensure_can_serve` admitting a spec it can serve and refusing one it cannot; that every top-level import is standard library, the package itself, or a declared dependency; that no module imports `agent_framework`, since a backend must be usable by a host that does not run the framework at all; that `reclaim` genuinely removes rather than raising, since no capability gates it and there is no declare-or-raise escape from it; and that a backend declaring `FILES_OUT` passes `maf_sandbox.conformance` against a real instance rather than against a fake that agrees with it.
+The ordered path through this — declarations first, then each `Sandbox` method with what it owes, what to reach for, what never to do, and the probes that prove it — is [`writing-a-backend.md`](writing-a-backend.md), which this comparison feeds but does not replace. The shape it walks, summarised: there is no shared backend base class and no conformance suite a backend inherits by subclassing — `maf_sandbox.testing` is a set of fakes, not a harness, and backends do not import it; each fakes its own provider seam, and is held to the protocol and the suites rather than to a parent class.
 
 ## Where to read next
 
+- [`writing-a-backend.md`](writing-a-backend.md) — the ordered path for a new backend author, built on the rules these pages carry.
 - [`../capabilities.md`](../capabilities.md) — what each capability obligates, and the caps and confinement rules the pull surface enforces.
 - [`../network.md`](../network.md) — the egress axis, the allowlist, and the proxy topology two of these backends share.
 - [`../hosts.md`](../hosts.md) — what a host wires, and what identity each declaration implies.
