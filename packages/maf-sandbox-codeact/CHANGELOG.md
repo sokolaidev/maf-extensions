@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.9.0...maf-sandbox-codeact-v0.9.1) (2026-09-01)
+
+
+### Fixes
+
+* every dependent admits maf-sandbox 0.29, and the samples floor on 0.28 ([#779](https://github.com/sokolaidev/maf-extensions/issues/779)) ([71c917a](https://github.com/sokolaidev/maf-extensions/commit/71c917a8d7ae9e253a30cb38e2fb25c393332fc1))
+
 ## [0.9.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.8.0...maf-sandbox-codeact-v0.9.0) (2026-09-01)
 
 
