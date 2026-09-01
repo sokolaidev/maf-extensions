@@ -329,10 +329,10 @@ jobs:
           name: dist-${{ needs.build.outputs.package }}
           path: dist/
 
-      # The siblings are this repository's code, not published artifacts, so they are built here:
-      # `maf-sandbox-codeact`'s e2e module imports `maf_sandbox_docker`, and
-      # `maf-sandbox-docker`'s parity test asserts `maf-sandbox-wslc` is importable rather than
-      # skipping. The package under test keeps the artifact that will actually be uploaded.
+      # The siblings are this repository's code, not published artifacts, so they are built
+      # here: `maf-sandbox-codeact`'s e2e module imports `maf_sandbox_docker`, and without the
+      # sibling that module skips rather than runs. The package under test keeps the artifact
+      # that will actually be uploaded.
       - name: Build the sibling wheels
         if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
         env:

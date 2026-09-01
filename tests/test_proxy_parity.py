@@ -6,9 +6,14 @@ choice is a mirrored copy that could silently drift; this test is the price paid
 loud. A fix to the private-address refusal made in one package without the other must fail here,
 not in production.
 
-This runs in the workspace, where both packages are importable side by side; it is not shipped
-in a way that requires wslc at a consumer's install time — a `pytest.skip` covers the wheel-only
-case where the sibling is absent.
+**It belongs to neither package, which is why it sits here.** The claim spans two of them and
+is true or false whatever a consumer installs, so it is a repository invariant like the ones
+beside it, not part of `maf-sandbox-docker`'s shipped suite. Living under that package meant
+`check_dependent_works_with_published_cores.py` dragged it into a throwaway wheel-only
+environment on every published core it tests, where the sibling need not exist at all; that it
+passed there for three weeks was luck, and it ran out the first time no published
+`maf-sandbox-wslc` admitted the core under test. Here both packages are always installed, so
+the guard below is unconditional rather than contingent on what the index happens to hold.
 """
 
 from __future__ import annotations
@@ -16,7 +21,6 @@ from __future__ import annotations
 import pathlib
 
 import pytest
-
 from maf_sandbox_docker import proxy_build_context
 
 _FILES = ("Dockerfile", "proxy.py")
@@ -32,12 +36,10 @@ def _wslc_context() -> pathlib.Path | None:
 
 class TestProxyIsByteIdenticalToWslc:
     def test_the_sibling_is_available_in_this_workspace(self):
-        """A guard so a skipped sibling does not let the parity check pass vacuously in CI."""
-        # In the workspace both packages are installed; only a wheel-only install lacks the
-        # sibling, and that is not where this test is meant to run.
+        """A guard so an absent sibling does not let the parity check pass vacuously."""
         assert _wslc_context() is not None, (
-            "maf-sandbox-wslc is not importable, so proxy parity cannot be checked. This test "
-            "is meant to run in the workspace where both packages are present."
+            "maf-sandbox-wslc is not importable, so proxy parity cannot be checked. Every test "
+            "in this tree runs against the workspace, where it always is."
         )
 
     @pytest.mark.parametrize("filename", _FILES)

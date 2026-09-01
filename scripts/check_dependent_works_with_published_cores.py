@@ -70,8 +70,8 @@ _USAGE = "usage: {program} <distribution> <wheel> [--local-core <wheel>]"
 _TEST_REQUIREMENTS = ("pytest",)
 
 #: The dependents a published-core install names explicitly, pinned to the core under test:
-#: two suites import a sibling outright (codeact's e2e, docker's parity guard), and a consumer
-#: assembling the candidate beside this core would have to resolve the siblings that admit it.
+#: codeact's e2e imports one outright, and a consumer assembling the candidate beside this core
+#: would have to resolve the siblings that admit it.
 #: Naming them turns a sibling whose floor excludes the core into a resolution refusal — the
 #: pairing-mismatch verdict — instead of an import failure three layers into the suite.
 _SIBLING_DISTRIBUTIONS = (
@@ -166,11 +166,11 @@ def sibling_wheels(wheel: Path) -> list[Path]:
     distribution trips the ambiguity refusal below instead of coming back as a "sibling" and
     riding a `--no-deps` pass over the artifact under test.
 
-    Two suites reach for a sibling: `maf-sandbox-codeact`'s e2e module imports
-    `maf_sandbox_docker` behind a `pytest.importorskip` — a missing sibling skips that module,
-    which is why docker's hard-asserting parity guard is the non-vacuous half — and
-    `maf-sandbox-docker`'s proxy-parity test asserts outright that `maf-sandbox-wslc` is
-    importable so a skip cannot make it vacuous. Every suite gets the siblings all the same:
+    One suite reaches for a sibling: `maf-sandbox-codeact`'s e2e module imports
+    `maf_sandbox_docker` behind a `pytest.importorskip`, so a missing sibling skips that module
+    rather than failing it — which is why the siblings are worth installing and why no package
+    suite may *assert* one is present, a rule the proxy-parity check follows by living in the
+    repository's own `tests/` tree instead. Every suite gets the siblings all the same:
     on the local-core path they are installed without their dependencies (see
     :func:`run_suite`), so a sibling's floor on the not-yet-released core never enters
     resolution; on the published-core path they resolve from the index like anything else.
