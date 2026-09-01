@@ -108,7 +108,6 @@ from ._outputs import (
     make_file_system_sink,
     missing_sink_refusal,
     portable_file_name,
-    portable_name,
     spec_lands_artifacts,
     validate_artifact_name,
 )
@@ -263,7 +262,6 @@ __all__ = [
     "meets_floor",
     "missing_sink_refusal",
     "portable_file_name",
-    "portable_name",
     "reclaim_run",
     "sandbox_tool",
     "spec_lands_artifacts",

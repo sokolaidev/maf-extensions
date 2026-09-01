@@ -9,14 +9,9 @@ contained and is not.
 from __future__ import annotations
 
 import asyncio
-import inspect
 import io
-import subprocess
-import sys
 import tarfile
-import warnings
 from collections.abc import Sequence
-from pathlib import Path
 
 import pytest
 
@@ -773,84 +768,3 @@ class TestTheGuestSideStatUnderTheCheck:
     def test_both_names_are_exported(self):
         assert "stat_by_asking_the_guest" in paths.__all__
         assert "stat_by_asking_the_guest_as_root" in paths.__all__
-
-
-class TestTheNamesTheseHadBefore:
-    """Each spelling from before the rename warns when *called* and delegates to its replacement.
-
-    Not on lookup: importing one must stay silent, or any consumer still on the old spelling
-    fails under ``-W error`` for reading a name rather than for using it.
-    """
-
-    RENAMED = [
-        ("confine_guest_path", "confine_resolve_guest_path"),
-        ("confine_guest_write_path", "confine_resolve_guest_write_path"),
-        ("guest_directory_chain", "guest_path_and_ancestors"),
-        ("refuse_symlinked_parents", "refuse_symlinked_ancestors"),
-    ]
-
-    def test_the_sync_pair_warns_and_delegates(self):
-        with pytest.warns(DeprecationWarning, match="confine_resolve_guest_path"):
-            confined = paths.confine_guest_path("out/a.png", _WORK_DIR)
-        assert confined == paths.confine_resolve_guest_path("out/a.png", _WORK_DIR)
-
-        with pytest.warns(DeprecationWarning, match="guest_path_and_ancestors"):
-            returned = paths.guest_directory_chain("/maf-sandbox/work/out", _WORK_DIR)
-        assert returned == paths.guest_path_and_ancestors("/maf-sandbox/work/out", _WORK_DIR)
-
-    def test_the_async_pair_warns_and_delegates(self):
-        stat, _ = TestRefuseSymlinkedAncestors._stat(
-            {"/maf-sandbox": EntryKind.DIRECTORY, "/maf-sandbox/work": EntryKind.DIRECTORY}
-        )
-
-        with pytest.warns(DeprecationWarning, match="refuse_symlinked_ancestors"):
-            asyncio.run(paths.refuse_symlinked_parents(stat, "/maf-sandbox/work/a.png", _WORK_DIR))
-
-        with pytest.warns(DeprecationWarning, match="confine_resolve_guest_write_path"):
-            written = asyncio.run(paths.confine_guest_write_path(stat, "a.png", _WORK_DIR))
-        assert written == "/maf-sandbox/work/a.png"
-
-    def test_the_warning_names_the_caller_and_not_asyncio(self):
-        """The warning names this file, not `asyncio/events.py`.
-
-        `confine_guest_write_path` gives the reason the shims are sync and return a coroutine.
-        """
-        stat, _ = TestRefuseSymlinkedAncestors._stat(
-            {"/maf-sandbox": EntryKind.DIRECTORY, "/maf-sandbox/work": EntryKind.DIRECTORY}
-        )
-
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            asyncio.run(paths.refuse_symlinked_parents(stat, "/maf-sandbox/work/a.png", _WORK_DIR))
-
-        assert Path(caught[0].filename).name == Path(__file__).name
-
-    def test_the_async_shims_still_answer_iscoroutinefunction(self):
-        """Both spellings were `async def`, so both must keep reading as coroutine functions.
-
-        A sync shim returning a coroutine is invisible to `await` and visible to
-        `inspect.iscoroutinefunction`, which is what a caller that dispatches on it would stop
-        awaiting. `inspect.markcoroutinefunction` restores the answer the old spelling gave.
-        """
-        for old, new in (
-            (paths.confine_guest_write_path, paths.confine_resolve_guest_write_path),
-            (paths.refuse_symlinked_parents, paths.refuse_symlinked_ancestors),
-        ):
-            assert inspect.iscoroutinefunction(new)
-            assert inspect.iscoroutinefunction(old), f"{old.__name__} reads as synchronous"
-
-    def test_importing_the_old_spelling_does_not_warn(self):
-        """A consumer importing these must not be failed under `-W error` for the import alone."""
-        source = "from maf_sandbox.paths import refuse_symlinked_parents, confine_guest_path"
-        completed = subprocess.run(
-            [sys.executable, "-W", "error::DeprecationWarning", "-c", source],
-            capture_output=True,
-            text=True,
-        )
-        assert completed.returncode == 0, completed.stderr
-
-    @pytest.mark.parametrize(("old", "new"), RENAMED)
-    def test_both_spellings_stay_importable_for_the_cycle(self, old: str, new: str):
-        """Keeping the old name means keeping it in `__all__` too, until the removal minor."""
-        assert old in paths.__all__
-        assert new in paths.__all__

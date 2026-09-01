@@ -40,9 +40,6 @@ ENTRY_POINTS = (
     "confine_resolve_guest_read_path",
     "confine_resolve_guest_list_path",
     "confine_resolve_guest_delete_path",
-    # Both spellings are exported, so a caller on either is matched.
-    "refuse_symlinked_parents",
-    "confine_guest_write_path",
 )
 
 #: How `maf_sandbox.paths` is spelled in an import. Absolute it is the dotted name; relative it

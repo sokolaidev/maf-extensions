@@ -49,29 +49,22 @@ name on where the answer comes from, since that is what a caller is choosing.
 
 from __future__ import annotations
 
-import inspect
 import posixpath
 import tarfile
-import warnings
-from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
-from typing import Any
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 
 from ._protocol import EntryKind, SandboxEntry
 
 __all__ = [
-    "confine_guest_path",
-    "confine_guest_write_path",
     "confine_resolve_guest_delete_path",
     "confine_resolve_guest_list_path",
     "confine_resolve_guest_path",
     "confine_resolve_guest_read_path",
     "confine_resolve_guest_write_path",
-    "guest_directory_chain",
     "guest_path_and_ancestors",
     "guest_path_relative_to",
     "path_ancestors_are_host_owned",
     "refuse_symlinked_ancestors",
-    "refuse_symlinked_parents",
     "sandbox_entry_from_tar_header",
     "stat_by_asking_the_guest",
     "stat_by_asking_the_guest_as_root",
@@ -435,67 +428,3 @@ def path_ancestors_are_host_owned(
     if not walked:
         return empty_means_host_owned
     return all(uid == 0 and not mode & 0o022 for uid, mode in walked.values())
-
-
-def _warn_renamed(old: str, new: str) -> None:
-    """The notice a caller still on the old spelling gets, once per call."""
-    warnings.warn(
-        f"maf_sandbox.paths.{old} is deprecated and is removed in the next minor; use {new}.",
-        DeprecationWarning,
-        stacklevel=3,
-    )
-
-
-# The spellings these four had before the rename, served for one minor. Importing one must not
-# warn — a backend that imports it would fail under ``-W error`` — so the notice is on the call.
-
-
-def confine_guest_path(path: str, working_directory: str) -> str:
-    """Deprecated. Use :func:`confine_resolve_guest_path`."""
-    _warn_renamed("confine_guest_path", "confine_resolve_guest_path")
-    return confine_resolve_guest_path(path, working_directory)
-
-
-@inspect.markcoroutinefunction
-def confine_guest_write_path(
-    stat: Callable[[str], Awaitable[SandboxEntry | None]],
-    path: str,
-    working_directory: str,
-) -> Coroutine[Any, Any, str]:
-    """Deprecated. Use :func:`confine_resolve_guest_write_path`.
-
-    Deliberately not ``async``: an ``async def`` body runs only once the event loop has taken
-    the coroutine, so the warning would be attributed to ``asyncio`` rather than to the caller.
-    Warning here and handing back the replacement's coroutine keeps the notice at the call
-    site, and ``await`` on the result is unchanged.
-
-    The marker is what keeps that invisible.  This spelling *was* an ``async def``, so a caller
-    dispatching on :func:`inspect.iscoroutinefunction` would otherwise read the shim as
-    synchronous and stop awaiting it — a break during the one minor that exists to avoid one.
-    """
-    _warn_renamed("confine_guest_write_path", "confine_resolve_guest_write_path")
-    return confine_resolve_guest_write_path(stat, path, working_directory)
-
-
-def guest_directory_chain(guest_path: str, working_directory: str) -> tuple[str, ...]:
-    """Deprecated. Use :func:`guest_path_and_ancestors`."""
-    _warn_renamed("guest_directory_chain", "guest_path_and_ancestors")
-    return guest_path_and_ancestors(guest_path, working_directory)
-
-
-@inspect.markcoroutinefunction
-def refuse_symlinked_parents(
-    stat: Callable[[str], Awaitable[SandboxEntry | None]],
-    guest_path: str,
-    working_directory: str,
-    *,
-    include_self: bool = False,
-) -> Coroutine[Any, Any, None]:
-    """Deprecated. Use :func:`refuse_symlinked_ancestors`.
-
-    Not ``async``, and marked, for the reasons :func:`confine_guest_write_path` gives.
-    """
-    _warn_renamed("refuse_symlinked_parents", "refuse_symlinked_ancestors")
-    return refuse_symlinked_ancestors(
-        stat, guest_path, working_directory, include_self=include_self
-    )
