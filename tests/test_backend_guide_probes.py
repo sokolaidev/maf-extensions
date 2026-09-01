@@ -7,7 +7,7 @@ no longer has. The helpers it tells an author to reach for are held the same way
 backticked name in a `maf_sandbox.paths` or `maf_sandbox.conformance` shape must be a name
 that module still exports.
 
-Two traps, both worth knowing before trusting this.
+Three traps, all worth knowing before trusting this.
 
 **It is a wiring check.** It proves every name the guide writes resolves, not that the guide
 maps the right probes to the right method — that mapping is editorial, and review rather than
