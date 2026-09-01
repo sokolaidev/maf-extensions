@@ -241,14 +241,15 @@ def make_bicep_tools(
         spec=bicep_sandbox_spec(image, image_id, egress=egress),
         name=BICEP_VALIDATE_TOOL_NAME,
         approval_mode="never_require",
-        # No `declarations=` and no `outbound_max_confidentiality=`: the default derivation is
-        # exactly `{"source_integrity": "trusted"}`, which is what this tool has always
-        # declared. Trusted because the compiler's diagnostics are deterministic first-party
-        # output from a sandbox with no ambient identity and nothing reachable but the
-        # Microsoft-operated hosts a module restore reads from (see the allowlist above).
-        # No confidentiality key on purpose — a host's confidentiality tiers are
-        # the host's classification, and declaring one here can activate a policy leg a given
-        # host keeps dormant. `TestFidesDeclarations` pins the resulting dict.
+        # The compiler is first-party, and what it is deterministic *about* is a template the
+        # model wrote: a diagnostic quotes the identifiers of the source, and every location
+        # names a file the caller passed. So the result does not derive from wholly trusted
+        # input and cannot claim to. The library's `"trusted"` default would not floor the
+        # framework's input-label join here — it replaces it.
+        source_integrity=None,
+        # No confidentiality key on purpose — a host's confidentiality tiers are the host's
+        # classification, and declaring one here can activate a policy leg a given host keeps
+        # dormant. `TestFidesDeclarations` pins the resulting dict.
         logger=logger,
     )
 

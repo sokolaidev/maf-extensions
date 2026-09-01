@@ -927,17 +927,25 @@ class TestFidesDeclarations:
     fire, and nothing in this suite — or in the host's — would report the change as a
     failure. It would simply become a different policy.
 
-    The factory in :mod:`maf_sandbox.maf` CAN derive an egress cap; this kind deliberately
-    does not ask for one (see the comment at its `sandboxed_tool` call). This test is what
-    holds that decision in place.
+    `source_integrity` is the same kind of contract read the other way round. A declared
+    integrity level *replaces* the framework's input-label join rather than flooring it, so
+    declaring `"trusted"` here would tell a host's middleware to disregard where the result
+    came from — and it came from a template the model wrote. The factory in
+    :mod:`maf_sandbox.maf` defaults to `"trusted"` and CAN derive an egress cap; this kind
+    asks for neither (see the comment at its `sandboxed_tool` call). These tests are what
+    hold both decisions in place.
     """
 
     def _properties(self):
         store = InMemoryStore({})
         return dict(_tool(store, _fake_backend()).additional_properties or {})
 
-    def test_the_tool_declares_exactly_trusted_source_integrity(self):
-        assert self._properties() == {"source_integrity": "trusted"}
+    def test_the_tool_declares_nothing_at_all(self):
+        assert self._properties() == {}
+
+    def test_it_declares_no_source_integrity(self):
+        """The library default is `"trusted"`, so an empty dict here is a passed argument."""
+        assert "source_integrity" not in self._properties()
 
     def test_it_declares_nothing_about_confidentiality(self):
         properties = self._properties()
