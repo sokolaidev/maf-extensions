@@ -91,6 +91,7 @@ The suites are the executable half of every Proved-by line above, and your packa
 **Run them against a real instance.** Your suite fakes the provider seam, and a faked seam agrees with whatever its author believed; the probes plant a hostile layout through the public surface and attack it there, so what passes is your provider's real behaviour. Filling in the subject is the backend's part: a `ConformanceSubject` is your sandbox, its working directory, and the planting and seeing the protocol has no word for, with `PosixGuestSubject` covering a Linux guest that has `ln` and `test`. One sandbox serves them all, with `EXEC` last — its final probe asserts the `TimeoutError` contract and two shipped backends discard the whole sandbox when a call times out, which is the documented recovery rather than a defect:
 
 ```python
+import pytest
 from maf_sandbox.conformance import (
     PosixGuestSubject,
     assert_exec_conformance,

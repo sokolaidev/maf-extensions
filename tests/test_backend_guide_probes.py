@@ -33,7 +33,8 @@ import maf_sandbox.paths
 REPO_ROOT = Path(__file__).resolve().parent.parent
 GUIDE = REPO_ROOT / "docs" / "sandbox" / "backends" / "writing-a-backend.md"
 
-#: The five registries a **Proved by** line draws from.
+#: Proved-by lines draw from every registry, so a probe that moved suites is caught here
+#: rather than only by the suite that lost it.
 REGISTRIES = (
     maf_sandbox.conformance.FILES_OUT_PROBES,
     maf_sandbox.conformance.FILES_IN_PROBES,
