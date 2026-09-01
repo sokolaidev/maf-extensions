@@ -38,7 +38,7 @@ _HEALTHY = """\
 == 2. What the surface means ==
 
   result_integrity:  untrusted
-                     the weakest tier over sources only — fetch_changelog drags
+                     the weakest level over sources only — fetch_changelog drags
                      the whole result down, and semver_bump cannot drag it up.
   outbound_caps:     {'public'}
                      verbatim and unfolded: confidentiality is the host's
@@ -134,7 +134,7 @@ class TestTheRegistrationGate:
 
 class TestTheAggregate:
     def test_a_changed_fold_is_caught_by_leg(self):
-        # `trusted` is the silent widening the weakest-tier fold exists to prevent.
+        # `trusted` is the silent widening the weakest-level fold exists to prevent.
         reasons = check.assess(
             _HEALTHY.replace("result_integrity:  untrusted", "result_integrity:  trusted")
         )

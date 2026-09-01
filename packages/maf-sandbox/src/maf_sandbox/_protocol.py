@@ -205,7 +205,7 @@ class SourceIntegrity(StrEnum):
 
     The vocabulary MAF's information-flow module already speaks (``source_integrity`` on a
     tool's ``additional_properties``), promoted to an enum here because the host-tools
-    aggregate has to *fold* it: ``execute_code``'s own result integrity is the weakest tier
+    aggregate has to *fold* it: ``execute_code``'s own result integrity is the weakest level
     over every registered source, and "weakest" needs an ordering, which this repository
     requires to be data — see :data:`INTEGRITY_RANK`.
     """
@@ -429,7 +429,7 @@ class HostToolAggregate:
     Derived per leg, over the relevant subset, never replacing the host's classification of the
     tool itself as an exec sink under untrusted taint — refining it:
 
-    - ``result_integrity`` is the weakest tier over *sources only* — a sink-only or pure tool
+    - ``result_integrity`` is the weakest level over *sources only* — a sink-only or pure tool
       must not drag the result to untrusted, and a registry with no sources has no integrity
       opinion at all (``None``): the workload's own default stands.
     - ``outbound_caps`` is every declared sink cap, verbatim and unfolded.  Confidentiality

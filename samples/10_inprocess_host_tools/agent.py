@@ -128,7 +128,7 @@ def act_two_aggregate(registry: HostToolRegistry) -> HostToolAggregate:
     aggregate = registry.aggregate()
 
     print(f"  result_integrity:  {aggregate.result_integrity}")
-    print("                     the weakest tier over sources only — fetch_changelog drags")
+    print("                     the weakest level over sources only — fetch_changelog drags")
     print("                     the whole result down, and semver_bump cannot drag it up.")
     print(f"  outbound_caps:     {set(aggregate.outbound_caps) or '{}'}")
     print("                     verbatim and unfolded: confidentiality is the host's")

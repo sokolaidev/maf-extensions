@@ -261,7 +261,7 @@ def sandbox_tool_declarations(
     Args:
         spec: The sandbox this workload asks for; ``egress_allow``, ``declared_outputs`` and
             ``outputs_named_at_call_time`` are what is read.
-        source_integrity: Integrity tier for this tool's results, or ``None`` to declare
+        source_integrity: Integrity label for this tool's results, or ``None`` to declare
             none.
         outbound_max_confidentiality: The host's cap for outbound tools, in the host's own
             vocabulary, or ``None`` (the default) to declare none.
