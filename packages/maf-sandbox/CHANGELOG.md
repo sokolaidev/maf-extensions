@@ -2,6 +2,17 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.29.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.28.0...maf-sandbox-v0.29.0) (2026-09-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** remove the four pre-rename confinement spellings and portable_name ([#787](https://github.com/sokolaidev/maf-extensions/issues/787))
+
+### Features
+
+* **sandbox:** remove the four pre-rename confinement spellings and portable_name ([#787](https://github.com/sokolaidev/maf-extensions/issues/787)) ([6d945ee](https://github.com/sokolaidev/maf-extensions/commit/6d945ee48ad7fa55b7b38f425dc39f35f041995a))
+
 ## [0.28.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.27.0...maf-sandbox-v0.28.0) (2026-08-31)
 
 
