@@ -1379,6 +1379,57 @@ class TestIsolationScopeRule:
         SandboxRouter([], min_isolation_scope=IsolationScope.CALL).ensure_can_serve(self._CALL_SPEC)
 
 
+class TestSpecValuesAreNormalisedOnConstruction:
+    """A `StrEnum` member equals its own string, so a string field satisfies `==` and fails `is`.
+
+    Both checks that make a per-call sandbox a boundary are `is`: the call id the key carries and
+    the router's refusal of a key without one. A spec built with `isolation_scope="call"` passed
+    the scope match by equality and failed both, so it was served a conversation-scoped sandbox
+    with nothing refused and nothing logged.
+    """
+
+    def test_a_string_scope_becomes_the_member(self):
+        spec = SandboxSpec(kind="bicep", isolation_scope=typing.cast("typing.Any", "call"))
+        assert spec.isolation_scope is IsolationScope.CALL
+
+    def test_a_string_scope_reaches_the_router_as_the_member(self):
+        router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE)
+        spec = SandboxSpec(kind="bicep", isolation_scope=typing.cast("typing.Any", "call"))
+        assert router.effective_isolation_scope(spec) is IsolationScope.CALL
+
+    def test_a_string_scoped_workload_still_meets_the_bare_key_refusal(self):
+        """The consequence the coercion exists for, asserted end to end."""
+        backend = InProcessSandboxBackend(
+            sandbox_per_key=True,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
+            ),
+        )
+        router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+        spec = SandboxSpec(kind="bicep", isolation_scope=typing.cast("typing.Any", "call"))
+        with pytest.raises(ValueError, match="names no call"):
+            asyncio.run(router.acquire(_KEY, spec))
+
+    def test_a_scope_that_is_not_a_member_is_refused_where_it_is_written(self):
+        with pytest.raises(ValueError, match="per-request"):
+            SandboxSpec(kind="bicep", isolation_scope=typing.cast("typing.Any", "per-request"))
+
+    def test_a_string_egress_becomes_the_member(self):
+        """Its own `__post_init__` compares with `is`, so the string used to fail the check it
+        satisfies: an allowlisted spec was refused for not being an allowlist."""
+        spec = SandboxSpec(
+            kind="bicep",
+            egress=typing.cast("typing.Any", "allowlist"),
+            egress_allow=("example.invalid",),
+        )
+        assert spec.egress is Egress.ALLOWLIST
+
+    def test_an_egress_that_is_not_a_member_is_refused_where_it_is_written(self):
+        with pytest.raises(ValueError, match="sometimes"):
+            SandboxSpec(kind="bicep", egress=typing.cast("typing.Any", "sometimes"))
+
+
 class TestAKeyMustNameTheCallItIsScopedTo:
     """At `IsolationScope.CALL`, a key with no `call_id` is the sharing the scope refuses.
 
@@ -2629,8 +2680,7 @@ class TestPolicyVocabularyExports:
         """A name public here and absent from its own module's `__all__` has drifted.
 
         Nothing imports `_protocol` with a star, so that list is a statement of intent rather
-        than machinery — which is exactly why it goes stale unnoticed: `OsFamily` sat outside it
-        from the release that added it until this test.
+        than machinery, and nothing else would notice it going stale.
         """
         import maf_sandbox
         from maf_sandbox import _protocol

@@ -585,7 +585,8 @@ class SandboxSpec:
     than a setting, like ``min_isolation``: a host raises it for every workload it serves, a spec
     raises it further, and the router refuses a backend that cannot enforce what the two resolve
     to.  It buys that with a cold start per call, which is the whole of its cost and the reason
-    it is not the default.
+    it is not the default.  Like ``egress`` it is normalised on construction, so a plain string
+    serves exactly as the member does and anything else raises here.
     """
 
     kind: str
@@ -629,6 +630,13 @@ class SandboxSpec:
         return self.host_tools.identities if self.host_tools is not None else frozenset()
 
     def __post_init__(self) -> None:
+        # Coerced before anything reads them, the way `HostToolDeclaration` coerces its own
+        # identity: a `StrEnum` member equals its string, so a caller passing ``"call"`` satisfies
+        # every ``==`` and fails every ``is`` — and the two checks that make a per-call sandbox a
+        # boundary, the key's call id and the router's refusal, are both ``is``. A value that is
+        # not a member raises here rather than degrading to a shared sandbox somewhere later.
+        object.__setattr__(self, "egress", Egress(str(self.egress)))
+        object.__setattr__(self, "isolation_scope", IsolationScope(str(self.isolation_scope)))
         if self.egress_allow and self.egress is not Egress.ALLOWLIST:
             hosts = ", ".join(self.egress_allow)
             raise ValueError(
