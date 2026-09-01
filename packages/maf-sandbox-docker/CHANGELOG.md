@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.12.0...maf-sandbox-docker-v0.12.1) (2026-09-01)
+
+
+### Fixes
+
+* acas and docker leave the deprecated confinement spellings, so a core release can remove them ([#781](https://github.com/sokolaidev/maf-extensions/issues/781)) ([3327de9](https://github.com/sokolaidev/maf-extensions/commit/3327de9d5dc0d0a019c71d878a80a86b806d1dcf))
+* every dependent admits maf-sandbox 0.29, and the samples floor on 0.28 ([#779](https://github.com/sokolaidev/maf-extensions/issues/779)) ([71c917a](https://github.com/sokolaidev/maf-extensions/commit/71c917a8d7ae9e253a30cb38e2fb25c393332fc1))
+
 ## [0.12.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.11.0...maf-sandbox-docker-v0.12.0) (2026-08-31)
 
 
