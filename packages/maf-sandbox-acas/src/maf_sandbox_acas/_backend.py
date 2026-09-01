@@ -44,10 +44,10 @@ from maf_sandbox import (
     fold_disposal_failures,
 )
 from maf_sandbox.paths import (
-    confine_guest_path,
-    confine_guest_write_path,
+    confine_resolve_guest_path,
+    confine_resolve_guest_write_path,
     guest_path_relative_to,
-    refuse_symlinked_parents,
+    refuse_symlinked_ancestors,
 )
 
 from ._config import AcasSandboxConfig
@@ -261,10 +261,10 @@ def _confined(path: str, working_directory: str) -> tuple[str, str]:
 
     Paired because every caller here wants the relative half for a
     :class:`~maf_sandbox.SandboxEntry` as soon as the absolute one is confined.  That half is
-    never ``None`` — :func:`~maf_sandbox.paths.confine_guest_path` has already refused anything
-    outside — so the ``or ""`` narrows a type rather than covering a case.
+    never ``None`` — :func:`~maf_sandbox.paths.confine_resolve_guest_path` has already refused
+    anything outside — so the ``or ""`` narrows a type rather than covering a case.
     """
-    resolved = confine_guest_path(path, working_directory)
+    resolved = confine_resolve_guest_path(path, working_directory)
     return resolved, guest_path_relative_to(resolved, working_directory) or ""
 
 
@@ -385,7 +385,7 @@ class _AcasSandbox:
         # parent. The file API docs do not mention the behaviour at all, so it is the SDK
         # signature that is load-bearing here; relying silently on a `0.1.0bN` default is how
         # `DiskImage.image` got missed. Stating it costs nothing and pins the intent.
-        guest = await confine_guest_write_path(
+        guest = await confine_resolve_guest_write_path(
             lambda p: self._stat_guest(p, p), path, working_directory
         )
         await self._sc.write_file(guest, content, create_dirs=True)
@@ -442,7 +442,7 @@ class _AcasSandbox:
         :data:`~maf_sandbox.EntryKind.SYMLINK` is how a caller learns it is one.
         """
         guest, relative = _confined(path, working_directory)
-        await self._refuse_symlinked_parents(guest, working_directory=working_directory)
+        await self._refuse_symlinked_ancestors(guest, working_directory=working_directory)
         return await self._stat_guest(guest, relative)
 
     async def run_code(self, code: str, *, timeout: float) -> ExecResult:
@@ -471,8 +471,8 @@ class _AcasSandbox:
         """
         from azure.core.exceptions import ResourceNotFoundError
 
-        guest = confine_guest_path(path, working_directory)
-        await self._refuse_symlinked_parents(guest, working_directory=working_directory)
+        guest = confine_resolve_guest_path(path, working_directory)
+        await self._refuse_symlinked_ancestors(guest, working_directory=working_directory)
         if posixpath.normpath(guest) == posixpath.normpath(working_directory):
             raise ValueError(
                 f"refusing to remove the working directory itself: {working_directory}"
@@ -553,7 +553,7 @@ class _AcasSandbox:
             return None
         return _stat_from_payload(payload, relative)
 
-    async def _refuse_symlinked_parents(
+    async def _refuse_symlinked_ancestors(
         self, guest: str, *, working_directory: str, include_guest: bool = False
     ) -> None:
         """The protocol's filesystem path check, over this backend's own unconfined stat.
@@ -565,7 +565,7 @@ class _AcasSandbox:
         :meth:`list_dir` needs: the service enumerates through a symlinked directory as readily
         as it reads through one.
         """
-        await refuse_symlinked_parents(
+        await refuse_symlinked_ancestors(
             lambda directory: self._stat_guest(directory, directory),
             guest,
             working_directory,
@@ -591,7 +591,7 @@ class _AcasSandbox:
         from azure.core.exceptions import ResourceNotFoundError
 
         guest, relative = _confined(path, working_directory)
-        await self._refuse_symlinked_parents(guest, working_directory=working_directory)
+        await self._refuse_symlinked_ancestors(guest, working_directory=working_directory)
         # `_stat_guest` rather than `stat_file`, which would check the same ancestors a second time.
         entry = await self._stat_guest(guest, relative)
         if entry is None:
@@ -647,7 +647,7 @@ class _AcasSandbox:
         from azure.core.exceptions import ResourceNotFoundError
 
         guest, _ = _confined(path, working_directory)
-        await self._refuse_symlinked_parents(
+        await self._refuse_symlinked_ancestors(
             guest, working_directory=working_directory, include_guest=True
         )
         try:

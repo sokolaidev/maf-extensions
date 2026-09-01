@@ -403,7 +403,7 @@ class TestWhatTheServiceDoesWithALinkOnDelete:
     ):
         """Not a defect — POSIX resolves every component but the last, and so does this.
 
-        It is the reason `_refuse_symlinked_parents` runs before the delete: the walk is the
+        It is the reason `_refuse_symlinked_ancestors` runs before the delete: the walk is the
         backend's to refuse, because the service will follow it.
         """
         assert service_link_delete["linked-parent-resolved"], (
@@ -591,7 +591,7 @@ class TestWhatOnlyTheServiceCanSay:
             assert entry is not None
             assert entry.kind is EntryKind.FILE
 
-            # ValueError is what `confine_guest_path` raises; the pull surface translates it to
+            # ValueError is what `confine_resolve_guest_path` raises; the pull surface translates it to
             # SandboxOutputNotConfined only above this layer, so a backend call sees the bare
             # one. Asserting the type matters: a FileNotFoundError here would mean the path was
             # accepted and merely missed, which is a refusal that never happened.

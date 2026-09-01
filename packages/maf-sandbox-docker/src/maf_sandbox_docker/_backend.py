@@ -59,11 +59,11 @@ from maf_sandbox import (
     fold_disposal_failures,
 )
 from maf_sandbox.paths import (
-    confine_guest_path,
-    confine_guest_write_path,
-    guest_directory_chain,
+    confine_resolve_guest_path,
+    confine_resolve_guest_write_path,
+    guest_path_and_ancestors,
     path_ancestors_are_host_owned,
-    refuse_symlinked_parents,
+    refuse_symlinked_ancestors,
     sandbox_entry_from_tar_header,
     tar_header_from_block,
 )
@@ -260,7 +260,7 @@ def _proxy_name(container: str) -> str:
 
 
 def _single_rooted(guest_path: str) -> str:
-    """``guest_directory_chain``'s normal form: the segments, under exactly one leading slash.
+    """``guest_path_and_ancestors``'s normal form: the segments, under exactly one leading slash.
 
     That helper rebuilds every ancestor from segments, so whatever it is handed comes back
     ``/``-rooted and single-slashed.  Two spellings reach here that ``normpath`` alone leaves
@@ -417,7 +417,7 @@ class _DockerSandbox:
         rule never cleared, and ``/`` is the destination and needs none.
         """
         walked: dict[str, tuple[int, int]] = {}
-        guest = await confine_guest_write_path(
+        guest = await confine_resolve_guest_write_path(
             lambda p: self._stat_guest(p, p, walked), path, working_directory
         )
         data = content.encode("utf-8") if isinstance(content, str) else content
@@ -427,7 +427,7 @@ class _DockerSandbox:
         with tarfile.open(fileobj=buffer, mode="w") as archive:
             missing = [
                 guest_dir
-                for guest_dir in guest_directory_chain(guest_leaf_dir, guest_work_dir)
+                for guest_dir in guest_path_and_ancestors(guest_leaf_dir, guest_work_dir)
                 if guest_dir not in walked
                 and guest_dir != "/"
                 and (
@@ -513,7 +513,7 @@ class _DockerSandbox:
         what an unreadable component means.
         """
         walked: dict[str, tuple[int, int]] = {}
-        for directory in ("/", *guest_directory_chain(posixpath.dirname(work_dir), "/")):
+        for directory in ("/", *guest_path_and_ancestors(posixpath.dirname(work_dir), "/")):
             await self._stat_guest(directory, directory, walked)
         return _reach_answer(walked)
 
@@ -571,8 +571,8 @@ class _DockerSandbox:
         The **final** component is described rather than refused: a link reported as
         :data:`~maf_sandbox.EntryKind.SYMLINK` is how a caller learns it is one.
         """
-        guest = confine_guest_path(path, working_directory)
-        await self._refuse_symlinked_parents(guest, working_directory=working_directory)
+        guest = confine_resolve_guest_path(path, working_directory)
+        await self._refuse_symlinked_ancestors(guest, working_directory=working_directory)
         return await self._stat_guest(guest, posixpath.normpath(path))
 
     async def run_code(self, code: str, *, timeout: float) -> ExecResult:
@@ -604,7 +604,7 @@ class _DockerSandbox:
         walk could not read even the root stays at the guest's authority.
         See ``docs/sandbox/backends/docker.md``.
         """
-        guest = confine_guest_path(path, working_directory)
+        guest = confine_resolve_guest_path(path, working_directory)
         walked: dict[str, tuple[int, int]] = {}
         try:
             await self._stat_guest("/", "/", walked)
@@ -614,7 +614,7 @@ class _DockerSandbox:
                 self._name,
                 unreadable,
             )
-        await self._refuse_symlinked_parents(
+        await self._refuse_symlinked_ancestors(
             guest, working_directory=working_directory, walked=walked
         )
         if posixpath.normpath(guest) == posixpath.normpath(working_directory):
@@ -686,7 +686,7 @@ class _DockerSandbox:
             walked[guest] = (info.uid, info.mode)
         return sandbox_entry_from_tar_header(info, rel)
 
-    async def _refuse_symlinked_parents(
+    async def _refuse_symlinked_ancestors(
         self,
         guest: str,
         *,
@@ -695,14 +695,14 @@ class _DockerSandbox:
     ) -> None:
         """The protocol's filesystem path check, over this backend's own unconfined stat.
 
-        The :func:`~maf_sandbox.paths.confine_guest_path` paired with it at every call site is
-        lexical, so a symlinked *parent* satisfies that one; this is what catches it.  A link
-        is only visible when it is the entry being tarred —
+        The :func:`~maf_sandbox.paths.confine_resolve_guest_path` paired with it at every call
+        site is lexical, so a symlinked *parent* satisfies that one; this is what catches it.
+        A link is only visible when it is the entry being tarred —
         the engine resolves the rest of the path daemon-side — so a symlinked component has to
         be found by checking each rather than by judging the path that was asked for.  One header
         read per component.
         """
-        await refuse_symlinked_parents(
+        await refuse_symlinked_ancestors(
             lambda directory: self._stat_guest(directory, directory, walked),
             guest,
             working_directory,
@@ -721,8 +721,8 @@ class _DockerSandbox:
         The residual that the check cannot close: a guest that turns a stat-ed component into a link
         between the check and the read wins, since ``docker cp`` has no no-follow form.
         """
-        guest = confine_guest_path(path, working_directory)
-        await self._refuse_symlinked_parents(guest, working_directory=working_directory)
+        guest = confine_resolve_guest_path(path, working_directory)
+        await self._refuse_symlinked_ancestors(guest, working_directory=working_directory)
         # Header + the most body the cap allows. A larger file is refused from the header alone,
         # so the extra bytes are never read; a file within the cap is fully present in this bound.
         result = await self._run(
