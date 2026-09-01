@@ -403,8 +403,8 @@ class TestWhatTheServiceDoesWithALinkOnDelete:
     ):
         """Not a defect — POSIX resolves every component but the last, and so does this.
 
-        It is the reason `_refuse_symlinked_ancestors` runs before the delete: the walk is the
-        backend's to refuse, because the service will follow it.
+        It is the reason `_refuse_symlinked_ancestors` runs before the delete: the filesystem
+        path check is the backend's to refuse, because the service will follow it.
         """
         assert service_link_delete["linked-parent-resolved"], (
             "the service did NOT resolve a linked parent — surprising rather than unsafe, but "

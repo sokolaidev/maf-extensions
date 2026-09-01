@@ -778,8 +778,8 @@ class TestTheGuestSideStatUnderTheCheck:
 class TestTheNamesTheseHadBefore:
     """Each spelling from before the rename warns when *called* and delegates to its replacement.
 
-    Not on lookup: importing one must stay silent, or the three shipped backends fail under
-    ``-W error``.
+    Not on lookup: importing one must stay silent, or any consumer still on the old spelling
+    fails under ``-W error`` for reading a name rather than for using it.
     """
 
     RENAMED = [
@@ -840,7 +840,7 @@ class TestTheNamesTheseHadBefore:
             assert inspect.iscoroutinefunction(old), f"{old.__name__} reads as synchronous"
 
     def test_importing_the_old_spelling_does_not_warn(self):
-        """The three shipped backends import these; warning here fails them under `-W error`."""
+        """A consumer importing these must not be failed under `-W error` for the import alone."""
         source = "from maf_sandbox.paths import refuse_symlinked_parents, confine_guest_path"
         completed = subprocess.run(
             [sys.executable, "-W", "error::DeprecationWarning", "-c", source],
