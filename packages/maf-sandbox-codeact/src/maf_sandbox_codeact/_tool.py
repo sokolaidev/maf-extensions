@@ -473,7 +473,7 @@ def _withheld_integrity(surface: HostToolAggregate | None) -> SourceIntegrity | 
     """What a withholding tool may declare, once the registry has had its say.
 
     Withholding is about this kind's own rendering, and a registry's sources are core's fold to
-    make: ``result_integrity`` is the weakest tier over every registered source, and an
+    make: ``result_integrity`` is the weakest level over every registered source, and an
     unstamped tool has already failed safe into it. A registry with no opinion leaves the
     workload's own, which withholding has earned; one that says untrusted keeps it.
     """

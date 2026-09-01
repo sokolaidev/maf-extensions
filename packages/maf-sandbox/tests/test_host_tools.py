@@ -86,7 +86,7 @@ class TestSandboxToolDecorator:
         with pytest.raises(TypeError):
             sandbox_tool(sink=None, identity=None)  # type: ignore[call-arg]
 
-    def test_an_unknown_source_tier_is_refused(self):
+    def test_an_unknown_source_label_is_refused(self):
         """The enum constructor is the refuse-unknown policy, here as everywhere."""
         with pytest.raises(ValueError):
             sandbox_tool(source="verified", sink=None, identity=None)  # type: ignore[arg-type]
@@ -115,7 +115,7 @@ class TestSandboxToolDecorator:
 
 class TestIntegrityRank:
     def test_every_member_is_ranked(self):
-        """An unranked tier would raise `KeyError` inside the aggregate's fold."""
+        """An unranked label would raise `KeyError` inside the aggregate's fold."""
         assert set(INTEGRITY_RANK) == set(SourceIntegrity)
 
     def test_untrusted_is_the_weakest(self):

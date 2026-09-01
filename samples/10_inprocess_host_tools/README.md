@@ -37,7 +37,7 @@ The one-time registration notice is printed rather than suppressed. It says out 
 
 | | On this registry | Why |
 |---|---|---|
-| `result_integrity` | `untrusted` | the weakest tier over **sources only** — `fetch_changelog` drags the result down and `semver_bump` cannot drag it back up. A registry with no sources has no opinion at all (`None`) and the workload's default stands |
+| `result_integrity` | `untrusted` | the weakest level over **sources only** — `fetch_changelog` drags the result down and `semver_bump` cannot drag it back up. A registry with no sources has no opinion at all (`None`) and the workload's default stands |
 | `outbound_caps` | `{'public'}` | every declared sink cap, verbatim and unfolded. Confidentiality is the host's own vocabulary and this library has no ordering for it, so two distinct caps are the host's to reconcile |
 | `identities` | `{app, user}` | whose authority the bodies exercise |
 | `requires_approval` | `True` | one `USER` tool is enough: a single host-tool call may exercise the user's delegated authority |

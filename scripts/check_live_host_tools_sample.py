@@ -32,7 +32,7 @@ _REGISTERED = frozenset({"semver_bump", "fetch_changelog", "publish_release_note
 _UNSTAMPED = "rerun_failed_jobs"
 
 #: `HostToolAggregate`'s scalar legs, as this registry folds to. Each is a fold the library
-#: performs rather than a value the sample chose: the weakest source tier wins, and one USER
+#: performs rather than a value the sample chose: the weakest source level wins, and one USER
 #: tool gates the whole surface.
 _AGGREGATE = {
     "result_integrity": "untrusted",
