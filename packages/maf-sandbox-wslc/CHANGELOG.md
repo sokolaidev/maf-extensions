@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.13.0...maf-sandbox-wslc-v0.14.0) (2026-09-01)
+
+
+### Features
+
+* core ships the guest-side stat ([#777](https://github.com/sokolaidev/maf-extensions/issues/777)) ([cd17235](https://github.com/sokolaidev/maf-extensions/commit/cd17235d7870cf9fa96c36867ff0a37c8f85f264))
+* **sandbox:** core offers a container-cp tar header helper, and two backends (docker & wslc) use it ([#766](https://github.com/sokolaidev/maf-extensions/issues/766)) ([f34218e](https://github.com/sokolaidev/maf-extensions/commit/f34218ef599301bfacf7fa99ef62c82fd9c164b5))
+
 ## [0.13.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.12.0...maf-sandbox-wslc-v0.13.0) (2026-08-29)
 
 
