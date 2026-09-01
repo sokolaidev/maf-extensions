@@ -23,7 +23,7 @@ from collections.abc import Mapping
 from types import MappingProxyType
 
 import pytest
-from maf_sandbox import CallerContext, SandboxRouter
+from maf_sandbox import CallerContext, Egress, SandboxRouter
 from maf_sandbox.testing import InMemoryStore, InProcessSandbox, InProcessSandboxBackend
 
 from maf_sandbox_bicep import (
@@ -982,6 +982,17 @@ class TestBicepSandboxSpec:
             "aka.ms",
             "live-data.bicep.azure.com",
         )
+
+    @pytest.mark.parametrize("egress", [Egress.CLOSED, Egress.UNRESTRICTED])
+    def test_the_hosts_are_the_payload_of_an_allowlist_run_and_nothing_else(self, egress):
+        """The four hosts are what `ALLOWLIST` *means* here, not a list carried beside the mode.
+
+        Off that run the payload is empty, and the two modes it is empty for are opposites:
+        `CLOSED` reaches nothing, `UNRESTRICTED` reaches whatever the host can. So the
+        allowlist says nothing about what a given deployment can dial, and any argument that
+        reasons from these four hosts holds only on the default run.
+        """
+        assert bicep_sandbox_spec(egress=egress).egress_allow == ()
 
     def test_work_dir_is_a_dedicated_root(self):
         """Everything shared with the sandbox lives here, on a path nothing else owns."""
