@@ -1105,26 +1105,28 @@ async def _probe_the_streams_stay_separate(
     )
     if result.exit_code != 0:
         raise AssertionError(f"the stream probe exited {result.exit_code}")
-    if result.streams_merged:
-        # A declared merge is conformant, and owes the other half of what it promises:
-        # everything printed is in `stdout`, and `stderr` holds none of the program's words.
+    if result.producer_owns_stderr:
+        # A declared ownership is conformant, and owes the other half of what it promises:
+        # `stderr` holds none of the program's words — either marker there breaks it, not only
+        # the one the program wrote to that stream — and what the result does carry of them is
+        # therefore on `stdout`. This probe's own output is small, so nothing here may be
+        # dropped for its size; a producer that carries less says so elsewhere.
         if _ON_STDOUT not in result.stdout or _ON_STDERR not in result.stdout:
             raise AssertionError(
-                f"streams_merged is set but stdout came back as {result.stdout!r} — a result "
-                "declaring the merge promises both of the program's streams are in it"
+                f"producer_owns_stderr is set but stdout came back as {result.stdout!r} — with "
+                "that field the producer's, the program's own words have nowhere else to be"
             )
-        if _ON_STDERR in result.stderr:
+        if _ON_STDOUT in result.stderr or _ON_STDERR in result.stderr:
             raise AssertionError(
-                f"streams_merged is set and stderr still carries what the program wrote to its "
-                f"standard error ({result.stderr!r}) — on a merged result that field is the "
-                "producer's, so a caller separating host text from guest text mistakes one for "
-                "the other"
+                f"producer_owns_stderr is set and stderr still carries what the program wrote "
+                f"({result.stderr!r}) — the flag says that field is the producer's, so a caller "
+                "separating host text from guest text mistakes one for the other"
             )
         return
     if _ON_STDOUT not in result.stdout or _ON_STDERR in result.stdout:
         raise AssertionError(
             f"stdout came back as {result.stdout!r} — the program's standard error was folded "
-            "into it without the result saying so, which is what streams_merged is for"
+            "into it without the result saying so, which is what producer_owns_stderr is for"
         )
     if _ON_STDERR not in result.stderr or _ON_STDOUT in result.stderr:
         raise AssertionError(
@@ -1216,9 +1218,9 @@ EXEC_PROBES: tuple[Probe, ...] = (
         why=(
             "a caller renders the two differently — a kind withholding guest text must not "
             "withhold a host note, and one quoting stderr as the program's diagnosis must not "
-            "quote the host's. A backend that folds stderr into stdout without setting "
-            "streams_merged makes every one of those readings wrong, and the result is where "
-            "it has to say so."
+            "quote the host's. A backend that takes stderr for itself without setting "
+            "producer_owns_stderr makes every one of those readings wrong, and the result is "
+            "where it has to say so."
         ),
         requires=frozenset({Capability.EXEC}),
         run=_probe_the_streams_stay_separate,

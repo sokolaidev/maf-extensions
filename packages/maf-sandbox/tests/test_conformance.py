@@ -536,8 +536,9 @@ class _SimulatedGuest:
         self._quoting = quoting
         self._exit_codes = exit_codes
         #: How this specimen answers the stream probe: `separate` keeps the two apart,
-        #: `merged` folds and declares it, `folded` folds and stays quiet, and `mislabelled`
-        #: declares a merge while leaving the program's own words on `stderr`.
+        #: `merged` folds and declares it, `folded` folds and stays quiet, `mislabelled`
+        #: declares the ownership while leaving the program's stderr on `stderr`, and
+        #: `echoing` declares it while copying the program's *stdout* there instead.
         self._streams = streams
 
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
@@ -644,15 +645,17 @@ class _SimulatedGuest:
         # line was built and $1 is only the first word of what came back — modelled here by
         # evaluating `$(echo X)` to X and taking the first word.
         # `sh -c 'printf %s OUT; printf %s ERR >&2'`: the stream probe, and the only command
-        # here that writes to both. The four answers are the four a backend can give.
+        # here that writes to both. Each answer below is one a backend can give.
         if argv[0:1] == ["sh"] and argv[1:2] == ["-c"] and len(argv) == 3 and ">&2" in argv[2]:
             out, err = re.findall(r"printf %s (\S+)", argv[2])
             if self._streams == "folded":
                 return ExecResult(stdout=out + err)
             if self._streams == "merged":
-                return ExecResult(stdout=out + err, streams_merged=True)
+                return ExecResult(stdout=out + err, producer_owns_stderr=True)
             if self._streams == "mislabelled":
-                return ExecResult(stdout=out, stderr=err, streams_merged=True)
+                return ExecResult(stdout=out, stderr=err, producer_owns_stderr=True)
+            if self._streams == "echoing":
+                return ExecResult(stdout=out + err, stderr=out, producer_owns_stderr=True)
             return ExecResult(stdout=out, stderr=err)
         if argv[0:1] == ["sh"] and argv[1:2] == ["-c"] and len(argv) == 5 and "printf" in argv[2]:
             if self._quoting:
@@ -808,13 +811,18 @@ class TestExecConformance:
             [p.name for p in EXEC_PROBES], None
         )
 
-    def test_a_declared_merge_still_owes_an_stderr_that_is_not_the_programs(self):
-        """Setting the flag while leaving the guest's words on `stderr` is the worse failure.
+    @pytest.mark.parametrize("streams", ["mislabelled", "echoing"])
+    def test_a_declared_ownership_still_owes_an_stderr_with_none_of_the_programs_words(
+        self, streams
+    ):
+        """Setting the flag over any of the guest's words is the worse failure.
 
-        A caller reading `streams_merged` treats that field as the producer's, so a kind
-        withholding guest text surfaces the guest's own words whole.
+        A caller reading `producer_owns_stderr` treats that field as the producer's, so a kind
+        withholding guest text surfaces the guest's own words whole. `mislabelled` leaves the
+        program's stderr there and `echoing` copies its stdout there instead — the second is
+        the one a probe checking only the stderr marker lets through.
         """
-        failures = _sim_results(_sim_subject(streams="mislabelled"), run_exec_probes)
+        failures = _sim_results(_sim_subject(streams=streams), run_exec_probes)
         assert failures["streams-stay-separate"] is not None
 
     def test_a_timeout_that_returns_fails_the_last_probe(self):

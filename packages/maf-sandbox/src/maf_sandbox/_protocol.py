@@ -669,16 +669,26 @@ class ExecResult:
     """The result of one command run inside a sandbox.
 
     ``stdout`` is the program's standard output and ``stderr`` its standard error, each in its
-    own field.  A producer that cannot keep them apart declares it with ``streams_merged``
-    rather than folding one into the other silently, and
+    own field.  A producer that writes to ``stderr`` itself declares it with
+    ``producer_owns_stderr`` rather than leaving a caller to guess, and
     :func:`~maf_sandbox.conformance.assert_exec_conformance` holds a backend to both halves.
 
-    **``streams_merged`` says that** ``stderr`` **is not the program's.**  Everything the
-    program printed is in ``stdout``, its two streams interleaved, and ``stderr`` is whoever
-    produced this result speaking — a note about the run, never the guest's own words.
-    :func:`~maf_sandbox.host_tool_calls_over_exec` sets it, because its launcher redirects the
-    guest's stderr into the output file it reads back.  A caller that treats host text and
-    guest text differently reads this rather than inferring it from the transport it built.
+    **``producer_owns_stderr`` says that** ``stderr`` **is not the program's** — whoever built
+    this result is speaking there, and none of the guest's words are.  A producer sets it
+    whether it merged the two streams into ``stdout`` or never had the program's stderr at
+    all; what the field claims is the ownership, not how the field came to be free.
+
+    **It is not a completeness claim about** ``stdout``.  A producer may carry less of the
+    program's output than the program wrote and say so in that note — the host-tool transport
+    does exactly this over ``output_limit``, returning an empty ``stdout`` beside a note that
+    the output was dropped — and a caller reading completeness into the flag would report that
+    run as a program that printed nothing.  What holds is the direction: none of the program's
+    words are on ``stderr``, so whatever of them this result carries is on ``stdout``.
+
+    :func:`~maf_sandbox.host_tool_calls_over_exec` sets it on every result it returns, because
+    its launcher redirects the guest's stderr into the output file it reads back and its own
+    notes go where nothing else writes.  A caller that treats host text and guest text
+    differently reads this rather than inferring it from the transport it built.
     """
 
     stdout: str
@@ -686,7 +696,7 @@ class ExecResult:
     exit_code: int = 0
     # Appended after the defaulted fields already here, so it cannot rebind what a positional
     # caller passes.
-    streams_merged: bool = False
+    producer_owns_stderr: bool = False
 
 
 class SandboxQueuedTimeout(TimeoutError):

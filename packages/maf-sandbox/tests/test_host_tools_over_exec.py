@@ -2829,15 +2829,31 @@ class TestWhoOwnsStderrHere:
     """`stderr` is this transport's own field, and the result says so rather than a caller
     inferring it from having built the transport itself."""
 
-    def test_a_finished_run_declares_the_merge(self):
-        assert _run(_ScriptedGuest([], output="printed"), HostToolRun(_registry())).streams_merged
+    def test_a_finished_run_declares_the_ownership(self):
+        assert _run(
+            _ScriptedGuest([], output="printed"), HostToolRun(_registry())
+        ).producer_owns_stderr
 
     def test_a_launcher_that_never_started_the_program_declares_it_too(self):
-        """Nothing was merged on this leg and the field still holds: no program ran, so the
-        sentence on `stderr` is the launcher's rather than the guest's."""
+        """No program ran on this leg, so the sentence on `stderr` is the launcher's."""
         result = _run(_ScriptedGuest([], launcher_exit_code=127), HostToolRun(_registry()))
         assert result.exit_code == 127
-        assert result.streams_merged
+        assert result.producer_owns_stderr
+
+    def test_a_dropped_output_declares_it_beside_an_empty_stdout(self):
+        """The flag is about who owns `stderr`, never about how much of the output came back.
+
+        This is the combination a completeness reading gets wrong: the program printed 200
+        bytes, `stdout` is empty because the cap refused them, and the note saying so is on
+        the field the flag claims.
+        """
+        limits = TransferLimits(max_bytes_per_file=64, max_total_bytes=32, max_files=4)
+        guest = _ScriptedGuest([], output="x" * 200)
+        result = _run(guest, HostToolRun(_registry(response_limits=limits)))
+
+        assert result.stdout == ""
+        assert "larger than the host will read" in result.stderr
+        assert result.producer_owns_stderr
 
     def test_an_output_that_could_not_be_read_declares_it_too(self):
         class _RefusesToHandItOver(_ScriptedGuest):
@@ -2851,7 +2867,7 @@ class TestWhoOwnsStderrHere:
         guest = _RefusesToHandItOver([], output="unreachable")
         result = _run(guest, HostToolRun(_registry()), timeout=1.0)
         assert "could not be read" in result.stderr
-        assert result.streams_merged
+        assert result.producer_owns_stderr
 
     def test_every_result_this_module_builds_declares_it(self):
         """The three above cover the exit paths that exist; this covers the next one.
@@ -2870,10 +2886,10 @@ class TestWhoOwnsStderrHere:
         assert built, "the module builds no ExecResult at all, so this asserts nothing"
         for call in built:
             assert any(
-                keyword.arg == "streams_merged" and keyword.value.value is True
+                keyword.arg == "producer_owns_stderr" and keyword.value.value is True
                 for keyword in call.keywords
                 if isinstance(keyword.value, ast.Constant)
-            ), f"an ExecResult built on line {call.lineno} does not declare streams_merged"
+            ), f"an ExecResult built on line {call.lineno} does not declare producer_owns_stderr"
 
 
 class TestWhoseTimeoutItWas:
