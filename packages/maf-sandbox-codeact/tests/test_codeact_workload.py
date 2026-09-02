@@ -1149,7 +1149,39 @@ class TestTheModelIsToldUpFront:
         assert "return what it printed" not in description
         assert "Only what you print is read back as text" not in description
         assert "print(...)`` of\n        everything you need to see" not in description
-        assert "What you print is not read back" in description
+        assert "Nothing your program writes to stdout or stderr comes back" in description
+
+    def test_the_head_offers_the_streams_no_use_at_all(self):
+        """A head that names a use for a stream licenses it, and this mode leaves none to name:
+        no stream content comes back at all, so a model that prints to debug spends the call it
+        takes to learn otherwise."""
+        description = _callable(_withholding_tool(_ScriptedSandbox())).__doc__ or ""
+        unwrapped = " ".join(description.split())
+
+        assert "for your own debugging" not in unwrapped
+        assert "not as a value, not to debug with" in unwrapped
+        assert "even when the program fails" in unwrapped
+
+    def test_the_head_covers_every_route_to_the_streams(self):
+        """The withholding is at the process level — the kind reads the exec's `stdout` and
+        `stderr` — so a claim scoped to `print` alone leaves a model reading `logging`, which
+        defaults to stderr, as a channel that comes back."""
+        description = _callable(_withholding_tool(_ScriptedSandbox())).__doc__ or ""
+
+        for route in ("``print``", "``sys.stdout``", "``sys.stderr``", "``logging``", "traceback"):
+            assert route in description, route
+
+    def test_the_head_names_the_streams_as_written_to_and_never_as_received(self):
+        """On the host-tool-call transport the launcher merges the program's stderr into its
+        stdout and the `stderr` field is the host's, which is why `Returns:` is split in two.
+        One head serves both, so it may name the streams only as the program's own writes."""
+        head = (_callable(_withholding_tool(_ScriptedSandbox())).__doc__ or "").split(
+            "Write a complete"
+        )[0]
+
+        assert "writes to stdout or stderr" in head
+        for received in ("stdout and stderr come back", "get back stdout"):
+            assert received not in head, received
 
     def test_the_head_is_transport_neutral_about_the_shape(self):
         """One head serves both renderings, and the transport's is a single merged `output`
