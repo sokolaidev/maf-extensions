@@ -560,7 +560,7 @@ def sandbox_tool_declarations(
 
     These land on the tool's ``additional_properties``, where MAF's information-flow module
     (``agent_framework.security``, FIDES) reads them before every call: ``source_integrity``
-    decides whether this tool's *output* taints the conversation, and
+    is this tool's declaration about the integrity of its *results*, and
     ``max_allowed_confidentiality`` caps how confidential a conversation may be and still be
     allowed to call it.
 
@@ -568,8 +568,17 @@ def sandbox_tool_declarations(
     first-party output — a compiler's diagnostics, a script's stdout — produced by an
     environment with no ambient identity and a deny-by-default egress allowlist.  Pass
     ``None`` for a workload where that is not true (a sandbox that fetches arbitrary web
-    content, say): undeclared, the tracker's untrusted default applies and the result taints
-    the conversation, which is the fail-safe direction.
+    content, say): undeclared, the framework's untrusted default applies, which is the
+    fail-safe direction.
+
+    **What that default costs is the model's sight of the result, not the host's sinks.**
+    FIDES hides an untrusted result by default — the item is replaced by a variable reference
+    the model can pass to another tool without reading — and hidden content does not taint
+    the conversation's integrity, so later tools stay ungated.  Where a host has turned
+    hiding off the result is visible instead, and the conversation does go untrusted.  Two
+    limits on that trade: hiding stops once anything else has tainted the conversation, and
+    it never applies to confidentiality, which a hidden item still contributes.
+    ``docs/sandbox/information-flow.md`` carries the measurement and the full conditions.
 
     ``outbound_max_confidentiality`` is **opt-in, and off by default**, and the asymmetry is
     deliberate.  A confidentiality key is not inert metadata: writing one participates in a
