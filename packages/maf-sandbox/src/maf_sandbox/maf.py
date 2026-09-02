@@ -85,8 +85,8 @@ __all__ = [
     "sandbox_tool_declarations",
     "argument_provenance_middleware",
     "hidden_content_candidates",
+    "positions_holding_hidden_content",
     "sandboxed_tool",
-    "values_holding_hidden_content",
 ]
 
 # The three sentences a workload is allowed to hand the model when it could not get a
@@ -161,7 +161,7 @@ _CALL: ContextVar[_SandboxToolCall | None] = ContextVar("maf_sandbox_call", defa
 #: A `ContextVar` for the same reason `_CALL` above is one: a task starts from a copy of its
 #: parent's context, so concurrent calls each read their own record rather than whichever
 #: finished last.
-_INVOCATION: ContextVar[Any | None] = ContextVar("maf_sandbox_invocation", default=None)
+_CALL_CONTEXT: ContextVar[Any | None] = ContextVar("maf_sandbox_call_context", default=None)
 
 
 def argument_provenance_middleware() -> Any:
@@ -170,16 +170,16 @@ def argument_provenance_middleware() -> Any:
     A host's information-flow middleware may rewrite an argument before the body runs — a
     variable reference becomes the content it stands for — and the body is handed the result
     with no record of the substitution.  Wire this beside it and
-    :func:`values_holding_hidden_content` answers from that record rather than by inference.
+    :func:`positions_holding_hidden_content` answers from that record rather than by inference.
 
-    Order does not matter: middleware share one invocation object, so this publishes the same
+    Order does not matter: middleware share one call context, so this publishes the same
     record whichever side of the chain it sits on.
 
-    **It publishes the invocation object, not an accessor.** That object is the one the
+    **It publishes the framework's call context, not an accessor.** That object is the one the
     framework already hands any tool body declaring a ``FunctionInvocationContext`` parameter,
     so nothing here widens what a body can reach.  Nothing *public* returns it: this factory
-    answers with a stateless middleware, and :func:`values_holding_hidden_content` answers with
-    a subset of the values it was given.
+    answers with a stateless middleware, and :func:`positions_holding_hidden_content` answers
+    with positions in the list it was given.
 
     **Any middleware that rewrites arguments must sit before the information-flow middleware**,
     whichever side this one is on: the record is taken there, so an edit made after it reads as
@@ -193,11 +193,11 @@ def argument_provenance_middleware() -> Any:
 
     class _ArgumentProvenance(FunctionMiddleware):  # type: ignore[misc]
         async def process(self, context: Any, call_next: Any) -> None:
-            token = _INVOCATION.set(context)
+            token = _CALL_CONTEXT.set(context)
             try:
                 await call_next()
             finally:
-                _INVOCATION.reset(token)
+                _CALL_CONTEXT.reset(token)
 
     return _ArgumentProvenance()
 
@@ -225,7 +225,7 @@ def _awaits(body: object) -> bool:
     """Whether calling ``body`` gives something to await.
 
     An instance with an async ``__call__`` is as awaitable as a coroutine function, and only its
-    ``__call__`` is the coroutine function :mod:`inspect` can see â€” the same reading
+    ``__call__`` is the coroutine function :mod:`inspect` can see — the same reading
     ``_host_tools`` makes of a host-tool-call observer.
     """
     return inspect.iscoroutinefunction(body) or inspect.iscoroutinefunction(
@@ -234,7 +234,7 @@ def _awaits(body: object) -> bool:
 
 
 def _this_call(owner: object) -> _SandboxToolCall | None:
-    """The call ``owner`` is running inside, or ``None`` â€” including when it belongs elsewhere."""
+    """The call ``owner`` is running inside, or ``None`` — including when it belongs elsewhere."""
     call = _CALL.get()
     return call if call is not None and call.owner is owner else None
 
@@ -256,7 +256,7 @@ def _prefixed(name: str) -> str:
 
     The tool's name prefixes every record this module writes, and it is baked into the FORMAT
     rather than passed as an argument so the record is indistinguishable from one the workload
-    wrote by hand â€” ``record.msg`` included, which is what a structured exporter reads and what
+    wrote by hand — ``record.msg`` included, which is what a structured exporter reads and what
     a caplog assertion matches. A ``%`` in a name would then read as a format specifier.
     """
     return name.replace("%", "%%")
@@ -319,10 +319,10 @@ def hidden_content_candidates() -> frozenset[str]:
     Take this **before a body's first await** wherever the answer is needed later.  The
     framework's accessor is not scoped to the call, so an answer fetched after the body has
     suspended may not be available; a snapshot taken first thing survives the wait, and
-    :func:`values_holding_hidden_content` accepts it as ``candidates``.
+    :func:`positions_holding_hidden_content` accepts it as ``candidates``.
 
     A body that asks and answers in the same breath does not need this — it can let
-    :func:`values_holding_hidden_content` take its own.
+    :func:`positions_holding_hidden_content` take its own.
     """
     try:
         from agent_framework.security import get_current_middleware
@@ -334,13 +334,13 @@ def hidden_content_candidates() -> frozenset[str]:
     return frozenset(_hidden_payloads(middleware))
 
 
-def values_holding_hidden_content(
+def positions_holding_hidden_content(
     values: Sequence[str],
     *,
     argument: str | None = None,
     candidates: frozenset[str] | None = None,
-) -> frozenset[str]:
-    """Those of ``values`` the host's middleware expanded content it had hidden into.
+) -> frozenset[int]:
+    """The positions in ``values`` the host's middleware expanded content it had hidden into.
 
     MAF's information-flow middleware replaces an untrusted result with a variable reference,
     and rewrites that reference back into a tool's arguments **before** the body runs.  So a
@@ -350,6 +350,12 @@ def values_holding_hidden_content(
 
     **Containment, not equality.**  A reference is spliced into the text around it, so
     ``"[var_a1b2].bicep"`` arrives as the content with a suffix and equals no stored payload.
+
+    **Positions rather than the values themselves, because the verdict belongs to a position.**
+    Two entries can arrive equal while only one was rewritten — a caller sends its guess at the
+    hidden content beside a reference to it — and answering with values would report the guess
+    as well, so its refusal would change and confirm it.  Index the answer; do not ask it
+    whether it contains a name.
 
     **The answer is conservative, and deliberately so: it is about the whole conversation's
     store rather than about this call's expansions.**  A value is reported when it *could* have
@@ -398,18 +404,24 @@ def values_holding_hidden_content(
     """
     if not values:
         return frozenset()
-    invocation = _INVOCATION.get()
-    if invocation is not None and argument is not None:
-        before = _spellings_before_rewriting(invocation, argument)
+    call_context = _CALL_CONTEXT.get()
+    if call_context is not None and argument is not None:
+        before = _spellings_before_rewriting(call_context, argument)
         # Position by position, never against the record as a whole. A caller controls every
         # entry, so a value excused by an equal value it placed elsewhere is a value it can have
         # quoted back — which is the echo this exists to stop, arrived at from the other side.
         if before is not None and len(before) == len(values):
             return frozenset(
-                value for spelling, value in zip(before, values, strict=True) if value != spelling
+                position
+                for position, (spelling, value) in enumerate(zip(before, values, strict=True))
+                if value != spelling
             )
     payloads = hidden_content_candidates() if candidates is None else candidates
-    return frozenset(value for payload in payloads for value in values if payload in value)
+    return frozenset(
+        position
+        for position, value in enumerate(values)
+        if any(payload in value for payload in payloads)
+    )
 
 
 def make_caller_context(
