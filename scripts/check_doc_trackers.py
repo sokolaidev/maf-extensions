@@ -17,8 +17,9 @@ Two findings, and they are different mistakes:
 
 A run that belongs to a pull request judges the state at *merge* rather than the state today:
 what the request promises to close — read from GitHub's own closing references — counts as
-`CLOSED`, and the row a merge is about to invalidate can be flipped in the request that earns
-the flip. A run with no request to its name — the one on `main` — judges live state, which is
+`CLOSED`, and the request's own number counts as `MERGED`, so the row a merge is about to
+invalidate can be flipped in the request that earns the flip and can name that request as its
+deliverer. A run with no request to its name — the one on `main` — judges live state, which is
 what catches a promise that never landed.
 
 A reference to another repository is reported as unchecked rather than guessed at: upstream
@@ -161,13 +162,23 @@ def is_outstanding(state: str) -> bool:
     return _OUTSTANDING.match(state) is not None
 
 
-def state_at_merge(state: str | None, number: int, promised: frozenset[int]) -> str | None:
-    """The state a merge leaves behind: a number this request promises to close is `CLOSED`.
+def state_at_merge(
+    state: str | None, number: int, promised: frozenset[int], request: int | None = None
+) -> str | None:
+    """The state a merge leaves behind: a promise is `CLOSED`, and the request itself `MERGED`.
 
     Only `OPEN` changes — a tracker already closed or merged keeps what it is, and a number this
-    repository does not have stays missing, so no promise can invent one.
+    repository does not have stays missing, so no promise can invent one. ``request`` is the
+    number of the pull request the run belongs to: a flipped row cites the request delivering it
+    as `(merged)`, and that citation is true at the same merge the rest of the row is judged
+    against. Without it a row can only be right on one side of its own merge, and the annotation
+    a merge would make true is what blocks the merge.
     """
-    return "CLOSED" if number in promised and state == "OPEN" else state
+    if state != "OPEN":
+        return state
+    if number == request:
+        return "MERGED"
+    return "CLOSED" if number in promised else state
 
 
 def findings(
@@ -175,6 +186,7 @@ def findings(
     states: dict[int, str | None],
     slug: str,
     promised: frozenset[int] = frozenset(),
+    request: int | None = None,
 ) -> list[str]:
     """Every stale annotation and every outstanding row nothing tracks, newest problem first.
 
@@ -184,7 +196,9 @@ def findings(
 
     ``promised`` is the numbers the current request's closing keywords close, counted as `CLOSED`
     so a row is judged against the merge it belongs to rather than the moment the run happens.
-    Leave it empty and the comparison is live state, exactly as the run without a request sees it.
+    ``request`` is that request's own number, counted as `MERGED` for the same reason: a row
+    naming the request that delivers it is judged against the merge it describes. Leave both
+    empty and the comparison is live state, exactly as the run without a request sees it.
     """
     problems = []
     for row in rows:
@@ -194,10 +208,15 @@ def findings(
             if live is None:
                 problems.append(f"{row.path}:{row.line}: #{ref.number} does not exist in {slug}")
                 continue
-            at_merge = state_at_merge(live, ref.number, promised)
+            at_merge = state_at_merge(live, ref.number, promised, request)
             if not ref.claimed or not at_merge or ref.claimed == at_merge:
                 continue
-            if at_merge != live:
+            if ref.number == request:
+                problems.append(
+                    f"{row.path}:{row.line}: names #{ref.number} as ({ref.claimed.lower()}), "
+                    f"and it is this request, which merges as (merged) — {row.decision[:60]}"
+                )
+            elif at_merge != live:
                 problems.append(
                     f"{row.path}:{row.line}: names #{ref.number} as ({ref.claimed.lower()}), "
                     f"and this PR closes it — {row.decision[:60]}"
@@ -211,7 +230,8 @@ def findings(
             continue
         tracked = [states.get(ref.number) for ref in mine]
         at_merge = [
-            state_at_merge(state, ref.number, promised) for state, ref in zip(tracked, mine)
+            state_at_merge(state, ref.number, promised, request)
+            for state, ref in zip(tracked, mine)
         ]
         if not all(state in ("CLOSED", "MERGED") for state in at_merge):
             continue
@@ -445,7 +465,7 @@ def main(argv: list[str]) -> int:
         print(f"skipped: could not reach GitHub ({unreachable})")
         return 0
 
-    problems = findings(rows, states, slug, promised)
+    problems = findings(rows, states, slug, promised, number)
     unchecked = {ref.slug for row in rows for ref in references(row.tracking) if ref.slug != slug}
     if not problems:
         print(
@@ -454,6 +474,8 @@ def main(argv: list[str]) -> int:
         scored = ", ".join(f"#{n}" for n in sorted(promised & set(wanted)))
         if scored:
             print(f"promised by this request, scored as closed: {scored}")
+        if number is not None and number in wanted:
+            print(f"this request's own number, scored as merged: #{number}")
         if unchecked:
             print(f"not checked, another repository's: {', '.join(sorted(unchecked))}")
         return 0
