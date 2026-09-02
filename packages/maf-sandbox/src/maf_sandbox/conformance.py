@@ -1915,8 +1915,11 @@ async def run_call_scope_probes(
     attacked nothing.
 
     ``dispose_the_other`` deletes the sandbox this suite acquired, and runs in a ``finally``
-    because the suite is the only thing that knows it exists: a caller reading the signature
-    supplies an acquire and would not otherwise learn that a second sandbox outlived the run.
+    that covers the acquire itself, because the suite is the only thing that knows it exists: a
+    caller reading the signature supplies an acquire and would not otherwise learn that a second
+    sandbox outlived the run.  It is asked for even when the acquire never returned — a create
+    that raised part-way still made something, and a delete of a key nothing served is a wasted
+    round trip rather than a leak.
     Against a real provider that is a live, billable sandbox waiting on a scope purge.  A
     teardown that raises replaces the results, deliberately — a delete that cannot land is worse
     news than a probe nobody read.
@@ -1935,8 +1938,11 @@ async def run_call_scope_probes(
     work = ConformancePaths.under(subject.working_directory).work
     planted_first = f"{work}/{_BEFORE_THE_SECOND_ACQUIRE}"
     await subject.plant_file(planted_first, _SECRET)
-    other = await acquire_another()
     try:
+        # Inside, not before: an acquire that creates the sandbox and then raises or is
+        # cancelled has made the thing the teardown exists for, and the key it was made under
+        # is known here whether or not the call came back.
+        other = await acquire_another()
         return await _probe_the_pair(
             subject, other, planted_first, dispose_this_call=dispose_this_call
         )

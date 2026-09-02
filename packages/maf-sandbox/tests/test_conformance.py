@@ -1753,6 +1753,57 @@ class TestCallScopeConformance:
         assert [result.failure for result in results] == [None] * 5
         assert [result.skipped is None for result in results] == [True, True, False, False, True]
 
+    def test_the_second_sandbox_is_released_when_its_acquire_raises(self):
+        """A create that raises part-way has still made the thing the teardown exists for.
+
+        The acquire is the suite's own, so a caller never learns a sandbox was made; leaving it
+        outside the `finally` is a live, billable one waiting on a scope purge.
+        """
+        released: list[str] = []
+
+        async def acquire_another() -> _StoreSubject:
+            raise RuntimeError("the provider created it and then failed")
+
+        async def dispose_this_call() -> None:
+            released.append("this call")
+
+        async def dispose_the_other() -> None:
+            released.append("the other")
+
+        with pytest.raises(RuntimeError, match="created it and then failed"):
+            asyncio.run(
+                run_call_scope_probes(
+                    _StoreSubject(InProcessSandbox(), _EVERYTHING),
+                    acquire_another,
+                    dispose_this_call,
+                    dispose_the_other,
+                )
+            )
+        assert released == ["the other"]
+
+    def test_the_second_sandbox_is_released_when_the_run_is_cancelled(self):
+        released: list[str] = []
+
+        async def acquire_another() -> _StoreSubject:
+            raise asyncio.CancelledError
+
+        async def dispose_this_call() -> None:
+            released.append("this call")
+
+        async def dispose_the_other() -> None:
+            released.append("the other")
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                run_call_scope_probes(
+                    _StoreSubject(InProcessSandbox(), _EVERYTHING),
+                    acquire_another,
+                    dispose_this_call,
+                    dispose_the_other,
+                )
+            )
+        assert released == ["the other"]
+
     def test_two_roots_are_refused_rather_than_passing_vacuously(self):
         first, acquire_another, dispose_this_call, dispose_the_other = self._served()
 
