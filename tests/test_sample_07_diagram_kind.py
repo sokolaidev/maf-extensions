@@ -135,6 +135,31 @@ class TestTheSpecSaysItLandsSomethingItCannotName:
         assert Capability.FILES_OUT in diagram_sandbox_spec().requires
 
 
+class TestTheToolDeclaresNothingAboutItsResult:
+    """The decision this sample is the worked example for, pinned where deleting it shows.
+
+    `sandboxed_tool` defaults `source_integrity` to `"trusted"`, so the argument the factory
+    passes is the entire decision — drop the line and every other test in this file still
+    passes, while the tool starts telling a host's middleware to disregard where its result
+    came from. The rule is in `docs/sandbox/information-flow.md`, and both packaged kinds
+    carry the same assertion against the same default.
+    """
+
+    def _properties(self, out_dir: Path) -> dict[str, object]:
+        tools = _tools(_Renderer(), out_dir)
+        assert len(tools) == 1, tools
+        return dict(tools[0].additional_properties or {})
+
+    def test_it_declares_no_source_integrity(self, out_dir: Path):
+        """The library default is `"trusted"`, so an absent key here is a passed argument."""
+        assert "source_integrity" not in self._properties(out_dir)
+
+    def test_it_declares_nothing_at_all(self, out_dir: Path):
+        """Not only the integrity key. A confidentiality cap added here would start gating
+        calls in a host deployment, and nothing in this suite would report it as a failure."""
+        assert self._properties(out_dir) == {}
+
+
 class TestTheCallWritesInsideItsOwnDirectory:
     def test_the_renderer_was_given_paths_below_the_work_directory(self, out_dir: Path):
         """The `dot` command names both files, so the argv is where the choice is visible —

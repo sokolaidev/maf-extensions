@@ -125,10 +125,13 @@ def make_diagram_tools(
         spec=spec,
         name=RENDER_DIAGRAM_TOOL_NAME,
         approval_mode="never_require",
-        # No integrity declaration. `dot`'s failure diagnostic quotes the model's own DOT
-        # source, and which of the reference and the diagnostic comes back is decided by
-        # that source — a presence bit — so nothing about the result is first-party. `dot`
-        # is an unlabelled argument, so the framework's input-label join answers untrusted.
+        # No integrity declaration, and authorship is not the reason. The success reference
+        # is the host's own sentence; what disqualifies `trusted` is derivation. `dot`'s
+        # failure diagnostic quotes the model's DOT source back, and which of the two comes
+        # back is decided by that source — a presence bit — so the result derives from input
+        # the framework has not established as trusted. That is the test set in
+        # `docs/sandbox/information-flow.md`. `dot` is an unlabelled argument, so the
+        # framework's input-label join answers untrusted.
         source_integrity=None,
         output_sink=sink,
         logger=logger,
@@ -264,8 +267,10 @@ def _render_diagram_tool(
 def _render_failed(exit_code: int, stderr: str) -> str:
     """Render a ``dot`` failure for a model that has to fix its own DOT.
 
-    The diagnostic is ``dot``'s own — first-party, and a syntax error names the line — so it goes
-    back verbatim.  When ``dot`` failed but wrote nothing, the exit code is all there is.
+    A syntax error names the line, so it goes back verbatim: the model needs the exact message
+    to repair its own source.  That ``dot`` wrote it buys the result nothing — the message
+    quotes the model's DOT back, which is why this tool declares no integrity above.  When
+    ``dot`` failed but wrote nothing, the exit code is all there is.
     """
     if stderr:
         return f"dot could not render the diagram (exit {exit_code}):\n{stderr}"
