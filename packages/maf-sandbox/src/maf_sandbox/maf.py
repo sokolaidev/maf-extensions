@@ -40,6 +40,7 @@ import logging
 import math
 import posixpath
 import sys
+import threading
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -250,8 +251,11 @@ _ORIGINAL_ARGUMENTS_KEY = "original_arguments_for_messages"
 #: the accessor is a thread-local and answers nothing.
 _MIDDLEWARE_RAN_KEY = "context_label"
 
-#: One warning per process, not one per refusal.
+#: One warning per process, not one per refusal. Guarded, because the path this exists for is
+#: the one that runs off the event loop: `asyncio.to_thread` gives each synchronous body a
+#: pool thread, so two can read the flag before either sets it.
 _warned_about_a_missing_record = False
+_warning_lock = threading.Lock()
 
 
 def _warn_once_about_a_missing_record(logger: logging.Logger) -> None:
@@ -261,9 +265,11 @@ def _warn_once_about_a_missing_record(logger: logging.Logger) -> None:
     those two, and :func:`_the_framework_kept_no_record`, for why that pairing is the tell.
     """
     global _warned_about_a_missing_record
-    if _warned_about_a_missing_record:
-        return
-    _warned_about_a_missing_record = True
+    with _warning_lock:
+        if _warned_about_a_missing_record:
+            return
+        _warned_about_a_missing_record = True
+    # Logged outside the lock: a handler is arbitrary host code and may be slow or re-entrant.
     logger.warning(
         "argument_provenance_middleware: this agent-framework-core no longer records %r on a "
         "call, so which arguments it rewrote can no longer be answered. Every checked value is "

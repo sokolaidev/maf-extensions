@@ -3206,6 +3206,42 @@ class TestArgumentProvenanceMiddleware:
         assert len(warnings) == 1, "once per process, not once per refusal"
         assert "issues/826" in warnings[0].getMessage()
 
+    def test_the_flag_transition_is_serialised(self, monkeypatch, caplog):
+        """ "Once per process" has to hold on the path this safeguard exists for.
+
+        A synchronous body runs on a pool thread `asyncio.to_thread` hands it, so several can
+        reach the flag at once; read-then-write is two steps and nothing makes them one. Racing
+        threads cannot show that on CPython — 16 of them through a barrier at a 1us switch
+        interval never split the pair over 200 trials, because the GIL rarely yields inside it —
+        so this asserts the property directly instead: the transition happens under the lock,
+        which is what stays true when the interpreter stops holding it for us.
+        """
+        import logging as _logging
+
+        monkeypatch.setattr(_maf, "_warned_about_a_missing_record", False)
+        started = threading.Event()
+        finished = threading.Event()
+
+        def warn() -> None:
+            started.set()
+            _maf._warn_once_about_a_missing_record(_maf._DEFAULT_LOGGER)
+            finished.set()
+
+        thread = threading.Thread(target=warn)
+        with caplog.at_level(_logging.WARNING, logger=_maf.__name__):
+            with _maf._warning_lock:
+                thread.start()
+                assert started.wait(timeout=5), "the thread never ran"
+                assert not finished.wait(timeout=0.5), (
+                    "it reached the flag while this test held the lock, so the check and the "
+                    "set are not one step and two callers can both take the transition"
+                )
+            thread.join(timeout=5)
+
+        assert not thread.is_alive(), "it never got the lock this test released"
+        warnings = [r for r in caplog.records if _ORIGINAL_ARGUMENTS_KEY in r.getMessage()]
+        assert len(warnings) == 1
+
     def test_a_call_that_hid_nothing_is_ordinary(self, monkeypatch, caplog):
         """A host may wire this middleware and no information-flow middleware at all.
 
