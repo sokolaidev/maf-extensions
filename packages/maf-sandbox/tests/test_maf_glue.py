@@ -1159,8 +1159,27 @@ class TestASandboxNothingWouldDelete:
 
         asyncio.run(run())
         assert isinstance(outcome["result"], RuntimeError)
-        assert "after its tool call returned" in str(outcome["result"])
+        assert "no open tool call" in str(outcome["result"])
         assert backend.disposed == backend.keys
+
+
+class TestASandboxNothingWouldDeleteFromAnywhere:
+    """The guard is about there being an open call, not about which context asks.
+
+    A caller holding the session and the key from outside any call reaches `acquire` with
+    `_CALL` unset, which a check for a *closed* call lets straight through.
+    """
+
+    def test_a_key_naming_a_call_is_refused_outside_a_call_entirely(self):
+        session = _session(_per_call_backend(), spec=_CALL_SCOPED_SPEC)
+        keyed = dataclasses.replace(_KEY, call_id="7a1f")
+        with pytest.raises(RuntimeError, match="no open tool call"):
+            asyncio.run(session.acquire(keyed))
+
+    def test_a_bare_key_outside_a_call_is_still_served(self):
+        """The positive control: the refusal is about the call id, not about the context."""
+        session = _session(_per_call_backend())
+        assert not isinstance(asyncio.run(session.acquire(_KEY)), str)
 
 
 class TestTwoConcurrentCallsAtCallScope:

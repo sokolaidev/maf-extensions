@@ -1496,6 +1496,17 @@ class TestAKeyMustNameTheCallItIsScopedTo:
         first, second = asyncio.run(both())
         assert first is not second
 
+    def test_a_conversation_workload_is_refused_a_key_naming_a_call(self):
+        """The inverse mismatch, and the one with teeth.
+
+        A backend serving conversations keys a sandbox by the other three fields, so it hands
+        back the conversation's — and the framework reads the scope off the key, so the cleanup
+        deletes that shared sandbox when one call ends.
+        """
+        keyed = dataclasses.replace(_KEY, call_id="7a1f")
+        with pytest.raises(ValueError, match="names a call"):
+            asyncio.run(self._router().acquire(keyed, SandboxSpec(kind="bicep")))
+
     def test_a_conversation_workload_still_takes_a_bare_key(self):
         assert asyncio.run(self._router().acquire(_KEY, SandboxSpec(kind="bicep"))) is not None
 
@@ -1577,15 +1588,26 @@ class TestTheLedgerNeverCarriesAKeyNamingACall:
     _CALL_KEY = SandboxKey(
         scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer", call_id="7a1f"
     )
+    _CALL_SPEC = SandboxSpec(kind="test", isolation_scope=IsolationScope.CALL)
+    _SCOPES = frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL})
+
+    def _serving_backend(self, **kw) -> InProcessSandboxBackend:
+        return InProcessSandboxBackend(
+            sandbox_per_key=True,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS, isolation_scopes=self._SCOPES
+            ),
+            **kw,
+        )
 
     def _router(self) -> SandboxRouter:
-        return SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE)
+        return SandboxRouter([self._serving_backend()], min_isolation=Isolation.NONE)
 
     def test_marking_one_writes_nothing(self):
         router = self._router()
         router.mark_unclean(self._CALL_KEY, DisposalFailure("refused", "the service said no"))
         # Observed through the refusal rather than the private map: an entry that exists refuses.
-        assert asyncio.run(router.acquire(self._CALL_KEY, _SPEC)) is not None
+        assert asyncio.run(router.acquire(self._CALL_KEY, self._CALL_SPEC)) is not None
 
     def test_a_conversation_key_is_still_marked(self):
         """The positive control — the rule is about the call id, not about marking."""
@@ -1606,16 +1628,27 @@ class TestTheLedgerNeverCarriesAKeyNamingACall:
                 del key
                 return DisposalFailure("refused", "and the disposal did not land either")
 
-        router = SandboxRouter([_Unreclaimable()], min_isolation=Isolation.NONE)
+        router = SandboxRouter(
+            [
+                _Unreclaimable(
+                    declarations=dataclasses.replace(
+                        FAKE_BACKEND_DECLARATIONS, isolation_scopes=self._SCOPES
+                    )
+                )
+            ],
+            min_isolation=Isolation.NONE,
+        )
         for round_ in range(3):
             keyed = dataclasses.replace(self._CALL_KEY, call_id=f"call-{round_}")
             with pytest.raises(TypeError):
-                asyncio.run(router.acquire(keyed, _SPEC))
+                asyncio.run(router.acquire(keyed, self._CALL_SPEC))
         # Not SandboxUnclean: the refusal above fires again from the check, not from a ledger
         # that would have grown one entry per call and never shed one.
         with pytest.raises(TypeError):
             asyncio.run(
-                router.acquire(dataclasses.replace(self._CALL_KEY, call_id="call-0"), _SPEC)
+                router.acquire(
+                    dataclasses.replace(self._CALL_KEY, call_id="call-0"), self._CALL_SPEC
+                )
             )
 
     def test_dispose_unclean_refuses_a_key_naming_a_call(self):

@@ -852,8 +852,10 @@ class SandboxRouter:
             SandboxEgressNotEnforced: when the backend cannot confine egress to this spec.
             SandboxScopeNotEnforced: when the backend cannot serve the workload at the isolation
                 scope this host and the spec resolve to.
-            ValueError: when the workload runs at :data:`~maf_sandbox.IsolationScope.CALL`
-                and ``key`` names no call, which get-or-create would serve by sharing.
+            ValueError: when ``key`` and the workload's effective scope disagree — a
+                per-call workload whose key names no call, which get-or-create would serve by
+                sharing, or a conversation-scoped one whose key names a call, whose sandbox the
+                cleanup would then delete out from under the conversation.
             TypeError: when the backend hands back a sandbox without :meth:`Sandbox.reclaim`.
                 That sandbox is disposed (this backend, best effort) before the refusal
                 reaches the caller: a backend that cannot reclaim can never clean it, and a
@@ -875,13 +877,23 @@ class SandboxRouter:
                 code=reported.code if reported is not None else None,
             )
         self._refuse_unless_backend_can_serve(spec)
-        if self.effective_isolation_scope(spec) is IsolationScope.CALL and not key.call_id:
+        scope = self.effective_isolation_scope(spec)
+        if scope is IsolationScope.CALL and not key.call_id:
             raise ValueError(
                 f"the {spec.kind!r} workload runs one sandbox per call and this key names no "
                 "call (call_id is empty), so get-or-create would hand it the conversation's "
                 "sandbox — the sharing the scope refuses. A key comes from "
                 "SandboxToolSession.key(), which fills call_id at this scope; a caller building "
                 "its own supplies one that is unique per tool call."
+            )
+        if scope is IsolationScope.CONVERSATION and key.call_id:
+            raise ValueError(
+                f"the {spec.kind!r} workload runs one sandbox per conversation and this key "
+                f"names a call ({key.call_id!r}). A backend serving that scope keys a sandbox by "
+                "the other three fields, so it would hand back the conversation's — and the "
+                "framework reads the scope off the key, so the cleanup would then delete that "
+                "shared sandbox at the end of one call. Drop the call id, or raise the "
+                "workload's isolation_scope."
             )
         sandbox = await self._backend.acquire(key, spec)
         if key in self._unclean:

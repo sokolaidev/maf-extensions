@@ -520,17 +520,19 @@ class SandboxToolSession:
           — and the model gets a fixed sentence saying only that the run degraded.
 
         Raises:
-            RuntimeError: called after the tool call returned, with a key naming that call —
-                the wiring mistake :meth:`guest_call_path` refuses for the same reason. Nothing
-                would delete what it created.
+            RuntimeError: given a key naming a call while no tool call of this session is
+                open — after one returned, or from a context that never had one. The wiring
+                mistake :meth:`guest_call_path` refuses for the same reason: nothing would
+                delete what it created.
         """
         call = _this_call(self)
-        if call is not None and call.closed and key.call_id:
+        if key.call_id and (call is None or call.closed):
             raise RuntimeError(
-                f"{self._name}: acquire() was called after its tool call returned, with a key "
-                "naming that call. The sandbox it would create is one the cleanup has already "
-                "walked past, so nothing would delete it. A task outliving the call needs a key "
-                "of its own."
+                f"{self._name}: acquire() was given a key naming a call, with no open tool call "
+                "to record it against — this one has returned, or the caller never had one. The "
+                "sandbox it would create is past whatever would have deleted it: no cleanup "
+                "walks it, and no later call can name that key. A task outliving the call needs "
+                "a key of its own."
             )
         try:
             sandbox = await self._router.acquire(key, self._spec)
