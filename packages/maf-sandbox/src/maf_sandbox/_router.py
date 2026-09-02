@@ -390,29 +390,28 @@ def _declared_os_families(declared: BackendDeclarations) -> frozenset[OsFamily]:
     return frozenset(family for family in members if isinstance(family, OsFamily))
 
 
-def _declared_isolation_scopes(declared: BackendDeclarations) -> frozenset[object]:
+def _declared_isolation_scopes(
+    backend: SandboxBackend, declared: BackendDeclarations
+) -> frozenset[object]:
     """The scopes a backend claims it serves, defaulting to the sharing every backend already does.
 
-    Empty reads as :data:`~maf_sandbox.IsolationScope.CONVERSATION` rather than as nothing, and
-    this is the one declaration whose silence is a claim: get-or-create is what
-    :meth:`~maf_sandbox.SandboxBackend.acquire` has always obliged, so a backend written before
-    this axis serves exactly what it served.  A mis-shaped value reads the same way, for the
-    reason :func:`_declared_os_families` gives, though not to the same effect: there a
-    mis-shape resolves to the empty answer and can only refuse, while here it mints a claim, so
-    a backend that mis-shapedly declared only :data:`~maf_sandbox.IsolationScope.CALL` is served
-    conversation workloads its readable declaration would have turned away.  That direction is
-    accepted because the alternative — refusing every workload over an unreadable field — costs
-    more than serving one the sharing was never a question for.  A backend serving both scopes
-    declares both: a set naming only ``CALL`` says it creates per call and nothing else.
+    Saying nothing — an absent field, or an empty set — reads as
+    :data:`~maf_sandbox.IsolationScope.CONVERSATION`, and this is the one declaration whose
+    silence is a claim: get-or-create is what :meth:`~maf_sandbox.SandboxBackend.acquire` has
+    always obliged, so a backend written before this axis serves exactly what it served.
+
+    A value that is not a set is **refused**, on :func:`_declared_set`'s policy rather than
+    :func:`_declared_os_families`'s.  There a mis-shape resolves to the empty answer and can
+    only refuse a workload; here reading one as silence would mint a claim, and a backend that
+    mis-shapedly declared only :data:`~maf_sandbox.IsolationScope.CALL` would be served the
+    conversation workloads its readable declaration turns away.  A posture nobody can read is
+    refused at the router rather than guessed in the workload's favour.
 
     The members are not checked, for the reason :func:`_declared_set` gives: this is a
     ``StrEnum``, so a backend declaring plain strings matches exactly as the members do.
     """
-    scopes = cast("object", declared.isolation_scopes)
-    if not isinstance(scopes, frozenset | set):
-        return frozenset({IsolationScope.CONVERSATION})
-    declared_scopes = frozenset(cast("Iterable[object]", scopes))
-    return declared_scopes or frozenset({IsolationScope.CONVERSATION})
+    scopes = _declared_set(backend, cast("object", declared.isolation_scopes), "isolation_scopes")
+    return scopes or frozenset({IsolationScope.CONVERSATION})
 
 
 def _declared_limits(backend: SandboxBackend, declared: BackendDeclarations) -> SandboxLimits:
@@ -736,7 +735,7 @@ class SandboxRouter:
         # Resolved rather than matched, for the reason egress is: a workload runs at exactly one
         # scope. Why it is refused rather than served down a rung is `SandboxScopeNotEnforced`.
         scope = self.effective_isolation_scope(spec)
-        scopes = _declared_isolation_scopes(declarations)
+        scopes = _declared_isolation_scopes(self._backend, declarations)
         if scope not in scopes:
             serves = ", ".join(sorted(str(one) for one in scopes))
             raise SandboxScopeNotEnforced(

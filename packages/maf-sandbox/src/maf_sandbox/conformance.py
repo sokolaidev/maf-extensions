@@ -1738,12 +1738,14 @@ async def _probe_result(
 
 async def _run_suite(
     subject: ConformanceSubject,
-    gate: Capability,
+    gate: Capability | None,
     plant: Callable[[ConformanceSubject], Awaitable[ConformancePaths]],
     probes: tuple[Probe, ...],
 ) -> tuple[ProbeResult, ...]:
     declared = subject.capabilities
-    if gate not in declared:
+    # ``None`` gates on nothing, for a suite a backend owes whatever it declares: the subject's
+    # own seams plant and see, and each probe still skips on what it needs.
+    if gate is not None and gate not in declared:
         raise ValueError(
             f"this subject declares no {str(gate).upper()}, so every probe would be skipped "
             "and the run would report success having attacked nothing. Pass the backend's own "
@@ -1909,6 +1911,11 @@ async def run_call_scope_probes(
     every post-acquire probe there is. Two subjects rooted at different working directories are
     refused — each probe would compare paths that were never the same one, and pass having
     attacked nothing.
+
+    No capability gates the run.  ``plant_file`` and ``exists`` are the subject's own seams, as
+    they are for the mandatory reclaim suite, so a backend that declares
+    :data:`~maf_sandbox.IsolationScope.CALL` owes these probes whatever else it declares; the
+    two that read a sandbox back still skip without ``FILES_OUT`` and ``FILES_LIST``.
     """
     work = ConformancePaths.under(subject.working_directory).work
     planted_first = f"{work}/{_BEFORE_THE_SECOND_ACQUIRE}"
@@ -2020,7 +2027,7 @@ async def run_call_scope_probes(
             run=_the_listing_holds_only_this_calls_files,
         ),
     )
-    return await _run_suite(subject, Capability.FILES_IN, _plant_nothing, probes)
+    return await _run_suite(subject, None, _plant_nothing, probes)
 
 
 async def assert_call_scope_conformance(

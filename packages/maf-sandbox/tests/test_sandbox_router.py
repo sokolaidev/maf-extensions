@@ -1337,12 +1337,12 @@ class TestIsolationScopeRule:
         )
         SandboxRouter([backend], min_isolation=Isolation.NONE).ensure_can_serve(self._CALL_SPEC)
 
-    def test_a_malformed_declaration_reads_as_a_conversation(self):
-        """An unreadable declaration is served as the sharing every backend does.
+    def test_a_malformed_declaration_is_refused(self):
+        """A posture nobody can read is refused rather than guessed in the workload's favour.
 
-        It refuses a per-call workload loudly, and serves a conversation-scoped one that a
-        readable ``{CALL}`` would have turned away — the direction taken because refusing every
-        workload over a field nobody can read costs more.
+        Reading it as silence would mint the `{conversation}` claim, so a backend that
+        mis-shapedly declared only `CALL` would be served the conversation workloads its
+        readable declaration turns away.
         """
         backend = InProcessSandboxBackend(
             declarations=dataclasses.replace(
@@ -1351,9 +1351,12 @@ class TestIsolationScopeRule:
             )
         )
         router = SandboxRouter([backend], min_isolation=Isolation.NONE)
-        router.ensure_can_serve(self._SPEC)
-        with pytest.raises(SandboxScopeNotEnforced):
-            router.ensure_can_serve(self._CALL_SPEC)
+        with pytest.raises(SandboxBackendNotPermitted, match="isolation_scopes"):
+            router.ensure_can_serve(self._SPEC)
+
+    def test_an_empty_declaration_is_still_the_conversation(self):
+        """Absent and empty are the same silence, and that silence is the legacy claim."""
+        self._router().ensure_can_serve(self._SPEC)
 
     def test_a_host_raises_the_scope_for_every_workload_it_serves(self):
         """The deployment's own say, over a spec that asked for nothing."""

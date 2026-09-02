@@ -1666,15 +1666,21 @@ class TestCallScopeConformance:
             asyncio.run(run())
         assert "attacked nothing" in str(raised.value)
 
-    def test_the_gate_is_files_in(self):
-        """A subject declaring no FILES_IN cannot plant, so the run is refused rather than green."""
+    def test_no_capability_gates_the_run(self):
+        """A backend owes these probes whatever else it declares.
+
+        `plant_file` and `exists` are the subject's own seams, as they are for the mandatory
+        reclaim suite, so gating on `FILES_IN` would lock a valid call-scoped backend out of the
+        suite it owes for declaring the scope. The two probes that read a sandbox back still skip.
+        """
         first, acquire_another = self._served(frozenset({Capability.EXEC}))
 
         async def run():
             return await run_call_scope_probes(await first(), acquire_another)
 
-        with pytest.raises(ValueError, match="FILES_IN"):
-            asyncio.run(run())
+        results = asyncio.run(run())
+        assert [result.failure for result in results] == [None] * 4
+        assert [result.skipped is None for result in results] == [True, True, False, False]
 
     def test_two_roots_are_refused_rather_than_passing_vacuously(self):
         first, acquire_another = self._served()
