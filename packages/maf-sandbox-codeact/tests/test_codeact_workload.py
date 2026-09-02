@@ -2135,9 +2135,9 @@ class TestDeclaredOutputs:
         assert sandbox.raw_commands == []
 
     def test_a_name_too_long_once_the_run_directory_is_counted_is_refused_up_front(self):
-        """The guest path carries a 13-byte prefix, so judging the bare name accepts a
-        250-byte one here and has `collect_outputs` refuse the 263-byte declaration it becomes
-        — after the program has run, for a reason the model could not have foreseen."""
+        """The guest path carries a prefix, so judging the bare name accepts a 250-byte one
+        here and has `collect_outputs` refuse the over-ceiling guest path it becomes — after
+        the program has run, for a reason the model could not have foreseen."""
         sandbox = _ProducingSandbox()
         sink = _RecordingSink()
         tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink)
