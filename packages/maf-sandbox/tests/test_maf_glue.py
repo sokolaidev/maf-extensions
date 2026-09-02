@@ -46,6 +46,7 @@ from maf_sandbox import (
     SandboxRouter,
     SandboxSpec,
     SandboxUnclean,
+    SourceIntegrity,
 )
 from maf_sandbox import maf as _maf
 from maf_sandbox._reclaim import note_unclean
@@ -57,6 +58,7 @@ from maf_sandbox.maf import (
     SandboxToolSession,
     argument_provenance_middleware,
     hidden_content_candidates,
+    labelled_result_item,
     list_all_files,
     list_no_files,
     make_caller_context,
@@ -2085,9 +2087,13 @@ class TestABodyThatIsAnInstance:
 
 
 class TestWhatTheWrapperDoesNotTouch:
-    """A synchronous body cannot hold a sandbox, so it owns nothing and is left alone."""
+    """A synchronous body cannot hold a sandbox, so nothing of the reclaim reaches it.
 
-    def _sync_tool(self):
+    It does get a wrapper — the one that reads the result's shape — and that wrapper stays
+    synchronous, which is what these pin.
+    """
+
+    def _sync_build(self):
         def build(session: SandboxToolSession):
             def widget_run(target: str) -> str:
                 """Do a thing to ``target``, without awaiting anything."""
@@ -2095,16 +2101,26 @@ class TestWhatTheWrapperDoesNotTouch:
 
             return widget_run
 
-        return _attach_with(build, _router(InProcessSandboxBackend()))[0]
+        return build
+
+    def _sync_tool(self, backend=None):
+        router = _router(backend if backend is not None else InProcessSandboxBackend())
+        return _attach_with(self._sync_build(), router)[0]
 
     def test_a_sync_body_still_runs(self):
         """Wrapping it in `async def ... await body(...)` would raise TypeError on every call."""
         tool = self._sync_tool()
         assert _fn(tool)(target="x") == "did x"
 
-    def test_a_sync_body_reaches_maf_unwrapped(self):
+    def test_a_sync_body_reaches_maf_still_synchronous(self):
         """MAF runs a sync tool off the event loop, and decides that from this predicate."""
         assert not asyncio.iscoroutinefunction(_fn(self._sync_tool()))
+
+    def test_a_sync_body_reaches_no_reclaim(self):
+        """`guest_call_path` is the only way to own one, and a sync body cannot acquire."""
+        backend = InProcessSandboxBackend()
+        _fn(self._sync_tool(backend))(target="x")
+        assert _reclaimed(backend.sandbox) == []
 
 
 class TestATaskThatOutlivesItsCall:
@@ -3603,3 +3619,200 @@ class TestArgumentProvenanceMiddleware:
             "A spelled its name itself; reading B's record instead reports it as rewritten"
         )
         assert answers["B"] == ("SECRET-B.bicep", frozenset({0}))
+
+
+# ---------------------------------------------------------------------------
+# labelled_result_item — a result that is items rather than one string
+# ---------------------------------------------------------------------------
+
+
+_GUIDANCE = "Write what you want back to an output this kind declares."
+
+
+def _items(*answer):
+    """A build callback whose body answers with `answer` as a list."""
+
+    def build(_session: SandboxToolSession):
+        async def widget_run(target: str) -> Any:
+            """Do a thing to ``target`` inside a sandbox."""
+            return list(answer)
+
+        return widget_run
+
+    return build
+
+
+def _sync_items(*answer):
+    def build(_session: SandboxToolSession):
+        def widget_run(target: str) -> Any:
+            """Do a thing to ``target``, without awaiting anything."""
+            return list(answer)
+
+        return widget_run
+
+    return build
+
+
+def _text(text):
+    from agent_framework import Content
+
+    return Content.from_text(text)
+
+
+class TestALabelledResultItem:
+    """The one item a kind may label, and the one label it may carry."""
+
+    def test_it_carries_the_frameworks_own_serialization_of_the_label(self):
+        """A dict literal here would be a second copy of the framework's key and value names."""
+        item = labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED)
+        assert item.additional_properties == {
+            "security_label": {"integrity": "trusted", "confidentiality": "public"}
+        }
+
+    def test_the_text_is_the_items_own(self):
+        assert labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED).text == _GUIDANCE
+
+    def test_the_string_spelling_of_the_level_is_accepted(self):
+        """`SourceIntegrity` is a `StrEnum`, and a caller reading a declaration back has a str."""
+        assert labelled_result_item(_GUIDANCE, cast(Any, "trusted")).text == _GUIDANCE
+
+    def test_untrusted_is_refused_and_the_message_names_the_route(self):
+        with pytest.raises(ValueError, match="Leave the item unlabelled"):
+            labelled_result_item("EXIT=1", SourceIntegrity.UNTRUSTED)
+
+    def test_a_level_that_is_neither_is_refused(self):
+        with pytest.raises(ValueError, match="withheld"):
+            labelled_result_item("EXIT=1", cast(Any, "withheld"))
+
+
+class TestAResultThatIsItems:
+    """A body may answer with a list, and one shape of list is refused."""
+
+    def _tool(self, build, **kw):
+        return _attach_with(build, _router(InProcessSandboxBackend()), **kw)[0]
+
+    def test_the_list_reaches_maf_untouched(self):
+        guidance = labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED)
+        derived = _text("EXIT=1")
+        assert _call(self._tool(_items(guidance, derived)), target="x") == [guidance, derived]
+
+    def test_a_synchronous_body_may_answer_with_items_too(self):
+        guidance = labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED)
+        derived = _text("EXIT=1")
+        assert _fn(self._tool(_sync_items(guidance, derived)))(target="x") == [guidance, derived]
+
+    def test_a_string_is_still_the_common_case(self):
+        backend = InProcessSandboxBackend(InProcessSandbox(default_stdout="ok"))
+        assert _call(_attach_with(_body, _router(backend))[0], target="x") == "ok"
+
+    def test_a_result_whose_every_item_is_labelled_is_refused(self):
+        build = _items(
+            labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED),
+            labelled_result_item("also standing", SourceIntegrity.TRUSTED),
+        )
+        with pytest.raises(ValueError, match="carries the call's confidentiality"):
+            _call(self._tool(build), target="x")
+
+    def test_a_synchronous_body_is_held_to_the_same_shape(self):
+        """The body that gets no reclaim wrapper is held to it as much as the one that does."""
+        build = _sync_items(labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED))
+        with pytest.raises(ValueError, match="carries the call's confidentiality"):
+            _fn(self._tool(build))(target="x")
+
+    def test_an_empty_list_is_refused(self):
+        with pytest.raises(ValueError, match=r"the text '\[\]'"):
+            _call(self._tool(_items()), target="x")
+
+    def test_the_call_is_still_reclaimed_when_the_shape_is_refused(self):
+        """The refusal is raised inside the `try`, so the `finally` still takes the call's path."""
+        backend = InProcessSandboxBackend()
+
+        def build(session: SandboxToolSession):
+            async def widget_run(target: str) -> Any:
+                """Take a path, then answer with a shape the wrapper refuses."""
+                key = session.key()
+                assert not isinstance(key, str)
+                assert not isinstance(await session.acquire(key), str)
+                session.guest_call_path()
+                return [labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED)]
+
+            return widget_run
+
+        with pytest.raises(ValueError, match="carries the call's confidentiality"):
+            _call(_attach_with(build, _router(backend))[0], target="x")
+        assert len(_reclaimed(backend.sandbox)) == 1
+
+
+class TestWhatASplitResultDoesToTheCallsLabel:
+    """Why the refusal above exists, measured against the framework rather than reasoned.
+
+    A result's confidentiality comes from the tool's declaration, or from the middleware's own
+    default. A per-item label replaces the *whole* label, so an item labelled for integrity
+    alone names `public` — and the call's classification survives only because an unlabelled
+    item is still in the fold.
+    """
+
+    def _run(self, answer, *, declarations):
+        from agent_framework import FunctionInvocationContext
+        from agent_framework.security import LabelTrackingFunctionMiddleware
+
+        tool = _attach_with(
+            _items(*answer), _router(InProcessSandboxBackend()), declarations=declarations
+        )[0]
+        middleware = LabelTrackingFunctionMiddleware()
+        context = FunctionInvocationContext(function=tool, arguments={"target": "x"})
+
+        async def call_next() -> None:
+            context.result = await tool.invoke(arguments=context.arguments)
+
+        asyncio.run(middleware.process(context, call_next))
+        seen = [
+            "hidden" if (item.additional_properties or {}).get("_variable_reference") else item.text
+            for item in context.result
+        ]
+        return context.metadata["result_label"], seen, middleware.get_context_label()
+
+    def test_the_guidance_stays_visible_and_the_derived_half_is_hidden(self):
+        label, seen, conversation = self._run(
+            (labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED), _text("EXIT=1")),
+            declarations={"confidentiality": "private"},
+        )
+        assert seen == [_GUIDANCE, "hidden"]
+        assert str(label.integrity) == "untrusted"
+        assert str(conversation.integrity) == "trusted", "hidden content does not taint"
+
+    def test_the_unlabelled_item_keeps_the_calls_confidentiality(self):
+        label, _, conversation = self._run(
+            (labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED), _text("EXIT=1")),
+            declarations={"confidentiality": "private"},
+        )
+        assert str(label.confidentiality) == "private"
+        assert str(conversation.confidentiality) == "private"
+
+    def test_a_fully_labelled_result_would_lose_it(self):
+        """The counterfactual the refusal closes, built by hand because the factory refuses it."""
+        from agent_framework import Content, FunctionInvocationContext, FunctionTool
+        from agent_framework.security import LabelTrackingFunctionMiddleware
+
+        async def body() -> Any:
+            return [
+                labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED),
+                Content.from_text(
+                    "EXIT=1",
+                    additional_properties={
+                        "security_label": {"integrity": "untrusted", "confidentiality": "public"}
+                    },
+                ),
+            ]
+
+        tool = FunctionTool(
+            name="probe", func=body, additional_properties={"confidentiality": "private"}
+        )
+        middleware = LabelTrackingFunctionMiddleware()
+        context = FunctionInvocationContext(function=tool, arguments={})
+
+        async def call_next() -> None:
+            context.result = await tool.invoke(arguments={})
+
+        asyncio.run(middleware.process(context, call_next))
+        assert str(context.metadata["result_label"].confidentiality) == "public"
