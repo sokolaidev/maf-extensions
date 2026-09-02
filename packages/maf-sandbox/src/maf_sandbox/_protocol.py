@@ -245,12 +245,23 @@ class SourceIntegrity(StrEnum):
     aggregate has to *fold* it: ``execute_code``'s own result integrity is the weakest level
     over every registered source, and "weakest" needs an ordering, which this repository
     requires to be data — see :data:`INTEGRITY_RANK`.
+
+    **Which value is right is decided by derivation, never by authorship.**  A declaration
+    overrides rather than floors: the tracker discards the call's input-label join for it.  So
+    :data:`TRUSTED` is honest only where every source surviving into the result — as text, as a
+    number, or as the presence of a line — is one the framework has established *as trusted*.
+    Establishment on its own settles nothing: a source established as **untrusted** disqualifies
+    the claim exactly as an unestablished one does.  Neither does authorship, a compiler being
+    deterministic *about* a template the model wrote.
+    ``docs/sandbox/information-flow.md`` carries the rule and what declining it costs.
     """
 
-    #: Attacker-influenceable content: fetched documents, search results, anything a model or
-    #: the open network shaped. The tracker's own default for an undeclared tool.
+    #: Output with a surviving source the framework has not established as trusted: fetched
+    #: documents, search results, anything a model or the open network shaped — and anything
+    #: computed from one of those. The value the tracker's ``default_integrity`` ships with,
+    #: which a host may move — so declaring nothing delegates rather than fails safe.
     UNTRUSTED = "untrusted"
-    #: Deterministic first-party output the host would trust from its own code.
+    #: Output whose every surviving source is established as trusted, whoever wrote the bytes.
     TRUSTED = "trusted"
 
 
