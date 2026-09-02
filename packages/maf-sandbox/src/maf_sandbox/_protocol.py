@@ -666,11 +666,27 @@ class SandboxSpec:
 
 @dataclass(frozen=True)
 class ExecResult:
-    """The result of one command run inside a sandbox."""
+    """The result of one command run inside a sandbox.
+
+    ``stdout`` is the program's standard output and ``stderr`` its standard error, each in its
+    own field.  A producer that cannot keep them apart declares it with ``streams_merged``
+    rather than folding one into the other silently, and
+    :func:`~maf_sandbox.conformance.assert_exec_conformance` holds a backend to both halves.
+
+    **``streams_merged`` says that** ``stderr`` **is not the program's.**  Everything the
+    program printed is in ``stdout``, its two streams interleaved, and ``stderr`` is whoever
+    produced this result speaking — a note about the run, never the guest's own words.
+    :func:`~maf_sandbox.host_tool_calls_over_exec` sets it, because its launcher redirects the
+    guest's stderr into the output file it reads back.  A caller that treats host text and
+    guest text differently reads this rather than inferring it from the transport it built.
+    """
 
     stdout: str
     stderr: str = ""
     exit_code: int = 0
+    # Appended after the defaulted fields already here, so it cannot rebind what a positional
+    # caller passes.
+    streams_merged: bool = False
 
 
 class SandboxQueuedTimeout(TimeoutError):

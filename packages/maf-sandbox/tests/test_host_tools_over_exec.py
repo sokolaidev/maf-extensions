@@ -2825,6 +2825,57 @@ class TestWhatAnEmptyOutputMeans:
         assert result.stderr == ""
 
 
+class TestWhoOwnsStderrHere:
+    """`stderr` is this transport's own field, and the result says so rather than a caller
+    inferring it from having built the transport itself."""
+
+    def test_a_finished_run_declares_the_merge(self):
+        assert _run(_ScriptedGuest([], output="printed"), HostToolRun(_registry())).streams_merged
+
+    def test_a_launcher_that_never_started_the_program_declares_it_too(self):
+        """Nothing was merged on this leg and the field still holds: no program ran, so the
+        sentence on `stderr` is the launcher's rather than the guest's."""
+        result = _run(_ScriptedGuest([], launcher_exit_code=127), HostToolRun(_registry()))
+        assert result.exit_code == 127
+        assert result.streams_merged
+
+    def test_an_output_that_could_not_be_read_declares_it_too(self):
+        class _RefusesToHandItOver(_ScriptedGuest):
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                if path.endswith("program_output.txt"):
+                    raise TimeoutError("the service stopped answering")
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
+        guest = _RefusesToHandItOver([], output="unreachable")
+        result = _run(guest, HostToolRun(_registry()), timeout=1.0)
+        assert "could not be read" in result.stderr
+        assert result.streams_merged
+
+    def test_every_result_this_module_builds_declares_it(self):
+        """The three above cover the exit paths that exist; this covers the next one.
+
+        A path added without the flag hands a caller a host sentence labelled as the guest's,
+        and no behavioural test would fail — the flag would simply read false.
+        """
+        source = Path(host_tools_over_exec.__file__).read_text(encoding="utf-8")
+        built = [
+            node
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "ExecResult"
+        ]
+        assert built, "the module builds no ExecResult at all, so this asserts nothing"
+        for call in built:
+            assert any(
+                keyword.arg == "streams_merged" and keyword.value.value is True
+                for keyword in call.keywords
+                if isinstance(keyword.value, ast.Constant)
+            ), f"an ExecResult built on line {call.lineno} does not declare streams_merged"
+
+
 class TestWhoseTimeoutItWas:
     def test_a_clock_that_reads_behind_the_timer_still_names_this_runs_own_expiry(
         self, monkeypatch: pytest.MonkeyPatch

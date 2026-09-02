@@ -516,22 +516,29 @@ class _SimulatedGuest:
     """A sandbox whose `exec` interprets the probes' commands against real stores.
 
     **A simulator, not a guest**: `exec` here is a Python reading of `test`, `cat`, `printf`,
-    `pwd` and the one `sh -c` the quoting probe issues. What it proves is the probes' own
-    behaviour — the discharging implementation passes, and each defect below fails exactly its
-    probe — and nothing about any real shell. The live suites answer that, against engines and
-    services; this one answers the suite itself, the same role `_Leaky` plays for FILES_OUT.
+    `pwd` and the two `sh -c` lines the quoting and stream probes issue. What it proves is the
+    probes' own behaviour — the discharging implementation passes, and each defect below fails
+    exactly its probe — and nothing about any real shell. The live suites answer that, against
+    engines and services; this one answers the suite itself, the same role `_Leaky` plays for
+    FILES_OUT.
 
     Storage is the fake's shape (`contents`/`symlinks`/`directories`), so `write_file` and
     `remove` are the real `InProcessSandbox` methods reused via composition — the surface under
     test for those suites is the sandbox, and the shipped fake discharges it.
     """
 
-    def __init__(self, *, quoting: bool = True, exit_codes: bool = True) -> None:
+    def __init__(
+        self, *, quoting: bool = True, exit_codes: bool = True, streams: str = "separate"
+    ) -> None:
         self.contents: dict[str, bytes] = {}
         self.symlinks: dict[str, str] = {}
         self.directories: set[str] = set()
         self._quoting = quoting
         self._exit_codes = exit_codes
+        #: How this specimen answers the stream probe: `separate` keeps the two apart,
+        #: `merged` folds and declares it, `folded` folds and stays quiet, and `mislabelled`
+        #: declares a merge while leaving the program's own words on `stderr`.
+        self._streams = streams
 
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
         if "\\" in path:
@@ -636,6 +643,17 @@ class _SimulatedGuest:
         # already handed the whole thing to a shell, so the substitution ran while the command
         # line was built and $1 is only the first word of what came back — modelled here by
         # evaluating `$(echo X)` to X and taking the first word.
+        # `sh -c 'printf %s OUT; printf %s ERR >&2'`: the stream probe, and the only command
+        # here that writes to both. The four answers are the four a backend can give.
+        if argv[0:1] == ["sh"] and argv[1:2] == ["-c"] and len(argv) == 3 and ">&2" in argv[2]:
+            out, err = re.findall(r"printf %s (\S+)", argv[2])
+            if self._streams == "folded":
+                return ExecResult(stdout=out + err)
+            if self._streams == "merged":
+                return ExecResult(stdout=out + err, streams_merged=True)
+            if self._streams == "mislabelled":
+                return ExecResult(stdout=out, stderr=err, streams_merged=True)
+            return ExecResult(stdout=out, stderr=err)
         if argv[0:1] == ["sh"] and argv[1:2] == ["-c"] and len(argv) == 5 and "printf" in argv[2]:
             if self._quoting:
                 return ExecResult(stdout=argv[4])
@@ -774,6 +792,30 @@ class TestExecConformance:
         failures = _sim_results(_sim_subject(quoting=False), run_exec_probes)
         assert failures["argv-is-quoted"] is not None
         assert failures["an-argv-sequence-runs"] is None
+
+    def test_a_backend_that_folds_stderr_into_stdout_quietly_fails_the_stream_probe(self):
+        failures = _sim_results(_sim_subject(streams="folded"), run_exec_probes)
+        assert failures["streams-stay-separate"] is not None
+        assert failures["an-argv-sequence-runs"] is None
+
+    def test_a_merge_the_result_declares_is_conformant(self):
+        """The transport merges and says so, so the probe has to admit that answer.
+
+        A suite that failed it would hold a fourth backend to a rule core's own launcher
+        breaks — and the field exists precisely so the honest merge is expressible.
+        """
+        assert _sim_results(_sim_subject(streams="merged"), run_exec_probes) == dict.fromkeys(
+            [p.name for p in EXEC_PROBES], None
+        )
+
+    def test_a_declared_merge_still_owes_an_stderr_that_is_not_the_programs(self):
+        """Setting the flag while leaving the guest's words on `stderr` is the worse failure.
+
+        A caller reading `streams_merged` treats that field as the producer's, so a kind
+        withholding guest text surfaces the guest's own words whole.
+        """
+        failures = _sim_results(_sim_subject(streams="mislabelled"), run_exec_probes)
+        assert failures["streams-stay-separate"] is not None
 
     def test_a_timeout_that_returns_fails_the_last_probe(self):
         class _NeverTimesOut(_SimulatedGuest):
