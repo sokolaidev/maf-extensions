@@ -175,6 +175,11 @@ def argument_provenance_middleware() -> Any:
     Order does not matter: middleware share one invocation object, so this publishes the same
     record whichever side of the chain it sits on.
 
+    **It publishes a record, never the arguments.** What the framework kept holds the caller's
+    original spellings, which are the variable references themselves — so nothing here hands
+    those back. :func:`values_holding_hidden_content` answers a yes-or-no about values the
+    caller already has, and the record it reads is private to this module.
+
     Returns a middleware instance to add to an agent's ``middleware`` list::
 
         Agent(..., middleware=[LabelTrackingFunctionMiddleware(), argument_provenance_middleware()])
@@ -366,6 +371,12 @@ def values_holding_hidden_content(
     rewriting produced.  That answer is exact, it needs no snapshot because the record lives on
     the call rather than in a slot another call can clear, and it depends on no detail of how a
     payload is stored or reduced — so ``candidates`` is not consulted when it is available.
+
+    **The two answers also differ in what they tell a caller that chose the value.** The record
+    is about this call, so it reports only what the caller already knew.  The fallback is about
+    the store, so a value that merely *matches* stored content is reported even where nothing
+    was rewritten — which lets a caller picking the value learn whether its guess sits inside
+    hidden content, by watching whether its refusal quotes the name or names the position.
 
     Everything below describes the fallback for a host that has not wired it.
 

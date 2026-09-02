@@ -2883,6 +2883,18 @@ class TestValuesHoldingHiddenContent:
         with pytest.raises(Exception, match="valid string|Invalid arguments"):
             self._hidden("[VAR]", stored=stored)
 
+    def test_the_inference_reports_a_value_the_caller_sent_itself(self):
+        """Pinned as a property rather than left to be discovered.
+
+        Comparing against the store cannot tell a rewritten value from one a caller chose that
+        happens to match stored content, so it reports both. That is the conservative direction
+        for containment and it is a channel for a caller that picks the value:
+        `argument_provenance_middleware` is what removes it.
+        """
+        seen = self._hidden(self.PAYLOAD)  # sent literally; nothing was rewritten
+        assert seen["received"] == [self.PAYLOAD]
+        assert seen["hidden"] == frozenset({self.PAYLOAD})
+
     def test_no_middleware_means_nothing_was_ever_hidden(self):
         """Outside a middleware-wrapped call there is no store, so nothing is reported and the
         shape bound in `echoed_name` is what applies."""
@@ -2971,6 +2983,20 @@ class TestArgumentProvenanceMiddleware:
         `main.bicep` — it *could* have arrived carrying that payload. The record says it did not.
         """
         assert self._run("main.bicep", stored="main")["reported"] == frozenset()
+
+    def test_a_value_the_caller_sent_itself_is_never_reported(self):
+        """The record answers about this call, so it tells a caller only what it already knew.
+
+        The fallback answers about the store, so a value that merely *matches* stored content is
+        reported even when nothing was rewritten — see the companion test on
+        `TestValuesHoldingHiddenContent`. That difference is a channel: a model choosing the
+        value can watch whether its refusal quotes the name or names the position, and so learn
+        whether its guess is inside hidden content. Here there is nothing to learn, because the
+        answer is a property of what the caller sent.
+        """
+        seen = self._run(self.PAYLOAD)  # sent literally; no reference, nothing rewritten
+        assert seen["received"] == [self.PAYLOAD]
+        assert seen["reported"] == frozenset()
 
     def test_overlapping_calls_each_see_their_own_arguments(self):
         """One record per call rather than per process, which is what a `ContextVar` buys."""
