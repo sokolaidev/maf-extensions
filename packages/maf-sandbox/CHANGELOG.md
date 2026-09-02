@@ -2,6 +2,14 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.29.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.29.0...maf-sandbox-v0.29.1) (2026-09-01)
+
+
+### Documentation
+
+* **sandbox:** an integrity value is a label or a level, and "tier" is retired for it ([#813](https://github.com/sokolaidev/maf-extensions/issues/813)) ([e58ac51](https://github.com/sokolaidev/maf-extensions/commit/e58ac51ba1d7164b2a6dfede698c635a32db4930))
+* **sandbox:** improved guidance for backend authors ([#797](https://github.com/sokolaidev/maf-extensions/issues/797)) ([a65d5b8](https://github.com/sokolaidev/maf-extensions/commit/a65d5b8a23b5613b10f909003eb842fa94e5d87c))
+
 ## [0.29.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.28.0...maf-sandbox-v0.29.0) (2026-09-01)
 
 
