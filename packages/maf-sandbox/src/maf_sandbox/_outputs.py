@@ -291,7 +291,7 @@ def _nfc(name: str) -> str:
     return unicodedata.normalize("NFC", name)
 
 
-def validate_artifact_name(name: str, *, at: str | None = None) -> None:
+def validate_artifact_name(name: str, *, at: str | None = None, hidden: bool = False) -> None:
     """Refuse ``name`` unless it meets the narrow invariant, naming the rule that refused it.
 
     Relative, no traversal segment, no backslash, no segment that names nothing (``a//b``,
@@ -304,16 +304,17 @@ def validate_artifact_name(name: str, *, at: str | None = None) -> None:
     length-non-increasing, so a name checked before normalization is not the name the host
     receives.
 
-    Every refusal renders the name through :func:`~maf_sandbox.echoed_name`, so ``at`` — where
-    the name came from, ``"outputs[1]"`` — is what a caller passing a *model-supplied* name
-    gives the model in place of a value too long or too unlike a name to quote back.
+    Every refusal renders the name through :func:`~maf_sandbox.echoed_name`, and both of that
+    function's arguments pass straight through: ``at`` — where the name came from,
+    ``"outputs[1]"`` — is what a refusal names in place of a value it will not repeat, and
+    ``hidden`` says the framework expanded content it had hidden into this name.
 
     Raises:
         SandboxArtifactNameInvalid: naming which of the rules the name broke.
     """
     if not name:
         raise SandboxArtifactNameInvalid("an artifact name must be a non-empty relative path")
-    echoed = echoed_name(name, at=at)
+    echoed = echoed_name(name, at=at, hidden=hidden)
     if _BACKSLASH in name:
         raise SandboxArtifactNameInvalid(
             f"{echoed} contains a backslash. The protocol has one path grammar "

@@ -26,7 +26,11 @@ from maf_sandbox import (
     echoed_name,
     error_detail,
 )
-from maf_sandbox.maf import SandboxToolSession, sandboxed_tool
+from maf_sandbox.maf import (
+    SandboxToolSession,
+    sandboxed_tool,
+    values_holding_hidden_content,
+)
 
 from ._paths import resolve_listed_path
 from ._sarif import count_restore_failures, format_diagnostics, parse_sarif
@@ -317,9 +321,14 @@ def _bicep_validate_tool(
         if isinstance(key, str):
             return key
 
+        # Asked once for the whole list: the middleware may have rewritten a variable
+        # reference into any of these, and its answer is what a refusal renders instead of the
+        # value. One pass over the variable store, before either loop that can refuse.
+        rewritten = values_holding_hidden_content(files)
+
         for position, name in enumerate(files):
             if not name.endswith(_ACCEPTED_SUFFIXES):
-                named = echoed_name(name, at=f"files[{position}]")
+                named = echoed_name(name, at=f"files[{position}]", hidden=name in rewritten)
                 return (
                     f"Error: bicep_validate only accepts .bicep and .bicepparam files; "
                     f"rejected: {named}"
@@ -352,7 +361,7 @@ def _bicep_validate_tool(
             sandbox_path, listing_key, rejection = resolve_listed_path(
                 name, listing, call_directory
             )
-            named = echoed_name(name, at=f"files[{position}]")
+            named = echoed_name(name, at=f"files[{position}]", hidden=name in rewritten)
             if rejection == "unsafe":
                 # No listing echoed back: that would invite a retry with another spelling.
                 return (

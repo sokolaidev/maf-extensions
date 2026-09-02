@@ -59,7 +59,11 @@ from maf_sandbox import (
     host_tool_shim,
     validate_artifact_name,
 )
-from maf_sandbox.maf import SandboxToolSession, sandboxed_tool
+from maf_sandbox.maf import (
+    SandboxToolSession,
+    sandboxed_tool,
+    values_holding_hidden_content,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -1120,11 +1124,15 @@ async def _resolve_listed_files(
         return listing
     known = set(listing)
     resolved: list[str] = []
+    # One pass over the variable store for the whole list: the middleware may have rewritten a
+    # variable reference into any of these, and that answer beats any guess from the shape.
+    rewritten = values_holding_hidden_content(files)
     for position, name in enumerate(files):
         at = f"files[{position}]"
-        named = echoed_name(name, at=at)
+        hidden = name in rewritten
+        named = echoed_name(name, at=at, hidden=hidden)
         try:
-            validate_artifact_name(name, at=at)
+            validate_artifact_name(name, at=at, hidden=hidden)
         except SandboxArtifactNameInvalid as exc:
             # The validator's own sentence, which names the rule that was broken: a fixed
             # message listing two of its rules tells a caller refused for a backslash or a
@@ -1133,7 +1141,7 @@ async def _resolve_listed_files(
             return f"Error: {named} cannot be shared — {exc}"
         if name in reserved:
             return f"Error: {named} cannot be shared — {reserved[name]}."
-        refusal = _inside_a_reserved_file(name, reserved, action="shared", at=at)
+        refusal = _inside_a_reserved_file(name, reserved, action="shared", at=at, hidden=hidden)
         if refusal is not None:
             return refusal
         if name in resolved:
@@ -1215,7 +1223,7 @@ async def _read_listed_files(
 
 
 def _inside_a_reserved_file(
-    name: str, reserved: Mapping[str, str], *, action: str, at: str
+    name: str, reserved: Mapping[str, str], *, action: str, at: str, hidden: bool
 ) -> str | None:
     """Refuse a name that would have to live inside a reserved file, naming which one.
 
@@ -1230,8 +1238,8 @@ def _inside_a_reserved_file(
     if above is None:
         return None
     return (
-        f"Error: {echoed_name(name, at=at)} cannot be {action} — {above!r} is a file name this "
-        f"tool reserves in every run's directory, so nothing can live inside it."
+        f"Error: {echoed_name(name, at=at, hidden=hidden)} cannot be {action} — {above!r} is a "
+        f"file name this tool reserves in every run's directory, so nothing can live inside it."
     )
 
 
@@ -1348,9 +1356,11 @@ def _validated_output_names(
         )
     prefix = f"{guest_prefix}/"
     seen: dict[str, tuple[str, str]] = {}
+    rewritten = values_holding_hidden_content(names)
     for position, name in enumerate(names):
         at = f"{named_by}[{position}]"
-        named = echoed_name(name, at=at)
+        hidden = name in rewritten
+        named = echoed_name(name, at=at, hidden=hidden)
         # NFC is not length-non-increasing — 43 × U+0958 is 129 bytes declared and 258
         # delivered — so the name to hold to the invariant is the one the sink will receive.
         delivered = (
@@ -1358,12 +1368,12 @@ def _validated_output_names(
         )
         for spelling in (name, delivered, prefix + name):
             try:
-                validate_artifact_name(spelling, at=at)
+                validate_artifact_name(spelling, at=at, hidden=hidden)
             except SandboxArtifactNameInvalid as exc:
                 return f"Error: {named} cannot be saved — {exc}"
         if name in reserved:
             return f"Error: {named} cannot be saved — {reserved[name]}."
-        refusal = _inside_a_reserved_file(name, reserved, action="saved", at=at)
+        refusal = _inside_a_reserved_file(name, reserved, action="saved", at=at, hidden=hidden)
         if refusal is not None:
             return refusal
         # `collect_outputs`' own key: NFC and case-folded, always, whatever the sink does

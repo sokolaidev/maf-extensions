@@ -10,11 +10,12 @@ Quoting is still what the caller needs: a model that misspelled a name cannot fi
 message that will not say which.  So a value of a shape a refusal can afford to repeat is
 repeated, and anything else is named by its position instead.
 
-**A shape bound is not a classifier, and this one narrows the channel rather than closing
-it.** Nothing here can tell a rewritten argument from one the model chose, and an instruction
-can be written without spaces — ``IGNORE_PRIOR_INSTRUCTIONS`` is the shape of a perfectly
-ordinary file name.  A caller that needs the channel closed passes ``at`` and renders that
-alone; what this buys is that the value is bounded and cannot forge the lines around it.
+**A shape bound is not a classifier.** Nothing in this module can tell a rewritten argument
+from one the model chose, and an instruction can be written without spaces —
+``IGNORE_PRIOR_INSTRUCTIONS`` is the shape of a perfectly ordinary file name.  So the shape is
+the weaker of two answers and the fallback for callers who have no other:
+:func:`~maf_sandbox.maf.values_holding_hidden_content` asks the host's middleware which values
+it rewrote, and ``hidden=True`` here settles the question without consulting the shape at all.
 """
 
 from __future__ import annotations
@@ -29,16 +30,25 @@ __all__ = ["MAX_ECHOED_NAME_CHARACTERS", "echoed_name"]
 MAX_ECHOED_NAME_CHARACTERS: int = 120
 
 
-def echoed_name(name: str, *, at: str | None = None) -> str:
+def echoed_name(name: str, *, at: str | None = None, hidden: bool = False) -> str:
     """``name`` quoted, or its position where the value is not one a refusal may repeat.
 
-    A value is repeated when it is at most :data:`MAX_ECHOED_NAME_CHARACTERS` characters,
-    printable, and free of spaces.  ``at`` says where the value came from — ``"files[1]"`` —
-    and is what a refusal names in its place; without it a refusal can say only how long the
-    value was.  Pass ``at`` and render it alone wherever no caller-controlled text may appear
-    at all, since the bound above narrows this channel without closing it.
+    ``at`` says where the value came from — ``"files[1]"`` — and is what a refusal names in
+    its place; without it a refusal can say only how long the value was.
+
+    ``hidden`` is the answer a caller should prefer wherever it can get one: pass ``True``
+    where the framework expanded content it had hidden into this value, and the shape below is
+    not consulted at all.  :func:`~maf_sandbox.maf.values_holding_hidden_content` computes it.
+    Left ``False``, the value is repeated when it is at most
+    :data:`MAX_ECHOED_NAME_CHARACTERS` characters, printable and free of spaces — a bound on
+    shape, which is what a caller with no better answer has.
     """
-    if len(name) <= MAX_ECHOED_NAME_CHARACTERS and name.isprintable() and " " not in name:
+    if (
+        not hidden
+        and len(name) <= MAX_ECHOED_NAME_CHARACTERS
+        and name.isprintable()
+        and " " not in name
+    ):
         return repr(name)
     if at is None:
         return f"a {len(name)}-character value"

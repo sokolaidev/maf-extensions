@@ -35,10 +35,10 @@ import logging
 import math
 import posixpath
 import sys
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from ._error_detail import error_detail
@@ -76,6 +76,7 @@ __all__ = [
     "make_caller_context",
     "sandbox_tool_declarations",
     "sandboxed_tool",
+    "values_holding_hidden_content",
 ]
 
 # The three sentences a workload is allowed to hand the model when it could not get a
@@ -171,6 +172,64 @@ def _prefixed(name: str) -> str:
     a caplog assertion matches. A ``%`` in a name would then read as a format specifier.
     """
     return name.replace("%", "%%")
+
+
+def _hidden_payloads(middleware: Any) -> Iterator[str]:
+    """Every stored payload a rewritten argument could have arrived carrying.
+
+    A hidden *text* item is stored as its own text; anything else as a dict, and the middleware
+    hands a tool the dict's ``response`` field where there is one.  Those two shapes are what
+    this reads.  A payload shaped like neither is not reported, and the caller falls back to
+    :func:`~maf_sandbox.echoed_name`'s bound on shape.
+    """
+    store = middleware.get_variable_store()
+    for variable_id in store.list_variables():
+        try:
+            content, _ = store.retrieve(variable_id)
+        except KeyError:  # pragma: no cover - a store cleared between the two calls
+            continue
+        if isinstance(content, str):
+            if content:
+                yield content
+        elif isinstance(content, Mapping):
+            primary = cast("Mapping[str, Any]", content).get("response")
+            if isinstance(primary, str) and primary:
+                yield primary
+
+
+def values_holding_hidden_content(values: Sequence[str]) -> frozenset[str]:
+    """Those of ``values`` the host's middleware expanded content it had hidden into.
+
+    MAF's information-flow middleware replaces an untrusted result with a variable reference,
+    and rewrites that reference back into a tool's arguments **before** the body runs.  So a
+    value a kind is about to quote in a refusal may be content the framework hid rather than
+    anything the model chose.  Pass the verdict to :func:`~maf_sandbox.echoed_name` as
+    ``hidden``, and it renders the argument's position instead of its value.
+
+    **Containment, not equality.**  A reference is spliced into the text around it, so
+    ``"[var_a1b2].bicep"`` arrives as the content with a suffix and equals no stored payload.
+
+    Take the whole argument list in one call: the answer costs one pass over the variable
+    store, and the store's own reads are logged by the framework.
+
+    Answers an empty set where no middleware is reachable, which is two different situations
+    it cannot tell apart.  Either the host runs none — then nothing was ever hidden and the
+    shape bound is all that is needed — or a **synchronous** tool body has been dispatched to
+    another thread, which the middleware's thread-local does not reach.  Every body in this
+    suite is ``async``; one that is not gets the bound instead of this.
+    """
+    if not values:
+        return frozenset()
+    try:
+        from agent_framework.security import get_current_middleware
+    except ImportError:  # pragma: no cover - a host without the security module
+        return frozenset()
+    middleware = get_current_middleware()
+    if middleware is None:
+        return frozenset()
+    return frozenset(
+        value for payload in _hidden_payloads(middleware) for value in values if payload in value
+    )
 
 
 def make_caller_context(
