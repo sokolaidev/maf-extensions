@@ -609,6 +609,10 @@ _DESCRIPTION_HEAD = """Run a short Python program inside a sandbox and return wh
 #: reads, so a withheld tool built on it argues with its own `Returns:` section. This one stays
 #: transport-neutral about the shape and says "how large" rather than a count of bytes written:
 #: `Returns:` is where one merged size is told from two, and neither is what the program wrote.
+#: The claim sits on the streams rather than on `print`, because the withholding does: `logging`
+#: defaults to stderr and a traceback goes there too, so a model told about `print` alone reads
+#: those as a channel that comes back. And it offers the streams no use at all — naming one,
+#: debugging included, licenses the writing this mode exists to redirect.
 _DESCRIPTION_HEAD_WITHHELD = """Run a short Python program inside a sandbox and report what it
         did.
 
@@ -616,9 +620,13 @@ _DESCRIPTION_HEAD_WITHHELD = """Run a short Python program inside a sandbox and 
         anything where running the code beats predicting what it would do.  The program runs
         as ``python3 program.py`` in a sandbox with {network}
 
-        **What you print is not read back.**  You get the exit code and how large the output
-        was, never what was in it — so ``print(...)`` is for your own debugging and never a way
-        to return a value.  Write anything you need to see into a declared output instead.
+        **Nothing your program writes to stdout or stderr comes back — not as a value, not to
+        debug with.**  You get the exit code and how large the output was, never what was in it,
+        so nothing you write there can show you anything, even when the program fails.  That
+        covers every route to those streams: ``print``, writes to ``sys.stdout`` or
+        ``sys.stderr``, the ``logging`` and ``warnings`` modules, tracebacks, and whatever a
+        subprocess you start prints.  Write everything you need to see — results and diagnostics
+        alike — into a declared output instead.
 
         Write a complete, self-contained program every time.  Each call gets a fresh working
         directory: nothing you did not pass in to *this* call is in it."""
