@@ -95,7 +95,7 @@ def _callable(tool):
     return getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
 
 
-def _run_in_a_container(
+def _items_in_a_container(
     code: str,
     *,
     mode: CodeactOutputs,
@@ -103,7 +103,7 @@ def _run_in_a_container(
     files_out: TransferLimits | None = None,
     withhold: bool = False,
     **call_kwargs: Any,
-) -> str:
+):
     """Build the tool over a real Docker backend, run ``code`` in it, and dispose.
 
     One container per call. They are free — the whole reason this suite can run on a pull
@@ -124,13 +124,25 @@ def _run_in_a_container(
     )
     assert len(tools) == 1, f"expected one tool, got {len(tools)}"
 
-    async def scenario() -> str:
+    async def scenario():
         try:
             return await _callable(tools[0])(code=code, **call_kwargs)
         finally:
             await backend.dispose_scope("e2e", thread_id)
 
     return asyncio.run(scenario())
+
+
+def _run_in_a_container(code: str, **kw: Any) -> str:
+    """The run's own half of the answer, which is the whole of it unless the host withholds.
+
+    A withholding tool answers with items: the run's text carrying no label, beside the
+    standing route sentence labelled trusted. Returning the first keeps every test about what
+    a run *reported* reading the same in both modes, exactly as the offline suite's `_run`
+    does — `_items_in_a_container` is for the tests about the split itself.
+    """
+    answer = _items_in_a_container(code, **kw)
+    return answer if isinstance(answer, str) else str(answer[0].text)
 
 
 def test_the_backend_meets_the_floor_this_suite_assumes():
@@ -392,6 +404,27 @@ class TestWithheldOutputAgainstARealInterpreter:
         assert sink.names == ["why.txt"]
         assert sink.contents["why.txt"] == b"ValueError: bad row 7"
         assert self._SECRET not in answer, answer
+
+    def test_the_route_is_its_own_trusted_item_against_a_real_run(self):
+        """The split, end to end: a real container, a real exit code, and the one item a
+        framework hiding untrusted content would leave the model."""
+        answer = _items_in_a_container(
+            "import sys\nprint('noise')\nsys.exit(1)\n",
+            mode=CodeactOutputs.DECLARED,
+            sink=_RecordingSink(),
+            withhold=True,
+            outputs=["why.txt"],
+        )
+
+        assert len(answer) == 2, answer
+        assert "exit code: 1" in str(answer[0].text)
+        assert (answer[0].additional_properties or {}).get("security_label") is None, (
+            "the run's half must stay unlabelled, or it replaces the call's confidentiality"
+        )
+        assert (answer[1].additional_properties or {}).get("security_label") == {
+            "integrity": "trusted",
+            "confidentiality": "public",
+        }
 
     def test_the_same_failure_shown_lands_nothing(self):
         """The contrast that makes the rule above a decision rather than an accident."""
