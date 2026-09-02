@@ -15,6 +15,7 @@ import dataclasses
 import enum
 import logging
 import math
+import threading
 from typing import Any, cast
 
 import pytest
@@ -3085,7 +3086,7 @@ class TestArgumentProvenanceMiddleware:
         )
 
         seen: dict[str, object] = {}
-        outliving: list[asyncio.Task[None]] = []
+        outliving: asyncio.Task[None] | None = None
         released = asyncio.Event()
         tracker = LabelTrackingFunctionMiddleware()
         ours = argument_provenance_middleware()
@@ -3102,7 +3103,8 @@ class TestArgumentProvenanceMiddleware:
         async def body(files: list[str]) -> str:
             # The snapshot a body takes before its first await, which is what lets a late
             # caller reach the store at all — `execute_code` threads exactly this.
-            outliving.append(asyncio.create_task(outlives(hidden_content_candidates())))
+            nonlocal outliving
+            outliving = asyncio.create_task(outlives(hidden_content_candidates()))
             return "ok"
 
         tool = FunctionTool(name="probe", func=body)
@@ -3119,10 +3121,84 @@ class TestArgumentProvenanceMiddleware:
             released.set()  # only now, so the task is answering after the call returned
             # Joined here rather than left to `asyncio.run` shutdown, which finishes an
             # already-resumable task only because it never suspends again.
-            await outliving[0]
+            assert outliving is not None
+            await outliving
 
         asyncio.run(drive())
         return seen
+
+    def _run_synchronous_body(self, sent: str):
+        """One call whose tool body is `def`, not `async def`.
+
+        The framework dispatches that with `asyncio.to_thread`, so the body runs off the event
+        loop's thread. `ContextVar` is copied into it; the framework's own middleware accessor
+        is a thread-local and is not.
+        """
+        from agent_framework import FunctionInvocationContext, FunctionTool
+        from agent_framework.security import (
+            ContentLabel,
+            IntegrityLabel,
+            LabelTrackingFunctionMiddleware,
+        )
+
+        seen: dict[str, object] = {}
+        tracker = LabelTrackingFunctionMiddleware()
+        ours = argument_provenance_middleware()
+        variable_id = tracker.get_variable_store().store(
+            self.PAYLOAD, ContentLabel(integrity=IntegrityLabel.UNTRUSTED)
+        )
+
+        def body(files: list[str]) -> str:
+            seen["thread"] = threading.get_ident()
+            seen["received"] = list(files)
+            seen["from_record"] = positions_holding_hidden_content(files, argument="files")
+            seen["from_fallback"] = positions_holding_hidden_content(files)
+            return "ok"
+
+        tool = FunctionTool(name="probe", func=body)
+        context = FunctionInvocationContext(
+            function=tool, arguments={"files": [sent.replace("VAR", variable_id)]}
+        )
+
+        async def innermost() -> None:
+            await tool.invoke(arguments=context.arguments)
+
+        async def inner() -> None:
+            await ours.process(context, innermost)
+
+        async def drive() -> None:
+            seen["loop_thread"] = threading.get_ident()
+            await tracker.process(context, inner)
+
+        asyncio.run(drive())
+        return seen
+
+    def test_a_synchronous_body_is_answered_from_the_record_where_the_fallback_gives_up(self):
+        """The one case where wiring the middleware changes what a *correct* caller can know.
+
+        A `def` body is dispatched to another thread, and the framework's middleware accessor
+        is a thread-local, so the inference finds no store there and answers empty — which reads
+        as "nothing was hidden" and quotes rewritten content straight back. The record is a
+        `ContextVar`, which `asyncio.to_thread` copies, so it still answers.
+        """
+        seen = self._run_synchronous_body("[VAR]")
+
+        assert seen["thread"] != seen["loop_thread"], (
+            "the body must really have been dispatched off the loop, or this proves nothing"
+        )
+        assert seen["received"] == [self.PAYLOAD]
+        assert seen["from_record"] == frozenset({0})
+        assert seen["from_fallback"] == frozenset(), (
+            "asserted rather than tolerated: this is the gap the record closes, and if the "
+            "framework ever makes its accessor reachable here the contrast is worth revisiting"
+        )
+
+    def test_a_synchronous_body_still_keeps_a_literal_values_echo(self):
+        """The record answers off-thread without the fallback's over-reporting coming with it."""
+        seen = self._run_synchronous_body(self.PAYLOAD)
+
+        assert seen["received"] == [self.PAYLOAD]
+        assert seen["from_record"] == frozenset()
 
     def _run_model_arguments(self, sent: str):
         """One call whose arguments are a model rather than a mapping, which is also supported."""

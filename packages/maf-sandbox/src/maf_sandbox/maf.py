@@ -409,9 +409,8 @@ def positions_holding_hidden_content(
     record = _CALL_CONTEXT.get()
     if record is not None and not record.closed and argument is not None:
         before = _spellings_before_rewriting(record.context, argument)
-        # Position by position, never against the record as a whole. A caller controls every
-        # entry, so a value excused by an equal value it placed elsewhere is a value it can have
-        # quoted back — which is the echo this exists to stop, arrived at from the other side.
+        # Per position, never against the record as a whole: an equal value at another position
+        # would otherwise excuse this one.
         if before is not None and len(before) == len(values):
             return frozenset(
                 position
