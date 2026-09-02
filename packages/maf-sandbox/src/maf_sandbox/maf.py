@@ -337,10 +337,10 @@ class SandboxToolSession:
     read; :meth:`guest_call_path` is the first value that has to be generated and then remembered,
     which is why it lives in :data:`_CALL` and not here.
 
-    All three accessors return **either the value or the string the tool should return**, rather
-    than raising.  A MAF tool answers with a ``str`` and a refusal is an ordinary answer, not
-    an exception: the model has to learn what happened through the same channel as a
-    successful result, or the turn ends mute.  So a body reads::
+    All three accessors return **either the value or the string the tool should return** for
+    anything the model has to hear about.  A MAF tool answers with a ``str`` and a refusal is an
+    ordinary answer, not an exception: the model has to learn what happened through the same
+    channel as a successful result, or the turn ends mute.  So a body reads::
 
         key = session.key()
         if isinstance(key, str):
@@ -352,6 +352,13 @@ class SandboxToolSession:
 
     A workload whose tool returns something other than a plain ``str`` translates the message
     into its own result shape at those two points; nothing else about the contract changes.
+
+    **A wiring mistake in the kind raises**, and that is the line the two shapes are split on: a
+    model can cause a refusal and cannot cause a body that asks for a call's key outside a call,
+    or acquires on a key naming a call that has ended.  Those reach a developer through a
+    traceback rather than a tool result, the way :meth:`guest_call_path` has always answered
+    them, because a sentence in the transcript is not where they get fixed.  Each is listed in
+    the ``Raises`` of the method it belongs to.
     """
 
     def __init__(

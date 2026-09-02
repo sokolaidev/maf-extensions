@@ -12,6 +12,7 @@ import importlib.util
 import os
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -294,3 +295,27 @@ class TestTheProgramThatAnswered:
 
     def test_no_results_is_not_an_error(self):
         assert sample.the_program_that_answered([]) == ""
+
+
+class TestTheRunDirectoryFilter:
+    """Act 5 counts what a sandbox kept, and it counts by matching the directory's name.
+
+    A name shape the filter does not recognise is not an error anywhere — the run is dropped
+    from the count and the act reports fewer than are there, which only a live run would show.
+    """
+
+    @pytest.mark.parametrize(
+        "name",
+        [uuid4().hex, uuid4().hex[:12]],
+        ids=["a whole uuid", "the twelve characters an older core wrote"],
+    )
+    def test_a_run_directory_is_recognised(self, name: str):
+        assert sample._RUN_ID.fullmatch(name)
+
+    @pytest.mark.parametrize(
+        "name",
+        ["host_tools", "work", "outputs", uuid4().hex[:11], uuid4().hex[:20], "g" * 12],
+        ids=["the transport's", "the work dir", "a plain name", "too short", "between", "not hex"],
+    )
+    def test_anything_else_is_not(self, name: str):
+        assert sample._RUN_ID.fullmatch(name) is None

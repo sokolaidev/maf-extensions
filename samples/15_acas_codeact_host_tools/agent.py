@@ -458,8 +458,12 @@ def amounts_the_model_wrote(response: object) -> int:
 #: `1e3f4a…` from reading as a thousand now that an exponent is allowed.
 _PRINTED_NUMBER = re.compile(r"(?<![\w.])-?\d[\d,_]*\.\d+(?:[eE][+-]?\d+)?")
 
-#: What the CodeAct kind names a run directory: `uuid4().hex[:12]`.
-_RUN_ID = re.compile(r"[0-9a-f]{12}")
+#: What the CodeAct kind names a run directory: the hex of a `uuid4`, whole.
+#:
+#: Twelve characters is what core allocated before the id also keyed a per-call sandbox, and a
+#: sandbox reached by an older release still holds directories of that length — so both match,
+#: and act 5 counts what is actually there rather than what this release would have written.
+_RUN_ID = re.compile(r"[0-9a-f]{12}(?:[0-9a-f]{20})?")
 
 
 def figures_in(text: str, expected: Iterable[float]) -> int:
@@ -681,7 +685,7 @@ async def _what_one_sandbox_holds(
     runs = await sandbox.list_dir(".", working_directory=spec.work_dir)
     # Kind *and* name, because the guest can write here: a program that walks up out of its
     # work directory can leave a file beside the runs, and `list_dir` on `<file>/host_tools`
-    # raises rather than reporting nothing. The kind names a run `uuid4().hex[:12]`.
+    # raises rather than reporting nothing. The kind names a run after the call it belongs to.
     named = (
         entry.path.rstrip("/").split("/")[-1] for entry in runs if entry.kind is EntryKind.DIRECTORY
     )
