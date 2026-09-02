@@ -98,8 +98,9 @@ _PROGRAM_FILENAME = "program.py"
 #: rather than an omission; :func:`codeact_sandbox_spec` has why it is fixed here.
 _KIND_EGRESS: tuple[str, ...] = ()
 
-#: The argument a ``DECLARED``-mode caller names its files in, which is what a refusal about
-#: one of them points at.
+#: The arguments a caller names files in, which is what a refusal about one of them points
+#: at and what provenance is asked about.
+_FILES_ARGUMENT = "files"
 _OUTPUTS_ARGUMENT = "outputs"
 
 #: Where a ``MANIFEST``-mode program says what it produced.
@@ -941,6 +942,7 @@ async def _execute(
             guest_prefix=guest_prefix,
             normalization=_normalization(session),
             named_by=_OUTPUTS_ARGUMENT,
+            argument=_OUTPUTS_ARGUMENT,
             candidates=rewritten,
         )
         if isinstance(checked, str):
@@ -1131,7 +1133,9 @@ async def _resolve_listed_files(
     # Asked before the first await, not beside the loop that uses it: the framework's accessor
     # is not scoped to the call, so every suspension before asking is a chance for the answer
     # to come back empty. See `values_holding_hidden_content`.
-    rewritten = values_holding_hidden_content(files, candidates=candidates)
+    rewritten = values_holding_hidden_content(
+        files, argument=_FILES_ARGUMENT, candidates=candidates
+    )
     listing = await session.list_files(store)
     if isinstance(listing, str):
         # The host's own sentence about its store. Withheld it is dropped for the reason the
@@ -1353,6 +1357,7 @@ def _validated_output_names(
     guest_prefix: str,
     normalization: NameNormalization,
     named_by: str,
+    argument: str | None = None,
     candidates: frozenset[str] | None = None,
 ) -> list[str] | str:
     """Settle every output name before the program runs, or answer with the refusal.
@@ -1375,7 +1380,7 @@ def _validated_output_names(
     # Asked of manifest names as well as of the model's own `outputs`, and that is not
     # belt-and-braces: `code` is a rewritten argument too, so a payload can reach the guest
     # in the program's own source and come back as a name the program chose to write.
-    rewritten = values_holding_hidden_content(names, candidates=candidates)
+    rewritten = values_holding_hidden_content(names, argument=argument, candidates=candidates)
     for position, name in enumerate(names):
         at = f"{named_by}[{position}]"
         hidden = name in rewritten

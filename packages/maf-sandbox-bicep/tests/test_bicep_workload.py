@@ -898,7 +898,7 @@ class TestARewrittenArgumentIsNeverQuoted:
 
     def _rewrite(self, monkeypatch, *values: str):
         monkeypatch.setattr(
-            _tool_module, "values_holding_hidden_content", lambda _: frozenset(values)
+            _tool_module, "values_holding_hidden_content", lambda _values, **_: frozenset(values)
         )
 
     def test_the_extension_refusal_does_not_quote_it(self, monkeypatch):
@@ -936,14 +936,17 @@ class TestARewrittenArgumentIsNeverQuoted:
     def test_the_whole_list_is_asked_about_once(self, monkeypatch):
         asked: list[list[str]] = []
 
-        def _record(values):
-            asked.append(list(values))
+        def _record(values, **kwargs):
+            asked.append((list(values), kwargs.get("argument")))
             return frozenset()
 
         monkeypatch.setattr(_tool_module, "values_holding_hidden_content", _record)
         _run(_tool(InMemoryStore({"main.bicep": "x"}), _fake_backend()), ["main.bicep"])
 
-        assert asked == [["main.bicep"]], "one pass over the variable store per call"
+        assert asked == [(["main.bicep"], "files")], (
+            "one pass per call, and naming the argument — without the name the exact answer "
+            "does not apply and this silently falls back to the inference"
+        )
 
 
 class TestARefusalNamesRatherThanEchoes:

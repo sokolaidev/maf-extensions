@@ -175,10 +175,15 @@ def argument_provenance_middleware() -> Any:
     Order does not matter: middleware share one invocation object, so this publishes the same
     record whichever side of the chain it sits on.
 
-    **It publishes a record, never the arguments.** What the framework kept holds the caller's
-    original spellings, which are the variable references themselves — so nothing here hands
-    those back. :func:`values_holding_hidden_content` answers a yes-or-no about values the
-    caller already has, and the record it reads is private to this module.
+    **It publishes the invocation object, not an accessor.** That object is the one the
+    framework already hands any tool body declaring a ``FunctionInvocationContext`` parameter,
+    so nothing here widens what a body can reach.  Nothing *public* returns it: this factory
+    answers with a stateless middleware, and :func:`values_holding_hidden_content` answers with
+    a subset of the values it was given.
+
+    **Any middleware that rewrites arguments must sit before the information-flow middleware**,
+    whichever side this one is on: the record is taken there, so an edit made after it reads as
+    content the framework substituted.
 
     Returns a middleware instance to add to an agent's ``middleware`` list::
 
@@ -197,37 +202,30 @@ def argument_provenance_middleware() -> Any:
     return _ArgumentProvenance()
 
 
-def _values_before_rewriting(context: Any) -> frozenset[str] | None:
-    """Every string the arguments held before the framework rewrote any of them, or ``None``.
+def _spellings_before_rewriting(context: Any, argument: str) -> list[str] | None:
+    """``argument``'s values as the caller spelled them, before the framework rewrote any.
 
     ``None`` where the record is absent — no information-flow middleware ran, so nothing was
-    rewritten and there is nothing to be exact about.
+    rewritten — and equally where it holds no list for ``argument``, which means a caller named
+    a parameter this call does not have and must not be read as "nothing was rewritten".
     """
     metadata = cast("Mapping[str, Any]", getattr(context, "metadata", None) or {})
     original: Any = metadata.get("original_arguments_for_messages")
-    if original is None:
+    if not isinstance(original, Mapping):
         return None
-    seen: set[str] = set()
-
-    def walk(value: Any) -> None:
-        if isinstance(value, str):
-            seen.add(value)
-        elif isinstance(value, Mapping):
-            for item in cast("Mapping[str, Any]", value).values():
-                walk(item)
-        elif isinstance(value, (list, tuple)):
-            for item in cast("Sequence[Any]", value):
-                walk(item)
-
-    walk(original)
-    return frozenset(seen)
+    spellings: Any = cast("Mapping[str, Any]", original).get(argument)
+    if not isinstance(spellings, (list, tuple)):
+        return None
+    return [
+        item if isinstance(item, str) else str(item) for item in cast("Sequence[Any]", spellings)
+    ]
 
 
 def _awaits(body: object) -> bool:
     """Whether calling ``body`` gives something to await.
 
     An instance with an async ``__call__`` is as awaitable as a coroutine function, and only its
-    ``__call__`` is the coroutine function :mod:`inspect` can see — the same reading
+    ``__call__`` is the coroutine function :mod:`inspect` can see â€” the same reading
     ``_host_tools`` makes of a host-tool-call observer.
     """
     return inspect.iscoroutinefunction(body) or inspect.iscoroutinefunction(
@@ -236,7 +234,7 @@ def _awaits(body: object) -> bool:
 
 
 def _this_call(owner: object) -> _SandboxToolCall | None:
-    """The call ``owner`` is running inside, or ``None`` — including when it belongs elsewhere."""
+    """The call ``owner`` is running inside, or ``None`` â€” including when it belongs elsewhere."""
     call = _CALL.get()
     return call if call is not None and call.owner is owner else None
 
@@ -258,7 +256,7 @@ def _prefixed(name: str) -> str:
 
     The tool's name prefixes every record this module writes, and it is baked into the FORMAT
     rather than passed as an argument so the record is indistinguishable from one the workload
-    wrote by hand — ``record.msg`` included, which is what a structured exporter reads and what
+    wrote by hand â€” ``record.msg`` included, which is what a structured exporter reads and what
     a caplog assertion matches. A ``%`` in a name would then read as a format specifier.
     """
     return name.replace("%", "%%")
@@ -337,7 +335,10 @@ def hidden_content_candidates() -> frozenset[str]:
 
 
 def values_holding_hidden_content(
-    values: Sequence[str], *, candidates: frozenset[str] | None = None
+    values: Sequence[str],
+    *,
+    argument: str | None = None,
+    candidates: frozenset[str] | None = None,
 ) -> frozenset[str]:
     """Those of ``values`` the host's middleware expanded content it had hidden into.
 
@@ -365,37 +366,48 @@ def values_holding_hidden_content(
     Take the whole argument list in one call: the answer costs one pass over the variable
     store, and the store's own reads are logged by the framework.
 
-    **Two ways of answering, and the exact one needs wiring.** Where a host has added
-    :func:`argument_provenance_middleware`, this compares the arguments against the record the
-    framework kept of them before rewriting: a value that was not there before is one the
-    rewriting produced.  That answer is exact, it needs no snapshot because the record lives on
-    the call rather than in a slot another call can clear, and it depends on no detail of how a
-    payload is stored or reduced — so ``candidates`` is not consulted when it is available.
+    **Two ways of answering, and the exact one needs wiring and a name.** Where a host has
+    added :func:`argument_provenance_middleware` *and* ``argument`` names the parameter these
+    values came from, each is compared with the spelling the caller gave at the same position:
+    a value differing from its own is one the rewriting produced.  That answer is exact, needs
+    no snapshot because the record lives on the call, and depends on no detail of how a payload
+    is stored or reduced — so ``candidates`` is not consulted where it applies.
 
-    **The two answers also differ in what they tell a caller that chose the value.** The record
-    is about this call, so it reports only what the caller already knew.  The fallback is about
-    the store, so a value that merely *matches* stored content is reported even where nothing
-    was rewritten — which lets a caller picking the value learn whether its guess sits inside
-    hidden content, by watching whether its refusal quotes the name or names the position.
+    ``argument`` is what makes the comparison positional, and it is required for it.  Matched
+    against the record as a whole, one entry could be excused by an equal value the caller put
+    at another — so a caller that guessed the hidden content could have it quoted back.  Where
+    the values are not one argument's — a manifest a program wrote — leave it unset and the
+    fallback answers.
+
+    **Neither answer is free of a guess-confirmation channel, and the difference is scope.**
+    The fallback reports any value containing a stored payload, so a caller can learn that a
+    string it chose sits inside hidden content by watching which way its refusal renders.  The
+    record narrows that to equality at one position, which is why the comparison must be
+    positional — matched against the record as a whole, a caller could excuse a rewritten entry
+    with an equal value placed elsewhere and have the hidden content quoted back.  What neither
+    hides is the *length* of a value it declines to repeat.
 
     Everything below describes the fallback for a host that has not wired it.
 
-    Answers an empty set where no middleware is reachable, which is two different situations
-    it cannot tell apart.  Either the host runs none — then nothing was ever hidden and the
-    shape bound is all that is needed — or a **synchronous** tool body has been dispatched to
-    another thread, which the middleware's thread-local does not reach.  Every body in this
-    suite is ``async``; one that is not gets the bound instead of this.
+    The fallback answers an empty set where no middleware is reachable, which is two different
+    situations it cannot tell apart.  Either the host runs none — then nothing was ever hidden
+    and the shape bound is all that is needed — or a **synchronous** tool body has been
+    dispatched to another thread, which the accessor it uses does not reach.  The record has
+    neither limit: it is carried in a ``ContextVar``, which ``asyncio.to_thread`` copies, so a
+    synchronous body wired for it is answered where the fallback would give up.
     """
     if not values:
         return frozenset()
     invocation = _INVOCATION.get()
-    if invocation is not None:
-        before = _values_before_rewriting(invocation)
-        if before is not None:
-            # Exact: a value the arguments did not hold before the framework rewrote them is one
-            # the rewriting produced. Nothing is inferred from the payloads, so no shape of one
-            # can be missed here and no snapshot is needed.
-            return frozenset(value for value in values if value not in before)
+    if invocation is not None and argument is not None:
+        before = _spellings_before_rewriting(invocation, argument)
+        # Position by position, never against the record as a whole. A caller controls every
+        # entry, so a value excused by an equal value it placed elsewhere is a value it can have
+        # quoted back — which is the echo this exists to stop, arrived at from the other side.
+        if before is not None and len(before) == len(values):
+            return frozenset(
+                value for spelling, value in zip(before, values, strict=True) if value != spelling
+            )
     payloads = hidden_content_candidates() if candidates is None else candidates
     return frozenset(value for payload in payloads for value in values if payload in value)
 

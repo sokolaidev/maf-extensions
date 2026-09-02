@@ -65,6 +65,10 @@ __all__ = [
     "make_bicep_tools",
 ]
 
+#: The argument the model names its files in, which is the parameter a refusal points at
+#: and the one provenance is asked about.
+_FILES_ARGUMENT = "files"
+
 BICEP_VALIDATE_TOOL_NAME = "bicep_validate"
 
 BICEP_TOOL_NAMES: frozenset[str] = frozenset({BICEP_VALIDATE_TOOL_NAME})
@@ -324,7 +328,7 @@ def _bicep_validate_tool(
         # Asked once for the whole list: the middleware may have rewritten a variable
         # reference into any of these, and its answer is what a refusal renders instead of the
         # value. One pass over the variable store, before either loop that can refuse.
-        rewritten = values_holding_hidden_content(files)
+        rewritten = values_holding_hidden_content(files, argument=_FILES_ARGUMENT)
 
         for position, name in enumerate(files):
             if not name.endswith(_ACCEPTED_SUFFIXES):

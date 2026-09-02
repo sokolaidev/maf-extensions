@@ -2932,7 +2932,7 @@ class TestArgumentProvenanceMiddleware:
 
         async def body(files: list[str]) -> str:
             seen["received"] = list(files)
-            seen["reported"] = values_holding_hidden_content(files)
+            seen["reported"] = values_holding_hidden_content(files, argument="files")
             return "ok"
 
         tool = FunctionTool(name="probe", func=body)
@@ -2989,14 +2989,74 @@ class TestArgumentProvenanceMiddleware:
 
         The fallback answers about the store, so a value that merely *matches* stored content is
         reported even when nothing was rewritten — see the companion test on
-        `TestValuesHoldingHiddenContent`. That difference is a channel: a model choosing the
-        value can watch whether its refusal quotes the name or names the position, and so learn
-        whether its guess is inside hidden content. Here there is nothing to learn, because the
-        answer is a property of what the caller sent.
+        `TestValuesHoldingHiddenContent`. The record answers about this argument at this
+        position, so a value the caller put there itself is not reported. What that does *not*
+        buy is a caller learning nothing: see the positional test below for the case it costs
+        effort to get right.
         """
         seen = self._run(self.PAYLOAD)  # sent literally; no reference, nothing rewritten
         assert seen["received"] == [self.PAYLOAD]
         assert seen["reported"] == frozenset()
+
+    def _run_two(self, spellings: list[str], *, argument: str | None = "files"):
+        """One call whose `files` argument is `spellings`, with VAR replaced by a real id."""
+        from agent_framework import FunctionInvocationContext, FunctionTool
+        from agent_framework.security import (
+            ContentLabel,
+            IntegrityLabel,
+            LabelTrackingFunctionMiddleware,
+        )
+
+        seen: dict[str, object] = {}
+        tracker = LabelTrackingFunctionMiddleware()
+        ours = argument_provenance_middleware()
+        variable_id = tracker.get_variable_store().store(
+            self.PAYLOAD, ContentLabel(integrity=IntegrityLabel.UNTRUSTED)
+        )
+
+        async def body(files: list[str]) -> str:
+            seen["received"] = list(files)
+            seen["reported"] = values_holding_hidden_content(files, argument=argument)
+            return "ok"
+
+        tool = FunctionTool(name="probe", func=body)
+        context = FunctionInvocationContext(
+            function=tool,
+            arguments={"files": [s.replace("VAR", variable_id) for s in spellings]},
+        )
+
+        async def innermost() -> None:
+            await tool.invoke(arguments=context.arguments)
+
+        async def drive() -> None:
+            await ours.process(context, innermost)
+
+        asyncio.run(tracker.process(context, drive))
+        return seen
+
+    def test_a_guess_elsewhere_in_the_list_does_not_excuse_a_rewritten_entry(self):
+        """The comparison is positional, and this is why it has to be.
+
+        Matched against the record as a whole, `files[0]` would be excused by an equal value the
+        caller put at `files[1]` — so a caller that guessed the hidden content could watch the
+        refusal quote it back, which is the echo this exists to stop reached from the other side.
+        """
+        wrong = self._run_two(["[VAR]", "not-the-content"])
+        right = self._run_two(["[VAR]", self.PAYLOAD])
+
+        assert wrong["reported"] == frozenset({self.PAYLOAD})
+        assert right["reported"] == frozenset({self.PAYLOAD}), (
+            "a correct guess at another position must not excuse the rewritten entry"
+        )
+
+    def test_values_that_came_from_no_argument_fall_back(self):
+        """Names a program wrote are in no argument, so the record cannot speak for them.
+
+        Answering from it would report every one of them as rewritten and strip the name from
+        every refusal about them. `argument=None` says so and the inference answers instead.
+        """
+        seen = self._run_two(["[VAR]"], argument=None)
+        assert seen["reported"] == frozenset({self.PAYLOAD}), "the fallback still answers"
 
     def test_overlapping_calls_each_see_their_own_arguments(self):
         """One record per call rather than per process, which is what a `ContextVar` buys."""
@@ -3018,7 +3078,10 @@ class TestArgumentProvenanceMiddleware:
 
             async def body(files: list[str]) -> str:
                 await asyncio.sleep(pause)
-                answers[name] = (files[0], bool(values_holding_hidden_content(files)))
+                answers[name] = (
+                    files[0],
+                    bool(values_holding_hidden_content(files, argument="files")),
+                )
                 return "ok"
 
             tool = FunctionTool(name=f"probe-{name}", func=body)
