@@ -136,13 +136,12 @@ class TestTheSpecSaysItLandsSomethingItCannotName:
 
 
 class TestTheToolDeclaresNothingAboutItsResult:
-    """The decision this sample is the worked example for, pinned where deleting it shows.
+    """`additional_properties` is a policy contract, and this tool's is empty.
 
-    `sandboxed_tool` defaults `source_integrity` to `"trusted"`, so the argument the factory
-    passes is the entire decision — drop the line and every other test in this file still
-    passes, while the tool starts telling a host's middleware to disregard where its result
-    came from. The rule is in `docs/sandbox/information-flow.md`, and both packaged kinds
-    carry the same assertion against the same default.
+    A declared `source_integrity` *replaces* the framework's input-label join rather than
+    flooring it, so `"trusted"` here would tell a host's middleware to disregard that the
+    result derives from the model's own DOT. `docs/sandbox/information-flow.md` is the rule,
+    and both packaged kinds carry the same assertion.
     """
 
     def _properties(self, out_dir: Path) -> dict[str, object]:

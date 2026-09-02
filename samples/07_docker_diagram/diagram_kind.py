@@ -267,10 +267,9 @@ def _render_diagram_tool(
 def _render_failed(exit_code: int, stderr: str) -> str:
     """Render a ``dot`` failure for a model that has to fix its own DOT.
 
-    A syntax error names the line, so it goes back verbatim: the model needs the exact message
-    to repair its own source.  That ``dot`` wrote it buys the result nothing — the message
-    quotes the model's DOT back, which is why this tool declares no integrity above.  When
-    ``dot`` failed but wrote nothing, the exit code is all there is.
+    A syntax error names the line, so the diagnostic goes back verbatim: the model needs the
+    exact message to repair its own source.  When ``dot`` failed but wrote nothing, the exit
+    code is all there is.
     """
     if stderr:
         return f"dot could not render the diagram (exit {exit_code}):\n{stderr}"
