@@ -2,6 +2,25 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.11.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.10.1...maf-sandbox-bicep-v0.11.0) (2026-09-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* **bicep:** bicep_validate no longer declares source_integrity="trusted"
+* require maf-sandbox 0.30.0 in the dependents and 0.29 in the samples, and admit 0.31 ([#789](https://github.com/sokolaidev/maf-extensions/issues/789))
+
+### Features
+
+* a kind can know which tool call arguments the framework rewrote ([#827](https://github.com/sokolaidev/maf-extensions/issues/827)) ([c83160e](https://github.com/sokolaidev/maf-extensions/commit/c83160ec727f2a94e7facf46e3584a7984407fa6))
+* a refusal names a rejected file by its position rather than echoing a value that is not a name ([#818](https://github.com/sokolaidev/maf-extensions/issues/818)) ([5123e52](https://github.com/sokolaidev/maf-extensions/commit/5123e52321766a70d079e26d369116cdf912fbfe))
+* require maf-sandbox 0.30.0 in the dependents and 0.29 in the samples, and admit 0.31 ([#789](https://github.com/sokolaidev/maf-extensions/issues/789)) ([670a005](https://github.com/sokolaidev/maf-extensions/commit/670a0055f180c83aae50179055dd84b01bbca0f5))
+
+
+### Fixes
+
+* **bicep:** the diagnostics quote model-authored Bicep, so the tool declares no source_integrity ([#814](https://github.com/sokolaidev/maf-extensions/issues/814)) ([0880d65](https://github.com/sokolaidev/maf-extensions/commit/0880d65b352f1363a8180f85befdde936c515bf8))
+
 ## [0.10.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.10.0...maf-sandbox-bicep-v0.10.1) (2026-09-01)
 
 
