@@ -402,8 +402,8 @@ class SandboxProgramTimeout(TimeoutError):
 
     ``output_reason`` is the other half of the same clause and never the program's words: the
     host's own account of why it read none, empty wherever output was read normally. The
-    message carries one or the other, so a caller that must not surface guest text renders this
-    beside ``signal`` and ``reach`` and quotes nothing.
+    message carries one or the other, so a caller that must not surface guest text takes this
+    and quotes nothing. What it renders beside it is that caller's to choose.
     """
 
     def __init__(

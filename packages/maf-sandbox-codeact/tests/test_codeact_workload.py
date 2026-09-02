@@ -3094,11 +3094,9 @@ class TestAWithheldTimeoutQuotesNothing:
         assert "before the program was started" not in out
 
     def test_the_hosts_reason_for_reading_no_output_is_carried(self):
-        """An output dropped for its size leaves the host explaining why, and that explanation
-        is the half of the message the guest did not write.
-
-        Reduced to the attributes it used to go with it: `output` is empty in exactly this
-        case, so a sentence rebuilt from that alone reports a program that printed nothing.
+        """An output dropped for its size leaves the host explaining why, and `output` is empty
+        in exactly that case — so a withheld sentence built from `output` alone reports a
+        program that printed nothing.
         """
         limits = TransferLimits(max_bytes_per_file=64, max_total_bytes=32, max_files=4)
         registry = _registry(_round_half_up, response_limits=limits)
