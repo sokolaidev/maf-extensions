@@ -60,9 +60,9 @@ Whichever mode is derived, the router serves it **only on a backend that enforce
 
 `acquire` is get-or-create, so the same sandbox serves every call in a conversation. The per-call directory is what keeps that from being a correctness bug: without it a file deleted from the store between rounds is still there for the next program to read as current, and last round's output is collected as this round's — a stale answer presented as a live one, in a kind whose job is transforming files.
 
-The path comes from `session.guest_call_path()`; the framework owns it and reclaims it in a `finally` when the call returns ([`../tool-call.md`](../tool-call.md)). The run id is chosen **before** `acquire`, so a declared output name can be judged against the guest path it will actually become — the prefix is 13 bytes of the 255 a name gets.
+The path comes from `session.guest_call_path()`; the framework owns it and reclaims it in a `finally` when the call returns ([`../tool-call.md`](../tool-call.md)). The call id in it is chosen **before** `acquire`, so a declared output name can be judged against the guest path it will actually become — the prefix is the id core allocates, derived from the path rather than counted.
 
-The layout inside it depends on whether a registry is wired, and the kind derives everything a model can name from one prefix so the three uses cannot disagree about a run's shape:
+The layout inside it depends on whether a registry is wired, and the kind derives everything a model can name from one prefix so the three uses cannot disagree about a call's shape:
 
 | | no registry | with a registry |
 |---|---|---|
