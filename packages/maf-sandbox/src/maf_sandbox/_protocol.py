@@ -47,6 +47,7 @@ __all__ = [
     "SandboxQueuedTimeout",
     "SandboxSpec",
     "ScopePurge",
+    "SourceChannel",
     "SourceIntegrity",
     "TransferLimits",
     "fold_disposal_failures",
@@ -270,6 +271,36 @@ class SourceIntegrity(StrEnum):
 INTEGRITY_RANK: Mapping[SourceIntegrity, int] = {
     level: rank for rank, level in enumerate((SourceIntegrity.UNTRUSTED, SourceIntegrity.TRUSTED))
 }
+
+
+class SourceChannel(StrEnum):
+    """A way into a workload's result that the framework cannot label for itself.
+
+    A spec names these before the sandbox exists — a capability it requires, a network mode it
+    runs in — which is what lets :func:`~maf_sandbox.sandbox_tool_declarations` check a
+    ``"trusted"`` declaration against them.  The rule being checked is
+    :class:`SourceIntegrity`'s: trusted is honest only where every surviving source is
+    established *as trusted*, and on its own none of these establishes anything.
+
+    Apart from :class:`Capability` because one member is not a capability.  Egress is a mode and
+    a payload rather than something a backend serves, and there has been no ``Capability.NETWORK``
+    since it was removed for that reason.
+    ``docs/sandbox/information-flow.md`` carries which spec field opens which channel.
+    """
+
+    #: The agent's file store feeds the guest — :data:`Capability.FILES_IN` in ``requires``.
+    #: :class:`AgentFileStore` holds a ``str`` and returns a ``str``, so what it hands over
+    #: cannot carry a label at all, and nothing downstream reconstructs one.
+    FILE_STORE = "file_store"
+    #: The program may fetch from a host the deployment allowed — ``egress_allow`` naming hosts,
+    #: or :data:`Egress.UNRESTRICTED`, which names nothing and reaches everything.  What comes
+    #: back is whatever that host served.
+    EGRESS = "egress"
+    #: The program may call back through a host-tool registry — :data:`Capability.HOST_TOOLS` in
+    #: ``requires``.  The one channel a spec can also *establish*: a sealed
+    #: :class:`HostToolAggregate` on :attr:`SandboxSpec.host_tools` folds its registered sources,
+    #: and that fold settles this channel and no other.
+    HOST_TOOLS = "host_tools"
 
 
 class Identity(StrEnum):
