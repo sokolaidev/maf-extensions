@@ -36,6 +36,9 @@ def echoed_name(name: str, *, at: str | None = None, hidden: bool = False) -> st
     ``at`` says where the value came from — ``"files[1]"`` — and is what a refusal names in
     its place; without it a refusal can say only how long the value was.
 
+    An **empty** value renders as its position alone, since there is nothing in it to repeat
+    and nothing to measure.
+
     ``hidden`` is the answer a caller should prefer wherever it can get one: pass ``True``
     where the framework expanded content it had hidden into this value, and the shape below is
     not consulted at all.  :func:`~maf_sandbox.maf.values_holding_hidden_content` computes it.
@@ -43,6 +46,10 @@ def echoed_name(name: str, *, at: str | None = None, hidden: bool = False) -> st
     :data:`MAX_ECHOED_NAME_CHARACTERS` characters, printable and free of spaces — a bound on
     shape, which is what a caller with no better answer has.
     """
+    if not name:
+        # Nothing to repeat and nothing to measure: quoting `''` back tells a caller only what
+        # it already knows, where the position says which argument was left empty.
+        return at if at is not None else "an empty value"
     if (
         not hidden
         and len(name) <= MAX_ECHOED_NAME_CHARACTERS

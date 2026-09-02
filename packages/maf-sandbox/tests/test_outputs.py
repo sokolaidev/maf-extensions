@@ -293,6 +293,19 @@ class TestARefusalNamesRatherThanEchoes:
             validate_artifact_name("a" * 256, at="outputs[0]")
         assert "a" * 256 not in str(caught.value)
 
+    def test_the_empty_name_refusal_identifies_the_argument_too(self):
+        """The one refusal that returns before a name exists still has to say which argument.
+
+        It raised before the rendering was computed, so it was the single exception to the
+        docstring's promise that every refusal names the position it was given.
+        """
+        with pytest.raises(SandboxArtifactNameInvalid, match=r"outputs\[1\]"):
+            validate_artifact_name("", at="outputs[1]")
+
+    def test_the_empty_name_refusal_still_reads_without_a_position(self):
+        with pytest.raises(SandboxArtifactNameInvalid, match="non-empty relative path"):
+            validate_artifact_name("")
+
     def test_the_rule_that_refused_is_still_named(self):
         """Naming rather than echoing must not cost the caller the reason."""
         with pytest.raises(SandboxArtifactNameInvalid, match="absolute"):

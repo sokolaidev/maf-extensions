@@ -312,9 +312,9 @@ def validate_artifact_name(name: str, *, at: str | None = None, hidden: bool = F
     Raises:
         SandboxArtifactNameInvalid: naming which of the rules the name broke.
     """
-    if not name:
-        raise SandboxArtifactNameInvalid("an artifact name must be a non-empty relative path")
     echoed = echoed_name(name, at=at, hidden=hidden)
+    if not name:
+        raise SandboxArtifactNameInvalid(f"{echoed} must be a non-empty relative path")
     if _BACKSLASH in name:
         raise SandboxArtifactNameInvalid(
             f"{echoed} contains a backslash. The protocol has one path grammar "

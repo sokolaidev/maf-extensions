@@ -33,8 +33,12 @@ class TestANameIsQuoted:
     def test_the_position_is_unused_while_the_name_reads_like_one(self):
         assert echoed_name("main.bicep", at="files[1]") == "'main.bicep'"
 
-    def test_an_empty_name_is_quoted(self):
-        assert echoed_name("") == "''"
+    def test_an_empty_name_renders_as_its_position(self):
+        """`''` quoted back tells a caller nothing; which argument was left empty does."""
+        assert echoed_name("", at="outputs[1]") == "outputs[1]"
+
+    def test_an_empty_name_without_a_position_says_only_that(self):
+        assert echoed_name("") == "an empty value"
 
     def test_a_name_at_the_ceiling_is_still_quoted(self):
         name = "a" * MAX_ECHOED_NAME_CHARACTERS
