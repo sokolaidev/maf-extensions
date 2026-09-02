@@ -125,10 +125,11 @@ def make_diagram_tools(
         spec=spec,
         name=RENDER_DIAGRAM_TOOL_NAME,
         approval_mode="never_require",
-        # `source_integrity` stays at its "trusted" default: the result is deterministic
-        # first-party output from a no-identity, closed-egress sandbox — a host-authored
-        # reference on success, `dot`'s own diagnostic on failure — the same basis on which the
-        # Bicep workload trusts a compiler's output. It is not model-authored content.
+        # No integrity declaration. `dot`'s failure diagnostic quotes the model's own DOT
+        # source, and which of the reference and the diagnostic comes back is decided by
+        # that source — a presence bit — so nothing about the result is first-party. `dot`
+        # is an unlabelled argument, so the framework's input-label join answers untrusted.
+        source_integrity=None,
         output_sink=sink,
         logger=logger,
     )
