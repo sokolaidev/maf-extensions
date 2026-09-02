@@ -1608,20 +1608,39 @@ def _format_landed(
     """
     delivered = {unicodedata.normalize("NFC", item.name) for item in landed}
     lines: list[str] = []
-    if landed:
-        lines.append("Saved:")
-        if withhold:
-            lines.extend(
-                f"- {name}" for name in declared if unicodedata.normalize("NFC", name) in delivered
-            )
-        else:
-            lines.extend(f"- {item.display}" for item in landed)
-    # A name that produced no file is reported the way a refusal reports one: the caller's
-    # spelling where it is the caller's, and the position where the framework put something
-    # else there. It is the one line here that names a file which does not exist.
+    # Answered once, above the two renderings that need it: a name that landed is reported as
+    # surely as one that did not, and a name the framework substituted must not be repeated
+    # either way. `withhold` makes no difference to that — it is the mode that renders least.
     rewritten = positions_holding_hidden_content(
         list(declared), argument=argument, candidates=candidates
     )
+    position_of = {
+        unicodedata.normalize("NFC", name): position for position, name in enumerate(declared)
+    }
+
+    if landed:
+        lines.append("Saved:")
+        if withhold:
+            for position, name in enumerate(declared):
+                if unicodedata.normalize("NFC", name) in delivered:
+                    # The name itself unless the framework put it there: this is a list of
+                    # files, not a refusal, so a name of the model's own is what it wants back.
+                    lines.append(
+                        f"- {named_by}[{position}]" if position in rewritten else f"- {name}"
+                    )
+        else:
+            for item in landed:
+                # The display carries the name inside it, so a substituted one is reported by
+                # position instead. A name of the model's own keeps the size and the rest of it.
+                position = position_of.get(unicodedata.normalize("NFC", item.name))
+                lines.append(
+                    f"- {named_by}[{position}]"
+                    if position is not None and position in rewritten
+                    else f"- {item.display}"
+                )
+    # A name that produced no file is reported the way a refusal reports one: the caller's
+    # spelling where it is the caller's, and the position where the framework put something
+    # else there. It is the one line here that names a file which does not exist.
     missing = [
         echoed_name(name, at=f"{named_by}[{position}]", hidden=position in rewritten)
         for position, name in enumerate(declared)

@@ -387,7 +387,9 @@ def _reduced_form(payload: object) -> object:
         if stripped.startswith("{") and stripped.endswith("}"):
             try:
                 parsed = json.loads(stripped)
-            except ValueError:
+            except (ValueError, RecursionError):
+                # `RecursionError` is not a `ValueError`, and this walks the whole store: a
+                # payload nothing referenced must not end the call that asked about another.
                 return payload
             if isinstance(parsed, dict) and "response" in parsed:
                 return cast("dict[str, Any]", parsed)["response"]

@@ -2887,6 +2887,17 @@ class TestPositionsHoldingHiddenContent:
         with pytest.raises(Exception, match="valid string|Invalid arguments"):
             self._hidden("[VAR]", stored=stored)
 
+    def test_a_payload_too_deep_to_parse_does_not_end_an_unrelated_call(self):
+        """`json.loads` raises `RecursionError`, which is not a `ValueError`.
+
+        The framework parses only the payload it is expanding; this walks the store whole, so a
+        payload nothing referenced still reaches it.
+        """
+        deep = '{"a":' + "[" * 3200 + "]" * 3200 + "}"
+        seen = self._hidden("main.bicep", stored=deep)  # nothing references it
+        assert seen["received"] == ["main.bicep"]
+        assert seen["hidden"] == frozenset(), "an untouched name, and no error out of the walk"
+
     def test_the_inference_reports_a_value_the_caller_sent_itself(self):
         """Pinned as a property rather than left to be discovered.
 
