@@ -74,7 +74,7 @@ Oregon	TOTAL	3514.35
 
   [measured] transport cleanup: left for the sandbox (#438)
   [measured] call directory cleanup: left for the sandbox (#438)
-  [measured] run directories across both sandboxes: 3
+  [measured] call directories across both sandboxes: 3
   [measured] of those, runs that called a host tool: 2
   [measured] transport files left behind: 75, of which answered calls: 25
 
@@ -100,7 +100,9 @@ _RECLAIMED = (
         "call directory cleanup: left for the sandbox (#438)",
         "call directory cleanup: reclaimed by the framework",
     )
-    .replace("run directories across both sandboxes: 3", "run directories across both sandboxes: 0")
+    .replace(
+        "call directories across both sandboxes: 3", "call directories across both sandboxes: 0"
+    )
     .replace(
         "of those, runs that called a host tool: 2", "of those, runs that called a host tool: 0"
     )
@@ -302,11 +304,11 @@ class TestDirectPaysPerStage:
                     "host-tool-call route: tool calls per round: [1, 1]",
                     "host-tool-call route: tool calls per round: [1, 1, 1]",
                 )
-                .replace("run directories across both sandboxes: 3", "…dirs…")
+                .replace("call directories across both sandboxes: 3", "…dirs…")
                 .replace(
                     "programs that called a host tool: 2", "programs that called a host tool: 3"
                 )
-                .replace("…dirs…", "run directories across both sandboxes: 4")
+                .replace("…dirs…", "call directories across both sandboxes: 4")
                 .replace(
                     "transport files left behind: 75, of which answered calls: 25",
                     "transport files left behind: 87, of which answered calls: 29",
@@ -694,8 +696,8 @@ class TestATransportThatReclaimsItsOwn:
 
     def test_reclaimed_call_directories_must_not_leave_run_directories(self):
         broken = _reclaimed(
-            "run directories across both sandboxes: 0",
-            "run directories across both sandboxes: 1",
+            "call directories across both sandboxes: 0",
+            "call directories across both sandboxes: 1",
         )
         assert any("survived framework reclamation" in r for r in check.assess(broken))
 
@@ -738,8 +740,8 @@ class TestATransportThatReclaimsItsOwn:
             "the only thing left saying the programs ran" in r
             for r in check.assess(
                 _transport_reclaimed(
-                    "run directories across both sandboxes: 3",
-                    "run directories across both sandboxes: 2",
+                    "call directories across both sandboxes: 3",
+                    "call directories across both sandboxes: 2",
                 )
             )
         )
@@ -784,8 +786,8 @@ class TestTheRunsLeftTheirTrafficBehind:
             "one sandbox short" in r
             for r in check.assess(
                 _swap(
-                    "[measured] run directories across both sandboxes: 3",
-                    "[measured] run directories across both sandboxes: 2",
+                    "[measured] call directories across both sandboxes: 3",
+                    "[measured] call directories across both sandboxes: 2",
                 )
             )
         )
@@ -851,7 +853,7 @@ class TestTheRunsLeftTheirTrafficBehind:
     @pytest.mark.parametrize(
         "line",
         [
-            "run directories across both sandboxes",
+            "call directories across both sandboxes",
             "of those, runs that called a host tool",
             "transport files left behind",
         ],
@@ -1169,7 +1171,7 @@ class TestTheCommandLine:
         "direct route: sales figures the model wrote",
         "sales figures the model wrote into code, direct",
         "round trip:",
-        "run directories across both sandboxes",
+        "call directories across both sandboxes",
         "transport files left behind",
         "Disposed",
     ],
@@ -1186,7 +1188,7 @@ _ACT_FIVE_MARKERS = (
     "== 5. What the runs left",
     "transport cleanup:",
     "call directory cleanup:",
-    "run directories across both sandboxes:",
+    "call directories across both sandboxes:",
     "of those, runs that called a host tool:",
     "transport files left behind:",
 )

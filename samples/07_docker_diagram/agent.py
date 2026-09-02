@@ -66,7 +66,7 @@ from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
 logger = logging.getLogger(__name__)
 
-# A sandbox is keyed by (scope, thread_id, agent_dir). A host reads the first two from its own
+# A sandbox is keyed by the caller's scope, thread and agent directory. A host reads the first two from its own
 # request context; this program serves one request, so they are constants — named, not inlined,
 # because they belong to the request rather than to the agent.
 SCOPE = "samples"

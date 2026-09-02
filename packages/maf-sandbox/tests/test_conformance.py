@@ -19,12 +19,24 @@ refused outright, which is the shell-less backend the subject's seams exist for 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import posixpath
 import re
 
 import pytest
 
-from maf_sandbox import Capability, EntryKind, ExecResult, Sandbox, SandboxEntry
+from maf_sandbox import (
+    Capability,
+    EntryKind,
+    ExecResult,
+    Isolation,
+    IsolationScope,
+    Sandbox,
+    SandboxEntry,
+    SandboxKey,
+    SandboxRouter,
+    SandboxSpec,
+)
 from maf_sandbox.conformance import (
     EXEC_PROBES,
     FILES_DELETE_PROBES,
@@ -34,6 +46,7 @@ from maf_sandbox.conformance import (
     ConformanceFailure,
     ConformancePaths,
     PosixGuestSubject,
+    assert_call_scope_conformance,
     assert_egress_conformance,
     assert_exec_conformance,
     assert_files_delete_conformance,
@@ -41,13 +54,18 @@ from maf_sandbox.conformance import (
     assert_files_out_conformance,
     assert_reclaim_conformance,
     measure_files_delete_probes,
+    run_call_scope_probes,
     run_exec_probes,
     run_files_delete_probes,
     run_files_in_probes,
     run_files_out_probes,
     run_reclaim_probes,
 )
-from maf_sandbox.testing import InProcessSandbox
+from maf_sandbox.testing import (
+    FAKE_BACKEND_DECLARATIONS,
+    InProcessSandbox,
+    InProcessSandboxBackend,
+)
 
 _WORK = "/maf-sandbox/work"
 _BOTH = frozenset({Capability.FILES_OUT, Capability.FILES_LIST})
@@ -1534,6 +1552,273 @@ class _EgressSubject:
 
     async def plant_file(self, path: str, content: bytes) -> None:
         await self.sandbox.write_file(path, content, working_directory=self.working_directory)
+
+
+class _StoreSubject(_FakeSubject):
+    """`_FakeSubject` whose `exists` reads the store rather than the scripted `exec`.
+
+    The shipped fake answers every command with success, so an `exec`-borne `exists` is true
+    everywhere. Right for the suites that verify through the store, wrong for the one probe that
+    asks whether a name is there at all.
+    """
+
+    async def exists(self, path: str) -> bool:
+        entry = await self.sandbox.stat_file(path, working_directory=posixpath.dirname(path) or "/")
+        return entry is not None
+
+
+class _VanishingSubject(_StoreSubject):
+    """A subject whose plant lands nowhere — the harness failure the positive controls exist for."""
+
+    async def plant_file(self, path: str, content: bytes) -> None:
+        del path, content
+
+
+class TestCallScopeConformance:
+    """The package that ships the suite answers it too, through two real acquires.
+
+    Two keys differing only in `call_id`, served by the fake in its per-key mode: the shape a
+    backend's own test builds.
+    """
+
+    _SPEC = SandboxSpec(kind="test", isolation_scope=IsolationScope.CALL, work_dir=_WORK)
+    _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-1", call_id="one")
+
+    def _router(self) -> SandboxRouter:
+        backend = InProcessSandboxBackend(
+            sandbox_per_key=True,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                capabilities=_EVERYTHING,
+                isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
+            ),
+        )
+        return SandboxRouter([backend], min_isolation=Isolation.NONE)
+
+    def _served(self, capabilities: frozenset[Capability] = _EVERYTHING):
+        """The first subject, a factory for the second, and the seam that deletes the first."""
+        router = self._router()
+
+        async def first() -> _StoreSubject:
+            return _StoreSubject(await router.acquire(self._KEY, self._SPEC), capabilities)
+
+        async def acquire_another() -> _StoreSubject:
+            second = await router.acquire(dataclasses.replace(self._KEY, call_id="two"), self._SPEC)
+            return _StoreSubject(second, capabilities)
+
+        async def dispose_this_call() -> None:
+            if not await router.dispose_call(self._KEY, timeout=5.0):
+                raise AssertionError("the delete did not land, so the probe would prove nothing")
+
+        async def dispose_the_other() -> None:
+            await router.dispose_call(dataclasses.replace(self._KEY, call_id="two"), timeout=5.0)
+
+        return first, acquire_another, dispose_this_call, dispose_the_other
+
+    def test_two_sandboxes_answer_every_probe(self):
+        first, acquire_another, dispose_this_call, dispose_the_other = self._served()
+
+        async def run():
+            return await assert_call_scope_conformance(
+                await first(), acquire_another, dispose_this_call, dispose_the_other
+            )
+
+        results = asyncio.run(run())
+        assert [result.failure for result in results] == [None] * 5
+        assert [result.skipped for result in results] == [None] * 5
+
+    def test_one_filesystem_behind_two_keys_fails_the_separation_probes(self):
+        """The specimen the suite exists for: the sharing a declaration cannot be trusted about."""
+        shared = InProcessSandbox()
+
+        async def acquire_another() -> _StoreSubject:
+            return _StoreSubject(shared, _EVERYTHING)
+
+        async def dispose_this_call() -> None:
+            shared.contents.clear()
+
+        async def dispose_the_other() -> None:
+            """Nothing to release: this specimen's sandboxes are objects the test holds."""
+
+        with pytest.raises(ConformanceFailure) as raised:
+            asyncio.run(
+                assert_call_scope_conformance(
+                    _StoreSubject(shared, _EVERYTHING),
+                    acquire_another,
+                    dispose_this_call,
+                    dispose_the_other,
+                )
+            )
+        assert len(raised.value.failures) == 5
+        assert "CALL_SCOPE" in str(raised.value)
+
+    def test_a_sandbox_seeded_from_the_conversations_is_refused(self):
+        """Two filesystems, and the second opens holding the first's files.
+
+        A warm start that copies the conversation's sandbox satisfies every probe that writes
+        after both exist, which is why one of them plants before the second is acquired.
+        """
+        first = InProcessSandbox()
+
+        async def acquire_another() -> _StoreSubject:
+            seeded = InProcessSandbox()
+            seeded.contents.update(first.contents)
+            return _StoreSubject(seeded, _EVERYTHING)
+
+        async def dispose_this_call() -> None:
+            first.contents.clear()
+
+        async def dispose_the_other() -> None:
+            """Nothing to release: this specimen's sandboxes are objects the test holds."""
+
+        with pytest.raises(ConformanceFailure) as raised:
+            asyncio.run(
+                assert_call_scope_conformance(
+                    _StoreSubject(first, _EVERYTHING),
+                    acquire_another,
+                    dispose_this_call,
+                    dispose_the_other,
+                )
+            )
+        assert [failure.probe.name for failure in raised.value.failures] == [
+            "arrives-without-the-other-calls-data"
+        ]
+
+    def test_a_disposal_that_sweeps_the_conversation_is_refused(self):
+        """Acquire folds the call; dispose still reaches by scope, thread and agent.
+
+        Every probe that runs before a delete passes, and ending one call destroys the sandbox
+        of another still running beside it — which is what the shipped backends' `dispose` would
+        do if they declared the scope without changing it.
+        """
+        first = InProcessSandbox()
+        second = InProcessSandbox()
+
+        async def acquire_another() -> _StoreSubject:
+            return _StoreSubject(second, _EVERYTHING)
+
+        async def dispose_this_call() -> None:
+            first.contents.clear()
+            second.contents.clear()  # the sweep: everything for this scope, thread and agent
+
+        async def dispose_the_other() -> None:
+            """Nothing to release: this specimen's sandboxes are objects the test holds."""
+
+        with pytest.raises(ConformanceFailure) as raised:
+            asyncio.run(
+                assert_call_scope_conformance(
+                    _StoreSubject(first, _EVERYTHING),
+                    acquire_another,
+                    dispose_this_call,
+                    dispose_the_other,
+                )
+            )
+        assert [failure.probe.name for failure in raised.value.failures] == [
+            "disposing-this-call-leaves-the-other"
+        ]
+
+    def test_a_plant_that_lands_nowhere_fails_rather_than_passes(self):
+        """The positive control: a subject whose writes vanish must not read as separation."""
+        _, acquire_another, dispose_this_call, dispose_the_other = self._served()
+
+        async def run():
+            return await assert_call_scope_conformance(
+                _VanishingSubject(InProcessSandbox(), _EVERYTHING),
+                acquire_another,
+                dispose_this_call,
+                dispose_the_other,
+            )
+
+        with pytest.raises(ConformanceFailure) as raised:
+            asyncio.run(run())
+        assert "attacked nothing" in str(raised.value)
+
+    def test_no_capability_gates_the_run(self):
+        """A backend owes these probes whatever else it declares.
+
+        `plant_file` and `exists` are the subject's own seams, as they are for the mandatory
+        reclaim suite, so gating on `FILES_IN` would lock a valid call-scoped backend out of the
+        suite it owes for declaring the scope. The two probes that read a sandbox back still skip.
+        """
+        first, acquire_another, dispose_this_call, dispose_the_other = self._served(
+            frozenset({Capability.EXEC})
+        )
+
+        async def run():
+            return await run_call_scope_probes(
+                await first(), acquire_another, dispose_this_call, dispose_the_other
+            )
+
+        results = asyncio.run(run())
+        assert [result.failure for result in results] == [None] * 5
+        assert [result.skipped is None for result in results] == [True, True, False, False, True]
+
+    def test_the_second_sandbox_is_released_when_its_acquire_raises(self):
+        """A create that raises part-way has still made the thing the teardown exists for.
+
+        The acquire is the suite's own, so a caller never learns a sandbox was made; leaving it
+        outside the `finally` is a live, billable one waiting on a scope purge.
+        """
+        released: list[str] = []
+
+        async def acquire_another() -> _StoreSubject:
+            raise RuntimeError("the provider created it and then failed")
+
+        async def dispose_this_call() -> None:
+            released.append("this call")
+
+        async def dispose_the_other() -> None:
+            released.append("the other")
+
+        with pytest.raises(RuntimeError, match="created it and then failed"):
+            asyncio.run(
+                run_call_scope_probes(
+                    _StoreSubject(InProcessSandbox(), _EVERYTHING),
+                    acquire_another,
+                    dispose_this_call,
+                    dispose_the_other,
+                )
+            )
+        assert released == ["the other"]
+
+    def test_the_second_sandbox_is_released_when_the_run_is_cancelled(self):
+        released: list[str] = []
+
+        async def acquire_another() -> _StoreSubject:
+            raise asyncio.CancelledError
+
+        async def dispose_this_call() -> None:
+            released.append("this call")
+
+        async def dispose_the_other() -> None:
+            released.append("the other")
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                run_call_scope_probes(
+                    _StoreSubject(InProcessSandbox(), _EVERYTHING),
+                    acquire_another,
+                    dispose_this_call,
+                    dispose_the_other,
+                )
+            )
+        assert released == ["the other"]
+
+    def test_two_roots_are_refused_rather_than_passing_vacuously(self):
+        first, acquire_another, dispose_this_call, dispose_the_other = self._served()
+
+        async def run():
+            async def elsewhere() -> _StoreSubject:
+                second = await acquire_another()
+                second.working_directory = f"{_WORK}-elsewhere"
+                return second
+
+            return await run_call_scope_probes(
+                await first(), elsewhere, dispose_this_call, dispose_the_other
+            )
+
+        with pytest.raises(ValueError, match="rooted at"):
+            asyncio.run(run())
 
 
 class TestEgressConformance:

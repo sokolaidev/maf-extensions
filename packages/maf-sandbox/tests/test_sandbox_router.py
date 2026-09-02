@@ -1,14 +1,16 @@
 """Tests for the sandbox router.
 
-The router has exactly five jobs, and all of them are tested here rather than inferred:
+The router has exactly seven jobs, and all of them are tested here rather than inferred:
 
 - picking a backend from configuration;
 - refusing a backend below the minimum-isolation floor the host — or a spec — requires;
 - refusing a backend that cannot do what a workload's spec requires;
+- refusing a backend that hands out no guest of the shape the spec is written for;
 - refusing a spec whose transfer caps sit above what the backend allows;
-- refusing a backend that cannot confine egress to what a workload's spec allows.
+- refusing a backend that cannot confine egress to what a workload's spec allows;
+- refusing a backend that cannot serve the workload at the isolation scope it runs at.
 
-The floor, the transfer ceilings and the egress rule are security properties. A shared-kernel
+The floor, the transfer ceilings, the egress rule and the scope are security properties. A shared-kernel
 container sits next to the host's credentials, and the posture a deployment claims rests on
 the boundary it actually got — so "the router would refuse" needs to be a test, not a comment.
 """
@@ -30,6 +32,7 @@ from maf_sandbox import (
     DEFAULT_SANDBOX_LIMITS,
     DEFAULT_TRANSFER_LIMITS,
     ISOLATION_RANK,
+    ISOLATION_SCOPE_RANK,
     BackendDeclarations,
     Capability,
     DeclaredOutput,
@@ -40,6 +43,7 @@ from maf_sandbox import (
     HostToolAggregate,
     Identity,
     Isolation,
+    IsolationScope,
     NoSandboxBackend,
     OsFamily,
     OutputDisposition,
@@ -56,6 +60,7 @@ from maf_sandbox import (
     SandboxOsFamilyNotSupported,
     SandboxPurger,
     SandboxRouter,
+    SandboxScopeNotEnforced,
     SandboxSpec,
     SandboxTransferLimitsNotPermitted,
     SandboxUnclean,
@@ -1271,6 +1276,445 @@ class TestEgressRule:
         SandboxRouter([]).ensure_can_serve(self._ALLOWLIST_SPEC)
 
 
+class TestIsolationScopeRule:
+    """One sandbox per conversation or one per call, resolved the way egress is.
+
+    The refusal is what makes the scope a boundary. A backend that cannot create per call would
+    otherwise answer both acquires with the conversation's sandbox: every call succeeds, and the
+    separation the workload asked for is not there and says nothing about being absent.
+    """
+
+    _SPEC = SandboxSpec(kind="bicep")
+    _CALL_SPEC = SandboxSpec(kind="bicep", isolation_scope=IsolationScope.CALL)
+
+    def _router(self, *scopes: IsolationScope, floor: IsolationScope | None = None):
+        declarations = dataclasses.replace(
+            FAKE_BACKEND_DECLARATIONS, isolation_scopes=frozenset(scopes)
+        )
+        return SandboxRouter(
+            [InProcessSandboxBackend(declarations=declarations)],
+            min_isolation=Isolation.NONE,
+            **({} if floor is None else {"min_isolation_scope": floor}),
+        )
+
+    def test_the_rank_is_exhaustive_and_ordered(self):
+        """A member added to the enum and not to the rank is a comparison that raises KeyError."""
+        assert set(ISOLATION_SCOPE_RANK) == set(IsolationScope)
+        assert sorted(ISOLATION_SCOPE_RANK.values()) == list(range(len(IsolationScope)))
+        assert (
+            ISOLATION_SCOPE_RANK[IsolationScope.CALL]
+            > ISOLATION_SCOPE_RANK[IsolationScope.CONVERSATION]
+        )
+
+    def test_a_backend_declaring_nothing_still_serves_a_conversation(self):
+        """The one silence rule that is a claim: get-or-create is what every backend already did."""
+        self._router().ensure_can_serve(self._SPEC)
+
+    def test_a_backend_declaring_nothing_refuses_a_per_call_workload(self):
+        with pytest.raises(SandboxScopeNotEnforced, match="one sandbox per call") as raised:
+            self._router().ensure_can_serve(self._CALL_SPEC)
+        assert "it serves one per conversation" in str(raised.value)
+        assert "call_id" in str(raised.value)
+
+    def test_a_backend_declaring_the_scope_serves_it(self):
+        self._router(IsolationScope.CONVERSATION, IsolationScope.CALL).ensure_can_serve(
+            self._CALL_SPEC
+        )
+
+    def test_a_backend_serving_only_calls_refuses_a_conversation(self):
+        """A set naming one scope says it serves one: a backend serving both declares both."""
+        with pytest.raises(SandboxScopeNotEnforced, match="one sandbox per conversation"):
+            self._router(IsolationScope.CALL).ensure_can_serve(self._SPEC)
+
+    def test_a_scope_matches_when_declared_as_a_plain_string(self):
+        """Backends outside this repository declare strings; `StrEnum` keeps them matching."""
+        assert IsolationScope.CALL == "call"
+        backend = InProcessSandboxBackend(
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                isolation_scopes=typing.cast("typing.Any", frozenset({"call", "conversation"})),
+            )
+        )
+        SandboxRouter([backend], min_isolation=Isolation.NONE).ensure_can_serve(self._CALL_SPEC)
+
+    def test_a_malformed_declaration_is_refused(self):
+        """A posture nobody can read is refused rather than guessed in the workload's favour.
+
+        Reading it as silence would mint the `{conversation}` claim, so a backend that
+        mis-shapedly declared only `CALL` would be served the conversation workloads its
+        readable declaration turns away.
+        """
+        backend = InProcessSandboxBackend(
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                isolation_scopes=typing.cast("typing.Any", "call"),
+            )
+        )
+        router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+        with pytest.raises(SandboxBackendNotPermitted, match="isolation_scopes"):
+            router.ensure_can_serve(self._SPEC)
+
+    def test_an_empty_declaration_is_still_the_conversation(self):
+        """Absent and empty are the same silence, and that silence is the legacy claim."""
+        self._router().ensure_can_serve(self._SPEC)
+
+    def test_a_host_raises_the_scope_for_every_workload_it_serves(self):
+        """The deployment's own say, over a spec that asked for nothing."""
+        router = self._router(IsolationScope.CONVERSATION, floor=IsolationScope.CALL)
+        assert router.effective_isolation_scope(self._SPEC) is IsolationScope.CALL
+        with pytest.raises(SandboxScopeNotEnforced, match="one sandbox per call"):
+            router.ensure_can_serve(self._SPEC)
+
+    def test_a_spec_may_raise_the_hosts_scope_and_never_lower_it(self):
+        served = self._router(IsolationScope.CONVERSATION, IsolationScope.CALL)
+        assert served.effective_isolation_scope(self._SPEC) is IsolationScope.CONVERSATION
+        assert served.effective_isolation_scope(self._CALL_SPEC) is IsolationScope.CALL
+        raised = self._router(
+            IsolationScope.CONVERSATION, IsolationScope.CALL, floor=IsolationScope.CALL
+        )
+        assert raised.effective_isolation_scope(self._SPEC) is IsolationScope.CALL
+        assert raised.effective_isolation_scope(self._CALL_SPEC) is IsolationScope.CALL
+
+    def test_a_scope_this_package_does_not_recognise_is_refused_at_construction(self):
+        """A floor that never matches would read as protection and provide none."""
+        with pytest.raises(ValueError, match="per-request"):
+            SandboxRouter(
+                [InProcessSandboxBackend()],
+                min_isolation=Isolation.NONE,
+                min_isolation_scope=typing.cast("typing.Any", "per-request"),
+            )
+
+    def test_no_backend_configured_is_not_a_scope_failure(self):
+        SandboxRouter([], min_isolation_scope=IsolationScope.CALL).ensure_can_serve(self._CALL_SPEC)
+
+
+class TestSpecValuesAreNormalisedOnConstruction:
+    """A `StrEnum` member equals its own string, so a string field satisfies `==` and fails `is`.
+
+    Both checks that make a per-call sandbox a boundary are `is` — the call id the key carries,
+    and the router's refusal of a key without one — so a field these tests let through as a
+    string is a workload served conversation-scoped with nothing refused.
+    """
+
+    def test_a_string_scope_becomes_the_member(self):
+        spec = SandboxSpec(kind="bicep", isolation_scope=typing.cast("typing.Any", "call"))
+        assert spec.isolation_scope is IsolationScope.CALL
+
+    def test_a_string_scope_reaches_the_router_as_the_member(self):
+        router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE)
+        spec = SandboxSpec(kind="bicep", isolation_scope=typing.cast("typing.Any", "call"))
+        assert router.effective_isolation_scope(spec) is IsolationScope.CALL
+
+    def test_a_string_scoped_workload_still_meets_the_bare_key_refusal(self):
+        """The consequence the coercion exists for, asserted end to end."""
+        backend = InProcessSandboxBackend(
+            sandbox_per_key=True,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
+            ),
+        )
+        router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+        spec = SandboxSpec(kind="bicep", isolation_scope=typing.cast("typing.Any", "call"))
+        with pytest.raises(ValueError, match="names no call"):
+            asyncio.run(router.acquire(_KEY, spec))
+
+    def test_the_routers_answer_is_a_member_whoever_set_the_field(self):
+        """Every gate that makes the scope a boundary is an `is`, so the answer cannot be a string.
+
+        The constructor normalises what it is given; this holds for a spec whose field was set
+        past it, which is the one way a string still reaches the router.
+        """
+        router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE)
+        spec = SandboxSpec(kind="bicep")
+        object.__setattr__(spec, "isolation_scope", "call")
+        assert router.effective_isolation_scope(spec) is IsolationScope.CALL
+
+    def test_a_scope_that_is_not_a_member_is_refused_where_it_is_written(self):
+        with pytest.raises(ValueError, match="per-request"):
+            SandboxSpec(kind="bicep", isolation_scope=typing.cast("typing.Any", "per-request"))
+
+    def test_a_string_egress_becomes_the_member(self):
+        """A spec whose `egress_allow` names hosts must read as `ALLOWLIST`.
+
+        `__post_init__` compares the mode with `is`, so a string that satisfies the rule by
+        equality has to land as the member or be refused by the check it passes.
+        """
+        spec = SandboxSpec(
+            kind="bicep",
+            egress=typing.cast("typing.Any", "allowlist"),
+            egress_allow=("example.invalid",),
+        )
+        assert spec.egress is Egress.ALLOWLIST
+
+    def test_an_egress_that_is_not_a_member_is_refused_where_it_is_written(self):
+        with pytest.raises(ValueError, match="sometimes"):
+            SandboxSpec(kind="bicep", egress=typing.cast("typing.Any", "sometimes"))
+
+
+class TestAKeyMustNameTheCallItIsScopedTo:
+    """At `IsolationScope.CALL`, a key with no `call_id` is the sharing the scope refuses.
+
+    The hole this closes is a kind building its own key: the router would take it, get-or-create
+    would answer with the conversation's sandbox, and the tool's declaration would still say the
+    workload was served per call.
+    """
+
+    _CALL_SPEC = SandboxSpec(kind="bicep", isolation_scope=IsolationScope.CALL)
+
+    def _router(self) -> SandboxRouter:
+        return SandboxRouter(
+            [
+                InProcessSandboxBackend(
+                    sandbox_per_key=True,
+                    declarations=dataclasses.replace(
+                        FAKE_BACKEND_DECLARATIONS,
+                        isolation_scopes=frozenset(
+                            {IsolationScope.CONVERSATION, IsolationScope.CALL}
+                        ),
+                    ),
+                )
+            ],
+            min_isolation=Isolation.NONE,
+        )
+
+    def test_a_key_naming_no_call_is_refused(self):
+        with pytest.raises(ValueError, match="names no call"):
+            asyncio.run(self._router().acquire(_KEY, self._CALL_SPEC))
+
+    def test_a_key_naming_a_call_is_served(self):
+        keyed = dataclasses.replace(_KEY, call_id="7a1f")
+        assert asyncio.run(self._router().acquire(keyed, self._CALL_SPEC)) is not None
+
+    def test_two_calls_of_one_conversation_are_served_two_sandboxes(self):
+        router = self._router()
+
+        async def both():
+            first = await router.acquire(dataclasses.replace(_KEY, call_id="7a1f"), self._CALL_SPEC)
+            second = await router.acquire(
+                dataclasses.replace(_KEY, call_id="9c02"), self._CALL_SPEC
+            )
+            return first, second
+
+        first, second = asyncio.run(both())
+        assert first is not second
+
+    def test_a_conversation_workload_is_refused_a_key_naming_a_call(self):
+        """The inverse mismatch, and the one with teeth.
+
+        A backend serving conversations keys a sandbox by the other three fields, so it hands
+        back the conversation's — and the framework reads the scope off the key, so the cleanup
+        deletes that shared sandbox when one call ends.
+        """
+        keyed = dataclasses.replace(_KEY, call_id="7a1f")
+        with pytest.raises(ValueError, match="names a call"):
+            asyncio.run(self._router().acquire(keyed, SandboxSpec(kind="bicep")))
+
+    def test_a_conversation_workload_still_takes_a_bare_key(self):
+        assert asyncio.run(self._router().acquire(_KEY, SandboxSpec(kind="bicep"))) is not None
+
+
+class TestDisposingACallScopedKey:
+    """`dispose_call` bounds the delete and reports it, and writes nothing to the ledger.
+
+    A key marked unclean refuses that key's *next* acquire. A call-scoped key has none, so the
+    entry would be read by nobody and cleared by nothing — and refusing the conversation over a
+    sandbox no later call can address would charge it for a leak it cannot reach.
+    """
+
+    _CALL_KEY = SandboxKey(
+        scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer", call_id="7a1f"
+    )
+    _SCOPES = frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL})
+
+    def _serving(self, **kw) -> InProcessSandboxBackend:
+        """A backend that declares the scope — the only kind with a call's sandbox to delete."""
+        return InProcessSandboxBackend(
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS, isolation_scopes=self._SCOPES
+            ),
+            **kw,
+        )
+
+    def test_a_backend_that_does_not_serve_the_scope_is_refused(self):
+        """Its dispose sweeps by scope, thread and agent, so this would take the conversation's."""
+        router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE)
+        with pytest.raises(ValueError, match="does not serve that scope"):
+            asyncio.run(router.dispose_call(self._CALL_KEY, timeout=5.0))
+
+    def test_a_landed_delete_answers_true(self):
+        backend = self._serving()
+        router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+        assert asyncio.run(router.dispose_call(self._CALL_KEY, timeout=5.0)) is True
+        assert backend.disposed == [self._CALL_KEY]
+
+    def test_a_refused_delete_answers_false_and_leaves_the_conversation_open(self):
+        backend = self._serving(
+            sandbox_per_key=True,
+            dispose_failure=DisposalFailure("refused", "the service said no"),
+        )
+        router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+        spec = SandboxSpec(kind="bicep", isolation_scope=IsolationScope.CALL)
+
+        async def leak_then_serve_the_next_call():
+            landed = await router.dispose_call(self._CALL_KEY, timeout=5.0)
+            served = await router.acquire(dataclasses.replace(self._CALL_KEY, call_id="9c02"), spec)
+            return landed, served
+
+        landed, served = asyncio.run(leak_then_serve_the_next_call())
+        assert landed is False
+        assert served is not None
+
+    def test_the_opt_down_does_not_reach_this_delete(self):
+        """`KEEP` loosens an escalation; here the delete is the separation the workload asked for."""
+        backend = self._serving()
+        router = SandboxRouter(
+            [backend],
+            min_isolation=Isolation.NONE,
+            reclaim=ReclaimConfig(failed_reclaim_policy=FailedReclaimPolicy.KEEP),
+        )
+        assert asyncio.run(router.dispose_call(self._CALL_KEY, timeout=5.0)) is True
+        assert backend.disposed == [self._CALL_KEY]
+
+    def test_a_key_naming_no_call_is_refused(self):
+        """This method drops the ledger because a call-scoped key has no next acquire.
+
+        Handed a conversation's key it would take every kind's sandbox for that conversation and
+        leave the key open when the delete did not land — the one protection `dispose_unclean`
+        exists to apply.
+        """
+        router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE)
+        with pytest.raises(ValueError, match="naming no call"):
+            asyncio.run(router.dispose_call(_KEY, timeout=5.0))
+
+    def test_an_unbounded_delete_is_refused(self):
+        router = SandboxRouter([self._serving()], min_isolation=Isolation.NONE)
+        with pytest.raises(ValueError, match="finite positive"):
+            asyncio.run(router.dispose_call(self._CALL_KEY, timeout=math.inf))
+
+
+class TestTheLedgerNeverCarriesAKeyNamingACall:
+    """A ledger entry closes a key against its *next* acquire, and a call-scoped key has none.
+
+    Writing one anyway is an unbounded map on a host that mints a key per call, so the rule lives
+    in one place rather than at each caller.
+    """
+
+    _CALL_KEY = SandboxKey(
+        scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer", call_id="7a1f"
+    )
+    _CALL_SPEC = SandboxSpec(kind="test", isolation_scope=IsolationScope.CALL)
+    _SCOPES = frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL})
+
+    def _serving_backend(self, **kw) -> InProcessSandboxBackend:
+        return InProcessSandboxBackend(
+            sandbox_per_key=True,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS, isolation_scopes=self._SCOPES
+            ),
+            **kw,
+        )
+
+    def _router(self) -> SandboxRouter:
+        return SandboxRouter([self._serving_backend()], min_isolation=Isolation.NONE)
+
+    def test_marking_one_writes_nothing(self):
+        router = self._router()
+        router.mark_unclean(self._CALL_KEY, DisposalFailure("refused", "the service said no"))
+        # Observed through the refusal rather than the private map: an entry that exists refuses.
+        assert asyncio.run(router.acquire(self._CALL_KEY, self._CALL_SPEC)) is not None
+
+    def test_a_conversation_key_is_still_marked(self):
+        """The positive control — the rule is about the call id, not about marking."""
+        router = self._router()
+        router.mark_unclean(_KEY, DisposalFailure("refused", "the service said no"))
+        with pytest.raises(SandboxUnclean):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_refused_acquire_that_cannot_dispose_leaves_no_entry(self):
+        """The one path that marks a key the caller never chose — `acquire`'s own refusal."""
+
+        class _Unreclaimable(InProcessSandboxBackend):
+            async def acquire(self, key, spec):
+                del key, spec
+                return object()  # no `reclaim`, so the router refuses and disposes
+
+            async def dispose(self, key):
+                del key
+                return DisposalFailure("refused", "and the disposal did not land either")
+
+        router = SandboxRouter(
+            [
+                _Unreclaimable(
+                    declarations=dataclasses.replace(
+                        FAKE_BACKEND_DECLARATIONS, isolation_scopes=self._SCOPES
+                    )
+                )
+            ],
+            min_isolation=Isolation.NONE,
+        )
+        for round_ in range(3):
+            keyed = dataclasses.replace(self._CALL_KEY, call_id=f"call-{round_}")
+            with pytest.raises(TypeError):
+                asyncio.run(router.acquire(keyed, self._CALL_SPEC))
+        # Not SandboxUnclean: the refusal above fires again from the check, not from a ledger
+        # that would have grown one entry per call and never shed one.
+        with pytest.raises(TypeError):
+            asyncio.run(
+                router.acquire(
+                    dataclasses.replace(self._CALL_KEY, call_id="call-0"), self._CALL_SPEC
+                )
+            )
+
+    def test_dispose_unclean_refuses_a_key_naming_a_call(self):
+        with pytest.raises(ValueError, match="naming a call"):
+            asyncio.run(self._router().dispose_unclean(self._CALL_KEY, timeout=5.0))
+
+
+class TestDisposeCallAsksTheServingBackendOnly:
+    """A key minted for one call was served by the selected backend and by nothing else.
+
+    Asking the others reports their failures as this call's leak, on every call.
+    """
+
+    _CALL_KEY = SandboxKey(
+        scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer", call_id="7a1f"
+    )
+
+    def test_another_backends_failure_is_not_this_calls_leak(self):
+        serving = InProcessSandboxBackend(
+            name="serving",
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
+            ),
+        )
+        other = InProcessSandboxBackend(
+            name="other", dispose_failure=DisposalFailure("refused", "unrelated")
+        )
+        router = SandboxRouter([serving, other], min_isolation=Isolation.NONE)
+        assert asyncio.run(router.dispose_call(self._CALL_KEY, timeout=5.0)) is True
+        assert serving.disposed == [self._CALL_KEY]
+        assert other.disposed == []
+
+    def test_a_delete_that_overruns_the_bound_answers_false(self):
+        """The report a hung provider produces — where a `True` would leak in silence."""
+        backend = _BlocksUntilReleased(
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
+            )
+        )
+        router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+
+        async def overrun():
+            landed = await router.dispose_call(self._CALL_KEY, timeout=0.05)
+            backend.release.set()
+            return landed
+
+        assert asyncio.run(overrun()) is False
+
+
 class TestAcquireEnforcesPolicy:
     """`acquire` refuses on the same grounds as `ensure_can_serve`.
 
@@ -2392,7 +2836,10 @@ class TestPolicyVocabularyExports:
             "SandboxCapabilityDenied",
             "SandboxCapabilityNotSupported",
             "SandboxIdentityDenied",
+            "ISOLATION_SCOPE_RANK",
+            "IsolationScope",
             "SandboxOsFamilyNotSupported",
+            "SandboxScopeNotEnforced",
             "SandboxProgramTimeout",
             "SandboxQueuedTimeout",
             "WORK_DIRECTORY",
@@ -2406,6 +2853,18 @@ class TestPolicyVocabularyExports:
 
         assert name in maf_sandbox.__all__
         assert hasattr(maf_sandbox, name)
+
+    def test_the_defining_module_lists_what_the_package_re_exports(self):
+        """A name public here and absent from its own module's `__all__` has drifted.
+
+        Nothing imports `_protocol` with a star, so that list is a statement of intent rather
+        than machinery, and nothing else would notice it going stale.
+        """
+        import maf_sandbox
+        from maf_sandbox import _protocol
+
+        defined_here = {name for name in maf_sandbox.__all__ if hasattr(_protocol, name)}
+        assert defined_here - set(_protocol.__all__) == set()
 
     def test_the_deployed_isolation_set_is_gone(self):
         """Superseded by the minimum-isolation floor (two-axis sandbox policy, axis 1)."""

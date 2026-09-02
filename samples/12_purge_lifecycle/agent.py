@@ -2,7 +2,7 @@
 
 Three disposal moments, and choosing between them is a cost decision rather than a style one.
 Every other sample creates a sandbox and drops it on the way out; this one is about what a
-long-lived host has to wire, because a sandbox is keyed by `(scope, thread_id, agent_dir)` and
+long-lived host has to wire, because a sandbox is keyed by the caller's scope, thread and agent directory and
 outlives the turn that made it.
 
 Needs a Docker-compatible engine. Containers are counted with `docker ps` rather than trusted

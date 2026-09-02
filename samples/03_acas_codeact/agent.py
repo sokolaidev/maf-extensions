@@ -52,7 +52,8 @@ from maf_sandbox.maf import list_no_files, make_caller_context
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 from maf_sandbox_codeact import make_codeact_tools
 
-# Keyed by (scope, thread_id, agent_dir); constants here since this program serves one request.
+# Keyed by the caller's scope, thread and agent directory; constants here since this
+# program serves one request.
 SCOPE = "samples"
 THREAD_ID = conversation_id("03-acas-codeact")
 AGENT_DIR = "data-analyst"

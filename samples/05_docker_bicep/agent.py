@@ -51,7 +51,7 @@ from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox_bicep import make_bicep_tools
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
-# A sandbox is keyed by (scope, thread_id, agent_dir).  A host reads the first two
+# A sandbox is keyed by the caller's scope, thread and agent directory.  A host reads the first two
 # from its own request context — a user/tenant and a conversation.  This program
 # serves exactly one request, so they are constants here, but they are still named
 # rather than inlined: the whole point of `make_caller_context` below is that

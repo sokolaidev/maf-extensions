@@ -50,7 +50,8 @@ from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox_codeact import CodeactOutputs, make_codeact_tools
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
-# Keyed by (scope, thread_id, agent_dir); constants here since this program serves one request.
+# Keyed by the caller's scope, thread and agent directory; constants here since this
+# program serves one request.
 SCOPE = "samples"
 THREAD_ID = "08-docker-codeact-files"
 AGENT_DIR = "data-analyst"

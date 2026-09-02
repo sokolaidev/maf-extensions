@@ -108,7 +108,8 @@ CALL_RECLAIMS = tuple(int(part) for part in version("maf-sandbox-codeact").split
 CALL_RECLAIMED = "reclaimed by the framework"
 CALL_KEPT = "left for the sandbox (an older CodeAct or core)"
 
-# Keyed by (scope, thread_id, agent_dir); constants here since this program serves one request.
+# Keyed by the caller's scope, thread and agent directory; constants here since this
+# program serves one request.
 SCOPE = "samples"
 AGENT_DIR = "analyst"
 
@@ -457,8 +458,13 @@ def amounts_the_model_wrote(response: object) -> int:
 #: `1e3f4a…` from reading as a thousand now that an exponent is allowed.
 _PRINTED_NUMBER = re.compile(r"(?<![\w.])-?\d[\d,_]*\.\d+(?:[eE][+-]?\d+)?")
 
-#: What the CodeAct kind names a run directory: `uuid4().hex[:12]`.
-_RUN_ID = re.compile(r"[0-9a-f]{12}")
+#: What names a **call's** directory: the hex of a `uuid4`, whole. Not a run — the transport's
+#: runs live *beneath* one of these, under `host_tools/`, and this sample has both.
+#:
+#: Twelve characters is what core allocated before the id also keyed a per-call sandbox, and a
+#: sandbox reached by an older release still holds directories of that length — so both match,
+#: and act 5 counts what is actually there rather than what this release would have written.
+_CALL_ID = re.compile(r"[0-9a-f]{12}(?:[0-9a-f]{20})?")
 
 
 def figures_in(text: str, expected: Iterable[float]) -> int:
@@ -680,14 +686,14 @@ async def _what_one_sandbox_holds(
     runs = await sandbox.list_dir(".", working_directory=spec.work_dir)
     # Kind *and* name, because the guest can write here: a program that walks up out of its
     # work directory can leave a file beside the runs, and `list_dir` on `<file>/host_tools`
-    # raises rather than reporting nothing. The kind names a run `uuid4().hex[:12]`.
+    # raises rather than reporting nothing. Each directory is one call's, named after it.
     named = (
         entry.path.rstrip("/").split("/")[-1] for entry in runs if entry.kind is EntryKind.DIRECTORY
     )
-    directories = sorted(name for name in named if _RUN_ID.fullmatch(name))
+    directories = sorted(name for name in named if _CALL_ID.fullmatch(name))
 
-    # `guest_run_layout` puts the transport under `<run>/host_tools/`, with the calls beneath
-    # that — not directly in the run directory.
+    # `guest_run_layout` puts the transport under `<call>/host_tools/`, with its own calls
+    # beneath that — not directly in the call's directory.
     called_a_host_tool, left, answered = 0, 0, 0
     for run in directories:
         try:
@@ -732,7 +738,7 @@ async def act_five_what_the_runs_left_behind(
 
     print(f"{MEASURED}transport cleanup: {RECLAIMED if TRANSPORT_RECLAIMS else KEPT}")
     print(f"{MEASURED}call directory cleanup: {CALL_RECLAIMED if CALL_RECLAIMS else CALL_KEPT}")
-    print(f"{MEASURED}run directories across both sandboxes: {directories}")
+    print(f"{MEASURED}call directories across both sandboxes: {directories}")
     print(f"{MEASURED}of those, runs that called a host tool: {runs_that_called_a_host_tool}")
     print(f"{MEASURED}transport files left behind: {left}, of which answered calls: {answered}")
     print()
