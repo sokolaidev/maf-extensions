@@ -2825,6 +2825,96 @@ class TestWhatAnEmptyOutputMeans:
         assert result.stderr == ""
 
 
+class TestWhoOwnsStderrHere:
+    """`stderr` is this transport's own field, and the result says so rather than a caller
+    inferring it from having built the transport itself."""
+
+    def test_a_finished_run_declares_the_ownership(self):
+        assert _run(
+            _ScriptedGuest([], output="printed"), HostToolRun(_registry())
+        ).producer_owns_stderr
+
+    def test_a_launcher_that_never_started_the_program_declares_it_too(self):
+        """No program ran on this leg, so the sentence on `stderr` is the launcher's."""
+        result = _run(_ScriptedGuest([], launcher_exit_code=127), HostToolRun(_registry()))
+        assert result.exit_code == 127
+        assert result.producer_owns_stderr
+
+    def test_the_launchers_own_stdout_is_not_returned_as_the_programs(self):
+        """`stdout` is the program's field, and on this leg no program ran.
+
+        What the launcher prints there is this module's own marker for which launch path it
+        took, so returning it would hand a kind host text to render as the guest's.
+        """
+
+        class _FailsAfterItsMarker(_ScriptedGuest):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                if _LAYOUT.launcher in str(command):
+                    return ExecResult(stdout=SESSION_MADE, stderr="", exit_code=126)
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        result = _run(_FailsAfterItsMarker([]), HostToolRun(_registry()))
+
+        assert result.exit_code == 126
+        assert result.stdout == ""
+        assert SESSION_MADE in result.stderr, (
+            "the launcher's own word was dropped rather than moved"
+        )
+
+    def test_a_dropped_output_declares_it_beside_an_empty_stdout(self):
+        """The flag is about who owns `stderr`, never about how much of the output came back.
+
+        This is the combination a completeness reading gets wrong: the program printed 200
+        bytes, `stdout` is empty because the cap refused them, and the note saying so is on
+        the field the flag claims.
+        """
+        limits = TransferLimits(max_bytes_per_file=64, max_total_bytes=32, max_files=4)
+        guest = _ScriptedGuest([], output="x" * 200)
+        result = _run(guest, HostToolRun(_registry(response_limits=limits)))
+
+        assert result.stdout == ""
+        assert "larger than the host will read" in result.stderr
+        assert result.producer_owns_stderr
+
+    def test_an_output_that_could_not_be_read_declares_it_too(self):
+        class _RefusesToHandItOver(_ScriptedGuest):
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                if path.endswith("program_output.txt"):
+                    raise TimeoutError("the service stopped answering")
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
+        guest = _RefusesToHandItOver([], output="unreachable")
+        result = _run(guest, HostToolRun(_registry()), timeout=1.0)
+        assert "could not be read" in result.stderr
+        assert result.producer_owns_stderr
+
+    def test_every_result_this_module_builds_declares_it(self):
+        """The three above cover the exit paths that exist; this covers the next one.
+
+        A path added without the flag hands a caller a host sentence labelled as the guest's,
+        and no behavioural test would fail — the flag would simply read false.
+        """
+        source = Path(host_tools_over_exec.__file__).read_text(encoding="utf-8")
+        built = [
+            node
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "ExecResult"
+        ]
+        assert built, "the module builds no ExecResult at all, so this asserts nothing"
+        for call in built:
+            assert any(
+                keyword.arg == "producer_owns_stderr" and keyword.value.value is True
+                for keyword in call.keywords
+                if isinstance(keyword.value, ast.Constant)
+            ), f"an ExecResult built on line {call.lineno} does not declare producer_owns_stderr"
+
+
 class TestWhoseTimeoutItWas:
     def test_a_clock_that_reads_behind_the_timer_still_names_this_runs_own_expiry(
         self, monkeypatch: pytest.MonkeyPatch

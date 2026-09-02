@@ -805,7 +805,11 @@ async def host_tool_calls_over_exec(
 
     Returns:
         The program's own :class:`~maf_sandbox.ExecResult` — its redirected output as
-        ``stdout`` and the exit code it recorded.
+        ``stdout`` and the exit code it recorded, with ``producer_owns_stderr`` set on every
+        path out of here: the launcher redirects the guest's stderr into that output, so
+        ``stderr`` carries this transport's note about the run and never the program's words.
+        The flag says who owns that field and nothing about how much of the output came back
+        — ``output_limit`` above is what can leave ``stdout`` empty beside a note.
 
     Raises:
         SandboxProgramTimeout: The run's own bound expired. Where the program had started,
@@ -1031,10 +1035,17 @@ async def _supervise(
             reach=reach,
         ) from spent
     if started.exit_code != 0:
+        # No program ran on this leg, so `stdout` — the program's field — has nothing to hold.
+        # Both of the launcher's own streams go to the one this result declares as the
+        # producer's: the marker it prints is this module's own word about which launch path
+        # ran, and handing it back as `stdout` would offer a kind host text to render as the
+        # guest's. The sentence stands in when the launcher said nothing at all.
+        said = "\n".join(part for part in (started.stderr.strip(), started.stdout.strip()) if part)
         return ExecResult(
-            stdout=started.stdout,
-            stderr=started.stderr or "the launcher did not start the program",
+            stdout="",
+            stderr=said or "the launcher did not start the program",
             exit_code=started.exit_code,
+            producer_owns_stderr=True,
         )
 
     # Read from the launcher's own output, not from a file in the run: the program can write
@@ -1641,11 +1652,13 @@ async def _completed(
             stdout="",
             stderr=f"the program finished, but its output could not be read{blamed}",
             exit_code=_exit_code_from(finished),
+            producer_owns_stderr=True,
         )
     return ExecResult(
         stdout=_as_text(output),
         stderr=_why_no_output(output),
         exit_code=_exit_code_from(finished),
+        producer_owns_stderr=True,
     )
 
 
@@ -2155,8 +2168,9 @@ def _why_no_output(value: str | _TooLarge | _NotText | None) -> str:
     An empty ``stdout`` beside exit code 0 says the program printed nothing, and for a program
     whose output was refused for its size that is a false report of a successful run — the one
     a caller cannot tell from the real thing. It goes in ``stderr`` because on this transport
-    that field is the host's: the launcher merges the guest's own stderr into the output file,
-    so nothing else ever writes there.
+    that field is the host's, which every result from here declares with
+    :attr:`~maf_sandbox.ExecResult.producer_owns_stderr` so a caller reads it rather than
+    inferring it.
 
     #354 settled the two questions this used to leave open. What the ceiling is: the caller's own
     ``output_limit`` where given, otherwise the borrowed leg (:func:`_output_cap`). And whether to

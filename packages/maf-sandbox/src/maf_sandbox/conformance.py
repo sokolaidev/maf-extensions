@@ -106,6 +106,12 @@ _READ_CAP = 1 << 20
 _SECRET = b"the guest must not reach this\n"
 _INSIDE = b"a legitimate output\n"
 
+#: The stream probe's two markers. Neither is a substring of the other, so "landed in the
+#: wrong field" is decidable by containment rather than by an equality a trailing newline or a
+#: backend's own framing would break.
+_ON_STDOUT = "conformance-wrote-this-to-stdout"
+_ON_STDERR = "conformance-wrote-this-to-stderr"
+
 #: High codepoints and no NUL: a payload every UTF-8 decoder agrees on, so the probe asserts
 #: what the protocol states (``stdout: str``) and nothing further. The bytes that *cannot*
 #: survive a decode — the ones a ``errors="replace"`` transport turns into U+FFFD — are a
@@ -1089,6 +1095,44 @@ async def _probe_working_directory_is_honoured(
         )
 
 
+async def _probe_the_streams_stay_separate(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    result = await subject.sandbox.exec(
+        ["sh", "-c", f"printf %s {_ON_STDOUT}; printf %s {_ON_STDERR} >&2"],
+        working_directory=subject.working_directory,
+        timeout=60,
+    )
+    if result.exit_code != 0:
+        raise AssertionError(f"the stream probe exited {result.exit_code}")
+    if result.producer_owns_stderr:
+        # A declared ownership owes the other half of what it promises: `stderr` holds
+        # none of the program's words, either marker being one of them, and the stderr the
+        # producer displaced is on `stdout` rather than discarded. Volume is not promised,
+        # but this probe's output is two short markers, so nothing here is near any cap.
+        if _ON_STDOUT not in result.stdout or _ON_STDERR not in result.stdout:
+            raise AssertionError(
+                f"producer_owns_stderr is set but stdout came back as {result.stdout!r} — with "
+                "that field the producer's, the program's own words have nowhere else to be"
+            )
+        if _ON_STDOUT in result.stderr or _ON_STDERR in result.stderr:
+            raise AssertionError(
+                f"producer_owns_stderr is set and stderr still carries what the program wrote "
+                f"({result.stderr!r}) — the flag says that field is the producer's, so a caller "
+                "separating host text from guest text mistakes one for the other"
+            )
+        return
+    if _ON_STDOUT not in result.stdout or _ON_STDERR in result.stdout:
+        raise AssertionError(
+            f"stdout came back as {result.stdout!r} — the program's standard error was folded "
+            "into it without the result saying so, which is what producer_owns_stderr is for"
+        )
+    if _ON_STDERR not in result.stderr or _ON_STDOUT in result.stderr:
+        raise AssertionError(
+            f"stderr came back as {result.stderr!r}, which is not the program's standard error"
+        )
+
+
 async def _probe_a_timeout_raises_timeout_error(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
@@ -1167,6 +1211,18 @@ EXEC_PROBES: tuple[Probe, ...] = (
         ),
         requires=frozenset({Capability.EXEC}),
         run=_probe_working_directory_is_honoured,
+    ),
+    Probe(
+        name="streams-stay-separate",
+        why=(
+            "a caller renders the two differently — a kind withholding guest text must not "
+            "withhold a host note, and one quoting stderr as the program's diagnosis must not "
+            "quote the host's. A backend that takes stderr for itself without setting "
+            "producer_owns_stderr makes every one of those readings wrong, and the result is "
+            "where it has to say so."
+        ),
+        requires=frozenset({Capability.EXEC}),
+        run=_probe_the_streams_stay_separate,
     ),
     Probe(
         name="a-timeout-raises-timeout-error",

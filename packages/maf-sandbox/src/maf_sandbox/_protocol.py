@@ -677,11 +677,37 @@ class SandboxSpec:
 
 @dataclass(frozen=True)
 class ExecResult:
-    """The result of one command run inside a sandbox."""
+    """The result of one command run inside a sandbox.
+
+    ``stdout`` is the program's standard output and ``stderr`` its standard error, each in its
+    own field.  A producer that writes to ``stderr`` itself declares it with
+    ``producer_owns_stderr`` rather than leaving a caller to guess, and
+    :func:`~maf_sandbox.conformance.assert_exec_conformance` holds a backend to both halves.
+
+    **``producer_owns_stderr`` says that** ``stderr`` **is not the program's** — whoever built
+    this result is speaking there, and none of the guest's words are.  Taking the field does
+    not license discarding what it displaced: the program's own standard error goes to
+    ``stdout``, interleaved with its standard output, because a caller then has no other way
+    to learn the program wrote there at all.
+
+    **Routing is promised; volume is not.**  A producer may carry less of ``stdout`` than the
+    program wrote, and says so in that note — the host-tool transport does exactly this over
+    ``output_limit``, returning an empty ``stdout`` beside a note that the output was dropped.
+    A caller reading completeness into the flag would report that run as a program that
+    printed nothing, which is the one thing the note exists to prevent.
+
+    :func:`~maf_sandbox.host_tool_calls_over_exec` sets it on every result it returns, because
+    its launcher redirects the guest's stderr into the output file it reads back and its own
+    notes go where nothing else writes.  A caller that treats host text and guest text
+    differently reads this rather than inferring it from the transport it built.
+    """
 
     stdout: str
     stderr: str = ""
     exit_code: int = 0
+    # Appended after the defaulted fields already here, so it cannot rebind what a positional
+    # caller passes.
+    producer_owns_stderr: bool = False
 
 
 class SandboxQueuedTimeout(TimeoutError):
