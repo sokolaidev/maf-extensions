@@ -259,8 +259,8 @@ def make_bicep_tools(
         # The compiler is first-party, and what it is deterministic *about* is a template the
         # model wrote: a diagnostic quotes the identifiers of the source, and every location
         # names a file the caller passed. So the result does not derive from wholly trusted
-        # input and cannot claim to. The library's `"trusted"` default would not floor the
-        # framework's input-label join here — it replaces it.
+        # input and cannot claim to. Declared, a label would replace the framework's
+        # input-label join rather than floor it.
         source_integrity=None,
         # No confidentiality key on purpose — a host's confidentiality tiers are the host's
         # classification, and declaring one here can activate a policy leg a given host keeps
