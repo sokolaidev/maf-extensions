@@ -1096,11 +1096,7 @@ async def _execute(
         return "Error: could not run the program in the sandbox"
 
     logger.info("execute_code: ran exit_code=%d shared=%d", result.exit_code, len(shared))
-    report = (
-        _format_withheld(result, over_transport=host_tool_call is not None)
-        if withhold
-        else _format_result(result)
-    )
+    report = _format_withheld(result) if withhold else _format_result(result)
     nothing_to_collect = outputs is CodeactOutputs.NONE or (
         outputs is CodeactOutputs.DECLARED and not names
     )
@@ -1696,20 +1692,19 @@ def _stream_bytes(text: str | None) -> int:
     return len((text or "").encode("utf-8", errors="surrogatepass"))
 
 
-def _format_withheld(result: ExecResult, *, over_transport: bool) -> str:
+def _format_withheld(result: ExecResult) -> str:
     """Render one run for a host that withholds guest text: sizes, not content.
 
     Fixed shape and fixed order, empty streams included, and the exit code named on every run
     unlike :func:`_format_result`'s — with the content gone it is the only thing left that says
     whether the program worked.
 
-    ``over_transport`` decides who owns ``stderr``. On the host-tool-call transport the
-    launcher merges the guest's stderr into its output file, so that field is the *host's* and
-    holds its note about the run — the one that tells a dropped output apart from a program
-    that printed nothing. Withholding it would report the first as the second, so it is
-    surfaced whole there and only the merged stream is reduced to a size.
+    ``ExecResult.producer_owns_stderr`` decides who owns ``stderr``. Where it is set that
+    field is the producer's, not the guest's, and holds its note about the run — the one that
+    tells a dropped output apart from a program that printed nothing. Withholding it would
+    report the first as the second, so it is surfaced whole and only ``stdout`` is sized.
     """
-    if over_transport:
+    if result.producer_owns_stderr:
         note = (result.stderr or "").rstrip("\n")
         lines = [f"exit code: {result.exit_code}", f"output: {_stream_bytes(result.stdout)} bytes"]
         if note:
