@@ -1898,6 +1898,7 @@ _BEFORE_THE_SECOND_ACQUIRE = "planted-before-the-other-call-existed.txt"
 async def run_call_scope_probes(
     subject: ConformanceSubject,
     acquire_another: Callable[[], Awaitable[ConformanceSubject]],
+    dispose_this_call: Callable[[], Awaitable[None]],
 ) -> tuple[ProbeResult, ...]:
     """Run the CALL_SCOPE probes over ``subject`` and a second sandbox this suite acquires.
 
@@ -1911,6 +1912,12 @@ async def run_call_scope_probes(
     every post-acquire probe there is. Two subjects rooted at different working directories are
     refused — each probe would compare paths that were never the same one, and pass having
     attacked nothing.
+
+    ``dispose_this_call`` deletes **``subject``'s** sandbox and raises if that did not land.
+    Separation is two properties, not one: a backend can fold ``call_id`` into what it acquires
+    and still sweep ``(scope, thread, agent)`` when it disposes — every probe above passes, and
+    ending one call takes a concurrent sibling's sandbox with it.  The last probe is the only
+    one that can see that, which is why the seam is required rather than optional.
 
     No capability gates the run.  ``plant_file`` and ``exists`` are the subject's own seams, as
     they are for the mandatory reclaim suite, so a backend that declares
@@ -1989,6 +1996,20 @@ async def run_call_scope_probes(
                 "scope exists to close"
             )
 
+    async def _disposing_this_call_leaves_the_other(
+        s: ConformanceSubject, paths: ConformancePaths
+    ) -> None:
+        del s
+        kept = f"{paths.work}/the-other-call-is-still-using-this.txt"
+        await other.plant_file(kept, _INSIDE)
+        await dispose_this_call()
+        if not await other.exists(kept):
+            raise AssertionError(
+                "deleting one call's sandbox took the other's with it: the disposal reaches by "
+                "scope, thread and agent rather than by the call, so ending either call in an "
+                "assistant message destroys the one still running beside it"
+            )
+
     probes = (
         Probe(
             name="arrives-without-the-other-calls-data",
@@ -2026,6 +2047,17 @@ async def run_call_scope_probes(
             requires=frozenset({Capability.FILES_LIST}),
             run=_the_listing_holds_only_this_calls_files,
         ),
+        # Last, and it has to be: it deletes the subject every probe above attacks with.
+        Probe(
+            name="disposing-this-call-leaves-the-other",
+            why=(
+                "folding the call into what is acquired and sweeping the conversation when "
+                "disposing passes every probe that runs before a delete, and ends one call by "
+                "destroying the sandbox of another that is still running."
+            ),
+            requires=frozenset(),
+            run=_disposing_this_call_leaves_the_other,
+        ),
     )
     return await _run_suite(subject, None, _plant_nothing, probes)
 
@@ -2033,10 +2065,13 @@ async def run_call_scope_probes(
 async def assert_call_scope_conformance(
     subject: ConformanceSubject,
     acquire_another: Callable[[], Awaitable[ConformanceSubject]],
+    dispose_this_call: Callable[[], Awaitable[None]],
 ) -> tuple[ProbeResult, ...]:
     """Run the CALL_SCOPE probes and raise :class:`ConformanceFailure` if any failed.
 
     What a backend owes before it declares :data:`~maf_sandbox.IsolationScope.CALL`: the
     declaration is what the router refuses on, and these are what make it true.
     """
-    return _assert_conformance(await run_call_scope_probes(subject, acquire_another), "CALL_SCOPE")
+    return _assert_conformance(
+        await run_call_scope_probes(subject, acquire_another, dispose_this_call), "CALL_SCOPE"
+    )

@@ -140,6 +140,12 @@ class IsolationScope(StrEnum):
     #: A sandbox created for one tool call and destroyed when it returns.  Two calls in one
     #: assistant message then share no filesystem, and a reclaim that fails leaves data no later
     #: call can address.  Paid for with a cold start per call.
+    #:
+    #: **The destruction belongs to whoever ran the call.**
+    #: :func:`maf_sandbox.maf.sandboxed_tool` does it from the ``finally`` it already owns; an
+    #: integration calling :meth:`SandboxRouter.acquire` itself owes the matching
+    #: ``dispose_call`` from a ``finally`` of its own, or every call leaks a sandbox until the
+    #: conversation is purged.
     CALL = "call"
 
 

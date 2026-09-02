@@ -6,7 +6,7 @@
 
 A sandbox request asks three independent things, and the policy answers them separately: **how strong must the boundary be in this environment** and **how much of a conversation may one sandbox serve**, which are the host's questions, and **what must the sandbox be able to do for this workload**, which is the spec's. The first two are ordered ladders with a floor a spec may raise and never lower; the third is a set match. Merging them would be a design error — a capability list cannot say "a micro-VM is enough for dev", a boundary strength cannot say "this kind needs a language runtime, not a shell", and neither can say whether the last call's files are still in the filesystem this one is handed.
 
-The policy that preceded this was one boolean, `deployed=True`, crossed with one frozenset that required `Isolation.VM`. It collapsed the first two of those into a binary, and it was removed rather than deprecated when the ladder landed.
+The policy that preceded this was one boolean, `deployed=True`, crossed with one frozenset that required `Isolation.VM`. It collapsed the boundary's strength and the workload's capabilities — the first and the third — into a binary, and it was removed rather than deprecated when the ladder landed. The scope is newer than any of it.
 
 ## Axis 1 — isolation, as an ordered ladder
 

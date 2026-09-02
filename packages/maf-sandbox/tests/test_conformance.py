@@ -1596,40 +1596,51 @@ class TestCallScopeConformance:
         return SandboxRouter([backend], min_isolation=Isolation.NONE)
 
     def _served(self, capabilities: frozenset[Capability] = _EVERYTHING):
-        """The first subject and a factory that acquires the second — one loop, as the suite runs."""
+        """The first subject, a factory for the second, and the seam that deletes the first."""
         router = self._router()
+
+        async def first() -> _StoreSubject:
+            return _StoreSubject(await router.acquire(self._KEY, self._SPEC), capabilities)
 
         async def acquire_another() -> _StoreSubject:
             second = await router.acquire(dataclasses.replace(self._KEY, call_id="two"), self._SPEC)
             return _StoreSubject(second, capabilities)
 
-        async def first() -> _StoreSubject:
-            return _StoreSubject(await router.acquire(self._KEY, self._SPEC), capabilities)
+        async def dispose_this_call() -> None:
+            if not await router.dispose_call(self._KEY, timeout=5.0):
+                raise AssertionError("the delete did not land, so the probe would prove nothing")
 
-        return first, acquire_another
+        return first, acquire_another, dispose_this_call
 
     def test_two_sandboxes_answer_every_probe(self):
-        first, acquire_another = self._served()
+        first, acquire_another, dispose_this_call = self._served()
 
         async def run():
-            return await assert_call_scope_conformance(await first(), acquire_another)
+            return await assert_call_scope_conformance(
+                await first(), acquire_another, dispose_this_call
+            )
 
         results = asyncio.run(run())
-        assert [result.failure for result in results] == [None] * 4
-        assert [result.skipped for result in results] == [None] * 4
+        assert [result.failure for result in results] == [None] * 5
+        assert [result.skipped for result in results] == [None] * 5
 
-    def test_one_filesystem_behind_two_keys_fails_every_probe(self):
+    def test_one_filesystem_behind_two_keys_fails_the_separation_probes(self):
         """The specimen the suite exists for: the sharing a declaration cannot be trusted about."""
         shared = InProcessSandbox()
 
         async def acquire_another() -> _StoreSubject:
             return _StoreSubject(shared, _EVERYTHING)
 
+        async def dispose_this_call() -> None:
+            shared.contents.clear()
+
         with pytest.raises(ConformanceFailure) as raised:
             asyncio.run(
-                assert_call_scope_conformance(_StoreSubject(shared, _EVERYTHING), acquire_another)
+                assert_call_scope_conformance(
+                    _StoreSubject(shared, _EVERYTHING), acquire_another, dispose_this_call
+                )
             )
-        assert len(raised.value.failures) == 4
+        assert len(raised.value.failures) == 5
         assert "CALL_SCOPE" in str(raised.value)
 
     def test_a_sandbox_seeded_from_the_conversations_is_refused(self):
@@ -1645,21 +1656,55 @@ class TestCallScopeConformance:
             seeded.contents.update(first.contents)
             return _StoreSubject(seeded, _EVERYTHING)
 
+        async def dispose_this_call() -> None:
+            first.contents.clear()
+
         with pytest.raises(ConformanceFailure) as raised:
             asyncio.run(
-                assert_call_scope_conformance(_StoreSubject(first, _EVERYTHING), acquire_another)
+                assert_call_scope_conformance(
+                    _StoreSubject(first, _EVERYTHING), acquire_another, dispose_this_call
+                )
             )
         assert [failure.probe.name for failure in raised.value.failures] == [
             "arrives-without-the-other-calls-data"
         ]
 
+    def test_a_disposal_that_sweeps_the_conversation_is_refused(self):
+        """Acquire folds the call; dispose still reaches by scope, thread and agent.
+
+        Every probe that runs before a delete passes, and ending one call destroys the sandbox
+        of another still running beside it — which is what the shipped backends' `dispose` would
+        do if they declared the scope without changing it.
+        """
+        first = InProcessSandbox()
+        second = InProcessSandbox()
+
+        async def acquire_another() -> _StoreSubject:
+            return _StoreSubject(second, _EVERYTHING)
+
+        async def dispose_this_call() -> None:
+            first.contents.clear()
+            second.contents.clear()  # the sweep: everything for this scope, thread and agent
+
+        with pytest.raises(ConformanceFailure) as raised:
+            asyncio.run(
+                assert_call_scope_conformance(
+                    _StoreSubject(first, _EVERYTHING), acquire_another, dispose_this_call
+                )
+            )
+        assert [failure.probe.name for failure in raised.value.failures] == [
+            "disposing-this-call-leaves-the-other"
+        ]
+
     def test_a_plant_that_lands_nowhere_fails_rather_than_passes(self):
         """The positive control: a subject whose writes vanish must not read as separation."""
-        _, acquire_another = self._served()
+        _, acquire_another, dispose_this_call = self._served()
 
         async def run():
             return await assert_call_scope_conformance(
-                _VanishingSubject(InProcessSandbox(), _EVERYTHING), acquire_another
+                _VanishingSubject(InProcessSandbox(), _EVERYTHING),
+                acquire_another,
+                dispose_this_call,
             )
 
         with pytest.raises(ConformanceFailure) as raised:
@@ -1673,17 +1718,17 @@ class TestCallScopeConformance:
         reclaim suite, so gating on `FILES_IN` would lock a valid call-scoped backend out of the
         suite it owes for declaring the scope. The two probes that read a sandbox back still skip.
         """
-        first, acquire_another = self._served(frozenset({Capability.EXEC}))
+        first, acquire_another, dispose_this_call = self._served(frozenset({Capability.EXEC}))
 
         async def run():
-            return await run_call_scope_probes(await first(), acquire_another)
+            return await run_call_scope_probes(await first(), acquire_another, dispose_this_call)
 
         results = asyncio.run(run())
-        assert [result.failure for result in results] == [None] * 4
-        assert [result.skipped is None for result in results] == [True, True, False, False]
+        assert [result.failure for result in results] == [None] * 5
+        assert [result.skipped is None for result in results] == [True, True, False, False, True]
 
     def test_two_roots_are_refused_rather_than_passing_vacuously(self):
-        first, acquire_another = self._served()
+        first, acquire_another, dispose_this_call = self._served()
 
         async def run():
             async def elsewhere() -> _StoreSubject:
@@ -1691,7 +1736,7 @@ class TestCallScopeConformance:
                 second.working_directory = f"{_WORK}-elsewhere"
                 return second
 
-            return await run_call_scope_probes(await first(), elsewhere)
+            return await run_call_scope_probes(await first(), elsewhere, dispose_this_call)
 
         with pytest.raises(ValueError, match="rooted at"):
             asyncio.run(run())
