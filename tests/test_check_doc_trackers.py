@@ -146,6 +146,23 @@ class TestTheStateAtMerge:
     def test_a_number_the_repository_does_not_have_is_not_invented(self):
         assert state_at_merge(None, 999999, frozenset({999999})) is None
 
+    def test_the_open_request_itself_becomes_merged(self):
+        assert state_at_merge("OPEN", 829, frozenset(), 829) == "MERGED"
+
+    def test_another_open_number_is_not_the_request(self):
+        assert state_at_merge("OPEN", 828, frozenset(), 829) == "OPEN"
+
+    def test_a_run_with_no_request_scores_nothing_as_merged(self):
+        assert state_at_merge("OPEN", 829, frozenset()) == "OPEN"
+
+    def test_a_closed_request_is_not_reopened_into_a_merge(self):
+        """A request closed unmerged keeps what it is; `main`'s live run is what says so."""
+        assert state_at_merge("CLOSED", 829, frozenset(), 829) == "CLOSED"
+
+    def test_the_request_is_merged_rather_than_closed_when_it_is_both(self):
+        """`closingIssuesReferences` answers with issues, never the request — belt and braces."""
+        assert state_at_merge("OPEN", 829, frozenset({829}), 829) == "MERGED"
+
 
 class TestTheTwoMistakes:
     def test_an_annotation_that_disagrees_is_reported(self):
@@ -220,6 +237,53 @@ class TestThePromisesInFindings:
         rows = [_row("open", _link(999999))]
         problem = findings(rows, {999999: None}, _SLUG, frozenset({999999}))
         assert "#999999 does not exist" in problem[0]
+
+
+class TestTheRequestNamingItself:
+    """A flipped row cites the request that delivers it, and the request is open while it does."""
+
+    def test_a_row_citing_this_request_as_merged_passes_before_the_merge(self):
+        cell = f"{_link(811)} (closed) by {_link(829, 'pull')} (merged)"
+        assert (
+            findings(
+                [_row("shipped", cell)], {811: "OPEN", 829: "OPEN"}, _SLUG, frozenset({811}), 829
+            )
+            == []
+        )
+
+    def test_without_the_request_the_same_row_fails(self):
+        """The deadlock this scoring answers: the annotation is only true at the merge it blocks."""
+        cell = f"{_link(811)} (closed) by {_link(829, 'pull')} (merged)"
+        problem = findings(
+            [_row("shipped", cell)], {811: "OPEN", 829: "OPEN"}, _SLUG, frozenset({811})
+        )
+        assert "names #829 as (merged), and it is open" in problem[0]
+
+    def test_a_row_citing_this_request_as_open_is_reported(self):
+        """The row is about to be wrong, and the request that writes it is the one to fix it."""
+        cell = f"{_link(829, 'pull')} (open)"
+        problem = findings([_row("shipped", cell)], {829: "OPEN"}, _SLUG, frozenset(), 829)
+        assert (
+            "names #829 as (open), and it is this request, which merges as (merged)" in problem[0]
+        )
+
+    def test_an_outstanding_row_tracked_only_by_this_request_is_reported(self):
+        """Once it merges nothing tracks the row, which is the state word going stale."""
+        problem = findings(
+            [_row("open", _link(829, "pull"))], {829: "OPEN"}, _SLUG, frozenset(), 829
+        )
+        assert "nothing will track it once this PR merges (#829)" in problem[0]
+
+    def test_a_row_naming_a_different_request_is_judged_live(self):
+        cell = f"{_link(828, 'pull')} (merged)"
+        problem = findings([_row("shipped", cell)], {828: "OPEN"}, _SLUG, frozenset(), 829)
+        assert "names #828 as (merged), and it is open" in problem[0]
+
+    def test_on_main_a_row_whose_request_never_merged_still_fails(self):
+        """The flip is a promise, and the run with no request to its name collects on it."""
+        cell = f"{_link(829, 'pull')} (merged)"
+        problem = findings([_row("shipped", cell)], {829: "CLOSED"}, _SLUG)
+        assert "names #829 as (merged), and it is closed" in problem[0]
 
 
 class TestTheCINamedRequest:
