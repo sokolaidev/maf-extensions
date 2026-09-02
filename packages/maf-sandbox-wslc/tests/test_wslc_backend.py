@@ -614,8 +614,9 @@ class TestReclaim:
         """Serving `reclaim` must not open a delete surface for `remove` by a side door.
 
         The two share a mechanism (`rm -rf` over `exec`) but not a duty: `remove` takes a
-        model-supplied path and owes the confinement walk this backend has no `stat_file` to
-        build, so it must keep refusing exactly as it did before `reclaim` existed.
+        model-supplied path and owes the filesystem path check, which this backend answers
+        inside the guest for the kinds that decide an escape, so it must keep refusing exactly
+        as it did before `reclaim` existed.
         """
         sandbox, _ = self._sandbox()
         with pytest.raises(NotImplementedError, match="FILES_DELETE"):
