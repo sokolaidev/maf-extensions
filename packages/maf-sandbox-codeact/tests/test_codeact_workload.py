@@ -3011,40 +3011,54 @@ class TestATimeoutSaysWhoseItWas:
         assert out == "Error: the program timed out after 7s"
 
 
-class TestOnTheTransportStderrIsTheHosts:
-    """The launcher merges the guest's stderr into its output file, so on that transport
-    `ExecResult.stderr` is the *host's* field and carries its note about the run.
+class TestOnAMergedResultStderrIsTheProducers:
+    """A result that declares `producer_owns_stderr` says `stderr` is not the program's, so it holds
+    a note about the run rather than guest text — the host-tool transport's launcher merges,
+    and a backend that cannot separate the streams declares the same thing.
 
-    Reducing it to a byte count reports the one thing the note exists to prevent: a program
+    Reducing that note to a byte count reports the one thing it exists to prevent: a program
     whose output was dropped for its size reads back as one that printed nothing.
     """
 
-    def test_the_hosts_note_is_surfaced_whole(self):
+    def test_the_producers_note_is_surfaced_whole(self):
         note = "the program's output was larger than the host will read and was not returned"
-        out = _format_withheld(ExecResult(stdout="", stderr=note), over_transport=True)
+        out = _format_withheld(ExecResult(stdout="", stderr=note, producer_owns_stderr=True))
 
         assert f"note: {note}" in out
         assert "exit code: 0" in out
 
     def test_the_merged_stream_is_one_count_not_two(self):
         """Naming `stderr` there would tell a model its stderr write vanished."""
-        out = _format_withheld(ExecResult(stdout="a\nb", stderr=""), over_transport=True)
+        out = _format_withheld(ExecResult(stdout="a\nb", stderr="", producer_owns_stderr=True))
 
         assert "output: 3 bytes" in out
         assert "stdout:" not in out
         assert "stderr:" not in out
 
     def test_a_run_with_no_note_says_nothing_in_its_place(self):
-        out = _format_withheld(ExecResult(stdout="hi", stderr=""), over_transport=True)
+        out = _format_withheld(ExecResult(stdout="hi", stderr="", producer_owns_stderr=True))
 
         assert "note:" not in out
 
     def test_the_plain_path_keeps_both_counts(self):
-        """Off the transport `stderr` is the program's own, and is withheld like `stdout`."""
-        out = _format_withheld(ExecResult(stdout="a", stderr="boom"), over_transport=False)
+        """Undeclared, `stderr` is the program's own and is withheld like `stdout`."""
+        out = _format_withheld(ExecResult(stdout="a", stderr="boom"))
 
         assert "stdout: 1 bytes" in out
         assert "stderr: 4 bytes" in out
+
+    def test_the_result_decides_it_rather_than_the_wiring(self):
+        """The reach the field buys: a *backend* that merges gets the merged rendering too.
+
+        Nothing about this result came from the host-tool transport, and the previous rule —
+        branch on whether this kind wired one — would have sized the producer's note away.
+        """
+        out = _format_withheld(
+            ExecResult(stdout="printed", stderr="a note", producer_owns_stderr=True)
+        )
+
+        assert "note: a note" in out
+        assert "stderr:" not in out
 
     def test_a_wired_registry_selects_the_transport_rendering(self):
         """The wiring, not just the renderer: a tool built with host tools has to pass it."""
