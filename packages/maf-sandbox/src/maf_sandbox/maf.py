@@ -235,9 +235,10 @@ def _reachable_middleware() -> Any | None:
 #: Where the framework keeps a call's arguments as they arrived, before it expands any
 #: reference into them.  **Not a published contract** — a string literal inside
 #: `LabelTrackingFunctionMiddleware`, and this package accepts every ``agent-framework-core``
-#: 1.x — so a compatible minor may rename it and the exact answer would quietly become the
-#: inference.  Two things watch for that: a divergence alarm in the suite, and
-#: `_warn_once_about_a_missing_record` for a host whose upgrade this suite never saw.
+#: 1.x — so a compatible minor may rename it and this would stop answering.  Two things keep
+#: that from being silent: a divergence alarm in the suite, and, for a host whose upgrade this
+#: suite never saw, `_warn_once_about_a_missing_record` beside an answer that names every
+#: position rather than quoting one.
 #: Retiring both needs a provenance API the framework publishes, which is #826.
 _ORIGINAL_ARGUMENTS_KEY = "original_arguments_for_messages"
 
@@ -256,9 +257,8 @@ _warned_about_a_missing_record = False
 def _warn_once_about_a_missing_record(logger: logging.Logger) -> None:
     """Say that the framework stopped keeping the record, where that is what it must mean.
 
-    Only called with an information-flow middleware reachable, which is the one situation the
-    key cannot legitimately be absent in: that middleware writes it on every call before it
-    expands anything.
+    Called where a call carries `_MIDDLEWARE_RAN_KEY` and not `_ORIGINAL_ARGUMENTS_KEY` — see
+    those two, and :func:`_the_framework_kept_no_record`, for why that pairing is the tell.
     """
     global _warned_about_a_missing_record
     if _warned_about_a_missing_record:
