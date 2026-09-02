@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
+import json
 import logging
 import math
 import posixpath
@@ -174,13 +175,36 @@ def _prefixed(name: str) -> str:
     return name.replace("%", "%%")
 
 
+def _primary_of(payload: str) -> str | None:
+    """The field the middleware would hand a tool in place of ``payload``, or ``None``.
+
+    A stored payload that is JSON naming a ``response`` does not reach a tool whole: the
+    middleware substitutes that field alone.  This mirrors that rule, so what is compared
+    against an argument is what the argument could actually have arrived as — and it has to
+    keep mirroring it, because a payload shape this misses is one an argument can carry past
+    the check.
+    """
+    stripped = payload.strip()
+    if not (stripped.startswith("{") and stripped.endswith("}")):
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except ValueError:
+        return None
+    if isinstance(parsed, dict):
+        primary = cast("dict[str, Any]", parsed).get("response")
+        if isinstance(primary, str) and primary:
+            return primary
+    return None
+
+
 def _hidden_payloads(middleware: Any) -> Iterator[str]:
     """Every stored payload a rewritten argument could have arrived carrying.
 
-    A hidden *text* item is stored as its own text; anything else as a dict, and the middleware
-    hands a tool the dict's ``response`` field where there is one.  Those two shapes are what
-    this reads.  A payload shaped like neither is not reported, and the caller falls back to
-    :func:`~maf_sandbox.echoed_name`'s bound on shape.
+    A hidden *text* item is stored as its own text and anything else as a dict, and either can
+    reach a tool reduced to a ``response`` field rather than whole — so both the payload and
+    that field are reported where they differ.  A payload shaped like neither is not reported,
+    and the caller falls back to :func:`~maf_sandbox.echoed_name`'s bound on shape.
     """
     store = middleware.get_variable_store()
     for variable_id in store.list_variables():
@@ -191,10 +215,13 @@ def _hidden_payloads(middleware: Any) -> Iterator[str]:
         if isinstance(content, str):
             if content:
                 yield content
-        elif isinstance(content, Mapping):
-            primary = cast("Mapping[str, Any]", content).get("response")
-            if isinstance(primary, str) and primary:
+            primary = _primary_of(content)
+            if primary is not None:
                 yield primary
+        elif isinstance(content, Mapping):
+            primary_field = cast("Mapping[str, Any]", content).get("response")
+            if isinstance(primary_field, str) and primary_field:
+                yield primary_field
 
 
 def values_holding_hidden_content(values: Sequence[str]) -> frozenset[str]:
@@ -208,6 +235,14 @@ def values_holding_hidden_content(values: Sequence[str]) -> frozenset[str]:
 
     **Containment, not equality.**  A reference is spliced into the text around it, so
     ``"[var_a1b2].bicep"`` arrives as the content with a suffix and equals no stored payload.
+
+    **The answer is conservative, and deliberately so: it is about the whole conversation's
+    store rather than about this call's expansions.**  A value is reported when it *could* have
+    arrived carrying a hidden payload, not when it provably did — so a store holding a short
+    payload such as ``"main"`` reports an untouched ``"main.bicep"`` too, and its refusal names
+    a position where it would otherwise have quoted the name.  That is the safe direction and
+    it costs ergonomics rather than containment; the exact question needs the argument's own
+    before-and-after, which a tool body cannot reach.
 
     Take the whole argument list in one call: the answer costs one pass over the variable
     store, and the store's own reads are logged by the framework.

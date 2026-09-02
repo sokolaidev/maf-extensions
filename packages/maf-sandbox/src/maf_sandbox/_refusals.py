@@ -2,9 +2,9 @@
 
 A refusal is text the model reads back on every later turn, so a name quoted into one is a
 channel out of the tool — and the value being quoted is not always the one the model chose.
-MAF's information-flow middleware rewrites a bracketed variable reference into the content it
-stands for *before* the tool body runs, so a kind that echoes an argument can hand back
-content the framework had hidden, under whatever label the tool declares (#810).
+MAF's information-flow middleware rewrites a variable reference into the content it stands for
+*before* the tool body runs, so an argument may be content the framework hid rather than
+anything the model wrote (#810).
 
 Quoting is still what the caller needs: a model that misspelled a name cannot fix it from a
 message that will not say which.  So a value of a shape a refusal can afford to repeat is
