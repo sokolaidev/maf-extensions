@@ -13,7 +13,7 @@ from a return value — see this directory's README.
 # requires-python = ">=3.12"
 # dependencies = [
 #     "maf-sandbox-docker",
-#     "maf-sandbox>=0.29",
+#     "maf-sandbox>=0.30",
 # ]
 # ///
 

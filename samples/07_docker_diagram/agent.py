@@ -33,7 +33,7 @@ Read it, along with the prerequisites and the environment variables, first.
 #     "azure-core[aio]",
 #     "azure-identity",
 #     "maf-sandbox-docker",
-#     "maf-sandbox>=0.29",
+#     "maf-sandbox>=0.30",
 # ]
 # ///
 
