@@ -218,8 +218,8 @@ class TestTheSharedConformanceSuites:
     through `exec`, which this backend has — the probes are why that shape was chosen.
 
     FILES_DELETE is **called and refused**: the suite gate raises before any probe runs,
-    because this backend declares no such capability — confining a removal needs the component
-    walk its absent pull surface cannot provide (#125 carries the pull surface). The call is
+    because this backend declares no such capability — the filesystem path check a removal owes
+    is answered inside the guest for the kinds that decide an escape (#495). The call is
     the wiring; the refusal is the answer, and there are no results to skip.
 
     RECLAIM is answered in full, unlike FILES_DELETE: it is gated by no capability, so this is
@@ -305,8 +305,8 @@ class TestTheSharedConformanceSuites:
         report probe results at all; asserting the refusal keeps the call honest (it is what
         the coverage wiring looks for) without pretending skips that the runner never emits.
         The capability itself is withheld structurally — `remove` raises NotImplementedError,
-        confining a deletion needs the pull surface #125 carries — so unlike acas there is
-        nothing to measure: no mechanism exists behind the gate.
+        since the check a deletion owes is answered inside the guest (#495) — so unlike acas
+        there is nothing to measure: no mechanism exists behind the gate.
         """
         scope = f"e2e-{uuid.uuid4()}"
         backend = WslcSandboxBackend(WslcSandboxConfig())
