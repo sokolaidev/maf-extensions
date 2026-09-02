@@ -165,10 +165,10 @@ class HostToolDeclaration:
     (``None``: nothing conversation-derived flows out); ``identity`` is whose authority the
     body exercises (``None``: pure computation, no authority beyond returning a value).
     ``source`` is the derivation question :class:`SourceIntegrity` states, asked of what this
-    body *returns*: reaching a network or a store the host cannot vouch for makes it
-    :data:`SourceIntegrity.UNTRUSTED` once anything of them survives into the result, however
-    first-party the formatting around it. Reaching one and returning nothing of it is what
-    ``None`` already covers.
+    body *returns*: a body reaching a network or a store the host cannot vouch for declares
+    :data:`SourceIntegrity.UNTRUSTED` once anything from that source survives into its result,
+    however first-party the formatting around it. Reaching one and returning nothing from it is
+    what ``None`` already covers.
 
     There are no defaults, deliberately: a declaration exists to prove every leg was
     considered, and a defaulted leg would be indistinguishable from a never-considered one.
