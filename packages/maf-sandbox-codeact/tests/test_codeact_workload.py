@@ -944,7 +944,7 @@ class TestWithholdingStillLandsFiles:
     def test_the_sinks_display_does_not_reach_a_withheld_result(self):
         """`display` is composed from an `Artifact` whose `content` is the guest's bytes, and
         no protocol rule keeps the two apart — so a sink that derives one from the other would
-        put guest-authored text inside a result declaring trusted integrity."""
+        put guest-authored text back into a result rendered to hold none."""
         sink = _LeakyDisplaySink()
         sandbox = _ProducingSandbox()
         tool = _withholding_tool(sandbox, sink)
@@ -961,7 +961,7 @@ class TestWithholdingStillLandsFiles:
         tool = _withholding_tool(sandbox, _RefusingSink())
         out = _run_producing(tool, sandbox, {"answer.txt": b"THE-SECRET"}, outputs=["answer.txt"])
 
-        assert "THE-SECRET" not in out, "the sink's refusal text reached a trusted result"
+        assert "THE-SECRET" not in out, "the sink's refusal text reached a withheld result"
         assert "could not be saved" in out
 
     def test_the_shown_path_still_quotes_a_sinks_refusal(self):
@@ -1079,21 +1079,22 @@ class TestWithholdingIsRefusedWhereItCouldNotBeHonest:
         )
 
 
-class TestWithholdingDeclaresTrustedIntegrity:
-    """The declaration is the point of the feature. Withholding the text and still declaring
-    nothing would leave the tracker's untrusted default in place — the result would go on
-    tainting the conversation, which is the problem the option exists to solve."""
+class TestWithholdingDeclaresNoIntegrityEither:
+    """Withholding takes the guest's *text* out of the result, not the guest out of its
+    derivation: the exit status, each stream's size and every output's presence bit are chosen
+    by a program the model wrote. So there is nothing here to call trusted — and a declaration
+    would not be a floor under the framework's input-label join, it would replace it."""
 
-    def test_a_withholding_tool_declares_trusted(self):
+    def test_a_withholding_tool_declares_no_source_integrity(self):
         tool = _withholding_tool(_ScriptedSandbox())
-        assert dict(tool.additional_properties or {})["source_integrity"] == "trusted"
+        assert "source_integrity" not in dict(tool.additional_properties or {})
 
-    def test_the_declared_value_is_the_enums(self):
+    def test_a_withholding_tool_declares_nothing_at_all(self):
         tool = _withholding_tool(_ScriptedSandbox())
-        assert dict(tool.additional_properties or {})["source_integrity"] == SourceIntegrity.TRUSTED
+        assert dict(tool.additional_properties or {}) == {}
 
-    def test_a_showing_tool_still_declares_nothing(self):
-        """The default is unchanged, and that is the whole compatibility claim."""
+    def test_a_showing_tool_declares_nothing_either(self):
+        """The two renderings differ in what the result holds, never in what it claims."""
         tool = _tool(_backend(capabilities=_PULLS), **_landing(CodeactOutputs.DECLARED))
         assert "source_integrity" not in dict(tool.additional_properties or {})
 
@@ -1105,30 +1106,17 @@ class TestWithholdingDeclaresTrustedIntegrity:
             withhold_guest_output=True,
         )
 
-    def test_a_registry_of_trusted_sources_leaves_it_trusted(self):
-        assert (
-            dict(self._with_registry(_exchange_rate).additional_properties or {})[
-                "source_integrity"
-            ]
-            == "trusted"
-        )
-
-    def test_an_unstamped_registry_takes_the_declaration_away(self):
-        """`result_integrity` folds an unstamped tool to untrusted, and that fold is core's to
-        make: withholding is about this kind's rendering, not about where a host tool's data
-        came from."""
-        registry = _registry(_unstamped_lookup)
-        assert registry.aggregate().result_integrity is SourceIntegrity.UNTRUSTED
-        tool = self._with_registry(_unstamped_lookup)
+    @pytest.mark.parametrize(
+        "registered", [_exchange_rate, _log_to_crm, _unstamped_lookup], ids=lambda f: f.__name__
+    )
+    def test_no_stamping_of_the_registry_puts_a_declaration_back(
+        self, registered: Callable[..., Any]
+    ):
+        """A registry's `result_integrity` can only weaken a workload's own claim, and this
+        workload makes none — so a trusted source, a sink-only tool and an unstamped one all
+        read alike."""
+        tool = self._with_registry(registered)
         assert "source_integrity" not in dict(tool.additional_properties or {})
-
-    def test_a_sink_only_registry_keeps_it(self):
-        """A tool that carries something out has no opinion about integrity coming in."""
-        assert _registry(_log_to_crm).aggregate().result_integrity is None
-        assert (
-            dict(self._with_registry(_log_to_crm).additional_properties or {})["source_integrity"]
-            == "trusted"
-        )
 
 
 class TestTheModelIsToldUpFront:
@@ -1264,10 +1252,10 @@ class TestMakeCodeactTools:
 class TestFidesDeclarations:
     """This tool declares no `source_integrity`, and that is a decision, not an omission.
 
-    `sandbox_tool_declarations`'s default is `"trusted"` — right for a workload whose result
-    is a compiler's own diagnostics. It is wrong here: what comes back is whatever a
-    model-written `print(...)` chose to emit, so the tracker's untrusted default is the
-    honest reading, and it is also the fail-safe direction.
+    `sandbox_tool_declarations`'s default is `"trusted"`, and the argument that has to hold
+    for it is that the result derives from wholly trusted input. Here what comes back is
+    whatever a model-written `print(...)` chose to emit, so the tracker's untrusted default is
+    the honest reading, and it is also the fail-safe direction.
     """
 
     def test_it_declares_nothing(self):
@@ -1626,15 +1614,15 @@ class TestFilesIn:
     def test_a_withheld_refusal_names_no_file_from_the_store(self):
         """A store's filenames come from `list_files` and carry no integrity contract of their
         own — an agent that saved something it fetched may have named it from that content. In
-        a result declared trusted they would be unclassified text about a file the model never
-        asked for."""
+        a result rendered to hold no guest text they would be unclassified text about a file
+        the model never asked for."""
         sandbox = _ScriptedSandbox()
         store = InMemoryStore({"exfiltrated-<script>.csv": "x"})
         tool = _withholding_tool(sandbox, file_store=store)
 
         out = _run(tool, "print('hi')", files=["data/secrets.csv"], outputs=[])
         assert "not in this tool's file listing" in out
-        assert "exfiltrated" not in out, "a store-provided name reached a trusted result"
+        assert "exfiltrated" not in out, "a store-provided name reached a withheld result"
         assert "1 file(s)" in out
 
     def test_a_withheld_listing_failure_is_not_quoted(self):
@@ -1661,7 +1649,7 @@ class TestFilesIn:
         )
         out = asyncio.run(_callable(tools[0])(code="print('hi')", files=["a.csv"], outputs=[]))
 
-        assert "injected" not in out, "the host callback's message reached a trusted result"
+        assert "injected" not in out, "the host callback's message reached a withheld result"
         assert "could not be read" in out
         assert sandbox.written_files == {}
 

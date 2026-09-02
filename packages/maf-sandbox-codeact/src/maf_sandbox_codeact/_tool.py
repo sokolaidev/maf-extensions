@@ -50,7 +50,6 @@ from maf_sandbox import (
     SandboxProgramTimeout,
     SandboxRouter,
     SandboxSpec,
-    SourceIntegrity,
     TransferLimits,
     collect_outputs,
     error_detail,
@@ -250,11 +249,11 @@ def make_codeact_tools(
         outputs: How a program's output files are named. See :class:`CodeactOutputs`.
         withhold_guest_output: Keep what the program printed out of the tool result, and answer
             with sizes and the model's own declared names instead. No guest-authored text
-            survives into the result, so this tool declares
-            :data:`~maf_sandbox.SourceIntegrity.TRUSTED` — unless a wired registry's
-            ``result_integrity`` says otherwise, which is core's fold to make and is honoured
-            here. Requires :data:`CodeactOutputs.DECLARED`: the one mode where content can still
-            reach the model and no guest-chosen name reaches the result.
+            survives into the result — but the values that replace it were still chosen by a
+            program the model wrote, so this changes what the result *holds* and not where it
+            came from: the tool declares no ``source_integrity`` either way. Requires
+            :data:`CodeactOutputs.DECLARED`: the one mode where content can still reach the
+            model and no guest-chosen name reaches the result.
 
             A size here is the UTF-8 length of the text the stream came back as, not the count
             of bytes the program wrote: ``ExecResult`` states no decoding contract, so a
@@ -268,17 +267,16 @@ def make_codeact_tools(
             ``note:``, since withholding it would report a dropped output as a program that
             printed nothing.
 
-            **What "trusted" claims, exactly.** The prose and the shape are this package's, and
-            the artifact names are the model's own — but what fills them is the program's to
-            choose, and it is a channel rather than a leak-free boundary. The exit status is 8
-            bits; each stream's size is a few more, chosen by padding; and **each declared
+            **What withholding gets you, exactly.** The prose and the shape are this package's,
+            and the artifact names are the model's own — but what fills them is the program's
+            to choose, and it is a channel rather than a leak-free boundary. The exit status is
+            8 bits; each stream's size is a few more, chosen by padding; and **each declared
             output is one further bit**, since the program decides whether to write it and the
             result says of every declared name whether it landed — up to ``files_out.max_files``
-            of them. So the claim is that no guest-authored *text* crosses, not that no
-            guest-chosen *bit* does. That is a narrow per-call channel rather than the open one
-            a rendered ``stdout`` is, and a host that must close it should not attach this
-            workload at all. The sink's ``display`` is deliberately *not* rendered here — see
-            :func:`_format_landed`.
+            of them. So what stops crossing is guest-authored *text*, not every guest-chosen
+            *bit* — a narrow per-call channel rather than the open one a rendered ``stdout`` is,
+            and a host that must close it should not attach this workload at all. The sink's
+            ``display`` is deliberately *not* rendered here — see :func:`_format_landed`.
         outbound_max_confidentiality: The host's cap for tools that carry something out, in the
             host's own vocabulary. Off by default and written only when something can actually
             leave: an artifact landing in the sink, a host tool that carries something out, or
@@ -457,29 +455,16 @@ def make_codeact_tools(
         name=EXECUTE_CODE_TOOL_NAME,
         approval_mode="always_require" if approval_gated else "never_require",
         also_carries_out=registry_carries_out,
-        # The library's "trusted" default is right for a compiler's diagnostics and wrong here:
-        # what comes back is whatever a model-written `print(...)` chose to emit. Undeclared,
-        # the tracker's untrusted default applies and the result taints the conversation.
-        # Withholding removes that premise — no guest-authored text survives into the result —
-        # so the declaration becomes available, subject to the registry's own fold below.
-        source_integrity=_withheld_integrity(surface) if withhold_guest_output else None,
+        # Never declared, withheld or not. What comes back is whatever a model-written
+        # `print(...)` chose to emit; withheld it is an exit status, two sizes and a presence
+        # bit per declared output, every one of them chosen by a program the model wrote. A
+        # declaration replaces the framework's input-label join rather than flooring it, so
+        # declaring anything here would tell a host's middleware to disregard the input side.
+        source_integrity=None,
         outbound_max_confidentiality=outbound_max_confidentiality,
         output_sink=output_sink,
         logger=logger,
     )
-
-
-def _withheld_integrity(surface: HostToolAggregate | None) -> SourceIntegrity | None:
-    """What a withholding tool may declare, once the registry has had its say.
-
-    Withholding is about this kind's own rendering, and a registry's sources are core's fold to
-    make: ``result_integrity`` is the weakest level over every registered source, and an
-    unstamped tool has already failed safe into it. A registry with no opinion leaves the
-    workload's own, which withholding has earned; one that says untrusted keeps it.
-    """
-    if surface is not None and surface.result_integrity is SourceIntegrity.UNTRUSTED:
-        return None
-    return SourceIntegrity.TRUSTED
 
 
 def _effective_egress(extra: Sequence[str]) -> tuple[str, ...]:
@@ -1172,8 +1157,8 @@ def _listing_hint(name: str, listing: list[str], *, withhold: bool = False) -> s
     ``withhold`` names none of them. A store's filenames are the host's to supply through
     ``list_files`` and carry no integrity contract of their own — an agent that saved something
     it fetched may have named it from that content — so echoing up to
-    :data:`_LISTING_HINT_MAX` of them would put unclassified text into a result declared
-    :data:`~maf_sandbox.SourceIntegrity.TRUSTED`, for a name the model never asked about.
+    :data:`_LISTING_HINT_MAX` of them would put unclassified text into a result whose whole
+    point is to hold none, for a name the model never asked about.
     """
     if not listing:
         return "This tool's listing is empty — no files were shared with it."
@@ -1544,9 +1529,9 @@ def _format_landed(
     ``withhold`` drops ``display`` in favour of the name the model itself declared. The sink
     composes ``display`` from an :class:`~maf_sandbox.Artifact` whose ``content`` is the guest's
     bytes, and nothing in the protocol requires the two to be independent — so a sink that puts
-    any of that content in the string would be putting guest-authored text into a result this
-    kind has declared :data:`~maf_sandbox.SourceIntegrity.TRUSTED`. Naming the declared spelling
-    costs the sink's own detail and needs no promise from the host to stay honest.
+    any of that content in the string would be putting guest-authored text back into a result
+    rendered to hold none. Naming the declared spelling costs the sink's own detail and needs no
+    promise from the host to stay honest.
     """
     delivered = {unicodedata.normalize("NFC", item.name) for item in landed}
     lines: list[str] = []
