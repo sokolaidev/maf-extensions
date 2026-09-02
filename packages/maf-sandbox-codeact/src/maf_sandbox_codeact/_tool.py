@@ -1114,6 +1114,10 @@ async def _resolve_listed_files(
     """
     if not files:
         return []
+    # Asked before the first await, not beside the loop that uses it: the framework's accessor
+    # is not scoped to the call, so every suspension before asking is a chance for the answer
+    # to come back empty. See `values_holding_hidden_content`.
+    rewritten = values_holding_hidden_content(files)
     listing = await session.list_files(store)
     if isinstance(listing, str):
         # The host's own sentence about its store. Withheld it is dropped for the reason the
@@ -1124,9 +1128,6 @@ async def _resolve_listed_files(
         return listing
     known = set(listing)
     resolved: list[str] = []
-    # One pass over the variable store for the whole list: the middleware may have rewritten a
-    # variable reference into any of these, and that answer beats any guess from the shape.
-    rewritten = values_holding_hidden_content(files)
     for position, name in enumerate(files):
         at = f"files[{position}]"
         hidden = name in rewritten

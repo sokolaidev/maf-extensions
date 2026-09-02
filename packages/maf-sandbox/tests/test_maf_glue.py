@@ -2261,18 +2261,45 @@ class TestValuesHoldingHiddenContent:
     ):
         """A divergence alarm, not a feature test.
 
-        `_primary_of` reimplements a rule that lives in the framework rather than in any
-        contract it publishes, so a change there silently stops this matching and a payload
-        walks past the check — which is how the JSON-response shape got through once already.
-        Each row asserts what the framework *delivers* before asserting what is reported, so a
-        changed reduction fails on the first half and names itself.
+        `_reduced_form` reimplements a rule that lives in the framework rather than in any
+        contract it publishes, so a change there stops it matching and a payload of that shape
+        reaches an argument unreported. Each row asserts what the framework *delivers* before
+        asserting what is reported, so a changed reduction fails on the first half.
         """
         seen = self._hidden("[VAR]", stored=stored)
         assert seen["received"] == [delivered], (
-            "the framework's payload reduction has changed — `maf._primary_of` mirrors it and "
+            "the framework's payload reduction has changed — `maf._reduced_form` mirrors it and "
             "must be updated to match, or an argument carrying this shape is not reported"
         )
         assert bool(seen["hidden"]) is reported
+
+    #: The same payloads, referenced *inside* a longer argument. Alone they reduce to a value
+    #: that is not text and the call is refused; spliced, the framework calls `str()` on them
+    #: and they arrive as a perfectly ordinary filename.
+    SPLICED = [
+        pytest.param('{"response": 42}', "42.bicep", id="a numeric response, from json"),
+        pytest.param({"response": 42}, "42.bicep", id="a numeric response, from a dict"),
+        pytest.param(
+            {"other": "EVIL.bicep"}, "{'other': 'EVIL.bicep'}.bicep", id="a dict naming no response"
+        ),
+    ]
+
+    @pytest.mark.parametrize(("stored", "delivered"), SPLICED)
+    def test_a_payload_spliced_into_an_argument_is_reported_however_it_reduces(
+        self, stored: object, delivered: str
+    ):
+        """`str()` of the reduction is what a spliced reference delivers, whatever its type.
+
+        This is the half a whole-string check cannot see: alone these reduce to something that
+        is not text and the call is refused, so only the spliced form reaches an argument — as
+        text, shaped like a name, and free of spaces.
+        """
+        seen = self._hidden("[VAR].bicep", stored=stored)
+        assert seen["received"] == [delivered], (
+            "the framework's payload reduction has changed — `maf._reduced_form` mirrors it and "
+            "must be updated to match"
+        )
+        assert seen["hidden"] == frozenset({delivered})
 
     @pytest.mark.parametrize(
         "stored",

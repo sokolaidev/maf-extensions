@@ -294,10 +294,10 @@ class TestARefusalNamesRatherThanEchoes:
         assert "a" * 256 not in str(caught.value)
 
     def test_the_empty_name_refusal_identifies_the_argument_too(self):
-        """The one refusal that returns before a name exists still has to say which argument.
+        """A refusal with no name to show still names the argument it was given.
 
-        It raised before the rendering was computed, so it was the single exception to the
-        docstring's promise that every refusal names the position it was given.
+        It is the one that cannot fall back to quoting a value, so the position is the whole of
+        what it can tell a caller.
         """
         with pytest.raises(SandboxArtifactNameInvalid, match=r"outputs\[1\]"):
             validate_artifact_name("", at="outputs[1]")

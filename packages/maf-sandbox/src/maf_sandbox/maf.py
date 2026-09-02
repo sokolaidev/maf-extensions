@@ -175,42 +175,41 @@ def _prefixed(name: str) -> str:
     return name.replace("%", "%%")
 
 
-def _primary_of(payload: str) -> str | None:
-    """The field the middleware would hand a tool in place of ``payload``, or ``None``.
+def _reduced_form(payload: object) -> object | None:
+    """What the middleware substitutes for ``payload``, or ``None`` where it substitutes nothing.
 
-    A stored payload that is JSON naming a ``response`` does not reach a tool whole: the
-    middleware substitutes that field alone.  This mirrors that reduction so that what is
-    compared against an argument is what the argument could actually have arrived as.
+    A stored payload does not always reach a tool whole: a mapping, or JSON text naming a
+    ``response``, is reduced to that field first.  This mirrors that rule so what is compared
+    against an argument is what the argument could actually have arrived as.
 
-    **It is a mirror of behaviour, not of a published contract, so it has to track upstream.**
-    The rule lives inside ``agent_framework.security`` (MIT, Microsoft Corporation) rather than
-    in anything that package promises, and a shape this stops matching is a shape an argument
-    carries past the check — which is how a JSON payload got through once already.
-    ``TestValuesHoldingHiddenContent`` asserts what the framework *delivers* for each shape
-    before asserting what is reported, so a changed reduction fails there and says so, and
-    ``THIRD-PARTY-NOTICES.md`` records the reuse where a dependency list cannot show it.
+    **It mirrors behaviour rather than a published contract, so it has to track upstream.** The
+    rule lives inside ``agent_framework.security`` (MIT, Microsoft Corporation), which promises
+    nothing about it, and a shape this stops matching is a shape an argument carries past the
+    check. ``THIRD-PARTY-NOTICES.md`` records the reuse.
     """
-    stripped = payload.strip()
-    if not (stripped.startswith("{") and stripped.endswith("}")):
-        return None
-    try:
-        parsed = json.loads(stripped)
-    except ValueError:
-        return None
-    if isinstance(parsed, dict):
-        primary = cast("dict[str, Any]", parsed).get("response")
-        if isinstance(primary, str) and primary:
-            return primary
+    if isinstance(payload, Mapping):
+        mapping = cast("Mapping[str, Any]", payload)
+        return mapping["response"] if "response" in mapping else mapping
+    if isinstance(payload, str):
+        stripped = payload.strip()
+        if stripped.startswith("{") and stripped.endswith("}"):
+            try:
+                parsed = json.loads(stripped)
+            except ValueError:
+                return None
+            if isinstance(parsed, dict) and "response" in parsed:
+                return cast("dict[str, Any]", parsed)["response"]
     return None
 
 
 def _hidden_payloads(middleware: Any) -> Iterator[str]:
-    """Every stored payload a rewritten argument could have arrived carrying.
+    """Every string form a rewritten argument could have arrived carrying.
 
-    A hidden *text* item is stored as its own text and anything else as a dict, and either can
-    reach a tool reduced to a ``response`` field rather than whole — so both the payload and
-    that field are reported where they differ.  A payload shaped like neither is not reported,
-    and the caller falls back to :func:`~maf_sandbox.echoed_name`'s bound on shape.
+    Two forms per stored payload, because a reference is expanded two ways.  Alone, it is
+    replaced by the payload itself; spliced into surrounding text, by ``str()`` of it — so a
+    ``response`` that is not text still reaches an argument as one, and ``{"response": 42}``
+    arrives inside ``42.bicep``.  Both are reported, and a payload the reduction leaves alone
+    is compared whole.
     """
     store = middleware.get_variable_store()
     for variable_id in store.list_variables():
@@ -218,16 +217,11 @@ def _hidden_payloads(middleware: Any) -> Iterator[str]:
             content, _ = store.retrieve(variable_id)
         except KeyError:  # pragma: no cover - a store cleared between the two calls
             continue
-        if isinstance(content, str):
-            if content:
-                yield content
-            primary = _primary_of(content)
-            if primary is not None:
-                yield primary
-        elif isinstance(content, Mapping):
-            primary_field = cast("Mapping[str, Any]", content).get("response")
-            if isinstance(primary_field, str) and primary_field:
-                yield primary_field
+        if isinstance(content, str) and content:
+            yield content
+        reduced = _reduced_form(content)
+        if reduced is not None and (text := str(reduced)):
+            yield text
 
 
 def values_holding_hidden_content(values: Sequence[str]) -> frozenset[str]:
@@ -252,6 +246,11 @@ def values_holding_hidden_content(values: Sequence[str]) -> frozenset[str]:
 
     Take the whole argument list in one call: the answer costs one pass over the variable
     store, and the store's own reads are logged by the framework.
+
+    **Ask before the body's first await.** The framework's accessor is not scoped to the call,
+    so an answer fetched late may not be available at all; asking first thing is what a caller
+    can do about it, and nothing available to a tool body does better. An unavailable answer is
+    an empty one, which falls back to :func:`~maf_sandbox.echoed_name`'s bound on shape.
 
     Answers an empty set where no middleware is reachable, which is two different situations
     it cannot tell apart.  Either the host runs none — then nothing was ever hidden and the
