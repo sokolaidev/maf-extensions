@@ -245,14 +245,14 @@ class TestSandboxToolDeclarations:
 
     def test_a_string_override_declares_the_scope_it_names(self):
         """The argument is public, and the check below it is `is`: a string would declare nothing."""
-        assert sandbox_tool_declarations(_SPEC, isolation_scope=cast("Any", "call")) == {
+        assert sandbox_tool_declarations(_SPEC, isolation_scope=cast(Any, "call")) == {
             "source_integrity": "trusted",
             ISOLATION_SCOPE_KEY: "call",
         }
 
     def test_an_override_that_is_not_a_scope_is_refused(self):
         with pytest.raises(ValueError, match="per-request"):
-            sandbox_tool_declarations(_SPEC, isolation_scope=cast("Any", "per-request"))
+            sandbox_tool_declarations(_SPEC, isolation_scope=cast(Any, "per-request"))
 
     def test_the_attached_tool_declares_what_the_router_resolves(self):
         tool = _attach_with(
