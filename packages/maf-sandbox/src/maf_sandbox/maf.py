@@ -179,10 +179,15 @@ def _primary_of(payload: str) -> str | None:
     """The field the middleware would hand a tool in place of ``payload``, or ``None``.
 
     A stored payload that is JSON naming a ``response`` does not reach a tool whole: the
-    middleware substitutes that field alone.  This mirrors that rule, so what is compared
-    against an argument is what the argument could actually have arrived as — and it has to
-    keep mirroring it, because a payload shape this misses is one an argument can carry past
-    the check.
+    middleware substitutes that field alone.  This mirrors that reduction so that what is
+    compared against an argument is what the argument could actually have arrived as.
+
+    **It is a mirror of behaviour, not of a published contract, so it has to track upstream.**
+    The rule lives inside ``agent_framework.security`` (MIT, Microsoft Corporation) rather than
+    in anything that package promises, and a shape this stops matching is a shape an argument
+    carries past the check — which is how a JSON payload got through once already.
+    ``TestValuesHoldingHiddenContent`` asserts what the framework *delivers* for each shape
+    before asserting what is reported, so a changed reduction fails there and says so.
     """
     stripped = payload.strip()
     if not (stripped.startswith("{") and stripped.endswith("}")):
@@ -262,6 +267,11 @@ def values_holding_hidden_content(values: Sequence[str]) -> frozenset[str]:
     middleware = get_current_middleware()
     if middleware is None:
         return frozenset()
+    # No guard for a non-string value, though expansion does substitute whatever a payload
+    # reduced to: a `list[str]` argument holding an `int` fails the framework's own argument
+    # validation, so a tool body is never entered with one. `TestValuesHoldingHiddenContent`
+    # pins that, since the alternative reading — that containment here could raise — is the
+    # obvious one to reach for.
     return frozenset(
         value for payload in _hidden_payloads(middleware) for value in values if payload in value
     )
