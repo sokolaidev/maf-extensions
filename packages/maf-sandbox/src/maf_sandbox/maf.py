@@ -385,13 +385,12 @@ def positions_holding_hidden_content(
     the values are not one argument's — a manifest a program wrote — leave it unset and the
     fallback answers.
 
-    **Neither answer is free of a guess-confirmation channel, and the difference is scope.**
-    The fallback reports any value containing a stored payload, so a caller can learn that a
-    string it chose sits inside hidden content by watching which way its refusal renders.  The
-    record narrows that to equality at one position, which is why the comparison must be
-    positional — matched against the record as a whole, a caller could excuse a rewritten entry
-    with an equal value placed elsewhere and have the hidden content quoted back.  What neither
-    hides is the *length* of a value it declines to repeat.
+    **The guess-confirmation channel belongs to the fallback alone.**  It reports any value
+    containing a stored payload, so a caller can learn that a string it chose sits inside
+    hidden content by watching which way its refusal renders.  The record cannot: it compares
+    an entry with the caller's own spelling at that position and never consults the store, so a
+    value the caller sent literally keeps its echo whatever it happens to equal.  What both
+    renderings still disclose is the *length* of a value they decline to repeat.
 
     Everything below describes the fallback for a host that has not wired it.
 
