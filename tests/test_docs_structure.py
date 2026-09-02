@@ -6,12 +6,19 @@ than surviving as a dead link a reader finds later.
 
 from __future__ import annotations
 
+import importlib.util
 import re
 from pathlib import Path
 
 import pytest
 
 _ROOT = Path(__file__).resolve().parent.parent
+_spec = importlib.util.spec_from_file_location(
+    "check_doc_paths", _ROOT / "scripts" / "check_doc_paths.py"
+)
+assert _spec and _spec.loader
+_check = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_check)
 _DOCS = _ROOT / "docs"
 _SANDBOX = _DOCS / "sandbox"
 _RESEARCH = _SANDBOX / "research"
@@ -148,6 +155,22 @@ class TestEveryResearchRecordOpensWithABanner:
             f"{doc.relative_to(_ROOT).as_posix()} carries {found} — "
             "location conveys status now, and the `## Status` table carries the detail"
         )
+
+
+class TestNoRecordCitesALine:
+    """A record is never edited to match what shipped, so a line number in one cannot be repaired.
+
+    `check_doc_paths.py` holds a line reference to the definition it names, which is a promise
+    about *today's* source. A record makes no such promise — it is kept in the tense it was
+    written — so a number in one rots by construction and is left pointing into the middle of
+    whatever moved. Its parser is reused here rather than approximated, since a second, weaker
+    reading of what a reference looks like would pass exactly the ones it failed to recognise.
+    """
+
+    @pytest.mark.parametrize("doc", _markdown(_RESEARCH), ids=_ids(_markdown(_RESEARCH)))
+    def test_it_names_no_line(self, doc: Path):
+        cited = _check.line_references(_check.document_text(doc))
+        assert [reference.written for reference in cited] == []
 
 
 class TestTheIndexReadmesAreSelfSufficient:

@@ -3,8 +3,14 @@
     python scripts/check_doc_paths.py
 
 Reads every tracked markdown file, and every shipped source file under ``packages/*/src``, and
-reports three kinds of reference that name something absent: a relative link, the heading
-fragment on one, and a repository path written in prose.
+reports four kinds of reference that no longer hold: a relative link, the heading fragment on
+one, a repository path written in prose, and the line number on a path.
+
+**A line number is the one reference that never 404s.** The other three go missing when they
+rot; a stale line still resolves, to a different line of the same live file, so the page keeps
+looking maintained while it sends its reader into the middle of some other function. So it is
+not resolved but *corroborated*: a documented line must begin the definition of the symbol
+written beside it, which is the one line number in a source file this check can derive itself.
 
 **Resolution is against the tracked tree, never the filesystem.** An untracked or ignored file
 satisfies nothing, because a reference is only worth anything to a reader who cloned the
@@ -18,6 +24,8 @@ heading of a fragment on anything but a markdown file, which has none to check.
 
 from __future__ import annotations
 
+import ast
+import bisect
 import re
 import subprocess
 import sys
@@ -111,8 +119,29 @@ _MARKUP = re.compile(r"[`*~]")
 #: delimiter, which is what keeps the identifiers in these headings intact.
 _UNDERSCORE_EMPHASIS = re.compile(r"(?<![0-9A-Za-z_])(_{1,3})(?=\S)(.+?)(?<=\S)\1(?![0-9A-Za-z_])")
 
-#: `#L42` and `#L42-L60` on a source file are GitHub line references, not headings.
-_LINE_REFERENCE = re.compile(r"^L\d+(?:-L\d+)?$")
+#: `#L42` and `#L42-L60` on a source file are GitHub's own line anchors, not headings. Named
+#: for the fragment rather than for what it points at, because *line reference* is spent below
+#: on the thing written in prose, and one file cannot hold two meanings of it.
+_LINE_ANCHOR = re.compile(r"^L\d+(?:-L\d+)?$")
+
+#: A line reference, written as a code span holding nothing else: `testing.py:181`, or `:187`
+#: continuing the file the one before it named. Holding nothing else is what tells a reference
+#: apart from a line number quoted inside something — a compiler diagnostic reads
+#: `[warning] BCP035 @ main.bicep:31: …`, and a comment on docker's user syntax reads
+#: `:20001` runs as `0:20001` — and neither points into this tree.
+#:
+#: The extension rule is `_PROSE_PATH`'s, so the two passes agree on what a filename looks like.
+_LINE_REFERENCE = re.compile(
+    r"^(?P<file>[\w-][\w./-]*\.[A-Za-z][A-Za-z0-9]*)?:(?P<line>\d+)(?P<range>-\d+)?$"
+)
+
+#: A code span holding one undotted name, which is what a line reference is held to. A dotted
+#: spelling is not: `Egress.CLOSED` is a use rather than a definition, and `_scaffold.py`
+#: beside `samples/01_acas_bicep/_scaffold.py:37` is the file being named a second time.
+_BARE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+#: A blank line, which ends the paragraph a reference borrows its file and its symbol from.
+_PARAGRAPH_BREAK = re.compile(r"\n[ \t]*\n")
 
 #: A URI scheme opening a destination, which puts it off this tree.
 _SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
@@ -436,15 +465,13 @@ def _blank(kept: list[str], start: int, end: int) -> None:
             kept[index] = " "
 
 
-def without_code_spans(text: str) -> str:
-    """``text`` with every inline code span blanked, its length and line breaks preserved.
+def code_spans(text: str) -> list[tuple[int, int, str]]:
+    """Every inline code span in ``text``: the bounds of the whole span, and what is inside it.
 
-    A code span holds characters rather than markup, so `` `[x](missing.md)` `` is a document
-    showing its reader what a link looks like — the inline half of the rule fenced blocks
-    already get. A backtick run with no matching closer is literal text and is left alone,
-    which is what stops one stray tick blanking the rest of a page.
+    A backtick run with no matching closer opens nothing, which is what stops one stray tick
+    reading the rest of a page as code.
     """
-    kept = list(text)
+    found: list[tuple[int, int, str]] = []
     position = 0
     while (opener := _TICKS.search(text, position)) is not None:
         closer, search = None, opener.end()
@@ -456,8 +483,21 @@ def without_code_spans(text: str) -> str:
         if closer is None:
             position = opener.end()
             continue
-        _blank(kept, opener.start(), closer.end())
+        found.append((opener.start(), closer.end(), text[opener.end() : closer.start()]))
         position = closer.end()
+    return found
+
+
+def without_code_spans(text: str) -> str:
+    """``text`` with every inline code span blanked, its length and line breaks preserved.
+
+    A code span holds characters rather than markup, so `` `[x](missing.md)` `` is a document
+    showing its reader what a link looks like — the inline half of the rule fenced blocks
+    already get.
+    """
+    kept = list(text)
+    for start, end, _content in code_spans(text):
+        _blank(kept, start, end)
     return "".join(kept)
 
 
@@ -704,7 +744,7 @@ def broken_links(repo_root: Path) -> list[str]:
             # one on a *markdown* target — where the rendered page has no such anchor and the
             # fragment is dead. `?plain=1` is the exception and the only one: it asks for the
             # source listing, which is line-numbered. Any other query still renders markdown.
-            if _LINE_REFERENCE.match(fragment) and asks_for_the_plain_view(target):
+            if _LINE_ANCHOR.match(fragment) and asks_for_the_plain_view(target):
                 continue
             if fragment not in anchors(destination.read_text("utf-8")):
                 out.append(f"{here}: heading -> {target}")
@@ -717,8 +757,8 @@ def package_of(relative_path: str) -> str | None:
     return f"packages/{parts[1]}" if len(parts) >= 2 and parts[0] == "packages" else None
 
 
-def names_something(named: str, referrer: str, files: set[str]) -> bool:
-    """Whether ``named``, written in ``referrer``, points at a tracked file.
+def named_files(named: str, referrer: str, files: set[str]) -> list[str]:
+    """Every tracked file ``named``, written in ``referrer``, could mean.
 
     Prose inside a package saying ``tests/test_x.py`` means *that package's* tests, so it is
     resolved against the package and nowhere else — searching the whole repository would let
@@ -727,14 +767,20 @@ def names_something(named: str, referrer: str, files: set[str]) -> bool:
 
     A document outside every package has no such home, so ``scripts/import_disk_image.py`` in a
     design document means whichever package ships it, and only there is a repository-wide
-    search the right reading.
+    search the right reading. That search can match more than once — ``_backend.py`` names four
+    files — which is why this reports the candidates rather than a verdict.
     """
     if named in files:
-        return True
+        return [named]
     package = package_of(referrer)
     if package is not None:
-        return f"{package}/{named}" in files
-    return any(candidate.endswith("/" + named) for candidate in files)
+        return [f"{package}/{named}"] if f"{package}/{named}" in files else []
+    return sorted(candidate for candidate in files if candidate.endswith("/" + named))
+
+
+def names_something(named: str, referrer: str, files: set[str]) -> bool:
+    """Whether ``named``, written in ``referrer``, points at a tracked file."""
+    return bool(named_files(named, referrer, files))
 
 
 def broken_prose_paths(repo_root: Path) -> list[str]:
@@ -759,6 +805,169 @@ def broken_prose_paths(repo_root: Path) -> list[str]:
     return out
 
 
+class LineReference(NamedTuple):
+    """One documented line number: what it names, where it points, and what holds it there.
+
+    ``named`` is the file as the document spells it, and ``link`` the destination when the
+    reference sits inside a link label — the two are kept apart because a label can disagree
+    with the destination. ``symbol`` is the name written beside it, which is the whole
+    expectation: without one there is nothing a line number can be wrong against.
+    """
+
+    written: str
+    named: str
+    link: str | None
+    line: int
+    ranged: bool
+    symbol: str | None
+
+
+def _label_destination(links: list[Link], start: int, end: int) -> str | None:
+    """The destination of the innermost link whose *label* holds ``start``..``end``, if any.
+
+    A label is the one place a reference can name its file exactly, so it is preferred over the
+    spelling: a link says which of the two ``_tool.py`` files it means, and a bare mention of
+    the basename cannot.
+    """
+    found: Link | None = None
+    for link in links:
+        if link.start < start and end <= link.hidden_start:
+            if found is None or link.start > found.start:
+                found = link
+    return found.target if found is not None else None
+
+
+def line_references(text: str) -> list[LineReference]:
+    """Every line reference in ``text``, each carrying the name written beside it.
+
+    A reference is a code span holding nothing but a path and a number, because that is what
+    tells one apart from a line number quoted inside something else — see `_LINE_REFERENCE`.
+
+    The file may be left off, and then it is the one the reference before it in the same
+    paragraph named: that is how a page lists eight members of one class without repeating the
+    file eight times. A bare number with nothing before it in its paragraph names nothing, and
+    is not read as a reference at all.
+
+    The name is the nearest bare one spanned before it, and each reference consumes one, so two
+    references in a row are held to two names rather than both to the first.
+    """
+    breaks = [match.start() for match in _PARAGRAPH_BREAK.finditer(text)]
+    links = inline_links(text)
+    found: list[LineReference] = []
+    paragraph, symbol, carried = -1, None, None
+    for start, end, content in code_spans(text):
+        here = bisect.bisect_right(breaks, start)
+        if here != paragraph:
+            paragraph, symbol, carried = here, None, None
+        content = content.strip()
+        cited = _LINE_REFERENCE.match(content)
+        if cited is None:
+            if _BARE_NAME.match(content):
+                symbol = content
+            continue
+        named, link = cited["file"], _label_destination(links, start, end)
+        if named is None:
+            if carried is None:
+                continue
+            named, link = carried
+        found.append(
+            LineReference(content, named, link, int(cited["line"]), bool(cited["range"]), symbol)
+        )
+        carried, symbol = (named, link), None
+    return found
+
+
+def definition_lines(source: str) -> dict[str, set[int]]:
+    """Every name ``source`` defines, against the lines its definitions start on.
+
+    A ``def``, a ``class`` and an assignment are the three shapes a document cites, and the
+    parser hands back a line for each — which is what makes a definition the only line number in
+    a source file this check can derive for itself. A decorated function's line is its ``def``
+    rather than its first decorator, because that is the line a reader counting to it lands on.
+    """
+    found: dict[str, set[int]] = {}
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            found.setdefault(node.name, set()).add(node.lineno)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    found.setdefault(target.id, set()).add(target.lineno)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            found.setdefault(node.target.id, set()).add(node.target.lineno)
+    return found
+
+
+def _stale(
+    reference: LineReference,
+    document: Path,
+    repo_root: Path,
+    files: set[str],
+    definitions: dict[str, dict[str, set[int]]],
+) -> str | None:
+    """Why ``reference`` no longer holds, or None when it does."""
+    if reference.ranged:
+        return "names a range, and only the line a definition starts on can be checked"
+    here = document.relative_to(repo_root).as_posix()
+    if reference.link is not None:
+        named = _repo_relative(document.parent / resolve(reference.link), repo_root)
+        if named is None or named not in files:
+            return f"links to {reference.link}, which is not a tracked file"
+        if reference.named.rsplit("/", 1)[-1] != named.rsplit("/", 1)[-1]:
+            return f"names {reference.named} and links to {named}"
+    else:
+        candidates = named_files(reference.named, here, files)
+        if not candidates:
+            return f"names {reference.named}, which is not a tracked file"
+        if len(candidates) > 1:
+            # A basename can mean several files, and a reader sent to one of four `_backend.py`
+            # has been told nothing. A link's destination says which, so this is fixable.
+            return f"names {reference.named}, which is {' and '.join(candidates)}; link it"
+        named = candidates[0]
+    if not named.endswith(".py"):
+        return f"points into {named}, and only Python source carries definitions to check"
+    if reference.symbol is None:
+        return "carries no name beside it, so nothing says what the line should hold"
+    if named not in definitions:
+        definitions[named] = definition_lines((repo_root / named).read_text("utf-8"))
+    defined = definitions[named].get(reference.symbol)
+    if not defined:
+        return f"{named} defines no {reference.symbol}"
+    if reference.line not in defined:
+        return f"{reference.symbol} is defined at {' and '.join(str(n) for n in sorted(defined))}"
+    return None
+
+
+def document_text(path: Path) -> str:
+    """``path``'s text as the line pass reads it.
+
+    Markdown preprocessing on markdown alone, as in `broken_prose_paths`: a fenced block holds
+    another language, and a line number in one is that language's rather than a reference into
+    this tree — while in a `.py` file `<!--` is just characters, and reading it as a comment
+    opener would blank shipped source to the next `-->`.
+    """
+    text = path.read_text("utf-8")
+    return rendered(text) if path.suffix.lower() == ".md" else text
+
+
+def broken_line_references(repo_root: Path) -> list[str]:
+    """One line per documented line number that no longer begins what its document says it does.
+
+    Definitions are read once per file and shared, because the edit that breaks these is one
+    source file moving under every page that cites it.
+    """
+    files, _directories = tracked_tree(repo_root)
+    definitions: dict[str, dict[str, set[int]]] = {}
+    out: list[str] = []
+    for path in tracked(repo_root, *_PROSE_GLOBS):
+        here = path.relative_to(repo_root).as_posix()
+        for reference in line_references(document_text(path)):
+            stale = _stale(reference, path, repo_root, files, definitions)
+            if stale is not None:
+                out.append(f"{here}: line -> `{reference.written}` {stale}")
+    return out
+
+
 def repo_root() -> Path:
     """The tree every reference is resolved against.
 
@@ -774,14 +983,14 @@ def main(argv: list[str]) -> int:
         print(f"usage: {argv[0]}", file=sys.stderr)
         return 2
     root = repo_root()
-    problems = sorted(broken_links(root) + broken_prose_paths(root))
+    problems = sorted(broken_links(root) + broken_prose_paths(root) + broken_line_references(root))
     if not problems:
-        print("every documentation link and path resolves")
+        print("every documentation reference holds")
         return 0
     for problem in problems:
         print(problem, file=sys.stderr)
     print(
-        f"\n{len(problems)} reference(s) do not resolve. The ones under packages/*/src ship "
+        f"\n{len(problems)} reference(s) do not hold. The ones under packages/*/src ship "
         "inside the wheel, so a reader follows them out of a released package.",
         file=sys.stderr,
     )

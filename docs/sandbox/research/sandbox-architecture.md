@@ -87,7 +87,7 @@ A sibling operational package for that transport-and-container content is deferr
 Two things that look shared are deliberately not hoisted:
 
 - **A caller context built from constants.** `CallerContext.current_scope` and `.current_thread_id` are callables read at call time; a convenience that took plain values instead would hand a host the exact confused-deputy bug that "Keying, and the confused-deputy defense" above exists to prevent, so no such helper exists.
-- **`require_env_vars` as a published helper.** It is duplicated in all eight samples (for example `samples/01_acas_bicep/agent.py:66`), but it is sample scaffolding — an app's own startup-validation policy, not a library obligation; two consumers is the gate for library code, and eight copies of a sample's front matter is not the same claim.
+- **`require_env_vars` as a published helper.** It is duplicated in all eight samples (for example `samples/01_acas_bicep/agent.py`), but it is sample scaffolding — an app's own startup-validation policy, not a library obligation; two consumers is the gate for library code, and eight copies of a sample's front matter is not the same claim.
 
 ## The shipped backends
 

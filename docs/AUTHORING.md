@@ -34,6 +34,14 @@ Decided but unimplemented content goes in the body like everything else, in the 
 
 Start new work there and let it graduate. When a decision is made, **move** the decided content out into the main documents and **leave** the record behind — kept in the tense it was written, as the argument rather than a description of the code, its banner extended with a short line naming where the decided content now lives. A record is never edited to match what shipped; the main document is what tracks that. Nothing is deleted on the way.
 
+## Citing a line
+
+Write a line reference as a code span holding nothing else — `` `testing.py:181` `` — and put the name it points at beside it. That name is the whole check: [`check_doc_paths.py`](../scripts/check_doc_paths.py) requires the line to **begin the definition** of the name written before it, because a line number is otherwise the one reference that never 404s. It goes stale when somebody edits the source, and it still lands on a real line of a real file, so the page keeps looking maintained while it sends its reader into the middle of some other function ([#746](https://github.com/sokolaidev/maf-extensions/issues/746)).
+
+Three rules follow. Name **one** line and not a range, since only the line a definition starts on can be derived. **Link** the reference when the basename is shared — four files here are called `_backend.py`, and a reader sent to one of them has been told nothing. And leave the file off with a bare `` `:187` `` to continue the one named before it in the same paragraph, which is how a page walks a class member by member; a bare number opening a paragraph names nothing and is not read as a reference at all.
+
+A record under `research/` carries no line numbers. It is never edited to match what shipped, so a number in one cannot be repaired once the code moves — it rots by construction. Name the symbol and quote the code, which is what the argument rested on anyway.
+
 ## Diagrams
 
 Hand-author the SVG and commit it to `<family>/assets/`. There is no build step and no rendering service, so the picture is reviewable in the diff like the prose is. Share one house palette across a family, so two diagrams of the same system read as the same system rather than two drawings of it. Every file carries a `<title>` and a `<desc>` wired through `role="img"` and `aria-labelledby`, and the embed carries a long alt that narrates the whole picture — someone who cannot see it should come away with the argument, not a caption. Where the text already has an ascii sketch, keep it beside the SVG: the terse form and the full one do different jobs, and the terse one is what a reader quotes.
@@ -46,6 +54,7 @@ Hand-author the SVG and commit it to `<family>/assets/`. There is no build step 
 - every main document ends in a `## Status` heading with a table under it,
 - every tracker row pins something, and the two index READMEs pin through a page rather than an issue,
 - every record under `research/` opens with its banner inside the first five lines,
+- no record under `research/` cites a line number,
 - no main document carries the old `Status:` banner grammar — location conveys status now, and the table carries the detail.
 
 The front door and the records are exempt from the `## Status` rule, and so is anything outside a family directory, this file included.
