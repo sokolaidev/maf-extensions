@@ -241,6 +241,14 @@ def _reachable_middleware() -> Any | None:
 #: Retiring both needs a provenance API the framework publishes, which is #826.
 _ORIGINAL_ARGUMENTS_KEY = "original_arguments_for_messages"
 
+#: Another key that middleware writes on every call, before the one above and for a different
+#: reader.  Present-without-the-other is the tell this package needs: it says an information-flow
+#: middleware ran and its argument record is gone, which no legitimate wiring produces.  Read
+#: from the call rather than from the framework's accessor deliberately — metadata travels with
+#: the context object, so this answers on the worker thread a synchronous body runs on, where
+#: the accessor is a thread-local and answers nothing.
+_MIDDLEWARE_RAN_KEY = "context_label"
+
 #: One warning per process, not one per refusal.
 _warned_about_a_missing_record = False
 
@@ -258,11 +266,21 @@ def _warn_once_about_a_missing_record(logger: logging.Logger) -> None:
     _warned_about_a_missing_record = True
     logger.warning(
         "argument_provenance_middleware: this agent-framework-core no longer records %r on a "
-        "call, so which arguments it rewrote is now inferred from the stored payloads instead. "
-        "That answer is conservative and reports a value a caller chose that merely matches "
-        "hidden content. See https://github.com/sokolaidev/maf-extensions/issues/826",
+        "call, so which arguments it rewrote can no longer be answered. Every checked value is "
+        "being named by its position instead of quoted, which is safe and noisy. See "
+        "https://github.com/sokolaidev/maf-extensions/issues/826",
         _ORIGINAL_ARGUMENTS_KEY,
     )
+
+
+def _the_framework_kept_no_record(context: Any) -> bool:
+    """Whether a middleware ran on this call and left no record of the arguments it received.
+
+    The two keys are written together, so one without the other is the framework's contract
+    having moved rather than a host that wired no information-flow middleware at all.
+    """
+    metadata = cast("Mapping[str, Any]", getattr(context, "metadata", None) or {})
+    return _ORIGINAL_ARGUMENTS_KEY not in metadata and _MIDDLEWARE_RAN_KEY in metadata
 
 
 def _spellings_before_rewriting(context: Any, argument: str) -> list[str] | None:
@@ -277,11 +295,6 @@ def _spellings_before_rewriting(context: Any, argument: str) -> list[str] | None
     package does not depend on the framework's validation library.
     """
     metadata = cast("Mapping[str, Any]", getattr(context, "metadata", None) or {})
-    if _ORIGINAL_ARGUMENTS_KEY not in metadata:
-        # Absent with a middleware reachable means the key moved, not that nothing was hidden.
-        if _reachable_middleware() is not None:
-            _warn_once_about_a_missing_record(_DEFAULT_LOGGER)
-        return None
     original: Any = metadata.get(_ORIGINAL_ARGUMENTS_KEY)
     dump = getattr(original, "model_dump", None)
     if callable(dump):
@@ -451,6 +464,13 @@ def positions_holding_hidden_content(
         return frozenset()
     record = _CALL_CONTEXT.get()
     if record is not None and not record.closed and argument is not None:
+        if _the_framework_kept_no_record(record.context):
+            # Fail closed. Something hid content on this call and the record of what it
+            # rewrote is gone, so every entry is one this cannot vouch for. The fallback is
+            # no answer here: a synchronous body runs on a thread the framework's accessor
+            # does not reach, so it would report nothing and every value would be quoted.
+            _warn_once_about_a_missing_record(_DEFAULT_LOGGER)
+            return frozenset(range(len(values)))
         before = _spellings_before_rewriting(record.context, argument)
         # Per position, never against the record as a whole: an equal value at another position
         # would otherwise excuse this one.

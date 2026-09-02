@@ -55,7 +55,6 @@ from maf_sandbox.maf import (
     ISOLATION_SCOPE_KEY,
     SandboxPurger,
     SandboxToolSession,
-    _spellings_before_rewriting,
     argument_provenance_middleware,
     hidden_content_candidates,
     list_all_files,
@@ -3159,6 +3158,12 @@ class TestArgumentProvenanceMiddleware:
 
         asyncio.run(tracker.process(context, call_next))
 
+        assert _maf._MIDDLEWARE_RAN_KEY in context.metadata, (
+            f"this agent-framework-core no longer records {_maf._MIDDLEWARE_RAN_KEY!r} on a "
+            "call. `_the_framework_kept_no_record` reads it to tell a moved contract from a "
+            "host that wired no information-flow middleware, so that distinction is now wrong "
+            "in the unsafe direction"
+        )
         assert _ORIGINAL_ARGUMENTS_KEY in context.metadata, (
             f"this agent-framework-core no longer records {_ORIGINAL_ARGUMENTS_KEY!r} on a "
             "call. `_spellings_before_rewriting` reads it, so the exact answer has silently "
@@ -3175,44 +3180,81 @@ class TestArgumentProvenanceMiddleware:
     def test_a_record_that_went_missing_is_said_out_loud(self, monkeypatch, caplog):
         """The alarm above fires in this suite; a host upgrades without running it.
 
-        With a middleware reachable the key cannot legitimately be absent — that middleware
-        writes it on every call before expanding anything — so its absence is the framework's
-        contract having moved, and falling back silently would drop a security property with
-        no trace anywhere.
+        The two framework keys are written together, so one without the other says a middleware
+        ran and its argument record is gone — the contract having moved, not a host that wired
+        no information-flow middleware. Falling back silently would drop a security property
+        with no trace anywhere.
         """
         import logging as _logging
 
         monkeypatch.setattr(_maf, "_warned_about_a_missing_record", False)
-        monkeypatch.setattr(_maf, "_reachable_middleware", object)
 
         class _Context:
-            metadata: dict[str, object] = {}
+            metadata = {_maf._MIDDLEWARE_RAN_KEY: object()}
 
-        with caplog.at_level(_logging.WARNING, logger=_maf.__name__):
-            assert _spellings_before_rewriting(_Context(), "files") is None
-            assert _spellings_before_rewriting(_Context(), "files") is None
+        token = _maf._CALL_CONTEXT.set(_maf._CallProvenance(context=_Context()))
+        try:
+            with caplog.at_level(_logging.WARNING, logger=_maf.__name__):
+                first = positions_holding_hidden_content(["a.bicep", "b.bicep"], argument="files")
+                second = positions_holding_hidden_content(["c.bicep"], argument="files")
+        finally:
+            _maf._CALL_CONTEXT.reset(token)
 
+        assert first == frozenset({0, 1}), "every entry, since none of them can be vouched for"
+        assert second == frozenset({0})
         warnings = [r for r in caplog.records if _ORIGINAL_ARGUMENTS_KEY in r.getMessage()]
         assert len(warnings) == 1, "once per process, not once per refusal"
         assert "issues/826" in warnings[0].getMessage()
 
-    def test_no_middleware_reachable_is_not_worth_a_warning(self, monkeypatch, caplog):
+    def test_a_call_that_hid_nothing_is_ordinary(self, monkeypatch, caplog):
         """A host may wire this middleware and no information-flow middleware at all.
 
-        Then the key is absent because nothing was ever hidden, which is ordinary.
+        Then neither key is on the call, nothing was ever hidden, and a name is quoted as usual.
+        Failing closed here would name a position for every value in a perfectly good wiring.
         """
         import logging as _logging
 
         monkeypatch.setattr(_maf, "_warned_about_a_missing_record", False)
-        monkeypatch.setattr(_maf, "_reachable_middleware", lambda: None)
 
         class _Context:
             metadata: dict[str, object] = {}
 
-        with caplog.at_level(_logging.WARNING, logger=_maf.__name__):
-            assert _spellings_before_rewriting(_Context(), "files") is None
+        token = _maf._CALL_CONTEXT.set(_maf._CallProvenance(context=_Context()))
+        try:
+            with caplog.at_level(_logging.WARNING, logger=_maf.__name__):
+                answer = positions_holding_hidden_content(["main.bicep"], argument="files")
+        finally:
+            _maf._CALL_CONTEXT.reset(token)
 
+        assert answer == frozenset()
         assert not [r for r in caplog.records if _ORIGINAL_ARGUMENTS_KEY in r.getMessage()]
+
+    def test_a_synchronous_body_fails_closed_when_the_record_key_moves(self, monkeypatch, caplog):
+        """Where the safeguard is needed most, and where reading the accessor would miss it.
+
+        A `def` body runs on a worker thread. The framework's middleware accessor is a
+        thread-local and answers nothing there — `test_a_synchronous_body_is_answered_from_the
+        _record_where_the_fallback_gives_up` is that fact — so a renamed key would leave this
+        with no record *and* no fallback: nothing reported, and content the framework hid
+        quoted back. The tell is read from the call's own metadata, which travels with it.
+        """
+        import logging as _logging
+
+        monkeypatch.setattr(_maf, "_warned_about_a_missing_record", False)
+        monkeypatch.setattr(_maf, "_ORIGINAL_ARGUMENTS_KEY", "renamed_by_a_compatible_minor")
+
+        with caplog.at_level(_logging.WARNING, logger=_maf.__name__):
+            seen = self._run_synchronous_body("[VAR]")
+
+        assert seen["thread"] != seen["loop_thread"]
+        assert seen["received"] == [self.PAYLOAD]
+        assert seen["from_record"] == frozenset({0}), (
+            "off the loop there is no fallback to degrade to, so the only safe answer is to "
+            "name every position rather than quote a value the framework may have rewritten"
+        )
+        assert [r for r in caplog.records if "no longer records" in r.getMessage()], (
+            "and it must say so, since this is the upgrade no test of ours would catch"
+        )
 
     def _run_synchronous_body(self, sent: str):
         """One call whose tool body is `def`, not `async def`.
