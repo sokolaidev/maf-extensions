@@ -12,7 +12,7 @@ It is **not** re-exported from the package's ``__init__``, on purpose: ``import 
 has to stay cheap and MAF-free for a backend, a workload's own test suite, or anything else
 that only speaks the protocol.  Reach it by name — ``from maf_sandbox.maf import ...``.
 
-Six things live here, and each of them had begun to exist twice before it did:
+Seven things live here, and each of them had begun to exist twice before it did:
 
 - :func:`make_caller_context` — how a host says who is calling and which files they own.
 - :func:`sandboxed_tool` — the shape every sandbox workload's tool has: attach nothing when
@@ -24,6 +24,8 @@ Six things live here, and each of them had begun to exist twice before it did:
 - :func:`list_all_files` and :func:`list_no_files` — the listing a caller context is built
   from, walked from ``list_children`` or declared empty. They are here rather than in core
   because the walk reads ``FileStoreEntry.type``, which the framework owns.
+- :func:`labelled_result_item` — one item of a result a kind splits, carrying its own
+  integrity label. Here because the item is an ``agent_framework`` ``Content``.
 - :func:`argument_provenance_middleware`, :func:`positions_holding_hidden_content` and
   :func:`hidden_content_candidates` — which of a call's arguments the host's information-flow
   middleware rewrote, so a refusal names a position rather than quoting content the framework
@@ -44,7 +46,7 @@ import threading
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
 from ._error_detail import error_detail
@@ -57,6 +59,7 @@ from ._protocol import (
     Sandbox,
     SandboxKey,
     SandboxSpec,
+    SourceIntegrity,
 )
 from ._purger import SandboxPurger
 from ._reclaim import (
@@ -68,6 +71,9 @@ from ._reclaim import (
     reclaim_guest_path,
 )
 from ._router import ATTACH_REFUSALS, NoSandboxBackend, SandboxRouter, SandboxUnclean
+
+if TYPE_CHECKING:
+    from agent_framework import Content
 
 #: The declaration key naming the scope a sandbox tool is served at. Written only for
 #: :data:`~maf_sandbox.IsolationScope.CALL`, and read by a host's own policy: the framework's
@@ -84,6 +90,7 @@ __all__ = [
     "ISOLATION_SCOPE_KEY",
     "SandboxPurger",
     "SandboxToolSession",
+    "labelled_result_item",
     "list_all_files",
     "list_no_files",
     "make_caller_context",
@@ -649,6 +656,49 @@ def sandbox_tool_declarations(
         # carry — that no other call's data was in the filesystem this result came out of.
         declarations[ISOLATION_SCOPE_KEY] = str(scope)
     return declarations
+
+
+def labelled_result_item(text: str, integrity: SourceIntegrity) -> Content:
+    """One item of a split tool result, carrying its own integrity label.
+
+    A kind whose result mixes standing guidance with something the call produced answers with
+    a list of these rather than one string.  MAF's information-flow module reads a per-item
+    label ahead of the tool's own declaration and hides each item separately, so the guidance
+    stays readable while the derived half is replaced by a reference the model can still pass
+    on.  `docs/sandbox/information-flow.md` carries what may be labelled and why.
+
+    **Label only what carries nothing from the call.**  A per-item label is the item's *whole*
+    label, confidentiality included, and this library has no confidentiality value to give —
+    those are the host's.  An item left unlabelled takes the call's own label instead, which
+    is where its confidentiality comes from, so :func:`sandboxed_tool` refuses a result whose
+    every item carries one.
+
+    Args:
+        text: The item's text.
+        integrity: :data:`~maf_sandbox.SourceIntegrity.TRUSTED`, and only that — see below.
+
+    Raises:
+        ValueError: for :data:`~maf_sandbox.SourceIntegrity.UNTRUSTED`, which an item is
+            given by leaving it unlabelled rather than by writing it here.
+    """
+    if SourceIntegrity(str(integrity)) is not SourceIntegrity.TRUSTED:
+        raise ValueError(
+            f"labelled_result_item: {str(integrity)!r} is not a label an item may carry here. "
+            "A per-item label replaces the item's whole label, and one written for integrity "
+            "alone arrives `public` — a claim about content the call produced, in a vocabulary "
+            "that is the host's and not this library's. Leave the item unlabelled instead: it "
+            "then takes the call's own label, which is untrusted unless the tool declared "
+            "otherwise. Where the input-label join might answer trusted, say so for the whole "
+            "tool with sandboxed_tool(source_integrity='untrusted')."
+        )
+
+    # `ContentLabel.to_dict` rather than a dict literal: the key names and the value spellings
+    # are the framework's serialization, and a literal here would be a second copy of them.
+    from agent_framework import Content
+    from agent_framework.security import ContentLabel, IntegrityLabel
+
+    label = ContentLabel(integrity=IntegrityLabel(str(integrity)))
+    return Content.from_text(text, additional_properties={"security_label": label.to_dict()})
 
 
 class SandboxToolSession:
@@ -1228,8 +1278,39 @@ async def _reclaim_the_call(
             raise
 
 
+def _refuse_a_result_that_carries_no_call_label(result: object, *, tool: str) -> None:
+    """Refuse a list of items in which nothing is left to carry the call's own label.
+
+    A per-item label replaces the whole label rather than its integrity alone, so a result
+    made only of labelled items has replaced the call's confidentiality with whatever those
+    items named — ``public``, for every item this package can build. One unlabelled item is
+    what keeps the call's confidentiality in the fold, and an empty list is the same absence
+    written differently: the framework renders it to the model as the text ``[]``.
+    """
+    if not isinstance(result, list):
+        return
+    items = cast("list[Any]", result)
+    if not items:
+        raise ValueError(
+            f"{tool}: the tool body returned an empty list. MAF renders that to the model as "
+            "the text '[]'. Return the string the model should read, or the items it should."
+        )
+    if any(
+        "security_label" not in (getattr(item, "additional_properties", None) or {})
+        for item in items
+    ):
+        return
+    raise ValueError(
+        f"{tool}: every item of this result carries its own security label, so nothing in it "
+        "carries the call's confidentiality. A per-item label replaces the whole label, and "
+        "one this package builds names no confidentiality, so such a result is `public` "
+        "however the tool or the host classified it. Leave the items that derive from the "
+        "call unlabelled — the framework labels those from the call itself."
+    )
+
+
 def sandboxed_tool(
-    build: Callable[[SandboxToolSession], Callable[..., Awaitable[str]]],
+    build: Callable[[SandboxToolSession], Callable[..., Awaitable[str | list[Content]]]],
     *,
     router: SandboxRouter | None,
     context: CallerContext,
@@ -1281,6 +1362,12 @@ def sandboxed_tool(
        A ``spec`` whose ``work_dir`` is the guest root is refused, because a path one
        component from the root is one this cannot remove — and only for such a body, since a
        synchronous one is not held to a rule it cannot break.
+    8. **A result is one string, or a list of items each carrying its own label.**  The list
+       is passed on untouched — see :func:`labelled_result_item` for what may be labelled —
+       with one refusal: a list in which *every* item is labelled has nothing left to carry
+       the call's own confidentiality, and so has neither the tool's classification nor the
+       host's.  Both bodies are held to it, the synchronous one through a wrapper that reads
+       the result's shape and does nothing else.
 
     ``build`` is a callback rather than a decorated function because the session does not
     exist until the attach gate has passed, and the tool body needs it in its closure.  Two
@@ -1297,7 +1384,8 @@ def sandboxed_tool(
     call answers the attach gate identically, so an unconfigured host still gets ``[]``.
 
     Args:
-        build: Given the session, returns the async function to expose as the tool.
+        build: Given the session, returns the async function to expose as the tool.  It
+            answers with a ``str``, or with the list of items point 8 above describes.
         router: The sandbox router, or ``None`` when sandboxing is not configured.
         context: How to read the caller's scope and thread, and how to enumerate the
             file store (see :func:`make_caller_context`).
@@ -1425,9 +1513,16 @@ def sandboxed_tool(
     body = build(session)
     if not _awaits(body):
         # `acquire` is a coroutine, so a body that awaits nothing can hold no sandbox and owns
-        # nothing to reclaim. Left unwrapped rather than wrapped-and-skipped, so MAF still runs
-        # it off the event loop the way it runs any synchronous tool.
-        return [decorate(body)]
+        # nothing to reclaim, and this wrapper reads the result's shape and does nothing else.
+        # It stays synchronous so MAF still runs the body off the event loop the way it runs
+        # any synchronous tool.
+        @functools.wraps(body)
+        def checked(*args: Any, **kwargs: Any) -> Any:
+            result = body(*args, **kwargs)
+            _refuse_a_result_that_carries_no_call_label(result, tool=name)
+            return result
+
+        return [decorate(checked)]
     if not [part for part in posixpath.normpath(spec.work_dir).split("/") if part]:
         # Here rather than with the spec refusals above, because it constrains only a tool that
         # can reclaim: a body that never receives the wrapper cannot leave a path behind, and
@@ -1452,7 +1547,9 @@ def sandboxed_tool(
         # reach everything — read back once the body has returned.
         unclean, notes = open_unclean_notes()
         try:
-            return await body(*args, **kwargs)
+            result = await body(*args, **kwargs)
+            _refuse_a_result_that_carries_no_call_label(result, tool=name)
+            return result
         finally:
             _CALL.reset(token)
             close_unclean_notes(notes)
