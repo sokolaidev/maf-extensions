@@ -771,8 +771,11 @@ async def _reclaim_the_call(
     ``FailedReclaimPolicy`` does not loosen it. A sandbox is unclean when the removal did not
     happen, or when
     ``unclean`` carries a transport's note that a stop did not reach everything the program
-    started: either way what is left stays readable by every later call, so the framework
-    disposes the sandbox — unless the host opted down — and only then tells the host.
+    started.  At :data:`~maf_sandbox.IsolationScope.CONVERSATION` either of those leaves the
+    residue readable by every later call, so the framework disposes the sandbox — unless the
+    host opted down — and only then tells the host.  At ``CALL`` the delete above was already
+    the cleanup, and a leak it could not take is one no later call can address: nothing is
+    escalated, nothing is opted down from, and the host is told what did not happen.
     ``timeout`` bounds the removal, the disposal and the report separately, so one sandbox
     can cost up to three times it.
 
