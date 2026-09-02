@@ -2882,6 +2882,18 @@ class TestValuesHoldingHiddenContent:
         with pytest.raises(Exception, match="valid string|Invalid arguments"):
             self._hidden("[VAR]", stored=stored)
 
+    def test_a_payload_too_deep_to_parse_does_not_end_an_unrelated_call(self):
+        """`json.loads` raises `RecursionError`, which is not a `ValueError`.
+
+        The framework parses only the payload it is expanding; this walks the store whole, so a
+        payload nothing referenced still reaches it. Unhandled, one of them would end every
+        later call for that middleware rather than only the call that named it.
+        """
+        deep = '{"a":' + "[" * 3200 + "]" * 3200 + "}"
+        seen = self._hidden("main.bicep", stored=deep)  # nothing references it
+        assert seen["received"] == ["main.bicep"]
+        assert seen["hidden"] == frozenset(), "an untouched name, and no error out of the walk"
+
     def test_no_middleware_means_nothing_was_ever_hidden(self):
         """Outside a middleware-wrapped call there is no store, so nothing is reported and the
         shape bound in `echoed_name` is what applies."""

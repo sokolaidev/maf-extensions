@@ -29,6 +29,11 @@ __all__ = ["MAX_ECHOED_NAME_CHARACTERS", "echoed_name"]
 #: bounded is what a model reads rather than what a filesystem stores.
 MAX_ECHOED_NAME_CHARACTERS: int = 120
 
+#: Code points that render as blank but are not separators, so :meth:`str.isprintable`
+#: admits them and a check for a space does not see them.  Without these a whole sentence
+#: reads as one word: the braille blank is a symbol and the Hangul fillers are letters.
+_BLANKS_THAT_ARE_NOT_SPACES: frozenset[str] = frozenset("⠀ᅟᅠㅤﾠ")
+
 
 def echoed_name(name: str, *, at: str | None = None, hidden: bool = False) -> str:
     """``name`` quoted, or its position where the value is not one a refusal may repeat.
@@ -55,6 +60,7 @@ def echoed_name(name: str, *, at: str | None = None, hidden: bool = False) -> st
         and len(name) <= MAX_ECHOED_NAME_CHARACTERS
         and name.isprintable()
         and " " not in name
+        and _BLANKS_THAT_ARE_NOT_SPACES.isdisjoint(name)
     ):
         return repr(name)
     if at is None:

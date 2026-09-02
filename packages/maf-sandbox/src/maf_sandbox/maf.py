@@ -217,7 +217,11 @@ def _reduced_form(payload: object) -> object:
         if stripped.startswith("{") and stripped.endswith("}"):
             try:
                 parsed = json.loads(stripped)
-            except ValueError:
+            except (ValueError, RecursionError):
+                # A payload nested deeply enough to exhaust the stack is still a payload, and
+                # this runs on the way into every refusal: letting the error out would end the
+                # call rather than render it, and every later call with it, since the store is
+                # walked whole. `_read_manifest` in the codeact kind catches the same thing.
                 return payload
             if isinstance(parsed, dict) and "response" in parsed:
                 return cast("dict[str, Any]", parsed)["response"]

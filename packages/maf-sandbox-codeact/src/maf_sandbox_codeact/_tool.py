@@ -1595,18 +1595,37 @@ def _format_landed(
     """
     delivered = {unicodedata.normalize("NFC", item.name) for item in landed}
     lines: list[str] = []
+    # Answered once, above the two renderings that need it: a name that landed is reported as
+    # surely as one that did not, and a name the framework substituted must not be repeated
+    # either way. `withhold` makes no difference to that — it is the mode that renders least.
+    rewritten = values_holding_hidden_content(list(declared), candidates=candidates)
+    at_position = {
+        unicodedata.normalize("NFC", name): f"{named_by}[{position}]"
+        for position, name in enumerate(declared)
+    }
+
     if landed:
         lines.append("Saved:")
         if withhold:
-            lines.extend(
-                f"- {name}" for name in declared if unicodedata.normalize("NFC", name) in delivered
-            )
+            for name in declared:
+                key = unicodedata.normalize("NFC", name)
+                if key in delivered:
+                    # The name itself unless the framework put it there: this is a list of
+                    # files, not a refusal, so a name of the model's own is what it wants back.
+                    lines.append(f"- {at_position[key] if name in rewritten else name}")
         else:
-            lines.extend(f"- {item.display}" for item in landed)
+            for item in landed:
+                key = unicodedata.normalize("NFC", item.name)
+                # The display carries the name inside it, so a substituted one is reported by
+                # position instead. A name of the model's own keeps the size and the rest of it.
+                lines.append(
+                    f"- {at_position[key]}"
+                    if key in at_position and item.name in rewritten
+                    else f"- {item.display}"
+                )
     # A name that produced no file is reported the way a refusal reports one: the caller's
     # spelling where it is the caller's, and the position where the framework put something
     # else there. It is the one line here that names a file which does not exist.
-    rewritten = values_holding_hidden_content(list(declared), candidates=candidates)
     missing = [
         echoed_name(name, at=f"{named_by}[{position}]", hidden=name in rewritten)
         for position, name in enumerate(declared)
