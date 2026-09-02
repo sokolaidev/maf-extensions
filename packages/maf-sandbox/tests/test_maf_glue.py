@@ -3183,7 +3183,7 @@ class TestArgumentProvenanceMiddleware:
         import logging as _logging
 
         monkeypatch.setattr(_maf, "_warned_about_a_missing_record", False)
-        monkeypatch.setattr(_maf, "_reachable_middleware", lambda: object())
+        monkeypatch.setattr(_maf, "_reachable_middleware", object)
 
         class _Context:
             metadata: dict[str, object] = {}
