@@ -222,38 +222,35 @@ class TestMakeCallerContext:
 class TestSandboxToolDeclarations:
     """A declaration is not inert metadata: a policy engine reads these keys per call.
 
-    The default therefore has to be the smallest true statement — trusted output, nothing
-    said about confidentiality — because the alternative is a library silently activating a
-    policy leg in a host that never asked for it.
+    So a caller that passes nothing declares nothing on either axis, and both omissions land
+    on the framework's own fallback rather than on a claim this library made for it.
     """
 
-    def test_the_default_is_exactly_source_integrity_trusted(self):
-        assert sandbox_tool_declarations(_SPEC) == {"source_integrity": "trusted"}
+    def test_a_caller_that_says_nothing_declares_nothing(self):
+        assert sandbox_tool_declarations(_SPEC) == {}
 
-    def test_the_default_says_nothing_about_confidentiality(self):
-        declarations = sandbox_tool_declarations(_SPEC)
-        assert "confidentiality" not in declarations
-        assert "max_allowed_confidentiality" not in declarations
+    def test_an_integrity_label_is_written_when_one_is_passed(self):
+        assert sandbox_tool_declarations(_SPEC, source_integrity="trusted") == {
+            "source_integrity": "trusted"
+        }
 
     def test_the_call_scope_is_written_only_when_there_is_something_to_say(self):
         """The conversation-scoped sandbox is what a tool carrying no such key already means."""
         assert ISOLATION_SCOPE_KEY not in sandbox_tool_declarations(_SPEC)
         assert sandbox_tool_declarations(
             dataclasses.replace(_SPEC, isolation_scope=IsolationScope.CALL)
-        ) == {"source_integrity": "trusted", ISOLATION_SCOPE_KEY: "call"}
+        ) == {ISOLATION_SCOPE_KEY: "call"}
 
     def test_a_caller_that_knows_the_served_scope_states_it(self):
         """A host floor raises the scope above the spec, and the tool says what it is served."""
         assert sandbox_tool_declarations(_SPEC, isolation_scope=IsolationScope.CALL) == {
-            "source_integrity": "trusted",
-            ISOLATION_SCOPE_KEY: "call",
+            ISOLATION_SCOPE_KEY: "call"
         }
 
     def test_a_string_override_declares_the_scope_it_names(self):
         """The argument is public, and the check below it is `is`: a string would declare nothing."""
         assert sandbox_tool_declarations(_SPEC, isolation_scope=cast(Any, "call")) == {
-            "source_integrity": "trusted",
-            ISOLATION_SCOPE_KEY: "call",
+            ISOLATION_SCOPE_KEY: "call"
         }
 
     def test_an_override_that_is_not_a_scope_is_refused(self):
@@ -267,33 +264,30 @@ class TestSandboxToolDeclarations:
         )[0]
         assert tool.additional_properties[ISOLATION_SCOPE_KEY] == "call"
 
-    def test_no_integrity_claim_is_expressible(self):
-        """A workload whose sandbox fetches arbitrary content must be able to decline."""
+    def test_declining_explicitly_reads_the_same_as_saying_nothing(self):
+        """A workload that has considered the question writes the answer the default gives."""
         assert sandbox_tool_declarations(_SPEC, source_integrity=None) == {}
 
     def test_an_outbound_cap_is_written_only_when_asked_for(self):
         assert sandbox_tool_declarations(_SPEC, outbound_max_confidentiality="private") == {
-            "source_integrity": "trusted",
-            "max_allowed_confidentiality": "private",
+            "max_allowed_confidentiality": "private"
         }
 
     def test_a_sandbox_with_no_egress_gets_no_cap_even_when_asked(self):
         """Nothing can leave, so a cap would gate calls for a flow that does not exist."""
-        assert sandbox_tool_declarations(
-            _NO_EGRESS_SPEC, outbound_max_confidentiality="private"
-        ) == {"source_integrity": "trusted"}
+        assert (
+            sandbox_tool_declarations(_NO_EGRESS_SPEC, outbound_max_confidentiality="private") == {}
+        )
 
     def test_a_landing_spec_and_a_sink_write_the_cap_with_egress_shut(self):
         """The sink is the flow: guest bytes reach host state with the network still shut."""
         assert sandbox_tool_declarations(
             _LANDING_SPEC, outbound_max_confidentiality="private", output_sink=_SINK
-        ) == {"source_integrity": "trusted", "max_allowed_confidentiality": "private"}
+        ) == {"max_allowed_confidentiality": "private"}
 
     def test_a_sink_writes_nothing_the_host_did_not_ask_for(self):
         """Attaching a sink is not itself a request to activate the confidentiality leg."""
-        assert sandbox_tool_declarations(_LANDING_SPEC, output_sink=_SINK) == {
-            "source_integrity": "trusted"
-        }
+        assert sandbox_tool_declarations(_LANDING_SPEC, output_sink=_SINK) == {}
 
     @pytest.mark.parametrize("spec", [_NO_EGRESS_SPEC, _CONSUME_SPEC])
     def test_a_sink_with_nothing_to_send_down_it_earns_no_cap(self, spec: SandboxSpec):
@@ -301,16 +295,19 @@ class TestSandboxToolDeclarations:
         says nothing about *this* workload. A spec that declares no output — or only ones the
         kind consumes itself — carries nothing to host state, and capping it would gate calls
         for the flow this condition exists to avoid inventing."""
-        assert sandbox_tool_declarations(
-            spec, outbound_max_confidentiality="private", output_sink=_SINK
-        ) == {"source_integrity": "trusted"}
+        assert (
+            sandbox_tool_declarations(
+                spec, outbound_max_confidentiality="private", output_sink=_SINK
+            )
+            == {}
+        )
 
     def test_a_call_time_spec_and_a_sink_earn_the_cap_too(self):
         """It lands artifacts; not being able to name them yet changes nothing about the flow,
         and reading `declared_outputs` alone would leave the cap silently off."""
         assert sandbox_tool_declarations(
             _CALL_TIME_SPEC, outbound_max_confidentiality="private", output_sink=_SINK
-        ) == {"source_integrity": "trusted", "max_allowed_confidentiality": "private"}
+        ) == {"max_allowed_confidentiality": "private"}
 
     def test_also_carries_out_writes_the_cap_the_spec_cannot_show(self):
         """A wired host-tool registry carries something out that neither egress nor a landing
@@ -318,7 +315,7 @@ class TestSandboxToolDeclarations:
         hand-built declarations dict, and the condition lives in one place."""
         assert sandbox_tool_declarations(
             _NO_EGRESS_SPEC, outbound_max_confidentiality="private", also_carries_out=True
-        ) == {"source_integrity": "trusted", "max_allowed_confidentiality": "private"}
+        ) == {"max_allowed_confidentiality": "private"}
 
 
 # ---------------------------------------------------------------------------
@@ -677,8 +674,14 @@ class TestAttachedToolShape:
     def test_approval_mode_is_overridable(self):
         assert self._tool(approval_mode="always_require").approval_mode == "always_require"
 
-    def test_the_declarations_come_from_the_spec(self):
-        assert self._tool().additional_properties == {"source_integrity": "trusted"}
+    def test_a_tool_that_was_told_nothing_declares_nothing(self):
+        """The whole point of the default: forgetting the keyword claims no integrity."""
+        assert self._tool().additional_properties == {}
+
+    def test_an_integrity_label_reaches_the_tool_when_one_is_passed(self):
+        assert self._tool(source_integrity="trusted").additional_properties == {
+            "source_integrity": "trusted"
+        }
 
     def test_explicit_declarations_win_over_the_derivation(self):
         assert self._tool(declarations={"source_integrity": "untrusted"}).additional_properties == {
@@ -687,8 +690,7 @@ class TestAttachedToolShape:
 
     def test_an_outbound_cap_reaches_the_tool_when_the_host_asks_for_one(self):
         assert self._tool(outbound_max_confidentiality="private").additional_properties == {
-            "source_integrity": "trusted",
-            "max_allowed_confidentiality": "private",
+            "max_allowed_confidentiality": "private"
         }
 
     def test_the_sink_reaches_the_derivation_and_not_only_the_workload(self):
@@ -699,27 +701,26 @@ class TestAttachedToolShape:
             outbound_max_confidentiality="private",
             output_sink=_SINK,
         )
+        assert tool.additional_properties == {"max_allowed_confidentiality": "private"}
+
+    def test_source_integrity_reaches_the_derivation_without_the_declarations_escape_hatch(self):
+        """A label *and* a sink: `declarations=` is refused alongside a sink, so this parameter
+        is the only way a workload that has earned one can have both."""
+        (tool,) = _attach(
+            _router(_pulling_backend()),
+            spec=_LANDING_SPEC,
+            source_integrity="trusted",
+            outbound_max_confidentiality="private",
+            output_sink=_SINK,
+        )
         assert tool.additional_properties == {
             "source_integrity": "trusted",
             "max_allowed_confidentiality": "private",
         }
 
-    def test_source_integrity_reaches_the_derivation_without_the_declarations_escape_hatch(self):
-        """The pair a kind running model-written code needs: no integrity claim *and* a sink.
-        `declarations=` is refused alongside a sink, so before this parameter existed the two
-        could not both be had."""
-        (tool,) = _attach(
-            _router(_pulling_backend()),
-            spec=_LANDING_SPEC,
-            source_integrity=None,
-            outbound_max_confidentiality="private",
-            output_sink=_SINK,
-        )
-        assert tool.additional_properties == {"max_allowed_confidentiality": "private"}
-
     def test_an_explicit_mapping_still_wins_over_it(self):
         assert self._tool(
-            source_integrity=None, declarations={"source_integrity": "untrusted"}
+            source_integrity="trusted", declarations={"source_integrity": "untrusted"}
         ).additional_properties == {"source_integrity": "untrusted"}
 
     def test_the_declarations_dict_is_not_shared_with_the_caller(self):

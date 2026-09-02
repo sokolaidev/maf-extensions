@@ -482,16 +482,18 @@ class _WslcSandbox:
         """Not supported: this backend declares no
         :data:`~maf_sandbox.Capability.FILES_DELETE`.
 
-        Not for want of ``rm``: confining a removal means checking every ancestor, and this
-        backend does run that check for :meth:`write_file`, over its private ``_stat_guest``.
-        What that stat cannot do is classify a link without asking the container (#495), which
-        is a different thing to rest a recursive delete on than a write. Which of that and the
-        absent pull surface (#125) is the blocker is #743.
+        Not for want of ``rm``, nor of the filesystem path check: :meth:`write_file` runs that
+        check over ``_stat_guest``, whose answer for a regular file and a link comes from
+        ``test`` inside the container being confined (#495).  A misplaced write is one file; a
+        recursive removal through an ancestor the guest misreported is a tree outside
+        ``working_directory``.  Nor could such a removal's authority be licensed: no branch of
+        that stat carries an owner, so the reach rule has nothing to read (#839).
         """
         raise NotImplementedError(
-            "the wslc backend does not support FILES_DELETE: confining a removal needs the "
-            "component walk that stat_file provides, and this backend has none. Remove through "
-            "exec if the workload already requires it, or declare a backend with a pull surface."
+            "the wslc backend does not support FILES_DELETE: it runs the filesystem path check, "
+            "but the entry kind that decides an escape is answered by the container being "
+            "confined, which a recursive delete must not rest on. Remove through exec if the "
+            "workload already requires it, or declare a backend whose engine answers that check."
         )
 
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:

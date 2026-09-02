@@ -3082,6 +3082,56 @@ class TestWhoseTimeoutItWas:
             "the host's note is wearing the label that means the program's own stdout"
         )
 
+    def test_the_hosts_reason_for_reading_nothing_is_readable_without_the_message(self):
+        """A caller that must not surface guest text cannot read the message at all.
+
+        The message carries the program's words or the host's reason, so taking it whole to
+        get the second hands over the first wherever there is one. Both of `_output_clause`'s
+        inputs are therefore attributes.
+        """
+
+        class _PrintsTooMuchThenHangs(_ScriptedGuest):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                started = await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+                self.files[_LAYOUT.output] = b"THE-SECRET-IS-42" * 20
+                return started
+
+        limits = TransferLimits(max_bytes_per_file=64, max_total_bytes=32, max_files=4)
+        guest = _PrintsTooMuchThenHangs([], finish=False)
+
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry(response_limits=limits)), timeout=0.1)
+
+        assert "larger than the host will read" in expired.value.output_reason
+        assert "THE-SECRET-IS-42" not in expired.value.output_reason, (
+            "the host's reason is quoting the program"
+        )
+
+    def test_a_run_whose_output_was_read_gives_no_reason_for_reading_none(self):
+        """Empty is what says the output beside it is the whole answer."""
+        wedged = _ScriptedGuest([], finish=False)
+        wedged.files[_LAYOUT.output] = b"step 1 done"
+
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(wedged, HostToolRun(_registry()), timeout=0.05)
+
+        assert expired.value.output == "step 1 done"
+        assert expired.value.output_reason == ""
+
+    def test_a_run_that_expired_before_the_program_started_gives_no_reason_either(self):
+        """Nothing had been started, so there is no output to have a reason about."""
+
+        class _BoundsTheStart(_ScriptedGuest):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                raise TimeoutError
+
+        with pytest.raises(SandboxProgramTimeout) as spent:
+            _run(_BoundsTheStart([], finish=False), HostToolRun(_registry()), timeout=30.0)
+
+        assert spent.value.output_reason == ""
+
     def test_an_ordinary_expiry_blames_no_transport_call(self, monkeypatch: pytest.MonkeyPatch):
         """A run that simply ran out must not report a sandbox that answered promptly.
 

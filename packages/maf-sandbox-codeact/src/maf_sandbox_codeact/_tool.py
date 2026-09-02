@@ -1041,9 +1041,7 @@ async def _execute(
         # The transport's own bound — but *which* of its bounds is something only its message
         # knows. The run can expire before the program is started at all, and that message
         # says so where a reconstructed "the program timed out" would blame code that never
-        # ran. The message also carries the output clause, which is the program's stdout or
-        # the host's reason for having none; `output` is empty in the second case, so
-        # rebuilding the sentence from that attribute drops the reason silently.
+        # ran.
         #
         # It says what was *attempted* on the program too — its process group signalled, the
         # program signalled alone, or nothing signalled. None of the three is a claim that the
@@ -1055,15 +1053,21 @@ async def _execute(
         # a backend's own text kept to the log, which is the same rule this kind follows.
         logger.warning("execute_code: %s", expired)
         if withhold:
-            # The output clause is in the message rather than fenced off in `output`, so the
-            # sentence is rebuilt from the attributes instead — and it names no bound, because
-            # *whose* expired is not knowable here. A backend may raise this public type from a
-            # call of its own, the transport propagates that untranslated, and the subtype that
-            # tells the two apart is core's private one. `signal` is the discriminator the
-            # exception does carry, and `"absent"` is its one value asserting nothing started.
-            if expired.signal == "absent":
-                return f"Error: the time ran out before the program was started. {_WITHHELD_ROUTE}"
-            return f"Error: the program did not finish in the time it was given. {_WITHHELD_ROUTE}"
+            # The message quotes the program, so the sentence is rebuilt from the attributes
+            # instead — and it names no bound, because *whose* expired is not knowable here. A
+            # backend may raise this public type from a call of its own, the transport
+            # propagates that untranslated, and the subtype that tells the two apart is core's
+            # private one. `signal` is the discriminator the exception does carry, and
+            # `"absent"` is its one value asserting nothing started.
+            what_happened = (
+                "the time ran out before the program was started"
+                if expired.signal == "absent"
+                else "the program did not finish in the time it was given"
+            )
+            # The host's own words for why it read no output, surfaced whole like the note on
+            # the success path: it is the half of the message the guest did not write.
+            reason = f" {expired.output_reason}." if expired.output_reason else ""
+            return f"Error: {what_happened}.{reason} {_WITHHELD_ROUTE}"
         return f"Error: {expired}"
     except TimeoutError as unfinished:
         if host_tool_call is None:

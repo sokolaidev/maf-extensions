@@ -91,9 +91,10 @@ catalogue is a ready-made checklist of the attacks the walk must survive.
 
 ## What this settles for #371
 
-1. **The `:145` table row's egress is wrong.** `allowed_domains` is a method-scoped
-   allowlist enforced natively. The declaration is `ALLOWLIST`; `closed` is only the
-   zero-config default. (#371 flagged exactly this for checking.)
+1. **The Hyperlight row's egress in
+   [`two-axis-sandbox-policy.md`](two-axis-sandbox-policy.md) is wrong.** `allowed_domains` is
+   a method-scoped allowlist enforced natively. The declaration is `ALLOWLIST`; `closed` is
+   only the zero-config default. (#371 flagged exactly this for checking.)
 2. **The sandbox is public API** — `hyperlight-sandbox`, with a stability promise. The
    dependency question answers itself in favour of dropping `agent-framework-hyperlight`.
 3. **The `FILES_OUT` push-vs-pull mismatch is softer than stated.** The guest writes to a

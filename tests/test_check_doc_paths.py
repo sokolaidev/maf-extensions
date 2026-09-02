@@ -1,8 +1,9 @@
 """What `scripts/check_doc_paths.py` accepts, and what it must never accept.
 
-Three references are checked — a relative link, the heading fragment on one, and a repository
-path in prose — and the suite is written around the two ways each can be wrong. Reporting a
-working reference gets the check switched off; passing a dead one is the defect it exists for.
+Four references are checked — a relative link, the heading fragment on one, a repository path
+in prose, and the line number on a path — and the suite is written around the two ways each can
+be wrong. Reporting a working reference gets the check switched off; passing a dead one is the
+defect it exists for.
 
 The boundaries that carry the most weight: resolution is against the *tracked* tree, so an
 untracked file satisfies nothing; a path written inside a package resolves against that package
@@ -636,12 +637,182 @@ class TestAnchors:
         assert check.broken_links(root) == []
 
 
+#: A source file whose definitions sit where a test can name them: `Sandbox` on line 4,
+#: `write_file` on 5, `exec` on 8 and `_ALLOW_ID` on 12.
+_SOURCE = (
+    '"""A fake sandbox."""\n'
+    "\n"
+    "\n"
+    "class Sandbox:\n"
+    "    async def write_file(self) -> None:\n"
+    "        pass\n"
+    "\n"
+    "    async def exec(self) -> None:\n"
+    "        pass\n"
+    "\n"
+    "\n"
+    '_ALLOW_ID = "allow"\n'
+)
+
+_HERE = "packages/p/src/m/testing.py"
+
+
+class TestLineReferences:
+    """The fourth reference, and the only one that stays live after it goes wrong.
+
+    A dead link 404s. A stale line number lands on a real line of a real file, so the page keeps
+    looking maintained while it teaches the wrong thing — which is why the expectation comes
+    from the name written beside it rather than from the reference resolving. The two ways to be
+    wrong are the same two as everywhere here: reporting a live reference gets the check
+    switched off, and passing a stale one is the defect it exists for.
+    """
+
+    def test_a_definition_that_moved_is_reported_with_the_line_it_moved_to(self, repo):
+        root = repo({"docs/a.md": "`write_file` (`testing.py:9`)", _HERE: _SOURCE})
+        assert check.broken_line_references(root) == [
+            "docs/a.md: line -> `testing.py:9` write_file is defined at 5"
+        ]
+
+    def test_a_reference_that_still_begins_the_definition_passes(self, repo):
+        root = repo({"docs/a.md": "`write_file` (`testing.py:5`)", _HERE: _SOURCE})
+        assert check.broken_line_references(root) == []
+
+    @pytest.mark.parametrize(("name", "line"), [("Sandbox", 4), ("exec", 8), ("_ALLOW_ID", 12)])
+    def test_a_class_a_method_and_an_assignment_are_all_definitions(self, repo, name, line):
+        root = repo({"docs/a.md": f"`{name}` (`testing.py:{line}`)", _HERE: _SOURCE})
+        assert check.broken_line_references(root) == []
+
+    def test_a_decorated_function_is_found_at_its_def_and_not_its_decorator(self, repo):
+        source = "import functools\n\n\n@functools.cache\ndef thing() -> int:\n    return 1\n"
+        root = repo({"docs/a.md": "`thing` (`testing.py:5`)", _HERE: source})
+        assert check.broken_line_references(root) == []
+
+    def test_a_file_left_off_continues_the_one_before_it_in_the_paragraph(self, repo):
+        root = repo({"docs/a.md": "`write_file` (`testing.py:5`), `exec` (`:8`)", _HERE: _SOURCE})
+        assert check.broken_line_references(root) == []
+
+    def test_a_file_left_off_is_still_held_to_its_own_name(self, repo):
+        root = repo({"docs/a.md": "`write_file` (`testing.py:5`), `exec` (`:9`)", _HERE: _SOURCE})
+        assert check.broken_line_references(root) == [
+            "docs/a.md: line -> `:9` exec is defined at 8"
+        ]
+
+    def test_each_reference_consumes_the_name_beside_it(self, repo):
+        """Two in a row are held to two names, so the second cannot lean on the first's."""
+        root = repo({"docs/a.md": "`write_file` (`testing.py:5`) and (`:5`)", _HERE: _SOURCE})
+        assert check.broken_line_references(root) == [
+            "docs/a.md: line -> `:5` carries no name beside it, so nothing says what the line "
+            "should hold"
+        ]
+
+    def test_a_name_in_the_paragraph_above_does_not_reach_the_reference(self, repo):
+        root = repo(
+            {"docs/a.md": "`write_file` is a member.\n\nSee `testing.py:5`.", _HERE: _SOURCE}
+        )
+        assert check.broken_line_references(root) == [
+            "docs/a.md: line -> `testing.py:5` carries no name beside it, so nothing says what "
+            "the line should hold"
+        ]
+
+    def test_a_file_left_off_with_nothing_before_it_names_nothing_and_is_not_a_reference(
+        self, repo
+    ):
+        """`:20001` in a shipped comment is docker's user syntax, not a line in this tree."""
+        source = '"""An empty user half is root: `:20001` runs as `0:20001`."""\n'
+        root = repo({_HERE: source})
+        assert check.broken_line_references(root) == []
+
+    @pytest.mark.parametrize(
+        "written",
+        [
+            "[warning] BCP035 @ main.bicep:31: the declaration is missing",
+            "maf-sandbox-docker-<sha256(scope|kind)[:12]>",
+            "Resource temporarily unavailable (mcr.microsoft.com:443)",
+        ],
+    )
+    def test_a_line_number_quoted_inside_something_else_is_not_a_reference(self, repo, written):
+        root = repo({"docs/a.md": f"`write_file` says `{written}`", _HERE: _SOURCE})
+        assert check.broken_line_references(root) == []
+
+    def test_a_reference_inside_a_fenced_block_is_not_read(self, repo):
+        page = "# Output\n\n```\n`write_file` (`testing.py:9`)\n```\n"
+        root = repo({"docs/a.md": page, _HERE: _SOURCE})
+        assert check.broken_line_references(root) == []
+
+    def test_a_range_is_refused_because_only_its_first_line_could_be_checked(self, repo):
+        root = repo({"docs/a.md": "`write_file` (`testing.py:5-9`)", _HERE: _SOURCE})
+        assert check.broken_line_references(root) == [
+            "docs/a.md: line -> `testing.py:5-9` names a range, and only the line a definition "
+            "starts on can be checked"
+        ]
+
+    def test_a_basename_that_means_several_files_is_refused(self, repo):
+        root = repo(
+            {
+                "docs/a.md": "`write_file` (`testing.py:5`)",
+                "packages/p/src/m/testing.py": _SOURCE,
+                "packages/q/src/m/testing.py": _SOURCE,
+            }
+        )
+        assert check.broken_line_references(root) == [
+            "docs/a.md: line -> `testing.py:5` names testing.py, which is "
+            "packages/p/src/m/testing.py and packages/q/src/m/testing.py; link it"
+        ]
+
+    def test_a_link_says_which_file_a_shared_basename_means(self, repo):
+        root = repo(
+            {
+                "docs/a.md": "`write_file` ([`testing.py:5`](../packages/p/src/m/testing.py))",
+                "packages/p/src/m/testing.py": _SOURCE,
+                "packages/q/src/m/testing.py": "x = 1\n",
+            }
+        )
+        assert check.broken_line_references(root) == []
+
+    def test_a_label_that_disagrees_with_its_destination_is_reported(self, repo):
+        root = repo({"docs/a.md": "`write_file` ([`fake.py:5`](../" + _HERE + "))", _HERE: _SOURCE})
+        assert check.broken_line_references(root) == [
+            "docs/a.md: line -> `fake.py:5` names fake.py and links to " + _HERE
+        ]
+
+    def test_a_file_the_dotted_span_names_is_not_read_as_the_name_to_check(self, repo):
+        """`_scaffold.py` beside the path is the file again, not something it defines."""
+        page = "`write_file` lives in `testing.py` (`packages/p/src/m/testing.py:5`)"
+        root = repo({"docs/a.md": page, _HERE: _SOURCE})
+        assert check.broken_line_references(root) == []
+
+    def test_a_name_the_file_does_not_define_is_reported(self, repo):
+        root = repo({"docs/a.md": "`reclaim` (`testing.py:5`)", _HERE: _SOURCE})
+        assert check.broken_line_references(root) == [
+            f"docs/a.md: line -> `testing.py:5` {_HERE} defines no reclaim"
+        ]
+
+    def test_a_reference_into_something_that_is_not_python_is_refused(self, repo):
+        root = repo({"docs/a.md": "`write_file` (`docs/b.md:3`)", "docs/b.md": "x\ny\nz\n"})
+        assert check.broken_line_references(root) == [
+            "docs/a.md: line -> `docs/b.md:3` points into docs/b.md, and only Python source "
+            "carries definitions to check"
+        ]
+
+    def test_a_reference_to_a_file_that_is_not_tracked_is_reported(self, repo):
+        root = repo({"docs/a.md": "`write_file` (`gone.py:5`)", _HERE: _SOURCE})
+        assert check.broken_line_references(root) == [
+            "docs/a.md: line -> `gone.py:5` names gone.py, which is not a tracked file"
+        ]
+
+    def test_the_carried_file_is_the_link_destination_and_not_the_label(self, repo):
+        """The eight members on one page each continue a file only the first link named."""
+        page = "`write_file` ([`testing.py:5`](../packages/p/src/m/testing.py)), `exec` (`:8`)"
+        root = repo({"docs/a.md": page, _HERE: _SOURCE, "packages/q/src/m/testing.py": "y = 1\n"})
+        assert check.broken_line_references(root) == []
+
+
 class TestTheVerdict:
     def test_a_clean_tree_exits_zero(self, capsys, monkeypatch, repo):
         root = repo({"README.md": "[x](docs/a.md)", "docs/a.md": "y"})
         monkeypatch.setattr(check, "repo_root", lambda: root)
         assert check.main(["check_doc_paths.py"]) == 0
-        assert "resolves" in capsys.readouterr().out
+        assert "holds" in capsys.readouterr().out
 
     def test_a_dangling_reference_exits_one_and_names_it(self, capsys, monkeypatch, repo):
         root = repo({"README.md": "see docs/design/gone.md", "docs/sandbox/gone.md": "y"})
@@ -657,4 +828,19 @@ class TestThisRepository:
     """The check against the tree it ships in — the one that keeps it honest as things move."""
 
     def test_every_reference_in_this_repository_resolves(self):
-        assert check.broken_links(_ROOT) + check.broken_prose_paths(_ROOT) == []
+        problems = check.broken_links(_ROOT) + check.broken_prose_paths(_ROOT)
+        assert problems + check.broken_line_references(_ROOT) == []
+
+    def test_the_line_references_in_this_repository_are_read_rather_than_skipped(self):
+        """A pass that reads nothing reports nothing, and reads as green either way.
+
+        The corroboration rule is only worth what it covers, so the count is pinned: every line
+        reference on these pages is read, and each one carries the name it is held to.
+        """
+        read = [
+            reference
+            for path in check.tracked(_ROOT, *check._PROSE_GLOBS)
+            for reference in check.line_references(check.document_text(path))
+        ]
+        assert len(read) == 11
+        assert all(reference.symbol for reference in read)

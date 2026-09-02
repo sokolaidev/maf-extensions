@@ -399,6 +399,11 @@ class SandboxProgramTimeout(TimeoutError):
     ``output`` is what the program had printed when the run was given up on, already capped —
     empty on the two starting legs, where there is nothing to have read yet. An attribute
     rather than message text, so a caller can surface the program's own stdout alone.
+
+    ``output_reason`` is the other half of the same clause and never the program's words: the
+    host's own account of why it read none, empty wherever output was read normally. The
+    message carries one or the other, so a caller that must not surface guest text renders this
+    beside ``signal`` and ``reach`` and quotes nothing.
     """
 
     def __init__(
@@ -406,11 +411,13 @@ class SandboxProgramTimeout(TimeoutError):
         message: str,
         *,
         output: str = "",
+        output_reason: str = "",
         signal: SignalOutcome = "unknown",
         reach: SignalReach = "nothing",
     ) -> None:
         super().__init__(message)
         self.output = output
+        self.output_reason = output_reason
         #: What the signal reached, where one was sent. ``"program"`` means the children
         #: it spawned are still running and disposal is the only thing that stops them.
         self.reach = reach
@@ -1080,6 +1087,7 @@ async def _supervise(
                 f"{_clause_after_the_launcher_started(fate, reach)}. "
                 f"{_output_clause(printed, note)}",
                 output=printed[:2000],
+                output_reason=note,
                 signal=fate,
                 reach=reach,
             )
@@ -1168,6 +1176,7 @@ async def _supervise(
                 f"the guest program did not finish within {timeout:g}s — {failure}. "
                 f"{_output_clause(printed, note)}",
                 output=printed[:2000],
+                output_reason=note,
                 signal=fate,
                 reach=reach,
             ) from stalled

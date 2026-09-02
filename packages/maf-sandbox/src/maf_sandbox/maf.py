@@ -550,7 +550,7 @@ def make_caller_context(
 def sandbox_tool_declarations(
     spec: SandboxSpec,
     *,
-    source_integrity: str | None = "trusted",
+    source_integrity: str | None = None,
     outbound_max_confidentiality: str | None = None,
     output_sink: OutputSink | None = None,
     also_carries_out: bool = False,
@@ -560,16 +560,26 @@ def sandbox_tool_declarations(
 
     These land on the tool's ``additional_properties``, where MAF's information-flow module
     (``agent_framework.security``, FIDES) reads them before every call: ``source_integrity``
-    decides whether this tool's *output* taints the conversation, and
+    is this tool's declaration about the integrity of its *results*, and
     ``max_allowed_confidentiality`` caps how confidential a conversation may be and still be
     allowed to call it.
 
-    ``source_integrity="trusted"`` is the default because a sandbox result is deterministic
-    first-party output — a compiler's diagnostics, a script's stdout — produced by an
-    environment with no ambient identity and a deny-by-default egress allowlist.  Pass
-    ``None`` for a workload where that is not true (a sandbox that fetches arbitrary web
-    content, say): undeclared, the tracker's untrusted default applies and the result taints
-    the conversation, which is the fail-safe direction.
+    **Nothing is declared by default**, and the omission is the fail-safe answer rather than a
+    gap to fill in.  A declaration overrides rather than floors: the tracker discards the
+    call's input-label join for it.  So ``"trusted"`` is honest only where the result does not
+    derive from input the framework has not established as trusted — which authorship does not
+    settle, a compiler being deterministic *about* a template the model wrote.  Undeclared,
+    the join decides, and it falls back to the framework's untrusted default where no argument
+    carries a label.
+
+    **What that default costs is the model's sight of the result, not the host's sinks.**
+    FIDES hides an untrusted result by default — the item is replaced by a variable reference
+    the model can pass to another tool without reading — and hidden content does not taint
+    the conversation's integrity, so later tools stay ungated.  Where a host has turned
+    hiding off the result is visible instead, and the conversation does go untrusted.  Two
+    limits on that trade: hiding stops once anything else has tainted the conversation, and
+    it never applies to confidentiality, which a hidden item still contributes.
+    ``docs/sandbox/information-flow.md`` carries the measurement and the full conditions.
 
     ``outbound_max_confidentiality`` is **opt-in, and off by default**, and the asymmetry is
     deliberate.  A confidentiality key is not inert metadata: writing one participates in a
@@ -601,8 +611,8 @@ def sandbox_tool_declarations(
     Args:
         spec: The sandbox this workload asks for; ``egress_allow``, ``declared_outputs`` and
             ``outputs_named_at_call_time`` are what is read.
-        source_integrity: Integrity label for this tool's results, or ``None`` to declare
-            none.
+        source_integrity: Integrity label for this tool's results, or ``None`` (the default)
+            to declare none.
         outbound_max_confidentiality: The host's cap for outbound tools, in the host's own
             vocabulary, or ``None`` (the default) to declare none.
         output_sink: Where this workload's artifacts land, if it lands any. Read together with
@@ -1228,7 +1238,7 @@ def sandboxed_tool(
     name: str,
     approval_mode: Literal["always_require", "never_require"] = "never_require",
     declarations: Mapping[str, Any] | None = None,
-    source_integrity: str | None = "trusted",
+    source_integrity: str | None = None,
     outbound_max_confidentiality: str | None = None,
     output_sink: OutputSink | None = None,
     also_carries_out: bool = False,
@@ -1300,10 +1310,10 @@ def sandboxed_tool(
             full control. Defaults to :func:`sandbox_tool_declarations` over ``spec``.
             Refused together with ``output_sink``.
         source_integrity: Passed to :func:`sandbox_tool_declarations`; ignored when
-            ``declarations`` is given. ``None`` declares no integrity at all, which is the
-            fail-safe answer for a workload whose result is whatever model-written code chose
-            to emit — and the reason this is a parameter here rather than something a kind
-            reaches ``declarations=`` for, since that escape hatch is refused alongside a sink.
+            ``declarations`` is given. ``None`` is the default and declares no integrity at
+            all, which is what a workload whose result is whatever model-written code chose to
+            emit wants. A workload that has earned a label states it here rather than through
+            ``declarations=``, which is refused alongside a sink.
         outbound_max_confidentiality: Passed to :func:`sandbox_tool_declarations`; ignored when
             ``declarations`` is given. Read that function before setting it — it is off by
             default for a reason.
