@@ -154,6 +154,25 @@ The contract says what may be called; it does not say how a host-tool call *reac
 
 It costs round trips — several backend calls per host-tool call, plus polling, plus one on every return to reclaim, and one more to stop the program on a run that overran. It serves one outstanding call at a time. This module's own docstring counts those costs exactly, beside the code that decides them; whether the trade is worth it is a measurement rather than an assumption.
 
+## A result the model may read half of
+
+A sandbox result is rarely uniformly derived: a compiler's diagnostics quote a template the model wrote, while the sentence naming what to do about them is a constant the package ships. Under one label a kind has to choose — claim `trusted` over the guest's text, or declare honestly and watch MAF's information-flow module hide the whole result behind a variable reference. So a tool body may answer with a **list of items** instead of one string, and MAF labels and hides each item separately: the standing guidance stays readable while everything the call produced is hidden.
+
+```python
+from agent_framework import Content
+from maf_sandbox import SourceIntegrity
+from maf_sandbox.maf import labelled_result_item
+
+return [
+    labelled_result_item(RECOVERY_ROUTE, SourceIntegrity.TRUSTED),
+    Content.from_text(rendered_diagnostics),
+]
+```
+
+**Label as little as you can, and never every item.** A per-item label replaces the item's *whole* label, confidentiality included, and this package has no confidentiality value to put there — those are the host's vocabulary, carried verbatim. An item left unlabelled takes the call's own label instead, and the result's combined label is the most restrictive across every item, so one unlabelled item is what keeps the host's classification. `sandboxed_tool` refuses a result whose every item carries a label, because nothing in it is left to carry the call's; `labelled_result_item` refuses `SourceIntegrity.UNTRUSTED` for the same reason from the other side, since the untrusted item is the one holding what the call produced. `str` stays valid and stays the common case.
+
+What may carry `TRUSTED` is narrow — text whose value **and whose presence** are independent of everything the call touched, which in practice means standing guidance emitted on every return path. A count, an exit status, a size, or a line emitted only on failure all fail that test however they are split out. [`docs/sandbox/information-flow.md`](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/information-flow.md) carries the rule and the measurements behind it.
+
 ## Upgrading to 0.27
 
 **These landed in the tree tagged `maf-sandbox-v0.26.0`, which never reached PyPI.** That tag and its GitHub Release are immutable and will stay visible; there is no 0.26.0 to install, and the same tree ships as 0.27.0. The changelog's 0.26.0 section says why.
