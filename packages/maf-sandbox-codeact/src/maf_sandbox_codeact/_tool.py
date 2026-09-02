@@ -87,10 +87,10 @@ EXECUTE_CODE_TOOL_NAME = "execute_code"
 #: The sandbox kind this workload asks for.
 CODEACT_KIND = "codeact"
 
-#: Where every run's directory is created — a dedicated root rather than the image's own tree.
+#: Where every call's directory is created — a dedicated root rather than the image's own tree.
 _WORK_DIR = "/maf-sandbox/work"
 
-#: One fixed name inside each run's own directory.
+#: One fixed name inside each call's own directory.
 _PROGRAM_FILENAME = "program.py"
 
 #: What this kind needs to reach for ``execute_code`` to work at all — nothing, because the
@@ -983,9 +983,9 @@ async def _execute(
         return sandbox
 
     # The session owns this path, and `sandboxed_tool` reclaims it when the call returns.
-    # Built before anything is written, because it decides where everything goes. A run that
+    # Built before anything is written, because it decides where everything goes. A call that
     # calls a host tool is two directories — the model's files in `work`, the program and the shim
-    # in the transport's — and one that does not is the run directory flat, which is what a kind
+    # in the transport's — and one that does not is the call directory flat, which is what a kind
     # writing no shim has always been. The program name and the interpreter are passed rather
     # than defaulted, so this kind's constants and the transport's cannot drift apart.
     layout = (
