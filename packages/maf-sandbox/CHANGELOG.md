@@ -2,6 +2,20 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.30.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.29.1...maf-sandbox-v0.30.0) (2026-09-02)
+
+
+### Features
+
+* a kind can know which tool call arguments the framework rewrote ([#827](https://github.com/sokolaidev/maf-extensions/issues/827)) ([c83160e](https://github.com/sokolaidev/maf-extensions/commit/c83160ec727f2a94e7facf46e3584a7984407fa6))
+* a refusal names a rejected file by its position rather than echoing a value that is not a name ([#818](https://github.com/sokolaidev/maf-extensions/issues/818)) ([5123e52](https://github.com/sokolaidev/maf-extensions/commit/5123e52321766a70d079e26d369116cdf912fbfe))
+* a workload can ask for a sandbox per tool call, and incompatible backend is refused ([#800](https://github.com/sokolaidev/maf-extensions/issues/800)) ([3f50ff6](https://github.com/sokolaidev/maf-extensions/commit/3f50ff6d686813cdc3e34a7091b5c0dd50b4fd35))
+
+
+### Fixes
+
+* a name that landed is not repeated either, and two ways past the bound are closed ([#831](https://github.com/sokolaidev/maf-extensions/issues/831)) ([d430e78](https://github.com/sokolaidev/maf-extensions/commit/d430e7883ef5c1008a964e7d8f3b76bff95b4022))
+
 ## [0.29.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.29.0...maf-sandbox-v0.29.1) (2026-09-01)
 
 
