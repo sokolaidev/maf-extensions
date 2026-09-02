@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.9.1...maf-sandbox-codeact-v0.9.2) (2026-09-02)
+
+
+### Documentation
+
+* **sandbox:** an integrity value is a label or a level, and "tier" is retired for it ([#813](https://github.com/sokolaidev/maf-extensions/issues/813)) ([e58ac51](https://github.com/sokolaidev/maf-extensions/commit/e58ac51ba1d7164b2a6dfede698c635a32db4930))
+
 ## [0.9.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.9.0...maf-sandbox-codeact-v0.9.1) (2026-09-01)
 
 
