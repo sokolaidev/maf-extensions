@@ -36,6 +36,7 @@ from ._protocol import (
     SandboxSpec,
     TransferLimits,
 )
+from ._refusals import echoed_name
 
 __all__ = [
     "MAX_ARTIFACT_NAME_BYTES",
@@ -290,7 +291,7 @@ def _nfc(name: str) -> str:
     return unicodedata.normalize("NFC", name)
 
 
-def validate_artifact_name(name: str) -> None:
+def validate_artifact_name(name: str, *, at: str | None = None, hidden: bool = False) -> None:
     """Refuse ``name`` unless it meets the narrow invariant, naming the rule that refused it.
 
     Relative, no traversal segment, no backslash, no segment that names nothing (``a//b``,
@@ -303,36 +304,40 @@ def validate_artifact_name(name: str) -> None:
     length-non-increasing, so a name checked before normalization is not the name the host
     receives.
 
+    Every refusal renders the name through :func:`~maf_sandbox.echoed_name`, and both of that
+    function's arguments pass straight through: ``at`` — where the name came from,
+    ``"outputs[1]"`` — is what a refusal names in place of a value it will not repeat, and
+    ``hidden`` says the framework expanded content it had hidden into this name.
+
     Raises:
         SandboxArtifactNameInvalid: naming which of the rules the name broke.
     """
+    echoed = echoed_name(name, at=at, hidden=hidden)
     if not name:
-        raise SandboxArtifactNameInvalid("an artifact name must be a non-empty relative path")
+        raise SandboxArtifactNameInvalid(f"{echoed} must be a non-empty relative path")
     if _BACKSLASH in name:
         raise SandboxArtifactNameInvalid(
-            f"artifact name {name!r} contains a backslash. The protocol has one path grammar "
+            f"{echoed} contains a backslash. The protocol has one path grammar "
             "and '\\' is not a separator in it, whatever the guest or the host runs."
         )
     if name.startswith(_SEPARATOR):
         raise SandboxArtifactNameInvalid(
-            f"artifact name {name!r} is absolute, and a landing name is relative: where it "
-            "lands is the host's to decide, not the guest's"
+            f"{echoed} is absolute, and a landing name is relative: where it lands is the "
+            "host's to decide, not the guest's"
         )
     segments = name.split(_SEPARATOR)
     if _TRAVERSAL in segments:
-        raise SandboxArtifactNameInvalid(
-            f"artifact name {name!r} contains a {_TRAVERSAL!r} traversal segment"
-        )
+        raise SandboxArtifactNameInvalid(f"{echoed} contains a {_TRAVERSAL!r} traversal segment")
     if not _NON_NAMING_SEGMENTS.isdisjoint(segments):
         raise SandboxArtifactNameInvalid(
-            f"artifact name {name!r} contains an empty or {_CURRENT_DIRECTORY!r} path segment, "
-            "which names no directory of its own. It is the same file as the spelling without "
-            "it, and two spellings of one file would land as two artifacts."
+            f"{echoed} contains an empty or {_CURRENT_DIRECTORY!r} path segment, which names "
+            "no directory of its own. It is the same file as the spelling without it, and two "
+            "spellings of one file would land as two artifacts."
         )
     control = sorted(_CONTROL_CHARACTERS.intersection(name))
     if control:
         raise SandboxArtifactNameInvalid(
-            f"artifact name {name!r} contains a control character (ASCII "
+            f"{echoed} contains a control character (ASCII "
             f"{', '.join(str(ord(character)) for character in control)}). No filesystem "
             "accepts one, so this is a narrow-invariant rule rather than a guess about the "
             "destination's own namespace."
@@ -341,12 +346,12 @@ def validate_artifact_name(name: str) -> None:
         encoded = name.encode("utf-8")
     except UnicodeEncodeError as exc:
         raise SandboxArtifactNameInvalid(
-            f"artifact name {name!r} is not valid UTF-8, which is the interchange form for "
-            "every name crossing this boundary"
+            f"{echoed} is not valid UTF-8, which is the interchange form for every name "
+            "crossing this boundary"
         ) from exc
     if len(encoded) > MAX_ARTIFACT_NAME_BYTES:
         raise SandboxArtifactNameInvalid(
-            f"artifact name {name!r} is {len(encoded)} bytes of UTF-8, over the "
+            f"{echoed} is {len(encoded)} bytes of UTF-8, over the "
             f"{MAX_ARTIFACT_NAME_BYTES}-byte ceiling"
         )
 

@@ -52,13 +52,19 @@ from maf_sandbox import (
     SandboxSpec,
     TransferLimits,
     collect_outputs,
+    echoed_name,
     error_detail,
     guest_run_layout,
     host_tool_calls_over_exec,
     host_tool_shim,
     validate_artifact_name,
 )
-from maf_sandbox.maf import SandboxToolSession, sandboxed_tool
+from maf_sandbox.maf import (
+    SandboxToolSession,
+    hidden_content_candidates,
+    sandboxed_tool,
+    values_holding_hidden_content,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -91,6 +97,10 @@ _PROGRAM_FILENAME = "program.py"
 #: program computes and no part of this kind resolves a module or installs a package. An answer
 #: rather than an omission; :func:`codeact_sandbox_spec` has why it is fixed here.
 _KIND_EGRESS: tuple[str, ...] = ()
+
+#: The argument a ``DECLARED``-mode caller names its files in, which is what a refusal about
+#: one of them points at.
+_OUTPUTS_ARGUMENT = "outputs"
 
 #: Where a ``MANIFEST``-mode program says what it produced.
 _MANIFEST_FILENAME = "outputs.json"
@@ -883,6 +893,10 @@ async def _execute(
     withhold: bool,
 ) -> str:
     """One ``execute_code`` call: share, run, and collect."""
+    # Taken before anything here awaits, and carried to every name check in this call: the
+    # framework's accessor is not scoped to the call, so a lookup made after the run — the
+    # manifest's, above all — may find nothing left to answer with.
+    rewritten = hidden_content_candidates()
     # Scope and thread come from the host's request context, never from model input.
     key = session.key()
     if isinstance(key, str):
@@ -926,6 +940,8 @@ async def _execute(
             reserved=reserved,
             guest_prefix=guest_prefix,
             normalization=_normalization(session),
+            named_by=_OUTPUTS_ARGUMENT,
+            candidates=rewritten,
         )
         if isinstance(checked, str):
             return checked
@@ -952,7 +968,7 @@ async def _execute(
         return over_cap
     if store is not None:
         resolved = await _resolve_listed_files(
-            session, store, files, reserved=reserved, withhold=withhold
+            session, store, files, reserved=reserved, withhold=withhold, candidates=rewritten
         )
         if isinstance(resolved, str):
             return resolved
@@ -1080,7 +1096,14 @@ async def _execute(
         # a program that caught its own error and wrote the diagnosis into one.
         return report
     collected = await _collect(
-        session, sandbox, guest_prefix, outputs, names, reserved, withhold=withhold
+        session,
+        sandbox,
+        guest_prefix,
+        outputs,
+        names,
+        reserved,
+        withhold=withhold,
+        candidates=rewritten,
     )
     return f"{report}\n\n{collected}" if collected else report
 
@@ -1095,6 +1118,7 @@ async def _resolve_listed_files(
     *,
     reserved: Mapping[str, str],
     withhold: bool = False,
+    candidates: frozenset[str] | None = None,
 ) -> list[str] | str:
     """Match each requested name against the caller's listing, or answer with the refusal.
 
@@ -1104,6 +1128,10 @@ async def _resolve_listed_files(
     """
     if not files:
         return []
+    # Asked before the first await, not beside the loop that uses it: the framework's accessor
+    # is not scoped to the call, so every suspension before asking is a chance for the answer
+    # to come back empty. See `values_holding_hidden_content`.
+    rewritten = values_holding_hidden_content(files, candidates=candidates)
     listing = await session.list_files(store)
     if isinstance(listing, str):
         # The host's own sentence about its store. Withheld it is dropped for the reason the
@@ -1114,24 +1142,27 @@ async def _resolve_listed_files(
         return listing
     known = set(listing)
     resolved: list[str] = []
-    for name in files:
+    for position, name in enumerate(files):
+        at = f"files[{position}]"
+        hidden = name in rewritten
+        named = echoed_name(name, at=at, hidden=hidden)
         try:
-            validate_artifact_name(name)
+            validate_artifact_name(name, at=at, hidden=hidden)
         except SandboxArtifactNameInvalid as exc:
             # The validator's own sentence, which names the rule that was broken: a fixed
             # message listing two of its rules tells a caller refused for a backslash or a
             # control character that its name satisfies everything the tool asked for. The
             # listing is still not echoed — that would invite a retry with another spelling.
-            return f"Error: {name!r} cannot be shared — {exc}"
+            return f"Error: {named} cannot be shared — {exc}"
         if name in reserved:
-            return f"Error: {name!r} cannot be shared — {reserved[name]}."
-        refusal = _inside_a_reserved_file(name, reserved, action="shared")
+            return f"Error: {named} cannot be shared — {reserved[name]}."
+        refusal = _inside_a_reserved_file(name, reserved, action="shared", at=at, hidden=hidden)
         if refusal is not None:
             return refusal
         if name in resolved:
             # One read and one write per name. Repeating one buys the caller nothing and
             # multiplies both, which is the cheapest way to amplify against the byte ceilings.
-            return f"Error: {name!r} was listed twice."
+            return f"Error: {named} was listed twice."
         if name not in known:
             logger.warning(
                 "execute_code: %r is not in this tool's file store listing (%d file(s) visible) "
@@ -1140,7 +1171,7 @@ async def _resolve_listed_files(
                 len(listing),
             )
             return (
-                f"Error: {name!r} is not in this tool's file listing, so it was not shared. "
+                f"Error: {named} is not in this tool's file listing, so it was not shared. "
                 f"{_listing_hint(name, listing, withhold=withhold)}"
             )
         resolved.append(name)
@@ -1206,7 +1237,9 @@ async def _read_listed_files(
     return read
 
 
-def _inside_a_reserved_file(name: str, reserved: Mapping[str, str], *, action: str) -> str | None:
+def _inside_a_reserved_file(
+    name: str, reserved: Mapping[str, str], *, action: str, at: str, hidden: bool
+) -> str | None:
     """Refuse a name that would have to live inside a reserved file, naming which one.
 
     Every shipped backend creates parent directories for a nested write, so
@@ -1220,8 +1253,8 @@ def _inside_a_reserved_file(name: str, reserved: Mapping[str, str], *, action: s
     if above is None:
         return None
     return (
-        f"Error: {name!r} cannot be {action} — {above!r} is a file name this tool reserves in "
-        f"every run's directory, so nothing can live inside it."
+        f"Error: {echoed_name(name, at=at, hidden=hidden)} cannot be {action} — {above!r} is a "
+        f"file name this tool reserves in every run's directory, so nothing can live inside it."
     )
 
 
@@ -1319,6 +1352,8 @@ def _validated_output_names(
     reserved: Mapping[str, str],
     guest_prefix: str,
     normalization: NameNormalization,
+    named_by: str,
+    candidates: frozenset[str] | None = None,
 ) -> list[str] | str:
     """Settle every output name before the program runs, or answer with the refusal.
 
@@ -1326,6 +1361,9 @@ def _validated_output_names(
     with its run prefix, and the delivered name after normalization — so that a refusal cannot
     arrive a whole run late.  That function stays the authority: if the two disagree, this one
     is wrong, and the cost is the late refusal rather than a name reaching a host.
+
+    ``named_by`` says where the names came from — the ``outputs`` argument or the manifest —
+    so a refusal can point at the one it means without quoting a value it should not.
     """
     if len(names) > max_files:
         return (
@@ -1333,8 +1371,15 @@ def _validated_output_names(
             f"{max_files} per call."
         )
     prefix = f"{guest_prefix}/"
-    seen: dict[str, str] = {}
-    for name in names:
+    seen: dict[str, tuple[str, str]] = {}
+    # Asked of manifest names as well as of the model's own `outputs`, and that is not
+    # belt-and-braces: `code` is a rewritten argument too, so a payload can reach the guest
+    # in the program's own source and come back as a name the program chose to write.
+    rewritten = values_holding_hidden_content(names, candidates=candidates)
+    for position, name in enumerate(names):
+        at = f"{named_by}[{position}]"
+        hidden = name in rewritten
+        named = echoed_name(name, at=at, hidden=hidden)
         # NFC is not length-non-increasing — 43 × U+0958 is 129 bytes declared and 258
         # delivered — so the name to hold to the invariant is the one the sink will receive.
         delivered = (
@@ -1342,25 +1387,25 @@ def _validated_output_names(
         )
         for spelling in (name, delivered, prefix + name):
             try:
-                validate_artifact_name(spelling)
+                validate_artifact_name(spelling, at=at, hidden=hidden)
             except SandboxArtifactNameInvalid as exc:
-                return f"Error: {name!r} cannot be saved — {exc}"
+                return f"Error: {named} cannot be saved — {exc}"
         if name in reserved:
-            return f"Error: {name!r} cannot be saved — {reserved[name]}."
-        refusal = _inside_a_reserved_file(name, reserved, action="saved")
+            return f"Error: {named} cannot be saved — {reserved[name]}."
+        refusal = _inside_a_reserved_file(name, reserved, action="saved", at=at, hidden=hidden)
         if refusal is not None:
             return refusal
         # `collect_outputs`' own key: NFC and case-folded, always, whatever the sink does
         # about rewriting.
         key = unicodedata.normalize("NFC", name).lower()
         if key in seen:
-            earlier = seen[key]
+            earlier, earlier_named = seen[key]
             return (
-                f"Error: {name!r} and {earlier!r} are one file once saved"
+                f"Error: {named} and {earlier_named} are one file once saved"
                 if earlier != name
-                else f"Error: {name!r} was declared twice."
+                else f"Error: {named} was declared twice."
             )
-        seen[key] = name
+        seen[key] = (name, named)
     return list(names)
 
 
@@ -1373,6 +1418,7 @@ async def _collect(
     reserved: Mapping[str, str],
     *,
     withhold: bool = False,
+    candidates: frozenset[str] | None = None,
 ) -> str:
     """Land whatever this run produced, and say what happened — never raising into the model."""
     sink = session.output_sink
@@ -1404,6 +1450,8 @@ async def _collect(
             reserved=reserved,
             guest_prefix=guest_prefix,
             normalization=_normalization(session),
+            named_by=_MANIFEST_FILENAME,
+            candidates=candidates,
         )
         if isinstance(checked, str):
             return checked
@@ -1432,7 +1480,13 @@ async def _collect(
     except Exception as exc:  # noqa: BLE001
         logger.warning("execute_code: saving this run's files failed: %s", error_detail(exc))
         return f"Error: the program ran but its files could not be saved. {_MAY_HAVE_LANDED}"
-    return _format_landed(landed, declared, withhold=withhold)
+    return _format_landed(
+        landed,
+        declared,
+        withhold=withhold,
+        named_by=_MANIFEST_FILENAME if outputs is CodeactOutputs.MANIFEST else _OUTPUTS_ARGUMENT,
+        candidates=candidates,
+    )
 
 
 async def _read_manifest(
@@ -1516,7 +1570,12 @@ async def _read_manifest(
 
 
 def _format_landed(
-    landed: Sequence[LandedArtifact], declared: Sequence[str], *, withhold: bool = False
+    landed: Sequence[LandedArtifact],
+    declared: Sequence[str],
+    *,
+    withhold: bool = False,
+    named_by: str = _OUTPUTS_ARGUMENT,
+    candidates: frozenset[str] | None = None,
 ) -> str:
     """What the model is told about the files: what landed, and what is absent.
 
@@ -1543,7 +1602,15 @@ def _format_landed(
             )
         else:
             lines.extend(f"- {item.display}" for item in landed)
-    missing = [name for name in declared if unicodedata.normalize("NFC", name) not in delivered]
+    # A name that produced no file is reported the way a refusal reports one: the caller's
+    # spelling where it is the caller's, and the position where the framework put something
+    # else there. It is the one line here that names a file which does not exist.
+    rewritten = values_holding_hidden_content(list(declared), candidates=candidates)
+    missing = [
+        echoed_name(name, at=f"{named_by}[{position}]", hidden=name in rewritten)
+        for position, name in enumerate(declared)
+        if unicodedata.normalize("NFC", name) not in delivered
+    ]
     if missing:
         lines.append(
             f"Not written by the program, so not saved: {', '.join(sorted(missing))}. Write "

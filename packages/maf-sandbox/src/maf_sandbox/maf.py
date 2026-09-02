@@ -31,14 +31,15 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
+import json
 import logging
 import math
 import posixpath
 import sys
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from ._error_detail import error_detail
@@ -82,7 +83,9 @@ __all__ = [
     "list_no_files",
     "make_caller_context",
     "sandbox_tool_declarations",
+    "hidden_content_candidates",
     "sandboxed_tool",
+    "values_holding_hidden_content",
 ]
 
 # The three sentences a workload is allowed to hand the model when it could not get a
@@ -190,6 +193,119 @@ def _prefixed(name: str) -> str:
     a caplog assertion matches. A ``%`` in a name would then read as a format specifier.
     """
     return name.replace("%", "%%")
+
+
+def _reduced_form(payload: object) -> object:
+    """What the middleware substitutes for ``payload`` when it expands a reference to it.
+
+    A mapping, or JSON text naming a ``response``, is reduced to that field.  **Everything else
+    is substituted unchanged**, which is the branch that matters most here: a payload of any
+    other type still reaches an argument, as ``str()`` of itself, once the reference is spliced
+    into surrounding text.  So this always answers with something, and "no reduction" is the
+    payload rather than an absence — there is no shape a caller should skip.
+
+    **It mirrors behaviour rather than a published contract, so it has to track upstream.** The
+    rule lives inside ``agent_framework.security`` (MIT, Microsoft Corporation), which promises
+    nothing about it, and a shape this stops matching is a shape an argument carries past the
+    check. ``THIRD-PARTY-NOTICES.md`` records the reuse.
+    """
+    if isinstance(payload, Mapping):
+        mapping = cast("Mapping[str, Any]", payload)
+        return mapping["response"] if "response" in mapping else mapping
+    if isinstance(payload, str):
+        stripped = payload.strip()
+        if stripped.startswith("{") and stripped.endswith("}"):
+            try:
+                parsed = json.loads(stripped)
+            except ValueError:
+                return payload
+            if isinstance(parsed, dict) and "response" in parsed:
+                return cast("dict[str, Any]", parsed)["response"]
+    return payload
+
+
+def _hidden_payloads(middleware: Any) -> Iterator[str]:
+    """Every string form a rewritten argument could have arrived carrying.
+
+    Two forms per stored payload, because a reference is expanded two ways.  Alone, it is
+    replaced by the payload itself; spliced into surrounding text, by ``str()`` of what the
+    reduction answers — so a payload of any type reaches an argument as text, and a stored
+    ``["SECRET"]`` arrives inside ``['SECRET'].bicep``.
+    """
+    store = middleware.get_variable_store()
+    for variable_id in store.list_variables():
+        try:
+            content, _ = store.retrieve(variable_id)
+        except KeyError:  # pragma: no cover - a store cleared between the two calls
+            continue
+        reduced = _reduced_form(content)
+        candidates: set[str] = {content} if isinstance(content, str) else set()
+        candidates.add(reduced if isinstance(reduced, str) else str(reduced))
+        for text in candidates:
+            if text:
+                yield text
+
+
+def hidden_content_candidates() -> frozenset[str]:
+    """Every string form a rewritten argument could have arrived carrying, as the store holds it.
+
+    Take this **before a body's first await** wherever the answer is needed later.  The
+    framework's accessor is not scoped to the call, so an answer fetched after the body has
+    suspended may not be available; a snapshot taken first thing survives the wait, and
+    :func:`values_holding_hidden_content` accepts it as ``candidates``.
+
+    A body that asks and answers in the same breath does not need this — it can let
+    :func:`values_holding_hidden_content` take its own.
+    """
+    try:
+        from agent_framework.security import get_current_middleware
+    except ImportError:  # pragma: no cover - a host without the security module
+        return frozenset()
+    middleware = get_current_middleware()
+    if middleware is None:
+        return frozenset()
+    return frozenset(_hidden_payloads(middleware))
+
+
+def values_holding_hidden_content(
+    values: Sequence[str], *, candidates: frozenset[str] | None = None
+) -> frozenset[str]:
+    """Those of ``values`` the host's middleware expanded content it had hidden into.
+
+    MAF's information-flow middleware replaces an untrusted result with a variable reference,
+    and rewrites that reference back into a tool's arguments **before** the body runs.  So a
+    value a kind is about to quote in a refusal may be content the framework hid rather than
+    anything the model chose.  Pass the verdict to :func:`~maf_sandbox.echoed_name` as
+    ``hidden``, and it renders the argument's position instead of its value.
+
+    **Containment, not equality.**  A reference is spliced into the text around it, so
+    ``"[var_a1b2].bicep"`` arrives as the content with a suffix and equals no stored payload.
+
+    **The answer is conservative, and deliberately so: it is about the whole conversation's
+    store rather than about this call's expansions.**  A value is reported when it *could* have
+    arrived carrying a hidden payload, not when it provably did — so a store holding a short
+    payload such as ``"main"`` reports an untouched ``"main.bicep"`` too, and its refusal names
+    a position where it would otherwise have quoted the name.  That is the safe direction and
+    it costs ergonomics rather than containment; the exact question needs the argument's own
+    before-and-after, which a tool body cannot reach.
+
+    ``candidates`` is a snapshot from :func:`hidden_content_candidates`, for a caller that has
+    to ask long after its body began — see that function.  Without one this takes its own, which
+    is right for a caller answering immediately.
+
+    Take the whole argument list in one call: the answer costs one pass over the variable
+    store, and the store's own reads are logged by the framework.
+
+    Answers an empty set where no middleware is reachable, which is two different situations
+    it cannot tell apart.  Either the host runs none — then nothing was ever hidden and the
+    shape bound is all that is needed — or a **synchronous** tool body has been dispatched to
+    another thread, which the middleware's thread-local does not reach.  Every body in this
+    suite is ``async``; one that is not gets the bound instead of this.
+    """
+    if not values:
+        return frozenset()
+    payloads = hidden_content_candidates() if candidates is None else candidates
+    return frozenset(value for payload in payloads for value in values if payload in value)
 
 
 def make_caller_context(
