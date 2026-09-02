@@ -125,10 +125,14 @@ def make_diagram_tools(
         spec=spec,
         name=RENDER_DIAGRAM_TOOL_NAME,
         approval_mode="never_require",
-        # `source_integrity` stays at its "trusted" default: the result is deterministic
-        # first-party output from a no-identity, closed-egress sandbox — a host-authored
-        # reference on success, `dot`'s own diagnostic on failure — the same basis on which the
-        # Bicep workload trusts a compiler's output. It is not model-authored content.
+        # No integrity declaration, and authorship is not the reason. The success reference
+        # is the host's own sentence; what disqualifies `trusted` is derivation. `dot`'s
+        # failure diagnostic quotes the model's DOT source back, and which of the two comes
+        # back is decided by that source — a presence bit — so the result derives from input
+        # the framework has not established as trusted. That is the test set in
+        # `docs/sandbox/information-flow.md`. `dot` is an unlabelled argument, so the
+        # framework's input-label join answers untrusted.
+        source_integrity=None,
         output_sink=sink,
         logger=logger,
     )
@@ -263,8 +267,9 @@ def _render_diagram_tool(
 def _render_failed(exit_code: int, stderr: str) -> str:
     """Render a ``dot`` failure for a model that has to fix its own DOT.
 
-    The diagnostic is ``dot``'s own — first-party, and a syntax error names the line — so it goes
-    back verbatim.  When ``dot`` failed but wrote nothing, the exit code is all there is.
+    A syntax error names the line, so the diagnostic goes back verbatim: the model needs the
+    exact message to repair its own source.  When ``dot`` failed but wrote nothing, the exit
+    code is all there is.
     """
     if stderr:
         return f"dot could not render the diagram (exit {exit_code}):\n{stderr}"

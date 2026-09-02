@@ -14,8 +14,9 @@ repeated, and anything else is named by its position instead.
 from one the model chose, and an instruction can be written without spaces —
 ``IGNORE_PRIOR_INSTRUCTIONS`` is the shape of a perfectly ordinary file name.  So the shape is
 the weaker of two answers and the fallback for callers who have no other:
-:func:`~maf_sandbox.maf.values_holding_hidden_content` asks the host's middleware which values
-it rewrote, and ``hidden=True`` here settles the question without consulting the shape at all.
+:func:`~maf_sandbox.maf.positions_holding_hidden_content` asks the host's middleware which
+entries it rewrote, and ``hidden=True`` here settles the question without consulting the shape
+at all.
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ def echoed_name(name: str, *, at: str | None = None, hidden: bool = False) -> st
 
     ``hidden`` is the answer a caller should prefer wherever it can get one: pass ``True``
     where the framework expanded content it had hidden into this value, and the shape below is
-    not consulted at all.  :func:`~maf_sandbox.maf.values_holding_hidden_content` computes it.
+    not consulted at all.  :func:`~maf_sandbox.maf.positions_holding_hidden_content` computes it.
     Left ``False``, the value is repeated when it is at most
     :data:`MAX_ECHOED_NAME_CHARACTERS` characters, printable and free of spaces — a bound on
     shape, which is what a caller with no better answer has.
