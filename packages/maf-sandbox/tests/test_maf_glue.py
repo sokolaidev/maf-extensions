@@ -47,12 +47,15 @@ from maf_sandbox import (
     SandboxSpec,
     SandboxUnclean,
 )
+from maf_sandbox import maf as _maf
 from maf_sandbox._reclaim import note_unclean
 from maf_sandbox._router import ATTACH_REFUSALS
 from maf_sandbox.maf import (
+    _ORIGINAL_ARGUMENTS_KEY,
     ISOLATION_SCOPE_KEY,
     SandboxPurger,
     SandboxToolSession,
+    _spellings_before_rewriting,
     argument_provenance_middleware,
     hidden_content_candidates,
     list_all_files,
@@ -3122,6 +3125,94 @@ class TestArgumentProvenanceMiddleware:
 
         asyncio.run(drive())
         return seen
+
+    def test_the_framework_still_records_the_arguments_this_reads(self):
+        """A divergence alarm, not a feature test.
+
+        The exact answer is read out of `original_arguments_for_messages`, which is a string
+        literal inside `LabelTrackingFunctionMiddleware` rather than anything the framework
+        publishes — and this package accepts every `agent-framework-core` 1.x. If a compatible
+        minor renames it, every other test here still passes on the inference and only the two
+        that separate the answers go red, saying nothing about why. This one says why.
+        """
+        from agent_framework import FunctionInvocationContext, FunctionTool
+        from agent_framework.security import (
+            ContentLabel,
+            IntegrityLabel,
+            LabelTrackingFunctionMiddleware,
+        )
+
+        tracker = LabelTrackingFunctionMiddleware()
+        variable_id = tracker.get_variable_store().store(
+            self.PAYLOAD, ContentLabel(integrity=IntegrityLabel.UNTRUSTED)
+        )
+        reference = f"[{variable_id}]"
+
+        async def body(files: list[str]) -> str:
+            return "ok"
+
+        tool = FunctionTool(name="probe", func=body)
+        context = FunctionInvocationContext(function=tool, arguments={"files": [reference]})
+
+        async def call_next() -> None:
+            await tool.invoke(arguments=context.arguments)
+
+        asyncio.run(tracker.process(context, call_next))
+
+        assert _ORIGINAL_ARGUMENTS_KEY in context.metadata, (
+            f"this agent-framework-core no longer records {_ORIGINAL_ARGUMENTS_KEY!r} on a "
+            "call. `_spellings_before_rewriting` reads it, so the exact answer has silently "
+            "become the inference — find where the framework keeps it now, or make the "
+            "middleware capture its own record (see #826)"
+        )
+        assert context.metadata[_ORIGINAL_ARGUMENTS_KEY] == {"files": [reference]}, (
+            "the record no longer holds the arguments as the caller spelled them"
+        )
+        assert context.arguments == {"files": [self.PAYLOAD]}, (
+            "the framework no longer expands into the arguments, so there is nothing to detect"
+        )
+
+    def test_a_record_that_went_missing_is_said_out_loud(self, monkeypatch, caplog):
+        """The alarm above fires in this suite; a host upgrades without running it.
+
+        With a middleware reachable the key cannot legitimately be absent — that middleware
+        writes it on every call before expanding anything — so its absence is the framework's
+        contract having moved, and falling back silently would drop a security property with
+        no trace anywhere.
+        """
+        import logging as _logging
+
+        monkeypatch.setattr(_maf, "_warned_about_a_missing_record", False)
+        monkeypatch.setattr(_maf, "_reachable_middleware", lambda: object())
+
+        class _Context:
+            metadata: dict[str, object] = {}
+
+        with caplog.at_level(_logging.WARNING, logger=_maf.__name__):
+            assert _spellings_before_rewriting(_Context(), "files") is None
+            assert _spellings_before_rewriting(_Context(), "files") is None
+
+        warnings = [r for r in caplog.records if _ORIGINAL_ARGUMENTS_KEY in r.getMessage()]
+        assert len(warnings) == 1, "once per process, not once per refusal"
+        assert "issues/826" in warnings[0].getMessage()
+
+    def test_no_middleware_reachable_is_not_worth_a_warning(self, monkeypatch, caplog):
+        """A host may wire this middleware and no information-flow middleware at all.
+
+        Then the key is absent because nothing was ever hidden, which is ordinary.
+        """
+        import logging as _logging
+
+        monkeypatch.setattr(_maf, "_warned_about_a_missing_record", False)
+        monkeypatch.setattr(_maf, "_reachable_middleware", lambda: None)
+
+        class _Context:
+            metadata: dict[str, object] = {}
+
+        with caplog.at_level(_logging.WARNING, logger=_maf.__name__):
+            assert _spellings_before_rewriting(_Context(), "files") is None
+
+        assert not [r for r in caplog.records if _ORIGINAL_ARGUMENTS_KEY in r.getMessage()]
 
     def _run_synchronous_body(self, sent: str):
         """One call whose tool body is `def`, not `async def`.

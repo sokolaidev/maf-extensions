@@ -223,6 +223,48 @@ def argument_provenance_middleware() -> Any:
     return _ArgumentProvenance()
 
 
+def _reachable_middleware() -> Any | None:
+    """The host's information-flow middleware, or ``None`` where none is reachable."""
+    try:
+        from agent_framework.security import get_current_middleware
+    except ImportError:  # pragma: no cover - a host without the security module
+        return None
+    return get_current_middleware()
+
+
+#: Where the framework keeps a call's arguments as they arrived, before it expands any
+#: reference into them.  **Not a published contract** — a string literal inside
+#: `LabelTrackingFunctionMiddleware`, and this package accepts every ``agent-framework-core``
+#: 1.x — so a compatible minor may rename it and the exact answer would quietly become the
+#: inference.  Two things watch for that: a divergence alarm in the suite, and
+#: `_warn_once_about_a_missing_record` for a host whose upgrade this suite never saw.
+#: Retiring both needs a provenance API the framework publishes, which is #826.
+_ORIGINAL_ARGUMENTS_KEY = "original_arguments_for_messages"
+
+#: One warning per process, not one per refusal.
+_warned_about_a_missing_record = False
+
+
+def _warn_once_about_a_missing_record(logger: logging.Logger) -> None:
+    """Say that the framework stopped keeping the record, where that is what it must mean.
+
+    Only called with an information-flow middleware reachable, which is the one situation the
+    key cannot legitimately be absent in: that middleware writes it on every call before it
+    expands anything.
+    """
+    global _warned_about_a_missing_record
+    if _warned_about_a_missing_record:
+        return
+    _warned_about_a_missing_record = True
+    logger.warning(
+        "argument_provenance_middleware: this agent-framework-core no longer records %r on a "
+        "call, so which arguments it rewrote is now inferred from the stored payloads instead. "
+        "That answer is conservative and reports a value a caller chose that merely matches "
+        "hidden content. See https://github.com/sokolaidev/maf-extensions/issues/826",
+        _ORIGINAL_ARGUMENTS_KEY,
+    )
+
+
 def _spellings_before_rewriting(context: Any, argument: str) -> list[str] | None:
     """``argument``'s values as the caller spelled them, before the framework rewrote any.
 
@@ -235,7 +277,12 @@ def _spellings_before_rewriting(context: Any, argument: str) -> list[str] | None
     package does not depend on the framework's validation library.
     """
     metadata = cast("Mapping[str, Any]", getattr(context, "metadata", None) or {})
-    original: Any = metadata.get("original_arguments_for_messages")
+    if _ORIGINAL_ARGUMENTS_KEY not in metadata:
+        # Absent with a middleware reachable means the key moved, not that nothing was hidden.
+        if _reachable_middleware() is not None:
+            _warn_once_about_a_missing_record(_DEFAULT_LOGGER)
+        return None
+    original: Any = metadata.get(_ORIGINAL_ARGUMENTS_KEY)
     dump = getattr(original, "model_dump", None)
     if callable(dump):
         original = dump()
@@ -352,11 +399,7 @@ def hidden_content_candidates() -> frozenset[str]:
     A body that asks and answers in the same breath does not need this — it can let
     :func:`positions_holding_hidden_content` take its own.
     """
-    try:
-        from agent_framework.security import get_current_middleware
-    except ImportError:  # pragma: no cover - a host without the security module
-        return frozenset()
-    middleware = get_current_middleware()
+    middleware = _reachable_middleware()
     if middleware is None:
         return frozenset()
     return frozenset(_hidden_payloads(middleware))
