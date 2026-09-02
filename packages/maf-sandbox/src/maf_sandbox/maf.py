@@ -83,6 +83,7 @@ __all__ = [
     "list_no_files",
     "make_caller_context",
     "sandbox_tool_declarations",
+    "argument_provenance_middleware",
     "hidden_content_candidates",
     "sandboxed_tool",
     "values_holding_hidden_content",
@@ -152,6 +153,69 @@ class _SandboxToolCall:
 #: the record is *closed* before the removal runs and asking it for a path then raises: anything
 #: such a task wrote afterwards would sit in the sandbox with nothing left to reclaim it.
 _CALL: ContextVar[_SandboxToolCall | None] = ContextVar("maf_sandbox_call", default=None)
+
+
+#: The framework's record of the call a tool body is running inside, published by
+#: :func:`argument_provenance_middleware` and ``None`` where a host has not wired it.
+#:
+#: A `ContextVar` for the same reason `_CALL` above is one: a task starts from a copy of its
+#: parent's context, so concurrent calls each read their own record rather than whichever
+#: finished last.
+_INVOCATION: ContextVar[Any | None] = ContextVar("maf_sandbox_invocation", default=None)
+
+
+def argument_provenance_middleware() -> Any:
+    """Middleware that lets a tool body see its arguments as the framework first received them.
+
+    A host's information-flow middleware may rewrite an argument before the body runs — a
+    variable reference becomes the content it stands for — and the body is handed the result
+    with no record of the substitution.  Wire this beside it and
+    :func:`values_holding_hidden_content` answers from that record rather than by inference.
+
+    Order does not matter: middleware share one invocation object, so this publishes the same
+    record whichever side of the chain it sits on.
+
+    Returns a middleware instance to add to an agent's ``middleware`` list::
+
+        Agent(..., middleware=[LabelTrackingFunctionMiddleware(), argument_provenance_middleware()])
+    """
+    from agent_framework import FunctionMiddleware
+
+    class _ArgumentProvenance(FunctionMiddleware):  # type: ignore[misc]
+        async def process(self, context: Any, call_next: Any) -> None:
+            token = _INVOCATION.set(context)
+            try:
+                await call_next()
+            finally:
+                _INVOCATION.reset(token)
+
+    return _ArgumentProvenance()
+
+
+def _values_before_rewriting(context: Any) -> frozenset[str] | None:
+    """Every string the arguments held before the framework rewrote any of them, or ``None``.
+
+    ``None`` where the record is absent — no information-flow middleware ran, so nothing was
+    rewritten and there is nothing to be exact about.
+    """
+    metadata = cast("Mapping[str, Any]", getattr(context, "metadata", None) or {})
+    original: Any = metadata.get("original_arguments_for_messages")
+    if original is None:
+        return None
+    seen: set[str] = set()
+
+    def walk(value: Any) -> None:
+        if isinstance(value, str):
+            seen.add(value)
+        elif isinstance(value, Mapping):
+            for item in cast("Mapping[str, Any]", value).values():
+                walk(item)
+        elif isinstance(value, (list, tuple)):
+            for item in cast("Sequence[Any]", value):
+                walk(item)
+
+    walk(original)
+    return frozenset(seen)
 
 
 def _awaits(body: object) -> bool:
@@ -296,6 +360,15 @@ def values_holding_hidden_content(
     Take the whole argument list in one call: the answer costs one pass over the variable
     store, and the store's own reads are logged by the framework.
 
+    **Two ways of answering, and the exact one needs wiring.** Where a host has added
+    :func:`argument_provenance_middleware`, this compares the arguments against the record the
+    framework kept of them before rewriting: a value that was not there before is one the
+    rewriting produced.  That answer is exact, it needs no snapshot because the record lives on
+    the call rather than in a slot another call can clear, and it depends on no detail of how a
+    payload is stored or reduced — so ``candidates`` is not consulted when it is available.
+
+    Everything below describes the fallback for a host that has not wired it.
+
     Answers an empty set where no middleware is reachable, which is two different situations
     it cannot tell apart.  Either the host runs none — then nothing was ever hidden and the
     shape bound is all that is needed — or a **synchronous** tool body has been dispatched to
@@ -304,6 +377,14 @@ def values_holding_hidden_content(
     """
     if not values:
         return frozenset()
+    invocation = _INVOCATION.get()
+    if invocation is not None:
+        before = _values_before_rewriting(invocation)
+        if before is not None:
+            # Exact: a value the arguments did not hold before the framework rewrote them is one
+            # the rewriting produced. Nothing is inferred from the payloads, so no shape of one
+            # can be missed here and no snapshot is needed.
+            return frozenset(value for value in values if value not in before)
     payloads = hidden_content_candidates() if candidates is None else candidates
     return frozenset(value for payload in payloads for value in values if payload in value)
 
