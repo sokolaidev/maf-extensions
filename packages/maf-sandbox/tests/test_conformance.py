@@ -818,9 +818,8 @@ class TestExecConformance:
         """Setting the flag over any of the guest's words is the worse failure.
 
         A caller reading `producer_owns_stderr` treats that field as the producer's, so a kind
-        withholding guest text surfaces the guest's own words whole. `mislabelled` leaves the
-        program's stderr there and `echoing` copies its stdout there instead — the second is
-        the one a probe checking only the stderr marker lets through.
+        withholding guest text surfaces the guest's own words whole. Either marker there
+        breaks it: `mislabelled` leaves the program's stderr, `echoing` copies its stdout.
         """
         failures = _sim_results(_sim_subject(streams=streams), run_exec_probes)
         assert failures["streams-stay-separate"] is not None

@@ -1106,11 +1106,10 @@ async def _probe_the_streams_stay_separate(
     if result.exit_code != 0:
         raise AssertionError(f"the stream probe exited {result.exit_code}")
     if result.producer_owns_stderr:
-        # A declared ownership is conformant, and owes the other half of what it promises:
-        # `stderr` holds none of the program's words — either marker there breaks it, not only
-        # the one the program wrote to that stream — and what the result does carry of them is
-        # therefore on `stdout`. This probe's own output is small, so nothing here may be
-        # dropped for its size; a producer that carries less says so elsewhere.
+        # A declared ownership owes the other half of what it promises: `stderr` holds
+        # none of the program's words, either marker being one of them, and the stderr the
+        # producer displaced is on `stdout` rather than discarded. Volume is not promised,
+        # but this probe's output is two short markers, so nothing here is near any cap.
         if _ON_STDOUT not in result.stdout or _ON_STDERR not in result.stdout:
             raise AssertionError(
                 f"producer_owns_stderr is set but stdout came back as {result.stdout!r} — with "

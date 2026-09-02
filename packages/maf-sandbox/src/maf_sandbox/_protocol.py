@@ -674,16 +674,16 @@ class ExecResult:
     :func:`~maf_sandbox.conformance.assert_exec_conformance` holds a backend to both halves.
 
     **``producer_owns_stderr`` says that** ``stderr`` **is not the program's** — whoever built
-    this result is speaking there, and none of the guest's words are.  A producer sets it
-    whether it merged the two streams into ``stdout`` or never had the program's stderr at
-    all; what the field claims is the ownership, not how the field came to be free.
+    this result is speaking there, and none of the guest's words are.  Taking the field does
+    not license discarding what it displaced: the program's own standard error goes to
+    ``stdout``, interleaved with its standard output, because a caller then has no other way
+    to learn the program wrote there at all.
 
-    **It is not a completeness claim about** ``stdout``.  A producer may carry less of the
-    program's output than the program wrote and say so in that note — the host-tool transport
-    does exactly this over ``output_limit``, returning an empty ``stdout`` beside a note that
-    the output was dropped — and a caller reading completeness into the flag would report that
-    run as a program that printed nothing.  What holds is the direction: none of the program's
-    words are on ``stderr``, so whatever of them this result carries is on ``stdout``.
+    **Routing is promised; volume is not.**  A producer may carry less of ``stdout`` than the
+    program wrote, and says so in that note — the host-tool transport does exactly this over
+    ``output_limit``, returning an empty ``stdout`` beside a note that the output was dropped.
+    A caller reading completeness into the flag would report that run as a program that
+    printed nothing, which is the one thing the note exists to prevent.
 
     :func:`~maf_sandbox.host_tool_calls_over_exec` sets it on every result it returns, because
     its launcher redirects the guest's stderr into the output file it reads back and its own
