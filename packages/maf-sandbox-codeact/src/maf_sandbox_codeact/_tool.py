@@ -52,6 +52,7 @@ from maf_sandbox import (
     SandboxSpec,
     TransferLimits,
     collect_outputs,
+    echoed_name,
     error_detail,
     guest_run_layout,
     host_tool_calls_over_exec,
@@ -91,6 +92,10 @@ _PROGRAM_FILENAME = "program.py"
 #: program computes and no part of this kind resolves a module or installs a package. An answer
 #: rather than an omission; :func:`codeact_sandbox_spec` has why it is fixed here.
 _KIND_EGRESS: tuple[str, ...] = ()
+
+#: The argument a ``DECLARED``-mode caller names its files in, which is what a refusal about
+#: one of them points at.
+_OUTPUTS_ARGUMENT = "outputs"
 
 #: Where a ``MANIFEST``-mode program says what it produced.
 _MANIFEST_FILENAME = "outputs.json"
@@ -926,6 +931,7 @@ async def _execute(
             reserved=reserved,
             guest_prefix=guest_prefix,
             normalization=_normalization(session),
+            named_by=_OUTPUTS_ARGUMENT,
         )
         if isinstance(checked, str):
             return checked
@@ -1114,24 +1120,26 @@ async def _resolve_listed_files(
         return listing
     known = set(listing)
     resolved: list[str] = []
-    for name in files:
+    for position, name in enumerate(files):
+        at = f"files[{position}]"
+        named = echoed_name(name, at=at)
         try:
-            validate_artifact_name(name)
+            validate_artifact_name(name, at=at)
         except SandboxArtifactNameInvalid as exc:
             # The validator's own sentence, which names the rule that was broken: a fixed
             # message listing two of its rules tells a caller refused for a backslash or a
             # control character that its name satisfies everything the tool asked for. The
             # listing is still not echoed — that would invite a retry with another spelling.
-            return f"Error: {name!r} cannot be shared — {exc}"
+            return f"Error: {named} cannot be shared — {exc}"
         if name in reserved:
-            return f"Error: {name!r} cannot be shared — {reserved[name]}."
-        refusal = _inside_a_reserved_file(name, reserved, action="shared")
+            return f"Error: {named} cannot be shared — {reserved[name]}."
+        refusal = _inside_a_reserved_file(name, reserved, action="shared", at=at)
         if refusal is not None:
             return refusal
         if name in resolved:
             # One read and one write per name. Repeating one buys the caller nothing and
             # multiplies both, which is the cheapest way to amplify against the byte ceilings.
-            return f"Error: {name!r} was listed twice."
+            return f"Error: {named} was listed twice."
         if name not in known:
             logger.warning(
                 "execute_code: %r is not in this tool's file store listing (%d file(s) visible) "
@@ -1140,7 +1148,7 @@ async def _resolve_listed_files(
                 len(listing),
             )
             return (
-                f"Error: {name!r} is not in this tool's file listing, so it was not shared. "
+                f"Error: {named} is not in this tool's file listing, so it was not shared. "
                 f"{_listing_hint(name, listing, withhold=withhold)}"
             )
         resolved.append(name)
@@ -1206,7 +1214,9 @@ async def _read_listed_files(
     return read
 
 
-def _inside_a_reserved_file(name: str, reserved: Mapping[str, str], *, action: str) -> str | None:
+def _inside_a_reserved_file(
+    name: str, reserved: Mapping[str, str], *, action: str, at: str
+) -> str | None:
     """Refuse a name that would have to live inside a reserved file, naming which one.
 
     Every shipped backend creates parent directories for a nested write, so
@@ -1220,8 +1230,8 @@ def _inside_a_reserved_file(name: str, reserved: Mapping[str, str], *, action: s
     if above is None:
         return None
     return (
-        f"Error: {name!r} cannot be {action} — {above!r} is a file name this tool reserves in "
-        f"every run's directory, so nothing can live inside it."
+        f"Error: {echoed_name(name, at=at)} cannot be {action} — {above!r} is a file name this "
+        f"tool reserves in every run's directory, so nothing can live inside it."
     )
 
 
@@ -1319,6 +1329,7 @@ def _validated_output_names(
     reserved: Mapping[str, str],
     guest_prefix: str,
     normalization: NameNormalization,
+    named_by: str,
 ) -> list[str] | str:
     """Settle every output name before the program runs, or answer with the refusal.
 
@@ -1326,6 +1337,9 @@ def _validated_output_names(
     with its run prefix, and the delivered name after normalization — so that a refusal cannot
     arrive a whole run late.  That function stays the authority: if the two disagree, this one
     is wrong, and the cost is the late refusal rather than a name reaching a host.
+
+    ``named_by`` says where the names came from — the ``outputs`` argument or the manifest —
+    so a refusal can point at the one it means without quoting a value it should not.
     """
     if len(names) > max_files:
         return (
@@ -1333,8 +1347,10 @@ def _validated_output_names(
             f"{max_files} per call."
         )
     prefix = f"{guest_prefix}/"
-    seen: dict[str, str] = {}
-    for name in names:
+    seen: dict[str, tuple[str, str]] = {}
+    for position, name in enumerate(names):
+        at = f"{named_by}[{position}]"
+        named = echoed_name(name, at=at)
         # NFC is not length-non-increasing — 43 × U+0958 is 129 bytes declared and 258
         # delivered — so the name to hold to the invariant is the one the sink will receive.
         delivered = (
@@ -1342,25 +1358,25 @@ def _validated_output_names(
         )
         for spelling in (name, delivered, prefix + name):
             try:
-                validate_artifact_name(spelling)
+                validate_artifact_name(spelling, at=at)
             except SandboxArtifactNameInvalid as exc:
-                return f"Error: {name!r} cannot be saved — {exc}"
+                return f"Error: {named} cannot be saved — {exc}"
         if name in reserved:
-            return f"Error: {name!r} cannot be saved — {reserved[name]}."
-        refusal = _inside_a_reserved_file(name, reserved, action="saved")
+            return f"Error: {named} cannot be saved — {reserved[name]}."
+        refusal = _inside_a_reserved_file(name, reserved, action="saved", at=at)
         if refusal is not None:
             return refusal
         # `collect_outputs`' own key: NFC and case-folded, always, whatever the sink does
         # about rewriting.
         key = unicodedata.normalize("NFC", name).lower()
         if key in seen:
-            earlier = seen[key]
+            earlier, earlier_named = seen[key]
             return (
-                f"Error: {name!r} and {earlier!r} are one file once saved"
+                f"Error: {named} and {earlier_named} are one file once saved"
                 if earlier != name
-                else f"Error: {name!r} was declared twice."
+                else f"Error: {named} was declared twice."
             )
-        seen[key] = name
+        seen[key] = (name, named)
     return list(names)
 
 
@@ -1404,6 +1420,7 @@ async def _collect(
             reserved=reserved,
             guest_prefix=guest_prefix,
             normalization=_normalization(session),
+            named_by=_MANIFEST_FILENAME,
         )
         if isinstance(checked, str):
             return checked

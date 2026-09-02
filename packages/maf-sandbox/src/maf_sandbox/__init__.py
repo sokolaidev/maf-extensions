@@ -152,6 +152,7 @@ from ._reclaim import (
     ReclaimConfig,
     ReclaimFailure,
 )
+from ._refusals import MAX_ECHOED_NAME_CHARACTERS, echoed_name
 from ._router import (
     NoSandboxBackend,
     SandboxBackendNotPermitted,
@@ -179,6 +180,7 @@ __all__ = [
     "INTEGRITY_RANK",
     "ISOLATION_RANK",
     "MAX_ARTIFACT_NAME_BYTES",
+    "MAX_ECHOED_NAME_CHARACTERS",
     "SHIM_MODULE",
     "WORK_DIRECTORY",
     "Artifact",
@@ -252,6 +254,7 @@ __all__ = [
     "declaration_of",
     "fold_disposal_failures",
     "host_tool_calls_over_exec",
+    "echoed_name",
     "error_detail",
     "fold_host_tool_call_transfer_limits",
     "guest_run_layout",

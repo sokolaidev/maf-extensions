@@ -2429,6 +2429,7 @@ _PROTOCOL_MODULES = frozenset(
         "_protocol",
         "_purger",
         "_reclaim",
+        "_refusals",
         "_router",
         "_shim",
         "_shim_wire_contract",
