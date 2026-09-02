@@ -2144,8 +2144,7 @@ class TestValuesHoldingHiddenContent:
 
     def _hidden(self, spelling: str, *, values: list[str] | None = None, stored: str | None = None):
         """Run one call whose `files` argument is `spelling`, and answer what the body saw."""
-        from agent_framework import FunctionTool
-        from agent_framework._middleware import FunctionInvocationContext
+        from agent_framework import FunctionInvocationContext, FunctionTool
         from agent_framework.security import (
             ContentLabel,
             IntegrityLabel,
