@@ -551,18 +551,13 @@ def _items(tool, code: str, **kw):
 
 
 def _route(tool, code: str, **kw) -> str:
-    """The standing sentence off the item a withholding tool closes every answer with."""
+    """The standing sentence, off the last item a withholding tool closes its answer with."""
     answer = _items(tool, code, **kw)
     return "" if isinstance(answer, str) else str(answer[-1].text)
 
 
 def _run(tool, code: str, **kw) -> str:
-    """The run's own half of the answer, which is the whole of it unless the host withholds.
-
-    A withholding tool answers with items: the run's text carrying no label, beside the
-    standing route sentence labelled trusted. Returning the first keeps every test about what
-    a run *reported* reading the same in both modes.
-    """
+    """The call-derived half of the answer, which is the whole of it unless the host withholds."""
     answer = _items(tool, code, **kw)
     return answer if isinstance(answer, str) else str(answer[0].text)
 
@@ -936,8 +931,8 @@ class TestWithheldResultFormat:
         assert "exit code: 1" in self._out(ExecResult(stdout="", stderr="boom\n", exit_code=1))
 
     def test_every_result_names_the_route_that_still_carries_content(self):
-        """An exit code on its own leaves a model nothing it can act on — and the sentence
-        is an item of its own, so a framework hiding the run's half leaves this one readable."""
+        """An exit code on its own leaves a model nothing it can act on — and the sentence is
+        an item of its own, so hiding the call-derived half leaves this one readable."""
         out = self._out(ExecResult(stdout="", stderr="boom\n", exit_code=1))
         assert "declared output" not in out, "the report still splices the route in"
         route = self._route_out(ExecResult(stdout="", stderr="boom", exit_code=1))
@@ -3240,15 +3235,15 @@ class TestAWithheldTimeoutQuotesNothing:
 
 
 # ---------------------------------------------------------------------------
-# The withheld result splits: the route is trusted, the run's half carries no label
+# The withheld result splits: the route is trusted, the call-derived half carries no label
 # ---------------------------------------------------------------------------
 
 
 class TestAWithheldResultSplits:
-    """A withholding tool answers with items, so hiding reaches the run's half and not the route.
+    """A withholding tool answers with items, so hiding can reach one and not the other.
 
-    The whole point is what a FIDES host sees: an untrusted result is replaced by a variable
-    reference, which under one label took the recovery sentence with it.
+    An untrusted item is replaced by a variable reference, which under one label took the
+    recovery sentence with it.
     """
 
     def _label(self, item) -> dict[str, Any] | None:
@@ -3267,7 +3262,7 @@ class TestAWithheldResultSplits:
 
         assert self._label(answer[-1]) == {"integrity": "trusted", "confidentiality": "public"}
 
-    def test_the_runs_half_carries_no_label_of_its_own(self):
+    def test_the_call_derived_half_carries_no_label_of_its_own(self):
         """That is what keeps the call's confidentiality: a labelled item would replace it with
         this package's, and confidentiality values are the host's."""
         answer = _items(_withholding_tool(_ScriptedSandbox(ExecResult(stdout="42"))), "print(1)")
@@ -3297,14 +3292,18 @@ class TestAWithheldResultSplits:
         assert str(answer[-1].text) == _WITHHELD_ROUTE
 
 
-class TestWhatAFidesHostSeesOfAWithheldRun:
+class TestWhatAFidesHostSeesOfAWithheldResult:
     """Driven against the real middleware, because the value of the split is entirely its."""
 
-    def _processed(self, tool, **kw):
+    def _processed(self, tool, *, host_default=None, **kw):
         from agent_framework import FunctionInvocationContext
         from agent_framework.security import LabelTrackingFunctionMiddleware
 
-        middleware = LabelTrackingFunctionMiddleware()
+        middleware = (
+            LabelTrackingFunctionMiddleware()
+            if host_default is None
+            else LabelTrackingFunctionMiddleware(default_integrity=host_default)
+        )
         arguments = {"code": "print(1)", **kw}
         context = FunctionInvocationContext(function=tool, arguments=arguments)
 
@@ -3318,11 +3317,24 @@ class TestWhatAFidesHostSeesOfAWithheldRun:
         ]
         return seen, context.metadata["result_label"], middleware.get_context_label()
 
-    def test_the_route_stays_readable_while_the_run_is_hidden(self):
+    def test_the_route_stays_readable_while_the_rest_is_hidden(self):
         tool = _withholding_tool(_ScriptedSandbox(ExecResult(stdout="42")))
 
         seen, _, _ = self._processed(tool, files=[], outputs=[])
         assert seen == ["hidden", _WITHHELD_ROUTE]
+
+    def test_hiding_follows_the_call_label_rather_than_the_split(self):
+        """The unlabelled half takes the call's label, and a host owns `default_integrity` —
+        so a host that raised it gets a trusted call and nothing is hidden at all."""
+        from agent_framework.security import IntegrityLabel
+
+        tool = _withholding_tool(_ScriptedSandbox(ExecResult(stdout="42")))
+
+        seen, result, _ = self._processed(
+            tool, host_default=IntegrityLabel.TRUSTED, files=[], outputs=[]
+        )
+        assert "hidden" not in seen, seen
+        assert str(result.integrity) == "trusted"
 
     def test_the_conversation_stays_trusted(self):
         """Only visible items taint, and the visible one is a constant this package ships."""

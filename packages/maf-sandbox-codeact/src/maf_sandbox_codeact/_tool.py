@@ -138,15 +138,11 @@ _NO_OUTPUT = (
     "program with print(...) of what you need to see."
 )
 
-#: Its own item on every result a withholding host returns, labelled trusted, so a framework
-#: that hides the run's half leaves this one readable. A sentence rather than a silence, because
-#: the exit code alone leaves a model nothing to act on; it names the route without promising a
-#: reader, which is the host's wiring rather than this kind's to claim.
-#:
-#: **The label holds only while this stays true of the tool rather than of a call.** Nothing a
-#: run produced may reach it — not a count, not a status, not a bit that is only sometimes
-#: there — and it is emitted on every return path, refusals included, which is why it is
-#: attached at the one funnel rather than at each `return`.
+#: Closes every result a withholding host returns, as an item of its own labelled trusted. A
+#: sentence rather than a silence, because the exit code alone leaves a model nothing to act on;
+#: it names the route without promising a reader, which is the host's wiring rather than this
+#: kind's to claim. The label holds only while nothing a call produced reaches it and it stays
+#: on every return path, refusals included.
 _WITHHELD_ROUTE = (
     "What the program printed is not read back as text. To surface a value, write it into a "
     "declared output rather than printing it."
@@ -287,14 +283,15 @@ def make_codeact_tools(
             ``note:``, since withholding it would report a dropped output as a program that
             printed nothing.
 
-            **The result is two items, not one string.**  The run's half — the exit code, the
-            sizes, the landed names — carries no label of its own, so it takes whatever the
-            call's is; beside it sits the standing sentence naming the recovery route, labelled
-            ``trusted``, because nothing a run produced reaches it and it is emitted on every
-            return path including the refusals.  A framework that hides untrusted content
-            therefore hides the first and leaves the second readable, which is the point: under
-            one label the sentence went with the numbers it was there to explain.  A host
-            wiring no information-flow middleware simply reads both.
+            **The result is two items, not one string.**  The call-derived half — the exit
+            code, the sizes, the landed names — carries no label of its own, so it takes
+            whatever the call's is; beside it sits the standing sentence naming the recovery
+            route, labelled ``trusted``, because nothing a call produced reaches it and it is
+            emitted on every return path including the refusals.  **Where that call resolves
+            untrusted** — the default, but ``default_integrity`` is the host's to move — a
+            framework hiding untrusted content hides the first and leaves the second readable,
+            which is the point: under one label the sentence went with the numbers it was there
+            to explain.
 
             **What withholding gets you, exactly.** The prose and the shape are this package's,
             and the artifact names are the model's own — but what fills them is the program's
@@ -870,10 +867,8 @@ def _execute_code_tool(
         )
         if not withhold:
             return answer
-        # Here rather than at each `return` inside `_execute`: the label is honest only where
-        # the sentence is on *every* path, refusals included, and one funnel is what makes that
-        # true by construction. The run's own half carries no label, which is how it keeps
-        # whatever confidentiality the call was going to have.
+        # At the funnel rather than at each `return` inside `_execute`: the trusted label is
+        # honest only where the sentence is on every path, refusals included.
         return [
             Content.from_text(answer),
             labelled_result_item(_WITHHELD_ROUTE, SourceIntegrity.TRUSTED),

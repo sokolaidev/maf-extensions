@@ -134,13 +134,7 @@ def _items_in_a_container(
 
 
 def _run_in_a_container(code: str, **kw: Any) -> str:
-    """The run's own half of the answer, which is the whole of it unless the host withholds.
-
-    A withholding tool answers with items: the run's text carrying no label, beside the
-    standing route sentence labelled trusted. Returning the first keeps every test about what
-    a run *reported* reading the same in both modes, exactly as the offline suite's `_run`
-    does — `_items_in_a_container` is for the tests about the split itself.
-    """
+    """The call-derived half of the answer, which is the whole of it unless the host withholds."""
     answer = _items_in_a_container(code, **kw)
     return answer if isinstance(answer, str) else str(answer[0].text)
 
@@ -405,7 +399,7 @@ class TestWithheldOutputAgainstARealInterpreter:
         assert sink.contents["why.txt"] == b"ValueError: bad row 7"
         assert self._SECRET not in answer, answer
 
-    def test_the_route_is_its_own_trusted_item_against_a_real_run(self):
+    def test_the_route_is_its_own_trusted_item_against_a_real_container(self):
         """The split, end to end: a real container, a real exit code, and the one item a
         framework hiding untrusted content would leave the model."""
         answer = _items_in_a_container(
@@ -419,7 +413,7 @@ class TestWithheldOutputAgainstARealInterpreter:
         assert len(answer) == 2, answer
         assert "exit code: 1" in str(answer[0].text)
         assert (answer[0].additional_properties or {}).get("security_label") is None, (
-            "the run's half must stay unlabelled, or it replaces the call's confidentiality"
+            "the call-derived half must stay unlabelled, or it replaces the call's confidentiality"
         )
         assert (answer[1].additional_properties or {}).get("security_label") == {
             "integrity": "trusted",
