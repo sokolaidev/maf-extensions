@@ -2891,8 +2891,7 @@ class TestPositionsHoldingHiddenContent:
         """`json.loads` raises `RecursionError`, which is not a `ValueError`.
 
         The framework parses only the payload it is expanding; this walks the store whole, so a
-        payload nothing referenced still reaches it. Unhandled, one of them would end every
-        later call for that middleware rather than only the call that named it.
+        payload nothing referenced still reaches it.
         """
         deep = '{"a":' + "[" * 3200 + "]" * 3200 + "}"
         seen = self._hidden("main.bicep", stored=deep)  # nothing references it
