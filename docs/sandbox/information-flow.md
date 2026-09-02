@@ -1,0 +1,113 @@
+# Information flow
+
+> What a kind is allowed to claim about the result it hands back, and why the claim is not about who wrote the bytes. The framework's vocabulary, the one rule that decides every declaration, what its input-label join does not establish, and the rules a kind is held to. The decision is recorded in [#774](https://github.com/sokolaidev/maf-extensions/issues/774); [`hosts.md`](hosts.md) owns the sink and identity legs of the same seam.
+
+A tool result is persisted into a conversation and read back by the model on every later turn. If it carries text an attacker shaped, the conversation now contains an instruction the model may follow — and the framework's information-flow module exists to notice that and stop it. A sandbox is what makes the work safe to *run*; this document is about what is safe to *say* about the answer.
+
+## What the framework tracks
+
+MAF's information-flow module (`agent_framework.security`, FIDES) attaches a label to every tool result and carries a running label for the conversation. A label has two independent axes:
+
+- **Integrity** — `trusted` or `untrusted`. Where the content came from, not whether it is correct. Standing guidance a package emits is trusted even when it is wrong; a compiler's diagnostic is untrusted when the template it describes was model-authored, however accurate it is. The axis exists to say whether content could carry an instruction an attacker chose, so provenance is the test and truthfulness is not.
+- **Confidentiality** — `public`, `private`, `user_identity`, ordered. How far the content may travel. This suite never orders or folds confidentiality values; they are the host's own vocabulary, carried verbatim ([`hosts.md`](hosts.md)).
+
+Labels combine by most restrictive: one untrusted input makes the combination untrusted. Integrity is a ratchet — once untrusted content becomes visible in a conversation, the conversation stays untrusted, and the policy middleware then refuses every later tool that has not opted in to running in one.
+
+**A word this repository does not use for an integrity value: *tier*.** It already means the grounding level here — `T0` is the model checking its own work, `T2` is compiler truth — and it separately means FIDES's label-propagation priority, below. An integrity value is a **label**, or a **level** where "label" would collide with the framework's `ContentLabel` object. Confidentiality is the exception the rename leaves alone: where a document says "a host's confidentiality tiers" it is describing the *host's* own vocabulary, which this suite carries verbatim and never orders.
+
+## Where a label comes from
+
+FIDES resolves a result's label by a strict three-tier priority, and *tier* is its word for that priority rather than for any value:
+
+| | Source | Used when |
+|---|---|---|
+| Tier 1 | per-item `security_label` on each returned item — the whole label, **both axes** | always wins if present |
+| Tier 2 | the tool's `source_integrity` declaration | no per-item labels |
+| Tier 3 | the join of the call's input argument labels — its **integrity** only; confidentiality comes from the tool, never from the join | neither of the above |
+
+With none of the three, the result is untrusted. That is the fail-safe direction and it is the default this suite relies on.
+
+**Tier 2 replaces tier 3; it does not floor it.** A tool that declares `source_integrity` instructs the middleware to disregard what it knows about that call's inputs. This is the single fact every declaration in this suite turns on, and it is why the question a kind has to answer is mechanical rather than a matter of judgement.
+
+## The rule
+
+**A kind may declare `trusted` only where its result does not derive from input the framework has not established as trusted.**
+
+Authorship is not the test. That a package formatted the string, or that a first-party compiler emitted it, says nothing about the trust of what it was formatted *from*: a compiler is deterministic about a template the model wrote, and its diagnostics quote that template's identifiers back verbatim. Freedom from influence is not the test either, at least not as a separate one — it is what derivation measures.
+
+Three questions settle a **`trusted`** claim. When an `untrusted` declaration has to be explicit rather than left to the join is decided separately, below:
+
+1. What are the result's actual sources — every channel that reaches it, not only the arguments: the file store it reads, an allowlisted host the program may fetch from, a host-tool registry it may call back through.
+2. Is each of those established at least as trusted as what this tool is about to declare?
+3. What of them survives into the result — as text, as a number, as the presence of a line?
+
+**The join is a lower bound on the first question, never the answer to it.** Where it says something weaker than the declaration, the declaration is suppressing what the framework knows. Where it says nothing, the framework knows nothing — and a source it never observed is still a source. So a trusted labelled argument does not license the declaration on its own: it settles one channel and is silent about the rest.
+
+A **`trusted`** declaration is honest only where every surviving source clears question 2, or question 3 answers *nothing*. Read "clears" strictly: a source is cleared by being established **as trusted**, and a source established as *untrusted* is the opposite of cleared — the registry fold answers either way, so establishment on its own settles nothing. Of the sources in *What the input-label join does not establish* below, the file store and an allowlisted host establish nothing at all in either direction. A host-tool registry is the exception: its fold does establish the integrity of the tools registered in it, and a kind that serves them can read it — but it settles that source and no other, so a registry folding to `trusted` clears one source while the store behind the same call stays unestablished. Neither shipped kind clears *every* surviving source, which is why both declare nothing.
+
+**Declaring nothing is a supported answer and usually the right one.** It is not an omission to be filled in later; it hands the question to the input-label join, which is where a workload running model-authored code belongs. Note what that does and does not promise: the join propagates whatever labels the arguments carry, so a call with a trusted labelled argument yields a *trusted* result. It falls back to untrusted only when the join finds no labels at all — which is what happens to every kind here, because every value they take is a plain unlabelled string, and is a property of their signatures rather than a guarantee of the rule.
+
+**So declaring nothing is not universally safe, and there is a case where it launders exactly as a false `trusted` would.** A kind whose visible arguments all carry trusted labels, while an unestablished source still reaches its result out of band, gets a *trusted* result out of tier 3 — with no declaration written anywhere, and the rule on line 34 broken all the same. Where an unestablished source may survive into the result and the join is not guaranteed to resolve untrusted, a kind declares `untrusted` **explicitly**, or labels the affected items untrusted per item. Delegating to the join is an answer only when the join cannot answer trusted.
+
+## What an untrusted result actually costs
+
+Less than it appears, and the difference decides whether a kind can afford to be honest.
+
+FIDES hides an untrusted result by default: the item is replaced by a variable reference the model can pass to another tool without reading, and **hidden content does not taint the conversation's integrity** — only what stays visible does. Its *confidentiality* still counts: the framework folds a hidden item's confidentiality into the conversation, so a hidden item labelled above a sink's cap can still close that sink. Nothing in this suite writes a result-side confidentiality today, which is the only reason the two halves come apart cleanly; a per-item label carries one, so this stops being academic under [#803](https://github.com/sokolaidev/maf-extensions/issues/803). From a clean conversation, then, an honest untrusted declaration keeps the conversation's integrity clean and costs the model its sight of the result.
+
+**Hiding is a first-taint protection, not a redaction.** It applies only where all of four conditions hold: `auto_hide_untrusted` is on, the item is untrusted, the tool is not `inspect_variable`, and **the conversation is still trusted**. The last is the one that decides how far the paragraph above reaches. Once anything has tainted the conversation, hiding stops: a later untrusted result is visible, and the model reads it. So the trade holds while the conversation is clean and lapses when it is not, and a host that admits this workload into an already-untrusted context gets neither half of it — not the hidden result, and not the clean conversation it was protecting.
+
+Where a host has turned hiding off, the untrusted result is visible from the first call, the conversation goes untrusted, and the policy middleware refuses subsequent tools that have not opted in. Both behaviours are the framework's, measured against `agent-framework-core` 1.13.0 and 1.16.0 — the floor this suite declares and the newest published at the time of measuring — whose `agent_framework/security.py` are byte-identical to each other. The declared range `>=1.13.0,<2` admits any later 1.x, which no measurement here covers. The reproducer is in [#774](https://github.com/sokolaidev/maf-extensions/issues/774).
+
+That trade — a clean conversation against a blind model — is the whole difficulty. Splitting the result narrows it rather than dissolving it: it rescues whatever a kind can say without reference to the call, and leaves everything derived from the guest program on the wrong side of it. For a kind whose product *is* the derived half, `bicep_validate` above all, the trade is unchanged for the part the caller wanted, and a host that needs the model to read it is choosing taint.
+
+## One result, two labels
+
+A result is not uniformly derived. `execute_code` withholding its streams returns an exit status the guest chose beside a fixed sentence naming the recovery route; `bicep_validate` returns the compiler's diagnostics, and the same shape would put standing guidance beside them. Collapsing those into one label forces a kind to be either dishonest about the derived half or useless about the half that derives from nothing.
+
+So a kind returns **items, each carrying its own label**, and the rule above is applied to each item separately.
+
+**An item may be labelled trusted only where its value *and its presence* are both independent of every source not established as trusted** — the same test as the rule above, applied per item rather than per result. A source the framework established as *untrusted* counts against the item exactly as an unestablished one does; what licenses the label is establishment **as trusted**, never establishment as such. "Guest-controlled" would be too narrow: a value the store decided, with no guest program involved at all, is unestablished just the same. Authorship does not qualify it — that test is rejected above and it is no more valid per item than it was per result. A diagnostic count, an exit status, a stream size and a presence bit all derive from something unestablished, and moving one into an item of its own changes the granularity rather than the derivation. Presence is the half that is easy to miss: a line emitted only when the program failed carries one bit of unestablished information whatever its text says, so a constant sentence qualifies only when it is emitted unconditionally — on **every** return path, refusals and error surfaces included, and true on all of them. No sentence any shipped kind renders meets that today.
+
+What survives as trusted is therefore narrow — standing guidance the kind emits on every return path, saying nothing about this call. That is less than it sounds like it should be, and it is not the whole of what [#769](https://github.com/sokolaidev/maf-extensions/issues/769) measured: that issue's failing program left the model an exit code and nothing else, and what it asked for was the exit code, the stream sizes, the landed-output list **and** a sentence naming the route. Standing guidance is the only one of the four this rule lets a kind keep visible, so the split preserves the recovery route and not the diagnosis. Everything computed from the call is labelled untrusted beside it, and hidden while the conversation is still trusted — the label is the kind's claim, the hiding is the framework's response to it, and only the first is unconditional.
+
+This is tier 1, and it is what a kind reaches for whenever its result mixes the two.
+
+**A per-item label carries confidentiality as well, and omitting it declassifies.** Tier 1 replaces the whole `ContentLabel`, not its integrity alone, and `ContentLabel` defaults confidentiality to `public` — so an item labelled for derivation and nothing else arrives *public* whatever the call would otherwise have been. Measured on 1.13.0 and 1.16.0: a tool declaring `confidentiality: private` produces a `private` result with no per-item label and a `public` one as soon as an item carries an integrity-only label, with the conversation following it down. The integrity reasoning in this document is therefore only half of what a per-item label has to get right.
+
+**Where the other half's value comes from is not settled, and it is [#803](https://github.com/sokolaidev/maf-extensions/issues/803)'s to settle.** This suite has no confidentiality vocabulary of its own: the values are the host's, carried verbatim and never ordered or folded ([`hosts.md`](hosts.md)), so a kind cannot invent one and must be handed the label it is to preserve. Until that mechanism says where the value comes from, a kind splitting its result would have to choose between labelling for derivation and keeping the host's classification — which is not a choice this rule is willing to hand anyone.
+
+## What the input-label join does not establish
+
+The rule above is what a kind is held to. These are the reasons it cannot be checked automatically, and a kind writer has to know both.
+
+**Two different things keep the join uninformed, and only one is invisibility.** `execute_code` takes its model-authored program *directly*, as `code: str` on every variant; `bicep_validate` and codeact's `files=` take store-relative names. The join sees all of those — they are arguments — and finds nothing to label, because a plain string carries none. Separately, the *content* behind a name is read from the agent's file store inside the tool body, which the join never sees at all. Visible-but-unlabelled and out-of-band are different failures with the same outcome here, and a kind writer needs both: the first is fixed by labelling arguments, the second cannot be. In either case it collects nothing, and the framework takes its separate no-labels branch straight to the untrusted default — reached because nothing was inspected rather than because anything was traced. Note which way that branch points: joining an empty set of labels would return *trusted*, so the fail-safe here is the branch, not the join. A kind therefore labels what it emits from what it knows about its own construction, not from what the framework traced for it. Tracked in [#802](https://github.com/sokolaidev/maf-extensions/issues/802).
+
+**Egress and host tools widen the derivation without widening the signature.** A program that may reach an allowlisted host, or call back through a host-tool registry, derives from whatever those returned. The registry's own folded integrity is available as `HostToolAggregate.result_integrity` — the weakest level over the registered sources, with an unstamped tool failing safe to untrusted ([`hosts.md`](hosts.md)) — and a kind that serves host tools reads it rather than assuming its own construction still describes the result.
+
+## What the shipped kinds declare
+
+| Kind | Declares | Because |
+|---|---|---|
+| [`bicep`](kinds/bicep.md) | nothing | the diagnostics quote model-authored Bicep, and the file name in every location is a string the model chose |
+| [`codeact`](kinds/codeact.md) | nothing | what comes back is whatever a model-written `print(...)` emitted, and withholding that text does not remove the guest from what remains |
+
+Both reach the untrusted fallback, because their arguments carry no labels for the join to propagate. Under per-item labels both split the same way: standing guidance that says nothing about the call stays visible, and everything derived from it — the diagnostics, the exit status, the counts and sizes — is labelled untrusted, which hides it for as long as the conversation is still trusted.
+
+## Status
+
+| Decision | State | Tracking |
+|---|---|---|
+| Integrity is about derivation: a `trusted` claim requires input the framework has established as trusted, and authorship alone never licenses one | decided, not yet written into the core docstrings | [#774](https://github.com/sokolaidev/maf-extensions/issues/774) (open) |
+| A tier-2 declaration replaces the input-label join rather than flooring it, so declaring is an instruction to disregard the input side | measured against `agent-framework-core` 1.13.0 and 1.16.0, identical on both | [#774](https://github.com/sokolaidev/maf-extensions/issues/774) (open) |
+| Hidden untrusted content does not taint the conversation's *integrity*, though its confidentiality still counts against a sink's cap, so from a still-trusted conversation an honest declaration costs the model's sight of the result. Hiding is conditional on that cleanliness and stops once anything has tainted the conversation | measured against `agent-framework-core` 1.13.0 and 1.16.0, identical on both; several shipped places still say the result taints the conversation, and #806 carries the inventory | [#774](https://github.com/sokolaidev/maf-extensions/issues/774) (open), the shipped corrections [#806](https://github.com/sokolaidev/maf-extensions/issues/806) (open) |
+| An integrity value is a *label* or a *level*, never a *tier*; *tier* is FIDES's propagation priority and this repository's grounding level | shipped | [#799](https://github.com/sokolaidev/maf-extensions/issues/799) (closed) by [#813](https://github.com/sokolaidev/maf-extensions/pull/813) (merged) |
+| `bicep_validate` declares nothing | shipped | [#801](https://github.com/sokolaidev/maf-extensions/issues/801) (closed) by [#814](https://github.com/sokolaidev/maf-extensions/pull/814) (merged) |
+| `execute_code` declares nothing | shipped on the default path | — |
+| `execute_code` declares nothing under `withhold_guest_output=True` either: the exit status, stream sizes and presence bits it answers with are chosen by a model-authored program | shipped | [#807](https://github.com/sokolaidev/maf-extensions/issues/807) (closed) by [#816](https://github.com/sokolaidev/maf-extensions/pull/816) (merged) |
+| A kind returns items each carrying its own label, and an item is trusted only where its value and its presence are both independent of every source not established as trusted | not shipped — a kind body returns `str`, which is one item under one label | [#803](https://github.com/sokolaidev/maf-extensions/issues/803) (open) |
+| A kind cannot see the label of content it reads from the file store, and labels what it emits from its own construction instead | open gap, no mechanism proposed | [#802](https://github.com/sokolaidev/maf-extensions/issues/802) (open) |
+| The rules a kind writer follows, in [`kinds/README.md`](kinds/README.md) § *Writing a kind that declares its information flow* | draft, pending review alongside the two changes above | [#803](https://github.com/sokolaidev/maf-extensions/issues/803) (open) |
+| Post-expansion call arguments are a source a kind cannot vouch for: the framework substitutes hidden content into an argument before the body runs, so a kind that echoes a name back has crossed something it never chose | partly closed — the `trusted` declarations that made an echoed name *visible* went with [#814](https://github.com/sokolaidev/maf-extensions/pull/814) and [#816](https://github.com/sokolaidev/maf-extensions/pull/816), so an echo is now labelled untrusted and hidden from a clean conversation; the echo itself remains | [#810](https://github.com/sokolaidev/maf-extensions/issues/810) (open) |
+| The `render_diagram` sample declares nothing, like the kinds it is the worked example for | not shipped — it takes the `"trusted"` default and argues the authorship case this page rejects | [#811](https://github.com/sokolaidev/maf-extensions/issues/811) (open) |
+| `source_integrity` defaults to `None`, so a kind that says nothing declares nothing | not shipped — `sandbox_tool_declarations` and `sandboxed_tool` both default `"trusted"`, so the compliant answer requires overriding the library | [#812](https://github.com/sokolaidev/maf-extensions/issues/812) (open) |
