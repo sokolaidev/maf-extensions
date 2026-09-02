@@ -2198,6 +2198,15 @@ class TestValuesHoldingHiddenContent:
         seen = self._hidden("[VAR]", values=["main.bicep", "notes.txt"])
         assert seen["hidden"] == frozenset()
 
+    def test_a_payload_that_travelled_through_a_program_is_still_reported(self):
+        """The question is about the value, not about which argument it arrived in.
+
+        A model-authored program is itself a rewritten argument, so a payload can reach the
+        guest, come back as a name the program chose, and still be found here.
+        """
+        seen = self._hidden("main.bicep", values=[f"{self.PAYLOAD}.csv"])
+        assert seen["hidden"] == frozenset({f"{self.PAYLOAD}.csv"})
+
     def test_no_middleware_means_nothing_was_ever_hidden(self):
         """Outside a middleware-wrapped call there is no store, so nothing is reported and the
         shape bound in `echoed_name` is what applies."""

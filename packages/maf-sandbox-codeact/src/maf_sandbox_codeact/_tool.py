@@ -1356,6 +1356,9 @@ def _validated_output_names(
         )
     prefix = f"{guest_prefix}/"
     seen: dict[str, tuple[str, str]] = {}
+    # Asked of manifest names as well as of the model's own `outputs`, and that is not
+    # belt-and-braces: `code` is a rewritten argument too, so a payload can reach the guest
+    # in the program's own source and come back as a name the program chose to write.
     rewritten = values_holding_hidden_content(names)
     for position, name in enumerate(names):
         at = f"{named_by}[{position}]"
