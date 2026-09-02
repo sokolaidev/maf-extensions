@@ -87,10 +87,10 @@ EXECUTE_CODE_TOOL_NAME = "execute_code"
 #: The sandbox kind this workload asks for.
 CODEACT_KIND = "codeact"
 
-#: Where every run's directory is created — a dedicated root rather than the image's own tree.
+#: Where every call's directory is created — a dedicated root rather than the image's own tree.
 _WORK_DIR = "/maf-sandbox/work"
 
-#: One fixed name inside each run's own directory.
+#: One fixed name inside each call's own directory.
 _PROGRAM_FILENAME = "program.py"
 
 #: What this kind needs to reach for ``execute_code`` to work at all — nothing, because the
@@ -922,16 +922,17 @@ async def _execute(
         )
 
     # Chosen here rather than after `acquire`, so that a declared name can be judged against
-    # the guest path it will actually become — the prefix is 13 bytes of the 255 a name gets.
+    # the guest path it will actually become — the prefix is the id core allocates for the
+    # call, derived below rather than counted.
     call_directory = session.guest_call_path()
-    run_id = call_directory.rsplit("/", 1)[-1]
-    # Where the model's own files live, relative to `work_dir`: the run directory itself, or
+    call_id = call_directory.rsplit("/", 1)[-1]
+    # Where the model's own files live, relative to `work_dir`: the call directory itself, or
     # the work subdirectory of it when the transport owns the run. Everything addressed by a
     # name a model chose is built from this — what is shared in, what the manifest is read
-    # from, and what is collected out — so the three cannot disagree about one run's layout.
+    # from, and what is collected out — so the three cannot disagree about one call's layout.
     # It is longer when calling a host tool, which is why the name checks below take it rather than
-    # `run_id`: five more bytes of the 255 a guest path gets, spent before the name is.
-    guest_prefix = f"{run_id}/{WORK_DIRECTORY}" if host_tool_call is not None else run_id
+    # `call_id`: five more bytes of the 255 a guest path gets, spent before the name is.
+    guest_prefix = f"{call_id}/{WORK_DIRECTORY}" if host_tool_call is not None else call_id
 
     names: list[str] = []
     if outputs is CodeactOutputs.DECLARED:
@@ -984,9 +985,9 @@ async def _execute(
         return sandbox
 
     # The session owns this path, and `sandboxed_tool` reclaims it when the call returns.
-    # Built before anything is written, because it decides where everything goes. A run that
+    # Built before anything is written, because it decides where everything goes. A call that
     # calls a host tool is two directories — the model's files in `work`, the program and the shim
-    # in the transport's — and one that does not is the run directory flat, which is what a kind
+    # in the transport's — and one that does not is the call directory flat, which is what a kind
     # writing no shim has always been. The program name and the interpreter are passed rather
     # than defaulted, so this kind's constants and the transport's cannot drift apart.
     layout = (
