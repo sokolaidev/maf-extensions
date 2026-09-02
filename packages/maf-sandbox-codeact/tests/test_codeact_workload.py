@@ -3345,7 +3345,7 @@ class TestWhatAFidesHostSeesOfAWithheldResult:
         assert str(conversation.integrity) == "trusted"
 
     def test_one_string_would_have_hidden_the_route_with_it(self):
-        """The counterfactual: the same host, the same run, without the split."""
+        """The counterfactual: the same host, the same call, without the split."""
         tool = _tool(
             _backend(_ScriptedSandbox(ExecResult(stdout="42")), capabilities=_PULLS),
             **_landing(CodeactOutputs.DECLARED),
