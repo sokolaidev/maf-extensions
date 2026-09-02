@@ -589,15 +589,21 @@ class SandboxToolSession:
             # delete for this key, so what came back is a sandbox nothing is left to remove: take
             # it here, and refuse rather than hand a task something it cannot have cleaned up.
             landed = await self._router.dispose_call(key, timeout=self._router.reclaim.timeout)
-            if not landed:
+            if landed:
+                fate = "It has been disposed and the result refused."
+            else:
                 self._logger.warning(
                     f"{self._log_prefix}: a sandbox created after the call had ended was not "
                     "disposed; the conversation's purge is what reaches it now"
                 )
+                fate = (
+                    "Deleting it did not land, so it is still there until the conversation's "
+                    "purge reaches it, and the result is refused."
+                )
             raise RuntimeError(
                 f"{self._name}: acquire() came back after its tool call had ended, so the sandbox "
-                "it created is past the cleanup that would have deleted it. It has been disposed "
-                "and the result refused. A task outliving the call needs a key of its own."
+                f"it created is past the cleanup that would have deleted it. {fate} A task "
+                "outliving the call needs a key of its own."
             )
         if call is not None and not call.closed:
             # Recorded on the way through rather than re-derived in the `finally`, where a

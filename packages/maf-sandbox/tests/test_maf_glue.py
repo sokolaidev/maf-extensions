@@ -1151,6 +1151,69 @@ class TestACallScopedWorkloadGetsItsOwnSandbox:
         assert len(backend.disposed) == 2
         assert {key.call_id for key in backend.disposed} == {backend.keys[0].call_id}
 
+    def test_a_late_sandbox_that_could_not_be_deleted_says_so(self):
+        """The refusal reports what the delete did, not what it was meant to do.
+
+        A caller told "it has been disposed" over a delete that failed has the operational
+        state exactly backwards: the sandbox is still there, and still billable.
+        """
+        entered = asyncio.Event()
+        released = asyncio.Event()
+        outcome: dict[str, object] = {}
+        tasks: list[asyncio.Task[None]] = []
+
+        class _BlocksOnTheSecond(InProcessSandboxBackend):
+            def __init__(self, **kw) -> None:
+                super().__init__(**kw)
+                self.seen = 0
+
+            async def acquire(self, key, spec):
+                self.seen += 1
+                if self.seen == 2:
+                    entered.set()
+                    await released.wait()
+                return await super().acquire(key, spec)
+
+        backend = _BlocksOnTheSecond(
+            sandbox_per_key=True,
+            dispose_failure=DisposalFailure("refused", "the service said no"),
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
+            ),
+        )
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Leave a task inside the backend, holding this call's own key."""
+                key = session.key()
+                assert not isinstance(key, str)
+                assert not isinstance(await session.acquire(key), str)
+
+                async def later() -> None:
+                    try:
+                        outcome["result"] = await session.acquire(key)
+                    except RuntimeError as raised:
+                        outcome["result"] = raised
+
+                tasks.append(asyncio.create_task(later()))
+                await entered.wait()
+                return target
+
+            return widget_run
+
+        fn = _fn(_reclaiming(backend, build, spec=_CALL_SCOPED_SPEC))
+
+        async def run() -> None:
+            await fn(target="x")
+            released.set()
+            await asyncio.gather(*tasks)
+
+        asyncio.run(run())
+        assert isinstance(outcome["result"], RuntimeError)
+        assert "did not land" in str(outcome["result"])
+        assert "has been disposed" not in str(outcome["result"])
+
 
 class TestTheFinallyDisposesTheCallsSandbox:
     """The whole sandbox goes, because the call is what it was created for."""
