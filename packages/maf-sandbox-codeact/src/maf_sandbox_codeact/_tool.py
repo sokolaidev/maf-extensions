@@ -921,16 +921,17 @@ async def _execute(
         )
 
     # Chosen here rather than after `acquire`, so that a declared name can be judged against
-    # the guest path it will actually become — the prefix is 13 bytes of the 255 a name gets.
+    # the guest path it will actually become — the prefix is the id core allocates for the
+    # call, derived below rather than counted.
     call_directory = session.guest_call_path()
-    run_id = call_directory.rsplit("/", 1)[-1]
-    # Where the model's own files live, relative to `work_dir`: the run directory itself, or
+    call_id = call_directory.rsplit("/", 1)[-1]
+    # Where the model's own files live, relative to `work_dir`: the call directory itself, or
     # the work subdirectory of it when the transport owns the run. Everything addressed by a
     # name a model chose is built from this — what is shared in, what the manifest is read
-    # from, and what is collected out — so the three cannot disagree about one run's layout.
+    # from, and what is collected out — so the three cannot disagree about one call's layout.
     # It is longer when calling a host tool, which is why the name checks below take it rather than
-    # `run_id`: five more bytes of the 255 a guest path gets, spent before the name is.
-    guest_prefix = f"{run_id}/{WORK_DIRECTORY}" if host_tool_call is not None else run_id
+    # `call_id`: five more bytes of the 255 a guest path gets, spent before the name is.
+    guest_prefix = f"{call_id}/{WORK_DIRECTORY}" if host_tool_call is not None else call_id
 
     names: list[str] = []
     if outputs is CodeactOutputs.DECLARED:
