@@ -3124,6 +3124,70 @@ class TestArgumentProvenanceMiddleware:
         asyncio.run(drive())
         return seen
 
+    def _run_model_arguments(self, sent: str):
+        """One call whose arguments are a model rather than a mapping, which is also supported."""
+        from agent_framework import FunctionInvocationContext, FunctionTool
+        from agent_framework.security import (
+            ContentLabel,
+            IntegrityLabel,
+            LabelTrackingFunctionMiddleware,
+        )
+        from pydantic import BaseModel
+
+        class _Arguments(BaseModel):
+            files: list[str]
+
+        seen: dict[str, object] = {}
+        tracker = LabelTrackingFunctionMiddleware()
+        ours = argument_provenance_middleware()
+        variable_id = tracker.get_variable_store().store(
+            self.PAYLOAD, ContentLabel(integrity=IntegrityLabel.UNTRUSTED)
+        )
+
+        async def body(files: list[str]) -> str:
+            seen["received"] = list(files)
+            seen["reported"] = positions_holding_hidden_content(files, argument="files")
+            return "ok"
+
+        tool = FunctionTool(name="probe", func=body)
+        context = FunctionInvocationContext(
+            function=tool, arguments=_Arguments(files=[sent.replace("VAR", variable_id)])
+        )
+
+        async def innermost() -> None:
+            arguments = context.arguments
+            await tool.invoke(
+                arguments=arguments if isinstance(arguments, dict) else arguments.model_dump()  # pyright: ignore[reportAttributeAccessIssue]
+            )
+
+        async def inner() -> None:
+            await ours.process(context, innermost)
+
+        asyncio.run(tracker.process(context, inner))
+        return seen
+
+    def test_arguments_given_as_a_model_are_still_answered_from_the_record(self):
+        """`FunctionInvocationContext.arguments` is `BaseModel | Mapping`, and the framework
+        keeps whichever it was handed before expanding it, so the record holds a model here."""
+        seen = self._run_model_arguments("[VAR]")
+
+        assert seen["received"] == [self.PAYLOAD]
+        assert seen["reported"] == frozenset({0})
+
+    def test_a_literal_value_under_model_arguments_keeps_its_echo(self):
+        """The half that says the record answered rather than the inference.
+
+        Both answer `frozenset({0})` for a rewritten entry, so only a literal value equal to
+        stored content separates them: the record reports nothing, the fallback reports it and
+        hands the caller confirmation that its guess sits inside something hidden.
+        """
+        seen = self._run_model_arguments(self.PAYLOAD)
+
+        assert seen["received"] == [self.PAYLOAD]
+        assert seen["reported"] == frozenset(), (
+            "a model-shaped record must be read, not skipped for the store inference"
+        )
+
     def test_a_task_outliving_the_call_falls_back_rather_than_reading_a_closed_record(self):
         """Resetting the variable does not reach a child's copy, so the record is closed too.
 

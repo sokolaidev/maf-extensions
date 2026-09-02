@@ -12,7 +12,7 @@ It is **not** re-exported from the package's ``__init__``, on purpose: ``import 
 has to stay cheap and MAF-free for a backend, a workload's own test suite, or anything else
 that only speaks the protocol.  Reach it by name — ``from maf_sandbox.maf import ...``.
 
-Five things live here, and each of them had begun to exist twice before it did:
+Six things live here, and each of them had begun to exist twice before it did:
 
 - :func:`make_caller_context` — how a host says who is calling and which files they own.
 - :func:`sandboxed_tool` — the shape every sandbox workload's tool has: attach nothing when
@@ -24,6 +24,10 @@ Five things live here, and each of them had begun to exist twice before it did:
 - :func:`list_all_files` and :func:`list_no_files` — the listing a caller context is built
   from, walked from ``list_children`` or declared empty. They are here rather than in core
   because the walk reads ``FileStoreEntry.type``, which the framework owns.
+- :func:`argument_provenance_middleware`, :func:`positions_holding_hidden_content` and
+  :func:`hidden_content_candidates` — which of a call's arguments the host's information-flow
+  middleware rewrote, so a refusal names a position rather than quoting content the framework
+  hid. Here because the answer comes from that middleware.
 """
 
 from __future__ import annotations
@@ -225,9 +229,16 @@ def _spellings_before_rewriting(context: Any, argument: str) -> list[str] | None
     ``None`` where the record is absent — no information-flow middleware ran, so nothing was
     rewritten — and equally where it holds no list for ``argument``, which means a caller named
     a parameter this call does not have and must not be read as "nothing was rewritten".
+
+    A call's arguments are a mapping *or* a model, and the framework keeps whichever it was
+    given, so a model is dumped before it is read.  Duck-typed rather than imported: this
+    package does not depend on the framework's validation library.
     """
     metadata = cast("Mapping[str, Any]", getattr(context, "metadata", None) or {})
     original: Any = metadata.get("original_arguments_for_messages")
+    dump = getattr(original, "model_dump", None)
+    if callable(dump):
+        original = dump()
     if not isinstance(original, Mapping):
         return None
     spellings: Any = cast("Mapping[str, Any]", original).get(argument)
@@ -359,72 +370,39 @@ def positions_holding_hidden_content(
 ) -> frozenset[int]:
     """The positions in ``values`` the host's middleware expanded content it had hidden into.
 
-    MAF's information-flow middleware replaces an untrusted result with a variable reference,
-    and rewrites that reference back into a tool's arguments **before** the body runs.  So a
-    value a kind is about to quote in a refusal may be content the framework hid rather than
-    anything the model chose.  Pass the verdict to :func:`~maf_sandbox.echoed_name` as
-    ``hidden``, and it renders the argument's position instead of its value.
+    MAF's information-flow middleware rewrites a variable reference back into a tool's arguments
+    **before** the body runs, so a value a kind is about to quote in a refusal may be content the
+    framework hid rather than anything the model chose.  Pass the verdict to
+    :func:`~maf_sandbox.echoed_name` as ``hidden`` and it renders the position instead.
 
-    **Containment, not equality.**  A reference is spliced into the text around it, so
-    ``"[var_a1b2].bicep"`` arrives as the content with a suffix and equals no stored payload.
+    Answered two ways.  Where a host has wired :func:`argument_provenance_middleware` *and*
+    ``argument`` names the parameter these values came from, each is compared with the spelling
+    the caller gave at the same position: exact, and consulting no stored payload.  Otherwise it
+    falls back to containment against the whole conversation's store, which is conservative — a
+    store holding ``"main"`` reports an untouched ``"main.bicep"`` — and reports a value the
+    caller chose that merely matches hidden content.  ``docs/sandbox/information-flow.md``
+    carries why that difference matters.
 
-    **Positions rather than the values themselves, because the verdict belongs to a position.**
-    Two entries can arrive equal while only one was rewritten — a caller sends its guess at the
-    hidden content beside a reference to it — and answering with values would report the guess
-    as well, so its refusal would change and confirm it.  Index the answer; do not ask it
-    whether it contains a name.
+    What a caller has to know:
 
-    **The answer is conservative, and deliberately so: it is about the whole conversation's
-    store rather than about this call's expansions.**  A value is reported when it *could* have
-    arrived carrying a hidden payload, not when it provably did — so a store holding a short
-    payload such as ``"main"`` reports an untouched ``"main.bicep"`` too, and its refusal names
-    a position where it would otherwise have quoted the name.  That is the safe direction and
-    it costs ergonomics rather than containment; the exact question needs the argument's own
-    before-and-after, which a tool body cannot reach.
+    - **Index the answer.**  Two entries can arrive equal while only one was rewritten, so a
+      verdict belongs to a position and never to a value.
+    - **``argument`` is required for the exact answer, and names one call argument.**  Values
+      that came from no argument — a manifest a program wrote — leave it unset, or the
+      comparison is against a list the caller never sent.
+    - **Containment, not equality.**  A reference is spliced into the text around it, so
+      ``"[var_a1b2].bicep"`` arrives as the content with a suffix and equals no stored payload.
+    - **A task outliving the call falls back, and reaches the store only through
+      ``candidates``.**  The record is closed with the call, and the framework's own accessor
+      goes with it.  Take that snapshot from :func:`hidden_content_candidates` before the first
+      await; a caller answering immediately needs none.
+    - **An empty answer from the fallback is not "nothing was hidden".**  It is also what an
+      unreachable middleware gives, including for a synchronous body dispatched to another
+      thread.  The record has neither limit — a ``ContextVar`` is copied by
+      ``asyncio.to_thread``.
 
-    ``candidates`` is a snapshot from :func:`hidden_content_candidates`, for a caller that has
-    to ask long after its body began — see that function.  Without one this takes its own, which
-    is right for a caller answering immediately.
-
-    Take the whole argument list in one call: the answer costs one pass over the variable
-    store, and the store's own reads are logged by the framework.
-
-    **Two ways of answering, and the exact one needs wiring and a name.** Where a host has
-    added :func:`argument_provenance_middleware` *and* ``argument`` names the parameter these
-    values came from, each is compared with the spelling the caller gave at the same position:
-    a value differing from its own is one the rewriting produced.  That answer is exact, needs
-    no snapshot because the record lives on the call, and depends on no detail of how a payload
-    is stored or reduced — so ``candidates`` is not consulted where it applies.
-
-    **The record is scoped to the call, and a task outliving one falls back.**  A task started
-    during the call keeps its own copy of the variable after the call returns, so answering from
-    it would compare against arguments nobody is asking about — and a value equal to the
-    spelling left at its position would be reported untouched and quoted back.  Such a task gets
-    the inference instead, which is the same answer an unwired host gets — so such a task needs
-    the ``candidates`` snapshot below to be answered at all, the framework's own accessor having
-    gone with the call.
-
-    ``argument`` is what makes the comparison positional, and it is required for it.  Matched
-    against the record as a whole, one entry could be excused by an equal value the caller put
-    at another — so a caller that guessed the hidden content could have it quoted back.  Where
-    the values are not one argument's — a manifest a program wrote — leave it unset and the
-    fallback answers.
-
-    **The guess-confirmation channel belongs to the fallback alone.**  It reports any value
-    containing a stored payload, so a caller can learn that a string it chose sits inside
-    hidden content by watching which way its refusal renders.  The record cannot: it compares
-    an entry with the caller's own spelling at that position and never consults the store, so a
-    value the caller sent literally keeps its echo whatever it happens to equal.  What both
-    renderings still disclose is the *length* of a value they decline to repeat.
-
-    Everything below describes the fallback for a host that has not wired it.
-
-    The fallback answers an empty set where no middleware is reachable, which is two different
-    situations it cannot tell apart.  Either the host runs none — then nothing was ever hidden
-    and the shape bound is all that is needed — or a **synchronous** tool body has been
-    dispatched to another thread, which the accessor it uses does not reach.  The record has
-    neither limit: it is carried in a ``ContextVar``, which ``asyncio.to_thread`` copies, so a
-    synchronous body wired for it is answered where the fallback would give up.
+    Take the whole argument list in one call: the answer costs one pass over the variable store,
+    and the store's own reads are logged by the framework.
     """
     if not values:
         return frozenset()
