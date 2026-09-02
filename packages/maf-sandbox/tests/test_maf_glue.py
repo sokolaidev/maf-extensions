@@ -3130,9 +3130,10 @@ class TestArgumentProvenanceMiddleware:
 
         The exact answer is read out of `original_arguments_for_messages`, which is a string
         literal inside `LabelTrackingFunctionMiddleware` rather than anything the framework
-        publishes — and this package accepts every `agent-framework-core` 1.x. If a compatible
-        minor renames it, every other test here still passes on the inference and only the two
-        that separate the answers go red, saying nothing about why. This one says why.
+        publishes — and this package accepts every `agent-framework-core` 1.x. A rename turns
+        most of this class red at once, because failing closed makes every test that expects a
+        particular answer expect the wrong one, and none of them says what happened. This is
+        the one that does.
         """
         from agent_framework import FunctionInvocationContext, FunctionTool
         from agent_framework.security import (
@@ -3166,9 +3167,9 @@ class TestArgumentProvenanceMiddleware:
         )
         assert _ORIGINAL_ARGUMENTS_KEY in context.metadata, (
             f"this agent-framework-core no longer records {_ORIGINAL_ARGUMENTS_KEY!r} on a "
-            "call. `_spellings_before_rewriting` reads it, so the exact answer has silently "
-            "become the inference — find where the framework keeps it now, or make the "
-            "middleware capture its own record (see #826)"
+            "call. `_spellings_before_rewriting` reads it, so exact provenance is no longer "
+            "available and every checked value is now named by its position — find where the "
+            "framework keeps it now, or make the middleware capture its own record (see #826)"
         )
         assert context.metadata[_ORIGINAL_ARGUMENTS_KEY] == {"files": [reference]}, (
             "the record no longer holds the arguments as the caller spelled them"
