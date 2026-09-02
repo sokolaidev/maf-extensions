@@ -175,12 +175,14 @@ def _prefixed(name: str) -> str:
     return name.replace("%", "%%")
 
 
-def _reduced_form(payload: object) -> object | None:
-    """What the middleware substitutes for ``payload``, or ``None`` where it substitutes nothing.
+def _reduced_form(payload: object) -> object:
+    """What the middleware substitutes for ``payload`` when it expands a reference to it.
 
-    A stored payload does not always reach a tool whole: a mapping, or JSON text naming a
-    ``response``, is reduced to that field first.  This mirrors that rule so what is compared
-    against an argument is what the argument could actually have arrived as.
+    A mapping, or JSON text naming a ``response``, is reduced to that field.  **Everything else
+    is substituted unchanged**, which is the branch that matters most here: a payload of any
+    other type still reaches an argument, as ``str()`` of itself, once the reference is spliced
+    into surrounding text.  So this always answers with something, and "no reduction" is the
+    payload rather than an absence — there is no shape a caller should skip.
 
     **It mirrors behaviour rather than a published contract, so it has to track upstream.** The
     rule lives inside ``agent_framework.security`` (MIT, Microsoft Corporation), which promises
@@ -196,20 +198,19 @@ def _reduced_form(payload: object) -> object | None:
             try:
                 parsed = json.loads(stripped)
             except ValueError:
-                return None
+                return payload
             if isinstance(parsed, dict) and "response" in parsed:
                 return cast("dict[str, Any]", parsed)["response"]
-    return None
+    return payload
 
 
 def _hidden_payloads(middleware: Any) -> Iterator[str]:
     """Every string form a rewritten argument could have arrived carrying.
 
     Two forms per stored payload, because a reference is expanded two ways.  Alone, it is
-    replaced by the payload itself; spliced into surrounding text, by ``str()`` of it — so a
-    ``response`` that is not text still reaches an argument as one, and ``{"response": 42}``
-    arrives inside ``42.bicep``.  Both are reported, and a payload the reduction leaves alone
-    is compared whole.
+    replaced by the payload itself; spliced into surrounding text, by ``str()`` of what the
+    reduction answers — so a payload of any type reaches an argument as text, and a stored
+    ``["SECRET"]`` arrives inside ``['SECRET'].bicep``.
     """
     store = middleware.get_variable_store()
     for variable_id in store.list_variables():
@@ -217,11 +218,12 @@ def _hidden_payloads(middleware: Any) -> Iterator[str]:
             content, _ = store.retrieve(variable_id)
         except KeyError:  # pragma: no cover - a store cleared between the two calls
             continue
-        if isinstance(content, str) and content:
-            yield content
         reduced = _reduced_form(content)
-        if reduced is not None and (text := str(reduced)):
-            yield text
+        candidates: set[str] = {content} if isinstance(content, str) else set()
+        candidates.add(reduced if isinstance(reduced, str) else str(reduced))
+        for text in candidates:
+            if text:
+                yield text
 
 
 def values_holding_hidden_content(values: Sequence[str]) -> frozenset[str]:

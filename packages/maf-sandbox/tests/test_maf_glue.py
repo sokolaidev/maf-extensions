@@ -2282,6 +2282,12 @@ class TestValuesHoldingHiddenContent:
         pytest.param(
             {"other": "EVIL.bicep"}, "{'other': 'EVIL.bicep'}.bicep", id="a dict naming no response"
         ),
+        # The framework substitutes anything it does not reduce unchanged, so a payload of any
+        # type still arrives as text once the reference is spliced.
+        pytest.param(["SECRET"], "['SECRET'].bicep", id="a list, reduced by nothing"),
+        pytest.param(42, "42.bicep", id="a bare number"),
+        pytest.param(("A", "B"), "('A', 'B').bicep", id="a tuple"),
+        pytest.param('{"response": null}', "None.bicep", id="a response that is JSON null"),
     ]
 
     @pytest.mark.parametrize(("stored", "delivered"), SPLICED)
