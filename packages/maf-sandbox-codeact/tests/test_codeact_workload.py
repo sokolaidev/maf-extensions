@@ -3093,6 +3093,38 @@ class TestAWithheldTimeoutQuotesNothing:
 
         assert "before the program was started" not in out
 
+    def test_the_hosts_reason_for_reading_no_output_is_carried(self):
+        """An output dropped for its size leaves the host explaining why, and that explanation
+        is the half of the message the guest did not write.
+
+        Reduced to the attributes it used to go with it: `output` is empty in exactly this
+        case, so a sentence rebuilt from that alone reports a program that printed nothing.
+        """
+        limits = TransferLimits(max_bytes_per_file=64, max_total_bytes=32, max_files=4)
+        registry = _registry(_round_half_up, response_limits=limits)
+        sandbox = _StallingSandbox(printed=b"THE-SECRET-IS-42" * 20)
+        tool = _tool(
+            _backend(sandbox, capabilities=_CALLS),
+            host_tools=registry,
+            **_landing(CodeactOutputs.DECLARED),
+            withhold_guest_output=True,
+            exec_timeout_seconds=1,
+        )
+        out = _run(tool, "print('x')")
+
+        assert "larger than the host will read" in out, out
+        assert "THE-SECRET-IS-42" not in out, "the reason carried the program's output with it"
+
+    def test_a_run_whose_output_was_read_says_nothing_in_its_place(self):
+        """The reason has to distinguish the two cases, or it is noise on every timed-out
+        run."""
+        sandbox = _StallingSandbox(printed=b"step 1 done")
+        out = _run(self._withholding_calling_tool(sandbox, exec_timeout_seconds=1), "print('x')")
+
+        assert out == (
+            f"Error: the program did not finish in the time it was given. {_WITHHELD_ROUTE}"
+        )
+
     def test_off_the_transport_it_names_neither_a_run_nor_a_bound(self):
         """`SandboxProgramTimeout` is public and a backend may raise one from a call of its
         own, whose bound is not the number handed to `exec` — and a call with no host tool has
