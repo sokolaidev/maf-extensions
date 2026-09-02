@@ -279,13 +279,23 @@ def _warn_once_about_a_missing_record(logger: logging.Logger) -> None:
     )
 
 
+def _framework_metadata(context: Any) -> Mapping[str, Any]:
+    """What the framework left on this call, or empty where it left nothing."""
+    return cast("Mapping[str, Any]", getattr(context, "metadata", None) or {})
+
+
+def _the_framework_kept_a_record(context: Any) -> bool:
+    """Whether this call carries the framework's record of the arguments it received."""
+    return _ORIGINAL_ARGUMENTS_KEY in _framework_metadata(context)
+
+
 def _the_framework_kept_no_record(context: Any) -> bool:
     """Whether a middleware ran on this call and left no record of the arguments it received.
 
     The two keys are written together, so one without the other is the framework's contract
     having moved rather than a host that wired no information-flow middleware at all.
     """
-    metadata = cast("Mapping[str, Any]", getattr(context, "metadata", None) or {})
+    metadata = _framework_metadata(context)
     return _ORIGINAL_ARGUMENTS_KEY not in metadata and _MIDDLEWARE_RAN_KEY in metadata
 
 
@@ -300,8 +310,7 @@ def _spellings_before_rewriting(context: Any, argument: str) -> list[str] | None
     given, so a model is dumped before it is read.  Duck-typed rather than imported: this
     package does not depend on the framework's validation library.
     """
-    metadata = cast("Mapping[str, Any]", getattr(context, "metadata", None) or {})
-    original: Any = metadata.get(_ORIGINAL_ARGUMENTS_KEY)
+    original: Any = _framework_metadata(context).get(_ORIGINAL_ARGUMENTS_KEY)
     dump = getattr(original, "model_dump", None)
     if callable(dump):
         original = dump()
@@ -486,6 +495,13 @@ def positions_holding_hidden_content(
                 for position, (spelling, value) in enumerate(zip(before, values, strict=True))
                 if value != spelling
             )
+        if _the_framework_kept_a_record(record.context):
+            # The record is here and this argument cannot be read out of it — a name that is no
+            # parameter of this call, a value that is no longer a list, a length that no longer
+            # matches. None of that says nothing was rewritten, so it must not answer as though
+            # it did, and the fallback would: a synchronous body reaches no store from its
+            # thread and would report an empty set, quoting whatever the framework had hidden.
+            return frozenset(range(len(values)))
     payloads = hidden_content_candidates() if candidates is None else candidates
     return frozenset(
         position

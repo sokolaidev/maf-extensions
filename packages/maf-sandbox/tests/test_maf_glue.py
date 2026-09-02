@@ -3002,7 +3002,13 @@ class TestArgumentProvenanceMiddleware:
         assert seen["received"] == [self.PAYLOAD]
         assert seen["reported"] == frozenset()
 
-    def _run_two(self, spellings: list[str], *, argument: str | None = "files"):
+    def _run_two(
+        self,
+        spellings: list[str],
+        *,
+        argument: str | None = "files",
+        ask: list[str] | None = None,
+    ):
         """One call whose `files` argument is `spellings`, with VAR replaced by a real id."""
         from agent_framework import FunctionInvocationContext, FunctionTool
         from agent_framework.security import (
@@ -3020,7 +3026,9 @@ class TestArgumentProvenanceMiddleware:
 
         async def body(files: list[str]) -> str:
             seen["received"] = list(files)
-            seen["reported"] = positions_holding_hidden_content(files, argument=argument)
+            seen["reported"] = positions_holding_hidden_content(
+                ask if ask is not None else files, argument=argument
+            )
             return "ok"
 
         tool = FunctionTool(name="probe", func=body)
@@ -3241,6 +3249,47 @@ class TestArgumentProvenanceMiddleware:
         warnings = [r for r in caplog.records if _ORIGINAL_ARGUMENTS_KEY in r.getMessage()]
         assert len(warnings) == 1
 
+    def test_an_argument_the_record_cannot_answer_for_fails_closed(self):
+        """A record that is present but unreadable *for this argument* says nothing either way.
+
+        A name that is no parameter of the call, a value that is not a list, a length that does
+        not match: none of them means nothing was rewritten, and answering as though they did
+        hands the caller whatever the framework hid. A synchronous body makes that concrete,
+        since the fallback reaches no store from its thread and would report an empty set.
+        """
+        seen = self._run_synchronous_body("[VAR]", argument="filez")
+
+        assert seen["received"] == [self.PAYLOAD]
+        assert seen["from_record"] == frozenset({0}), (
+            "one character wrong in the argument name must not turn a rewritten value back "
+            "into a quotable one"
+        )
+
+    def test_a_record_that_cannot_answer_fails_closed_on_the_loop_too(self):
+        """Same verdict on the event loop, where the fallback *could* have answered.
+
+        Deliberately not thread-dependent: an answer that is safe only where the inference
+        happens to be reachable is one a caller cannot reason about. The value sent here is a
+        plain name the fallback would clear, so the two answers differ and this says which one
+        an unreadable record takes.
+        """
+        seen = self._run_two(["main.bicep"], argument="filez")
+
+        assert seen["received"] == ["main.bicep"]
+        assert seen["reported"] == frozenset({0}), (
+            "the fallback would clear this name; an unreadable record must not borrow that "
+            "verdict, because it is not an answer about this call"
+        )
+
+    def test_a_length_that_no_longer_matches_fails_closed(self):
+        """The mismatch arm, asked of values that are not the whole argument."""
+        seen = self._run_two(["[VAR]", "notes.txt"], ask=["notes.txt"])
+
+        assert seen["reported"] == frozenset({0}), (
+            "a short list cannot be lined up against the record, and lining up is the whole "
+            "of the exact answer"
+        )
+
     def test_a_call_that_hid_nothing_is_ordinary(self, monkeypatch, caplog):
         """A host may wire this middleware and no information-flow middleware at all.
 
@@ -3291,7 +3340,7 @@ class TestArgumentProvenanceMiddleware:
             "and it must say so, since this is the upgrade no test of ours would catch"
         )
 
-    def _run_synchronous_body(self, sent: str):
+    def _run_synchronous_body(self, sent: str, *, argument: str = "files"):
         """One call whose tool body is `def`, not `async def`.
 
         The framework dispatches that with `asyncio.to_thread`, so the body runs off the event
@@ -3315,7 +3364,7 @@ class TestArgumentProvenanceMiddleware:
         def body(files: list[str]) -> str:
             seen["thread"] = threading.get_ident()
             seen["received"] = list(files)
-            seen["from_record"] = positions_holding_hidden_content(files, argument="files")
+            seen["from_record"] = positions_holding_hidden_content(files, argument=argument)
             seen["from_fallback"] = positions_holding_hidden_content(files)
             return "ok"
 
