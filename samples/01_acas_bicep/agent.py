@@ -53,7 +53,7 @@ from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 from maf_sandbox_bicep import make_bicep_tools
 
-# A sandbox is keyed by (scope, thread_id, agent_dir).  A host reads the first two
+# A sandbox is keyed by the caller's scope, thread and agent directory.  A host reads the first two
 # from its own request context — a user/tenant and a conversation.  This program
 # serves exactly one request, so they are constants here, but they are still named
 # rather than inlined: the whole point of `make_caller_context` below is that
@@ -127,7 +127,7 @@ async def run() -> int:
 
     # All three arguments are **callables, read per call** — not values.  That is
     # load-bearing rather than a convenience.  A sandbox is keyed by
-    # (scope, thread_id, agent_dir); a host that builds one agent and serves many
+    # the caller's scope, thread and agent directory; a host that builds one agent and serves many
     # conversations with it would, if scope and thread were captured here, let
     # one conversation address another conversation's sandbox.  Reading them per
     # call keeps the key a property of the request.  It is also why nothing in

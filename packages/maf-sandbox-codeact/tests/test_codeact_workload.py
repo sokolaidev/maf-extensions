@@ -22,6 +22,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from types import MappingProxyType
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from maf_sandbox import (
@@ -87,6 +88,13 @@ _PULLS = DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
 #: And before a program may reach a host tool: a host-tool call carries its requests over the
 #: same pull surface, so it needs everything a collection needs and the capability besides.
 _CALLS = _PULLS | {Capability.HOST_TOOLS}
+
+#: What a call's own directory costs a declared artifact name — the id plus its separator.
+#:
+#: Derived rather than written down: the id is core's to choose, and it grew when it became the
+#: thing that keys a per-call sandbox rather than only naming a directory. A literal here would
+#: have to be found and re-derived every time that changes.
+_CALL_PREFIX_BYTES = len(uuid4().hex) + 1
 
 # ---------------------------------------------------------------------------
 # Fakes: a sandbox that keeps the command it was handed, unjoined, and what it was written
@@ -2143,13 +2151,13 @@ class TestDeclaredOutputs:
         """A host-tool-calling run keeps the model's files one level deeper, so the prefix a
         declared name is judged against is `<run>/work/` — five bytes more than `<run>/`.
 
-        242 is the longest name the flat layout accepts, and it is over the ceiling as soon as
-        those five are counted. Both halves are asserted because only the pair discriminates:
+        The longest name the flat layout accepts is over the ceiling as soon as those five
+        are counted. Both halves are asserted because only the pair discriminates:
         judging against the run id alone would let this through and have `collect_outputs`
         refuse the guest path a whole run later, which is the failure the up-front check exists
         to prevent.
         """
-        name = "a" * (MAX_ARTIFACT_NAME_BYTES - 13)
+        name = "a" * (MAX_ARTIFACT_NAME_BYTES - _CALL_PREFIX_BYTES)
 
         flat_sink = _RecordingSink()
         flat_tool, flat_sandbox = _neighbouring(
@@ -2207,7 +2215,7 @@ class TestDeclaredOutputs:
         sandbox = _ProducingSandbox()
         sink = _RecordingSink()
         tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink)
-        name = "a" * (MAX_ARTIFACT_NAME_BYTES - 13)
+        name = "a" * (MAX_ARTIFACT_NAME_BYTES - _CALL_PREFIX_BYTES)
 
         _run_producing(tool, sandbox, {name: b"1"}, outputs=[name])
         assert sink.names == [name]

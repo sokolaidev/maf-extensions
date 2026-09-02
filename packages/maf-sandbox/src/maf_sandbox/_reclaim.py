@@ -108,10 +108,19 @@ class ReclaimFailure:
     """A tool call's own guest path the framework acted on, and why.
 
     What ``sandboxed_tool``'s ``on_reclaim_failure`` receives, after the framework has acted.
-    A data-retention failure rather than a tidiness one: ``acquire`` is get-or-create, so what
-    is left stays readable by every later call in that sandbox, and disposal is the only
-    remedy. The framework disposes by default and says so in :attr:`disposal`; a host that
-    opted down with ``FailedReclaimPolicy.KEEP`` is told the sandbox was kept.
+    A data-retention failure rather than a tidiness one, and which retention depends on the
+    scope the workload runs at.
+
+    At :data:`~maf_sandbox.IsolationScope.CONVERSATION`, ``acquire`` is get-or-create, so what
+    is left stays readable by every later call in that sandbox and disposal is the only remedy.
+    The framework disposes by default and says so in :attr:`disposal`; a host that opted down
+    with ``FailedReclaimPolicy.KEEP`` is told the sandbox was kept.
+
+    At :data:`~maf_sandbox.IsolationScope.CALL` the sandbox *is* the call, so its delete is the
+    cleanup rather than a remedy for one — ``KEEP`` does not loosen it, :attr:`disposal` is
+    always ``"failed"`` here, and :attr:`reason` carries why that delete did not land beside
+    anything a transport noted about the sandbox it left. What is left is addressable by no
+    later call, so the conversation's purge is what reaches it rather than a host's own retry.
     """
 
     #: The tool whose call left it, as the model sees the name.

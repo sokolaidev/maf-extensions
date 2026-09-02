@@ -30,7 +30,12 @@ suite costs even where no capability suite runs, so the image has to carry the P
 utilities, and what those suites assert is measured against the guest the image ships, which
 for the suites that run in CI is the image the workflow names.
 
-**One suite belongs to no capability.**  :func:`assert_reclaim_conformance` covers
+**Two suites belong to no capability.** ``assert_call_scope_conformance`` is gated by a
+declaration rather than a capability — a backend owes it once it declares
+:data:`~maf_sandbox.IsolationScope.CALL` — and it is the only one that acquires a sandbox of
+its own, because one of its probes has to plant before that sandbox exists.
+
+**One belongs to no capability and no declaration.**  :func:`assert_reclaim_conformance` covers
 :meth:`Sandbox.reclaim`, which is mandatory, so it runs with no declaration gate.  Its probes
 verify through the subject rather than through ``exec``: they plant with
 :meth:`ConformanceSubject.plant_file` and ask :meth:`ConformanceSubject.exists` what survived.
@@ -76,6 +81,7 @@ __all__ = [
     "PosixGuestSubject",
     "Probe",
     "ProbeResult",
+    "assert_call_scope_conformance",
     "assert_egress_conformance",
     "assert_exec_conformance",
     "assert_files_delete_conformance",
@@ -84,6 +90,7 @@ __all__ = [
     "assert_reclaim_conformance",
     "measure_files_delete_probes",
     "plant_layout",
+    "run_call_scope_probes",
     "run_egress_probes",
     "run_exec_probes",
     "run_files_delete_probes",
@@ -1731,12 +1738,14 @@ async def _probe_result(
 
 async def _run_suite(
     subject: ConformanceSubject,
-    gate: Capability,
+    gate: Capability | None,
     plant: Callable[[ConformanceSubject], Awaitable[ConformancePaths]],
     probes: tuple[Probe, ...],
 ) -> tuple[ProbeResult, ...]:
     declared = subject.capabilities
-    if gate not in declared:
+    # ``None`` gates on nothing, for a suite a backend owes whatever it declares: the subject's
+    # own seams plant and see, and each probe still skips on what it needs.
+    if gate is not None and gate not in declared:
         raise ValueError(
             f"this subject declares no {str(gate).upper()}, so every probe would be skipped "
             "and the run would report success having attacked nothing. Pass the backend's own "
@@ -1864,4 +1873,237 @@ async def assert_egress_conformance(
             subject, allowed_url=allowed_url, denied_url=denied_url, exec_timeout=exec_timeout
         ),
         "EGRESS",
+    )
+
+
+# ---------------------------------------------------------------------------
+# CALL_SCOPE — that a sandbox per call is a boundary and not a name (#436)
+# ---------------------------------------------------------------------------
+#
+# Two sandboxes, acquired with keys differing only in `call_id`. The suite acquires the second
+# one itself, and that is load-bearing: the first thing it does is plant a file *before* that
+# acquire, so a backend serving `IsolationScope.CALL` by cloning the warm conversation sandbox
+# — a plausible warm-start — fails here rather than being certified. Probes that only write
+# after both sandboxes exist cannot see that: everything they plant post-dates the copy.
+#
+# The other half a backend can fail with nothing noticing: one deriving a sandbox's name from
+# three fields of the key answers both acquires with a single sandbox, both calls succeed, and
+# the separation the workload asked for was never there. See docs/sandbox/tool-call.md.
+
+#: Planted in the first sandbox before the second is acquired. The name says when, because the
+#: probe that reads it is the only one whose meaning depends on the order.
+_BEFORE_THE_SECOND_ACQUIRE = "planted-before-the-other-call-existed.txt"
+
+
+async def run_call_scope_probes(
+    subject: ConformanceSubject,
+    acquire_another: Callable[[], Awaitable[ConformanceSubject]],
+    dispose_this_call: Callable[[], Awaitable[None]],
+    dispose_the_other: Callable[[], Awaitable[None]],
+) -> tuple[ProbeResult, ...]:
+    """Run the CALL_SCOPE probes over ``subject`` and a second sandbox this suite acquires.
+
+    ``acquire_another`` must acquire with a key differing from ``subject``'s **only** in
+    :attr:`~maf_sandbox.SandboxKey.call_id`, and hand back a subject over it. A pair differing in
+    scope, thread or agent is kept apart by fields every backend already folds, so it would pass
+    here while saying nothing about the call scope.
+
+    The suite acquires rather than being handed both, because one probe has to plant before the
+    second sandbox exists: a backend that seeds each call from the conversation's sandbox passes
+    every post-acquire probe there is. Two subjects rooted at different working directories are
+    refused — each probe would compare paths that were never the same one, and pass having
+    attacked nothing.
+
+    ``dispose_the_other`` deletes the sandbox this suite acquired, and runs in a ``finally``
+    that covers the acquire itself, because the suite is the only thing that knows it exists: a
+    caller reading the signature supplies an acquire and would not otherwise learn that a second
+    sandbox outlived the run.  It is asked for even when the acquire never returned — a create
+    that raised part-way still made something, and a delete of a key nothing served is a wasted
+    round trip rather than a leak.
+    Against a real provider that is a live, billable sandbox waiting on a scope purge.  A
+    teardown that raises replaces the results, deliberately — a delete that cannot land is worse
+    news than a probe nobody read.
+
+    ``dispose_this_call`` deletes **``subject``'s** sandbox and raises if that did not land.
+    Separation is two properties, not one: a backend can fold ``call_id`` into what it acquires
+    and still sweep ``(scope, thread, agent)`` when it disposes — every probe above passes, and
+    ending one call takes a concurrent sibling's sandbox with it.  The last probe is the only
+    one that can see that, which is why the seam is required rather than optional.
+
+    No capability gates the run.  ``plant_file`` and ``exists`` are the subject's own seams, as
+    they are for the mandatory reclaim suite, so a backend that declares
+    :data:`~maf_sandbox.IsolationScope.CALL` owes these probes whatever else it declares; the
+    two that read a sandbox back still skip without ``FILES_OUT`` and ``FILES_LIST``.
+    """
+    work = ConformancePaths.under(subject.working_directory).work
+    planted_first = f"{work}/{_BEFORE_THE_SECOND_ACQUIRE}"
+    await subject.plant_file(planted_first, _SECRET)
+    try:
+        # Inside, not before: an acquire that creates the sandbox and then raises or is
+        # cancelled has made the thing the teardown exists for, and the key it was made under
+        # is known here whether or not the call came back.
+        other = await acquire_another()
+        return await _probe_the_pair(
+            subject, other, planted_first, dispose_this_call=dispose_this_call
+        )
+    finally:
+        await dispose_the_other()
+
+
+async def _probe_the_pair(
+    subject: ConformanceSubject,
+    other: ConformanceSubject,
+    planted_first: str,
+    *,
+    dispose_this_call: Callable[[], Awaitable[None]],
+) -> tuple[ProbeResult, ...]:
+    """The probes themselves, over a pair the caller above owns the teardown of."""
+    if subject.working_directory != other.working_directory:
+        raise ValueError(
+            f"these subjects are rooted at {subject.working_directory!r} and "
+            f"{other.working_directory!r}. Every probe here plants under one and looks under the "
+            "other, so different roots make each one pass without attacking anything. Acquire "
+            "both sandboxes from one spec."
+        )
+
+    async def _arrives_without_the_other_calls_data(
+        s: ConformanceSubject, paths: ConformancePaths
+    ) -> None:
+        del paths
+        if not await s.exists(planted_first):
+            raise AssertionError(
+                "the file did not land in the sandbox that planted it, so this probe attacked "
+                "nothing and a pass would mean nothing"
+            )
+        if await other.exists(planted_first):
+            raise AssertionError(
+                "a file written before this sandbox was acquired is already in it: the call was "
+                "served a copy of what the conversation held rather than a sandbox of its own, "
+                "so every earlier call's data arrives with it"
+            )
+
+    async def _the_other_calls_file_is_not_here(
+        s: ConformanceSubject, paths: ConformancePaths
+    ) -> None:
+        planted = f"{paths.work}/one-call-planted-this.txt"
+        await other.plant_file(planted, _SECRET)
+        if not await other.exists(planted):
+            raise AssertionError(
+                "the file did not land in the sandbox that planted it, so this probe attacked "
+                "nothing and a pass would mean nothing"
+            )
+        if await s.exists(planted):
+            raise AssertionError(
+                "a file one call planted is there in the other call's sandbox: the two acquires "
+                "were served one filesystem, so the per-call scope is a name and not a boundary"
+            )
+
+    async def _the_same_name_holds_this_calls_bytes(
+        s: ConformanceSubject, paths: ConformancePaths
+    ) -> None:
+        name = "both-calls-wrote-this.txt"
+        await s.plant_file(f"{paths.work}/{name}", _INSIDE)
+        await other.plant_file(f"{paths.work}/{name}", _SECRET)
+        content = await s.sandbox.read_file(
+            name, working_directory=s.working_directory, max_bytes=_READ_CAP
+        )
+        if content != _INSIDE:
+            raise AssertionError(
+                f"the file this call wrote reads back as {content!r}: the other call's write to "
+                "the same name replaced it, which is what one filesystem does and two do not"
+            )
+
+    async def _the_listing_holds_only_this_calls_files(
+        s: ConformanceSubject, paths: ConformancePaths
+    ) -> None:
+        name = "only-the-other-call-planted-this.txt"
+        await other.plant_file(f"{paths.work}/{name}", _SECRET)
+        entries = await s.sandbox.list_dir(".", working_directory=s.working_directory)
+        if any(posixpath.basename(entry.path) == name for entry in entries):
+            raise AssertionError(
+                f"listing this call's working directory named {name!r}, which only the other "
+                "call planted — a listing reaching another call's files is the discovery the "
+                "scope exists to close"
+            )
+
+    async def _disposing_this_call_leaves_the_other(
+        s: ConformanceSubject, paths: ConformancePaths
+    ) -> None:
+        del s
+        kept = f"{paths.work}/the-other-call-is-still-using-this.txt"
+        await other.plant_file(kept, _INSIDE)
+        await dispose_this_call()
+        if not await other.exists(kept):
+            raise AssertionError(
+                "deleting one call's sandbox took the other's with it: the disposal reaches by "
+                "scope, thread and agent rather than by the call, so ending either call in an "
+                "assistant message destroys the one still running beside it"
+            )
+
+    probes = (
+        Probe(
+            name="arrives-without-the-other-calls-data",
+            why=(
+                "a sandbox seeded from the conversation's carries every earlier call's files, "
+                "and passes every probe that only writes after both sandboxes exist."
+            ),
+            requires=frozenset(),
+            run=_arrives_without_the_other_calls_data,
+        ),
+        Probe(
+            name="the-other-calls-file-is-not-here",
+            why=(
+                "the property itself: what one call writes must not be in the sandbox the next "
+                "one is served, whatever the reclaim did or did not manage afterwards."
+            ),
+            requires=frozenset(),
+            run=_the_other_calls_file_is_not_here,
+        ),
+        Probe(
+            name="the-same-name-holds-this-calls-bytes",
+            why=(
+                "two calls of one workload write the same paths; sharing shows up as one "
+                "silently overwriting the other rather than as an error either can see."
+            ),
+            requires=frozenset({Capability.FILES_OUT}),
+            run=_the_same_name_holds_this_calls_bytes,
+        ),
+        Probe(
+            name="the-listing-holds-only-this-calls-files",
+            why=(
+                "a workload that enumerates its directory finds the other call's artifacts and "
+                "reads them as its own, without either call naming a path the other wrote."
+            ),
+            requires=frozenset({Capability.FILES_LIST}),
+            run=_the_listing_holds_only_this_calls_files,
+        ),
+        # Last, and it has to be: it deletes the subject every probe above attacks with.
+        Probe(
+            name="disposing-this-call-leaves-the-other",
+            why=(
+                "folding the call into what is acquired and sweeping the conversation when "
+                "disposing passes every probe that runs before a delete, and ends one call by "
+                "destroying the sandbox of another that is still running."
+            ),
+            requires=frozenset(),
+            run=_disposing_this_call_leaves_the_other,
+        ),
+    )
+    return await _run_suite(subject, None, _plant_nothing, probes)
+
+
+async def assert_call_scope_conformance(
+    subject: ConformanceSubject,
+    acquire_another: Callable[[], Awaitable[ConformanceSubject]],
+    dispose_this_call: Callable[[], Awaitable[None]],
+    dispose_the_other: Callable[[], Awaitable[None]],
+) -> tuple[ProbeResult, ...]:
+    """Run the CALL_SCOPE probes and raise :class:`ConformanceFailure` if any failed.
+
+    What a backend owes before it declares :data:`~maf_sandbox.IsolationScope.CALL`: the
+    declaration is what the router refuses on, and these are what make it true.
+    """
+    return _assert_conformance(
+        await run_call_scope_probes(subject, acquire_another, dispose_this_call, dispose_the_other),
+        "CALL_SCOPE",
     )

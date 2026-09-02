@@ -1,6 +1,6 @@
 # 12 — when a sandbox goes away: within a turn, at its end, and on thread delete
 
-Every other sample creates a sandbox and drops it on the way out, because every other sample is one program that runs once. A real host is not that. It serves many conversations, for a long time, and a sandbox is keyed by `(scope, thread_id, agent_dir)` — so it **outlives the turn that made it**, on purpose.
+Every other sample creates a sandbox and drops it on the way out, because every other sample is one program that runs once. A real host is not that. It serves many conversations, for a long time, and a sandbox is keyed by the caller's scope, thread and agent directory — so it **outlives the turn that made it**, on purpose.
 
 That leaves a host three moments where a sandbox can go away, and choosing between them is a cost decision rather than a style one.
 

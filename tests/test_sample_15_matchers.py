@@ -12,6 +12,7 @@ import importlib.util
 import os
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -58,7 +59,7 @@ def test_act_five_reports_version_derived_cleanup_with_surviving_directories(mon
     output = capsys.readouterr().out
     assert sample.CALL_RECLAIMS
     assert "call directory cleanup: reclaimed by the framework" in output
-    assert "run directories across both sandboxes: 6" in output
+    assert "call directories across both sandboxes: 6" in output
 
 
 def _table(cells: dict[str, dict[str, float]], separator: str = "\t") -> str:
@@ -294,3 +295,27 @@ class TestTheProgramThatAnswered:
 
     def test_no_results_is_not_an_error(self):
         assert sample.the_program_that_answered([]) == ""
+
+
+class TestTheCallDirectoryFilter:
+    """Act 5 counts what a sandbox kept, and it counts by matching the directory's name.
+
+    A name shape the filter does not recognise is not an error anywhere — that call is dropped
+    from the count and the act reports fewer than are there, which only a live run would show.
+    """
+
+    @pytest.mark.parametrize(
+        "name",
+        [uuid4().hex, uuid4().hex[:12]],
+        ids=["a whole uuid", "the twelve characters an older core wrote"],
+    )
+    def test_a_call_directory_is_recognised(self, name: str):
+        assert sample._CALL_ID.fullmatch(name)
+
+    @pytest.mark.parametrize(
+        "name",
+        ["host_tools", "work", "outputs", uuid4().hex[:11], uuid4().hex[:20], "g" * 12],
+        ids=["the transport's", "the work dir", "a plain name", "too short", "between", "not hex"],
+    )
+    def test_anything_else_is_not(self, name: str):
+        assert sample._CALL_ID.fullmatch(name) is None

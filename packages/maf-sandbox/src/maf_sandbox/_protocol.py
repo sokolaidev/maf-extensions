@@ -24,6 +24,7 @@ __all__ = [
     "DEFAULT_TRANSFER_LIMITS",
     "INTEGRITY_RANK",
     "ISOLATION_RANK",
+    "ISOLATION_SCOPE_RANK",
     "BackendDeclarations",
     "Capability",
     "DeclaredOutput",
@@ -35,12 +36,15 @@ __all__ = [
     "HostToolAggregate",
     "Identity",
     "Isolation",
+    "IsolationScope",
+    "OsFamily",
     "OutputDisposition",
     "Sandbox",
     "SandboxBackend",
     "SandboxEntry",
     "SandboxKey",
     "SandboxLimits",
+    "SandboxQueuedTimeout",
     "SandboxSpec",
     "ScopePurge",
     "SourceIntegrity",
@@ -117,6 +121,39 @@ ISOLATION_RANK: Mapping[Isolation, int] = {
 def meets_floor(declared: Isolation, floor: Isolation) -> bool:
     """Whether ``declared`` sits at or above ``floor`` on the ladder."""
     return ISOLATION_RANK[declared] >= ISOLATION_RANK[floor]
+
+
+class IsolationScope(StrEnum):
+    """How much of a conversation one sandbox serves. Asked for by a spec, enforced by a backend.
+
+    A different axis from :class:`Isolation`, which says how strong the boundary is: a microVM
+    serving a whole conversation and a container serving one call answer different questions,
+    and a workload can need either answer.  Ordered by :data:`ISOLATION_SCOPE_RANK`, and a spec
+    may raise the host's floor and never lower it — the rule :attr:`SandboxSpec.min_isolation`
+    follows.
+    """
+
+    #: One sandbox per ``(key, kind)``, reused across a conversation's calls — the get-or-create
+    #: :meth:`SandboxBackend.acquire` describes.  What a call leaves behind outlives it, bounded
+    #: by what the reclaim removes.
+    CONVERSATION = "conversation"
+    #: A sandbox created for one tool call and destroyed when it returns.  Two calls in one
+    #: assistant message then share no filesystem, and a reclaim that fails leaves data no later
+    #: call can address.  Paid for with a cold start per call.
+    #:
+    #: **The destruction belongs to whoever ran the call.**
+    #: :func:`maf_sandbox.maf.sandboxed_tool` does it from the ``finally`` it already owns; an
+    #: integration calling :meth:`SandboxRouter.acquire` itself owes the matching
+    #: ``dispose_call`` from a ``finally`` of its own, or every call leaks a sandbox until the
+    #: conversation is purged.
+    CALL = "call"
+
+
+#: The order, least separated first, written down exactly once — every comparison of two scopes
+#: goes through it, and an exhaustiveness test asserts every member is ranked.
+ISOLATION_SCOPE_RANK: Mapping[IsolationScope, int] = {
+    scope: rank for rank, scope in enumerate((IsolationScope.CONVERSATION, IsolationScope.CALL))
+}
 
 
 class Egress(StrEnum):
@@ -410,11 +447,21 @@ class SandboxKey:
     value here would let one conversation address another's sandbox.  ``agent_dir`` keys the
     sandbox to a single agent, so two agents in one conversation do not share a
     filesystem.
+
+    ``call_id`` is empty for a conversation-scoped sandbox and names one tool call for an
+    :data:`IsolationScope.CALL` one, which no acquire repeats — so get-or-create runs as it
+    always does and finds nothing to warm.  A
+    backend folds it into whatever names a sandbox — the container name, the label set, its own
+    registry — and one that does not must not declare that scope: two calls would resolve to one
+    sandbox, which is the sharing the scope exists to end.
     """
 
     scope: str
     thread_id: str
     agent_dir: str
+    #: Defaulted, so a key written before this axis existed constructs unchanged and still means
+    #: the conversation-scoped sandbox it always meant.
+    call_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -536,6 +583,17 @@ class SandboxSpec:
     here.  It is where ``identities`` comes from, so those two cannot disagree; what a spec
     still owes is :data:`Capability.HOST_TOOLS` in ``requires``, refused below otherwise,
     because the router reads that half of its posture from the field rather than the surface.
+
+    ``isolation_scope`` is how much of a conversation one sandbox serves.  The default shares one
+    across every call in the conversation; :data:`IsolationScope.CALL` asks for one created for
+    this call and destroyed when it returns, which is what a workload handling labelled data
+    needs — two calls in a single assistant message otherwise run in one filesystem, and a
+    reclaim that fails leaves what the first wrote where the second can read it.  A floor rather
+    than a setting, like ``min_isolation``: a host raises it for every workload it serves, a spec
+    raises it further, and the router refuses a backend that cannot enforce what the two resolve
+    to.  It buys that with a cold start per call, which is the whole of its cost and the reason
+    it is not the default.  Like ``egress`` it is normalised on construction: a plain string
+    serves exactly as the member does, and anything else raises here.
     """
 
     kind: str
@@ -566,6 +624,8 @@ class SandboxSpec:
     # Appended last, like the defaulted fields above, so it cannot rebind a positional caller's
     # argument.
     host_tools: HostToolAggregate | None = None
+    # Appended after it, for that same reason.
+    isolation_scope: IsolationScope = IsolationScope.CONVERSATION
 
     @property
     def identities(self) -> frozenset[Identity]:
@@ -577,6 +637,13 @@ class SandboxSpec:
         return self.host_tools.identities if self.host_tools is not None else frozenset()
 
     def __post_init__(self) -> None:
+        # Coerced before anything reads them, the way `HostToolDeclaration` coerces its own
+        # identity: a `StrEnum` member equals its string, so a caller passing ``"call"`` satisfies
+        # every ``==`` and fails every ``is`` — and the two checks that make a per-call sandbox a
+        # boundary, the key's call id and the router's refusal, are both ``is``. A value that is
+        # not a member raises here rather than degrading to a shared sandbox somewhere later.
+        object.__setattr__(self, "egress", Egress(str(self.egress)))
+        object.__setattr__(self, "isolation_scope", IsolationScope(str(self.isolation_scope)))
         if self.egress_allow and self.egress is not Egress.ALLOWLIST:
             hosts = ", ".join(self.egress_allow)
             raise ValueError(
@@ -927,11 +994,12 @@ class BackendDeclarations:
     """What a backend tells the router about itself, in one object read with one ``getattr``.
 
     Every field's default **is** its silence rule, so a backend that omits one is read exactly
-    as a backend that declared nothing at all.  The four rules differ and are not
+    as a backend that declared nothing at all.  The rules differ and are not
     interchangeable: :attr:`capabilities` is a functionality claim read charitably,
-    :attr:`limits` is a safety claim read conservatively, and the two sets are the *absence of
-    an answer* — which refuses every ask on :attr:`egress_modes`, where a backend enforcing no
-    mode can serve none, and only an asking spec on :attr:`os_families`.
+    :attr:`limits` is a safety claim read conservatively, :attr:`egress_modes` and
+    :attr:`os_families` are the *absence of an answer* — which refuses every ask on the first,
+    where a backend enforcing no mode can serve none, and only an asking spec on the second —
+    and :attr:`isolation_scopes` is a claim, defaulting to the sharing every backend does.
 
     The router reads this synchronously, before any sandbox exists, so it must be settled by
     the time it asks: a plain attribute or a property over configuration, never an ``async``
@@ -959,6 +1027,12 @@ class BackendDeclarations:
     #: leaves every spec that does not exactly as it was: a backend with no guest in the
     #: operating-system sense — a language runtime, a data-plane API — has no answer to give.
     os_families: frozenset[OsFamily] = frozenset()
+    #: How much of a conversation the backend can serve from one sandbox, resolved against a
+    #: spec's :attr:`SandboxSpec.isolation_scope`.  The one field whose silence is a *claim*
+    #: rather than the absence of one, and the default says so: get-or-create is what every
+    #: backend written before this axis already did.  :data:`IsolationScope.CALL` belongs here
+    #: only once the backend folds :attr:`SandboxKey.call_id` into the name it gives a sandbox.
+    isolation_scopes: frozenset[IsolationScope] = frozenset({IsolationScope.CONVERSATION})
 
 
 #: What a backend declaring no ``declarations`` is read as: every field at its own silence rule.
@@ -1019,6 +1093,11 @@ class SandboxBackend(Protocol):
         over.  An unguarded read-then-create then hands out two sandboxes where the caller
         expects one, and only one of them is remembered.  Serialise the get-or-create, or
         derive a name the provider will reject a duplicate of.
+
+        ``key`` may carry a :attr:`SandboxKey.call_id`, and it is part of a sandbox's identity
+        exactly as the other three fields are.  A backend deriving its name from three of the
+        four hands one sandbox to two calls that asked not to share, so fold the whole key —
+        and declare :data:`IsolationScope.CALL` only once it is folded.
         """
         ...
 

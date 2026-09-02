@@ -1,10 +1,10 @@
 """Backend selection: the layer between a host application and any sandbox provider.
 
 ``app -> SandboxRouter -> backend -> the sandbox itself``.  The router owns what no
-individual backend can own: **which** backend serves a request, and the five rules that
-decide whether it may — a minimum-isolation floor, a capability match, the transfer ceilings,
-the egress rule, and the host's outright denials (capabilities and identities this posture
-refuses whatever the backend could do).
+individual backend can own: **which** backend serves a request, and the rules that decide
+whether it may — a minimum-isolation floor, a capability match, the guest's shape, the
+transfer ceilings, the egress rule, the scope one sandbox may serve, and the host's outright
+denials (capabilities and identities this posture refuses whatever the backend could do).
 """
 
 from __future__ import annotations
@@ -23,12 +23,14 @@ from ._host_tools_over_exec import fold_host_tool_call_transfer_limits
 from ._protocol import (
     DEFAULT_BACKEND_DECLARATIONS,
     ISOLATION_RANK,
+    ISOLATION_SCOPE_RANK,
     BackendDeclarations,
     Capability,
     DisposalCode,
     DisposalFailure,
     Identity,
     Isolation,
+    IsolationScope,
     OsFamily,
     Sandbox,
     SandboxBackend,
@@ -54,6 +56,7 @@ __all__ = [
     "SandboxIdentityDenied",
     "SandboxOsFamilyNotSupported",
     "SandboxRouter",
+    "SandboxScopeNotEnforced",
     "SandboxTransferLimitsNotPermitted",
     "SandboxUnclean",
     "ScopeDisposal",
@@ -183,6 +186,15 @@ class SandboxEgressNotEnforced(PermissionError):
     """
 
 
+class SandboxScopeNotEnforced(PermissionError):
+    """The selected backend cannot give the workload a sandbox at the scope it runs at.
+
+    The :class:`SandboxEgressNotEnforced` rule on a second axis, refused for the same reason: a
+    backend serving one sandbox per conversation would answer a workload asking for one per call
+    by sharing, and every call would succeed while the separation it asked for was never there.
+    """
+
+
 class SandboxTransferLimitsNotPermitted(PermissionError):
     """The workload's spec asks to move more data than the selected backend allows.
 
@@ -213,6 +225,7 @@ ATTACH_REFUSALS: tuple[type[Exception], ...] = (
     SandboxEgressNotEnforced,
     SandboxIdentityDenied,
     SandboxOsFamilyNotSupported,
+    SandboxScopeNotEnforced,
     SandboxTransferLimitsNotPermitted,
 )
 
@@ -287,7 +300,7 @@ def _has_attribute(backend: SandboxBackend, name: str) -> bool:
 
 
 def _declarations(backend: SandboxBackend) -> BackendDeclarations:
-    """The one object every optional declaration is read from: one ``getattr``, four fields.
+    """The one object every optional declaration is read from: one ``getattr``, five fields.
 
     Not a Protocol member, so declaring nothing is legal and reads as
     :data:`~maf_sandbox.DEFAULT_BACKEND_DECLARATIONS`.  *Declaring nothing* is narrower than it
@@ -377,6 +390,30 @@ def _declared_os_families(declared: BackendDeclarations) -> frozenset[OsFamily]:
     return frozenset(family for family in members if isinstance(family, OsFamily))
 
 
+def _declared_isolation_scopes(
+    backend: SandboxBackend, declared: BackendDeclarations
+) -> frozenset[object]:
+    """The scopes a backend claims it serves, defaulting to the sharing every backend already does.
+
+    Saying nothing — an absent field, or an empty set — reads as
+    :data:`~maf_sandbox.IsolationScope.CONVERSATION`, and this is the one declaration whose
+    silence is a claim: get-or-create is what :meth:`~maf_sandbox.SandboxBackend.acquire` has
+    always obliged, so a backend written before this axis serves exactly what it served.
+
+    A value that is not a set is **refused**, on :func:`_declared_set`'s policy rather than
+    :func:`_declared_os_families`'s.  There a mis-shape resolves to the empty answer and can
+    only refuse a workload; here reading one as silence would mint a claim, and a backend that
+    mis-shapedly declared only :data:`~maf_sandbox.IsolationScope.CALL` would be served the
+    conversation workloads its readable declaration turns away.  A posture nobody can read is
+    refused at the router rather than guessed in the workload's favour.
+
+    The members are not checked, for the reason :func:`_declared_set` gives: this is a
+    ``StrEnum``, so a backend declaring plain strings matches exactly as the members do.
+    """
+    scopes = _declared_set(backend, cast("object", declared.isolation_scopes), "isolation_scopes")
+    return scopes or frozenset({IsolationScope.CONVERSATION})
+
+
 def _declared_limits(backend: SandboxBackend, declared: BackendDeclarations) -> SandboxLimits:
     """The ceilings a backend claims, refusing a declaration that is not the right shape.
 
@@ -408,6 +445,12 @@ class SandboxRouter:
         backends: The registered backends, in preference order.
         min_isolation: The weakest boundary this host accepts. Defaults to
             :data:`Isolation.MICROVM`.
+        min_isolation_scope: The most sharing this host accepts — how much of a conversation
+            one sandbox may serve. Defaults to
+            :data:`~maf_sandbox.IsolationScope.CONVERSATION`, which is what every backend
+            already did. Raised to :data:`~maf_sandbox.IsolationScope.CALL` it gives every
+            workload this router serves a sandbox of its own per call, whatever the workload's
+            own spec asks for, and refuses a backend that cannot create one.
         selected: Name of the backend to use. ``None`` picks the first registered one, which
             with a single backend is the whole selection story and stays correct when more
             arrive.
@@ -432,8 +475,9 @@ class SandboxRouter:
             :class:`~maf_sandbox.BackendDeclarations` replaced, or a ``declarations`` that is
             not one. Failing here rather than at first use means a misconfigured deployment
             cannot start with the feature apparently enabled and quietly unsafe.
-        ValueError: at construction, when ``min_isolation`` is not a rung this package
-            recognises — raised by :class:`Isolation` itself rather than surfacing later as a
+        ValueError: at construction, when ``min_isolation`` is not a rung — or
+            ``min_isolation_scope`` not a scope — this package recognises, raised by
+            :class:`Isolation` and :class:`IsolationScope` themselves rather than surfacing as a
             bare ``KeyError`` out of a rank comparison, which would only happen once a backend
             was registered and a floor was actually compared against — or when a denied
             capability or identity is not a member this package recognises: a deny list that
@@ -446,6 +490,7 @@ class SandboxRouter:
         backends: Sequence[SandboxBackend],
         *,
         min_isolation: Isolation = Isolation.MICROVM,
+        min_isolation_scope: IsolationScope = IsolationScope.CONVERSATION,
         selected: str | None = None,
         denied_capabilities: Iterable[Capability] = (),
         denied_identities: Iterable[Identity] = (),
@@ -475,6 +520,7 @@ class SandboxRouter:
             asyncio.AbstractEventLoop, weakref.WeakValueDictionary[SandboxKey, asyncio.Lock]
         ] = weakref.WeakKeyDictionary()
         self._min_isolation = Isolation(str(min_isolation))
+        self._min_isolation_scope = IsolationScope(str(min_isolation_scope))
         self._selected_name = selected
         self._denied_capabilities = frozenset(
             Capability(str(capability)) for capability in denied_capabilities
@@ -533,8 +579,33 @@ class SandboxRouter:
             return self._min_isolation
         return max(self._min_isolation, spec.min_isolation, key=ISOLATION_RANK.__getitem__)
 
+    def effective_isolation_scope(self, spec: SandboxSpec) -> IsolationScope:
+        """The stricter of the host's scope floor and the spec's — a spec may raise, never lower.
+
+        Public because a caller has to build the key from it: whether a key carries a
+        ``call_id`` is what makes a sandbox call-scoped, and the answer is not in the spec alone.
+        :class:`~maf_sandbox.maf.SandboxToolSession` reads it per call to fill the key;
+        :func:`~maf_sandbox.maf.sandboxed_tool` reads it once at attach, for what the tool
+        declares.
+
+        The answer is always a member.  :class:`SandboxSpec` normalises the field it is built
+        with, and this coerces again rather than trusting that from a distance: every gate that
+        makes the scope a boundary is an ``is``, and a caller reaching past the constructor would
+        otherwise be handed a string that fails all of them.
+        """
+        return IsolationScope(
+            str(
+                max(
+                    self._min_isolation_scope,
+                    spec.isolation_scope,
+                    key=ISOLATION_SCOPE_RANK.__getitem__,
+                )
+            )
+        )
+
     def _refuse_unless_backend_can_serve(self, spec: SandboxSpec) -> None:
-        """Raise unless ``spec`` may be served: denials, floor, capabilities, limits, egress.
+        """Raise unless ``spec`` may be served: denials, floor, capabilities, guest shape,
+        limits, egress, scope.
 
         The REFUSING half of the policy, shared by :meth:`ensure_can_serve` and
         :meth:`acquire`. With no backend configured this returns: nothing runs, so nothing
@@ -661,8 +732,23 @@ class SandboxRouter:
                 "one changes the posture it was built for."
             )
 
+        # Resolved rather than matched, for the reason egress is: a workload runs at exactly one
+        # scope. Why it is refused rather than served down a rung is `SandboxScopeNotEnforced`.
+        scope = self.effective_isolation_scope(spec)
+        scopes = _declared_isolation_scopes(self._backend, declarations)
+        if scope not in scopes:
+            serves = ", ".join(sorted(str(one) for one in scopes))
+            raise SandboxScopeNotEnforced(
+                f"sandbox backend {self._backend.name!r} cannot serve the {spec.kind!r} workload "
+                f"one sandbox per {str(scope)} (it serves one per {serves}). A backend declares "
+                f"{str(IsolationScope.CALL)!r} once it folds the key's call_id into whatever "
+                "names a sandbox — until it does, two calls asking not to share would be handed "
+                "the same one."
+            )
+
     def ensure_can_serve(self, spec: SandboxSpec) -> None:
-        """Raise unless ``spec`` may be served: denials, floor, capabilities, limits, egress.
+        """Raise unless ``spec`` may be served: denials, floor, capabilities, guest shape,
+        limits, egress, scope.
 
         Called for you by :func:`maf_sandbox.maf.sandboxed_tool`, and it is also the whole of
         a host's own wiring test::
@@ -686,6 +772,8 @@ class SandboxRouter:
                 or when the backend declares its ceilings as something other than a
                 ``SandboxLimits``.
             SandboxEgressNotEnforced: when the backend cannot enforce the spec's egress mode.
+            SandboxScopeNotEnforced: when the backend cannot serve the workload at the isolation
+                scope this host and the spec resolve to.
         """
         self._refuse_unless_backend_can_serve(spec)
 
@@ -761,6 +849,12 @@ class SandboxRouter:
                 or when the backend declares its ceilings as something other than a
                 ``SandboxLimits``.
             SandboxEgressNotEnforced: when the backend cannot confine egress to this spec.
+            SandboxScopeNotEnforced: when the backend cannot serve the workload at the isolation
+                scope this host and the spec resolve to.
+            ValueError: when ``key`` and the workload's effective scope disagree — a
+                per-call workload whose key names no call, which get-or-create would serve by
+                sharing, or a conversation-scoped one whose key names a call, whose sandbox the
+                cleanup would then delete out from under the conversation.
             TypeError: when the backend hands back a sandbox without :meth:`Sandbox.reclaim`.
                 That sandbox is disposed (this backend, best effort) before the refusal
                 reaches the caller: a backend that cannot reclaim can never clean it, and a
@@ -782,6 +876,24 @@ class SandboxRouter:
                 code=reported.code if reported is not None else None,
             )
         self._refuse_unless_backend_can_serve(spec)
+        scope = self.effective_isolation_scope(spec)
+        if scope is IsolationScope.CALL and not key.call_id:
+            raise ValueError(
+                f"the {spec.kind!r} workload runs one sandbox per call and this key names no "
+                "call (call_id is empty), so get-or-create would hand it the conversation's "
+                "sandbox — the sharing the scope refuses. A key comes from "
+                "SandboxToolSession.key(), which fills call_id at this scope; a caller building "
+                "its own supplies one that is unique per tool call."
+            )
+        if scope is IsolationScope.CONVERSATION and key.call_id:
+            raise ValueError(
+                f"the {spec.kind!r} workload runs one sandbox per conversation and this key "
+                f"names a call ({key.call_id!r}). A backend serving that scope keys a sandbox by "
+                "the other three fields, so it would hand back the conversation's — and the "
+                "framework reads the scope off the key, so the cleanup would then delete that "
+                "shared sandbox at the end of one call. Drop the call id, or raise the "
+                "workload's isolation_scope."
+            )
         sandbox = await self._backend.acquire(key, spec)
         if key in self._unclean:
             # Read again after the create: the check above is only as fresh as the moment
@@ -817,8 +929,18 @@ class SandboxRouter:
         async with self._disposal_lock(key):
             await self._dispose_each(key)
 
-    async def _dispose_each(self, key: SandboxKey, *, refuse: bool = False) -> bool:
+    async def _dispose_each(
+        self,
+        key: SandboxKey,
+        *,
+        refuse: bool = False,
+        backends: Sequence[SandboxBackend] | None = None,
+    ) -> bool:
         """Ask every backend to dispose ``key``; ``True`` when none refused.
+
+        ``backends`` narrows the sweep, and only :meth:`dispose_call` passes it: every other
+        caller asks all of them, because a key may have been served by a backend this router no
+        longer selects.
 
         A landed disposal clears the key from the unclean set: whatever was in that sandbox
         went with it.  ``refuse`` closes the key when one does *not* land, and only
@@ -830,7 +952,7 @@ class SandboxRouter:
         raises, so silence is the only thing that may be read as success.
         """
         reasons: list[DisposalFailure] = []
-        for backend in self._backends:
+        for backend in self._backends if backends is None else backends:
             try:
                 undisposed = await backend.dispose(key)
             except Exception as exc:  # noqa: BLE001 - disposal must not fail a caller
@@ -861,6 +983,65 @@ class SandboxRouter:
         self._unclean.pop(key, None)
         return True
 
+    async def dispose_call(self, key: SandboxKey, *, timeout: float) -> bool:
+        """Delete the sandbox a call-scoped key owns, bounded, and say whether it landed.
+
+        :meth:`dispose_unclean`'s bound and its answer without its ledger entry, because the two
+        protect different things.  A key marked unclean refuses the conversation's *next*
+        acquire; a call-scoped key has no next acquire, so the entry would never be read and
+        never cleared.  What a ``False`` leaves is a sandbox no later call can address — the
+        caller reports it, and the conversation's purge is what eventually reaches it.
+
+        ``FailedReclaimPolicy`` is not consulted, and that is the point: it loosens an
+        escalation — disposing a sandbox a removal could not clean — where this delete is the
+        call's own cleanup and the separation the workload asked for.
+
+        Raises:
+            ValueError: when ``key`` names no call, which is a conversation's key and not this
+                method's to delete; or when ``timeout`` is not a finite positive number of
+                seconds, for the reason :meth:`dispose_unclean` gives.
+        """
+        if not key.call_id:
+            raise ValueError(
+                f"dispose_call was given a key naming no call ({key.scope}/{key.thread_id}/"
+                f"{key.agent_dir}), which is a conversation's. Deleting it here would take every "
+                "kind's sandbox for that conversation and skip the ledger that refuses the key "
+                "when the delete does not land — the protection this method drops precisely "
+                "because a call-scoped key has no next acquire. Use dispose(key), or "
+                "dispose_unclean(key, timeout=...) when a call could not leave it clean."
+            )
+        if self._backend is not None:
+            serves = _declared_isolation_scopes(self._backend, _declarations(self._backend))
+            if IsolationScope.CALL not in serves:
+                raise ValueError(
+                    f"dispose_call was given a key naming a call, and sandbox backend "
+                    f"{self._backend.name!r} does not serve that scope, so it has no sandbox of "
+                    "that call's to delete. What it does have is the conversation's, which its "
+                    "dispose sweeps by scope, thread and agent — deleting it out from under "
+                    "every later call. Use dispose(key) for a conversation."
+                )
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError(f"timeout must be a finite positive number of seconds, not {timeout}")
+        try:
+            async with asyncio.timeout(timeout):
+                async with self._disposal_lock(key):
+                    # This backend alone. A key minted for one call was served by the backend
+                    # this router selected and by nothing else, and asking the others would
+                    # report their failures as this call's leak. None configured means nothing
+                    # was ever served, which `_dispose_each` answers as a landed delete.
+                    serving = [] if self._backend is None else [self._backend]
+                    return await self._dispose_each(key, backends=serving)
+        except TimeoutError:
+            logger.warning(
+                "sandbox router: disposing the call sandbox %s/%s/%s/%s did not finish within %ss",
+                key.scope,
+                key.thread_id,
+                key.agent_dir,
+                key.call_id,
+                timeout,
+            )
+            return False
+
     async def dispose_unclean(self, key: SandboxKey, *, timeout: float) -> bool:
         """Dispose a sandbox the framework could not clean, and refuse the key until one lands.
 
@@ -878,11 +1059,20 @@ class SandboxRouter:
         refused.  ``FailedReclaimPolicy.KEEP`` suppresses the ledger writes, not the bound.
 
         Raises:
-            ValueError: when ``timeout`` is not a finite positive number of seconds. ``math.inf``
+            ValueError: when ``key`` names a call, which :meth:`dispose_call` serves and this
+                cannot protect; or when ``timeout`` is not a finite positive number of seconds.
+                ``math.inf``
                 would leave ``asyncio.timeout`` unable to expire, so the documented bound would
                 not hold and a hanging backend would hang the caller. Checked before the key is
                 marked, so a rejected call has no lingering effect on the ledger.
         """
+        if not self._may_be_refused(key):
+            raise ValueError(
+                f"dispose_unclean was given a key naming a call ({key.call_id}). Refusing it "
+                "afterwards protects nothing — that key has no next acquire — so this method has "
+                "nothing to offer over dispose_call(key, timeout=...), which deletes the "
+                "call's sandbox and reports whether it landed."
+            )
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError(f"timeout must be a finite positive number of seconds, not {timeout}")
         # The opt-down is from closing the key, not from the bound: this still runs after a
@@ -922,6 +1112,17 @@ class SandboxRouter:
             )
             return False
 
+    def _may_be_refused(self, key: SandboxKey) -> bool:
+        """Whether the ledger can protect ``key`` at all.
+
+        It closes a key against its **next** acquire, and a call-scoped key has none — the entry
+        would be read by nobody and cleared by nothing, so writing one is an unbounded map on a
+        host that mints a key per call. What the entry would have refused is refused anyway: the
+        conditions that mark a key — a sandbox this backend cannot reclaim, a delete that did not
+        land — are re-read on the next acquire rather than remembered.
+        """
+        return not key.call_id
+
     def mark_unclean(self, key: SandboxKey, reason: DisposalFailure | None = None) -> None:
         """Refuse ``key`` without disposing — for a cleanup cancelled before it could dispose.
 
@@ -933,7 +1134,11 @@ class SandboxRouter:
         The refusal carries ``reason``'s *code* only; the detail stays in the log.  A reason
         does not overwrite one a disposal already recorded: what a backend said about the
         sandbox says more than that a cleanup was cut short.
+
+        A key naming a call is not written at all — :meth:`_may_be_refused` carries why.
         """
+        if not self._may_be_refused(key):
+            return
         if self._unclean.get(key) is None:
             # Folded, not stored as given: one place decides what a legal code is.
             self._unclean[key] = None if reason is None else fold_disposal_failures([reason])

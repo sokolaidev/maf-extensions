@@ -370,7 +370,7 @@ class InProcessSandboxBackend:
             proxy-capable live backend, rather than every offline test becoming a test of the
             attach refusal. A test of that refusal passes a narrower set (``frozenset()`` for
             "enforces nothing", ``{UNRESTRICTED}`` for the no-confinement backend). The other
-            three fields keep the router's own silence rules, so leaving them unset and stating
+            four fields keep the router's own silence rules, so leaving them unset and stating
             them explicitly serve one spec identically — which is why ``capabilities`` still
             defaults to :data:`~maf_sandbox.DEFAULT_CAPABILITIES` even though this sandbox
             genuinely implements the pull surface: a test that wants it asks for it.
@@ -390,6 +390,13 @@ class InProcessSandboxBackend:
             which is what a real backend does, since ``dispose`` is contractually best-effort.
             Fires after ``dispose_error``, so a test setting both sees the raise.
         purge_failure: The same for ``dispose_scope``, returned as ``ScopePurge.undisposed``.
+        sandbox_per_key: Hand out one sandbox per ``(key, kind)`` instead of one for everything,
+            which is what a real backend does and what a test of
+            :data:`~maf_sandbox.IsolationScope.CALL` needs: two keys differing only in
+            ``call_id`` must not reach one filesystem. The sandbox passed as ``sandbox`` serves
+            the first key and later ones get their own, so a test scripting outputs for a single
+            key is unaffected. A backend declaring that scope without this is a fake that lies,
+            and ``assert_call_scope_conformance`` is what catches it.
 
     Every ``acquire`` records ``key`` into :attr:`keys` and ``spec`` into :attr:`specs`
     (skipped when ``acquire_error`` fires — a failed acquire acquired nothing). Every
@@ -398,10 +405,10 @@ class InProcessSandboxBackend:
     ``(scope, thread_id)`` into :attr:`purged` and returns :attr:`purge_count`, settable per
     test to simulate more than one sandbox reclaimed.
 
-    A deliberate simplification: every ``acquire`` returns the same sandbox whatever the key
-    or the spec's kind, where a real backend keys sandboxes by ``(key, kind)``. Tests that
-    care which kind asked read :attr:`specs`; a test that needs two genuinely distinct
-    sandboxes registers two backends.
+    A deliberate simplification, unless ``sandbox_per_key`` says otherwise: every ``acquire``
+    returns the same sandbox whatever the key or the spec's kind, where a real backend keys
+    sandboxes by ``(key, kind)``. Tests that care which kind asked read :attr:`specs`; a test
+    that needs two genuinely distinct sandboxes sets the flag, or registers two backends.
     """
 
     def __init__(
@@ -415,6 +422,7 @@ class InProcessSandboxBackend:
         dispose_error: BaseException | None = None,
         dispose_failure: DisposalFailure | None = None,
         purge_failure: DisposalFailure | None = None,
+        sandbox_per_key: bool = False,
     ) -> None:
         self.sandbox = sandbox if sandbox is not None else InProcessSandbox()
         self._name = name
@@ -424,6 +432,13 @@ class InProcessSandboxBackend:
         self.dispose_error = dispose_error
         self.dispose_failure = dispose_failure
         self.purge_failure = purge_failure
+        self.sandbox_per_key = sandbox_per_key
+        #: What each ``(key, kind)`` was handed, when ``sandbox_per_key`` is set. Emptied for a
+        #: key a ``dispose`` **landed** on, so reacquiring one starts from an empty filesystem
+        #: the way a real create does — and kept when one was configured to fail, because a
+        #: sandbox that was not deleted is one the next acquire still finds.
+        self.sandboxes: dict[tuple[SandboxKey, str], InProcessSandbox] = {}
+        self._handed_out = False
         self.keys: list[SandboxKey] = []
         self.specs: list[SandboxSpec] = []
         self.disposed: list[SandboxKey] = []
@@ -447,16 +462,43 @@ class InProcessSandboxBackend:
             raise self.acquire_error
         self.keys.append(key)
         self.specs.append(spec)
-        return self.sandbox
+        if not self.sandbox_per_key:
+            return self.sandbox
+        held = self.sandboxes.get((key, spec.kind))
+        if held is None:
+            # The one this was constructed with serves the first acquire, so a test that
+            # scripted its outputs still gets them. Once, not once per empty map: a key whose
+            # sandbox a dispose took starts from a fresh filesystem, the way a create does.
+            held = InProcessSandbox() if self._handed_out else self.sandbox
+            self._handed_out = True
+            self.sandboxes[(key, spec.kind)] = held
+        return held
 
     async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
         self.disposed.append(key)
         if self.dispose_error is not None:
             raise self.dispose_error
-        return self.dispose_failure
+        if self.dispose_failure is not None:
+            # A delete that did not land leaves the sandbox and everything in it. Dropping the
+            # mapping here would hand the next acquire a fresh filesystem, so a test written
+            # against a failing dispose would measure separation this fake had not given it.
+            return self.dispose_failure
+        for held in [entry for entry in self.sandboxes if entry[0] == key]:
+            del self.sandboxes[held]
+        return None
 
     async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
         self.purged.append((scope, thread_id))
+        if self.purge_failure is not None:
+            # Kept for the reason `dispose` keeps them, and this one reports a partial sweep:
+            # `undisposed` says some sandbox may still be there, so all of them stay reachable.
+            return ScopePurge(self.purge_count, self.purge_failure)
+        for held in [
+            entry
+            for entry in self.sandboxes
+            if entry[0].scope == scope and entry[0].thread_id == thread_id
+        ]:
+            del self.sandboxes[held]
         return ScopePurge(self.purge_count, self.purge_failure)
 
 

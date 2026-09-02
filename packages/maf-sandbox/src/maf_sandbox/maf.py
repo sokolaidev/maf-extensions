@@ -47,6 +47,7 @@ from ._protocol import (
     CallerContext,
     Capability,
     DisposalFailure,
+    IsolationScope,
     Sandbox,
     SandboxKey,
     SandboxSpec,
@@ -62,6 +63,11 @@ from ._reclaim import (
 )
 from ._router import ATTACH_REFUSALS, NoSandboxBackend, SandboxRouter, SandboxUnclean
 
+#: The declaration key naming the scope a sandbox tool is served at. Written only for
+#: :data:`~maf_sandbox.IsolationScope.CALL`, and read by a host's own policy: the framework's
+#: flow module knows the two FIDES keys beside it and not this one.
+ISOLATION_SCOPE_KEY = "sandbox_isolation_scope"
+
 #: Fallback for :func:`sandboxed_tool`'s ``logger`` argument. Named apart from the usual
 #: module-level ``logger`` because that argument is the whole point: a workload passes its
 #: own logger so the failure ladder's records keep the workload's logger name, and only a
@@ -69,6 +75,7 @@ from ._router import ATTACH_REFUSALS, NoSandboxBackend, SandboxRouter, SandboxUn
 _DEFAULT_LOGGER = logging.getLogger(__name__)
 
 __all__ = [
+    "ISOLATION_SCOPE_KEY",
     "SandboxPurger",
     "SandboxToolSession",
     "list_all_files",
@@ -162,6 +169,18 @@ def _this_call(owner: object) -> _SandboxToolCall | None:
     return call if call is not None and call.owner is owner else None
 
 
+def _call_name(call: _SandboxToolCall) -> str:
+    """This call's own id, allocated on first use and fixed from then on.
+
+    One whole id serves both the guest path and the key, because a call-scoped sandbox and the
+    directory inside it name the same call; two would say they were two, and two calls colliding
+    on one are two calls get-or-create hands the same sandbox.
+    """
+    if call.name is None:
+        call.name = uuid4().hex
+    return call.name
+
+
 def _prefixed(name: str) -> str:
     """``name``, safe to bake into a logging format string.
 
@@ -215,6 +234,7 @@ def sandbox_tool_declarations(
     outbound_max_confidentiality: str | None = None,
     output_sink: OutputSink | None = None,
     also_carries_out: bool = False,
+    isolation_scope: IsolationScope | None = None,
 ) -> dict[str, Any]:
     """The information-flow declarations a sandbox workload's tool carries.
 
@@ -274,6 +294,12 @@ def sandbox_tool_declarations(
             out" condition, so the caller computes only the fact it alone knows and this one
             rule still decides whether the cap is written. The caller owns the claim; the
             library cannot check it.
+        isolation_scope: The scope this workload's sandbox is actually served at, which a host's
+            floor can raise above what ``spec`` asks for. ``None`` reads the spec, which is what
+            a caller without a router has. Written only when it is
+            :data:`~maf_sandbox.IsolationScope.CALL`, because that is the whole of what there is
+            to say: the conversation-scoped sandbox is what a tool carrying no such key already
+            means.
     """
     declarations: dict[str, Any] = {}
     if source_integrity is not None:
@@ -282,6 +308,16 @@ def sandbox_tool_declarations(
     carries_something_out = bool(spec.egress_allow) or lands_artifacts or also_carries_out
     if outbound_max_confidentiality is not None and carries_something_out:
         declarations["max_allowed_confidentiality"] = outbound_max_confidentiality
+    # Coerced for the reason `SandboxSpec.__post_init__` coerces its own, and this argument is
+    # public where that one is a field: a caller passing the string would declare nothing at all.
+    scope = (
+        spec.isolation_scope if isolation_scope is None else IsolationScope(str(isolation_scope))
+    )
+    if scope is IsolationScope.CALL:
+        # This package's own vocabulary rather than the flow tracker's, and nothing in the
+        # framework reads it: what it gives a host is the fact its confidentiality cap cannot
+        # carry — that no other call's data was in the filesystem this result came out of.
+        declarations[ISOLATION_SCOPE_KEY] = str(scope)
     return declarations
 
 
@@ -301,10 +337,10 @@ class SandboxToolSession:
     read; :meth:`guest_call_path` is the first value that has to be generated and then remembered,
     which is why it lives in :data:`_CALL` and not here.
 
-    All three accessors return **either the value or the string the tool should return**, rather
-    than raising.  A MAF tool answers with a ``str`` and a refusal is an ordinary answer, not
-    an exception: the model has to learn what happened through the same channel as a
-    successful result, or the turn ends mute.  So a body reads::
+    All three accessors return **either the value or the string the tool should return** for
+    anything the model has to hear about.  A MAF tool answers with a ``str`` and a refusal is an
+    ordinary answer, not an exception: the model has to learn what happened through the same
+    channel as a successful result, or the turn ends mute.  So a body reads::
 
         key = session.key()
         if isinstance(key, str):
@@ -316,6 +352,13 @@ class SandboxToolSession:
 
     A workload whose tool returns something other than a plain ``str`` translates the message
     into its own result shape at those two points; nothing else about the contract changes.
+
+    **A wiring mistake in the kind raises**, and that is the line the two shapes are split on: a
+    model can cause a refusal and cannot cause a body that asks for a call's key outside a call,
+    or acquires on a key naming a call that has ended.  Those reach a developer through a
+    traceback rather than a tool result, the way :meth:`guest_call_path` has always answered
+    them, because a sentence in the transcript is not where they get fixed.  Each is listed in
+    the ``Raises`` of the method it belongs to.
     """
 
     def __init__(
@@ -367,6 +410,16 @@ class SandboxToolSession:
         A call with no bound conversation is refused rather than served from a placeholder
         key, because a shared fallback key is exactly the cross-conversation reach the key
         exists to prevent.
+
+        The key names this call as well when the host and the spec resolve to
+        :data:`~maf_sandbox.IsolationScope.CALL`, and that is what makes the sandbox the call's
+        own: without it get-or-create hands back the conversation's, which the router refuses at
+        that scope rather than serves.
+
+        Raises:
+            RuntimeError: at that scope only — called outside a tool call, or after one
+                returned, there is no call to key a sandbox to and nothing that would dispose
+                what it creates. A wiring mistake in a kind, like :meth:`guest_call_path`'s.
         """
         thread_id = self._context.current_thread_id()
         if thread_id is None:
@@ -378,7 +431,21 @@ class SandboxToolSession:
             scope=self._context.current_scope(),
             thread_id=thread_id,
             agent_dir=self._agent_dir,
+            call_id=self._call_id(),
         )
+
+    def _call_id(self) -> str:
+        """This call's id when the workload runs one sandbox per call, and empty otherwise."""
+        if self._router.effective_isolation_scope(self._spec) is not IsolationScope.CALL:
+            return ""
+        call = _this_call(self)
+        if call is None or call.closed:
+            raise RuntimeError(
+                f"{self._name}: key() was called outside a tool call, and this workload runs one "
+                "sandbox per call — there is no call to key it to, and nothing would dispose "
+                "what it creates. Call it from the tool body."
+            )
+        return _call_name(call)
 
     def guest_call_path(self) -> str:
         """This call's own place **inside the sandbox**, under the spec's ``work_dir``.
@@ -412,11 +479,9 @@ class SandboxToolSession:
                 "path is already reclaimed, and anything written to it now would stay in the "
                 "sandbox. A task outliving the call needs a path of its own."
             )
-        if call.name is None:
-            call.name = uuid4().hex[:12]
         # Composed for the caller, and never stored composed: the reclaim addresses this by
         # name against ``work_dir``, the way every other confined call on the surface does.
-        return f"{self._spec.work_dir}/{call.name}"
+        return f"{self._spec.work_dir}/{_call_name(call)}"
 
     async def list_files(self, store: Any) -> list[str] | str:
         """The paths this caller may act on, or the message to return if they cannot be read.
@@ -461,7 +526,42 @@ class SandboxToolSession:
           that detail goes to the log — with :func:`~maf_sandbox.error_detail`, because
           ``str()`` on such an error is often just ``Operation returned an invalid status``
           — and the model gets a fixed sentence saying only that the run degraded.
+
+        Raises:
+            RuntimeError: given a key naming a call while no tool call of this session is
+                open — after one returned, from a context that never had one, or naming a
+                different call than the one running. The wiring mistake :meth:`guest_call_path`
+                refuses for the same reason: nothing would delete what it created. Raised again
+                when the call ends *during* the acquire, in which case the sandbox that came back
+                is disposed before the refusal.
         """
+        call = _this_call(self)
+        if key.call_id and (call is None or call.closed):
+            raise RuntimeError(
+                f"{self._name}: acquire() was given a key naming a call, with no open tool call "
+                "to record it against — this one has returned, or the caller never had one. The "
+                "sandbox it would create is past whatever would have deleted it: no cleanup "
+                "walks it, and no later call can name that key. A task outliving the call needs "
+                "a key of its own."
+            )
+        if key.call_id and call is not None and key.call_id != call.name:
+            raise RuntimeError(
+                f"{self._name}: acquire() was given a key naming {key.call_id!r}, which is not "
+                "this call. That sandbox is either gone or is the one its own cleanup could not "
+                "delete, and reaching it from here is exactly the sharing the scope refuses. "
+                "Take the key from session.key(), which names the call it is called in."
+            )
+        per_call = self._router.effective_isolation_scope(self._spec) is IsolationScope.CALL
+        if key.call_id and call is not None and per_call:
+            # Recorded before the create rather than after it: a cancellation landing inside the
+            # backend's own acquire can leave a sandbox it already made, and a map written
+            # afterwards would hand the cleanup nothing to delete.
+            #
+            # Only at this scope, and that is the load-bearing half. The cleanup reads the scope
+            # off the key, and a backend's `dispose` sweeps a key's whole (scope, thread, agent) —
+            # so registering a call-naming key under a conversation-scoped workload would have the
+            # `finally` delete the conversation's own sandbox over an acquire the router refused.
+            call.acquired.setdefault(key, [])
         try:
             sandbox = await self._router.acquire(key, self._spec)
         except ATTACH_REFUSALS as exc:
@@ -492,7 +592,27 @@ class SandboxToolSession:
             # tenant ids, so it goes to the log and never into the model's context.
             self._logger.warning(f"{self._log_prefix}: sandbox unavailable: %s", error_detail(exc))
             return _SANDBOX_UNAVAILABLE
-        call = _this_call(self)
+        if key.call_id and call is not None and call.closed:
+            # The call ended while the backend was still creating. Its cleanup has already run the
+            # delete for this key, so what came back is a sandbox nothing is left to remove: take
+            # it here, and refuse rather than hand a task something it cannot have cleaned up.
+            landed = await self._router.dispose_call(key, timeout=self._router.reclaim.timeout)
+            if landed:
+                fate = "It has been disposed and the result refused."
+            else:
+                self._logger.warning(
+                    f"{self._log_prefix}: a sandbox created after the call had ended was not "
+                    "disposed; the conversation's purge is what reaches it now"
+                )
+                fate = (
+                    "Deleting it did not land, so it is still there until the conversation's "
+                    "purge reaches it, and the result is refused."
+                )
+            raise RuntimeError(
+                f"{self._name}: acquire() came back after its tool call had ended, so the sandbox "
+                f"it created is past the cleanup that would have deleted it. {fate} A task "
+                "outliving the call needs a key of its own."
+            )
         if call is not None and not call.closed:
             # Recorded on the way through rather than re-derived in the `finally`, where a
             # second `acquire` could fail on its own and report a reclaim failure for it. Not
@@ -562,6 +682,11 @@ def _refuse_not_yet_reclaimed(
     if router.reclaim.failed_reclaim_policy is FailedReclaimPolicy.KEEP:
         return
     for key, _ in acquired[start:]:
+        if key.call_id:
+            # Nothing to refuse: the ledger closes a key against its *next* acquire, and a
+            # call-scoped key has none — the entry would be read by nobody and cleared by
+            # nothing. What is left is a sandbox no later call can address.
+            continue
         router.mark_unclean(
             key,
             # `unknown`, not a guess: the cleanup stopped before anything could observe the
@@ -570,6 +695,61 @@ def _refuse_not_yet_reclaimed(
                 "unknown", "the tool call's cleanup was cancelled before it could dispose"
             ),
         )
+
+
+async def _tell_the_host(
+    on_failure: Callable[[ReclaimFailure], Awaitable[None]],
+    failure: ReclaimFailure,
+    *,
+    prefix: str,
+    logger: logging.Logger,
+    timeout: float,
+) -> None:
+    """Hand one failure to the host's callback, bounded, and swallow what the callback does with it.
+
+    Bounded like the removal and separately from it: a host may reach a backend in here, which is
+    a round trip that can hang, and an unbounded one holds the tool call open for as long as it
+    hangs — on a cancelled call, past a deadline that has already expired.
+    """
+    try:
+        async with asyncio.timeout(timeout):
+            await on_failure(failure)
+    except TimeoutError:
+        logger.warning(f"{prefix}: on_reclaim_failure did not finish within %ss", timeout)
+    except Exception as raised:  # noqa: BLE001 — a host's callback must not fail the call
+        logger.warning(f"{prefix}: on_reclaim_failure raised: %s", error_detail(raised))
+    except (asyncio.CancelledError, GeneratorExit) as stopped:
+        # The callback awaits, so this is the caller's cancellation arriving inside it, not a
+        # failure of the callback's own — logged, then re-raised for the caller's handler. Named
+        # rather than stated, so this line interpolates: `prefix` has its `%` doubled for exactly
+        # that, and `logging` leaves the doubling alone with no args.
+        logger.warning(f"{prefix}: on_reclaim_failure did not finish: %s", type(stopped).__name__)
+        raise
+
+
+async def _dispose_the_call_sandbox(
+    key: SandboxKey,
+    *,
+    router: SandboxRouter,
+    prefix: str,
+    logger: logging.Logger,
+    timeout: float,
+) -> str | None:
+    """Delete the sandbox one call owns, and say why it is still there if it is.
+
+    The whole sandbox goes, so nothing is removed from inside it first, and a transport's note
+    that a stop did not reach everything is answered by the same delete.  Nothing is marked
+    unclean: that refuses a key's next acquire, and this key has none.
+    """
+    try:
+        landed = await router.dispose_call(key, timeout=timeout)
+    except (asyncio.CancelledError, GeneratorExit):
+        logger.warning(
+            f"{prefix}: the call's sandbox was not disposed — the call was cancelled during the "
+            "delete. It holds this call's files until the conversation's purge reaches it"
+        )
+        raise
+    return None if landed else "the delete did not land"
 
 
 async def _reclaim_the_call(
@@ -586,10 +766,16 @@ async def _reclaim_the_call(
     """Remove what one tool call owns, and act on a sandbox it could not leave clean.
 
     Once per sandbox the call acquired — ordinarily one, and more only for a call that
-    reached a second key. A sandbox is unclean when the removal did not happen, or when
+    reached a second key. A **call-scoped** key's sandbox is deleted rather than emptied: it was
+    created for this call, so the delete is the cleanup itself and not an escalation, and
+    ``FailedReclaimPolicy`` does not loosen it. A sandbox is unclean when the removal did not
+    happen, or when
     ``unclean`` carries a transport's note that a stop did not reach everything the program
-    started: either way what is left stays readable by every later call, so the framework
-    disposes the sandbox — unless the host opted down — and only then tells the host.
+    started.  At :data:`~maf_sandbox.IsolationScope.CONVERSATION` either of those leaves the
+    residue readable by every later call, so the framework disposes the sandbox — unless the
+    host opted down — and only then tells the host.  At ``CALL`` the delete above was already
+    the cleanup, and a leak it could not take is one no later call can address: nothing is
+    escalated, nothing is opted down from, and the host is told what did not happen.
     ``timeout`` bounds the removal, the disposal and the report separately, so one sandbox
     can cost up to three times it.
 
@@ -608,6 +794,45 @@ async def _reclaim_the_call(
     path = f"{spec.work_dir}/{call.name}" if call.name is not None else spec.work_dir
     acquired = tuple(call.acquired.items())
     for index, (key, sandboxes) in enumerate(acquired):
+        if key.call_id:
+            try:
+                undisposed = await _dispose_the_call_sandbox(
+                    key, router=router, prefix=prefix, logger=logger, timeout=timeout
+                )
+                if undisposed is None:
+                    # The sandbox went, and every note about it went with it.
+                    continue
+                logger.warning(f"{prefix}: the call's sandbox was not disposed: %s", undisposed)
+                left = [
+                    undisposed,
+                    *(
+                        reason
+                        for owner, reason in unclean
+                        if any(owner is held for held in sandboxes)
+                    ),
+                ]
+                if len(left) > 1:
+                    # It is still there, so a stop that did not reach everything the program
+                    # started is still true of it — and a host told only that data was left
+                    # would not know something may still be running in it.
+                    logger.warning(
+                        f"{prefix}: the sandbox that was not disposed is not clean either: %s",
+                        "; ".join(left[1:]),
+                    )
+                if on_failure is not None:
+                    await _tell_the_host(
+                        on_failure,
+                        ReclaimFailure(
+                            tool=tool, key=key, path=path, reason="; ".join(left), disposal="failed"
+                        ),
+                        prefix=prefix,
+                        logger=logger,
+                        timeout=timeout,
+                    )
+            except (asyncio.CancelledError, GeneratorExit):
+                _refuse_not_yet_reclaimed(router, acquired, index)
+                raise
+            continue
         reasons: list[str] = []
         if call.name is not None:
             try:
@@ -654,29 +879,15 @@ async def _reclaim_the_call(
             )
             if on_failure is None:
                 continue
-            failure = ReclaimFailure(
-                tool=tool, key=key, path=path, reason="; ".join(reasons), disposal=disposal
+            await _tell_the_host(
+                on_failure,
+                ReclaimFailure(
+                    tool=tool, key=key, path=path, reason="; ".join(reasons), disposal=disposal
+                ),
+                prefix=prefix,
+                logger=logger,
+                timeout=timeout,
             )
-            try:
-                # Bounded like the removal, and separately from it: a host may still reach a
-                # backend in here, which is a round trip that can hang, and an unbounded one holds
-                # the tool call open for as long as it hangs — on a cancelled call, past a deadline
-                # that has already expired.
-                async with asyncio.timeout(timeout):
-                    await on_failure(failure)
-            except TimeoutError:
-                logger.warning(f"{prefix}: on_reclaim_failure did not finish within %ss", timeout)
-            except Exception as raised:  # noqa: BLE001 — a host's callback must not fail the call
-                logger.warning(f"{prefix}: on_reclaim_failure raised: %s", error_detail(raised))
-            except (asyncio.CancelledError, GeneratorExit) as stopped:
-                # The callback awaits, so this is the caller's cancellation arriving inside it, not
-                # a failure of the callback's own — logged, then re-raised for the handler below.
-                # Named rather than stated, so this line interpolates: `prefix` has its `%` doubled
-                # for exactly that, and `logging` leaves the doubling alone with no args.
-                logger.warning(
-                    f"{prefix}: on_reclaim_failure did not finish: %s", type(stopped).__name__
-                )
-                raise
         except (asyncio.CancelledError, GeneratorExit):
             # Cancellation during the disposal or the host callback, not the removal above. This
             # key is already accounted for — dispose_unclean refuses it before its first await, and
@@ -785,10 +996,17 @@ def sandboxed_tool(
             cap is derived by the one rule rather than hand-built into ``declarations=``.
         on_reclaim_failure: Called with a :class:`~maf_sandbox.ReclaimFailure` when the call
             left its sandbox unclean — its guest path could not be removed, or a program it
-            stopped may have left something running — **after** the framework has disposed
-            that sandbox. The failure says what the disposal did. This is notification: where
-            a host logs, alerts or counts. It is not where safety is wired; that is the
-            router's, and a host opts down from it with
+            stopped may have left something running — **after** the framework has acted on it.
+            :attr:`~maf_sandbox.ReclaimFailure.disposal` says what that was: ``disposed`` where
+            the framework deleted the sandbox, ``kept`` where the host opted down, and
+            ``failed`` where the delete did not land. A **call-scoped** sandbox reports only
+            the last of those: deleting it is the cleanup rather than an escalation over a
+            failed one, so the callback runs when that delete did not happen — except when the
+            call was cancelled *during* it, where the leak reaches the log and nothing else,
+            because the callback would be awaiting past a deadline that has already expired.
+            This is
+            notification: where a host logs, alerts or counts. It is not where safety is
+            wired; that is the router's, and a host opts down from it with
             ``ReclaimConfig(failed_reclaim_policy=FailedReclaimPolicy.KEEP)``, never from here.
             Default ``None`` falls back to the router's ``reclaim.on_failure``. Its own failure is
             logged and swallowed — it runs in a ``finally``, over a call that may already be
@@ -861,6 +1079,7 @@ def sandboxed_tool(
             outbound_max_confidentiality=outbound_max_confidentiality,
             output_sink=output_sink,
             also_carries_out=also_carries_out,
+            isolation_scope=router.effective_isolation_scope(spec),
         )
     )
 

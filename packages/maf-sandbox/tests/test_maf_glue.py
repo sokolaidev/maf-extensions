@@ -15,6 +15,7 @@ import dataclasses
 import enum
 import logging
 import math
+from typing import Any, cast
 
 import pytest
 
@@ -29,6 +30,7 @@ from maf_sandbox import (
     Egress,
     FailedReclaimPolicy,
     Isolation,
+    IsolationScope,
     LandedArtifact,
     NoSandboxBackend,
     OutputDisposition,
@@ -47,6 +49,7 @@ from maf_sandbox import (
 from maf_sandbox._reclaim import note_unclean
 from maf_sandbox._router import ATTACH_REFUSALS
 from maf_sandbox.maf import (
+    ISOLATION_SCOPE_KEY,
     SandboxPurger,
     SandboxToolSession,
     list_all_files,
@@ -225,6 +228,38 @@ class TestSandboxToolDeclarations:
         declarations = sandbox_tool_declarations(_SPEC)
         assert "confidentiality" not in declarations
         assert "max_allowed_confidentiality" not in declarations
+
+    def test_the_call_scope_is_written_only_when_there_is_something_to_say(self):
+        """The conversation-scoped sandbox is what a tool carrying no such key already means."""
+        assert ISOLATION_SCOPE_KEY not in sandbox_tool_declarations(_SPEC)
+        assert sandbox_tool_declarations(
+            dataclasses.replace(_SPEC, isolation_scope=IsolationScope.CALL)
+        ) == {"source_integrity": "trusted", ISOLATION_SCOPE_KEY: "call"}
+
+    def test_a_caller_that_knows_the_served_scope_states_it(self):
+        """A host floor raises the scope above the spec, and the tool says what it is served."""
+        assert sandbox_tool_declarations(_SPEC, isolation_scope=IsolationScope.CALL) == {
+            "source_integrity": "trusted",
+            ISOLATION_SCOPE_KEY: "call",
+        }
+
+    def test_a_string_override_declares_the_scope_it_names(self):
+        """The argument is public, and the check below it is `is`: a string would declare nothing."""
+        assert sandbox_tool_declarations(_SPEC, isolation_scope=cast(Any, "call")) == {
+            "source_integrity": "trusted",
+            ISOLATION_SCOPE_KEY: "call",
+        }
+
+    def test_an_override_that_is_not_a_scope_is_refused(self):
+        with pytest.raises(ValueError, match="per-request"):
+            sandbox_tool_declarations(_SPEC, isolation_scope=cast(Any, "per-request"))
+
+    def test_the_attached_tool_declares_what_the_router_resolves(self):
+        tool = _attach_with(
+            _reclaiming_body,
+            _router(_per_call_backend(), min_isolation_scope=IsolationScope.CALL),
+        )[0]
+        assert tool.additional_properties[ISOLATION_SCOPE_KEY] == "call"
 
     def test_no_integrity_claim_is_expressible(self):
         """A workload whose sandbox fetches arbitrary content must be able to decline."""
@@ -891,6 +926,527 @@ class TestTheCallOwnsAGuestPath:
         """A wiring mistake in a kind, not something a model can cause or should be told."""
         with pytest.raises(RuntimeError, match="outside a tool call"):
             _session().guest_call_path()
+
+
+_CALL_SCOPED_SPEC = dataclasses.replace(_SPEC, isolation_scope=IsolationScope.CALL)
+
+
+def _per_call_backend(**kw):
+    """A fake honest enough to declare the scope: one sandbox per key, and it says so."""
+    return InProcessSandboxBackend(
+        sandbox_per_key=True,
+        declarations=dataclasses.replace(
+            FAKE_BACKEND_DECLARATIONS,
+            isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
+        ),
+        **kw,
+    )
+
+
+class TestACallScopedWorkloadGetsItsOwnSandbox:
+    """`IsolationScope.CALL` reaches the key, and the key is what the backend keys a sandbox by."""
+
+    def test_the_key_names_the_call(self):
+        backend = _per_call_backend()
+        _call(_reclaiming(backend, spec=_CALL_SCOPED_SPEC), target="x")
+        assert len(backend.keys) == 1
+        assert backend.keys[0].call_id
+        assert backend.keys[0].scope == "scope-a"
+
+    def test_a_conversation_scoped_workload_names_no_call(self):
+        backend = _per_call_backend()
+        _call(_reclaiming(backend), target="x")
+        assert backend.keys[0].call_id == ""
+
+    def test_the_call_names_itself_once_for_its_key_and_its_path(self):
+        """One id, so the sandbox and the directory inside it do not claim to be two calls."""
+        backend = _per_call_backend()
+        path = _call(_reclaiming(backend, spec=_CALL_SCOPED_SPEC), target="x")
+        assert path == f"/maf-sandbox/work/{backend.keys[0].call_id}"
+
+    def test_the_call_id_is_a_whole_uuid(self):
+        """It is key material, so shortening it trades the boundary for a tidier path.
+
+        Two calls colliding on the id are two calls get-or-create hands one sandbox, with
+        nothing anywhere to show the separation was not there.
+        """
+        backend = _per_call_backend()
+        _call(_reclaiming(backend, spec=_CALL_SCOPED_SPEC), target="x")
+        call_id = backend.keys[0].call_id
+        assert len(call_id) == 32
+        assert int(call_id, 16) >= 0  # hex throughout, so the whole of it carries entropy
+
+    def test_two_calls_never_meet_in_one_sandbox(self):
+        backend = _per_call_backend()
+        tool = _reclaiming(backend, spec=_CALL_SCOPED_SPEC)
+        _call(tool, target="a")
+        _call(tool, target="b")
+        first, second = backend.keys
+        assert first.call_id != second.call_id
+        assert (first.scope, first.thread_id, first.agent_dir) == (
+            second.scope,
+            second.thread_id,
+            second.agent_dir,
+        )
+
+    def test_a_host_floor_reaches_a_workload_that_asked_for_nothing(self):
+        backend = _per_call_backend()
+        tool = _attach_with(
+            _reclaiming_body,
+            _router(backend, min_isolation_scope=IsolationScope.CALL),
+        )[0]
+        _call(tool, target="x")
+        assert backend.keys[0].call_id
+
+    def test_asking_for_a_key_outside_a_tool_call_raises(self):
+        """The same wiring mistake `guest_call_path` refuses, and for the same reason."""
+        session = _session(_per_call_backend(), spec=_CALL_SCOPED_SPEC)
+        with pytest.raises(RuntimeError, match="outside a tool call"):
+            session.key()
+
+    def test_a_conversation_scoped_session_answers_outside_a_call(self):
+        assert not isinstance(_session().key(), str)
+
+    def test_a_key_naming_another_call_is_refused(self):
+        """An open call is not enough: the key has to name *this* one.
+
+        A key kept from an earlier call would otherwise reacquire that call's sandbox from
+        inside a later one — and the sandbox most likely to still be there is the one whose own
+        cleanup could not delete it.
+        """
+        reached: dict[str, object] = {}
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Try to acquire on a key from somewhere else."""
+                stale = dataclasses.replace(_KEY, call_id="an-earlier-call")
+                try:
+                    reached["result"] = await session.acquire(stale)
+                except RuntimeError as raised:
+                    reached["result"] = raised
+                return target
+
+            return widget_run
+
+        _call(_reclaiming(_per_call_backend(), build, spec=_CALL_SCOPED_SPEC), target="x")
+        assert isinstance(reached["result"], RuntimeError)
+        assert "is not this call" in str(reached["result"])
+
+    def test_a_sandbox_created_under_a_cancelled_acquire_is_still_disposed(self):
+        """The backend made it; the cancellation arrived before anything recorded it.
+
+        Recording only after the await leaves the cleanup an empty map, and the sandbox with
+        nobody to delete it — for a call-scoped key, nobody ever.
+        """
+
+        class _CancelsAfterCreating(InProcessSandboxBackend):
+            async def acquire(self, key, spec):
+                sandbox = await super().acquire(key, spec)
+                del sandbox
+                raise asyncio.CancelledError
+
+        backend = _CancelsAfterCreating(
+            sandbox_per_key=True,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
+            ),
+        )
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Acquire, and be cancelled inside the backend."""
+                key = session.key()
+                assert not isinstance(key, str)
+                await session.acquire(key)
+                return target
+
+            return widget_run
+
+        with pytest.raises(asyncio.CancelledError):
+            _call(_reclaiming(backend, build, spec=_CALL_SCOPED_SPEC), target="x")
+        # The key the backend was asked for is the key the cleanup disposed.
+        assert backend.disposed == backend.keys
+
+    def test_a_refused_call_key_never_reaches_the_conversations_sandbox(self):
+        """A conversation-scoped body can forge a key naming its own call directory.
+
+        The router refuses that pairing, but the cleanup reads the scope off the key and a
+        backend's `dispose` sweeps the whole (scope, thread, agent) — so registering it would
+        have the `finally` delete the conversation's own sandbox over an acquire nothing served.
+        """
+        refused: dict[str, object] = {}
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Acquire properly, then reach with a key naming this call."""
+                key = session.key()
+                assert not isinstance(key, str)
+                assert not isinstance(await session.acquire(key), str)
+                forged = dataclasses.replace(
+                    key, call_id=session.guest_call_path().rsplit("/", 1)[-1]
+                )
+                refused["result"] = await session.acquire(forged)
+                return target
+
+            return widget_run
+
+        backend = _per_call_backend()
+        _call(_reclaiming(backend, build), target="x")
+        assert isinstance(refused["result"], str)  # the router's refusal, as a tool result
+        assert backend.disposed == []
+
+    def test_a_sandbox_that_arrives_after_the_call_ended_is_disposed_not_handed_over(self):
+        """The child is inside the backend when the body returns and the cleanup runs.
+
+        Its acquire then lands on a key the `finally` has already deleted, and recording is
+        skipped because the call is closed — so handing the sandbox over would leave a
+        call-scoped one alive with nothing able to name it again.
+        """
+        entered = asyncio.Event()
+        released = asyncio.Event()
+        outcome: dict[str, object] = {}
+        tasks: list[asyncio.Task[None]] = []
+
+        class _BlocksOnTheSecond(InProcessSandboxBackend):
+            """Parks the retry inside the backend, where a cancellation or a close can overtake it."""
+
+            def __init__(self, **kw) -> None:
+                super().__init__(**kw)
+                self.seen = 0
+
+            async def acquire(self, key, spec):
+                self.seen += 1
+                if self.seen == 2:
+                    entered.set()
+                    await released.wait()
+                return await super().acquire(key, spec)
+
+        backend = _BlocksOnTheSecond(
+            sandbox_per_key=True,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
+            ),
+        )
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Leave a task inside the backend, holding this call's own key."""
+                key = session.key()
+                assert not isinstance(key, str)
+                assert not isinstance(await session.acquire(key), str)
+
+                async def later() -> None:
+                    try:
+                        outcome["result"] = await session.acquire(key)
+                    except RuntimeError as raised:
+                        outcome["result"] = raised
+
+                tasks.append(asyncio.create_task(later()))
+                await entered.wait()
+                return target
+
+            return widget_run
+
+        fn = _fn(_reclaiming(backend, build, spec=_CALL_SCOPED_SPEC))
+
+        async def run() -> None:
+            await fn(target="x")
+            released.set()
+            await asyncio.gather(*tasks)
+
+        asyncio.run(run())
+        assert isinstance(outcome["result"], RuntimeError)
+        assert "came back after its tool call had ended" in str(outcome["result"])
+        # Disposed twice on the one key: the call's own cleanup, then the late arrival.
+        assert len(backend.disposed) == 2
+        assert {key.call_id for key in backend.disposed} == {backend.keys[0].call_id}
+
+    def test_a_late_sandbox_that_could_not_be_deleted_says_so(self):
+        """The refusal reports what the delete did, not what it was meant to do.
+
+        A caller told "it has been disposed" over a delete that failed has the operational
+        state exactly backwards: the sandbox is still there, and still billable.
+        """
+        entered = asyncio.Event()
+        released = asyncio.Event()
+        outcome: dict[str, object] = {}
+        tasks: list[asyncio.Task[None]] = []
+
+        class _BlocksOnTheSecond(InProcessSandboxBackend):
+            def __init__(self, **kw) -> None:
+                super().__init__(**kw)
+                self.seen = 0
+
+            async def acquire(self, key, spec):
+                self.seen += 1
+                if self.seen == 2:
+                    entered.set()
+                    await released.wait()
+                return await super().acquire(key, spec)
+
+        backend = _BlocksOnTheSecond(
+            sandbox_per_key=True,
+            dispose_failure=DisposalFailure("refused", "the service said no"),
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
+            ),
+        )
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Leave a task inside the backend, holding this call's own key."""
+                key = session.key()
+                assert not isinstance(key, str)
+                assert not isinstance(await session.acquire(key), str)
+
+                async def later() -> None:
+                    try:
+                        outcome["result"] = await session.acquire(key)
+                    except RuntimeError as raised:
+                        outcome["result"] = raised
+
+                tasks.append(asyncio.create_task(later()))
+                await entered.wait()
+                return target
+
+            return widget_run
+
+        fn = _fn(_reclaiming(backend, build, spec=_CALL_SCOPED_SPEC))
+
+        async def run() -> None:
+            await fn(target="x")
+            released.set()
+            await asyncio.gather(*tasks)
+
+        asyncio.run(run())
+        assert isinstance(outcome["result"], RuntimeError)
+        assert "did not land" in str(outcome["result"])
+        assert "has been disposed" not in str(outcome["result"])
+
+
+class TestTheFinallyDisposesTheCallsSandbox:
+    """The whole sandbox goes, because the call is what it was created for."""
+
+    def test_the_sandbox_is_disposed_when_the_body_returns(self):
+        backend = _per_call_backend()
+        _call(_reclaiming(backend, spec=_CALL_SCOPED_SPEC), target="x")
+        assert backend.disposed == backend.keys
+
+    def test_nothing_is_reclaimed_from_inside_it(self):
+        """A round trip that buys nothing: the delete takes the directory with the sandbox."""
+        backend = _per_call_backend()
+        _call(_reclaiming(backend, spec=_CALL_SCOPED_SPEC), target="x")
+        assert _reclaimed(backend.sandbox) == []
+
+    def test_a_conversation_scoped_call_still_reclaims_and_keeps_its_sandbox(self):
+        backend = _per_call_backend()
+        path = _call(_reclaiming(backend), target="x")
+        assert _reclaimed(backend.sandbox) == [path]
+        assert backend.disposed == []
+
+    def test_the_opt_down_does_not_keep_it(self):
+        """`KEEP` loosens the escalation over a failed reclaim, not the call's own separation."""
+        backend = _per_call_backend()
+        tool = _attach_with(
+            _reclaiming_body,
+            _router(backend, reclaim=ReclaimConfig(failed_reclaim_policy=FailedReclaimPolicy.KEEP)),
+            spec=_CALL_SCOPED_SPEC,
+        )[0]
+        _call(tool, target="x")
+        assert backend.disposed == backend.keys
+
+
+class TestADeleteThatDidNotLandIsReportedNotGuarded:
+    """A leaked call sandbox is told to the host, and the conversation carries on.
+
+    The next call is keyed to itself, so it cannot reach what leaked — where a conversation
+    scoped key is refused precisely because its next acquire would be handed the same sandbox.
+    """
+
+    def _failing(self, **kw):
+        return _per_call_backend(
+            dispose_failure=DisposalFailure("refused", "the service said no"), **kw
+        )
+
+    def test_the_host_hears_that_it_failed(self):
+        seen: list[ReclaimFailure] = []
+
+        async def record(failure: ReclaimFailure) -> None:
+            seen.append(failure)
+
+        backend = self._failing()
+        tool = _attach_with(
+            _reclaiming_body,
+            _router(backend),
+            spec=_CALL_SCOPED_SPEC,
+            on_reclaim_failure=record,
+        )[0]
+        _call(tool, target="x")
+        assert len(seen) == 1
+        assert seen[0].disposal == "failed"
+        assert seen[0].key.call_id
+        assert "did not land" in seen[0].reason
+
+    def test_the_next_call_is_served(self):
+        backend = self._failing()
+        tool = _reclaiming(backend, spec=_CALL_SCOPED_SPEC)
+        _call(tool, target="a")
+        assert _call(tool, target="b")
+
+    def test_the_body_still_answers(self):
+        """The cleanup runs in a `finally`: a leak must not replace what the call returned."""
+        backend = self._failing()
+        assert _call(_reclaiming(backend, spec=_CALL_SCOPED_SPEC), target="x")
+
+    def test_a_failure_is_logged_even_with_no_host_listening(self, caplog):
+        backend = self._failing()
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            _call(_reclaiming(backend, spec=_CALL_SCOPED_SPEC), target="x")
+        assert any("was not disposed" in record.message for record in caplog.records)
+
+
+class TestWhatALeakedCallSandboxTellsTheHost:
+    """A delete that did not land leaves the sandbox — and everything still running in it."""
+
+    def _failing(self):
+        return _per_call_backend(dispose_failure=DisposalFailure("refused", "the service said no"))
+
+    def test_the_report_carries_the_transports_note_too(self):
+        """The sandbox is still there, so a stop that did not take everything is still true.
+
+        Reporting only the leak would tell a host its data was left and not that a program may
+        still be executing beside it — which the conversation-scoped branch has always said.
+        """
+        seen: list[ReclaimFailure] = []
+
+        async def record(failure: ReclaimFailure) -> None:
+            seen.append(failure)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Leave a note the transport would have left."""
+                key = session.key()
+                assert not isinstance(key, str)
+                sandbox = await session.acquire(key)
+                assert not isinstance(sandbox, str)
+                note_unclean(sandbox, "a stop did not provably take down the process tree")
+                return target
+
+            return widget_run
+
+        backend = self._failing()
+        tool = _attach_with(
+            build,
+            _router(backend),
+            spec=_CALL_SCOPED_SPEC,
+            on_reclaim_failure=record,
+        )[0]
+        _call(tool, target="x")
+        assert len(seen) == 1
+        assert "did not land" in seen[0].reason
+        assert "process tree" in seen[0].reason
+
+
+class TestASandboxNothingWouldDelete:
+    def test_a_task_outliving_the_call_cannot_acquire_on_its_key(self):
+        """A task started in the body keeps the call's context, so it can still reach the key.
+
+        `key()` and `guest_call_path()` both refuse once the call is closed. Acquiring would
+        create a live sandbox after the cleanup walked past, with nothing left to delete it.
+        """
+        outcome: dict[str, object] = {}
+        tasks: list[asyncio.Task[None]] = []
+        released = asyncio.Event()
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Leave a task holding this call's key."""
+                key = session.key()
+                assert not isinstance(key, str)
+                assert not isinstance(await session.acquire(key), str)
+
+                async def later() -> None:
+                    await released.wait()
+                    try:
+                        outcome["result"] = await session.acquire(key)
+                    except RuntimeError as raised:
+                        outcome["result"] = raised
+
+                tasks.append(asyncio.create_task(later()))
+                return target
+
+            return widget_run
+
+        backend = _per_call_backend()
+        fn = _fn(_reclaiming(backend, build, spec=_CALL_SCOPED_SPEC))
+
+        async def run() -> None:
+            await fn(target="x")
+            released.set()
+            await asyncio.gather(*tasks)
+
+        asyncio.run(run())
+        assert isinstance(outcome["result"], RuntimeError)
+        assert "no open tool call" in str(outcome["result"])
+        assert backend.disposed == backend.keys
+
+
+class TestASandboxNothingWouldDeleteFromAnywhere:
+    """The guard is about there being an open call, not about which context asks.
+
+    A caller holding the session and the key from outside any call reaches `acquire` with
+    `_CALL` unset, which a check for a *closed* call lets straight through.
+    """
+
+    def test_a_key_naming_a_call_is_refused_outside_a_call_entirely(self):
+        session = _session(_per_call_backend(), spec=_CALL_SCOPED_SPEC)
+        keyed = dataclasses.replace(_KEY, call_id="7a1f")
+        with pytest.raises(RuntimeError, match="no open tool call"):
+            asyncio.run(session.acquire(keyed))
+
+    def test_a_bare_key_outside_a_call_is_still_served(self):
+        """The positive control: the refusal is about the call id, not about the context."""
+        session = _session(_per_call_backend())
+        assert not isinstance(asyncio.run(session.acquire(_KEY)), str)
+
+
+class TestTwoConcurrentCallsAtCallScope:
+    """The case the scope exists for: two function calls in one assistant message, in flight."""
+
+    def test_they_are_served_two_sandboxes_and_both_are_disposed(self):
+        backend = _per_call_backend()
+        barrier = asyncio.Barrier(2)
+        served: list[int] = []
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Hold a sandbox while the other call holds its own."""
+                key = session.key()
+                assert not isinstance(key, str)
+                sandbox = await session.acquire(key)
+                assert not isinstance(sandbox, str)
+                served.append(id(sandbox))
+                await sandbox.write_file(
+                    f"{session.guest_call_path()}/mine.txt", target, working_directory="/"
+                )
+                await barrier.wait()
+                return key.call_id
+
+            return widget_run
+
+        fn = _fn(_reclaiming(backend, build, spec=_CALL_SCOPED_SPEC))
+
+        async def both():
+            return await asyncio.gather(fn(target="a"), fn(target="b"))
+
+        first, second = asyncio.run(both())
+        assert first != second
+        # Two acquires, two distinct sandboxes, and each call's own key disposed.
+        assert len(set(served)) == 2
+        assert sorted(key.call_id for key in backend.disposed) == sorted([first, second])
 
 
 class TestTheFinallyReclaims:
