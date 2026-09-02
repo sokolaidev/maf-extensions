@@ -2840,6 +2840,29 @@ class TestWhoOwnsStderrHere:
         assert result.exit_code == 127
         assert result.producer_owns_stderr
 
+    def test_the_launchers_own_stdout_is_not_returned_as_the_programs(self):
+        """`stdout` is the program's field, and on this leg no program ran.
+
+        What the launcher prints there is this module's own marker for which launch path it
+        took, so returning it would hand a kind host text to render as the guest's.
+        """
+
+        class _FailsAfterItsMarker(_ScriptedGuest):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                if _LAYOUT.launcher in str(command):
+                    return ExecResult(stdout=SESSION_MADE, stderr="", exit_code=126)
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        result = _run(_FailsAfterItsMarker([]), HostToolRun(_registry()))
+
+        assert result.exit_code == 126
+        assert result.stdout == ""
+        assert SESSION_MADE in result.stderr, (
+            "the launcher's own word was dropped rather than moved"
+        )
+
     def test_a_dropped_output_declares_it_beside_an_empty_stdout(self):
         """The flag is about who owns `stderr`, never about how much of the output came back.
 

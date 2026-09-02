@@ -1028,11 +1028,15 @@ async def _supervise(
             reach=reach,
         ) from spent
     if started.exit_code != 0:
-        # The sentence below is the launcher's, and on this leg no program ran at all, so
-        # nothing of the guest's is in either field.
+        # No program ran on this leg, so `stdout` — the program's field — has nothing to hold.
+        # Both of the launcher's own streams go to the one this result declares as the
+        # producer's: the marker it prints is this module's own word about which launch path
+        # ran, and handing it back as `stdout` would offer a kind host text to render as the
+        # guest's. The sentence stands in when the launcher said nothing at all.
+        said = "\n".join(part for part in (started.stderr.strip(), started.stdout.strip()) if part)
         return ExecResult(
-            stdout=started.stdout,
-            stderr=started.stderr or "the launcher did not start the program",
+            stdout="",
+            stderr=said or "the launcher did not start the program",
             exit_code=started.exit_code,
             producer_owns_stderr=True,
         )
