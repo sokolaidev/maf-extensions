@@ -23,7 +23,7 @@ sink should point, which is the security-relevant decision here.  Read it first.
 #     "azure-identity",
 #     "maf-sandbox-codeact",
 #     "maf-sandbox-docker",
-#     "maf-sandbox>=0.28",
+#     "maf-sandbox>=0.29",
 # ]
 # ///
 
