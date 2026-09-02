@@ -2,11 +2,11 @@
 
 > The router's policy surface — the isolation ladder, the micro-VM standard, the floor, and the six checks every sandbox request passes. Source of record: [`research/two-axis-sandbox-policy.md`](research/two-axis-sandbox-policy.md).
 
-## Two questions, kept apart
+## Three questions, kept apart
 
-A sandbox request asks two independent things, and the policy answers them separately: **how strong must the boundary be in this environment**, which is the host's question, and **what must the sandbox be able to do for this workload**, which is the spec's. The first is an ordered ladder with a floor; the second is a set match. Merging them would be a design error — a capability list cannot say "a micro-VM is enough for dev", and a boundary strength cannot say "this kind needs a language runtime, not a shell".
+A sandbox request asks three independent things, and the policy answers them separately: **how strong must the boundary be in this environment** and **how much of a conversation may one sandbox serve**, which are the host's questions, and **what must the sandbox be able to do for this workload**, which is the spec's. The first two are ordered ladders with a floor a spec may raise and never lower; the third is a set match. Merging them would be a design error — a capability list cannot say "a micro-VM is enough for dev", a boundary strength cannot say "this kind needs a language runtime, not a shell", and neither can say whether the last call's files are still in the filesystem this one is handed.
 
-The policy that preceded this was one boolean, `deployed=True`, crossed with one frozenset that required `Isolation.VM`. It collapsed both questions into a binary, and it was removed rather than deprecated when the ladder landed.
+The policy that preceded this was one boolean, `deployed=True`, crossed with one frozenset that required `Isolation.VM`. It collapsed the first two of those into a binary, and it was removed rather than deprecated when the ladder landed.
 
 ## Axis 1 — isolation, as an ordered ladder
 

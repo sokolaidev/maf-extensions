@@ -174,9 +174,14 @@ def _call_name(call: _SandboxToolCall) -> str:
 
     One id serves both the guest path and the key, because a call-scoped sandbox and the
     directory inside it name the same call; two would say they were two.
+
+    Whole, not shortened. It became key material when a sandbox could be keyed to one call, and
+    two calls colliding on it are two calls get-or-create hands the same sandbox — the boundary
+    gone, with nothing to show it. A directory name is where the length would have been worth
+    something, and it is not worth that.
     """
     if call.name is None:
-        call.name = uuid4().hex[:12]
+        call.name = uuid4().hex
     return call.name
 
 

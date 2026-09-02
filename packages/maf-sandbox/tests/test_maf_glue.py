@@ -964,6 +964,18 @@ class TestACallScopedWorkloadGetsItsOwnSandbox:
         path = _call(_reclaiming(backend, spec=_CALL_SCOPED_SPEC), target="x")
         assert path == f"/maf-sandbox/work/{backend.keys[0].call_id}"
 
+    def test_the_call_id_is_a_whole_uuid(self):
+        """It is key material, so shortening it trades the boundary for a tidier path.
+
+        Two calls colliding on the id are two calls get-or-create hands one sandbox, with
+        nothing anywhere to show the separation was not there.
+        """
+        backend = _per_call_backend()
+        _call(_reclaiming(backend, spec=_CALL_SCOPED_SPEC), target="x")
+        call_id = backend.keys[0].call_id
+        assert len(call_id) == 32
+        assert int(call_id, 16) >= 0  # hex throughout, so the whole of it carries entropy
+
     def test_two_calls_never_meet_in_one_sandbox(self):
         backend = _per_call_backend()
         tool = _reclaiming(backend, spec=_CALL_SCOPED_SPEC)

@@ -1527,19 +1527,31 @@ class TestDisposingACallScopedKey:
     )
     _SCOPES = frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL})
 
+    def _serving(self, **kw) -> InProcessSandboxBackend:
+        """A backend that declares the scope — the only kind with a call's sandbox to delete."""
+        return InProcessSandboxBackend(
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS, isolation_scopes=self._SCOPES
+            ),
+            **kw,
+        )
+
+    def test_a_backend_that_does_not_serve_the_scope_is_refused(self):
+        """Its dispose sweeps by scope, thread and agent, so this would take the conversation's."""
+        router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE)
+        with pytest.raises(ValueError, match="does not serve that scope"):
+            asyncio.run(router.dispose_call(self._CALL_KEY, timeout=5.0))
+
     def test_a_landed_delete_answers_true(self):
-        backend = InProcessSandboxBackend()
+        backend = self._serving()
         router = SandboxRouter([backend], min_isolation=Isolation.NONE)
         assert asyncio.run(router.dispose_call(self._CALL_KEY, timeout=5.0)) is True
         assert backend.disposed == [self._CALL_KEY]
 
     def test_a_refused_delete_answers_false_and_leaves_the_conversation_open(self):
-        backend = InProcessSandboxBackend(
+        backend = self._serving(
             sandbox_per_key=True,
             dispose_failure=DisposalFailure("refused", "the service said no"),
-            declarations=dataclasses.replace(
-                FAKE_BACKEND_DECLARATIONS, isolation_scopes=self._SCOPES
-            ),
         )
         router = SandboxRouter([backend], min_isolation=Isolation.NONE)
         spec = SandboxSpec(kind="bicep", isolation_scope=IsolationScope.CALL)
@@ -1555,7 +1567,7 @@ class TestDisposingACallScopedKey:
 
     def test_the_opt_down_does_not_reach_this_delete(self):
         """`KEEP` loosens an escalation; here the delete is the separation the workload asked for."""
-        backend = InProcessSandboxBackend()
+        backend = self._serving()
         router = SandboxRouter(
             [backend],
             min_isolation=Isolation.NONE,
@@ -1576,7 +1588,7 @@ class TestDisposingACallScopedKey:
             asyncio.run(router.dispose_call(_KEY, timeout=5.0))
 
     def test_an_unbounded_delete_is_refused(self):
-        router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE)
+        router = SandboxRouter([self._serving()], min_isolation=Isolation.NONE)
         with pytest.raises(ValueError, match="finite positive"):
             asyncio.run(router.dispose_call(self._CALL_KEY, timeout=math.inf))
 
@@ -1670,7 +1682,13 @@ class TestDisposeCallAsksTheServingBackendOnly:
     )
 
     def test_another_backends_failure_is_not_this_calls_leak(self):
-        serving = InProcessSandboxBackend(name="serving")
+        serving = InProcessSandboxBackend(
+            name="serving",
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
+            ),
+        )
         other = InProcessSandboxBackend(
             name="other", dispose_failure=DisposalFailure("refused", "unrelated")
         )
@@ -1681,7 +1699,12 @@ class TestDisposeCallAsksTheServingBackendOnly:
 
     def test_a_delete_that_overruns_the_bound_answers_false(self):
         """The report a hung provider produces — where a `True` would leak in silence."""
-        backend = _BlocksUntilReleased()
+        backend = _BlocksUntilReleased(
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
+            )
+        )
         router = SandboxRouter([backend], min_isolation=Isolation.NONE)
 
         async def overrun():

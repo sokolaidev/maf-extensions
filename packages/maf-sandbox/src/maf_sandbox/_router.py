@@ -1010,6 +1010,16 @@ class SandboxRouter:
                 "because a call-scoped key has no next acquire. Use dispose(key), or "
                 "dispose_unclean(key, timeout=...) when a call could not leave it clean."
             )
+        if self._backend is not None:
+            serves = _declared_isolation_scopes(self._backend, _declarations(self._backend))
+            if IsolationScope.CALL not in serves:
+                raise ValueError(
+                    f"dispose_call was given a key naming a call, and sandbox backend "
+                    f"{self._backend.name!r} does not serve that scope, so it has no sandbox of "
+                    "that call's to delete. What it does have is the conversation's, which its "
+                    "dispose sweeps by scope, thread and agent — deleting it out from under "
+                    "every later call. Use dispose(key) for a conversation."
+                )
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError(f"timeout must be a finite positive number of seconds, not {timeout}")
         try:
