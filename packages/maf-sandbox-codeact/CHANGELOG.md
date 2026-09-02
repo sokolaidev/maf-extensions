@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.10.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.9.2...maf-sandbox-codeact-v0.10.0) (2026-09-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* **codeact:** a withheld result declares no source_integrity, since a model-authored program chose its values ([#816](https://github.com/sokolaidev/maf-extensions/issues/816))
+* require maf-sandbox 0.30.0 in the dependents and 0.29 in the samples, and admit 0.31 ([#789](https://github.com/sokolaidev/maf-extensions/issues/789))
+
+### Features
+
+* a kind can know which tool call arguments the framework rewrote ([#827](https://github.com/sokolaidev/maf-extensions/issues/827)) ([c83160e](https://github.com/sokolaidev/maf-extensions/commit/c83160ec727f2a94e7facf46e3584a7984407fa6))
+* a refusal names a rejected file by its position rather than echoing a value that is not a name ([#818](https://github.com/sokolaidev/maf-extensions/issues/818)) ([5123e52](https://github.com/sokolaidev/maf-extensions/commit/5123e52321766a70d079e26d369116cdf912fbfe))
+* require maf-sandbox 0.30.0 in the dependents and 0.29 in the samples, and admit 0.31 ([#789](https://github.com/sokolaidev/maf-extensions/issues/789)) ([670a005](https://github.com/sokolaidev/maf-extensions/commit/670a0055f180c83aae50179055dd84b01bbca0f5))
+
+
+### Fixes
+
+* a name that landed is not repeated either, and two ways past the bound are closed ([#831](https://github.com/sokolaidev/maf-extensions/issues/831)) ([d430e78](https://github.com/sokolaidev/maf-extensions/commit/d430e7883ef5c1008a964e7d8f3b76bff95b4022))
+* **codeact:** a withheld result declares no source_integrity, since a model-authored program chose its values ([#816](https://github.com/sokolaidev/maf-extensions/issues/816)) ([f15c23d](https://github.com/sokolaidev/maf-extensions/commit/f15c23de33f6e860d5415b208a643b45c7370086))
+* **codeact:** the call-directory prefix is no longer 13 bytes ([#828](https://github.com/sokolaidev/maf-extensions/issues/828)) ([1d02da6](https://github.com/sokolaidev/maf-extensions/commit/1d02da61cc59654e8692c62e990b2d8554ebb3ec))
+
 ## [0.9.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.9.1...maf-sandbox-codeact-v0.9.2) (2026-09-02)
 
 
