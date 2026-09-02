@@ -3086,7 +3086,7 @@ class TestArgumentProvenanceMiddleware:
         )
 
         seen: dict[str, object] = {}
-        outliving: asyncio.Task[None] | None = None
+        outliving: asyncio.Task[frozenset[int]] | None = None
         released = asyncio.Event()
         tracker = LabelTrackingFunctionMiddleware()
         ours = argument_provenance_middleware()
@@ -3094,11 +3094,9 @@ class TestArgumentProvenanceMiddleware:
             self.PAYLOAD, ContentLabel(integrity=IntegrityLabel.UNTRUSTED)
         )
 
-        async def outlives(candidates: frozenset[str]) -> None:
+        async def outlives(candidates: frozenset[str]) -> frozenset[int]:
             await released.wait()
-            seen["reported"] = positions_holding_hidden_content(
-                ask, argument="files", candidates=candidates
-            )
+            return positions_holding_hidden_content(ask, argument="files", candidates=candidates)
 
         async def body(files: list[str]) -> str:
             # The snapshot a body takes before its first await, which is what lets a late
@@ -3119,10 +3117,8 @@ class TestArgumentProvenanceMiddleware:
         async def drive() -> None:
             await tracker.process(context, inner)
             released.set()  # only now, so the task is answering after the call returned
-            # Joined here rather than left to `asyncio.run` shutdown, which finishes an
-            # already-resumable task only because it never suspends again.
             assert outliving is not None
-            await outliving
+            seen["reported"] = await outliving
 
         asyncio.run(drive())
         return seen
