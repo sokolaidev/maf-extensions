@@ -3210,11 +3210,9 @@ class TestArgumentProvenanceMiddleware:
         """ "Once per process" has to hold on the path this safeguard exists for.
 
         A synchronous body runs on a pool thread `asyncio.to_thread` hands it, so several can
-        reach the flag at once; read-then-write is two steps and nothing makes them one. Racing
-        threads cannot show that on CPython — 16 of them through a barrier at a 1us switch
-        interval never split the pair over 200 trials, because the GIL rarely yields inside it —
-        so this asserts the property directly instead: the transition happens under the lock,
-        which is what stays true when the interpreter stops holding it for us.
+        reach the flag at once, and read-then-write is two steps. The lock is what makes them
+        one, so this holds that lock and asserts a concurrent caller cannot reach the flag — a
+        property, rather than a race whose outcome the interpreter decides.
         """
         import logging as _logging
 
