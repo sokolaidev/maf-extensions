@@ -155,13 +155,26 @@ class _SandboxToolCall:
 _CALL: ContextVar[_SandboxToolCall | None] = ContextVar("maf_sandbox_call", default=None)
 
 
+@dataclass
+class _CallProvenance:
+    """The framework's record of one call, and whether that call has returned."""
+
+    context: Any
+    closed: bool = False
+
+
 #: The framework's record of the call a tool body is running inside, published by
 #: :func:`argument_provenance_middleware` and ``None`` where a host has not wired it.
 #:
 #: A `ContextVar` for the same reason `_CALL` above is one: a task starts from a copy of its
 #: parent's context, so concurrent calls each read their own record rather than whichever
-#: finished last.
-_CALL_CONTEXT: ContextVar[Any | None] = ContextVar("maf_sandbox_call_context", default=None)
+#: finished last. And *closed* like `_CALL` for the other half of that: resetting the variable
+#: does not reach a child's copy, so a task outliving the call would go on answering from
+#: arguments that are no longer the ones being asked about. The flag is on the record the copy
+#: shares, which is the only thing the parent can still reach.
+_CALL_CONTEXT: ContextVar[_CallProvenance | None] = ContextVar(
+    "maf_sandbox_call_context", default=None
+)
 
 
 def argument_provenance_middleware() -> Any:
@@ -193,11 +206,15 @@ def argument_provenance_middleware() -> Any:
 
     class _ArgumentProvenance(FunctionMiddleware):  # type: ignore[misc]
         async def process(self, context: Any, call_next: Any) -> None:
-            token = _CALL_CONTEXT.set(context)
+            record = _CallProvenance(context=context)
+            token = _CALL_CONTEXT.set(record)
             try:
                 await call_next()
             finally:
                 _CALL_CONTEXT.reset(token)
+                # Closed rather than only reset: a task the body left running holds its own copy
+                # of the variable, and this is what that copy can still see.
+                record.closed = True
 
     return _ArgumentProvenance()
 
@@ -379,6 +396,14 @@ def positions_holding_hidden_content(
     no snapshot because the record lives on the call, and depends on no detail of how a payload
     is stored or reduced — so ``candidates`` is not consulted where it applies.
 
+    **The record is scoped to the call, and a task outliving one falls back.**  A task started
+    during the call keeps its own copy of the variable after the call returns, so answering from
+    it would compare against arguments nobody is asking about — and a value equal to the
+    spelling left at its position would be reported untouched and quoted back.  Such a task gets
+    the inference instead, which is the same answer an unwired host gets — so such a task needs
+    the ``candidates`` snapshot below to be answered at all, the framework's own accessor having
+    gone with the call.
+
     ``argument`` is what makes the comparison positional, and it is required for it.  Matched
     against the record as a whole, one entry could be excused by an equal value the caller put
     at another — so a caller that guessed the hidden content could have it quoted back.  Where
@@ -403,9 +428,9 @@ def positions_holding_hidden_content(
     """
     if not values:
         return frozenset()
-    call_context = _CALL_CONTEXT.get()
-    if call_context is not None and argument is not None:
-        before = _spellings_before_rewriting(call_context, argument)
+    record = _CALL_CONTEXT.get()
+    if record is not None and not record.closed and argument is not None:
+        before = _spellings_before_rewriting(record.context, argument)
         # Position by position, never against the record as a whole. A caller controls every
         # entry, so a value excused by an equal value it placed elsewhere is a value it can have
         # quoted back — which is the echo this exists to stop, arrived at from the other side.

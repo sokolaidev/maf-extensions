@@ -53,6 +53,7 @@ from maf_sandbox.maf import (
     SandboxPurger,
     SandboxToolSession,
     argument_provenance_middleware,
+    hidden_content_candidates,
     list_all_files,
     list_no_files,
     make_caller_context,
@@ -3073,6 +3074,109 @@ class TestArgumentProvenanceMiddleware:
         """
         seen = self._run_two(["[VAR]"], argument=None)
         assert seen["reported"] == frozenset({0}), "the fallback still answers"
+
+    def _outliving(self, *, ask: list[str], sent: str):
+        """Run one call that leaves a task running, and ask that task once the call is over."""
+        from agent_framework import FunctionInvocationContext, FunctionTool
+        from agent_framework.security import (
+            ContentLabel,
+            IntegrityLabel,
+            LabelTrackingFunctionMiddleware,
+        )
+
+        seen: dict[str, object] = {}
+        outliving: list[asyncio.Task[None]] = []
+        released = asyncio.Event()
+        tracker = LabelTrackingFunctionMiddleware()
+        ours = argument_provenance_middleware()
+        tracker.get_variable_store().store(
+            self.PAYLOAD, ContentLabel(integrity=IntegrityLabel.UNTRUSTED)
+        )
+
+        async def outlives(candidates: frozenset[str]) -> None:
+            await released.wait()
+            seen["reported"] = positions_holding_hidden_content(
+                ask, argument="files", candidates=candidates
+            )
+
+        async def body(files: list[str]) -> str:
+            # The snapshot a body takes before its first await, which is what lets a late
+            # caller reach the store at all — `execute_code` threads exactly this.
+            outliving.append(asyncio.create_task(outlives(hidden_content_candidates())))
+            return "ok"
+
+        tool = FunctionTool(name="probe", func=body)
+        context = FunctionInvocationContext(function=tool, arguments={"files": [sent]})
+
+        async def innermost() -> None:
+            await tool.invoke(arguments=context.arguments)
+
+        async def inner() -> None:
+            await ours.process(context, innermost)
+
+        async def drive() -> None:
+            await tracker.process(context, inner)
+            released.set()  # only now, so the task is answering after the call returned
+            await outliving[0]
+
+        asyncio.run(drive())
+        return seen
+
+    def test_a_task_outliving_the_call_falls_back_rather_than_reading_a_closed_record(self):
+        """Resetting the variable does not reach a child's copy, so the record is closed too.
+
+        The consequence is not merely a stale answer. The outliving task asks about the hidden
+        content itself, carrying the snapshot its body took, and the finished call left an equal
+        spelling at that position — so a record still answering would compare the two, find them
+        equal, report nothing rewritten, and have the payload quoted straight back into a
+        refusal. Closed, the task takes the snapshot instead and the payload is reported.
+        """
+        seen = self._outliving(ask=[self.PAYLOAD], sent=self.PAYLOAD)
+
+        assert seen["reported"] == frozenset({0}), (
+            "a task outliving the call must fall back to the inference, which reports the "
+            "payload, rather than answer from the arguments of a call that has returned"
+        )
+
+    def test_a_task_inside_the_call_still_reads_the_record(self):
+        """Closing must not cost the case it exists beside: a child *during* the call.
+
+        It holds the same record, not a stale one, so it gets the exact answer like the body.
+        """
+        from agent_framework import FunctionInvocationContext, FunctionTool
+        from agent_framework.security import (
+            ContentLabel,
+            IntegrityLabel,
+            LabelTrackingFunctionMiddleware,
+        )
+
+        seen: dict[str, object] = {}
+        tracker = LabelTrackingFunctionMiddleware()
+        ours = argument_provenance_middleware()
+        variable_id = tracker.get_variable_store().store(
+            self.PAYLOAD, ContentLabel(integrity=IntegrityLabel.UNTRUSTED)
+        )
+
+        async def body(files: list[str]) -> str:
+            async def child() -> None:
+                seen["reported"] = positions_holding_hidden_content(files, argument="files")
+
+            await asyncio.create_task(child())
+            return "ok"
+
+        tool = FunctionTool(name="probe", func=body)
+        context = FunctionInvocationContext(
+            function=tool, arguments={"files": [f"[{variable_id}]"]}
+        )
+
+        async def innermost() -> None:
+            await tool.invoke(arguments=context.arguments)
+
+        async def inner() -> None:
+            await ours.process(context, innermost)
+
+        asyncio.run(tracker.process(context, inner))
+        assert seen["reported"] == frozenset({0})
 
     def test_overlapping_calls_each_see_their_own_arguments(self):
         """One record per call rather than per process, which is what a `ContextVar` buys.
