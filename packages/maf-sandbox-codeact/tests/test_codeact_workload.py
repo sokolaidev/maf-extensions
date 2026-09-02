@@ -3504,7 +3504,7 @@ class TestARewrittenArgumentIsNeverQuoted:
 
     def _rewrite(self, monkeypatch, *values: str):
         monkeypatch.setattr(
-            _tool_module, "values_holding_hidden_content", lambda _: frozenset(values)
+            _tool_module, "values_holding_hidden_content", lambda _values, **_: frozenset(values)
         )
 
     def test_a_shared_name_is_not_quoted(self, monkeypatch):
@@ -3546,6 +3546,31 @@ class TestARewrittenArgumentIsNeverQuoted:
         assert "EMAIL" not in out, out
         assert "outputs[0]" in out, out
         assert sandbox.raw_commands == []
+
+    def test_the_manifest_path_answers_from_the_snapshot_taken_before_the_run(self, monkeypatch):
+        """The manifest is read after the run, long after this call's body first awaited.
+
+        Asking then is asking too late — the framework's accessor is not scoped to the call. So
+        the answer is taken once before anything awaits and carried down. This pins that the
+        manifest branch uses that snapshot rather than looking again: the lookup is made to
+        answer nothing if called a second time.
+        """
+        taken: list[int] = []
+
+        def _once():
+            taken.append(1)
+            return frozenset({self.SUBSTITUTED}) if len(taken) == 1 else frozenset()
+
+        monkeypatch.setattr(_tool_module, "hidden_content_candidates", _once)
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.MANIFEST, sink)
+        manifest = f'{{"outputs": [{{"path": "{self.SUBSTITUTED}.csv"}}]}}'.encode()
+
+        out = _run_producing(tool, sandbox, {_MANIFEST_FILENAME: manifest})
+        assert taken == [1], "the snapshot is taken once per call, before anything awaits"
+        assert "EMAIL" not in out, out
+        assert f"{_MANIFEST_FILENAME}[0]" in out, out
 
     def test_an_untouched_argument_still_reads_back(self, monkeypatch):
         self._rewrite(monkeypatch, self.SUBSTITUTED)

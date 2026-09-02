@@ -76,6 +76,7 @@ __all__ = [
     "list_no_files",
     "make_caller_context",
     "sandbox_tool_declarations",
+    "hidden_content_candidates",
     "sandboxed_tool",
     "values_holding_hidden_content",
 ]
@@ -226,7 +227,30 @@ def _hidden_payloads(middleware: Any) -> Iterator[str]:
                 yield text
 
 
-def values_holding_hidden_content(values: Sequence[str]) -> frozenset[str]:
+def hidden_content_candidates() -> frozenset[str]:
+    """Every string form a rewritten argument could have arrived carrying, as the store holds it.
+
+    Take this **before a body's first await** wherever the answer is needed later.  The
+    framework's accessor is not scoped to the call, so an answer fetched after the body has
+    suspended may not be available; a snapshot taken first thing survives the wait, and
+    :func:`values_holding_hidden_content` accepts it as ``candidates``.
+
+    A body that asks and answers in the same breath does not need this — it can let
+    :func:`values_holding_hidden_content` take its own.
+    """
+    try:
+        from agent_framework.security import get_current_middleware
+    except ImportError:  # pragma: no cover - a host without the security module
+        return frozenset()
+    middleware = get_current_middleware()
+    if middleware is None:
+        return frozenset()
+    return frozenset(_hidden_payloads(middleware))
+
+
+def values_holding_hidden_content(
+    values: Sequence[str], *, candidates: frozenset[str] | None = None
+) -> frozenset[str]:
     """Those of ``values`` the host's middleware expanded content it had hidden into.
 
     MAF's information-flow middleware replaces an untrusted result with a variable reference,
@@ -246,13 +270,12 @@ def values_holding_hidden_content(values: Sequence[str]) -> frozenset[str]:
     it costs ergonomics rather than containment; the exact question needs the argument's own
     before-and-after, which a tool body cannot reach.
 
+    ``candidates`` is a snapshot from :func:`hidden_content_candidates`, for a caller that has
+    to ask long after its body began — see that function.  Without one this takes its own, which
+    is right for a caller answering immediately.
+
     Take the whole argument list in one call: the answer costs one pass over the variable
     store, and the store's own reads are logged by the framework.
-
-    **Ask before the body's first await.** The framework's accessor is not scoped to the call,
-    so an answer fetched late may not be available at all; asking first thing is what a caller
-    can do about it, and nothing available to a tool body does better. An unavailable answer is
-    an empty one, which falls back to :func:`~maf_sandbox.echoed_name`'s bound on shape.
 
     Answers an empty set where no middleware is reachable, which is two different situations
     it cannot tell apart.  Either the host runs none — then nothing was ever hidden and the
@@ -262,21 +285,8 @@ def values_holding_hidden_content(values: Sequence[str]) -> frozenset[str]:
     """
     if not values:
         return frozenset()
-    try:
-        from agent_framework.security import get_current_middleware
-    except ImportError:  # pragma: no cover - a host without the security module
-        return frozenset()
-    middleware = get_current_middleware()
-    if middleware is None:
-        return frozenset()
-    # No guard for a non-string value, though expansion does substitute whatever a payload
-    # reduced to: a `list[str]` argument holding an `int` fails the framework's own argument
-    # validation, so a tool body is never entered with one. `TestValuesHoldingHiddenContent`
-    # pins that, since the alternative reading — that containment here could raise — is the
-    # obvious one to reach for.
-    return frozenset(
-        value for payload in _hidden_payloads(middleware) for value in values if payload in value
-    )
+    payloads = hidden_content_candidates() if candidates is None else candidates
+    return frozenset(value for payload in payloads for value in values if payload in value)
 
 
 def make_caller_context(

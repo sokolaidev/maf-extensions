@@ -61,6 +61,7 @@ from maf_sandbox import (
 )
 from maf_sandbox.maf import (
     SandboxToolSession,
+    hidden_content_candidates,
     sandboxed_tool,
     values_holding_hidden_content,
 )
@@ -892,6 +893,10 @@ async def _execute(
     withhold: bool,
 ) -> str:
     """One ``execute_code`` call: share, run, and collect."""
+    # Taken before anything here awaits, and carried to every name check in this call: the
+    # framework's accessor is not scoped to the call, so a lookup made after the run — the
+    # manifest's, above all — may find nothing left to answer with.
+    rewritten = hidden_content_candidates()
     # Scope and thread come from the host's request context, never from model input.
     key = session.key()
     if isinstance(key, str):
@@ -936,6 +941,7 @@ async def _execute(
             guest_prefix=guest_prefix,
             normalization=_normalization(session),
             named_by=_OUTPUTS_ARGUMENT,
+            candidates=rewritten,
         )
         if isinstance(checked, str):
             return checked
@@ -962,7 +968,7 @@ async def _execute(
         return over_cap
     if store is not None:
         resolved = await _resolve_listed_files(
-            session, store, files, reserved=reserved, withhold=withhold
+            session, store, files, reserved=reserved, withhold=withhold, candidates=rewritten
         )
         if isinstance(resolved, str):
             return resolved
@@ -1090,7 +1096,14 @@ async def _execute(
         # a program that caught its own error and wrote the diagnosis into one.
         return report
     collected = await _collect(
-        session, sandbox, guest_prefix, outputs, names, reserved, withhold=withhold
+        session,
+        sandbox,
+        guest_prefix,
+        outputs,
+        names,
+        reserved,
+        withhold=withhold,
+        candidates=rewritten,
     )
     return f"{report}\n\n{collected}" if collected else report
 
@@ -1105,6 +1118,7 @@ async def _resolve_listed_files(
     *,
     reserved: Mapping[str, str],
     withhold: bool = False,
+    candidates: frozenset[str] | None = None,
 ) -> list[str] | str:
     """Match each requested name against the caller's listing, or answer with the refusal.
 
@@ -1117,7 +1131,7 @@ async def _resolve_listed_files(
     # Asked before the first await, not beside the loop that uses it: the framework's accessor
     # is not scoped to the call, so every suspension before asking is a chance for the answer
     # to come back empty. See `values_holding_hidden_content`.
-    rewritten = values_holding_hidden_content(files)
+    rewritten = values_holding_hidden_content(files, candidates=candidates)
     listing = await session.list_files(store)
     if isinstance(listing, str):
         # The host's own sentence about its store. Withheld it is dropped for the reason the
@@ -1339,6 +1353,7 @@ def _validated_output_names(
     guest_prefix: str,
     normalization: NameNormalization,
     named_by: str,
+    candidates: frozenset[str] | None = None,
 ) -> list[str] | str:
     """Settle every output name before the program runs, or answer with the refusal.
 
@@ -1360,7 +1375,7 @@ def _validated_output_names(
     # Asked of manifest names as well as of the model's own `outputs`, and that is not
     # belt-and-braces: `code` is a rewritten argument too, so a payload can reach the guest
     # in the program's own source and come back as a name the program chose to write.
-    rewritten = values_holding_hidden_content(names)
+    rewritten = values_holding_hidden_content(names, candidates=candidates)
     for position, name in enumerate(names):
         at = f"{named_by}[{position}]"
         hidden = name in rewritten
@@ -1403,6 +1418,7 @@ async def _collect(
     reserved: Mapping[str, str],
     *,
     withhold: bool = False,
+    candidates: frozenset[str] | None = None,
 ) -> str:
     """Land whatever this run produced, and say what happened — never raising into the model."""
     sink = session.output_sink
@@ -1435,6 +1451,7 @@ async def _collect(
             guest_prefix=guest_prefix,
             normalization=_normalization(session),
             named_by=_MANIFEST_FILENAME,
+            candidates=candidates,
         )
         if isinstance(checked, str):
             return checked
@@ -1463,7 +1480,13 @@ async def _collect(
     except Exception as exc:  # noqa: BLE001
         logger.warning("execute_code: saving this run's files failed: %s", error_detail(exc))
         return f"Error: the program ran but its files could not be saved. {_MAY_HAVE_LANDED}"
-    return _format_landed(landed, declared, withhold=withhold)
+    return _format_landed(
+        landed,
+        declared,
+        withhold=withhold,
+        named_by=_MANIFEST_FILENAME if outputs is CodeactOutputs.MANIFEST else _OUTPUTS_ARGUMENT,
+        candidates=candidates,
+    )
 
 
 async def _read_manifest(
@@ -1547,7 +1570,12 @@ async def _read_manifest(
 
 
 def _format_landed(
-    landed: Sequence[LandedArtifact], declared: Sequence[str], *, withhold: bool = False
+    landed: Sequence[LandedArtifact],
+    declared: Sequence[str],
+    *,
+    withhold: bool = False,
+    named_by: str = _OUTPUTS_ARGUMENT,
+    candidates: frozenset[str] | None = None,
 ) -> str:
     """What the model is told about the files: what landed, and what is absent.
 
@@ -1574,7 +1602,15 @@ def _format_landed(
             )
         else:
             lines.extend(f"- {item.display}" for item in landed)
-    missing = [name for name in declared if unicodedata.normalize("NFC", name) not in delivered]
+    # A name that produced no file is reported the way a refusal reports one: the caller's
+    # spelling where it is the caller's, and the position where the framework put something
+    # else there. It is the one line here that names a file which does not exist.
+    rewritten = values_holding_hidden_content(list(declared), candidates=candidates)
+    missing = [
+        echoed_name(name, at=f"{named_by}[{position}]", hidden=name in rewritten)
+        for position, name in enumerate(declared)
+        if unicodedata.normalize("NFC", name) not in delivered
+    ]
     if missing:
         lines.append(
             f"Not written by the program, so not saved: {', '.join(sorted(missing))}. Write "
