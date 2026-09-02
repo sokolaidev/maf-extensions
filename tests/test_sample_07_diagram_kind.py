@@ -154,8 +154,7 @@ class TestTheToolDeclaresNothingAboutItsResult:
         assert "source_integrity" not in self._properties(out_dir)
 
     def test_it_declares_nothing_at_all(self, out_dir: Path):
-        """Not only the integrity key. A confidentiality cap added here would start gating
-        calls in a host deployment, and nothing in this suite would report it as a failure."""
+        """An added confidentiality cap would gate host calls, so keep the policy contract empty."""
         assert self._properties(out_dir) == {}
 
 
