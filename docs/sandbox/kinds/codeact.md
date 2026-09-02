@@ -84,6 +84,8 @@ The source is never a command line on either road. With no registry the command 
 
 ## Withholding guest output, so the result holds none of it
 
+The rule behind the declaration this mode does *not* make, and what a kind may claim in general, is [`../information-flow.md`](../information-flow.md).
+
 `execute_code`'s result mixes two kinds of content: facts the host observed — the exit code, which declared outputs landed and where — and free text the guest authored, its `stdout` and `stderr`. They arrive as one string, so a host that must keep guest-authored text out of its transcript, its logs or its own classification has nowhere to cut. Nor is that text merely the model's own prose coming back: `files=` exists to hand the program data the host supplied, and that data is not always the host's own, so what a program reads and prints can be anything at all.
 
 The two are separate values right up to the join: `ExecResult` carries `stdout`, `stderr` and `exit_code` as distinct fields and the landed artifacts are a distinct sequence, and they become indistinguishable only where the returned string is assembled. So the fix belongs here rather than above the kind — a host separating them again has to match the rendered `stdout:` / `stderr:` section headers, which is parsing a format this package owns and is free to change. That fails *open*, and quietly.
