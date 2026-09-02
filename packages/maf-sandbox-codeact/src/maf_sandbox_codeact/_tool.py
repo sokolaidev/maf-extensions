@@ -33,6 +33,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, cast
 
+from agent_framework import Content
 from maf_sandbox import (
     DEFAULT_TRANSFER_LIMITS,
     SHIM_MODULE,
@@ -50,6 +51,7 @@ from maf_sandbox import (
     SandboxProgramTimeout,
     SandboxRouter,
     SandboxSpec,
+    SourceIntegrity,
     TransferLimits,
     collect_outputs,
     echoed_name,
@@ -62,6 +64,7 @@ from maf_sandbox import (
 from maf_sandbox.maf import (
     SandboxToolSession,
     hidden_content_candidates,
+    labelled_result_item,
     positions_holding_hidden_content,
     sandboxed_tool,
 )
@@ -135,9 +138,15 @@ _NO_OUTPUT = (
     "program with print(...) of what you need to see."
 )
 
-#: Closes every result a withholding host returns. A sentence rather than a silence, because
+#: Its own item on every result a withholding host returns, labelled trusted, so a framework
+#: that hides the run's half leaves this one readable. A sentence rather than a silence, because
 #: the exit code alone leaves a model nothing to act on; it names the route without promising a
 #: reader, which is the host's wiring rather than this kind's to claim.
+#:
+#: **The label holds only while this stays true of the tool rather than of a call.** Nothing a
+#: run produced may reach it — not a count, not a status, not a bit that is only sometimes
+#: there — and it is emitted on every return path, refusals included, which is why it is
+#: attached at the one funnel rather than at each `return`.
 _WITHHELD_ROUTE = (
     "What the program printed is not read back as text. To surface a value, write it into a "
     "declared output rather than printing it."
@@ -277,6 +286,15 @@ def make_codeact_tools(
             size and ``stderr`` is the host's — its note about the run is surfaced whole under
             ``note:``, since withholding it would report a dropped output as a program that
             printed nothing.
+
+            **The result is two items, not one string.**  The run's half — the exit code, the
+            sizes, the landed names — carries no label of its own, so it takes whatever the
+            call's is; beside it sits the standing sentence naming the recovery route, labelled
+            ``trusted``, because nothing a run produced reaches it and it is emitted on every
+            return path including the refusals.  A framework that hides untrusted content
+            therefore hides the first and leaves the second readable, which is the point: under
+            one label the sentence went with the numbers it was there to explain.  A host
+            wiring no information-flow middleware simply reads both.
 
             **What withholding gets you, exactly.** The prose and the shape are this package's,
             and the artifact names are the model's own — but what fills them is the program's
@@ -829,15 +847,17 @@ def _execute_code_tool(
     host_tool_call: _HostToolCall | None,
     *,
     withhold: bool,
-) -> Callable[..., Awaitable[str]]:
+) -> Callable[..., Awaitable[str | list[Content]]]:
     """Build the ``execute_code`` body for one attached tool.
 
     Four signatures over one implementation, because MAF derives the tool's schema from the
     function's parameters: a host that wired no file store must not be shown ``files``.
     """
 
-    async def run(code: str, files: list[str] | None, declared: list[str] | None) -> str:
-        return await _execute(
+    async def run(
+        code: str, files: list[str] | None, declared: list[str] | None
+    ) -> str | list[Content]:
+        answer = await _execute(
             session,
             store,
             outputs,
@@ -848,19 +868,29 @@ def _execute_code_tool(
             declared or [],
             withhold=withhold,
         )
+        if not withhold:
+            return answer
+        # Here rather than at each `return` inside `_execute`: the label is honest only where
+        # the sentence is on *every* path, refusals included, and one funnel is what makes that
+        # true by construction. The run's own half carries no label, which is how it keeps
+        # whatever confidentiality the call was going to have.
+        return [
+            Content.from_text(answer),
+            labelled_result_item(_WITHHELD_ROUTE, SourceIntegrity.TRUSTED),
+        ]
 
     async def with_files_and_outputs(
         code: str, files: list[str] | None = None, outputs: list[str] | None = None
-    ) -> str:
+    ) -> str | list[Content]:
         return await run(code, files, outputs)
 
-    async def with_files(code: str, files: list[str] | None = None) -> str:
+    async def with_files(code: str, files: list[str] | None = None) -> str | list[Content]:
         return await run(code, files, None)
 
-    async def with_outputs(code: str, outputs: list[str] | None = None) -> str:
+    async def with_outputs(code: str, outputs: list[str] | None = None) -> str | list[Content]:
         return await run(code, None, outputs)
 
-    async def plain(code: str) -> str:
+    async def plain(code: str) -> str | list[Content]:
         return await run(code, None, None)
 
     takes_files = store is not None
@@ -1075,16 +1105,14 @@ async def _execute(
             # The host's own words for why it read no output, surfaced whole like the note on
             # the success path: it is the half of the message the guest did not write.
             reason = f" {expired.output_reason}." if expired.output_reason else ""
-            return f"Error: {what_happened}.{reason} {_WITHHELD_ROUTE}"
+            return f"Error: {what_happened}.{reason}"
         return f"Error: {expired}"
     except TimeoutError as unfinished:
         if host_tool_call is None:
             # One `exec`, one bound: a timeout here is that bound and nothing else, so unlike
-            # the branch above this one may name it. The route still belongs on the end —
-            # every shipped backend reaches this line rather than that one.
+            # the branch above this one may name it.
             logger.warning("execute_code: the program timed out after %ss", timeout)
-            expiry = f"Error: the program timed out after {timeout}s"
-            return f"{expiry}. {_WITHHELD_ROUTE}" if withhold else expiry
+            return f"Error: the program timed out after {timeout}s"
         # A backend bounding one of its own control-plane calls, which the transport re-raises
         # untranslated. Blaming the program would be a guess about code the model is about to
         # rewrite — and the wrong one, since the run may have had most of its time left.
@@ -1699,6 +1727,9 @@ def _format_withheld(result: ExecResult) -> str:
     unlike :func:`_format_result`'s — with the content gone it is the only thing left that says
     whether the program worked.
 
+    The route sentence is not here: it closes every result a withholding tool returns, this
+    one included, and is attached where that is true of all of them.
+
     ``ExecResult.producer_owns_stderr`` decides who owns ``stderr``. Where it is set that
     field is the producer's, not the guest's, and holds its note about the run — the one that
     tells a dropped output apart from a program that printed nothing. Withholding it would
@@ -1709,13 +1740,11 @@ def _format_withheld(result: ExecResult) -> str:
         lines = [f"exit code: {result.exit_code}", f"output: {_stream_bytes(result.stdout)} bytes"]
         if note:
             lines.append(f"note: {note}")
-        lines.append(_WITHHELD_ROUTE)
         return "\n".join(lines)
     return "\n".join(
         (
             f"exit code: {result.exit_code}",
             f"stdout: {_stream_bytes(result.stdout)} bytes",
             f"stderr: {_stream_bytes(result.stderr)} bytes",
-            _WITHHELD_ROUTE,
         )
     )
