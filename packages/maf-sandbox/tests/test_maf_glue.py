@@ -3117,6 +3117,8 @@ class TestArgumentProvenanceMiddleware:
         async def drive() -> None:
             await tracker.process(context, inner)
             released.set()  # only now, so the task is answering after the call returned
+            # Joined here rather than left to `asyncio.run` shutdown, which finishes an
+            # already-resumable task only because it never suspends again.
             await outliving[0]
 
         asyncio.run(drive())
