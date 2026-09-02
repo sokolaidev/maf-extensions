@@ -624,9 +624,9 @@ _DESCRIPTION_HEAD_WITHHELD = """Run a short Python program inside a sandbox and 
         debug with.**  You get the exit code and how large the output was, never what was in it,
         so nothing you write there can show you anything, even when the program fails.  That
         covers every route to those streams: ``print``, writes to ``sys.stdout`` or
-        ``sys.stderr``, the ``logging`` module, tracebacks, and whatever a subprocess you start
-        prints.  Write everything you need to see — results and diagnostics alike — into a
-        declared output instead.
+        ``sys.stderr``, the ``logging`` and ``warnings`` modules, tracebacks, and whatever a
+        subprocess you start prints.  Write everything you need to see — results and diagnostics
+        alike — into a declared output instead.
 
         Write a complete, self-contained program every time.  Each call gets a fresh working
         directory: nothing you did not pass in to *this* call is in it."""

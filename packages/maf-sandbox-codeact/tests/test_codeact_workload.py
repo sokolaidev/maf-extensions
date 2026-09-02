@@ -1167,9 +1167,18 @@ class TestTheModelIsToldUpFront:
         `stderr` — so a claim scoped to `print` alone leaves a model reading `logging`, which
         defaults to stderr, as a channel that comes back."""
         description = _callable(_withholding_tool(_ScriptedSandbox())).__doc__ or ""
+        unwrapped = " ".join(description.split())
 
-        for route in ("``print``", "``sys.stdout``", "``sys.stderr``", "``logging``", "traceback"):
-            assert route in description, route
+        for route in (
+            "``print``",
+            "``sys.stdout``",
+            "``sys.stderr``",
+            "``logging``",
+            "``warnings``",
+            "traceback",
+            "a subprocess you start",
+        ):
+            assert route in unwrapped, route
 
     def test_the_head_names_the_streams_as_written_to_and_never_as_received(self):
         """On the host-tool-call transport the launcher merges the program's stderr into its
