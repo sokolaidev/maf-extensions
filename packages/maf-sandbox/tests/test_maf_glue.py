@@ -995,6 +995,67 @@ class TestACallScopedWorkloadGetsItsOwnSandbox:
     def test_a_conversation_scoped_session_answers_outside_a_call(self):
         assert not isinstance(_session().key(), str)
 
+    def test_a_key_naming_another_call_is_refused(self):
+        """An open call is not enough: the key has to name *this* one.
+
+        A key kept from an earlier call would otherwise reacquire that call's sandbox from
+        inside a later one — and the sandbox most likely to still be there is the one whose own
+        cleanup could not delete it.
+        """
+        reached: dict[str, object] = {}
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Try to acquire on a key from somewhere else."""
+                stale = dataclasses.replace(_KEY, call_id="an-earlier-call")
+                try:
+                    reached["result"] = await session.acquire(stale)
+                except RuntimeError as raised:
+                    reached["result"] = raised
+                return target
+
+            return widget_run
+
+        _call(_reclaiming(_per_call_backend(), build, spec=_CALL_SCOPED_SPEC), target="x")
+        assert isinstance(reached["result"], RuntimeError)
+        assert "is not this call" in str(reached["result"])
+
+    def test_a_sandbox_created_under_a_cancelled_acquire_is_still_disposed(self):
+        """The backend made it; the cancellation arrived before anything recorded it.
+
+        Recording only after the await leaves the cleanup an empty map, and the sandbox with
+        nobody to delete it — for a call-scoped key, nobody ever.
+        """
+
+        class _CancelsAfterCreating(InProcessSandboxBackend):
+            async def acquire(self, key, spec):
+                sandbox = await super().acquire(key, spec)
+                del sandbox
+                raise asyncio.CancelledError
+
+        backend = _CancelsAfterCreating(
+            sandbox_per_key=True,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
+            ),
+        )
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Acquire, and be cancelled inside the backend."""
+                key = session.key()
+                assert not isinstance(key, str)
+                await session.acquire(key)
+                return target
+
+            return widget_run
+
+        with pytest.raises(asyncio.CancelledError):
+            _call(_reclaiming(backend, build, spec=_CALL_SCOPED_SPEC), target="x")
+        # The key the backend was asked for is the key the cleanup disposed.
+        assert backend.disposed == backend.keys
+
 
 class TestTheFinallyDisposesTheCallsSandbox:
     """The whole sandbox goes, because the call is what it was created for."""

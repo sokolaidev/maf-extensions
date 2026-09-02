@@ -534,6 +534,18 @@ class SandboxToolSession:
                 "walks it, and no later call can name that key. A task outliving the call needs "
                 "a key of its own."
             )
+        if key.call_id and call is not None and key.call_id != call.name:
+            raise RuntimeError(
+                f"{self._name}: acquire() was given a key naming {key.call_id!r}, which is not "
+                "this call. That sandbox is either gone or is the one its own cleanup could not "
+                "delete, and reaching it from here is exactly the sharing the scope refuses. "
+                "Take the key from session.key(), which names the call it is called in."
+            )
+        if key.call_id and call is not None:
+            # Recorded before the create rather than after it: a cancellation landing inside the
+            # backend's own acquire can leave a sandbox it already made, and a map written
+            # afterwards would hand the cleanup nothing to delete.
+            call.acquired.setdefault(key, [])
         try:
             sandbox = await self._router.acquire(key, self._spec)
         except ATTACH_REFUSALS as exc:
