@@ -12,7 +12,7 @@ It is **not** re-exported from the package's ``__init__``, on purpose: ``import 
 has to stay cheap and MAF-free for a backend, a workload's own test suite, or anything else
 that only speaks the protocol.  Reach it by name — ``from maf_sandbox.maf import ...``.
 
-Five things live here, and each of them had begun to exist twice before it did:
+Six things live here, and each of them had begun to exist twice before it did:
 
 - :func:`make_caller_context` — how a host says who is calling and which files they own.
 - :func:`sandboxed_tool` — the shape every sandbox workload's tool has: attach nothing when
@@ -24,6 +24,10 @@ Five things live here, and each of them had begun to exist twice before it did:
 - :func:`list_all_files` and :func:`list_no_files` — the listing a caller context is built
   from, walked from ``list_children`` or declared empty. They are here rather than in core
   because the walk reads ``FileStoreEntry.type``, which the framework owns.
+- :func:`argument_provenance_middleware`, :func:`positions_holding_hidden_content` and
+  :func:`hidden_content_candidates` — which of a call's arguments the host's information-flow
+  middleware rewrote, so a refusal names a position rather than quoting content the framework
+  hid. Here because the answer comes from that middleware.
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ import logging
 import math
 import posixpath
 import sys
+import threading
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -83,9 +88,10 @@ __all__ = [
     "list_no_files",
     "make_caller_context",
     "sandbox_tool_declarations",
+    "argument_provenance_middleware",
     "hidden_content_candidates",
+    "positions_holding_hidden_content",
     "sandboxed_tool",
-    "values_holding_hidden_content",
 ]
 
 # The three sentences a workload is allowed to hand the model when it could not get a
@@ -152,6 +158,170 @@ class _SandboxToolCall:
 #: the record is *closed* before the removal runs and asking it for a path then raises: anything
 #: such a task wrote afterwards would sit in the sandbox with nothing left to reclaim it.
 _CALL: ContextVar[_SandboxToolCall | None] = ContextVar("maf_sandbox_call", default=None)
+
+
+@dataclass
+class _CallProvenance:
+    """The framework's record of one call, and whether that call has returned."""
+
+    context: Any
+    closed: bool = False
+
+
+#: The framework's record of the call a tool body is running inside, published by
+#: :func:`argument_provenance_middleware` and ``None`` where a host has not wired it.
+#:
+#: A `ContextVar` for the same reason `_CALL` above is one: a task starts from a copy of its
+#: parent's context, so concurrent calls each read their own record rather than whichever
+#: finished last. And *closed* like `_CALL` for the other half of that: resetting the variable
+#: does not reach a child's copy, so a task outliving the call would go on answering from
+#: arguments that are no longer the ones being asked about. The flag is on the record the copy
+#: shares, which is the only thing the parent can still reach.
+_CALL_CONTEXT: ContextVar[_CallProvenance | None] = ContextVar(
+    "maf_sandbox_call_context", default=None
+)
+
+
+def argument_provenance_middleware() -> Any:
+    """Middleware that lets a tool body see its arguments as the framework first received them.
+
+    A host's information-flow middleware may rewrite an argument before the body runs — a
+    variable reference becomes the content it stands for — and the body is handed the result
+    with no record of the substitution.  Wire this beside it and
+    :func:`positions_holding_hidden_content` answers from that record rather than by inference.
+
+    Order does not matter: middleware share one call context, so this publishes the same
+    record whichever side of the chain it sits on.
+
+    **It publishes the framework's call context, not an accessor.** That object is the one the
+    framework already hands any tool body declaring a ``FunctionInvocationContext`` parameter,
+    so nothing here widens what a body can reach.  Nothing *public* returns it: this factory
+    answers with a stateless middleware, and :func:`positions_holding_hidden_content` answers
+    with positions in the list it was given.
+
+    **Any middleware that rewrites arguments must sit before the information-flow middleware**,
+    whichever side this one is on: the record is taken there, so an edit made after it reads as
+    content the framework substituted.
+
+    Returns a middleware instance to add to an agent's ``middleware`` list::
+
+        Agent(..., middleware=[LabelTrackingFunctionMiddleware(), argument_provenance_middleware()])
+    """
+    from agent_framework import FunctionMiddleware
+
+    class _ArgumentProvenance(FunctionMiddleware):  # type: ignore[misc]
+        async def process(self, context: Any, call_next: Any) -> None:
+            record = _CallProvenance(context=context)
+            token = _CALL_CONTEXT.set(record)
+            try:
+                await call_next()
+            finally:
+                _CALL_CONTEXT.reset(token)
+                # Closed rather than only reset: a task the body left running holds its own copy
+                # of the variable, and this is what that copy can still see.
+                record.closed = True
+
+    return _ArgumentProvenance()
+
+
+def _reachable_middleware() -> Any | None:
+    """The host's information-flow middleware, or ``None`` where none is reachable."""
+    try:
+        from agent_framework.security import get_current_middleware
+    except ImportError:  # pragma: no cover - a host without the security module
+        return None
+    return get_current_middleware()
+
+
+#: Where the framework keeps a call's arguments as they arrived, before it expands any
+#: reference into them.  **Not a published contract** — a string literal inside
+#: `LabelTrackingFunctionMiddleware`, and this package accepts every ``agent-framework-core``
+#: 1.x — so a compatible minor may rename it and this would stop answering.  Two things keep
+#: that from being silent: a divergence alarm in the suite, and, for a host whose upgrade this
+#: suite never saw, `_warn_once_about_a_missing_record` beside an answer that names every
+#: position rather than quoting one.
+#: Retiring both needs a provenance API the framework publishes, which is #826.
+_ORIGINAL_ARGUMENTS_KEY = "original_arguments_for_messages"
+
+#: Another key that middleware writes on every call, before the one above and for a different
+#: reader.  Present-without-the-other is the tell this package needs: it says an information-flow
+#: middleware ran and its argument record is gone, which no legitimate wiring produces.  Read
+#: from the call rather than from the framework's accessor deliberately — metadata travels with
+#: the context object, so this answers on the worker thread a synchronous body runs on, where
+#: the accessor is a thread-local and answers nothing.
+_MIDDLEWARE_RAN_KEY = "context_label"
+
+#: One warning per process, not one per refusal. Guarded, because the path this exists for is
+#: the one that runs off the event loop: `asyncio.to_thread` gives each synchronous body a
+#: pool thread, so two can read the flag before either sets it.
+_warned_about_a_missing_record = False
+_warning_lock = threading.Lock()
+
+
+def _warn_once_about_a_missing_record(logger: logging.Logger) -> None:
+    """Say that the framework stopped keeping the record, where that is what it must mean.
+
+    Called where a call carries `_MIDDLEWARE_RAN_KEY` and not `_ORIGINAL_ARGUMENTS_KEY` — see
+    those two, and :func:`_the_framework_kept_no_record`, for why that pairing is the tell.
+    """
+    global _warned_about_a_missing_record
+    with _warning_lock:
+        if _warned_about_a_missing_record:
+            return
+        _warned_about_a_missing_record = True
+    # Logged outside the lock: a handler is arbitrary host code and may be slow or re-entrant.
+    logger.warning(
+        "argument_provenance_middleware: this agent-framework-core no longer records %r on a "
+        "call, so which arguments it rewrote can no longer be answered. Every checked value is "
+        "being named by its position instead of quoted, which is safe and noisy. See "
+        "https://github.com/sokolaidev/maf-extensions/issues/826",
+        _ORIGINAL_ARGUMENTS_KEY,
+    )
+
+
+def _framework_metadata(context: Any) -> Mapping[str, Any]:
+    """What the framework left on this call, or empty where it left nothing."""
+    return cast("Mapping[str, Any]", getattr(context, "metadata", None) or {})
+
+
+def _the_framework_kept_a_record(context: Any) -> bool:
+    """Whether this call carries the framework's record of the arguments it received."""
+    return _ORIGINAL_ARGUMENTS_KEY in _framework_metadata(context)
+
+
+def _the_framework_kept_no_record(context: Any) -> bool:
+    """Whether a middleware ran on this call and left no record of the arguments it received.
+
+    The two keys are written together, so one without the other is the framework's contract
+    having moved rather than a host that wired no information-flow middleware at all.
+    """
+    metadata = _framework_metadata(context)
+    return _ORIGINAL_ARGUMENTS_KEY not in metadata and _MIDDLEWARE_RAN_KEY in metadata
+
+
+def _spellings_before_rewriting(context: Any, argument: str) -> list[str] | None:
+    """``argument``'s values as the caller spelled them, before the framework rewrote any.
+
+    ``None`` where the record is absent — no information-flow middleware ran, so nothing was
+    rewritten — and equally where it holds no list for ``argument``, which means a caller named
+    a parameter this call does not have and must not be read as "nothing was rewritten".
+
+    A call's arguments are a mapping *or* a model, and the framework keeps whichever it was
+    given, so a model is dumped before it is read.  Duck-typed rather than imported: this
+    package does not depend on the framework's validation library.
+    """
+    original: Any = _framework_metadata(context).get(_ORIGINAL_ARGUMENTS_KEY)
+    dump = getattr(original, "model_dump", None)
+    if callable(dump):
+        original = dump()
+    if not isinstance(original, Mapping):
+        return None
+    spellings: Any = cast("Mapping[str, Any]", original).get(argument)
+    if not isinstance(spellings, (list, tuple)):
+        return None
+    return [
+        item if isinstance(item, str) else str(item) for item in cast("Sequence[Any]", spellings)
+    ]
 
 
 def _awaits(body: object) -> bool:
@@ -252,60 +422,92 @@ def hidden_content_candidates() -> frozenset[str]:
     Take this **before a body's first await** wherever the answer is needed later.  The
     framework's accessor is not scoped to the call, so an answer fetched after the body has
     suspended may not be available; a snapshot taken first thing survives the wait, and
-    :func:`values_holding_hidden_content` accepts it as ``candidates``.
+    :func:`positions_holding_hidden_content` accepts it as ``candidates``.
 
     A body that asks and answers in the same breath does not need this — it can let
-    :func:`values_holding_hidden_content` take its own.
+    :func:`positions_holding_hidden_content` take its own.
     """
-    try:
-        from agent_framework.security import get_current_middleware
-    except ImportError:  # pragma: no cover - a host without the security module
-        return frozenset()
-    middleware = get_current_middleware()
+    middleware = _reachable_middleware()
     if middleware is None:
         return frozenset()
     return frozenset(_hidden_payloads(middleware))
 
 
-def values_holding_hidden_content(
-    values: Sequence[str], *, candidates: frozenset[str] | None = None
-) -> frozenset[str]:
-    """Those of ``values`` the host's middleware expanded content it had hidden into.
+def positions_holding_hidden_content(
+    values: Sequence[str],
+    *,
+    argument: str | None = None,
+    candidates: frozenset[str] | None = None,
+) -> frozenset[int]:
+    """The positions in ``values`` the host's middleware expanded content it had hidden into.
 
-    MAF's information-flow middleware replaces an untrusted result with a variable reference,
-    and rewrites that reference back into a tool's arguments **before** the body runs.  So a
-    value a kind is about to quote in a refusal may be content the framework hid rather than
-    anything the model chose.  Pass the verdict to :func:`~maf_sandbox.echoed_name` as
-    ``hidden``, and it renders the argument's position instead of its value.
+    MAF's information-flow middleware rewrites a variable reference back into a tool's arguments
+    **before** the body runs, so a value a kind is about to quote in a refusal may be content the
+    framework hid rather than anything the model chose.  Pass the verdict to
+    :func:`~maf_sandbox.echoed_name` as ``hidden`` and it renders the position instead.
 
-    **Containment, not equality.**  A reference is spliced into the text around it, so
-    ``"[var_a1b2].bicep"`` arrives as the content with a suffix and equals no stored payload.
+    Answered two ways.  Where a host has wired :func:`argument_provenance_middleware` *and*
+    ``argument`` names the parameter these values came from, each is compared with the spelling
+    the caller gave at the same position: exact, and consulting no stored payload.  Otherwise it
+    falls back to containment against the whole conversation's store, which is conservative — a
+    store holding ``"main"`` reports an untouched ``"main.bicep"`` — and reports a value the
+    caller chose that merely matches hidden content.  ``docs/sandbox/information-flow.md``
+    carries why that difference matters.
 
-    **The answer is conservative, and deliberately so: it is about the whole conversation's
-    store rather than about this call's expansions.**  A value is reported when it *could* have
-    arrived carrying a hidden payload, not when it provably did — so a store holding a short
-    payload such as ``"main"`` reports an untouched ``"main.bicep"`` too, and its refusal names
-    a position where it would otherwise have quoted the name.  That is the safe direction and
-    it costs ergonomics rather than containment; the exact question needs the argument's own
-    before-and-after, which a tool body cannot reach.
+    What a caller has to know:
 
-    ``candidates`` is a snapshot from :func:`hidden_content_candidates`, for a caller that has
-    to ask long after its body began — see that function.  Without one this takes its own, which
-    is right for a caller answering immediately.
+    - **Index the answer.**  Two entries can arrive equal while only one was rewritten, so a
+      verdict belongs to a position and never to a value.
+    - **``argument`` is required for the exact answer, and names one call argument.**  Values
+      that came from no argument — a manifest a program wrote — leave it unset, or the
+      comparison is against a list the caller never sent.
+    - **Containment, not equality.**  A reference is spliced into the text around it, so
+      ``"[var_a1b2].bicep"`` arrives as the content with a suffix and equals no stored payload.
+    - **A task outliving the call falls back, and reaches the store only through
+      ``candidates``.**  The record is closed with the call, and the framework's own accessor
+      goes with it.  Take that snapshot from :func:`hidden_content_candidates` before the first
+      await; a caller answering immediately needs none.
+    - **An empty answer from the fallback is not "nothing was hidden".**  It is also what an
+      unreachable middleware gives, including for a synchronous body dispatched to another
+      thread.  The record has neither limit — a ``ContextVar`` is copied by
+      ``asyncio.to_thread``.
 
-    Take the whole argument list in one call: the answer costs one pass over the variable
-    store, and the store's own reads are logged by the framework.
-
-    Answers an empty set where no middleware is reachable, which is two different situations
-    it cannot tell apart.  Either the host runs none — then nothing was ever hidden and the
-    shape bound is all that is needed — or a **synchronous** tool body has been dispatched to
-    another thread, which the middleware's thread-local does not reach.  Every body in this
-    suite is ``async``; one that is not gets the bound instead of this.
+    Take the whole argument list in one call: the answer costs one pass over the variable store,
+    and the store's own reads are logged by the framework.
     """
     if not values:
         return frozenset()
+    record = _CALL_CONTEXT.get()
+    if record is not None and not record.closed and argument is not None:
+        if _the_framework_kept_no_record(record.context):
+            # Fail closed. Something hid content on this call and the record of what it
+            # rewrote is gone, so every entry is one this cannot vouch for. The fallback is
+            # no answer here: a synchronous body runs on a thread the framework's accessor
+            # does not reach, so it would report nothing and every value would be quoted.
+            _warn_once_about_a_missing_record(_DEFAULT_LOGGER)
+            return frozenset(range(len(values)))
+        before = _spellings_before_rewriting(record.context, argument)
+        # Per position, never against the record as a whole: an equal value at another position
+        # would otherwise excuse this one.
+        if before is not None and len(before) == len(values):
+            return frozenset(
+                position
+                for position, (spelling, value) in enumerate(zip(before, values, strict=True))
+                if value != spelling
+            )
+        if _the_framework_kept_a_record(record.context):
+            # The record is here and this argument cannot be read out of it — a name that is no
+            # parameter of this call, a value that is no longer a list, a length that no longer
+            # matches. None of that says nothing was rewritten, so it must not answer as though
+            # it did, and the fallback would: a synchronous body reaches no store from its
+            # thread and would report an empty set, quoting whatever the framework had hidden.
+            return frozenset(range(len(values)))
     payloads = hidden_content_candidates() if candidates is None else candidates
-    return frozenset(value for payload in payloads for value in values if payload in value)
+    return frozenset(
+        position
+        for position, value in enumerate(values)
+        if any(payload in value for payload in payloads)
+    )
 
 
 def make_caller_context(

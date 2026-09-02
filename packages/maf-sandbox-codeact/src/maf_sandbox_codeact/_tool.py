@@ -62,8 +62,8 @@ from maf_sandbox import (
 from maf_sandbox.maf import (
     SandboxToolSession,
     hidden_content_candidates,
+    positions_holding_hidden_content,
     sandboxed_tool,
-    values_holding_hidden_content,
 )
 
 if TYPE_CHECKING:
@@ -98,8 +98,9 @@ _PROGRAM_FILENAME = "program.py"
 #: rather than an omission; :func:`codeact_sandbox_spec` has why it is fixed here.
 _KIND_EGRESS: tuple[str, ...] = ()
 
-#: The argument a ``DECLARED``-mode caller names its files in, which is what a refusal about
-#: one of them points at.
+#: The arguments a caller names files in, which is what a refusal about one of them points
+#: at and what provenance is asked about.
+_FILES_ARGUMENT = "files"
 _OUTPUTS_ARGUMENT = "outputs"
 
 #: Where a ``MANIFEST``-mode program says what it produced.
@@ -942,6 +943,7 @@ async def _execute(
             guest_prefix=guest_prefix,
             normalization=_normalization(session),
             named_by=_OUTPUTS_ARGUMENT,
+            argument=_OUTPUTS_ARGUMENT,
             candidates=rewritten,
         )
         if isinstance(checked, str):
@@ -1131,8 +1133,10 @@ async def _resolve_listed_files(
         return []
     # Asked before the first await, not beside the loop that uses it: the framework's accessor
     # is not scoped to the call, so every suspension before asking is a chance for the answer
-    # to come back empty. See `values_holding_hidden_content`.
-    rewritten = values_holding_hidden_content(files, candidates=candidates)
+    # to come back empty. See `positions_holding_hidden_content`.
+    rewritten = positions_holding_hidden_content(
+        files, argument=_FILES_ARGUMENT, candidates=candidates
+    )
     listing = await session.list_files(store)
     if isinstance(listing, str):
         # The host's own sentence about its store. Withheld it is dropped for the reason the
@@ -1145,7 +1149,7 @@ async def _resolve_listed_files(
     resolved: list[str] = []
     for position, name in enumerate(files):
         at = f"files[{position}]"
-        hidden = name in rewritten
+        hidden = position in rewritten
         named = echoed_name(name, at=at, hidden=hidden)
         try:
             validate_artifact_name(name, at=at, hidden=hidden)
@@ -1354,6 +1358,7 @@ def _validated_output_names(
     guest_prefix: str,
     normalization: NameNormalization,
     named_by: str,
+    argument: str | None = None,
     candidates: frozenset[str] | None = None,
 ) -> list[str] | str:
     """Settle every output name before the program runs, or answer with the refusal.
@@ -1376,10 +1381,10 @@ def _validated_output_names(
     # Asked of manifest names as well as of the model's own `outputs`, and that is not
     # belt-and-braces: `code` is a rewritten argument too, so a payload can reach the guest
     # in the program's own source and come back as a name the program chose to write.
-    rewritten = values_holding_hidden_content(names, candidates=candidates)
+    rewritten = positions_holding_hidden_content(names, argument=argument, candidates=candidates)
     for position, name in enumerate(names):
         at = f"{named_by}[{position}]"
-        hidden = name in rewritten
+        hidden = position in rewritten
         named = echoed_name(name, at=at, hidden=hidden)
         # NFC is not length-non-increasing — 43 × U+0958 is 129 bytes declared and 258
         # delivered — so the name to hold to the invariant is the one the sink will receive.
@@ -1486,6 +1491,7 @@ async def _collect(
         declared,
         withhold=withhold,
         named_by=_MANIFEST_FILENAME if outputs is CodeactOutputs.MANIFEST else _OUTPUTS_ARGUMENT,
+        argument=None if outputs is CodeactOutputs.MANIFEST else _OUTPUTS_ARGUMENT,
         candidates=candidates,
     )
 
@@ -1576,6 +1582,7 @@ def _format_landed(
     *,
     withhold: bool = False,
     named_by: str = _OUTPUTS_ARGUMENT,
+    argument: str | None = None,
     candidates: frozenset[str] | None = None,
 ) -> str:
     """What the model is told about the files: what landed, and what is absent.
@@ -1585,6 +1592,12 @@ def _format_landed(
     exact-string comparison would report a file that landed perfectly well as never written.
     Normalizing **both** sides is right whichever normalization the sink chose — under
     ``NameNormalization.NONE`` the two are already the same string.
+
+    ``argument`` names the parameter ``declared`` came from, where it came from one — the
+    ``outputs`` argument, never the manifest, which no caller spelled.  It is what makes the
+    provenance answer exact here rather than inferred, and it matters as much after the run as
+    before it: without it a declared name equal to hidden content renders as a position, and a
+    caller watching which way its own spelling comes back learns that the guess was right.
 
     ``withhold`` drops ``display`` in favour of the name the model itself declared. The sink
     composes ``display`` from an :class:`~maf_sandbox.Artifact` whose ``content`` is the guest's
@@ -1606,9 +1619,11 @@ def _format_landed(
     # A name that produced no file is reported the way a refusal reports one: the caller's
     # spelling where it is the caller's, and the position where the framework put something
     # else there. It is the one line here that names a file which does not exist.
-    rewritten = values_holding_hidden_content(list(declared), candidates=candidates)
+    rewritten = positions_holding_hidden_content(
+        list(declared), argument=argument, candidates=candidates
+    )
     missing = [
-        echoed_name(name, at=f"{named_by}[{position}]", hidden=name in rewritten)
+        echoed_name(name, at=f"{named_by}[{position}]", hidden=position in rewritten)
         for position, name in enumerate(declared)
         if unicodedata.normalize("NFC", name) not in delivered
     ]

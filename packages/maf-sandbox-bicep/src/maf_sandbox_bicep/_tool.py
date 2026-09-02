@@ -28,8 +28,8 @@ from maf_sandbox import (
 )
 from maf_sandbox.maf import (
     SandboxToolSession,
+    positions_holding_hidden_content,
     sandboxed_tool,
-    values_holding_hidden_content,
 )
 
 from ._paths import resolve_listed_path
@@ -64,6 +64,10 @@ __all__ = [
     "bicep_sandbox_spec",
     "make_bicep_tools",
 ]
+
+#: The argument the model names its files in, which is the parameter a refusal points at
+#: and the one provenance is asked about.
+_FILES_ARGUMENT = "files"
 
 BICEP_VALIDATE_TOOL_NAME = "bicep_validate"
 
@@ -324,11 +328,11 @@ def _bicep_validate_tool(
         # Asked once for the whole list: the middleware may have rewritten a variable
         # reference into any of these, and its answer is what a refusal renders instead of the
         # value. One pass over the variable store, before either loop that can refuse.
-        rewritten = values_holding_hidden_content(files)
+        rewritten = positions_holding_hidden_content(files, argument=_FILES_ARGUMENT)
 
         for position, name in enumerate(files):
             if not name.endswith(_ACCEPTED_SUFFIXES):
-                named = echoed_name(name, at=f"files[{position}]", hidden=name in rewritten)
+                named = echoed_name(name, at=f"files[{position}]", hidden=position in rewritten)
                 return (
                     f"Error: bicep_validate only accepts .bicep and .bicepparam files; "
                     f"rejected: {named}"
@@ -361,7 +365,7 @@ def _bicep_validate_tool(
             sandbox_path, listing_key, rejection = resolve_listed_path(
                 name, listing, call_directory
             )
-            named = echoed_name(name, at=f"files[{position}]", hidden=name in rewritten)
+            named = echoed_name(name, at=f"files[{position}]", hidden=position in rewritten)
             if rejection == "unsafe":
                 # No listing echoed back: that would invite a retry with another spelling.
                 return (
