@@ -6,7 +6,10 @@ readme = "README.md"
 requires-python = ">=3.12,<3.15"
 authors = [{ name = "SOKOLAI BV", email = "info@sokolai.com" }]
 license = "MIT"
-license-files = ["LICENSE"]
+# `THIRD-PARTY-NOTICES.md` rides here rather than in the sdist alone: PEP 639 puts these
+# into the wheel's `.dist-info/licenses/`, which is where a consumer of the built
+# artifact looks — a notice only in the repository reaches nobody who installed it.
+license-files = ["LICENSE", "THIRD-PARTY-NOTICES.md"]
 keywords = [
     "agent-framework",
     "microsoft-agent-framework",

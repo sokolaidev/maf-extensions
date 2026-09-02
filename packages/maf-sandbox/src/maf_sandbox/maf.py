@@ -187,7 +187,8 @@ def _primary_of(payload: str) -> str | None:
     in anything that package promises, and a shape this stops matching is a shape an argument
     carries past the check — which is how a JSON payload got through once already.
     ``TestValuesHoldingHiddenContent`` asserts what the framework *delivers* for each shape
-    before asserting what is reported, so a changed reduction fails there and says so.
+    before asserting what is reported, so a changed reduction fails there and says so, and
+    ``THIRD-PARTY-NOTICES.md`` records the reuse where a dependency list cannot show it.
     """
     stripped = payload.strip()
     if not (stripped.startswith("{") and stripped.endswith("}")):
