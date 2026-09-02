@@ -521,9 +521,11 @@ class SandboxToolSession:
 
         Raises:
             RuntimeError: given a key naming a call while no tool call of this session is
-                open — after one returned, or from a context that never had one. The wiring
-                mistake :meth:`guest_call_path` refuses for the same reason: nothing would
-                delete what it created.
+                open — after one returned, from a context that never had one, or naming a
+                different call than the one running. The wiring mistake :meth:`guest_call_path`
+                refuses for the same reason: nothing would delete what it created. Raised again
+                when the call ends *during* the acquire, in which case the sandbox that came back
+                is disposed before the refusal.
         """
         call = _this_call(self)
         if key.call_id and (call is None or call.closed):
@@ -541,10 +543,16 @@ class SandboxToolSession:
                 "delete, and reaching it from here is exactly the sharing the scope refuses. "
                 "Take the key from session.key(), which names the call it is called in."
             )
-        if key.call_id and call is not None:
+        per_call = self._router.effective_isolation_scope(self._spec) is IsolationScope.CALL
+        if key.call_id and call is not None and per_call:
             # Recorded before the create rather than after it: a cancellation landing inside the
             # backend's own acquire can leave a sandbox it already made, and a map written
             # afterwards would hand the cleanup nothing to delete.
+            #
+            # Only at this scope, and that is the load-bearing half. The cleanup reads the scope
+            # off the key, and a backend's `dispose` sweeps a key's whole (scope, thread, agent) —
+            # so registering a call-naming key under a conversation-scoped workload would have the
+            # `finally` delete the conversation's own sandbox over an acquire the router refused.
             call.acquired.setdefault(key, [])
         try:
             sandbox = await self._router.acquire(key, self._spec)
@@ -576,6 +584,21 @@ class SandboxToolSession:
             # tenant ids, so it goes to the log and never into the model's context.
             self._logger.warning(f"{self._log_prefix}: sandbox unavailable: %s", error_detail(exc))
             return _SANDBOX_UNAVAILABLE
+        if key.call_id and call is not None and call.closed:
+            # The call ended while the backend was still creating. Its cleanup has already run the
+            # delete for this key, so what came back is a sandbox nothing is left to remove: take
+            # it here, and refuse rather than hand a task something it cannot have cleaned up.
+            landed = await self._router.dispose_call(key, timeout=self._router.reclaim.timeout)
+            if not landed:
+                self._logger.warning(
+                    f"{self._log_prefix}: a sandbox created after the call had ended was not "
+                    "disposed; the conversation's purge is what reaches it now"
+                )
+            raise RuntimeError(
+                f"{self._name}: acquire() came back after its tool call had ended, so the sandbox "
+                "it created is past the cleanup that would have deleted it. It has been disposed "
+                "and the result refused. A task outliving the call needs a key of its own."
+            )
         if call is not None and not call.closed:
             # Recorded on the way through rather than re-derived in the `finally`, where a
             # second `acquire` could fail on its own and report a reclaim failure for it. Not

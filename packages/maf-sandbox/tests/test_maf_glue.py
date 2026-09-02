@@ -1056,6 +1056,101 @@ class TestACallScopedWorkloadGetsItsOwnSandbox:
         # The key the backend was asked for is the key the cleanup disposed.
         assert backend.disposed == backend.keys
 
+    def test_a_refused_call_key_never_reaches_the_conversations_sandbox(self):
+        """A conversation-scoped body can forge a key naming its own call directory.
+
+        The router refuses that pairing, but the cleanup reads the scope off the key and a
+        backend's `dispose` sweeps the whole (scope, thread, agent) — so registering it would
+        have the `finally` delete the conversation's own sandbox over an acquire nothing served.
+        """
+        refused: dict[str, object] = {}
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Acquire properly, then reach with a key naming this call."""
+                key = session.key()
+                assert not isinstance(key, str)
+                assert not isinstance(await session.acquire(key), str)
+                forged = dataclasses.replace(
+                    key, call_id=session.guest_call_path().rsplit("/", 1)[-1]
+                )
+                refused["result"] = await session.acquire(forged)
+                return target
+
+            return widget_run
+
+        backend = _per_call_backend()
+        _call(_reclaiming(backend, build), target="x")
+        assert isinstance(refused["result"], str)  # the router's refusal, as a tool result
+        assert backend.disposed == []
+
+    def test_a_sandbox_that_arrives_after_the_call_ended_is_disposed_not_handed_over(self):
+        """The child is inside the backend when the body returns and the cleanup runs.
+
+        Its acquire then lands on a key the `finally` has already deleted, and recording is
+        skipped because the call is closed — so handing the sandbox over would leave a
+        call-scoped one alive with nothing able to name it again.
+        """
+        entered = asyncio.Event()
+        released = asyncio.Event()
+        outcome: dict[str, object] = {}
+        tasks: list[asyncio.Task[None]] = []
+
+        class _BlocksOnTheSecond(InProcessSandboxBackend):
+            """Parks the retry inside the backend, where a cancellation or a close can overtake it."""
+
+            def __init__(self, **kw) -> None:
+                super().__init__(**kw)
+                self.seen = 0
+
+            async def acquire(self, key, spec):
+                self.seen += 1
+                if self.seen == 2:
+                    entered.set()
+                    await released.wait()
+                return await super().acquire(key, spec)
+
+        backend = _BlocksOnTheSecond(
+            sandbox_per_key=True,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
+            ),
+        )
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Leave a task inside the backend, holding this call's own key."""
+                key = session.key()
+                assert not isinstance(key, str)
+                assert not isinstance(await session.acquire(key), str)
+
+                async def later() -> None:
+                    try:
+                        outcome["result"] = await session.acquire(key)
+                    except RuntimeError as raised:
+                        outcome["result"] = raised
+
+                tasks.append(asyncio.create_task(later()))
+                await entered.wait()
+                return target
+
+            return widget_run
+
+        fn = _fn(_reclaiming(backend, build, spec=_CALL_SCOPED_SPEC))
+
+        async def run() -> None:
+            await fn(target="x")
+            released.set()
+            await asyncio.gather(*tasks)
+
+        asyncio.run(run())
+        assert isinstance(outcome["result"], RuntimeError)
+        assert "came back after its tool call had ended" in str(outcome["result"])
+        # Disposed twice on the one key: the call's own cleanup, then the late arrival.
+        assert len(backend.disposed) == 2
+        assert {key.call_id for key in backend.disposed} == {backend.keys[0].call_id}
+
 
 class TestTheFinallyDisposesTheCallsSandbox:
     """The whole sandbox goes, because the call is what it was created for."""
