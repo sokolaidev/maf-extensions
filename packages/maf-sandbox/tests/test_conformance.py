@@ -1610,14 +1610,17 @@ class TestCallScopeConformance:
             if not await router.dispose_call(self._KEY, timeout=5.0):
                 raise AssertionError("the delete did not land, so the probe would prove nothing")
 
-        return first, acquire_another, dispose_this_call
+        async def dispose_the_other() -> None:
+            await router.dispose_call(dataclasses.replace(self._KEY, call_id="two"), timeout=5.0)
+
+        return first, acquire_another, dispose_this_call, dispose_the_other
 
     def test_two_sandboxes_answer_every_probe(self):
-        first, acquire_another, dispose_this_call = self._served()
+        first, acquire_another, dispose_this_call, dispose_the_other = self._served()
 
         async def run():
             return await assert_call_scope_conformance(
-                await first(), acquire_another, dispose_this_call
+                await first(), acquire_another, dispose_this_call, dispose_the_other
             )
 
         results = asyncio.run(run())
@@ -1634,10 +1637,16 @@ class TestCallScopeConformance:
         async def dispose_this_call() -> None:
             shared.contents.clear()
 
+        async def dispose_the_other() -> None:
+            """Nothing to release: this specimen's sandboxes are objects the test holds."""
+
         with pytest.raises(ConformanceFailure) as raised:
             asyncio.run(
                 assert_call_scope_conformance(
-                    _StoreSubject(shared, _EVERYTHING), acquire_another, dispose_this_call
+                    _StoreSubject(shared, _EVERYTHING),
+                    acquire_another,
+                    dispose_this_call,
+                    dispose_the_other,
                 )
             )
         assert len(raised.value.failures) == 5
@@ -1659,10 +1668,16 @@ class TestCallScopeConformance:
         async def dispose_this_call() -> None:
             first.contents.clear()
 
+        async def dispose_the_other() -> None:
+            """Nothing to release: this specimen's sandboxes are objects the test holds."""
+
         with pytest.raises(ConformanceFailure) as raised:
             asyncio.run(
                 assert_call_scope_conformance(
-                    _StoreSubject(first, _EVERYTHING), acquire_another, dispose_this_call
+                    _StoreSubject(first, _EVERYTHING),
+                    acquire_another,
+                    dispose_this_call,
+                    dispose_the_other,
                 )
             )
         assert [failure.probe.name for failure in raised.value.failures] == [
@@ -1686,10 +1701,16 @@ class TestCallScopeConformance:
             first.contents.clear()
             second.contents.clear()  # the sweep: everything for this scope, thread and agent
 
+        async def dispose_the_other() -> None:
+            """Nothing to release: this specimen's sandboxes are objects the test holds."""
+
         with pytest.raises(ConformanceFailure) as raised:
             asyncio.run(
                 assert_call_scope_conformance(
-                    _StoreSubject(first, _EVERYTHING), acquire_another, dispose_this_call
+                    _StoreSubject(first, _EVERYTHING),
+                    acquire_another,
+                    dispose_this_call,
+                    dispose_the_other,
                 )
             )
         assert [failure.probe.name for failure in raised.value.failures] == [
@@ -1698,13 +1719,14 @@ class TestCallScopeConformance:
 
     def test_a_plant_that_lands_nowhere_fails_rather_than_passes(self):
         """The positive control: a subject whose writes vanish must not read as separation."""
-        _, acquire_another, dispose_this_call = self._served()
+        _, acquire_another, dispose_this_call, dispose_the_other = self._served()
 
         async def run():
             return await assert_call_scope_conformance(
                 _VanishingSubject(InProcessSandbox(), _EVERYTHING),
                 acquire_another,
                 dispose_this_call,
+                dispose_the_other,
             )
 
         with pytest.raises(ConformanceFailure) as raised:
@@ -1718,17 +1740,21 @@ class TestCallScopeConformance:
         reclaim suite, so gating on `FILES_IN` would lock a valid call-scoped backend out of the
         suite it owes for declaring the scope. The two probes that read a sandbox back still skip.
         """
-        first, acquire_another, dispose_this_call = self._served(frozenset({Capability.EXEC}))
+        first, acquire_another, dispose_this_call, dispose_the_other = self._served(
+            frozenset({Capability.EXEC})
+        )
 
         async def run():
-            return await run_call_scope_probes(await first(), acquire_another, dispose_this_call)
+            return await run_call_scope_probes(
+                await first(), acquire_another, dispose_this_call, dispose_the_other
+            )
 
         results = asyncio.run(run())
         assert [result.failure for result in results] == [None] * 5
         assert [result.skipped is None for result in results] == [True, True, False, False, True]
 
     def test_two_roots_are_refused_rather_than_passing_vacuously(self):
-        first, acquire_another, dispose_this_call = self._served()
+        first, acquire_another, dispose_this_call, dispose_the_other = self._served()
 
         async def run():
             async def elsewhere() -> _StoreSubject:
@@ -1736,7 +1762,9 @@ class TestCallScopeConformance:
                 second.working_directory = f"{_WORK}-elsewhere"
                 return second
 
-            return await run_call_scope_probes(await first(), elsewhere, dispose_this_call)
+            return await run_call_scope_probes(
+                await first(), elsewhere, dispose_this_call, dispose_the_other
+            )
 
         with pytest.raises(ValueError, match="rooted at"):
             asyncio.run(run())

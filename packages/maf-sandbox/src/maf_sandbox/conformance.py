@@ -1899,6 +1899,7 @@ async def run_call_scope_probes(
     subject: ConformanceSubject,
     acquire_another: Callable[[], Awaitable[ConformanceSubject]],
     dispose_this_call: Callable[[], Awaitable[None]],
+    dispose_the_other: Callable[[], Awaitable[None]],
 ) -> tuple[ProbeResult, ...]:
     """Run the CALL_SCOPE probes over ``subject`` and a second sandbox this suite acquires.
 
@@ -1912,6 +1913,13 @@ async def run_call_scope_probes(
     every post-acquire probe there is. Two subjects rooted at different working directories are
     refused — each probe would compare paths that were never the same one, and pass having
     attacked nothing.
+
+    ``dispose_the_other`` deletes the sandbox this suite acquired, and runs in a ``finally``
+    because the suite is the only thing that knows it exists: a caller reading the signature
+    supplies an acquire and would not otherwise learn that a second sandbox outlived the run.
+    Against a real provider that is a live, billable sandbox waiting on a scope purge.  A
+    teardown that raises replaces the results, deliberately — a delete that cannot land is worse
+    news than a probe nobody read.
 
     ``dispose_this_call`` deletes **``subject``'s** sandbox and raises if that did not land.
     Separation is two properties, not one: a backend can fold ``call_id`` into what it acquires
@@ -1928,6 +1936,22 @@ async def run_call_scope_probes(
     planted_first = f"{work}/{_BEFORE_THE_SECOND_ACQUIRE}"
     await subject.plant_file(planted_first, _SECRET)
     other = await acquire_another()
+    try:
+        return await _probe_the_pair(
+            subject, other, planted_first, dispose_this_call=dispose_this_call
+        )
+    finally:
+        await dispose_the_other()
+
+
+async def _probe_the_pair(
+    subject: ConformanceSubject,
+    other: ConformanceSubject,
+    planted_first: str,
+    *,
+    dispose_this_call: Callable[[], Awaitable[None]],
+) -> tuple[ProbeResult, ...]:
+    """The probes themselves, over a pair the caller above owns the teardown of."""
     if subject.working_directory != other.working_directory:
         raise ValueError(
             f"these subjects are rooted at {subject.working_directory!r} and "
@@ -2066,6 +2090,7 @@ async def assert_call_scope_conformance(
     subject: ConformanceSubject,
     acquire_another: Callable[[], Awaitable[ConformanceSubject]],
     dispose_this_call: Callable[[], Awaitable[None]],
+    dispose_the_other: Callable[[], Awaitable[None]],
 ) -> tuple[ProbeResult, ...]:
     """Run the CALL_SCOPE probes and raise :class:`ConformanceFailure` if any failed.
 
@@ -2073,5 +2098,6 @@ async def assert_call_scope_conformance(
     declaration is what the router refuses on, and these are what make it true.
     """
     return _assert_conformance(
-        await run_call_scope_probes(subject, acquire_another, dispose_this_call), "CALL_SCOPE"
+        await run_call_scope_probes(subject, acquire_another, dispose_this_call, dispose_the_other),
+        "CALL_SCOPE",
     )

@@ -120,7 +120,7 @@ _CLEANUP = _tagged(r"transport cleanup:\s+(reclaimed by the transport|left for t
 _CALL_CLEANUP = _tagged(
     r"call directory cleanup:\s+(reclaimed by the framework|left for the sandbox)"
 )
-_RUN_DIRS = _tagged(r"run directories across both sandboxes:\s+(\d+)")
+_CALL_DIRS = _tagged(r"call directories across both sandboxes:\s+(\d+)")
 _RUNS_THAT_CALLED = _tagged(r"of those, runs that called a host tool:\s+(\d+)")
 _LEFT = _tagged(r"transport files left behind:\s+(\d+), of which answered calls:\s+(\d+)")
 _DISPOSED = _tagged(r"Disposed\s+(\d+)\s+sandbox\(es\)\.")
@@ -617,7 +617,7 @@ def _assess_what_the_runs_left(output: str) -> list[str]:
     call_said = _CALL_CLEANUP.findall(output)
     call_reclaims, problems = _once(call_said, "call directory cleanup")
     failures.extend(problems)
-    dirs, problems = _once(_RUN_DIRS.findall(output), "run directories")
+    dirs, problems = _once(_CALL_DIRS.findall(output), "call directories")
     failures.extend(problems)
     called_a_host_tool, problems = _once(
         _RUNS_THAT_CALLED.findall(output), "runs that called a host tool"
@@ -688,7 +688,7 @@ def _assess_what_the_runs_left(output: str) -> list[str]:
         # reaches this act has one — its table came from an `execute_code` — so a count with
         # none of them in it is an enumeration that read one sandbox and reported both.
         failures.append(
-            f"all {dirs} run directories are ones that called a host tool, so none of them is "
+            f"all {dirs} call directories are ones that called a host tool, so none of them is "
             "the direct route's. That program runs in a sandbox with no registry and leaves a "
             "directory with no transport in it, and its table above says it ran — so this count "
             "is one sandbox short of what it claims to cover"
