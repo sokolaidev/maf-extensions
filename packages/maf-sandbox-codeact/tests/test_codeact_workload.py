@@ -936,7 +936,7 @@ class TestWithholdingStillLandsFiles:
     def test_the_sinks_display_does_not_reach_a_withheld_result(self):
         """`display` is composed from an `Artifact` whose `content` is the guest's bytes, and
         no protocol rule keeps the two apart — so a sink that derives one from the other would
-        put guest-authored text inside a result declaring trusted integrity."""
+        put guest-authored text back into a result rendered to hold none."""
         sink = _LeakyDisplaySink()
         sandbox = _ProducingSandbox()
         tool = _withholding_tool(sandbox, sink)
@@ -953,7 +953,7 @@ class TestWithholdingStillLandsFiles:
         tool = _withholding_tool(sandbox, _RefusingSink())
         out = _run_producing(tool, sandbox, {"answer.txt": b"THE-SECRET"}, outputs=["answer.txt"])
 
-        assert "THE-SECRET" not in out, "the sink's refusal text reached a trusted result"
+        assert "THE-SECRET" not in out, "the sink's refusal text reached a withheld result"
         assert "could not be saved" in out
 
     def test_the_shown_path_still_quotes_a_sinks_refusal(self):
@@ -1606,15 +1606,15 @@ class TestFilesIn:
     def test_a_withheld_refusal_names_no_file_from_the_store(self):
         """A store's filenames come from `list_files` and carry no integrity contract of their
         own — an agent that saved something it fetched may have named it from that content. In
-        a result declared trusted they would be unclassified text about a file the model never
-        asked for."""
+        a result rendered to hold no guest text they would be unclassified text about a file
+        the model never asked for."""
         sandbox = _ScriptedSandbox()
         store = InMemoryStore({"exfiltrated-<script>.csv": "x"})
         tool = _withholding_tool(sandbox, file_store=store)
 
         out = _run(tool, "print('hi')", files=["data/secrets.csv"], outputs=[])
         assert "not in this tool's file listing" in out
-        assert "exfiltrated" not in out, "a store-provided name reached a trusted result"
+        assert "exfiltrated" not in out, "a store-provided name reached a withheld result"
         assert "1 file(s)" in out
 
     def test_a_withheld_listing_failure_is_not_quoted(self):
@@ -1641,7 +1641,7 @@ class TestFilesIn:
         )
         out = asyncio.run(_callable(tools[0])(code="print('hi')", files=["a.csv"], outputs=[]))
 
-        assert "injected" not in out, "the host callback's message reached a trusted result"
+        assert "injected" not in out, "the host callback's message reached a withheld result"
         assert "could not be read" in out
         assert sandbox.written_files == {}
 
