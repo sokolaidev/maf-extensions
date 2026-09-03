@@ -51,7 +51,6 @@ from uuid import uuid4
 
 from ._error_detail import error_detail
 from ._file_provenance import (
-    DELETE_TOOL,
     FILE_STORE_WRITE_TOOLS,
     PATH_ARGUMENT,
     WHOLE_CONTENT_ARGUMENT,
@@ -255,19 +254,24 @@ def file_store_provenance_middleware(
             file_store_provenance_middleware(provenance),
         ])
 
-    **Order does not matter, and it reads no argument the framework rewrote.** What it takes off
-    a call is the *path*, which is a name the model typed and which no expansion touches; it
-    never needs the content's own label, because a write reaching these tools is model-driven
-    however the content got there — see this module's own docstring. So unlike
-    :func:`~maf_sandbox.positions_holding_hidden_content` there is no private framework record
-    behind this, and nothing here to diverge from.
+    **Order does not matter, because the path is read after the body has run.** The
+    information-flow middleware expands a variable reference in any string argument, the path
+    included, and it edits the call's arguments in place — so reading afterwards sees the name
+    the store was written under whichever side of that middleware this sits on. The name is then
+    keyed through :func:`~maf_sandbox.store_key`, because the provider normalises before it
+    writes. What this never needs is the content's own label: a write reaching these tools is
+    model-driven however the content got there, so unlike
+    :func:`~maf_sandbox.positions_holding_hidden_content` no private framework record is read.
 
-    **A recorded write is not the same as a successful one.** The entry is written after the
-    tool body returns, but the tools answer a refusal with a *string* rather than raising, so a
-    write refused for an existing name still records. That is the conservative direction — the
-    path is marked untrusted when the file may be untouched — and the alternative, parsing a
-    human sentence for whether it meant failure, is a worse thing to depend on. A body that
-    *raises* records nothing, which is the same direction: nothing was written.
+    **A recorded write is not the same as a successful one, and a delete is recorded too.** The
+    tools answer a refusal with a *string* rather than raising, so nothing here can tell a write
+    that landed from one that was refused — and the same is true of a delete. Every observed call
+    therefore marks its path untrusted, which is the conservative direction in both cases: a
+    refused write marks a path the model did not change, and a failed delete keeps the entry for
+    bytes that are still there. Forgetting a path on a delete would do the opposite, returning it
+    to a trusted floor while the model's content remained, so the middleware never calls
+    :meth:`FileStoreProvenance.forget` — that is the host's, for when it can establish removal. A
+    body that *raises* records nothing, which is the same direction: nothing was written.
 
     Args:
         record: Where observed writes land, and what a kind reads back.
@@ -284,10 +288,13 @@ def file_store_provenance_middleware(
             if name not in observed:
                 await call_next()
                 return
-            # Read before the body runs: a tool is free to mutate the mapping it was handed,
-            # and what this needs is the path the call named.
-            path = _store_path_named_by(context)
             await call_next()
+            # Read *after* the body: the information-flow middleware expands a variable
+            # reference in any string argument, this one included, and it does that in place.
+            # Reading first would file the entry under `[var_id]` while the store holds the
+            # name that expanded to — a lookup miss, and a miss falls to the host's floor.
+            # Reading afterwards is correct whichever side of that middleware this sits on.
+            path = _store_path_named_by(context)
             if path is None:
                 # Nothing to key an entry on. Loud rather than silent: the tool ran, so a
                 # write may have landed, and this record now has a hole a reader cannot see.
@@ -297,9 +304,6 @@ def file_store_provenance_middleware(
                     name,
                     PATH_ARGUMENT,
                 )
-                return
-            if name == DELETE_TOOL:
-                record.forget(path)
                 return
             record.record(
                 path,

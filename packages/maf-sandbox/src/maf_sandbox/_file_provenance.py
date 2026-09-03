@@ -36,11 +36,11 @@ import threading
 from ._protocol import SourceIntegrity
 
 __all__ = [
-    "DELETE_TOOL",
     "FILE_STORE_WRITE_TOOLS",
     "PATH_ARGUMENT",
     "WHOLE_CONTENT_ARGUMENT",
     "FileStoreProvenance",
+    "store_key",
 ]
 
 #: The ``FileAccessProvider`` tools that change what a path holds.  Named here rather than
@@ -61,12 +61,33 @@ FILE_STORE_WRITE_TOOLS = frozenset(
 #: The argument every one of those tools names its path with.
 PATH_ARGUMENT = "file_name"
 
+
+def store_key(path: str) -> str:
+    """``path`` as the store will hold it, so a record files under the key a read will use.
+
+    ``FileAccessProvider`` normalises before it writes — it trims surrounding whitespace, turns
+    backslashes into forward slashes and collapses repeated separators — so a record filed under
+    the argument as the model spelled it is filed under a key nothing ever reads.  That is the
+    one failure this whole record exists to prevent: the lookup misses, the path falls to the
+    host's floor, and a trusted floor answers for bytes the model wrote.
+
+    **It mirrors behaviour rather than a published contract**, as ``_reduced_form`` does: the
+    rule lives in ``agent_framework._harness._file_access._normalize_relative_path``, which is
+    private and promises nothing.  A spelling this stops matching is a path whose entry a read
+    cannot find, so the suite checks the two against each other rather than assuming.  Only the
+    *collapsing* half is mirrored; the rejections that raise are the provider's to make, and a
+    path it refuses is one it never wrote.
+    """
+    collapsed = path.strip().replace("\\", "/")
+    while "//" in collapsed:
+        collapsed = collapsed.replace("//", "/")
+    return collapsed
+
+
 #: The argument carrying the whole of a file's new content, on the one tool that has it.
 #: ``file_access_replace`` and ``file_access_replace_lines`` describe an *edit*, so what the
 #: path ends up holding is not in their arguments and an entry for them carries no digest.
 WHOLE_CONTENT_ARGUMENT = "content"
-
-DELETE_TOOL = "file_access_delete"
 
 
 def _digest(content: str) -> str:
@@ -112,6 +133,9 @@ class FileStoreProvenance:
     def record(self, path: str, *, integrity: SourceIntegrity, content: str | None = None) -> None:
         """Record that ``path`` holds content of ``integrity``.
 
+        ``path`` is keyed through :func:`store_key`, here and in :meth:`integrity_of` alike, so a
+        record filed under one spelling is found under every spelling of the same file.
+
         ``content`` binds the entry to the bytes it describes: where it is given, the entry is
         served only while the path still holds those bytes, so an overwrite this never saw
         cannot keep serving the old answer. Where it is not — an edit, whose result is not in
@@ -119,19 +143,22 @@ class FileStoreProvenance:
         which is the conservative direction for the untrusted entries this records.
         """
         with self._lock:
-            self._entries[path] = (
+            self._entries[store_key(path)] = (
                 SourceIntegrity(str(integrity)),
                 None if content is None else _digest(content),
             )
 
     def forget(self, path: str) -> None:
-        """Drop any entry for ``path`` — what a delete leaves behind.
+        """Drop any entry for ``path``, returning it to :attr:`floor`.
 
-        The path then falls to :attr:`floor`, which is right: the file the entry described is
-        gone, and anything later found under that name arrived by a route this never saw.
+        For a host that has **established** the file is gone.  Nothing in this package calls it:
+        the file-store tools answer a failed delete with a sentence rather than an exception, so
+        an observer cannot tell a delete that removed the file from one that did not, and
+        forgetting on the strength of a call having been made would return a path to a trusted
+        floor while the model's bytes were still in it.
         """
         with self._lock:
-            self._entries.pop(path, None)
+            self._entries.pop(store_key(path), None)
 
     def integrity_of(self, path: str, content: str | None = None) -> SourceIntegrity | None:
         """What ``path`` is worth, or ``None`` where nothing here establishes it.
@@ -142,7 +169,7 @@ class FileStoreProvenance:
         being answered from a record of what it used to hold.
         """
         with self._lock:
-            entry = self._entries.get(path)
+            entry = self._entries.get(store_key(path))
         if entry is None:
             return self._floor
         integrity, digest = entry
