@@ -3242,8 +3242,8 @@ class TestAWithheldTimeoutQuotesNothing:
 class TestAWithheldResultSplits:
     """A withholding tool answers with items, so hiding can reach one and not the other.
 
-    An untrusted item is replaced by a variable reference, which under one label took the
-    recovery sentence with it.
+    Hiding an untrusted item is conditional — on `auto_hide_untrusted`, and on the conversation
+    still being trusted — so these fix both and vary only what they are measuring.
     """
 
     def _label(self, item) -> dict[str, Any] | None:

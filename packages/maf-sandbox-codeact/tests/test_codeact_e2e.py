@@ -400,8 +400,8 @@ class TestWithheldOutputAgainstARealInterpreter:
         assert self._SECRET not in answer, answer
 
     def test_the_route_is_its_own_trusted_item_against_a_real_container(self):
-        """The split, end to end: a real container, a real exit code, and the one item a
-        framework hiding untrusted content would leave the model."""
+        """The split, end to end: a real container, a real exit code, and the labels a
+        framework would hide the first item by, from a conversation still clean enough."""
         answer = _items_in_a_container(
             "import sys\nprint('noise')\nsys.exit(1)\n",
             mode=CodeactOutputs.DECLARED,

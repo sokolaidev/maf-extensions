@@ -288,10 +288,12 @@ def make_codeact_tools(
             whatever the call's is; beside it sits the standing sentence naming the recovery
             route, labelled ``trusted``, because nothing a call produced reaches it and it is
             emitted on every return path including the refusals.  **Where that call resolves
-            untrusted** — the default, but ``default_integrity`` is the host's to move — a
-            framework hiding untrusted content hides the first and leaves the second readable,
-            which is the point: under one label the sentence went with the numbers it was there
-            to explain.
+            untrusted and the conversation is still clean** — hiding is a first-taint
+            protection, and ``default_integrity`` is the host's to move — a framework hiding
+            untrusted content hides the first and leaves the second readable, which is the
+            point: under one label the sentence went with the numbers it was there to explain.
+            Neither condition is this kind's to promise; both are measured in
+            ``docs/sandbox/information-flow.md``.
 
             **What withholding gets you, exactly.** The prose and the shape are this package's,
             and the artifact names are the model's own — but what fills them is the program's
