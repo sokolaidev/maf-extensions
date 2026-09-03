@@ -1,0 +1,231 @@
+# The identity axis: one word, four things, and the order to build them in
+
+> A proposal. It reads every open issue on the identity axis together, separates the four things the word "identity" is spent on, and lays out one design and one implementation order for all of them. It covers the authority issues [#567](https://github.com/sokolaidev/maf-extensions/issues/567), [#566](https://github.com/sokolaidev/maf-extensions/issues/566) and [#757](https://github.com/sokolaidev/maf-extensions/issues/757), and the guest-principal cluster they turned out to share a foundation with: [#741](https://github.com/sokolaidev/maf-extensions/issues/741), [#753](https://github.com/sokolaidev/maf-extensions/issues/753), [#754](https://github.com/sokolaidev/maf-extensions/issues/754), [#792](https://github.com/sokolaidev/maf-extensions/issues/792), [#839](https://github.com/sokolaidev/maf-extensions/issues/839) and [#710](https://github.com/sokolaidev/maf-extensions/issues/710). What it decides graduates to [`../hosts.md`](../hosts.md), [`../capabilities.md`](../capabilities.md), [`../policy-isolation.md`](../policy-isolation.md), [`../tool-call.md`](../tool-call.md) and the backend pages. The argument it grew from is [`two-axis-sandbox-policy.md`](two-axis-sandbox-policy.md) § Identity.
+
+## The problem is a word
+
+The open issues on this axis do not disagree with each other. They talk past each other, because "identity" names four different things in this repository, and each issue is about a different one.
+
+| The thing | What it is | Where it lives today | Which issues |
+|---|---|---|---|
+| **Authority a host tool exercises** | Whose grants a host-tool body runs under, in the host process | `Identity.APP`, `Identity.USER`, the decorator's leg, `HostToolAggregate.identities`, `denied_identities`, `mint_user_identity` | [#566](https://github.com/sokolaidev/maf-extensions/issues/566) |
+| **Authority attached to the sandbox** | A platform identity the guest itself can spend, through platform plumbing | `Capability.ATTACHED_IDENTITY`, a name nobody declares | [#567](https://github.com/sokolaidev/maf-extensions/issues/567) |
+| **Material provisioned for one run** | A token handed to a guest for the length of one call, spendable at one audience | nothing; the refusal text that once named it moved to option B | [#757](https://github.com/sokolaidev/maf-extensions/issues/757) |
+| **The guest principal** | The uid the guest program runs as: root, a resolved user, or nobody the backend could name | docker's `_guest_identity` and `_ContainerFacts.guest_uid`; acas's `_probe_guest_uid`; nothing on wslc | [#741](https://github.com/sokolaidev/maf-extensions/issues/741), [#792](https://github.com/sokolaidev/maf-extensions/issues/792), [#839](https://github.com/sokolaidev/maf-extensions/issues/839), [#710](https://github.com/sokolaidev/maf-extensions/issues/710) |
+
+A fifth use is only a naming habit. The docs say a sandbox's "identity is `(key, kind)`", and [#753](https://github.com/sokolaidev/maf-extensions/issues/753) says "the identity that would narrow it is already at the call site". That is the sandbox's **name**, the tuple a backend keys it by, and it is what the disposal ladder is missing a rung for. It belongs in this proposal because the guest-principal work and the reclaim capability both need that rung before they can act on one sandbox rather than every sandbox a key owns.
+
+The rule this proposal asks the repository to adopt, in the shape the `tier` rule already has in [`../../../AGENTS.md`](../../../AGENTS.md): **identity is authority.** Say **principal** for the uid a guest runs as. Say **credential** for the material that proves an authority, a token or an environment value. Say **name** or "what a key owns for a kind" for the addressing tuple. Code that already spends the word on a memo key, `_image_identity`, does not rename; prose stops.
+
+## What was measured for this proposal
+
+Every constraint below was read from the installed SDKs and CLIs rather than assumed. Two of them change the design from what the two-axis record imagined.
+
+- **The ACAS data plane's `exec` takes a command and a working directory and nothing else.** `SandboxClient.exec(command, *, working_directory=None)` in `azure-containerapps-sandbox` 0.1.0b4. No environment. A `user=` keyword is accepted and discarded, as [`../backends/acas.md`](../backends/acas.md) already records. [#757](https://github.com/sokolaidev/maf-extensions/issues/757)'s constraint stands.
+- **The ACAS create call takes an `environment` mapping.** `begin_create_sandbox(..., environment=...)` sets variables for the sandbox's life. That is a create-time channel, not a per-call one, and a warm sandbox keeps whatever it was created with. It is the `write_file` objection in another form and this proposal does not use it.
+- **A managed identity attaches to the sandbox group, not to a sandbox.** `SandboxGroupMgmtClient.patch_group_identity(name, {"type": "SystemAssigned"})`, and the `aca sandboxgroup identity assign` command. Every sandbox in a group shares the group's identity. The design's `IdentityScope.PER_SANDBOX` is not something the service offers; `SHARED` is what it offers, and `PER_SCOPE` is a deployment that provisions one group per scope.
+- **The egress proxy can attach an identity's token to requests for one host.** `EgressRuleAction(type="Transform", headers=[EgressHeader(operation="Set", name=..., value_ref=EgressHeaderValueRef(managed_identity_ref=EgressManagedIdentityRef(identity_type=..., resource=...)))])`, matched by `EgressRuleMatch(host=..., path=..., methods=...)`. The token is minted for a named `resource` and set by the proxy; the guest never holds it. The same header can be sourced from a group secret instead, `EgressSecretRef(secret_id, secret_key)`. This is the single-audience cell the two-axis record designed, provided by the platform rather than composed by this stack, and it is why the in-guest half of C′ is the smaller half.
+- **Both container backends can carry a per-call environment.** `docker exec -e K=V` and `wslc container exec -e K=V` both exist, the latter confirmed from the installed CLI's own help. The `exec(env=)` channel is implementable on the two backends a pull request can run, and only ACAS refuses it.
+- **No shipped backend declares `ATTACHED_IDENTITY`, `IsolationScope.CALL`, or a per-kind disposal.** `dispose(key)` takes every kind's sandbox on every registered backend, and wslc's registry and acas's labels both already carry the kind that core cannot name.
+- **The guest principal is probed on two backends and read from nowhere by core.** docker resolves `Config.User` through `/etc/passwd`, `/etc/group` and `id`, and falls back to `0:0` with a warning when a named user resolves nowhere. acas runs `id -u` once per image and serves an unreadable answer. wslc reads nothing and runs `reclaim` as `--user 0` on the contract that the file plane wrote as root.
+
+## Principles carried over, unchanged
+
+The design below invents no new kind of check. Each piece is one of the repository's existing shapes applied to a new subject.
+
+- **Declared and matched, or declared and resolved, never emulated.** A backend states what it provides; a spec states what it needs; the router serves exactly that or refuses with a named exception. Sharing, widening and loosening are the directions a match exists to catch.
+- **Silence has one rule per field, and it is the field's default.** A backend that never heard of a declaration is read the way it was read before the declaration existed.
+- **Orderings are data with an exhaustiveness test.** A new scope enum gets a rank mapping beside `ISOLATION_SCOPE_RANK`.
+- **A capability gates a method; a fact is established, not declared.** The guest principal is a fact the backend measures on the cold path of `acquire`, which is Decision 3 of [`../guest-platform-and-commands.md`](../guest-platform-and-commands.md) applied to a principal rather than a command. It narrows a declared ceiling; it is never a declaration.
+- **Core helps a backend comply and never branches per engine.** Where two backends need the same refusal, core ships the helper that produces it, and each backend calls it with its own facts.
+- **A credential never crosses guest to host.** The guest may trigger a host tool and may never choose or supply the principal it runs as. `user_identity` is already a reserved argument for this reason; every new principal below gets the same treatment.
+
+## Pillar A — the guest principal is a fact core can read
+
+```python
+class GuestPrincipal(StrEnum):
+    ROOT = "root"                  # exec runs as uid 0
+    UNPRIVILEGED = "unprivileged"  # exec runs as a non-zero uid the backend has established
+    UNKNOWN = "unknown"            # the backend could not say: no probe answered
+```
+
+**Where it is established.** By the backend, once per image on the cold path of `acquire`, exactly where docker and acas already probe. wslc gains the same `id -u` probe acas runs. The answer is memoised per image reference, since it is a property of the artefact and not of the sandbox booted from it.
+
+**How it reaches core.** `Sandbox.guest_principal` becomes a property on the `Sandbox` protocol. It is a member rather than a `getattr` read, because a runtime fact with a conservative silence rule would make every backend written before it look like an unknown principal, and the whole point of the fact is that the backends this repository ships can answer it. Adding a member to `Sandbox` is a breaking change, and that is the choice this repository already made for `reclaim`.
+
+**What it decides.** Three things, each of which an issue today decides ad hoc.
+
+1. **Which capabilities the guest can back**, [#741](https://github.com/sokolaidev/maf-extensions/issues/741). acas already refuses `FILES_OUT` and `HOST_TOOLS` at acquire on a non-root image, because its file plane writes as root and the guest can create nothing inside what the file plane made. docker's unresolved-identity fallback is the same shape: the image named a user, the writes land `0:0`, and the guest cannot empty its own call directory. Core ships one helper, `refuse_capabilities_the_guest_cannot_back(spec, *, guest, files_land_as_guest, backend_name)`, and the rule is one sentence: **refuse the writing-guest capabilities when the guest is `UNPRIVILEGED` and the file plane does not land files as the guest; serve `EXEC` with a warning; serve `UNKNOWN`.** docker reports `UNPRIVILEGED` for a named user it could not resolve, since a named user is not root, and passes `files_land_as_guest=False` for that case because its stamping fell back to root. acas and wslc always pass `False`. `UNKNOWN` is served because refusing on an unreadable probe takes a working root image off a deployment, which is the reading acas already took. This closes #741 the way #722 closed on acas: a refusal at acquire that holds on every backend, with the `0:0` fallback kept for the one shape it is right for, an `EXEC`-only workload whose whole result is its stdout.
+2. **With whose authority a removal may run**, [#839](https://github.com/sokolaidev/maf-extensions/issues/839) and [#710](https://github.com/sokolaidev/maf-extensions/issues/710). The reach rule is unchanged: a raised removal is licensed only over a path with no component the guest could have swapped. What the principal adds is the argument for the case where the check walked nothing. On a backend whose file plane writes as root and whose guest is `UNPRIVILEGED`, every directory the file plane created is root's and unwritable by the guest, so the guest owns no component of a reclaimed path. That is #710's measured finding on acas, and it is wslc's situation too. `reclaim`'s docstring on both backends states that argument in place of the empty-mapping caveat, and wslc's `remove` stays refused for the reason #495 gives, now with the principal named in the refusal. Nothing in #839 waits on a tar header any longer: the owner of every component is known from the principal and the plane that wrote it.
+3. **Whether warm reuse is the right default for this guest**, [#792](https://github.com/sokolaidev/maf-extensions/issues/792). See the recommendation below; the mechanism is one keyword on `ReclaimConfig`.
+
+**The #792 recommendation: keep warm reuse the default, make the fact loud, and give the host one keyword.** The issue's argument is that a root guest can write anywhere and defeat a guest-authority reclaim, so warmth protects nothing. Two things weaken it. A non-root guest writes `/tmp` and `$HOME` just as freely, so root is not the line between confined and unconfined; the line is whether the guest program is model-written, which is a property of the kind, not of the image. And the guest-authority reclaim is not what runs on a root image: every shipped backend removes with root's authority where the reach rule allows, and on a root guest the reach rule is moot. What root changes is reach, not the safety of the reclaim. So the design ships `ReclaimConfig(root_guest_policy=RootGuestPolicy.RECLAIM | DISPOSE)`, default `RECLAIM`, the same shape as `failed_reclaim_policy`. `DISPOSE` disposes the call's own sandbox, one kind on one backend through Pillar B's clean path, after every call whose guest is `ROOT`. A host that wants #792's posture states it once. The kind-declared confinement opt-in the issue proposes is not built: no kind that runs model-written code can make that promise honestly, and a compiler kind that could gains nothing from making it. The stronger answer to the residue #792 names is the one already designed, `IsolationScope.CALL`, which no backend declares yet; that remains [#436](https://github.com/sokolaidev/maf-extensions/issues/436)'s.
+
+**Proved by.** A conformance probe, `the-principal-the-backend-reports-is-the-one-the-guest-runs-as`: exec `touch`, stat the file through the backend's own surface, and compare the owner to the reported principal. It runs on docker, where the tar header carries a uid, and skips where the surface carries none.
+
+## Pillar B — a rung below the key
+
+[#753](https://github.com/sokolaidev/maf-extensions/issues/753) and [#754](https://github.com/sokolaidev/maf-extensions/issues/754) are one change. The reclaim capability's fallback is a disposal, and a disposal at key granularity takes every kind's sandbox on every backend, so the rung has to exist first.
+
+**The backend member widens.** `SandboxBackend.dispose(key, *, kind: str | None = None)`. `None` keeps today's meaning: a caller releasing a key means all of it. A kind names the one sandbox that key owns for that kind, which is the unit every backend already registers and labels. Widening the member with a defaulted keyword is a breaking change to the protocol and lands as a core `feat!`, because a backend that does not accept the keyword fails when core passes it, and nothing in the type system marks the gap.
+
+**The router remembers who served a call.** `SandboxRouter` keeps a served-by table, `(key, kind) -> backend`, written when an acquire lands and dropped when a disposal of that sandbox lands. It is in-process state with a per-process lifetime, the same as the unclean ledger it sits beside. Per-kind disposal narrows to the serving backend when the table knows it and falls back to the fan-out when it does not, so a key served on another replica is still reached by the conservative path.
+
+**Two disposal paths, kept apart.** The clean path, `SandboxRouter.dispose_kind(key, kind)`, writes no ledger and refuses no key; it is ordinary cleanup, and it is what an undeclared `RECLAIM` and a `DISPOSE` root-guest policy both use. The failure path, `dispose_unclean`, narrows its deletion to the serving backend and kind but keeps its refusal at the key. That is the conservative answer to #753's ledger question: a dirty sandbox for kind A does not make kind B's safe to hand out, so the refusal stays wide while the deletion narrows, and the `SandboxUnclean` message names the kind. Narrowing the refusal is a later decision, taken once [#328](https://github.com/sokolaidev/maf-extensions/issues/328) makes a key genuinely span backends.
+
+**`Capability.RECLAIM`.** Declared, core calls `Sandbox.reclaim` after each call as today. Not declared, core disposes the call's own sandbox through the clean path instead. The router's hand-check, `_refuse_a_sandbox_that_cannot_be_reclaimed`, and the `TypeError` it raises from `acquire` go away, replaced by ordinary capability matching. The capability's docstring states the cost in its own words: a backend that does not declare it has no sandbox reuse, since `acquire` is get-or-create and a sandbox disposed after every call is created cold for the next one. `Sandbox.reclaim`'s docstring is rewritten to #754's acceptance text: reach stays the rule; confinement is a best practice rather than a promise; the mechanism and any check it needs are the backend's; a backend that cannot establish safety raises and `FailedReclaimPolicy.DISPOSE` makes that safe; the sentence that licensed the absent check goes. The conformance suite's `run_reclaim_probes` moves onto `_run_suite` with the new capability as its gate, and `tests/test_conformance_coverage.py` loses its note that RECLAIM has no withheld-capability answer.
+
+**Proved by.** `a-disposal-by-kind-leaves-the-sibling`: acquire two kinds under one key, dispose one, and the other still answers `exec`. And the RECLAIM suite, now skipped rather than owed on a backend that withholds the capability.
+
+## Pillar C — a host tool that acts as the sandbox
+
+[#566](https://github.com/sokolaidev/maf-extensions/issues/566) adds `Identity.SANDBOX`: the body runs host-side, under the identity the sandbox was provisioned with, and reaches nothing the sandbox could not already reach.
+
+**Servable under three conditions, each checked where it belongs.** The spec's backend attaches an identity, Pillar D's declaration, checked by the router at attach. The host can mint a token as that identity, `HostToolRegistry(mint_sandbox_identity=...)`, checked at registration the way `mint_user_identity` is. And the identity is one the host can actually assume, which is the host's own fact and not the library's: a user-assigned identity the host resource also holds is mintable by the host as `ManagedIdentityCredential(client_id=...)`; a system-assigned identity on a sandbox group is mintable by nobody but the group, and a registry on such a deployment registers the tool and refuses its call, exactly as a registry without a minter refuses a `USER` tool today.
+
+**The shape follows `USER` member for member.** The minter is called once per run with the run id and an `AttachedIdentityRef` naming which identity the sandbox has, and its answer reaches the body as the reserved argument `sandbox_identity`. One success per run is cached; a failure is not. A guest naming the argument is refused before the mint. `allowed_identities` takes `SANDBOX` as one more opt-in member, which is what the set shape in #396 was kept for. `denied_identities` works unchanged. The kind passes the backend's ref into `HostToolRun(sandbox_identity=...)`, read off the acquired sandbox.
+
+**Two things `SANDBOX` does not do.** It does not raise the surface to approval-gated, because it is least-privilege continuity rather than a widening: the dispatch reaches only what the sandbox was provisioned to reach. And a `SANDBOX` tool on a spec that requires no `ATTACHED_IDENTITY` is refused in `SandboxSpec.__post_init__`, the way a surface without `HOST_TOOLS` in `requires` is refused, so the capability match is what catches a backend that attaches nothing.
+
+**Where the host-side token is spent.** In the host's own network position, like every option-B body. The single-audience bound the guest-side channels get from egress does not apply here, and [`../hosts.md`](../hosts.md) says so for `APP` and `USER` already.
+
+## Pillar D — an identity attached to the sandbox
+
+[#567](https://github.com/sokolaidev/maf-extensions/issues/567)'s vocabulary, reshaped by the measurement that the platform attaches identities to groups.
+
+```python
+class IdentityScope(StrEnum):
+    NONE = "none"                  # nothing attached: the standard's second condition, unrelaxed
+    PER_SANDBOX = "per_sandbox"    # an identity this sandbox alone holds, gone when it is
+    PER_SCOPE = "per_scope"        # one identity per user or tenant scope
+    SHARED = "shared"              # one identity every sandbox the backend serves can spend
+
+IDENTITY_SCOPE_RANK: Mapping[IdentityScope, int]   # narrowest first; sharing is the widening direction
+
+@dataclass(frozen=True)
+class AttachedIdentity:
+    scope: IdentityScope
+    reference: str | None = None        # what the host would mint as, when it can: a client or resource id
+    auto_delete_seconds: int | None = None   # the platform-side bound on how long a leaked sandbox keeps the authority
+
+NO_ATTACHED_IDENTITY = AttachedIdentity(scope=IdentityScope.NONE)
+```
+
+**The backend declares what it provides.** `BackendDeclarations.attached_identity: AttachedIdentity = NO_ATTACHED_IDENTITY`. Silence is a claim, like `isolation_scopes`: a backend that says nothing attaches nothing, which is true of every backend in this repository. `Capability.ATTACHED_IDENTITY` stays as the spec's ask, and the router reads it as declared exactly when the scope is not `NONE`. A backend listing the capability while declaring no identity, or the reverse, is refused when the router resolves it, with both fields named. The declaration is settled synchronously from configuration, since the router reads it before any sandbox exists; acas takes an `AcasSandboxConfig(attached_identity=...)` and verifies it on the cold path of the first acquire by reading the group through the management client, refusing a mismatch in either direction. A group carrying an identity the configuration did not declare is an ambient identity, and serving it would falsify the micro-VM claim.
+
+**The host and the spec set a ceiling on sharing, and the router resolves it.** `SandboxRouter(max_identity_scope=IdentityScope.NONE)` is the widest sharing this host will run any workload beside, checked at construction like the floor so a deployment on a group with an identity fails at startup unless the host said so. `SandboxSpec.max_identity_scope: IdentityScope | None = None` lets a workload tighten and never loosen. The effective ceiling is the narrower of the two, and the seventh check refuses a backend whose declared scope ranks above it with `SandboxAttachedIdentityNotPermitted`. A spec that asks for the capability on a backend that attaches nothing is caught by the capability match. The two readings this produces are the ones the design wants: an identity a workload did not ask for is refused as ambient unless the host accepted it, and a workload that asked for one is refused where the backend would share it more widely than the workload tolerates.
+
+**The three obligations, placed.** *Granularity declared and matched* is the check above. *Every authority channel out of a sandbox is spec-declared* is answered on the egress rule: an attached identity is spent through the proxy's header injection, and the rule that names the host also names the `resource` the token is minted for, so the audience is written where the host is. That rides on the method-scoped `EgressRule` already specified in [`../network.md`](../network.md), which gains an `authority: Audience | None` leg; acas turns it into `EgressManagedIdentityRef`. Whether an ACAS guest can also reach a token endpoint from inside, an in-guest ambient channel that no rule names, is measurement M1 below, and if it can, the scope ceiling is the only bound on it and the docs say so. *A finite platform-side auto-delete* binds `PER_SANDBOX` and `PER_SCOPE`, where disposal is what reclaims the authority; the router refuses either scope declared without `auto_delete_seconds`. For `SHARED` the identity outlives every sandbox and disposal reclaims compute only, which the declaration's docstring states rather than pretends otherwise.
+
+**What information-flow reads off it.** `sandbox_tool_declarations` writes the outbound confidentiality cap only when something can carry data out, and today that is egress or a landing sink. An attached identity is a third way out that need not traverse egress, so `also_carries_out` folds `attached_identity.scope is not NONE`. And a `SHARED` identity is a fourth relay for [#793](https://github.com/sokolaidev/maf-extensions/issues/793)'s list: two conversations spending one identity at one service can pass bytes through that service. A host that raises `max_identity_scope` to `SHARED` accepts that, and [`../hosts.md`](../hosts.md) names it beside the sink-root mailbox.
+
+**Composition rules stand.** `Identity.USER` never attaches; the closest the platform gets is `PER_SCOPE`. A provisioned run credential has no scope, because it is call-time material, which is Pillar E.
+
+## Pillar E — material provisioned for one run
+
+[#757](https://github.com/sokolaidev/maf-extensions/issues/757) asks which of four shapes C′ takes. The answer this proposal gives is the first shape with the fourth's honesty: build the vocabulary and the refusals, ship the channel on the backends that can carry it, refuse it by declaration on the one that cannot, and park the second channel behind a measurement.
+
+```python
+class CredentialChannel(StrEnum):
+    EXEC_ENV = "exec_env"            # handed to one exec as environment, gone when it returns
+    EGRESS_HEADER = "egress_header"  # set by the egress machinery on requests to the audience; the guest never holds it
+
+@dataclass(frozen=True)
+class RunCredential:
+    channel: CredentialChannel
+    audience: str      # the one host the material is spendable at
+    name: str          # the variable, or the header
+```
+
+**Declared, asked, resolved.** `BackendDeclarations.credential_channels: frozenset[CredentialChannel] = frozenset()`, silence the absence of an answer, refusing a spec that asks and leaving every other spec as it was. `SandboxSpec.run_credential: RunCredential | None = None`. The eighth check refuses a channel the backend does not declare with `SandboxCredentialChannelNotSupported`. docker and wslc declare `{EXEC_ENV}`; acas declares nothing until M4 lands, and is refused rather than served through a command-line prefix that puts the secret in the process table.
+
+**Audience is egress, checked where the spec is built.** `SandboxSpec.__post_init__` refuses a run credential unless `egress is Egress.ALLOWLIST` and `egress_allow == (audience,)`. Not a subset: exactly the one host. The cell is the point, and a second allowed host is a second place the token can be spent.
+
+**The protocol grows one parameter.** `Sandbox.exec(command, *, working_directory, timeout, env: Mapping[str, str] | None = None)`. The contract: the mapping reaches the program's environment for that call and nothing else; it is never written to the filesystem, never appears in a listing, and is not inherited by a later call. A backend that declares no `EXEC_ENV` channel raises `NotImplementedError` on a non-empty mapping rather than running the program without its material, and the attach gate keeps that unreachable. The host-tools transport passes `env=` to the launcher exec only; the kill exec carries none. `run_code` gains nothing, since a runtime backend with no shell has no environment to hand over, and a `RUN_CODE` credential channel is a later member when a backend wants one.
+
+**The mint is the host's, per run, and it lives beside the kind.** A kind factory takes a provider, `make_codeact_tools(run_credential=RunCredentialProvider(spec=RunCredential(...), mint=...))`, mints once per run with the run id, and hands `{name: token}` to the exec. The material never reaches the kind's result. Wiring one raises the surface to approval-gated, the softening the two-axis record designed: the residual is misuse of the authority at the one legitimate service, bounded and visible. `also_carries_out` folds it, for the reason it folds an attached identity.
+
+**The bound the channel cannot close, stated.** A program holds its environment, and so does anything it spawns. At `IsolationScope.CONVERSATION` a concurrent call in the same sandbox runs as the same principal and can read that process's environment. That is the same user's authority in the same conversation, so it widens nothing across a tenancy line, and it is the reason the docs recommend `IsolationScope.CALL` for a credential-carrying workload once a backend declares it.
+
+**The parked half.** `EGRESS_HEADER` for run credentials on acas needs a per-run secret whose value the proxy reads at request time, so that a warm sandbox's create-time rule serves this run's token. Measurement M4 decides it. If the proxy reads the secret live, acas declares the channel and the token never enters the guest at all, which is the better cell. If it does not, the channel is servable only at `IsolationScope.CALL` where the rule is created per call, and it waits for that.
+
+## Pillar F — the control plane
+
+Option A is already true of the protocol: it holds no credential, and a backend authenticates however it authenticates. What is missing is the seam. `AcasSandboxConfig` takes `credential_factory: Callable[[], AsyncTokenCredential] | None`, read once per event loop where `DefaultAzureCredential()` is built today, so a host can hand the backend a workload identity, a federated one, or a test double. A per-request exchanged identity is not offered: the SDK client takes its credential at construction, and rebuilding a client per request is a cost this proposal does not take on until a host asks. [#313](https://github.com/sokolaidev/maf-extensions/issues/313)'s private-registry pull is the same seam one step over, `managed_identity_resource_id` on the image import, and it rides with the config change. No core change.
+
+## The router's checks, from six to eight
+
+| # | Check | Owner | Refusal |
+|---|---|---|---|
+| 1–6 | floor, capabilities, guest shape, limits, egress, scope | unchanged | unchanged |
+| 7 | **attached identity**: the backend's declared scope ranks at or below the narrower of the host's and the spec's ceiling | host, tightened by the spec | `SandboxAttachedIdentityNotPermitted` |
+| 8 | **credential channel**: the spec's channel is one the backend declares | workload | `SandboxCredentialChannelNotSupported` |
+
+Two consistency refusals join the resolve-time ones: a capability list and an identity declaration that disagree, and a `PER_SANDBOX` or `PER_SCOPE` identity declared without an auto-delete bound. The `Identity.SANDBOX` cross-check needs no new exception, since the spec refuses the combination before the router sees it and the capability match catches the rest.
+
+`BackendDeclarations` grows two fields, `attached_identity` and `credential_channels`, and stays one object read with one `getattr`. `SandboxSpec` grows two, `max_identity_scope` and `run_credential`, appended after `isolation_scope` for the positional reason every field there is appended.
+
+## What this proposal does not do
+
+- **Erase.** An unlink is not an overwrite; `IsolationScope.CALL` and this proposal both leave that where [`../tool-call.md`](../tool-call.md) puts it.
+- **Serialise calls** ([#476](https://github.com/sokolaidev/maf-extensions/issues/476)) or declare `CALL` on any backend ([#436](https://github.com/sokolaidev/maf-extensions/issues/436)). Pillar E's bound is why the second matters more after this lands.
+- **Route per spec** ([#328](https://github.com/sokolaidev/maf-extensions/issues/328)). Pillar B's served-by table is the prerequisite #753 named, and this proposal builds only that.
+- **Read the stop's pid from anywhere new** ([#463](https://github.com/sokolaidev/maf-extensions/issues/463)). That is the transport's, not the axis's.
+- **Negotiate a transport** ([#369](https://github.com/sokolaidev/maf-extensions/issues/369)). One consequence is worth carrying there: a backend-supplied channel's trampoline must resolve through `HostToolRun.call`, or the identity gates above never run on it.
+
+## Implementation order
+
+Three waves. Each core wave is one `feat!` minor, because every dependent pays a release per core minor and two protocol changes in one minor cost the same as one. Backends and kinds follow each core release in their own package-scoped pull requests, flooring on the version that exists, and the samples' floor bump goes last. The in-process fake changes first, in its own pull request, wherever a wave changes what the fake does.
+
+### Wave 0 — measurements and this record
+
+No package changes. Each measurement is a probe run against the real thing and recorded as a comment on the issue it decides.
+
+| # | Measures | Decides |
+|---|---|---|
+| M1 | Whether a program inside an ACAS sandbox in a group with a managed identity can obtain that identity's token from an in-guest endpoint | Whether `SHARED` on acas is a header-only channel or also an ambient one; what Pillar D's scope ceiling is bounding |
+| M2 | `EgressManagedIdentityRef` end to end: an allowed host, a `resource`, a request from the guest, a 200 with the bearer | That the header channel works as the SDK says, and what `format` does |
+| M3 | On docker and wslc, that an `exec -e` value is absent from `docker inspect`, from a later exec's environment, and from every listing; and present in a concurrent same-sandbox process's `/proc/<pid>/environ` | Pillar E's contract text and its stated bound |
+| M4 | On acas, whether a `secret set` after create changes the header the proxy injects on a warm sandbox's next request | Whether `EGRESS_HEADER` run credentials ship on acas, and at which scope |
+| M5 | Whether the management client can read a group's identity with the host's credential from inside the backend | The acquire-time verification in Pillar D |
+
+### Wave 1 — the guest principal, the rung below the key, and a declared reclaim
+
+One core `feat!`: `GuestPrincipal`, `Sandbox.guest_principal`, `refuse_capabilities_the_guest_cannot_back`, `Capability.RECLAIM`, `SandboxBackend.dispose(key, *, kind=None)`, `SandboxRouter.dispose_kind`, the served-by table, `ReclaimConfig(root_guest_policy=...)`, the `reclaim` docstring rewrite, and the two conformance probes with the RECLAIM suite moved onto its gate. The fake's repairs land first as their own pull request.
+
+Then, after the core release, one pull request per backend, each declaring `RECLAIM`, reporting a principal, accepting `kind` on `dispose`, and calling the shared refusal: docker with its unresolved case mapped to `UNPRIVILEGED`, which closes #741; acas with #710's measured facts in its `reclaim` docstring; wslc with the `id -u` probe and the principal named in its `remove` refusal, which closes #839's question. Kinds need no change. Samples take the floor bump, and the tracker rows in `tool-call.md`, `capabilities.md` and the three backend pages flip in the pull requests that deliver them.
+
+### Wave 2 — the authority axis
+
+One core `feat!`: `IdentityScope` and its rank, `AttachedIdentity`, `BackendDeclarations.attached_identity`, `SandboxRouter(max_identity_scope=...)`, `SandboxSpec.max_identity_scope`, check 7 and `SandboxAttachedIdentityNotPermitted`; `Identity.SANDBOX`, `HostToolRegistry(mint_sandbox_identity=...)`, `HostToolRun(sandbox_identity=...)`, the reserved argument; `CredentialChannel`, `RunCredential`, `BackendDeclarations.credential_channels`, `SandboxSpec.run_credential`, check 8, `Sandbox.exec(env=)`, the transport's passthrough; the `also_carries_out` and approval folds; the `EgressRule.authority` leg beside the method-scoped egress work. A `docs:` pull request adds the vocabulary rule to `AGENTS.md` beside the `tier` rule.
+
+Then, after the core release: docker and wslc each declare `{EXEC_ENV}` and pass the mapping; acas takes `credential_factory` and `attached_identity` in its config, verifies the group on the cold path, turns an `authority` leg into `EgressManagedIdentityRef`, declares no credential channel, and wires `managed_identity_resource_id` into the image import for #313; codeact takes `run_credential=` and passes the sandbox's identity ref to its runs. Two samples, each with its live job in the same pull request: a docker sample handing a per-run value to a program that spends it at the one allowed host and showing a second call does not see it; and an acas sample spending the group's identity at one Azure resource through the header rule, which needs the live estate's group to carry an identity with one role assignment, a maintainer decision recorded before the sample is written. `hosts.md` § Identity is rewritten to the decided content, `capabilities.md` and `policy-isolation.md` gain the two checks and the two declarations, and `backends/README.md` goes from six declarations to eight.
+
+### Wave 3 — what the measurements unlock
+
+Gated on M4: `EGRESS_HEADER` run credentials on acas, or the same at `IsolationScope.CALL` only. Gated on a backend declaring `CALL`: the docs' recommendation that credential-carrying workloads run there becomes a sample. Gated on #328: narrowing the unclean refusal to a kind.
+
+## Decisions this asks for
+
+1. `root_guest_policy` defaults to `RECLAIM`. The recommendation and its reasons are in Pillar A; #792 asks for `DISPOSE`.
+2. #741 closes by refusal, aligned with #722, rather than by a new host-side source or by logging alone.
+3. `Identity.SANDBOX` does not raise the surface to approval-gated.
+4. The unclean refusal stays at the key while the deletion narrows to a kind.
+5. A host accepts a group-level identity with one router keyword rather than per spec.
+6. The two samples in wave 2, and the estate change the acas one needs.
+
+## Issue disposition
+
+| Issue | What this proposal does with it | Wave |
+|---|---|---|
+| [#567](https://github.com/sokolaidev/maf-extensions/issues/567) | Pillar D in full, Pillar F for the control plane; `PER_SANDBOX` is vocabulary no platform here offers and stays declared by nobody | 2 |
+| [#566](https://github.com/sokolaidev/maf-extensions/issues/566) | Pillar C | 2 |
+| [#757](https://github.com/sokolaidev/maf-extensions/issues/757) | Pillar E: the first of its four shapes, on docker and wslc; acas refused by declaration until M4 | 2, then 3 |
+| [#741](https://github.com/sokolaidev/maf-extensions/issues/741) | Pillar A, direction one, through the shared refusal | 1 |
+| [#753](https://github.com/sokolaidev/maf-extensions/issues/753) | Pillar B: the per-kind rung, the served-by table, the ledger answer | 1 |
+| [#754](https://github.com/sokolaidev/maf-extensions/issues/754) | Pillar B: the capability, the clean path, the docstring, the suite gate | 1 |
+| [#792](https://github.com/sokolaidev/maf-extensions/issues/792) | Pillar A: the keyword, not the default flip; the confinement opt-in is not built | 1 |
+| [#839](https://github.com/sokolaidev/maf-extensions/issues/839) | Pillar A: the reach argument from the principal and the plane, stated as the limit it is | 1 |
+| [#710](https://github.com/sokolaidev/maf-extensions/issues/710) | Pillar A: the measured facts replace the caveat | 1 |
+| [#313](https://github.com/sokolaidev/maf-extensions/issues/313) | Pillar F: the identity for the pull rides the config change | 2 |
+| [#436](https://github.com/sokolaidev/maf-extensions/issues/436), [#476](https://github.com/sokolaidev/maf-extensions/issues/476), [#328](https://github.com/sokolaidev/maf-extensions/issues/328), [#369](https://github.com/sokolaidev/maf-extensions/issues/369), [#793](https://github.com/sokolaidev/maf-extensions/issues/793) | Not closed; each gains one sentence above that the axis owes it | — |
