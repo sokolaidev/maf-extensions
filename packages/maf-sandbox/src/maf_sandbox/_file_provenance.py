@@ -36,6 +36,7 @@ import threading
 from ._protocol import SourceIntegrity
 
 __all__ = [
+    "DELETE_TOOL",
     "FILE_STORE_WRITE_TOOLS",
     "PATH_ARGUMENT",
     "WHOLE_CONTENT_ARGUMENT",
