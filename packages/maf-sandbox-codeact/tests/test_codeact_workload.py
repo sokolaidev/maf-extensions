@@ -545,8 +545,21 @@ def _callable(tool):
     return getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
 
 
-def _run(tool, code: str, **kw) -> str:
+def _items(tool, code: str, **kw):
+    """Whatever the body answered with, unflattened — for the tests about the split itself."""
     return asyncio.run(_callable(tool)(code=code, **kw))
+
+
+def _route(tool, code: str, **kw) -> str:
+    """The standing sentence, off the last item a withholding tool closes its answer with."""
+    answer = _items(tool, code, **kw)
+    return "" if isinstance(answer, str) else str(answer[-1].text)
+
+
+def _run(tool, code: str, **kw) -> str:
+    """The call-derived half of the answer, which is the whole of it unless the host withholds."""
+    answer = _items(tool, code, **kw)
+    return answer if isinstance(answer, str) else str(answer[0].text)
 
 
 def _run_producing(tool, sandbox: _ProducingSandbox, produced: dict[str, bytes], **kw) -> str:
@@ -884,6 +897,9 @@ class TestWithheldResultFormat:
     def _out(self, result: ExecResult) -> str:
         return _run(_withholding_tool(_ScriptedSandbox(result)), "print('hi')")
 
+    def _route_out(self, result: ExecResult) -> str:
+        return _route(_withholding_tool(_ScriptedSandbox(result)), "print('hi')")
+
     def test_what_the_program_printed_does_not_come_back(self):
         out = self._out(ExecResult(stdout="the secret is 42\n"))
         assert "the secret is 42" not in out
@@ -915,10 +931,13 @@ class TestWithheldResultFormat:
         assert "exit code: 1" in self._out(ExecResult(stdout="", stderr="boom\n", exit_code=1))
 
     def test_every_result_names_the_route_that_still_carries_content(self):
-        """An exit code on its own leaves a model nothing it can act on."""
+        """An exit code on its own leaves a model nothing it can act on — and the sentence is
+        an item of its own, so hiding the call-derived half leaves this one readable."""
         out = self._out(ExecResult(stdout="", stderr="boom\n", exit_code=1))
-        assert "declared output" in out
-        assert "not read back as text" in out
+        assert "declared output" not in out, "the report still splices the route in"
+        route = self._route_out(ExecResult(stdout="", stderr="boom", exit_code=1))
+        assert "declared output" in route
+        assert "not read back as text" in route
 
     def test_a_silent_program_gets_the_same_shape_rather_than_the_print_advice(self):
         """`_NO_OUTPUT` tells a model to print what it needs, which is the opposite of the
@@ -1692,7 +1711,7 @@ class TestFilesIn:
             withhold_guest_output=True,
             image="registry.invalid/python:3.13",
         )
-        out = asyncio.run(_callable(tools[0])(code="print('hi')", files=["a.csv"], outputs=[]))
+        out = _run(tools[0], "print('hi')", files=["a.csv"], outputs=[])
 
         assert "injected" not in out, "the host callback's message reached a withheld result"
         assert "could not be read" in out
@@ -3128,9 +3147,9 @@ class TestAWithheldTimeoutQuotesNothing:
 
     def test_it_still_names_the_route(self):
         sandbox = _StallingSandbox(printed=b"step 1 done")
-        out = _run(self._withholding_calling_tool(sandbox, exec_timeout_seconds=1), "print('x')")
+        tool = self._withholding_calling_tool(sandbox, exec_timeout_seconds=1)
 
-        assert "declared output" in out
+        assert _route(tool, "print('x')") == _WITHHELD_ROUTE
 
     def test_a_run_that_expired_before_the_program_started_still_says_so(self):
         """Rebuilt from `signal`, which the transport documents as the thing to branch on —
@@ -3174,9 +3193,7 @@ class TestAWithheldTimeoutQuotesNothing:
         sandbox = _StallingSandbox(printed=b"step 1 done")
         out = _run(self._withholding_calling_tool(sandbox, exec_timeout_seconds=1), "print('x')")
 
-        assert out == (
-            f"Error: the program did not finish in the time it was given. {_WITHHELD_ROUTE}"
-        )
+        assert out == "Error: the program did not finish in the time it was given."
 
     def test_off_the_transport_it_names_neither_a_run_nor_a_bound(self):
         """`SandboxProgramTimeout` is public and a backend may raise one from a call of its
@@ -3191,16 +3208,16 @@ class TestAWithheldTimeoutQuotesNothing:
         assert "90s" not in out, "this kind's bound was reported as the one that expired"
         assert "the run's" not in out, "a call with no host tool has no run"
         assert "did not finish" in out
-        assert "declared output" in out
+        assert _route(tool, "print('hi')") == _WITHHELD_ROUTE
 
     def test_a_bare_timeout_names_the_bound_and_the_route(self):
         """The path every shipped backend takes: acas, docker and wslc all raise a bare
         `TimeoutError` from plain `exec`, so this is the withheld timeout a host actually
         meets. One `exec` and one bound here, so unlike the transport it may name it."""
-        sandbox = _ScriptedSandbox(raises=TimeoutError())
-        out = _run(_withholding_tool(sandbox, exec_timeout_seconds=7), "print('hi')")
+        tool = _withholding_tool(_ScriptedSandbox(raises=TimeoutError()), exec_timeout_seconds=7)
 
-        assert out == f"Error: the program timed out after 7s. {_WITHHELD_ROUTE}"
+        assert _run(tool, "print('hi')") == "Error: the program timed out after 7s"
+        assert _route(tool, "print('hi')") == _WITHHELD_ROUTE
 
     def test_the_shown_bare_timeout_is_unchanged(self):
         sandbox = _ScriptedSandbox(raises=TimeoutError())
@@ -3215,6 +3232,127 @@ class TestAWithheldTimeoutQuotesNothing:
         out = _run(_withholding_tool(sandbox), "print('hi')")
 
         assert "the secret is 42" not in out
+
+
+# ---------------------------------------------------------------------------
+# The withheld result splits: the route is trusted, the call-derived half carries no label
+# ---------------------------------------------------------------------------
+
+
+class TestAWithheldResultSplits:
+    """A withholding tool answers with items, so hiding can reach one and not the other.
+
+    Hiding an untrusted item is conditional — on `auto_hide_untrusted`, and on the conversation
+    still being trusted — so these fix both and vary only what they are measuring.
+    """
+
+    def _label(self, item) -> dict[str, Any] | None:
+        return (item.additional_properties or {}).get("security_label")
+
+    def test_a_withheld_answer_is_two_items(self):
+        answer = _items(_withholding_tool(_ScriptedSandbox(ExecResult(stdout="42"))), "print(1)")
+
+        assert [str(item.text) for item in answer] == [
+            "exit code: 0\nstdout: 2 bytes\nstderr: 0 bytes",
+            _WITHHELD_ROUTE,
+        ]
+
+    def test_the_route_is_labelled_trusted(self):
+        answer = _items(_withholding_tool(_ScriptedSandbox(ExecResult(stdout="42"))), "print(1)")
+
+        assert self._label(answer[-1]) == {"integrity": "trusted", "confidentiality": "public"}
+
+    def test_the_call_derived_half_carries_no_label_of_its_own(self):
+        """That is what keeps the call's confidentiality: a labelled item would replace it with
+        this package's, and confidentiality values are the host's."""
+        answer = _items(_withholding_tool(_ScriptedSandbox(ExecResult(stdout="42"))), "print(1)")
+
+        assert self._label(answer[0]) is None
+
+    def test_a_tool_that_withholds_nothing_still_answers_with_one_string(self):
+        answer = _items(_tool(_backend(_ScriptedSandbox(ExecResult(stdout="42")))), "print(1)")
+
+        assert isinstance(answer, str) and answer.endswith("42")
+
+    def test_a_refusal_reached_before_any_sandbox_still_carries_the_route(self):
+        """The label is honest only where the sentence is on *every* path, so the one that
+        returns before a key exists is the one to check."""
+        tool = _withholding_tool(_ScriptedSandbox(), thread_id=None)
+        answer = _items(tool, "print(1)")
+
+        assert "no active thread context" in str(answer[0].text)
+        assert str(answer[-1].text) == _WITHHELD_ROUTE
+        assert self._label(answer[-1]) == {"integrity": "trusted", "confidentiality": "public"}
+
+    def test_a_refusal_the_model_caused_carries_it_too(self):
+        tool = _withholding_tool(_ScriptedSandbox(), file_store=InMemoryStore({"a.csv": "x"}))
+        answer = _items(tool, "print(1)", files=["nope.csv"], outputs=[])
+
+        assert "not in this tool's file listing" in str(answer[0].text)
+        assert str(answer[-1].text) == _WITHHELD_ROUTE
+
+
+class TestWhatAFidesHostSeesOfAWithheldResult:
+    """Driven against the real middleware, because the value of the split is entirely its."""
+
+    def _processed(self, tool, *, host_default=None, **kw):
+        from agent_framework import FunctionInvocationContext
+        from agent_framework.security import LabelTrackingFunctionMiddleware
+
+        middleware = (
+            LabelTrackingFunctionMiddleware()
+            if host_default is None
+            else LabelTrackingFunctionMiddleware(default_integrity=host_default)
+        )
+        arguments = {"code": "print(1)", **kw}
+        context = FunctionInvocationContext(function=tool, arguments=arguments)
+
+        async def call_next() -> None:
+            context.result = await tool.invoke(arguments=arguments)
+
+        asyncio.run(middleware.process(context, call_next))
+        seen = [
+            "hidden" if (item.additional_properties or {}).get("_variable_reference") else item.text
+            for item in context.result
+        ]
+        return seen, context.metadata["result_label"], middleware.get_context_label()
+
+    def test_the_route_stays_readable_while_the_rest_is_hidden(self):
+        tool = _withholding_tool(_ScriptedSandbox(ExecResult(stdout="42")))
+
+        seen, _, _ = self._processed(tool, files=[], outputs=[])
+        assert seen == ["hidden", _WITHHELD_ROUTE]
+
+    def test_hiding_follows_the_call_label_rather_than_the_split(self):
+        """The unlabelled half takes the call's label, and a host owns `default_integrity` —
+        so a host that raised it gets a trusted call and nothing is hidden at all."""
+        from agent_framework.security import IntegrityLabel
+
+        tool = _withholding_tool(_ScriptedSandbox(ExecResult(stdout="42")))
+
+        seen, result, _ = self._processed(
+            tool, host_default=IntegrityLabel.TRUSTED, files=[], outputs=[]
+        )
+        assert "hidden" not in seen, seen
+        assert str(result.integrity) == "trusted"
+
+    def test_the_conversation_stays_trusted(self):
+        """Only visible items taint, and the visible one is a constant this package ships."""
+        tool = _withholding_tool(_ScriptedSandbox(ExecResult(stdout="42")))
+
+        _, result, conversation = self._processed(tool, files=[], outputs=[])
+        assert str(result.integrity) == "untrusted"
+        assert str(conversation.integrity) == "trusted"
+
+    def test_one_string_would_have_hidden_the_route_with_it(self):
+        """The counterfactual: the same host, the same call, without the split."""
+        tool = _tool(
+            _backend(_ScriptedSandbox(ExecResult(stdout="42")), capabilities=_PULLS),
+            **_landing(CodeactOutputs.DECLARED),
+        )
+
+        seen, _, _ = self._processed(tool, files=[], outputs=[])
+        assert seen == ["hidden"]
 
 
 class TestOnlyAnAttachedToolSealsTheRegistry:
