@@ -168,6 +168,7 @@ from ._router import (
     SandboxTransferLimitsNotPermitted,
     SandboxUnclean,
     ScopeDisposal,
+    Selection,
 )
 from ._shim import host_tool_shim
 
@@ -252,6 +253,7 @@ __all__ = [
     "SandboxTransferLimitsNotPermitted",
     "SandboxUnclean",
     "ScopeDisposal",
+    "Selection",
     "ScopePurge",
     "SourceIntegrity",
     "TransferLimits",

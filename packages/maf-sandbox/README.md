@@ -57,6 +57,8 @@ router = SandboxRouter(backends, min_isolation=Isolation.VM)       # stricter: d
 router = SandboxRouter(backends, min_isolation=Isolation.NONE)  # a developer machine, opted down
 ```
 
+**Which backend, when there is more than one.** By default the router resolves one at construction — `selected="docker"` names it, or the first registered one wins — and every workload gets that one, so a spec it cannot serve is refused with the other registered backends untouched. `SandboxRouter(backends, selection=Selection.PER_SPEC)` routes instead: the first registered backend that passes every check below, decided per spec. It is opt-in because it can only ever *serve* something that is refused today, and a served workload on a remote backend has a price. Registration order is the preference, and the route is a pure function of the spec and what the backends declare — never load, latency or cost — so a conversation keeps landing on one backend and the warm sandbox `acquire` reuses stays reachable.
+
 **1. The minimum-isolation floor.** A backend declares its own `isolation`, ranked on the ladder above. The router refuses, at construction, any backend below `min_isolation` — or one whose declared value is not a rung this package recognises, because nothing here can tell whether an unrecognised boundary is stronger or weaker than the floor. A spec may also carry its own `min_isolation`; the effective floor is the *stricter* of the host's and the spec's — a spec may raise the floor for itself and never lower it.
 
 It refuses rather than degrades. Falling back to a stronger backend would hide a misconfiguration; proceeding with the weaker one would break claims the host's security posture makes about every execution surface. Neither is better than an error.
