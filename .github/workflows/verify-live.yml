@@ -141,16 +141,16 @@ jobs:
       # error for an empty client-id does not say which field is missing.
       - name: Check the live configuration is present
         env:
-          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
-          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACAS_SANDBOX_SUBSCRIPTION_ID }}
-          ACAS_SANDBOX_RESOURCE_GROUP: ${{ vars.ACAS_SANDBOX_RESOURCE_GROUP }}
-          ACAS_SANDBOX_GROUP: ${{ vars.ACAS_SANDBOX_GROUP }}
-          ACAS_SANDBOX_REGISTRY: ${{ vars.ACAS_SANDBOX_REGISTRY }}
+          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_RESOURCE_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
+          ACAS_SANDBOX_GROUP: ${{ secrets.ACAS_SANDBOX_GROUP }}
+          ACAS_SANDBOX_REGISTRY: ${{ secrets.ACAS_SANDBOX_REGISTRY }}
           BICEP_SANDBOX_IMAGE: ${{ vars.BICEP_SANDBOX_IMAGE }}
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -162,16 +162,16 @@ jobs:
             [ -n "${!name}" ] || missing+=("$name")
           done
           if [ "${#missing[@]}" -ne 0 ]; then
-            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
           fi
 
       - name: Sign in to Azure with OIDC
         uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
@@ -193,12 +193,12 @@ jobs:
       - name: Run sample 01 and assert the diagnostics came back
         env:
           ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
-          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACAS_SANDBOX_SUBSCRIPTION_ID }}
-          ACAS_SANDBOX_RESOURCE_GROUP: ${{ vars.ACAS_SANDBOX_RESOURCE_GROUP }}
-          ACAS_SANDBOX_GROUP: ${{ vars.ACAS_SANDBOX_GROUP }}
-          ACAS_SANDBOX_REGISTRY: ${{ vars.ACAS_SANDBOX_REGISTRY }}
+          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_RESOURCE_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
+          ACAS_SANDBOX_GROUP: ${{ secrets.ACAS_SANDBOX_GROUP }}
+          ACAS_SANDBOX_REGISTRY: ${{ secrets.ACAS_SANDBOX_REGISTRY }}
           BICEP_SANDBOX_IMAGE: ${{ vars.BICEP_SANDBOX_IMAGE }}
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -283,14 +283,14 @@ jobs:
       # note there about EnvironmentCredential.
       - name: Check the live configuration is present
         env:
-          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
-          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACAS_SANDBOX_SUBSCRIPTION_ID }}
-          ACAS_SANDBOX_RESOURCE_GROUP: ${{ vars.ACAS_SANDBOX_RESOURCE_GROUP }}
-          ACAS_SANDBOX_GROUP: ${{ vars.ACAS_SANDBOX_GROUP }}
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_RESOURCE_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
+          ACAS_SANDBOX_GROUP: ${{ secrets.ACAS_SANDBOX_GROUP }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -301,16 +301,16 @@ jobs:
             [ -n "${!name}" ] || missing+=("$name")
           done
           if [ "${#missing[@]}" -ne 0 ]; then
-            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
           fi
 
       - name: Sign in to Azure with OIDC
         uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
@@ -333,10 +333,10 @@ jobs:
       - name: Run sample 03 and assert the computed answer came back
         env:
           ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
-          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACAS_SANDBOX_SUBSCRIPTION_ID }}
-          ACAS_SANDBOX_RESOURCE_GROUP: ${{ vars.ACAS_SANDBOX_RESOURCE_GROUP }}
-          ACAS_SANDBOX_GROUP: ${{ vars.ACAS_SANDBOX_GROUP }}
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_RESOURCE_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
+          ACAS_SANDBOX_GROUP: ${{ secrets.ACAS_SANDBOX_GROUP }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -390,10 +390,10 @@ jobs:
 
       - name: Check the live configuration is present
         env:
-          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -403,16 +403,16 @@ jobs:
             [ -n "${!name}" ] || missing+=("$name")
           done
           if [ "${#missing[@]}" -ne 0 ]; then
-            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
           fi
 
       - name: Sign in to Azure with OIDC
         uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       # Where samples 06 and 08 run an MCR image that `docker run` pulls, this one's guest is
       # built from this repository — the same context sample 01 imports into an Azure sandbox
@@ -436,7 +436,7 @@ jobs:
       - name: Run sample 05 and assert the diagnostics came back
         env:
           BICEP_SANDBOX_IMAGE: bicep-sandbox:local
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -496,10 +496,10 @@ jobs:
       # by name, before the login step reaches them.
       - name: Check the live configuration is present
         env:
-          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -509,16 +509,16 @@ jobs:
             [ -n "${!name}" ] || missing+=("$name")
           done
           if [ "${#missing[@]}" -ne 0 ]; then
-            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
           fi
 
       - name: Sign in to Azure with OIDC
         uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
@@ -538,7 +538,7 @@ jobs:
       # deliberately not exported here, so DefaultAzureCredential resolves through the CLI.
       - name: Run sample 06 and assert the computed answer came back
         env:
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -590,10 +590,10 @@ jobs:
 
       - name: Check the live configuration is present
         env:
-          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -603,16 +603,16 @@ jobs:
             [ -n "${!name}" ] || missing+=("$name")
           done
           if [ "${#missing[@]}" -ne 0 ]; then
-            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
           fi
 
       - name: Sign in to Azure with OIDC
         uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       # Graphviz on a Debian base, built from this repository like sample-05's guest. Nothing
       # pushes it anywhere: the backend runs what is on the machine.
@@ -634,7 +634,7 @@ jobs:
       - name: Run sample 07 and assert a rendered PNG came back out
         env:
           DIAGRAM_SANDBOX_IMAGE: diagram-sandbox:local
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -694,10 +694,10 @@ jobs:
 
       - name: Check the live configuration is present
         env:
-          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -707,16 +707,16 @@ jobs:
             [ -n "${!name}" ] || missing+=("$name")
           done
           if [ "${#missing[@]}" -ne 0 ]; then
-            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
           fi
 
       - name: Sign in to Azure with OIDC
         uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
@@ -732,7 +732,7 @@ jobs:
 
       - name: Run sample 08 and assert a file went in and a file came out
         env:
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -806,10 +806,10 @@ jobs:
 
       - name: Check the live configuration is present
         env:
-          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -819,16 +819,16 @@ jobs:
             [ -n "${!name}" ] || missing+=("$name")
           done
           if [ "${#missing[@]}" -ne 0 ]; then
-            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
           fi
 
       - name: Sign in to Azure with OIDC
         uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
@@ -849,7 +849,7 @@ jobs:
       # the CLI.
       - name: Run sample 09 and assert the diagnostics came back
         env:
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -978,10 +978,10 @@ jobs:
 
       - name: Check the live configuration is present
         env:
-          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -991,16 +991,16 @@ jobs:
             [ -n "${!name}" ] || missing+=("$name")
           done
           if [ "${#missing[@]}" -ne 0 ]; then
-            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
           fi
 
       - name: Sign in to Azure with OIDC
         uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       # Act 4's guest, built from this repository like sample-05's — the same Bicep CLI and the
       # same `bicepconfig.json`, so a difference between the two jobs is about egress rather
@@ -1038,7 +1038,7 @@ jobs:
         env:
           BICEP_SANDBOX_IMAGE: bicep-sandbox:local
           MAF_EGRESS_PROXY_IMAGE: maf-egress-proxy:ci
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -1160,10 +1160,10 @@ jobs:
 
       - name: Check the live configuration is present
         env:
-          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -1173,16 +1173,16 @@ jobs:
             [ -n "${!name}" ] || missing+=("$name")
           done
           if [ "${#missing[@]}" -ne 0 ]; then
-            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
           fi
 
       - name: Sign in to Azure with OIDC
         uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       # Built here rather than pulled, exactly as sample 05 does it, and the freshness matters
       # more for this sample than for that one: `bicepconfig.json` lives in the image, so a
@@ -1206,7 +1206,7 @@ jobs:
       - name: Run sample 13 and assert the file was repaired against one sandbox
         env:
           BICEP_SANDBOX_IMAGE: bicep-sandbox:local
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -1312,14 +1312,14 @@ jobs:
       # it needs nothing new.
       - name: Check the live configuration is present
         env:
-          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
-          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACAS_SANDBOX_SUBSCRIPTION_ID }}
-          ACAS_SANDBOX_RESOURCE_GROUP: ${{ vars.ACAS_SANDBOX_RESOURCE_GROUP }}
-          ACAS_SANDBOX_GROUP: ${{ vars.ACAS_SANDBOX_GROUP }}
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_RESOURCE_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
+          ACAS_SANDBOX_GROUP: ${{ secrets.ACAS_SANDBOX_GROUP }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -1330,16 +1330,16 @@ jobs:
             [ -n "${!name}" ] || missing+=("$name")
           done
           if [ "${#missing[@]}" -ne 0 ]; then
-            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
           fi
 
       - name: Sign in to Azure with OIDC
         uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
@@ -1356,10 +1356,10 @@ jobs:
       - name: Run sample 14 and assert a file went in and a file came out
         env:
           ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
-          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACAS_SANDBOX_SUBSCRIPTION_ID }}
-          ACAS_SANDBOX_RESOURCE_GROUP: ${{ vars.ACAS_SANDBOX_RESOURCE_GROUP }}
-          ACAS_SANDBOX_GROUP: ${{ vars.ACAS_SANDBOX_GROUP }}
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_RESOURCE_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
+          ACAS_SANDBOX_GROUP: ${{ secrets.ACAS_SANDBOX_GROUP }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -1438,14 +1438,14 @@ jobs:
       # six variables, so a group already serving 14 needs nothing new imported.
       - name: Check the live configuration is present
         env:
-          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
-          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACAS_SANDBOX_SUBSCRIPTION_ID }}
-          ACAS_SANDBOX_RESOURCE_GROUP: ${{ vars.ACAS_SANDBOX_RESOURCE_GROUP }}
-          ACAS_SANDBOX_GROUP: ${{ vars.ACAS_SANDBOX_GROUP }}
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_RESOURCE_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
+          ACAS_SANDBOX_GROUP: ${{ secrets.ACAS_SANDBOX_GROUP }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -1456,16 +1456,16 @@ jobs:
             [ -n "${!name}" ] || missing+=("$name")
           done
           if [ "${#missing[@]}" -ne 0 ]; then
-            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
           fi
 
       - name: Sign in to Azure with OIDC
         uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
@@ -1482,10 +1482,10 @@ jobs:
       - name: Run sample 15 and assert a program really called back out
         env:
           ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
-          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACAS_SANDBOX_SUBSCRIPTION_ID }}
-          ACAS_SANDBOX_RESOURCE_GROUP: ${{ vars.ACAS_SANDBOX_RESOURCE_GROUP }}
-          ACAS_SANDBOX_GROUP: ${{ vars.ACAS_SANDBOX_GROUP }}
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_RESOURCE_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
+          ACAS_SANDBOX_GROUP: ${{ secrets.ACAS_SANDBOX_GROUP }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -1542,10 +1542,10 @@ jobs:
       # The model's configuration only: on docker the sample reads no sandbox variable.
       - name: Check the live configuration is present
         env:
-          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -1555,16 +1555,16 @@ jobs:
             [ -n "${!name}" ] || missing+=("$name")
           done
           if [ "${#missing[@]}" -ne 0 ]; then
-            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
           fi
 
       - name: Sign in to Azure with OIDC
         uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Wait for this runner's PyPI edge to serve the release
         if: ${{ inputs.version != '' }}
@@ -1581,7 +1581,7 @@ jobs:
       - name: Run sample 15 on docker and assert a program really called back out
         env:
           SAMPLE_BACKEND: docker
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
@@ -1645,14 +1645,14 @@ jobs:
       # would do, and this is the one already known to pull.
       - name: Check the live configuration is present
         env:
-          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
-          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACAS_SANDBOX_SUBSCRIPTION_ID }}
-          ACAS_SANDBOX_RESOURCE_GROUP: ${{ vars.ACAS_SANDBOX_RESOURCE_GROUP }}
-          ACAS_SANDBOX_GROUP: ${{ vars.ACAS_SANDBOX_GROUP }}
-          ACAS_SANDBOX_REGISTRY: ${{ vars.ACAS_SANDBOX_REGISTRY }}
+          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_RESOURCE_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
+          ACAS_SANDBOX_GROUP: ${{ secrets.ACAS_SANDBOX_GROUP }}
+          ACAS_SANDBOX_REGISTRY: ${{ secrets.ACAS_SANDBOX_REGISTRY }}
           BICEP_SANDBOX_IMAGE: ${{ vars.BICEP_SANDBOX_IMAGE }}
         run: |
           set -euo pipefail
@@ -1663,16 +1663,16 @@ jobs:
             [ -n "${!name}" ] || missing+=("$name")
           done
           if [ "${#missing[@]}" -ne 0 ]; then
-            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
           fi
 
       - name: Sign in to Azure with OIDC
         uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Sync workspace
         run: uv sync --locked
@@ -1686,10 +1686,10 @@ jobs:
       - name: Run the ACAS live suite
         env:
           ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
-          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACAS_SANDBOX_SUBSCRIPTION_ID }}
-          ACAS_SANDBOX_RESOURCE_GROUP: ${{ vars.ACAS_SANDBOX_RESOURCE_GROUP }}
-          ACAS_SANDBOX_GROUP: ${{ vars.ACAS_SANDBOX_GROUP }}
-          ACAS_SANDBOX_REGISTRY: ${{ vars.ACAS_SANDBOX_REGISTRY }}
+          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_RESOURCE_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
+          ACAS_SANDBOX_GROUP: ${{ secrets.ACAS_SANDBOX_GROUP }}
+          ACAS_SANDBOX_REGISTRY: ${{ secrets.ACAS_SANDBOX_REGISTRY }}
           MAF_SANDBOX_ACAS_E2E_IMAGE: ${{ vars.BICEP_SANDBOX_IMAGE }}
           MAF_SANDBOX_ACAS_E2E_NONROOT_IMAGE: ${{ vars.ACAS_SANDBOX_NONROOT_IMAGE }}
         run: |
