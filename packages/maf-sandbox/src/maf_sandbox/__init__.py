@@ -58,6 +58,7 @@ reaching for it is a foreseeable mistake: :mod:`maf_sandbox.testing` in producti
 from __future__ import annotations
 
 from ._error_detail import error_detail
+from ._file_provenance import FILE_STORE_WRITE_TOOLS, FileStoreProvenance
 from ._host_tools import (
     DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN,
     FLOW_DECLARED_KEY,
@@ -176,6 +177,7 @@ __all__ = [
     "CALLS_DIRECTORY",
     "DEFAULT_BACKEND_DECLARATIONS",
     "DEFAULT_CAPABILITIES",
+    "FILE_STORE_WRITE_TOOLS",
     "DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN",
     "DEFAULT_RECLAIM_CONFIG",
     "DEFAULT_SANDBOX_LIMITS",
@@ -199,6 +201,7 @@ __all__ = [
     "EntryKind",
     "ExecResult",
     "FailedReclaimPolicy",
+    "FileStoreProvenance",
     "GuestRunLayout",
     "HostToolAggregate",
     "HostToolDeclaration",

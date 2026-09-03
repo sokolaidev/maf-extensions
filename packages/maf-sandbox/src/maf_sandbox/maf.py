@@ -50,6 +50,13 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
 from ._error_detail import error_detail
+from ._file_provenance import (
+    DELETE_TOOL,
+    FILE_STORE_WRITE_TOOLS,
+    PATH_ARGUMENT,
+    WHOLE_CONTENT_ARGUMENT,
+    FileStoreProvenance,
+)
 from ._outputs import OutputSink, landing_outputs, missing_sink_refusal, spec_lands_artifacts
 from ._protocol import (
     CallerContext,
@@ -90,6 +97,7 @@ _DEFAULT_LOGGER = logging.getLogger(__name__)
 
 __all__ = [
     "ISOLATION_SCOPE_KEY",
+    "file_store_provenance_middleware",
     "SandboxPurger",
     "SandboxToolSession",
     "labelled_result_item",
@@ -231,6 +239,115 @@ def argument_provenance_middleware() -> Any:
                 record.closed = True
 
     return _ArgumentProvenance()
+
+
+def file_store_provenance_middleware(
+    record: FileStoreProvenance, *, also_observes: frozenset[str] | set[str] = frozenset()
+) -> Any:
+    """Middleware that records an agent-driven file-store write into ``record``.
+
+    Wire it beside the host's information-flow middleware, the way
+    :func:`~maf_sandbox.argument_provenance_middleware` is wired::
+
+        provenance = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        Agent(..., middleware=[
+            LabelTrackingFunctionMiddleware(),
+            file_store_provenance_middleware(provenance),
+        ])
+
+    **Order does not matter, and it reads no argument the framework rewrote.** What it takes off
+    a call is the *path*, which is a name the model typed and which no expansion touches; it
+    never needs the content's own label, because a write reaching these tools is model-driven
+    however the content got there — see this module's own docstring. So unlike
+    :func:`~maf_sandbox.positions_holding_hidden_content` there is no private framework record
+    behind this, and nothing here to diverge from.
+
+    **A recorded write is not the same as a successful one.** The entry is written after the
+    tool body returns, but the tools answer a refusal with a *string* rather than raising, so a
+    write refused for an existing name still records. That is the conservative direction — the
+    path is marked untrusted when the file may be untouched — and the alternative, parsing a
+    human sentence for whether it meant failure, is a worse thing to depend on. A body that
+    *raises* records nothing, which is the same direction: nothing was written.
+
+    Args:
+        record: Where observed writes land, and what a kind reads back.
+        also_observes: Extra tool names to treat as file-store writes, for a host that wires a
+            write surface of its own. Each must name its path in a ``file_name`` argument.
+    """
+    from agent_framework import FunctionMiddleware
+
+    observed = FILE_STORE_WRITE_TOOLS | frozenset(also_observes)
+
+    class _FileStoreProvenance(FunctionMiddleware):  # type: ignore[misc]
+        async def process(self, context: Any, call_next: Any) -> None:
+            name = getattr(getattr(context, "function", None), "name", None)
+            if name not in observed:
+                await call_next()
+                return
+            # Read before the body runs: a tool is free to mutate the mapping it was handed,
+            # and what this needs is the path the call named.
+            path = _store_path_named_by(context)
+            await call_next()
+            if path is None:
+                # Nothing to key an entry on. Loud rather than silent: the tool ran, so a
+                # write may have landed, and this record now has a hole a reader cannot see.
+                _DEFAULT_LOGGER.warning(
+                    "file_store_provenance_middleware: %r ran without a %r argument, so the "
+                    "path it wrote is unknown and nothing was recorded for it.",
+                    name,
+                    PATH_ARGUMENT,
+                )
+                return
+            if name == DELETE_TOOL:
+                record.forget(path)
+                return
+            record.record(
+                path,
+                integrity=SourceIntegrity.UNTRUSTED,
+                content=_whole_store_content_named_by(context),
+            )
+
+    return _FileStoreProvenance()
+
+
+def _write_call_arguments(context: Any) -> Mapping[str, Any] | None:
+    """The call's arguments as a mapping, or ``None`` where they are not one.
+
+    A call's arguments are a mapping *or* a model, and the framework keeps whichever it was
+    given, so a model is dumped before it is read — duck-typed, as
+    ``_spellings_before_rewriting`` does it, because this package does not depend on the
+    framework's validation library.
+    """
+    arguments: Any = getattr(context, "arguments", None)
+    dump = getattr(arguments, "model_dump", None)
+    if callable(dump):
+        arguments = dump()
+    if not isinstance(arguments, Mapping):
+        return None
+    return cast("Mapping[str, Any]", arguments)
+
+
+def _store_path_named_by(context: Any) -> str | None:
+    """The store path this call names, or ``None`` where it names none this can read."""
+    arguments = _write_call_arguments(context)
+    if arguments is None:
+        return None
+    path: Any = arguments.get(PATH_ARGUMENT)
+    return path if isinstance(path, str) and path else None
+
+
+def _whole_store_content_named_by(context: Any) -> str | None:
+    """The whole content this call writes, where the call carries it.
+
+    ``None`` for the edit tools, whose arguments describe a change rather than a result — an
+    entry recorded from one of those carries no digest, and :meth:`FileStoreProvenance.record`
+    says what that costs.
+    """
+    arguments = _write_call_arguments(context)
+    if arguments is None:
+        return None
+    content: Any = arguments.get(WHOLE_CONTENT_ARGUMENT)
+    return content if isinstance(content, str) else None
 
 
 def _reachable_middleware() -> Any | None:

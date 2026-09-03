@@ -140,6 +140,39 @@ Two composition rules. **`Identity.USER` never attaches**: managed identities ar
 
 The `USER` host-tool refusal used to be read as the fourth, and it was not. It named C′'s three prerequisites — per-run minting, audience ⊆ egress, and the ephemeral `exec` env channel — but it fires on a **host-tool call**, whose body runs host-side under option B, where the credential never enters the sandbox at all. Two of those three bound a different mechanism: an `exec` env channel exists to hand a token *to a guest*, and the egress cell bounds where a *guest* can spend one. Only per-run minting was ever B's, and B is what that refusal guards, so B is what shipped. C′'s channel remains open on its own issue, where the constraint that decides it is recorded: `maf-sandbox-acas` cannot carry it, because the SDK's `exec` takes a command and a working directory and no environment, and smuggling a token through the command line reintroduces the visibility that ruled out `write_file`.
 
+## File-store provenance — what a kind reads, and what it is worth
+
+A kind that reads the agent's file store reads content the framework can no longer label. `AgentFileStore` holds a `str` and returns a `str`, and the information-flow middleware expands a variable reference into the bytes it stands for *before* the tool body that writes them runs — so nothing that reaches the store says what it was worth. That is [#841](https://github.com/sokolaidev/maf-extensions/issues/841), and [`research/labelling-the-file-store.md`](research/labelling-the-file-store.md) is where the three candidate seams were measured.
+
+**What is recoverable is who wrote it, and only at the call boundary.** A write through `FileAccessProvider` is a *tool call*, and a tool call is the unambiguous signal that the model drove it. `FileStoreProvenance` is the record, `file_store_provenance_middleware` fills it, and a host wires the two beside its information-flow middleware:
+
+```python
+from agent_framework.security import LabelTrackingFunctionMiddleware
+
+from maf_sandbox import FileStoreProvenance, SourceIntegrity
+from maf_sandbox.maf import file_store_provenance_middleware
+
+# This host places its own files in the store before the run, so what no tool call wrote is
+# trusted. Drop `floor=` and unwritten paths stay unestablished instead.
+provenance = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+middleware = [LabelTrackingFunctionMiddleware(), file_store_provenance_middleware(provenance)]
+
+# …and later, wherever the host answers what a name is worth:
+integrity = provenance.integrity_of("notes.bicep", "the bytes just read back")
+```
+
+That list goes on the agent's `middleware=`. Order does not matter: what the record takes off a call is the *path*, which is a name the model typed and which no expansion rewrites.
+
+**An observed write always records `untrusted`, and nothing is resolved to decide that.** Every route by which the model puts bytes into the store runs through the model: content behind a `[var_id]` is there because the middleware *hid* it, and it hides what is untrusted; content typed into `content=` was authored by the model. So the record needs no access to the framework's variable store, and the answer does not depend on `hide_threshold` staying where it is — a host that moves it makes the first of those two less precise and this still records untrusted, which is the fail-safe direction.
+
+**The floor is the host's, and an entry always beats it.** `floor=` says what applies to a path *no tool call ever wrote* — content placed before the run, or written past the store object by another process. `None`, the default, means unestablished: this host has not said. A recorded entry wins over the floor unconditionally, which is the property the whole record exists for — a trusted floor can never lift bytes the model wrote.
+
+**An entry is bound to the bytes, not to the path.** A write records the content's digest beside the label and the entry answers only while the path still holds those bytes, so an overwrite this never saw falls back to the floor rather than going on answering from a record of what the path used to hold. The two *edit* tools describe a change rather than a result, so their entries carry no digest and stay untrusted for the path outright — the conservative direction. A delete forgets the path.
+
+**One record, one store.** A path is the whole key: the tools carry no store identity to key on, so a host wiring two providers over two stores needs one record each. Reading a kind against the wrong one answers about a file it never read.
+
+Two limits worth stating plainly. A refusal the tools return as a *string* rather than an exception still records, so a write refused for an existing name marks the path untrusted when the file may be untouched — conservative, and better than parsing a human sentence for whether it meant failure. And `FILE_STORE_WRITE_TOOLS` is a copy of a private upstream constant; a divergence alarm in the suite fails when the framework's own set changes, because a write tool this does not observe is a path the record would answer from the floor.
+
 ## Where the storage base comes from
 
 A guest path is relative to something, and today that something is owned by nobody. A workload declares `work_dir` in its spec, no backend reads it, no backend creates it, and the protocol does not promise it exists. Every kind then composes absolute paths from a base the stack only hopes is there.
@@ -160,6 +193,7 @@ The second is the open question. **Something still needs a real absolute path in
 
 | Decision | State | Tracking |
 |---|---|---|
+| A kind can be told what the content it read out of the agent file store is worth — `FileStoreProvenance`, `file_store_provenance_middleware`, and a host-declared floor | shipped — an agent-driven write records `untrusted` and beats any floor, bound to the bytes it wrote; content no tool call wrote takes the host's floor, and `None` leaves it unestablished | [#841](https://github.com/sokolaidev/maf-extensions/issues/841) (open) |
 | The host writes and the library never does — `Artifact`, `LandedArtifact`, `OutputSink`, `NameNormalization`, `collect_outputs` in the stdlib-only core | shipped | [#113](https://github.com/sokolaidev/maf-extensions/pull/113) (merged); umbrella [#109](https://github.com/sokolaidev/maf-extensions/issues/109) (open) |
 | Call-time output names — `outputs_named_at_call_time`, `DeclaredOutput.name`, `collect_outputs(outputs=...)` refused without the flag | shipped | [#156](https://github.com/sokolaidev/maf-extensions/pull/156) (merged); the CodeAct channel that needed it, [#132](https://github.com/sokolaidev/maf-extensions/issues/132) (closed) |
 | Name invariant, NFC, case-only collisions compared lowercase, `portable_file_name()` | shipped | [#113](https://github.com/sokolaidev/maf-extensions/pull/113) (merged) |
