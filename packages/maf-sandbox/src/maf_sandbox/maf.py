@@ -718,9 +718,9 @@ class SandboxToolSession:
     which is why it lives in :data:`_CALL` and not here.
 
     All three accessors return **either the value or the string the tool should return** for
-    anything the model has to hear about.  A MAF tool answers with a ``str`` and a refusal is an
-    ordinary answer, not an exception: the model has to learn what happened through the same
-    channel as a successful result, or the turn ends mute.  So a body reads::
+    anything the model has to hear about.  A refusal is an ordinary answer, not an exception:
+    the model has to learn what happened through the same channel as a successful result, or
+    the turn ends mute.  So a body reads::
 
         key = session.key()
         if isinstance(key, str):
@@ -730,8 +730,12 @@ class SandboxToolSession:
         if isinstance(sandbox, str):
             return sandbox
 
-    A workload whose tool returns something other than a plain ``str`` translates the message
-    into its own result shape at those two points; nothing else about the contract changes.
+    A workload whose tool answers with something other than a plain ``str`` converts that
+    message into its own result shape at **one** place — the funnel its body returns through —
+    never at each accessor.  Three of them answer this way, :meth:`list_files` included, and a
+    body has its own returns besides, so a per-call-site conversion is a claim about every
+    return path that is one branch from being false.  Nothing else about the contract changes;
+    ``docs/sandbox/architecture.md`` carries the rule.
 
     **A wiring mistake in the kind raises**, and that is the line the two shapes are split on: a
     model can cause a refusal and cannot cause a body that asks for a call's key outside a call,
