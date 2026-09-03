@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import itertools
 import logging
 import sys
 import tarfile
@@ -39,11 +40,16 @@ from maf_sandbox import (
 from maf_sandbox_docker import BACKEND_NAME, DockerSandboxBackend, DockerSandboxConfig
 from maf_sandbox_docker._backend import (
     _GATEWAY_MODE_ISOLATED,
+    _GATEWAY_MODE_OPTS,
     _container_name,
     _DockerResult,
     _network_name,
     _proxy_name,
 )
+
+#: What `network inspect` prints for a network this backend built — one word per address
+#: family. Derived rather than written out, so adding a family updates the fixtures with it.
+_UNADDRESSED = " ".join([_GATEWAY_MODE_ISOLATED] * len(_GATEWAY_MODE_OPTS))
 
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
 _SPEC = SandboxSpec(kind="bicep", image="bicep-sandbox:local")
@@ -189,15 +195,18 @@ def _machine(
     ``running`` prints ``true``, one only in ``stopped`` prints ``false``, one in neither errors
     like a missing container. ``image inspect`` succeeds for a known image and errors otherwise.
 
-    ``networks`` maps a network name to the bridge gateway mode ``network inspect`` reports for
-    it; a name absent from it answers "not found", which is the cold path an acquire that has
-    yet to build one takes. An empty string is the mode a network built before this backend
-    asked for an unaddressed bridge reports.
+    ``networks`` maps a network name to what ``network inspect`` prints for the gateway-mode
+    format — one word per address family, so ``"isolated isolated"`` is a network this backend
+    built, ``"isolated"`` one addressed on IPv6 only, and ``""`` one built before either option
+    was asked for. A name absent from it answers "not found", the cold path an acquire that has
+    yet to build one takes. ``network rm`` removes the name, so a teardown's postcondition sees
+    what the teardown did; override ``("network", "rm")`` to model one that fails.
 
     The longest matching ``overrides`` prefix wins, so a per-path ``cp`` answer beats a
     catch-all one however the mapping was written.
     """
     present = set(running) | set(stopped)
+    live_networks = dict(networks or {})
     ranked = sorted((overrides or {}).items(), key=lambda item: len(item[0]), reverse=True)
 
     def respond(args: tuple[str, ...]) -> _DockerResult:
@@ -213,10 +222,15 @@ def _machine(
             )
         if args[:2] == ("network", "inspect"):
             net = args[-1]
-            mode = (networks or {}).get(net)
-            if mode is None:
+            modes = live_networks.get(net)
+            if modes is None:
                 return _DockerResult(1, b"", f"Error response from daemon: network {net} not found")
-            return _DockerResult(0, mode.encode() + b"\n", "")
+            return _DockerResult(0, modes.encode() + b"\n", "")
+        if args[:2] == ("network", "rm"):
+            net = args[-1]
+            if live_networks.pop(net, None) is None:
+                return _DockerResult(1, b"", f"Error: No such network: {net}")
+            return _DockerResult(0, net.encode() + b"\n", "")
         if args[:3] == ("inspect", "-f", "{{.Config.User}}"):
             return _DockerResult(0, b"\n", "")
         if args[0] == "cp" and args[1].endswith(":/"):
@@ -2854,15 +2868,40 @@ class TestAllowlistReuse:
             ("network", "create"): _DockerResult(1, b"", "network with name X already exists")
         }
         backend, fake = _backend_with(
-            _machine(
-                running=[_AL], overrides=overrides, networks={_AL_NET: _GATEWAY_MODE_ISOLATED}
-            ),
+            _machine(running=[_AL], overrides=overrides, networks={_AL_NET: _UNADDRESSED}),
             config=_ALLOW_CONFIG,
         )
         # Does not raise: the existing network is adopted, the running workload reused.
         sandbox = asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert sandbox.container_name == _AL
         assert fake.matching("rm", "-f", _AL) == []
+
+    def test_a_network_that_appeared_since_the_check_is_not_adopted_on_its_name(self):
+        """`create` compares nothing but the name, and the lock is local to one backend and
+        loop, so "already exists" can be a network something else put there after the acquire
+        looked. Adopting it on the name alone is the whole hole reopened.
+
+        The responder answers the acquire's own look with "not found" and every later one with
+        an addressed bridge, which is that interleaving and no other.
+        """
+        base = _machine(
+            overrides={
+                ("network", "create"): _DockerResult(1, b"", "network with name X already exists")
+            }
+        )
+        looks = itertools.count()
+
+        def racing(args: tuple[str, ...]) -> _DockerResult:
+            if args[:2] == ("network", "inspect") and args[-1] == _AL_NET:
+                if next(looks) == 0:
+                    return _DockerResult(1, b"", f"network {_AL_NET} not found")
+                return _DockerResult(0, b"\n", "")
+            return base(args)
+
+        backend, fake = _backend_with(racing, config=_ALLOW_CONFIG)
+        with pytest.raises(RuntimeError, match="already exists and its bridge holds"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("run", "-d", "--name", _AL) == []
 
 
 class TestASandboxLeftOnAnAddressedBridge:
@@ -2896,17 +2935,42 @@ class TestASandboxLeftOnAnAddressedBridge:
 
     def test_an_unreadable_network_is_replaced_rather_than_trusted(self):
         """The read decides whether a warm sandbox is kept, so an answer that is neither
-        "unaddressed" nor "no such network" cannot be taken as good news."""
+        "unaddressed" nor "no such network" cannot be taken as good news — the sandbox goes,
+        and an acquire that still cannot prove the bridge is unaddressed refuses rather than
+        serving one it has no answer for."""
         overrides = {("network", "inspect"): _DockerResult(1, b"", "daemon is not responding")}
         backend, fake = _backend_with(
             _machine(running=[_AL], overrides=overrides), config=_ALLOW_CONFIG
         )
+        with pytest.raises(RuntimeError, match="still has a bridge with a host address"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("rm", "-f", _AL) != []
+        assert fake.matching("run", "-d", "--name", _AL) == []
+
+    def test_a_bridge_isolated_on_one_family_only_is_still_addressed(self):
+        """Reading one of the two options would adopt a network an IPv6-enabled daemon still
+        gives a host address, which is the whole route back."""
+        backend, fake = _backend_with(
+            _machine(running=[_AL], networks={_AL_NET: _GATEWAY_MODE_ISOLATED}), _ALLOW_CONFIG
+        )
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert fake.matching("rm", "-f", _AL) != []
+        assert fake.matching("network", "rm", _AL_NET) != []
+
+    def test_a_network_that_will_not_go_away_fails_the_acquire(self):
+        """The removals report failure rather than raising it, so reading past them would hand
+        back the warm workload on the bridge this was trying to take away."""
+        overrides = {("network", "rm"): _DockerResult(1, b"", "network has active endpoints")}
+        backend, fake = _backend_with(
+            _machine(running=[_AL], networks={_AL_NET: ""}, overrides=overrides), _ALLOW_CONFIG
+        )
+        with pytest.raises(RuntimeError, match="still has a bridge with a host address"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("run", "-d", "--name", _AL) == []
 
     def test_an_unaddressed_bridge_keeps_its_warm_sandbox(self):
         backend, fake = _backend_with(
-            _machine(running=[_AL], networks={_AL_NET: _GATEWAY_MODE_ISOLATED}), _ALLOW_CONFIG
+            _machine(running=[_AL], networks={_AL_NET: _UNADDRESSED}), _ALLOW_CONFIG
         )
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert fake.matching("rm", "-f", _AL) == []

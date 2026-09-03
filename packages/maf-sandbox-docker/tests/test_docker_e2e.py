@@ -1186,10 +1186,7 @@ class TestAllowlistEgress:
         **Both probes need the test process in the daemon's own network namespace**, which is
         the ``docker-e2e`` runner and any native Linux engine. Against a Docker Desktop VM the
         test passes without proving anything, because the process is outside the VM the bridge
-        lives in — the mechanism assertions at the end are what still bite there. The two were
-        measured to discriminate on 29.7: from inside that namespace an addressed bridge
-        answers the guest ``200`` and refuses the host's connect, and an unaddressed one
-        answers ``000`` and times out.
+        lives in — the mechanism assertions at the end are what still bite there.
 
         The guest-to-host probe carries a positive control, since a listener that never came up
         would answer ``000`` for a reason that has nothing to do with the bridge.

@@ -133,8 +133,10 @@ _GATEWAY_MODE_OPTS = (
 _GATEWAY_MODE_ISOLATED = "isolated"
 #: The engine that accepts the mode above; an older one rejects the value, naming the option.
 _GATEWAY_MODE_MIN_ENGINE = "28.0.0"
-#: Reads the mode back off a network — empty for a bridge that holds an address.
-_GATEWAY_MODE_FORMAT = '{{index .Options "com.docker.network.bridge.gateway_mode_ipv4"}}'
+#: Reads every mode back off a network, space-separated, an option the network does not carry
+#: printing empty.  Built from the options themselves so a family can never be set without
+#: being checked: reading one of two would adopt a network still addressed on the other.
+_GATEWAY_MODE_FORMAT = " ".join('{{index .Options "' + opt + '"}}' for opt in _GATEWAY_MODE_OPTS)
 #: What `network inspect` reports for a network that is not there.
 _NETWORK_ABSENT = ("not found", _NO_SUCH)
 
@@ -946,6 +948,9 @@ class DockerSandboxBackend:
         Raises:
             SandboxOsFamilyNotSupported: when this backend declared a guest family and the
                 daemon a cold acquire would create or start a container on no longer runs it.
+            RuntimeError: when an allowlisted workload cannot be given a network whose bridge
+                holds no host address — the engine will not build one, or one that is already
+                there could not be removed.
         """
         egress_id = self._egress_id(spec)
         name = _container_name(key, spec.kind, egress_id)
@@ -1666,12 +1671,14 @@ class DockerSandboxBackend:
 
         ``network create`` reports an existing name as "already exists" (not the container
         conflict's "already in use"), and adopting it rather than failing is what lets a second
-        acquire of an allowlisted sandbox reuse its network.  What may be adopted is settled
-        before this runs: the create compares nothing but the name, so an existing network's
-        bridge is checked against ``_GATEWAY_MODE_OPTS`` by the caller, not here.
+        acquire of an allowlisted sandbox reuse its network — but only a network whose bridge
+        holds no host address, which is checked here rather than taken from the caller's
+        earlier read.  ``create`` compares nothing but the name and this backend's lock is
+        local to one instance and loop, so a network can arrive between that read and this
+        call; adopting on the name alone would serve the workload a route the allowlist does
+        not cover.
 
-        An engine that will not take those options fails the acquire.  Serving the workload on
-        an addressed bridge instead would give it a route the allowlist does not cover.
+        An engine that will not take the options fails the acquire, for the same reason.
         """
         args = ["network", "create", "--internal"]
         for opt in _GATEWAY_MODE_OPTS:
@@ -1680,8 +1687,17 @@ class DockerSandboxBackend:
             args += ["--label", f"{label}={value}"]
         args.append(net)
         result = await self._docker(*args, timeout=self._config.command_timeout_seconds)
-        if result.returncode == 0 or _NETWORK_EXISTS in result.stderr.lower():
+        if result.returncode == 0:
             return
+        if _NETWORK_EXISTS in result.stderr.lower():
+            if await self._bridge_holds_no_host_address(net):
+                return
+            raise RuntimeError(
+                f"network {net} already exists and its bridge holds a host address, so an "
+                f"allowlisted workload on it would reach the host around the proxy. Something "
+                f"outside this backend created it after the acquire checked; remove it and "
+                f"retry."
+            )
         detail = result.stderr.strip()
         if any(opt in result.stderr for opt in _GATEWAY_MODE_OPTS):
             detail += (
@@ -1710,7 +1726,8 @@ class DockerSandboxBackend:
         if result.returncode != 0:
             stderr = result.stderr.lower()
             return any(absent in stderr for absent in _NETWORK_ABSENT)
-        return result.stdout.decode("utf-8", errors="replace").strip() == _GATEWAY_MODE_ISOLATED
+        modes = result.stdout.decode("utf-8", errors="replace").split()
+        return modes == [_GATEWAY_MODE_ISOLATED] * len(_GATEWAY_MODE_OPTS)
 
     async def _discard_a_sandbox_on_an_addressed_bridge(self, name: str) -> None:
         """Remove an allowlisted sandbox whose network is not one this backend would build.
@@ -1718,7 +1735,12 @@ class DockerSandboxBackend:
         Its network goes with it, and it cannot go the other way round: the workload holds an
         endpoint, so the network will not remove while it is attached, and reconnecting the
         container elsewhere would leave it addressing a proxy that no longer resolves.  The
-        cost is one cold start for a sandbox left by an older version of this backend (#868).
+        cost is one cold start.
+
+        Raises:
+            RuntimeError: when the network is still addressed afterwards.  The removals here
+                report failure rather than raising it, and a caller that read past one would
+                reuse the workload on the bridge this exists to take away.
         """
         net = _network_name(name)
         if await self._bridge_holds_no_host_address(net):
@@ -1730,6 +1752,12 @@ class DockerSandboxBackend:
         await self._remove(name)
         await self._remove(_proxy_name(name))
         await self._remove_network(net)
+        if not await self._bridge_holds_no_host_address(net):
+            raise RuntimeError(
+                f"network {net} still has a bridge with a host address after the sandbox on it "
+                f"was removed, so an allowlisted workload cannot be served here without "
+                f"reaching the host around the proxy. Remove the network by hand and retry."
+            )
 
     async def _ensure_proxy(self, name: str, key: SandboxKey, spec: SandboxSpec) -> None:
         """Put a fresh filtering proxy on the sandbox's network, dual-homed and confirmed listening.
