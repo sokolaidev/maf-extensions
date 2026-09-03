@@ -580,20 +580,24 @@ def _open_source_channels(spec: SandboxSpec) -> frozenset[SourceChannel]:
     return frozenset(opened)
 
 
-def _host_tools_channel_is_established(spec: SandboxSpec) -> bool:
-    """Whether the spec's own host-tool surface settles the integrity of that channel.
+def _host_tools_channel_is_established_as_trusted(spec: SandboxSpec) -> bool:
+    """Whether the spec's own host-tool surface establishes that channel **as trusted**.
+
+    Not the same as establishing it at all: a fold of ``UNTRUSTED`` establishes the channel,
+    and answers ``False`` here, because a claim of ``trusted`` over a source known to be
+    untrusted is refused for the same reason as one over a source nothing has settled.
 
     The fold is taken once, when a host seals its registry, and it rides on the spec — so this
     reads :attr:`~maf_sandbox.SandboxSpec.host_tools` rather than asking the kind for a copy
     that could disagree with it.
 
-    Two of the fold's three states settle it.  ``TRUSTED`` because every registered source is,
+    Two of the fold's three states clear it.  ``TRUSTED`` because every registered source is,
     and ``None`` because there is no source at all: an unstamped tool folds in as ``UNTRUSTED``
     precisely so that ``None`` can never mean nobody answered.  Both rest on the host's own
     declaration that its tools bring nothing external in, which is the basis
     ``also_carries_out`` rests on too and which nothing here can check.
 
-    A spec requiring the capability while carrying **no** surface settles nothing.
+    A spec requiring the capability while carrying **no** surface clears nothing.
     :class:`~maf_sandbox.SandboxSpec` refuses a surface without the capability and not the
     converse, so such a spec is legal — and its channel is open with no fold to answer for it.
     """
@@ -602,12 +606,16 @@ def _host_tools_channel_is_established(spec: SandboxSpec) -> bool:
     return spec.host_tools.result_integrity is not SourceIntegrity.UNTRUSTED
 
 
-def _unestablished_source_channels(
+def _source_channels_not_established_as_trusted(
     spec: SandboxSpec, cleared: frozenset[SourceChannel]
 ) -> frozenset[SourceChannel]:
-    """What is left open after the caller's own claim and the spec's own fold."""
+    """The open channels this spec does not establish as trusted, after the caller's own claim.
+
+    Both a channel nothing settles and one a fold settled as *untrusted* are in here: the claim
+    being checked is ``trusted``, and neither licenses it.
+    """
     unestablished = _open_source_channels(spec) - cleared
-    if _host_tools_channel_is_established(spec):
+    if _host_tools_channel_is_established_as_trusted(spec):
         unestablished -= {SourceChannel.HOST_TOOLS}
     return unestablished
 
@@ -696,10 +704,11 @@ def sandbox_tool_declarations(
     the join decides, and it falls back to the framework's untrusted default where no argument
     carries a label.
 
-    **An explicit ``"trusted"`` is refused where the spec opens a channel nothing establishes.**
+    **An explicit ``"trusted"`` is refused where the spec opens a channel nothing establishes as
+    trusted.**
     A spec names the channels its workload opens before the sandbox exists — the agent's file
     store it reads, a host its program may fetch from, a registry it may call back through —
-    and of those only the registry can be established, by the fold a host seals onto
+    and of those only the registry can be established as trusted, by the fold a host seals onto
     :attr:`~maf_sandbox.SandboxSpec.host_tools`.  So a ``"trusted"`` claim over any of the
     others is a statement the framework will act on and nobody can check.  Where a channel is
     open but nothing from it
@@ -801,7 +810,7 @@ def sandbox_tool_declarations(
             f"it already made. Drop it, or declare {str(SourceIntegrity.TRUSTED)!r}."
         )
     if claimed is SourceIntegrity.TRUSTED:
-        unestablished = _unestablished_source_channels(spec, cleared)
+        unestablished = _source_channels_not_established_as_trusted(spec, cleared)
         if unestablished:
             raise _unlicensed_trusted_claim_refusal(
                 spec,
@@ -1527,11 +1536,11 @@ def sandboxed_tool(
        output without requiring :data:`~maf_sandbox.Capability.FILES_OUT` is refused, because
        the capability match is what stands between it and a backend with no pull surface; and
        an explicit ``source_integrity="trusted"`` is refused over a ``spec`` that opens a
-       channel nothing establishes — see :func:`sandbox_tool_declarations`, which owns the
-       rule and the escape.  That last one reads a verbatim ``declarations=`` mapping too, for
-       the one key: the mapping is otherwise untouched, but a check the derivation alone holds
-       is walked past by the hand-built mapping, which is exactly what a kind outside this
-       repository writes.  No escape is read beside such a mapping.
+       channel nothing establishes *as trusted* — see :func:`sandbox_tool_declarations`, which
+       owns the rule and the escape.  That last one reads a verbatim ``declarations=`` mapping
+       too, for the one key: the mapping is otherwise untouched, but a check the derivation
+       alone holds is walked past by the hand-built mapping, which is exactly what a kind
+       outside this repository writes.  No escape is read beside such a mapping.
     7. **Reclaim what the call owned**, for an ``async`` body — a synchronous one cannot
        ``await`` :meth:`SandboxToolSession.acquire`, so it holds no sandbox and owns nothing.
        A body that took a path from
@@ -1644,7 +1653,7 @@ def sandboxed_tool(
     # (`IntegrityLabel(value)`, anything else logged and dropped), so an unrecognised value is
     # not a claim to refuse — and the mapping's vocabulary is the host's, not this package's.
     if declarations is not None and declarations.get("source_integrity") == SourceIntegrity.TRUSTED:
-        unestablished = _unestablished_source_channels(spec, frozenset())
+        unestablished = _source_channels_not_established_as_trusted(spec, frozenset())
         if unestablished:
             raise _unlicensed_trusted_claim_refusal(
                 spec, unestablished, asked_by=name, through_mapping=True

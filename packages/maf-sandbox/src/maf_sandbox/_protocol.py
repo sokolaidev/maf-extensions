@@ -280,7 +280,8 @@ class SourceChannel(StrEnum):
     runs in — which is what lets :func:`~maf_sandbox.sandbox_tool_declarations` check a
     ``"trusted"`` declaration against them.  The rule being checked is
     :class:`SourceIntegrity`'s: trusted is honest only where every surviving source is
-    established *as trusted*, and on its own none of these establishes anything.
+    established *as trusted*, so a source a fold settles as **untrusted** disqualifies the claim
+    exactly as an unsettled one does.
 
     Apart from :class:`Capability` because one member is not a capability: egress is a mode and
     a payload rather than something a backend serves.
@@ -296,9 +297,10 @@ class SourceChannel(StrEnum):
     #: back is whatever that host served.
     EGRESS = "egress"
     #: The program may call back through a host-tool registry — :data:`Capability.HOST_TOOLS` in
-    #: ``requires``.  The one channel a spec can also *establish*: a sealed
+    #: ``requires``.  The one channel a spec can establish *as trusted*: a sealed
     #: :class:`HostToolAggregate` on :attr:`SandboxSpec.host_tools` folds its registered sources,
-    #: and that fold settles this channel and no other.
+    #: and that fold settles this channel and no other — as trusted, or as untrusted, which
+    #: disqualifies a ``trusted`` claim just as an unsettled channel does.
     HOST_TOOLS = "host_tools"
 
 
