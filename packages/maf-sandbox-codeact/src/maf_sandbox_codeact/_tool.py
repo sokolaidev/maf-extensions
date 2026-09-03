@@ -285,7 +285,7 @@ def make_codeact_tools(
 
             **The result is two items, not one string.**  The call-derived half — the exit
             code, the sizes, the landed names — carries no label of its own, so it takes
-            whatever the call's is; beside it sits the standing sentence naming the recovery
+            whatever the call's label is; beside it sits the standing sentence naming the recovery
             route, labelled ``trusted``, because nothing a call produced reaches it and it is
             emitted on every return path including the refusals.  **Where that call resolves
             untrusted and the conversation is still clean** — hiding is a first-taint
