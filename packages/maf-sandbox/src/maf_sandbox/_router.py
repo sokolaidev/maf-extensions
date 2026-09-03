@@ -1233,9 +1233,12 @@ class SandboxRouter:
         it again rather than by remembering where the sandbox went.  A ``key -> backend`` map
         would be the shape :meth:`_may_be_refused` already refuses for the unclean ledger — an
         unbounded map on a host that mints a key per call — and it would answer nothing on a
-        replica that did not create the sandbox.  Omitting it there leaves nothing to route
-        on, so every registered backend is asked: slower, never wrong, and the shipped caller
-        has the spec and passes it.
+        replica that did not create the sandbox.  Omitting it there leaves nothing to route on,
+        so every backend **declaring** :data:`~maf_sandbox.IsolationScope.CALL` is asked and no
+        others: slower than routing, never wrong, and the shipped caller has the spec and
+        passes it.  The exclusion is not an optimisation — a conversation-scoped backend's
+        ``dispose`` sweeps by scope, thread and agent, so asking one would delete a sandbox
+        this call never owned.
 
         Raises:
             ValueError: when ``key`` names no call, which is a conversation's key and not this
@@ -1289,14 +1292,24 @@ class SandboxRouter:
     ) -> tuple[SandboxBackend | None, list[SandboxBackend]]:
         """Which backend served a call's sandbox, and which backends to ask for the delete.
 
-        The two differ only when there is no answer: no backend to name and none to ask is a
-        landed delete, where no backend to name and *all* of them to ask is the honest
-        fallback for a per-spec router called without a spec.
+        The two differ only where there is no backend to name: none to ask is a landed delete,
+        and a per-spec router called without a spec has nothing to route on and asks each
+        backend that could be holding a call's sandbox at all.
+
+        **Only those**, and the filter is the same rule the scope guard above enforces for a
+        named backend. A backend serving one sandbox per conversation has none of this call's
+        to delete, and its ``dispose`` sweeps by scope, thread and agent — so asking it would
+        delete the conversation's sandbox out from under every later call.
         """
         if self._selection is not Selection.PER_SPEC:
             return self._backend, ([] if self._backend is None else [self._backend])
         if spec is None:
-            return None, list(self._backends)
+            return None, [
+                backend
+                for backend in self._backends
+                if IsolationScope.CALL
+                in _declared_isolation_scopes(backend, _declarations(backend))
+            ]
         served = self._route(spec)[0]
         return served, ([] if served is None else [served])
 

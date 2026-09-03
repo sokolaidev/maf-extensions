@@ -3400,10 +3400,7 @@ class TestPerSpecSelection:
         with pytest.raises(SandboxCapabilityNotSupported) as under_routing:
             routed.ensure_can_serve(spec)
         assert str(under_fixed.value) == str(under_routing.value)
-        # Checked against the shape as well as against each other. With one candidate the list
-        # of backends passed over is empty, so an unconditional suffix would trail off into
-        # nothing — and both routers would carry that identically, which is precisely what the
-        # equality above cannot notice.
+        # Equality alone cannot see a suffix both routers carry, so the shape is checked too.
         assert "was tried for the" not in str(under_routing.value)
 
     def test_a_pin_and_routing_are_two_answers_to_one_question(self):
@@ -3556,7 +3553,7 @@ class TestPerSpecSelection:
         assert strong.disposed == [call_key]
         assert weak.disposed == []
 
-    def test_dispose_call_without_a_spec_asks_every_registered_backend(self):
+    def test_dispose_call_without_a_spec_asks_every_backend_serving_that_scope(self):
         """Nothing to route on, so the delete is swept rather than aimed: slower, never wrong,
         and the shipped caller always has the spec and always passes it."""
         weak = _declaring("weak", per_call=True)
@@ -3568,6 +3565,38 @@ class TestPerSpecSelection:
         assert asyncio.run(router.dispose_call(call_key, timeout=5.0)) is True
         assert strong.disposed == [call_key]
         assert weak.disposed == [call_key]
+
+    def test_the_sweep_leaves_a_conversation_scoped_backend_alone(self):
+        """A backend serving one sandbox per conversation has none of this call's to delete.
+
+        Its `dispose` sweeps by scope, thread and agent and reads no `call_id`, so asking it to
+        delete a call's key takes the conversation's sandbox out from under every later call.
+        That is what the scope guard refuses for a backend the router can name; with no spec to
+        name one, the same rule has to hold per backend instead.
+        """
+        per_call = _declaring("per-call", per_call=True)
+        per_conversation = _declaring("per-conversation")
+        router = SandboxRouter(
+            [per_conversation, per_call],
+            min_isolation=Isolation.NONE,
+            selection=Selection.PER_SPEC,
+        )
+        call_key = dataclasses.replace(_KEY, call_id="call-1")
+        assert asyncio.run(router.dispose_call(call_key, timeout=5.0)) is True
+        assert per_call.disposed == [call_key]
+        assert per_conversation.disposed == [], (
+            "a conversation-scoped backend was asked to delete a call's key, and its dispose "
+            "would have taken the conversation's sandbox with it"
+        )
+
+    def test_a_sweep_with_nobody_to_ask_is_a_landed_delete(self):
+        """No backend serves the scope, so no sandbox of this call's was ever created —
+        `_dispose_each` answers an empty sweep the way it answers no backend at all."""
+        alone = _declaring("per-conversation")
+        router = SandboxRouter([alone], min_isolation=Isolation.NONE, selection=Selection.PER_SPEC)
+        call_key = dataclasses.replace(_KEY, call_id="call-1")
+        assert asyncio.run(router.dispose_call(call_key, timeout=5.0)) is True
+        assert alone.disposed == []
 
     def test_dispose_scope_still_reaches_every_backend_under_routing(self):
         """The one place holding more than one backend was already live, and routing does not
