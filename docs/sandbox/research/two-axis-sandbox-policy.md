@@ -97,6 +97,8 @@ DEFAULT_CAPABILITIES: frozenset[Capability] = frozenset({Capability.EXEC, Capabi
 - A spec declares `requires: frozenset[Capability]` (default `DEFAULT_CAPABILITIES`). `ensure_can_serve` refuses when `spec.requires ⊄ backend.capabilities`.
 - Selection becomes real routing: `_resolve` generalizes from "first registered backend" to "first registered backend satisfying floor ∧ capabilities ∧ egress" — one router can hold an in-process `run_code` backend for local CodeAct and a remote VM backend for compiler validation, selected per spec.
 
+> **Status:** the first two bullets shipped and the third did not, and nothing on this page said so until now. A backend declares its capabilities and a spec declares `requires`, and `ensure_can_serve` refuses the difference — both released, both still true. **Selection never generalized.** `SandboxRouter._resolve` runs once in `__init__`, taking `_backends[0]` or the `selected=` name, and every later call uses that one backend — so a spec the resolved backend cannot meet is *refused*, with a registered backend that could have served it sitting unused. The feature is [#328](https://github.com/sokolaidev/maf-extensions/issues/328), where the decision to make it opt-in per router is recorded, and the reason this bullet was worth marking rather than leaving to be inferred is that the belief it produced is the reassuring one: a reader who assumes the reroute assumes a safety net that is not there. What ships instead is written up in [`../capabilities.md`](../capabilities.md) § "What ships is a match, not a search", and `samples/11_router_two_backends` is where it can be watched refusing.
+
 ## A third axis has since landed — guest shape
 
 This document is named for two axes and there are now three. `OsFamily` (`posix`, `windows`) is declared by a backend as `os_families: frozenset[OsFamily]` and asked for by a spec as `requires_os_family`, matched by `ensure_can_serve` exactly as capabilities are. It is recorded here rather than written up here: [`guest-platform-and-commands.md`](../guest-platform-and-commands.md) is where it is settled, along with the question it deliberately does not answer — what a guest has *installed*, which no backend can declare about an image it was handed and never looked inside.
@@ -192,7 +194,7 @@ def codeact_spec(image: str) -> SandboxSpec:
     )
 ```
 
-`requires` uses `EXEC` — the ACA Sandboxes road: `write_file` the program, `exec` the interpreter. The same kind could later ship a `RUN_CODE` variant served by an embedded-interpreter backend; *the spec is where that choice lives*, and the router picks whichever registered backend satisfies it.
+`requires` uses `EXEC` — the ACA Sandboxes road: `write_file` the program, `exec` the interpreter. The same kind could later ship a `RUN_CODE` variant served by an embedded-interpreter backend; *the spec is where that choice lives*, and the router picks whichever registered backend satisfies it — which rests on the same unshipped generalization the Axis 2 status note above marks ([#328](https://github.com/sokolaidev/maf-extensions/issues/328)). Today the host picks, with `selected=`. Whether a second spec is even the right shape for that variant, against a disjunction in the matcher, is [#425](https://github.com/sokolaidev/maf-extensions/issues/425).
 
 **The router, per environment — the floor is the whole deployment story:**
 
