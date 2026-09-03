@@ -63,14 +63,14 @@ jobs:
       # question at different times.
       - name: Check the live configuration is present
         env:
-          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
-          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACAS_SANDBOX_SUBSCRIPTION_ID }}
-          ACAS_SANDBOX_RESOURCE_GROUP: ${{ vars.ACAS_SANDBOX_RESOURCE_GROUP }}
-          ACAS_SANDBOX_GROUP: ${{ vars.ACAS_SANDBOX_GROUP }}
-          ACAS_SANDBOX_REGISTRY: ${{ vars.ACAS_SANDBOX_REGISTRY }}
+          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_RESOURCE_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
+          ACAS_SANDBOX_GROUP: ${{ secrets.ACAS_SANDBOX_GROUP }}
+          ACAS_SANDBOX_REGISTRY: ${{ secrets.ACAS_SANDBOX_REGISTRY }}
           BICEP_SANDBOX_IMAGE: ${{ vars.BICEP_SANDBOX_IMAGE }}
         run: |
           set -euo pipefail
@@ -81,16 +81,16 @@ jobs:
             [ -n "${!name}" ] || missing+=("$name")
           done
           if [ "${#missing[@]}" -ne 0 ]; then
-            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
             exit 1
           fi
 
       - name: Sign in to Azure with OIDC
         uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Sync workspace
         run: uv sync --locked
@@ -104,10 +104,10 @@ jobs:
       - name: Run the ACAS live suite
         env:
           ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
-          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACAS_SANDBOX_SUBSCRIPTION_ID }}
-          ACAS_SANDBOX_RESOURCE_GROUP: ${{ vars.ACAS_SANDBOX_RESOURCE_GROUP }}
-          ACAS_SANDBOX_GROUP: ${{ vars.ACAS_SANDBOX_GROUP }}
-          ACAS_SANDBOX_REGISTRY: ${{ vars.ACAS_SANDBOX_REGISTRY }}
+          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_RESOURCE_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
+          ACAS_SANDBOX_GROUP: ${{ secrets.ACAS_SANDBOX_GROUP }}
+          ACAS_SANDBOX_REGISTRY: ${{ secrets.ACAS_SANDBOX_REGISTRY }}
           MAF_SANDBOX_ACAS_E2E_IMAGE: ${{ vars.BICEP_SANDBOX_IMAGE }}
           MAF_SANDBOX_ACAS_E2E_NONROOT_IMAGE: ${{ vars.ACAS_SANDBOX_NONROOT_IMAGE }}
         run: |
