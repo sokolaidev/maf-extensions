@@ -282,9 +282,8 @@ class SourceChannel(StrEnum):
     :class:`SourceIntegrity`'s: trusted is honest only where every surviving source is
     established *as trusted*, and on its own none of these establishes anything.
 
-    Apart from :class:`Capability` because one member is not a capability.  Egress is a mode and
-    a payload rather than something a backend serves, and there has been no ``Capability.NETWORK``
-    since it was removed for that reason.
+    Apart from :class:`Capability` because one member is not a capability: egress is a mode and
+    a payload rather than something a backend serves.
     ``docs/sandbox/information-flow.md`` carries which spec field opens which channel.
     """
 

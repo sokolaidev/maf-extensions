@@ -451,9 +451,31 @@ class TestTheTrustedClaimIsCheckedAgainstTheSpec:
         assert "egress_allow names example.invalid" in str(refusal.value)
 
     def test_declaring_nothing_is_never_refused(self):
-        """The property #833 bought and this must not spend: a caller who made no claim is
-        never told its claim was rejected."""
+        """A caller who made no claim is never told its claim was rejected."""
         assert sandbox_tool_declarations(_SPEC) == {}
+
+    def test_an_unrestricted_run_is_capped_like_an_allowlisted_one(self):
+        """The cap reads the mode as well as the payload: a run that reaches everything and
+        names nothing carries as much out as one naming hosts."""
+        spec = SandboxSpec(
+            kind="test",
+            work_dir="/w",
+            requires=frozenset({Capability.EXEC}),
+            egress=Egress.UNRESTRICTED,
+        )
+        assert sandbox_tool_declarations(spec, outbound_max_confidentiality="private") == {
+            "max_allowed_confidentiality": "private"
+        }
+
+    def test_an_allowlist_naming_no_host_is_not_capped(self):
+        """The other half of the same predicate: it reaches nothing, so there is no flow to gate."""
+        spec = SandboxSpec(
+            kind="test",
+            work_dir="/w",
+            requires=frozenset({Capability.EXEC}),
+            egress=Egress.ALLOWLIST,
+        )
+        assert sandbox_tool_declarations(spec, outbound_max_confidentiality="private") == {}
 
     def test_a_trusted_fold_establishes_that_channel_with_no_escape_needed(self):
         spec = _serving_host_tools(_a_fold(SourceIntegrity.TRUSTED))
@@ -946,6 +968,32 @@ class TestAttachedToolShape:
         assert self._tool(
             source_integrity="trusted", declarations={"source_integrity": "untrusted"}
         ).additional_properties == {"source_integrity": "untrusted"}
+
+    def test_a_trusted_claim_in_an_explicit_mapping_is_refused_too(self):
+        """The mapping is written verbatim and is still read for this one key. A check the
+        derivation alone held would be walked past by exactly the hand-built mapping a kind
+        outside this repository writes."""
+        with pytest.raises(ValueError, match=re.escape("requires holds 'files_in'")):
+            self._tool(declarations={"source_integrity": "trusted"})
+
+    def test_the_mapping_refusal_sends_the_claim_to_the_keyword(self):
+        """No escape is honoured beside an explicit mapping, so the remedy cannot be to name
+        one here — it is to move the claim where `nothing_survives_from` is read."""
+        with pytest.raises(ValueError, match="Move the claim to source_integrity="):
+            self._tool(declarations={"source_integrity": "trusted"})
+
+    def test_an_untrusted_mapping_is_written_over_any_spec(self):
+        """Only the trusted claim is read out of the mapping; nothing else in it is inspected."""
+        assert self._tool(
+            declarations={"source_integrity": "untrusted", "house_key": "kept"}
+        ).additional_properties == {"source_integrity": "untrusted", "house_key": "kept"}
+
+    def test_an_unknown_spelling_in_a_mapping_passes_through(self):
+        """FIDES believes two spellings and logs the rest away, so an unrecognised value is not
+        a claim to refuse — and the mapping's vocabulary is the host's, not this library's."""
+        assert self._tool(declarations={"source_integrity": "Trusted"}).additional_properties == {
+            "source_integrity": "Trusted"
+        }
 
     def test_the_declarations_dict_is_not_shared_with_the_caller(self):
         declarations = {"source_integrity": "trusted"}

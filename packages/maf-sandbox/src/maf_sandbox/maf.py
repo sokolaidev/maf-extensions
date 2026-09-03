@@ -559,12 +559,10 @@ def make_caller_context(
 def _reaches_the_network(spec: SandboxSpec) -> bool:
     """Whether this workload can reach a host outside its sandbox.
 
-    One predicate, read by the confidentiality cap below and by the trusted-claim refusal
-    beside it.  Two answers to the same question inside one function is the shape #774 was
-    about, and the mode is half the answer: ``egress_allow`` is true of exactly one posture —
-    an ``allowlist`` run naming hosts — while an ``unrestricted`` run names nothing and reaches
-    everything.  An ``allowlist`` run with an empty list reaches nothing and stays false here,
-    which is the one case the payload alone already had right.
+    Both halves are load-bearing, and one predicate answers for the confidentiality cap and the
+    trusted-claim refusal alike.  An ``unrestricted`` run names nothing and reaches everything,
+    so the mode has to be read; an ``allowlist`` run with an empty list reaches nothing, so the
+    payload has to be read too.
     """
     return spec.egress is Egress.UNRESTRICTED or bool(spec.egress_allow)
 
@@ -665,10 +663,10 @@ def _unlicensed_trusted_claim_refusal(
     )
     return ValueError(
         f"{asked_by}: the {spec.kind!r} workload declares "
-        f"source_integrity={str(SourceIntegrity.TRUSTED)!r}, and its spec opens channels the "
-        f"framework cannot establish: {named}. A declaration replaces the call's input-label "
-        "join, so anything reaching the result through those would be labelled trusted with "
-        f"nothing having established it. {remedy}"
+        f"source_integrity={str(SourceIntegrity.TRUSTED)!r}, and its spec opens channels "
+        f"nothing establishes as {str(SourceIntegrity.TRUSTED)!r}: {named}. A declaration "
+        "replaces the call's input-label join, so anything reaching the result through those "
+        f"would be labelled trusted on no such establishment. {remedy}"
     )
 
 
@@ -703,8 +701,8 @@ def sandbox_tool_declarations(
     store it reads, a host its program may fetch from, a registry it may call back through —
     and of those only the registry can be established, by the fold a host seals onto
     :attr:`~maf_sandbox.SandboxSpec.host_tools`.  So a ``"trusted"`` claim over any of the
-    others is a statement the framework will act on and nobody can check, which is what let two
-    kinds ship opposite readings of one sentence.  Where a channel is open but nothing from it
+    others is a statement the framework will act on and nobody can check.  Where a channel is
+    open but nothing from it
     survives into the result — host-authored fixtures written in, a fixed sentence written back
     — the caller says so with ``nothing_survives_from``.  Declaring nothing is never refused:
     there is no claim in it to refuse.
