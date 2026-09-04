@@ -31,10 +31,11 @@ dependencies = [
     # Upper-bounded too: maf-sandbox has not yet reached a stable API, so every release
     # before 1.0.0 may include breaking changes (see its CHANGELOG). Moving either end of
     # this range has an order to it — see RELEASING.md.
-    # 0.32.0, not 0.31.0: this release is breaking, so it lands outside every published
-    # dependent's `<0.32` ceiling — a version nothing already installed can reach is one
-    # that breaks nobody. Typed into the squash box as `Release-As: 0.32.0`; core 0.31.0
-    # is skipped. The backends widened separately, in #880, because they can.
+    # This release is breaking, so it lands outside every published dependent's ceiling: a
+    # version nothing already installed can reach is one that breaks nobody. Which release
+    # that is gets set with `Release-As:` in the squash box, so the floor below is the only
+    # place the number lives. The backends widened separately, in #880, because they call
+    # none of the surface this reshapes and can therefore admit it safely.
     "maf-sandbox>=0.32.0,<0.33",
     # The `@tool` decorator and AgentFileStore. MAF is a genuine dependency of the tool
     # itself, not of the host application.
