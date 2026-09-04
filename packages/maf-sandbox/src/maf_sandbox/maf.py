@@ -1250,10 +1250,8 @@ class SandboxToolSession:
         host's floor called ``trusted`` at listing time can be rewritten by the agent's own
         ``file_access_write`` before this read returns and the model's bytes arrive under the old
         label.  Only a ``trusted`` floor is exposed — an unestablished or untrusted entry has
-        nowhere weaker to go — and closing it needs the record at read time, which this method has
-        no way to reach; `#879 <https://github.com/sokolaidev/maf-extensions/issues/879>`_ carries
-        that.  Until then a host wiring ``floor=SourceIntegrity.TRUSTED`` is claiming the store is
-        not concurrently written, not merely that its unrecorded paths are trustworthy.
+        nowhere weaker to go — so a host wiring ``floor=SourceIntegrity.TRUSTED`` is claiming the
+        store is not written under a read, not merely that its unrecorded paths are trustworthy.
 
         ``at`` is where the caller got the name — ``"files[1]"`` — and ``hidden`` says the
         framework rewrote that argument, which is what makes the refusal render the position

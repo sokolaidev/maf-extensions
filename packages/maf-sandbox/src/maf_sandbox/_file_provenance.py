@@ -93,9 +93,9 @@ class FileStoreProvenance:
     **A ``TRUSTED`` floor is a claim about concurrency as well as about content.**  A caller folds
     this record at *listing* time and reads the bytes afterwards, and the write that lands in
     between is recorded only once the writing tool call returns — so a path answering ``trusted``
-    can hold model-written bytes by the time anything reads it.  ``None`` and ``UNTRUSTED`` floors
-    have nowhere weaker to fall and are unaffected.  See
-    `#879 <https://github.com/sokolaidev/maf-extensions/issues/879>`_.
+    can hold model-written bytes by the time anything reads it.  Wire this floor only where the
+    store is not written under a read.  ``None`` and ``UNTRUSTED`` floors have nowhere weaker to
+    fall and are unaffected.
     """
 
     def __init__(self, *, floor: SourceIntegrity | None = None) -> None:
