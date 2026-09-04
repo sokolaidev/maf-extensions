@@ -398,7 +398,7 @@ async def act_four_the_egress_the_workload_asked_for() -> tuple[bool, bool] | No
 
 
 async def act_five_disposal_reaches_everyone() -> tuple[int, int]:
-    """The one place holding more than one backend is live at run time.
+    """Disposal fans out to every registered backend, not only the one that served.
 
     Returns what it observed — sandboxes disposed, and how many backends were registered — so
     the footer reports measurements rather than the numbers this file expects.
@@ -480,15 +480,15 @@ async def act_six_the_spec_picks() -> None:
         )
         print(f"{MEASURED}the routed backend runs: {result.stdout.strip()!r}")
     finally:
-        # What the purge *said*, not how many it counted. The count is act 5's claim, made
-        # over two acquires that really happened; here the in-process backend answers with a
-        # fixed number of its own, so a total would not be a measurement. Whether anything
-        # was left behind is a measurement, and it is the one that matters — `dispose_scope`
-        # reports a failure rather than raising it, so discarding its answer is how this act
-        # leaks a container while the run still reads clean.
+        # Both halves, and neither is enough alone. `dispose_scope` reports a failure rather
+        # than raising it, so an act discarding its answer leaks a container while the run
+        # reads clean — that is `undisposed`. But silence only says nobody complained, and a
+        # backend never reached cannot complain, so the count says the sweep happened: the
+        # in-process fake answers 1 whatever it holds, and the second is the container docker
+        # really removed. A total of 1 is docker sweeping nothing.
         purge = await router.dispose_scope(KEY.scope, KEY.thread_id)
-        left = "clean" if purge.undisposed is None else str(purge.undisposed)
-        print(f"{MEASURED}act 6 cleanup: {left}\n")
+        left = "none" if purge.undisposed is None else str(purge.undisposed)
+        print(f"{MEASURED}act 6 cleanup: disposed={purge.disposed} undisposed={left}\n")
 
     print("  The refusal in act 2 and the route here differ by `selection=` and nothing else.")
     print("  It is off by default, and the reason is a bill rather than a scruple: what it")

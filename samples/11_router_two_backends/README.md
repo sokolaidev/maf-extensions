@@ -10,7 +10,7 @@ app  ->  maf_sandbox (router)  ->  [ in-process | docker ]  ->  the sandbox
 
 ## The short version
 
-**Which backend serves is a deployment decision, made once.** `SandboxRouter(backends, selected=DOCKER_BACKEND)` names it. Omit `selected=` and you get whichever was registered first. That is the whole mechanism — one argument, and the workload above never learns which one answered.
+**By default, which backend serves is a deployment decision made once.** `SandboxRouter(backends, selected=DOCKER_BACKEND)` names it. Omit `selected=` and you get whichever was registered first. That is the whole mechanism under the default selection — one argument, and the workload above never learns which one answered. Act 6 is the other selection, where the spec picks instead.
 
 `selected=` is matched against a backend's `name`, and each backend package exports its own so a host reading that choice out of configuration does not have to build a backend to learn it ([#411](https://github.com/sokolaidev/maf-extensions/issues/411)):
 
@@ -122,7 +122,7 @@ cd samples/11_router_two_backends && uv run agent.py
 
 The image acts 1, 2, 5 and 6 use is the same dev-container base samples 06 and 08 use, and the command run inside it is `cat` on a file the sample wrote: those acts are about which backend runs a command, not what the command is.
 
-There is one thing in acts 4 and 5 worth knowing if you adapt it. A fresh container has nothing at `work_dir`, so `exec` cannot change into it — the sample writes a file first, which creates the parents. That ordering is not decoration; it is why every kind pushes its inputs before running anything.
+There is one thing in acts 4, 5 and 6 worth knowing if you adapt it. A fresh container has nothing at `work_dir`, so `exec` cannot change into it — each of those acts writes a file first, which creates the parents. That ordering is not decoration; it is why every kind pushes its inputs before running anything.
 
 ## Where this sits
 

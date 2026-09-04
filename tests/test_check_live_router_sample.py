@@ -103,7 +103,7 @@ _HEALTHY = f"""\
   [measured] routed plain spec -> 'in-process'
 
   [measured] the routed backend runs: 'routed per spec'
-  [measured] act 6 cleanup: clean
+  [measured] act 6 cleanup: disposed=2 undisposed=none
 
   [measured] Completed 6 of 6 acts. Disposed 2 sandbox(es) across 2 backends.
 """
@@ -334,8 +334,7 @@ class TestAModelCannotForgeAMeasurement:
         assert any("none of them can be trusted" in r for r in reasons), reasons
 
     def test_a_quoted_footer_cannot_supply_the_completion(self):
-        """The footer was the one pattern not line-anchored, so a reply quoting it could hide
-        a real five-of-six run behind a six-of-six the model wrote."""
+        """The footer is a measurement, so it has to start a line like every other one."""
         forged = _HEALTHY.replace(
             "  [measured] Completed 6 of 6 acts.",
             "> [measured] Completed 6 of 6 acts. Disposed 2 sandbox(es) across 2 backends.\n"
@@ -413,26 +412,34 @@ class TestTheRoutingAct:
     def test_a_purge_that_left_something_behind_is_caught(self):
         """`dispose_scope` reports a failure rather than raising one, so the act prints what
         it said. Without reading that, a leaked container passes with every other line intact."""
-        leaked = _HEALTHY.replace(
-            "act 6 cleanup: clean", "act 6 cleanup: refused: the engine said no"
-        )
+        leaked = _HEALTHY.replace("undisposed=none", "undisposed=refused: the engine said no")
         reasons = check.assess(leaked)
         assert any("still there" in r for r in reasons), reasons
 
     def test_a_missing_cleanup_line_is_caught(self):
-        reasons = check.assess(_HEALTHY.replace("  [measured] act 6 cleanup: clean\n", ""))
+        reasons = check.assess(
+            _HEALTHY.replace("  [measured] act 6 cleanup: disposed=2 undisposed=none\n", "")
+        )
         assert any("act 6 cleanup" in r for r in reasons), reasons
 
     def test_a_doubled_cleanup_line_is_refused(self):
         doubled = _HEALTHY.replace(
-            "  [measured] act 6 cleanup: clean\n",
-            "  [measured] act 6 cleanup: clean\n  [measured] act 6 cleanup: refused\n",
+            "  [measured] act 6 cleanup: disposed=2 undisposed=none\n",
+            "  [measured] act 6 cleanup: disposed=2 undisposed=none\n"
+            "  [measured] act 6 cleanup: disposed=1 undisposed=none\n",
         )
         reasons = check.assess(doubled)
         assert any("appears 2 times" in r for r in reasons), reasons
 
+    def test_a_sweep_that_reached_nobody_is_caught(self):
+        """`undisposed=none` alone is silence, not success: a backend never asked cannot
+        report a failure, so the count is what says the sweep reached the routed one."""
+        shallow = _HEALTHY.replace("act 6 cleanup: disposed=2", "act 6 cleanup: disposed=1")
+        reasons = check.assess(shallow)
+        assert any("never reached the backend the route chose" in r for r in reasons), reasons
+
     def test_a_second_execution_marker_is_refused_rather_than_resolved(self):
-        """The first-match-wins the routed pair rejects, kept out of the marker too."""
+        """The marker is required exactly once, as every other measurement here is."""
         doubled = _HEALTHY.replace(
             "  [measured] the routed backend runs: 'routed per spec'\n",
             "  [measured] the routed backend runs: 'routed per spec'\n"

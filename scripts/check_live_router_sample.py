@@ -93,10 +93,19 @@ _FOOTER = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
-#: `[measured] act 6 cleanup: clean`, or whatever `dispose_scope` reported instead. Its own
-#: line rather than a count, because the count is act 5's: the in-process backend answers a
-#: purge with a fixed number, where what it says about a *failure* is a measurement.
-_CLEANUP = re.compile(rf"^\s*{re.escape(_TAG)}\s+act 6 cleanup:\s*(.+?)\s*$", re.MULTILINE)
+#: `[measured] act 6 cleanup: disposed=2 undisposed=none`. Both halves are required and
+#: neither is enough alone: `undisposed` catches a purge that reported a failure, and the
+#: count catches a sweep that never reached the backend holding the container — silence from
+#: a backend nobody asked reads exactly like success.
+_CLEANUP = re.compile(
+    rf"^\s*{re.escape(_TAG)}\s+act 6 cleanup:\s*disposed=(\d+)\s+undisposed=(.+?)\s*$",
+    re.MULTILINE,
+)
+
+#: What act 6's purge has to report. One from the in-process fake, which answers a fixed
+#: number whatever it holds, and one real container from docker — so a total of 1 is docker
+#: sweeping nothing, which is the leak this pair exists to catch.
+_CLEANUP_EXPECTED = 2
 
 
 def _measured_lines(output: str, needle: str) -> list[str]:
@@ -267,14 +276,24 @@ def _assess_routing(output: str) -> list[str]:
         )
     elif len(cleanup) > 1:
         failures.append(
-            f"'act 6 cleanup:' appears {len(cleanup)} times, saying {', '.join(cleanup)} — "
-            "the act prints it once, so none of them can be trusted"
+            f"'act 6 cleanup:' appears {len(cleanup)} times — the act prints it once, so "
+            "none of them can be trusted"
         )
-    elif cleanup[0] != "clean":
-        failures.append(
-            f"act 6's purge reported {cleanup[0]!r} — a sandbox it created is still there, "
-            "and on a backend that charges for one that is a leak rather than a warning"
-        )
+    else:
+        disposed, undisposed = cleanup[0]
+        if undisposed != "none":
+            failures.append(
+                f"act 6's purge reported {undisposed!r} — a sandbox it created is still "
+                "there, and on a backend that charges for one that is a leak rather than a "
+                "warning"
+            )
+        if int(disposed) != _CLEANUP_EXPECTED:
+            failures.append(
+                f"act 6's purge disposed {disposed}, expected exactly {_CLEANUP_EXPECTED} — "
+                "one from the in-process backend's fixed answer and one real container from "
+                "docker, so anything less means the sweep never reached the backend the route "
+                "chose and 'nothing was reported' is silence rather than success"
+            )
     return failures
 
 
