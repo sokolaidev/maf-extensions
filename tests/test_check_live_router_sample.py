@@ -344,6 +344,16 @@ class TestAModelCannotForgeAMeasurement:
         reasons = check.assess(forged)
         assert any("5 of 6 acts completed" in r for r in reasons), reasons
 
+    def test_a_second_footer_is_refused_rather_than_resolved(self):
+        """Two tagged footers cannot be resolved by taking either, so neither is read."""
+        doubled = _HEALTHY.replace(
+            "  [measured] Completed 6 of 6 acts.",
+            "  [measured] Completed 6 of 6 acts. Disposed 2 sandbox(es) across 2 backends.\n"
+            "  [measured] Completed 5 of 6 acts.",
+        )
+        reasons = check.assess(doubled)
+        assert any("footer appears 2 times" in r for r in reasons), reasons
+
     def test_untagged_prose_answers_nothing(self):
         """Every needle this file looks for, written by the model, tagged by nobody."""
         prose = (
@@ -432,8 +442,8 @@ class TestTheRoutingAct:
         assert any("appears 2 times" in r for r in reasons), reasons
 
     def test_a_route_label_with_punctuation_is_still_seen(self):
-        """`\\w+` would skip `novel-route` entirely, so the unexpected-label check never
-        fired on exactly the labels least likely to be ours."""
+        """A label is any non-whitespace run: a parser narrower than that cannot refuse
+        the labels least likely to be this sample's."""
         extra = _HEALTHY.replace(
             "  [measured] routed plain spec -> 'in-process'\n",
             "  [measured] routed plain spec -> 'in-process'\n"
