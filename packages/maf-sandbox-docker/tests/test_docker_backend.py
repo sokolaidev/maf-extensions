@@ -2839,7 +2839,7 @@ class TestAllowlistTopology:
 
     def test_an_allowlist_naming_no_hosts_builds_no_network_either(self):
         """`ALLOWLIST` with nothing on the list reaches what `CLOSED` reaches, so it takes the
-        same branch — which is why the engine floor this backend documents binds only a run
+        same branch — which is why the engine floor this backend documents binds only a sandbox
         that names hosts. A spec asking for the mode but no host never reaches the option."""
         spec = SandboxSpec(kind="bicep", image="bicep-sandbox:local", egress=Egress.ALLOWLIST)
         backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
@@ -3013,6 +3013,17 @@ class TestASandboxLeftOnAnAddressedBridge:
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert fake.matching("rm", "-f", _AL) == []
         assert fake.matching("network", "rm", _AL_NET) == []
+
+    def test_a_workload_that_outlived_its_network_is_rebuilt(self):
+        """Absence is safe for a sandbox about to be created and not for one already running:
+        a container cannot be on a network that is not there, so what it is on instead is
+        outside this backend's account of it. Building a fresh network beside it and reusing
+        it anyway would leave the allowlist describing something the workload never joined."""
+        backend, fake = _backend_with(_machine(running=[_AL]), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("rm", "-f", _AL) != []
+        created = _run_named(fake, _AL)
+        assert created.args[created.args.index("--network") + 1] == _AL_NET
 
     def test_a_cold_acquire_has_nothing_to_replace(self):
         """No network yet is the ordinary first acquire, not a stale one."""
