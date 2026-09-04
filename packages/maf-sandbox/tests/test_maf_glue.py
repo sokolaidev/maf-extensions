@@ -46,6 +46,7 @@ from maf_sandbox import (
     SandboxCapabilityNotSupported,
     SandboxEgressNotEnforced,
     SandboxKey,
+    SandboxLandingNotText,
     SandboxOutputSinkRequired,
     SandboxRouter,
     SandboxSpec,
@@ -54,6 +55,7 @@ from maf_sandbox import (
     SourceChannel,
     SourceIntegrity,
     TransferLimits,
+    collect_outputs,
     weakest_integrity,
 )
 from maf_sandbox import maf as _maf
@@ -73,6 +75,7 @@ from maf_sandbox.maf import (
     list_all_files,
     list_no_files,
     make_caller_context,
+    make_file_store_sink,
     positions_holding_hidden_content,
     sandbox_tool_declarations,
     sandboxed_tool,
@@ -4757,3 +4760,158 @@ class TestWhatASplitResultDoesToTheCallsLabel:
 
         asyncio.run(middleware.process(context, call_next))
         assert str(context.metadata["result_label"].confidentiality) == "public"
+
+
+class TestMakeFileStoreSink:
+    """The sink that lands a call's artifacts where the model's own file tools can read them.
+
+    Driven against the framework's real `InMemoryAgentFileStore` rather than a double: the
+    exclusive create this rests on, and the empty answer a missing folder gives back, are that
+    class's behaviour, and a double would only assert them of itself.
+    """
+
+    def _store(self) -> Any:
+        from agent_framework import InMemoryAgentFileStore
+
+        return InMemoryAgentFileStore()
+
+    def _artifact(
+        self, name: str, content: bytes = b"payload", call_id: str | None = "c0ffee"
+    ) -> Artifact:
+        return Artifact(
+            name=name, content=content, kind="codeact", media_type=None, call_id=call_id
+        )
+
+    def test_it_lands_under_the_call_id_and_reads_back_by_that_path(self):
+        store = self._store()
+        landed = asyncio.run(make_file_store_sink(store).deliver(self._artifact("s.md", b"# hi")))
+
+        assert asyncio.run(store.read("c0ffee/s.md")) == "# hi"
+        assert landed.name == "s.md"
+        assert landed.handle == "c0ffee/s.md"
+
+    def test_two_calls_declaring_one_name_land_in_two_folders(self):
+        """The stale read-back this shape exists to close: without the folder, the second call
+        overwrites the first and a model reading by name gets an answer to the wrong question."""
+        store = self._store()
+        sink = make_file_store_sink(store)
+
+        asyncio.run(sink.deliver(self._artifact("s.md", b"first", call_id="one")))
+        asyncio.run(sink.deliver(self._artifact("s.md", b"second", call_id="two")))
+
+        assert asyncio.run(store.read("one/s.md")) == "first"
+        assert asyncio.run(store.read("two/s.md")) == "second"
+
+    def test_a_second_landing_of_one_name_in_one_folder_is_refused(self):
+        store = self._store()
+        sink = make_file_store_sink(store)
+        asyncio.run(sink.deliver(self._artifact("s.md", b"first")))
+
+        with pytest.raises(FileExistsError):
+            asyncio.run(sink.deliver(self._artifact("s.md", b"second")))
+
+        assert asyncio.run(store.read("c0ffee/s.md")) == "first"
+
+    def test_a_landing_is_recorded_so_a_trusted_floor_never_answers_for_it(self):
+        """The record is what keeps guest-produced bytes from reading as host-placed ones when
+        a later call names one of them as its own input."""
+        store = self._store()
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)
+        sink = make_file_store_sink(store, provenance=record)
+        asyncio.run(sink.deliver(self._artifact("s.md")))
+
+        listing = asyncio.run(list_all_files(store, provenance=record))
+
+        assert listing == [ListedFile("c0ffee/s.md", SourceIntegrity.UNTRUSTED)]
+        assert weakest_integrity(listing) is SourceIntegrity.UNTRUSTED
+
+    def test_a_host_keeping_no_record_gets_a_landing_all_the_same(self):
+        """`provenance` is optional, and a host without one is not refused a sink."""
+        store = self._store()
+
+        asyncio.run(make_file_store_sink(store).deliver(self._artifact("s.md")))
+
+        assert asyncio.run(store.read("c0ffee/s.md")) == "payload"
+
+    def test_the_record_is_written_before_the_bytes_are(self):
+        """A window in which the file exists and the host's floor still answers for it is the
+        one ordering this cannot have. Over-recording only ever lowers a label."""
+
+        class _RefusingStore:
+            async def write(self, path: str, content: str, *, overwrite: bool = True) -> None:
+                raise OSError("the store is full")
+
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)
+        sink = make_file_store_sink(_RefusingStore(), provenance=record)
+
+        with pytest.raises(OSError, match="full"):
+            asyncio.run(sink.deliver(self._artifact("s.md")))
+
+        assert record.integrity_of("c0ffee/s.md") is SourceIntegrity.UNTRUSTED
+
+    def test_bytes_that_are_not_text_are_refused_rather_than_mangled(self):
+        """A store holding `str` has nowhere to put what did not decode, and a mangled copy
+        under the declared name would report success for a file the model then reads wrong."""
+        store = self._store()
+        sink = make_file_store_sink(store)
+
+        with pytest.raises(SandboxLandingNotText, match="UTF-8"):
+            asyncio.run(sink.deliver(self._artifact("chart.png", b"\x89PNG\xff\xfe")))
+
+        assert asyncio.run(store.read("c0ffee/chart.png")) is None
+
+    def test_an_artifact_with_no_call_id_is_refused(self):
+        sink = make_file_store_sink(self._store())
+
+        with pytest.raises(ValueError, match="no call_id"):
+            asyncio.run(sink.deliver(self._artifact("s.md", call_id=None)))
+
+    def test_it_declares_that_it_lands_per_call(self):
+        """Which is what makes `collect_outputs(call_id=...)` required rather than optional,
+        and what lets a kind name the folder without reading the sink's own string."""
+        assert make_file_store_sink(self._store()).per_call is True
+
+    def test_the_default_display_names_the_store_path_and_the_size(self):
+        """The path, because it is what the model passes to its own file-read tool."""
+        landed = asyncio.run(
+            make_file_store_sink(self._store()).deliver(self._artifact("s.md", b"1234"))
+        )
+
+        assert landed.display == "c0ffee/s.md (4 bytes)"
+
+    def test_a_host_can_supply_its_own_display(self):
+        sink = make_file_store_sink(
+            self._store(), display=lambda artifact, path: f"saved {artifact.name}"
+        )
+
+        assert asyncio.run(sink.deliver(self._artifact("s.md"))).display == "saved s.md"
+
+    def test_a_call_that_landed_nothing_lists_as_empty_rather_than_missing(self):
+        """Why nothing here creates the folder: the model reading back a call that landed
+        nothing cannot tell it from a call whose folder was made and left empty."""
+        store = self._store()
+
+        assert asyncio.run(store.list_children("never-ran")) == []
+
+    def test_it_lands_a_whole_collection_through_collect_outputs(self):
+        """End to end, because `deliver` alone does not prove the sink is shaped like one."""
+        work_dir = "/maf-sandbox/work"
+        sandbox = InProcessSandbox()
+        asyncio.run(
+            sandbox.write_file(f"{work_dir}/report.md", b"# hi", working_directory=work_dir)
+        )
+        store = self._store()
+        spec = SandboxSpec(
+            kind="codeact",
+            work_dir=work_dir,
+            declared_outputs=(DeclaredOutput(path="report.md", media_type="text/markdown"),),
+        )
+
+        landed = asyncio.run(
+            collect_outputs(sandbox, spec, sink=make_file_store_sink(store), call_id="c0ffee")
+        )
+
+        assert [item.name for item in landed] == ["report.md"]
+        assert asyncio.run(store.read("c0ffee/report.md")) == "# hi"

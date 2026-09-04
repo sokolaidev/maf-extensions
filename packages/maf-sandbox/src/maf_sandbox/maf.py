@@ -12,7 +12,7 @@ It is **not** re-exported from the package's ``__init__``, on purpose: ``import 
 has to stay cheap and MAF-free for a backend, a workload's own test suite, or anything else
 that only speaks the protocol.  Reach it by name — ``from maf_sandbox.maf import ...``.
 
-Seven things live here, and each of them had begun to exist twice before it did:
+Eight things live here, and each of them had begun to exist twice before it did:
 
 - :func:`make_caller_context` — how a host says who is calling and which files they own.
 - :func:`sandboxed_tool` — the shape every sandbox workload's tool has: attach nothing when
@@ -33,6 +33,9 @@ Seven things live here, and each of them had begun to exist twice before it did:
 - :func:`file_store_provenance_middleware` — records an agent-driven file-store write into a
   host's :class:`~maf_sandbox.FileStoreProvenance`. Here because it is a ``FunctionMiddleware``;
   the record it fills is stdlib-only and lives beside the protocol vocabulary.
+- :func:`make_file_store_sink` — an output sink landing each call's artifacts in a folder of an
+  ``AgentFileStore``, so the model reads them back through the host's own file tools instead of
+  through the workload's result. Here because the destination is the framework's store.
 """
 
 from __future__ import annotations
@@ -54,7 +57,15 @@ from uuid import uuid4
 
 from ._error_detail import error_detail
 from ._file_provenance import FILE_STORE_WRITE_TOOLS, PATH_ARGUMENT, FileStoreProvenance
-from ._outputs import OutputSink, landing_outputs, missing_sink_refusal, spec_lands_artifacts
+from ._outputs import (
+    Artifact,
+    LandedArtifact,
+    OutputSink,
+    SandboxLandingNotText,
+    landing_outputs,
+    missing_sink_refusal,
+    spec_lands_artifacts,
+)
 from ._protocol import (
     CallerContext,
     Capability,
@@ -2090,6 +2101,95 @@ def sandboxed_tool(
             )
 
     return [decorate(reclaiming)]
+
+
+def _landed_in_store(artifact: Artifact, destination: str) -> str:
+    """The default line a model sees for an artifact landed in a store: where, and how big."""
+    return f"{destination} ({len(artifact.content)} bytes)"
+
+
+def make_file_store_sink(
+    store: Any,
+    *,
+    provenance: FileStoreProvenance | None = None,
+    display: Callable[[Artifact, str], str] = _landed_in_store,
+) -> OutputSink:
+    """An :class:`~maf_sandbox.OutputSink` landing each call's artifacts under ``<call_id>/`` in
+    ``store``, for a model that reads them back with its own file tools.
+
+    Point it at a store the model can **read and not write**, and never at the one the agent's
+    ``file_access_write`` writes to.  A sink landing where that tool writes has handed
+    model-authored code an unapproved write, and one that lets a later call overwrite an earlier
+    landing has given it a way to influence the next call's input.
+
+    **A second ``FileAccessProvider`` is not how you expose it.**  That class names its tools
+    from fixed constants, so two of them put two ``file_access_read`` tools in one run — the
+    host's own read-only provider, with names of its own, is what reads this store back.
+    ``docs/sandbox/hosts.md`` carries the measurement and the shape.
+
+    The folder is the *host-minted* call id, so nothing the guest chose decides where its own
+    output goes.  Pass it through :func:`~maf_sandbox.collect_outputs`'s ``call_id`` — the sink
+    declares :attr:`~maf_sandbox.OutputSink.per_call`, which makes that argument required rather
+    than optional.
+
+    Three things a caller has to know:
+
+    - **A destination that already exists is refused, never replaced.**  ``write`` is called with
+      ``overwrite=False``, so a repeated landing raises ``FileExistsError`` out of the store
+      rather than making one call's answer read as another's.
+    - **``provenance`` is recorded before the bytes are written**, so there is no moment at which
+      the file exists and the host's floor still answers for it.  A record is monotone and only
+      ever lowers a label, so an entry left behind by a write that then failed is safe; the
+      reverse ordering is not.
+    - **Text only.**  ``AgentFileStore.write`` takes a ``str``, so an artifact whose bytes are not
+      UTF-8 is refused with :class:`~maf_sandbox.SandboxLandingNotText` rather than mangled.
+
+    Unlike :func:`~maf_sandbox.make_file_system_sink` this makes no confinement check of its own:
+    ``AgentFileStore`` requires its implementations to reject a path that escapes the root, where
+    a filesystem root has to be defended against a symlink already sitting in it.
+
+    Nothing here creates the folder, and both shipped stores make that invisible — each answers
+    ``list_children`` for a directory that does not exist with an empty list, so a call that
+    landed nothing reads back the same as one whose folder is empty.  A store that raises there
+    instead needs a host wrapper.
+
+    Args:
+        store: The ``agent_framework`` ``AgentFileStore`` to land in.
+        provenance: The host's record for **this** store.  Every landing is recorded, so a
+            ``TRUSTED`` floor never answers for bytes a guest produced.  ``None`` records
+            nothing, which is honest only for a host keeping no record at all.
+        display: The one line the model is shown per landing.  The default names the store path
+            and the size; a host that would rather say less supplies its own.
+
+    Raises:
+        ValueError: when an artifact reaches ``deliver`` with no ``call_id``.
+        SandboxLandingNotText: when an artifact's bytes are not valid UTF-8.
+    """
+
+    async def deliver(artifact: Artifact) -> LandedArtifact:
+        if artifact.call_id is None:
+            raise ValueError(
+                "make_file_store_sink was handed an artifact with no call_id, so there is no "
+                "folder to land it in. Pass collect_outputs(call_id=...)."
+            )
+        try:
+            content = artifact.content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise SandboxLandingNotText(
+                f"artifact {artifact.name!r} is not valid UTF-8, and this sink lands into a "
+                "file store that holds text. Land it somewhere that takes bytes."
+            ) from exc
+        destination = f"{artifact.call_id}/{artifact.name}"
+        if provenance is not None:
+            provenance.record(destination)
+        await store.write(destination, content, overwrite=False)
+        return LandedArtifact(
+            name=artifact.name,
+            display=display(artifact, destination),
+            handle=destination,
+        )
+
+    return OutputSink(deliver, per_call=True)
 
 
 async def list_all_files(
