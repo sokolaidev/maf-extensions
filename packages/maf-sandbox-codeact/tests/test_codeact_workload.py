@@ -445,7 +445,7 @@ def _backend(
     )
 
 
-async def _listing(store: Any) -> list[str]:
+async def _listing(store: Any) -> list[ListedFile]:
     """Enumerate whatever store the host wired; without one this kind shares nothing."""
     return [] if store is None else await store.list()
 

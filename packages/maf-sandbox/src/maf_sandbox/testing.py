@@ -520,8 +520,8 @@ class InMemoryStore:
     ``list_files: Callable[[Any], Awaitable[list[ListedFile]]]`` exactly.
     ``list_files=InMemoryStore.list`` works with no wrapper.
 
-    Every entry it answers with carries ``integrity=None``: a double keeps no provenance record,
-    and *unestablished* is what a host without one honestly knows.  Pass ``integrity`` to the
+    Entries carry ``integrity=None`` **by default**: a double keeps no provenance record, and
+    *unestablished* is what a host without one honestly knows.  Pass ``integrity`` to the
     constructor to give every file a label, or ``labels`` to give them one each — a test that
     needs a kind to see trusted and untrusted files side by side says so there.
     """
