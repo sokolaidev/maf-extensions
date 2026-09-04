@@ -628,37 +628,14 @@ class SandboxRouter:
     def _eligible(self) -> list[SandboxBackend]:
         """Every registered backend, once each is readable and at least one clears the floor.
 
-        Every one of them, deliberately, rather than the subset above the floor. Two reasons,
-        and the second is the load-bearing one. The floor is the *first* check
-        :meth:`_refuse_unless_this_backend_can_serve` runs, so a below-floor backend refuses per
-        spec with its rung and the floor named — which the host reads **only when no later
-        candidate serves**, since a successful route discards the refusals it passed over; the
-        warning below is what names it on every other route. And a backend this list dropped
-        would still be in ``self._backends``, so the filtering would buy nothing: disposal
-        sweeps that, not this.
+        Every one of them rather than the subset above the floor, since a dropped backend would
+        still be in ``self._backends`` and that is what disposal sweeps.
 
-        What is checked here is what cannot wait, and routing is what makes it urgent.
-
-        Declarations are read for **all** of them — the object, and the shape of the four
-        fields that *refuse* an unreadable value: ``capabilities``, ``egress_modes``,
-        ``isolation_scopes`` and ``limits``.  So a half-migrated or mis-shaped backend fails at
-        startup rather than the first time a spec happens to route as far as it.
-        ``os_families`` is deliberately not among them: it normalises a value it cannot read to
-        the empty set rather than raising, because a mis-shape there can only ever refuse a
-        workload and never widen anything, so there is no refusal here to route past.
-
-        Under :data:`Selection.FIXED` only the selected backend
-        is ever read, and that asymmetry is the point rather than an oversight: there, a
-        mis-shaped field surfaces at the first check because there is nowhere to route past it
-        to. Here there is. :meth:`_refusal_serving` catches :data:`ATTACH_REFUSALS`, and
-        ``_declared_set`` and ``_declared_limits`` raise members of it for a field this package
-        cannot read — so without this an unreadable declaration on the first candidate would be
-        indistinguishable from an honest refusal, and the *second* backend would quietly serve.
-        A declaration nobody can read is refused rather than routed past.
-
-        And the floor is judged across the whole registration: a deployment where nothing
-        clears it can serve no workload at all, which is the misconfiguration ``__init__``
-        exists to catch.
+        The trap is what must be validated *here* rather than left to the per-spec checks:
+        :meth:`_refusal_serving` catches :data:`ATTACH_REFUSALS`, and the field readers raise
+        members of it for a declaration this package cannot read — so past this point an
+        unreadable declaration is indistinguishable from a backend honestly declining one spec,
+        and the next candidate would quietly serve.
         """
         if not self._backends:
             return []
@@ -675,22 +652,13 @@ class SandboxRouter:
             _declared_limits(backend, declared)
         below = [(backend, rung) for backend, rung in rungs if not meets_floor(rung, floor)]
         if below and len(below) != len(rungs):
-            # Warned rather than raised, because this arrangement is the one PER_SPEC exists to
-            # serve and refusing it would take the feature away. Warned rather than left silent,
-            # because the alternative is the thing the floor's own refusal is written against: a
-            # host registers a backend below its floor, routing quietly passes over it in favour
-            # of one that clears it, and nothing ever says so. The per-spec refusal names it only
-            # when *nothing* can serve, which is exactly the case this one is not.
-            #
-            # It does not advise unregistering, and must not: `dispose` and `dispose_scope` ask
-            # every registered backend precisely so a host that changed which one serves does
-            # not strand what the previous one still holds. Below the floor is a statement about
-            # what may be *served*, never about what must be reclaimed.
-            #
-            # It promises nothing about what *will* serve either. No spec exists yet, so an
-            # above-floor backend may still refuse this host's every workload on capabilities,
-            # egress, limits or scope — "considered" is the whole of what clearing the floor
-            # earns, and a warning claiming an outcome would be one more thing to disbelieve.
+            # Warned rather than raised: a weaker backend beside a stronger one is the
+            # arrangement this mode serves. Warned rather than silent: the per-spec refusal
+            # names it only when *nothing* serves, which is not this case. Two things the
+            # message must not say — it must not advise unregistering, since `dispose` and
+            # `dispose_scope` reach every registered backend and a host that changed which
+            # one serves relies on that; and it must not promise what *will* serve, since no
+            # spec exists yet and an above-floor backend may still refuse every workload.
             logger.warning(
                 "sandbox router: %s registered below this host's %r minimum-isolation floor, so "
                 "no workload is ever routed there and only the backends clearing it are "

@@ -12,7 +12,7 @@ Every backend answers six questions before a workload's tool is ever attached, a
 
 **`isolation_scopes`** is how much of a conversation the backend can serve from one sandbox — `conversation`, the get-or-create every backend does, or `call`, one created for a tool call and deleted when it returns. Its silence is the only one that is a *claim* rather than the absence of an answer: the field defaults to `{conversation}`, so a backend written before the axis serves exactly what it served, and a per-call workload is refused rather than answered by sharing. Declare `call` once the backend folds `SandboxKey.call_id` into whatever names a sandbox — a container name, a label set, its own registry — and hold it to `maf_sandbox.conformance.assert_call_scope_conformance`, which acquires a second sandbox itself so it can plant before that one exists.
 
-A backend states the object once — `declarations` — rather than four attributes, and one that still carries any of the four it replaced is refused when the router resolves it, with the field named. That refusal is not belt-and-braces: none of the four was ever a Protocol member, so `isinstance` holds either way and nothing else in the type system marks a backend half-moved.
+A backend states the object once — `declarations` — rather than four attributes, and one that still carries any of the four it replaced is refused when the router reads it, with the field named: for the one backend it resolves where selection is fixed, and for every registered backend at construction where it selects per spec. That refusal is not belt-and-braces: none of the four was ever a Protocol member, so `isinstance` holds either way and nothing else in the type system marks a backend half-moved.
 
 ## The shipped backends
 
