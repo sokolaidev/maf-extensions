@@ -3282,13 +3282,10 @@ class TestTheRecordSamplesValueAndCountTogether:
         return record
 
     def test_it_looks_at_the_record_once(self):
-        """The pair has to describe one instant, and one look is what makes that true.
+        """The pair describes one instant only if it is read in one look.
 
-        Built from `integrity_of` and `generation_of` in turn it describes two: a write landing
-        between them gives the value from before it and the count from after, so a reader
-        comparing counts either side of its read sees a still interval and labels the bytes with
-        the value the write replaced. That window cannot be forced open once it is gone, so what
-        is asserted is the property that closes it.
+        Two looks answer about two, and a mutation between them pairs a value with another
+        instant's count.
         """
         looks: list[str] = []
 
@@ -3309,8 +3306,7 @@ class TestTheRecordSamplesValueAndCountTogether:
         )
 
     def test_it_looks_once_for_a_path_with_no_entry_either(self):
-        """The floor branch is where a second look is easiest to reintroduce, because resolving
-        it reads more of the record than the entry did."""
+        """Resolving the floor reads more of the record than an entry does, and still once."""
         looks: list[str] = []
 
         class _Counting(FileStoreProvenance):
@@ -3324,17 +3320,40 @@ class TestTheRecordSamplesValueAndCountTogether:
         assert record.state_of("a.txt") == (SourceIntegrity.TRUSTED, 0)
         assert looks == ["a.txt"]
 
-    def test_a_recorded_path_reads_odd_and_a_forgotten_one_even(self):
-        """The parity the test above rests on, asserted directly so it cannot drift."""
+    def test_every_change_moves_the_count_and_nothing_else_does(self):
+        """What the interval check needs: a count that moves when the value does, and only then.
+
+        Not parity — recording an already-recorded path leaves it recorded, and a count that
+        moved for it would end intervals nothing changed under.
+        """
         record = self._record()
         assert record.state_of("a.txt") == (SourceIntegrity.TRUSTED, 0)
+
         record.record("a.txt")
         assert record.state_of("a.txt") == (SourceIntegrity.UNTRUSTED, 1)
+
+        record.record("a.txt")
+        assert record.state_of("a.txt") == (SourceIntegrity.UNTRUSTED, 1), "already recorded"
+
         record.forget("a.txt")
         assert record.state_of("a.txt") == (SourceIntegrity.TRUSTED, 2)
 
+    def test_a_change_to_one_path_ends_an_interval_on_another(self):
+        """The count is the record's, so an unrelated write costs a concurrent read its label.
+
+        Conservative on purpose: the alternative is a per-path count, which cannot be discarded
+        when the path is forgotten without losing the history that makes the check work.
+        """
+        record = self._record()
+
+        _, before = record.state_of("a.txt")
+        record.record("elsewhere.txt")
+        _, after = record.state_of("a.txt")
+
+        assert after != before
+
     def test_forgetting_what_was_never_recorded_moves_nothing(self):
-        """A no-op forget costs no label: it did not remove an entry, so nothing moved."""
+        """A forget that removed no entry changed nothing, so it ends no interval."""
         record = self._record()
         record.forget("a.txt")
 
@@ -3354,12 +3373,8 @@ class TestReadFileRefoldsAgainstTheRecord:
         return record
 
     def test_a_write_while_the_read_is_in_flight_leaves_the_bytes_unlabelled(self):
-        """A record that moved during the read describes neither end of it.
-
-        The write is made from inside `read`, so it lands after the first look and before the
-        second. Nothing here can say what the record held when the bytes were captured, and
-        *unestablished* is what that honestly is.
-        """
+        """A record that moved during the read describes neither end of it, so nothing is
+        claimed about the bytes it was holding."""
         record = self._trusted_floor()
         listed = ListedFile("a.txt", record.integrity_of("a.txt"))
         assert listed.integrity is SourceIntegrity.TRUSTED, "the listing saw the floor"
@@ -3385,12 +3400,8 @@ class TestReadFileRefoldsAgainstTheRecord:
         assert SOURCE_INTEGRITY_PROPERTY not in item.additional_properties
 
     def test_a_record_then_forget_inside_one_read_is_not_read_as_no_change(self):
-        """The cycle two equal readings cannot tell from stillness.
-
-        Both looks answer `trusted` — the entry is created and dropped between them — while the
-        bytes were captured with the model's write recorded. Only the count separates this from
-        a read nothing touched, because it moves twice and never returns to where it was.
-        """
+        """Both looks answer `trusted` while the bytes were captured under an entry, so equal
+        values do not mean a still interval. The count does, because it never returns."""
         record = self._trusted_floor()
         listed = ListedFile("a.txt", record.integrity_of("a.txt"))
         assert listed.integrity is SourceIntegrity.TRUSTED

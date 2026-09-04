@@ -7,8 +7,8 @@ convention a caller could break.
 
 * **Every entry is untrusted**, because :meth:`FileStoreProvenance.record` takes no integrity
   argument.  Recording twice records the same thing, so recording only ever lowers — and
-  :meth:`FileStoreProvenance.forget` is the one thing that does not, which is why a reader
-  consults this record either side of its read rather than after it.
+  :meth:`FileStoreProvenance.forget` is the one thing that does not, which is why a reader takes
+  :meth:`FileStoreProvenance.state_of` either side of its read rather than a value after it.
 * **An entry is about the path**, not a version of its bytes, and it stands until
   :meth:`FileStoreProvenance.forget`.
 * **The floor applies only to a path with no recorded entry**, so an entry always beats it and
@@ -114,9 +114,12 @@ class FileStoreProvenance:
         # while the middleware recording writes runs on the event loop.
         self._lock = threading.Lock()
         self._entries: dict[str, SourceIntegrity] = {}
-        #: How many times each path has been recorded or forgotten.  Only ever counts up, which
-        #: is what lets a reader tell "unchanged" from "changed back" — see :meth:`generation_of`.
-        self._generations: dict[str, int] = {}
+        #: How many times anything in this record has changed.  Only ever counts up, which is
+        #: what lets a reader tell "unchanged" from "changed back" — see :meth:`state_of`.  One
+        #: counter rather than one per path: a per-path count cannot be dropped when a path is
+        #: forgotten without losing the very history it exists to carry, so it would grow with
+        #: every temporary file a long-lived host ever writes.
+        self._epoch = 0
         self._observed = False
 
     def _note_observer(self) -> None:
@@ -154,8 +157,9 @@ class FileStoreProvenance:
         """
         with self._lock:
             key = store_key(path)
-            self._entries[key] = SourceIntegrity.UNTRUSTED
-            self._generations[key] = self._generations.get(key, 0) + 1
+            if key not in self._entries:
+                self._entries[key] = SourceIntegrity.UNTRUSTED
+                self._epoch += 1
 
     def forget(self, path: str) -> None:
         """Drop any entry for ``path``, returning it to :attr:`floor`.
@@ -172,9 +176,8 @@ class FileStoreProvenance:
         then harmless rather than something a host has to serialise against.
         """
         with self._lock:
-            key = store_key(path)
-            if self._entries.pop(key, None) is not None:
-                self._generations[key] = self._generations.get(key, 0) + 1
+            if self._entries.pop(store_key(path), None) is not None:
+                self._epoch += 1
 
     def _sample(self, path: str) -> tuple[SourceIntegrity | None, bool, int]:
         """This path's entry, whether anything observes writes, and its count — under one lock.
@@ -185,38 +188,28 @@ class FileStoreProvenance:
         labels the bytes with the value the write replaced.
         """
         with self._lock:
-            key = store_key(path)
-            return self._entries.get(key), self._observed, self._generations.get(key, 0)
+            return self._entries.get(store_key(path)), self._observed, self._epoch
 
     def state_of(self, path: str) -> tuple[SourceIntegrity | None, int]:
-        """What ``path`` is worth and how many times it has moved, sampled together.
+        """What ``path`` is worth, and how many times this record has changed, sampled together.
 
         The pair :meth:`~maf_sandbox.maf.SandboxToolSession.read_file` takes either side of a
-        read.  Calling :meth:`integrity_of` and :meth:`generation_of` in turn would answer the
-        same two questions about two different instants, which is the one arrangement the count
-        cannot rescue.
+        read: an unchanged count means nothing moved in between, so the value describes the whole
+        interval rather than one instant of it.  Both come from one lock, because two calls would
+        answer about two instants and a write between them is the one arrangement a count cannot
+        rescue.
+
+        **The count is the record's, not the path's.**  A mutation anywhere ends every interval
+        in flight, so a busy store costs concurrent reads their label rather than their
+        correctness — and the alternative is a per-path count that can never be discarded,
+        because discarding it is what lets a path look untouched after being written and
+        forgotten.
 
         Raises:
             ValueError: as :meth:`integrity_of` does, and for the same reason.
         """
         entry, observed, generation = self._sample(path)
         return self._answer(entry, observed), generation
-
-    def generation_of(self, path: str) -> int:
-        """How many times ``path`` has been recorded or forgotten, counting only up.
-
-        For a reader that wants what this record said *throughout* an interval rather than at
-        one instant.  Sample this either side of the interval: an unchanged count means no
-        transition happened in between, so a single :meth:`integrity_of` describes the whole of
-        it.  A changed count means the record moved and the reader cannot say what it held while
-        the bytes were in flight.
-
-        **Counting rather than comparing is the point.**  :meth:`record` and :meth:`forget` can
-        both run inside one interval and leave :meth:`integrity_of` answering exactly what it
-        answered before, so two equal readings do not mean nothing happened.  Two equal counts
-        do.
-        """
-        return self._sample(path)[2]
 
     def integrity_of(self, path: str) -> SourceIntegrity | None:
         """What ``path`` is worth, or ``None`` where nothing here establishes it.

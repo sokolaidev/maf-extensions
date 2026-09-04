@@ -1325,8 +1325,9 @@ class SandboxToolSession:
         **A reading either side is not enough, and the count is what closes it.**  A path can be
         recorded and then forgotten while one read is in flight, which leaves both readings
         equal and neither of them true of the moment the bytes were captured — the model's write
-        happened between them.  :meth:`FileStoreProvenance.generation_of` only counts up, so an
-        unchanged count is the thing two equal readings are not: proof that nothing happened.
+        happened between them.  The count :meth:`FileStoreProvenance.state_of` answers with only
+        goes up, so an unchanged one is the thing two equal readings are not: proof that nothing
+        happened.
 
         Where it did change, this answers ``None``.  *Unestablished* is what a reader that
         cannot say honestly says, and it is what :func:`weakest_integrity` already treats as
