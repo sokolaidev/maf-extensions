@@ -191,6 +191,20 @@ def consequences(title: str, paths: list[str], repo_root: Path) -> list[str]:
     ]
 
 
+def pass_line(title: str, paths: list[str], repo_root: Path) -> str:
+    """Why this request reaches no ceiling, which is not always the same reason.
+
+    Three do: one attributed to no core, one whose title releases nothing, and one whose
+    release every ceiling admits. Only the third is about a version, so only the third names
+    one — a green line claiming a release that is not coming misleads as readily as a red one.
+    """
+    if not touches_core(paths, repo_root):
+        return "release order: no maf-sandbox release is attributed to this change"
+    if next_version(core_version(repo_root), title) is None:
+        return "release order: this title releases no maf-sandbox version"
+    return "release order: every dependent's ceiling already admits what this would release"
+
+
 def main(argv: list[str]) -> int:
     """CLI entry: read changed paths from stdin and the title from argv, and print what follows.
 
@@ -201,12 +215,13 @@ def main(argv: list[str]) -> int:
     if len(argv) != 2:
         print(f"usage: {argv[0]} <pull-request-title>", file=sys.stderr)
         return 2
+    repo_root = Path(__file__).resolve().parent.parent
     paths = [line.strip() for line in sys.stdin.read().splitlines() if line.strip()]
-    notices = consequences(argv[1], paths, Path(__file__).resolve().parent.parent)
+    notices = consequences(argv[1], paths, repo_root)
     for notice in notices:
         print(notice)
     if not notices:
-        print("release order: every dependent's ceiling already admits what this would release")
+        print(pass_line(argv[1], paths, repo_root))
         return 0
     print(
         "merge over this once the consequence above is read and accepted — that is what a "

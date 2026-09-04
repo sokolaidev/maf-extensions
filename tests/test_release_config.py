@@ -421,13 +421,7 @@ class TestTestsAreExcludedFromAttribution:
         ), "check_title_diff still counts a test-only touch as a package change"
 
     def test_the_release_order_gate_reads_the_same_rule(self):
-        """And this if the release-order gate does.
-
-        That gate states what a core release costs the dependents whose ceilings exclude it.
-        A change whose only core files are its tests cuts no core, so it has nothing to state
-        — and it fails the request rather than annotating it, so a consequence that will not
-        happen is one a reviewer is asked to accept.
-        """
+        """And this if the release-order gate stops applying it."""
         sys.path.insert(0, str(REPO_ROOT / "scripts"))
         import check_release_order
 

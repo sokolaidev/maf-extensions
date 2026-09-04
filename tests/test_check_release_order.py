@@ -299,8 +299,8 @@ class TestItFailsSoTheConsequenceIsRead:
     def test_a_breaking_title_over_the_core_s_tests_alone_passes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """The red this used to raise cost the check its meaning: a reviewer was asked to
-        accept a release that was never coming, on every request that edits a core test."""
+        """A core test alone cuts no core version, so no ceiling is reached and there is
+        nothing to override."""
         repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
         monkeypatch.setattr(check.sys, "stdin", io.StringIO(_CORE_TEST_FILE))
         monkeypatch.setattr(check.Path, "resolve", lambda self: repo / "scripts" / "x.py")
@@ -328,6 +328,50 @@ class TestItFailsSoTheConsequenceIsRead:
         captured = capsys.readouterr()
         assert "maf-sandbox-acas" in captured.out
         assert captured.err == ""
+
+
+class TestWhatItSaysWhenThereIsNothingToRead:
+    """The pass line names a release only where one follows.
+
+    Three requests reach no ceiling and only one of them cuts a version, so a single line for
+    all three tells two of them something untrue about a release they do not make.
+    """
+
+    def _out(
+        self,
+        repo: Path,
+        title: str,
+        changed: str,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> str:
+        monkeypatch.setattr(check.sys, "stdin", io.StringIO(changed))
+        monkeypatch.setattr(check.Path, "resolve", lambda self: repo / "scripts" / "x.py")
+        check.main(["prog", title])
+        return capsys.readouterr().out
+
+    def test_a_change_attributed_to_no_core_names_no_release(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
+        out = self._out(repo, "fix!: a thing", _CORE_TEST_FILE, monkeypatch, capsys)
+        assert "no maf-sandbox release is attributed to this change" in out
+        assert "already admits" not in out
+
+    def test_a_non_releasing_title_over_the_core_names_no_release_either(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
+        out = self._out(repo, "chore: a thing", _CORE_FILE, monkeypatch, capsys)
+        assert "this title releases no maf-sandbox version" in out
+        assert "already admits" not in out
+
+    def test_a_release_every_ceiling_admits_is_the_one_that_says_so(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.8"})
+        out = self._out(repo, "feat: a thing", _CORE_FILE, monkeypatch, capsys)
+        assert "every dependent's ceiling already admits" in out
 
 
 class TestPublishedVersionsAreSortedSemantically:
