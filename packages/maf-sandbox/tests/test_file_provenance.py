@@ -72,7 +72,7 @@ class TestWhatTheRecordAnswers:
     def test_a_recorded_entry_beats_a_trusted_floor(self):
         """The whole point: a trusted store default can never lift bytes the model wrote."""
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
-        record.record("notes.bicep", integrity=SourceIntegrity.UNTRUSTED)
+        record.record("notes.bicep")
         assert record.integrity_of("notes.bicep") is SourceIntegrity.UNTRUSTED
 
     def test_an_entry_answers_whatever_the_path_now_holds(self):
@@ -80,21 +80,21 @@ class TestWhatTheRecordAnswers:
         send a path whose content changed to the floor — and a trusted floor would then answer
         for a file the model demonstrably wrote."""
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
-        record.record("notes.bicep", integrity=SourceIntegrity.UNTRUSTED)
+        record.record("notes.bicep")
         assert record.integrity_of("notes.bicep") is SourceIntegrity.UNTRUSTED
 
     def test_recording_a_path_twice_is_the_same_answer(self):
         """Monotone, which is what makes the answer independent of the order two concurrent
         writes to one path happen to finish in."""
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
-        record.record("a.txt", integrity=SourceIntegrity.UNTRUSTED)
-        record.record("a.txt", integrity=SourceIntegrity.UNTRUSTED)
+        record.record("a.txt")
+        record.record("a.txt")
         assert record.integrity_of("a.txt") is SourceIntegrity.UNTRUSTED
         assert len(record) == 1
 
     def test_forgetting_a_path_returns_it_to_the_floor(self):
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
-        record.record("gone.txt", integrity=SourceIntegrity.UNTRUSTED)
+        record.record("gone.txt")
         record.forget("gone.txt")
         assert record.integrity_of("gone.txt") is SourceIntegrity.TRUSTED
         assert len(record) == 0
@@ -128,7 +128,7 @@ class TestWhatTheMiddlewareRecords:
 
     def test_the_host_can_still_forget_a_path_it_established_is_gone(self):
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
-        record.record("a.txt", integrity=SourceIntegrity.UNTRUSTED)
+        record.record("a.txt")
         record.forget("a.txt")
         assert record.integrity_of("a.txt") is SourceIntegrity.TRUSTED
 
@@ -300,7 +300,7 @@ class TestTheStoreKeyMatchesTheProvider:
 
     def test_a_record_filed_under_one_spelling_is_found_under_another(self):
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
-        record.record("dir\\a.txt", integrity=SourceIntegrity.UNTRUSTED)
+        record.record("dir\\a.txt")
         assert record.integrity_of("dir/a.txt") is SourceIntegrity.UNTRUSTED
 
     def test_a_write_records_under_the_normalised_key(self):
@@ -310,3 +310,66 @@ class TestTheStoreKeyMatchesTheProvider:
             _run(middleware, _Context("file_access_write", file_name="dir//a.txt", content="x"))
         )
         assert record.integrity_of("dir/a.txt") is SourceIntegrity.UNTRUSTED
+
+
+class TestBothMiddlewareOrders:
+    """The ordering claim, against the real `LabelTrackingFunctionMiddleware`.
+
+    The unit test above simulates expansion by rewriting the argument itself, which pins what
+    this middleware does with an already-expanded name and *not* the documented claim that it
+    works on either side of the framework's own. Only driving the real chain can catch an
+    upstream change that moves when expansion happens — the sibling argument-provenance suite
+    drives both compositions for the same reason.
+    """
+
+    def _drive(self, *, ours_outside: bool) -> FileStoreProvenance:
+        from agent_framework import FunctionInvocationContext, FunctionTool
+        from agent_framework.security import (
+            ContentLabel,
+            IntegrityLabel,
+            LabelTrackingFunctionMiddleware,
+        )
+
+        tracker = LabelTrackingFunctionMiddleware()
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        ours = file_store_provenance_middleware(record)
+        variable_id = tracker.get_variable_store().store(
+            "notes.bicep", ContentLabel(integrity=IntegrityLabel.UNTRUSTED)
+        )
+
+        async def body(file_name: str, content: str) -> str:
+            return f"File '{file_name}' written."
+
+        tool = FunctionTool(name="file_access_write", func=body)
+        context = FunctionInvocationContext(
+            function=tool, arguments={"file_name": f"[{variable_id}]", "content": "x"}
+        )
+
+        async def innermost() -> None:
+            await tool.invoke(arguments=context.arguments)
+
+        async def drive() -> None:
+            if ours_outside:
+
+                async def inner() -> None:
+                    await tracker.process(context, innermost)
+
+                await ours.process(context, inner)
+            else:
+
+                async def inner() -> None:
+                    await ours.process(context, innermost)
+
+                await tracker.process(context, inner)
+
+        asyncio.run(drive())
+        return record
+
+    @pytest.mark.parametrize("ours_outside", [True, False])
+    def test_the_expanded_name_is_recorded_whichever_side_this_sits_on(self, ours_outside: bool):
+        record = self._drive(ours_outside=ours_outside)
+        assert record.integrity_of("notes.bicep") is SourceIntegrity.UNTRUSTED, (
+            "the record filed the placeholder rather than the name it expanded to, so a read of "
+            "the real path falls to the host's floor"
+        )
+        assert len(record) == 1

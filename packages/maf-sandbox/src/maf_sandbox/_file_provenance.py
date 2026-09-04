@@ -22,9 +22,9 @@ without this module resolving anything.  That reading does not depend on the fra
 ``hide_threshold`` staying where it is: a host that moves it makes the *first* bullet less
 precise, and this still records untrusted, which is the fail-safe direction.
 
-**Everything else is the host's to declare.** Content placed before the run, or written past
-the store object by another process, is not a tool call and is not observed here.  A host that
-knows how its store is fed says so once with ``floor=``, and a recorded entry always beats it —
+**Everything else is the host's to declare.** Content placed before the agent started, or
+**Everything else is the host's to declare.** Content placed before the agent started, or
+written past the store object by another process, is not a tool call and is not observed here.
 so a trusted floor can never lift bytes the model wrote.
 """
 
@@ -94,10 +94,10 @@ class FileStoreProvenance:
     kind against the wrong one would answer about a file it never read.
 
     Args:
-        floor: What applies to a path with no recorded entry — content placed before the run,
-            or written past the store object by something that is not a tool call. ``None``,
-            the default, means *unestablished*: this host has not said, and a caller must treat
-            the answer as it treats any source the framework has not established.
+        floor: What applies to a path with no recorded entry — content placed before the agent
+            started, or written past the store object by something that is not a tool call.
+            ``None``, the default, means *unestablished*: this host has not said, and a caller
+            must treat the answer as it treats any source the framework has not established.
     """
 
     def __init__(self, *, floor: SourceIntegrity | None = None) -> None:
@@ -112,23 +112,26 @@ class FileStoreProvenance:
         """What a path with no recorded entry is worth, as the host declared it."""
         return self._floor
 
-    def record(self, path: str, *, integrity: SourceIntegrity) -> None:
+    def record(self, path: str) -> None:
         """Record that an agent-driven call wrote ``path``.
 
         ``path`` is keyed through :func:`store_key`, here and in :meth:`integrity_of` alike, so a
         record filed under one spelling is found under every spelling of the same file.
+
+        **There is no integrity argument, and that is what makes the record monotone.**  Every
+        entry it can hold is untrusted, so recording twice is recording the same thing and no
+        caller — not this package's middleware, not a host's own — can raise a path that was
+        written by the model back to trusted.  A record whose entries could be raised would give
+        the concurrency and floor guarantees below nothing to stand on.
 
         **An entry is about the path, not about a version of its content.**  It records that the
         model has written here, which stays true of every later version: nothing the model writes
         afterwards makes the file host-authored again.  Binding the entry to a digest of the bytes
         would say the opposite — a path whose content changed would stop matching and fall to the
         floor, and a trusted floor would then answer for a file the model demonstrably wrote.
-        That also makes the record **monotone**, which is what keeps it correct when two calls
-        write the same path at once: both record the same thing, so the order they finish in
-        cannot change the answer.
         """
         with self._lock:
-            self._entries[store_key(path)] = SourceIntegrity(str(integrity))
+            self._entries[store_key(path)] = SourceIntegrity.UNTRUSTED
 
     def forget(self, path: str) -> None:
         """Drop any entry for ``path``, returning it to :attr:`floor`.

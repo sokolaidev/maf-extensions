@@ -305,7 +305,7 @@ def file_store_provenance_middleware(
                         PATH_ARGUMENT,
                     )
                 else:
-                    record.record(path, integrity=SourceIntegrity.UNTRUSTED)
+                    record.record(path)
 
     return _FileStoreProvenance()
 
