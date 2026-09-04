@@ -41,6 +41,7 @@ from maf_sandbox import (
     HostToolRegistry,
     Identity,
     LandedArtifact,
+    ListedFile,
     MafSandboxHostToolsWarning,
     NameNormalization,
     OutputSink,
@@ -403,8 +404,8 @@ class _ListedButGoneStore:
     async def read(self, name: str) -> str | None:
         return None
 
-    async def list(self) -> list[str]:
-        return [self._name]
+    async def list(self) -> list[ListedFile]:
+        return [ListedFile(self._name)]
 
 
 #: Transfer limits the router accepts for a *folded* spec (#393). Generous on purpose, so these
@@ -444,7 +445,7 @@ def _backend(
     )
 
 
-async def _listing(store: Any) -> list[str]:
+async def _listing(store: Any) -> list[ListedFile]:
     """Enumerate whatever store the host wired; without one this kind shares nothing."""
     return [] if store is None else await store.list()
 
@@ -3783,6 +3784,41 @@ class TestARewrittenArgumentIsNeverQuoted:
         assert "EMAIL" not in out, out
         assert "outputs[0]" in out, out
         assert sandbox.raw_commands == []
+
+    def test_the_sandbox_write_refusal_is_not_quoted(self, monkeypatch):
+        """Reached only after the name matched the listing and the read succeeded, which is why
+        the verdict has to travel with the file rather than being consumed at the read."""
+        name = f"{self.SUBSTITUTED}.csv"
+        self._rewrite(monkeypatch, name)
+
+        class _RefusesToWrite(_ScriptedSandbox):
+            async def write_file(self, *args, **kwargs):
+                raise RuntimeError("no space left on device")
+
+        tool = _tool(_backend(_RefusesToWrite()), file_store=InMemoryStore({name: "y"}))
+
+        out = _run(tool, "print('hi')", files=[name])
+        assert "EMAIL" not in out, out
+        assert "files[0]" in out, out
+        assert "could not share" in out, out
+
+    def test_the_per_file_cap_refusal_is_not_quoted(self, monkeypatch):
+        """The tally's two refusals name the file, and it counts every file it reads — so a
+        listed name the framework expanded reaches them on the ordinary oversized-input path."""
+        name = f"{self.SUBSTITUTED}.csv"
+        self._rewrite(monkeypatch, name)
+        tool = _tool(
+            _backend(_ScriptedSandbox()),
+            file_store=InMemoryStore({name: "x" * 100}),
+            # Above the 11-byte program, which the same tally counts first: a cap the program
+            # trips names `program.py` and would pass this test while proving nothing.
+            files_in=replace(DEFAULT_TRANSFER_LIMITS, max_bytes_per_file=20),
+        )
+
+        out = _run(tool, "print('hi')", files=[name])
+        assert "EMAIL" not in out, out
+        assert "files[0]" in out, out
+        assert "at most 20 bytes per file" in out, out
 
     def test_the_manifest_path_answers_from_the_snapshot_taken_before_the_run(self, monkeypatch):
         """The manifest is read after the run, long after this call's body first awaited.

@@ -16,10 +16,13 @@ The router exists for five things a backend cannot own:
   — :data:`~maf_sandbox.Isolation.MICROVM` unless the host says otherwise — is refused
   outright, as is a rung this package does not recognise; see
   :class:`~maf_sandbox._router.SandboxBackendNotPermitted`.  Enforced at construction and
-  pinned by tests.
+  pinned by tests.  A router selecting per spec (:class:`~maf_sandbox.Selection`) judges that
+  across the whole registration: it refuses when *nothing* clears the floor, and keeps an
+  individual backend below it, warned about and never routed to.
 - **The capability match.** A backend that cannot do what a workload's spec requires is
   refused when that workload attaches its tool — see
-  :class:`~maf_sandbox._router.SandboxCapabilityNotSupported`.
+  :class:`~maf_sandbox._router.SandboxCapabilityNotSupported`.  Selecting per spec, that same
+  match is what *chooses*, so it refuses only once every registered backend has.
 - **The transfer ceilings.** A spec declaring caps above what the backend allows in either
   direction is refused at the same moment — see
   :class:`~maf_sandbox._router.SandboxTransferLimitsNotPermitted`.
@@ -132,6 +135,7 @@ from ._protocol import (
     Identity,
     Isolation,
     IsolationScope,
+    ListedFile,
     OsFamily,
     OutputDisposition,
     Sandbox,
@@ -147,6 +151,7 @@ from ._protocol import (
     TransferLimits,
     fold_disposal_failures,
     meets_floor,
+    weakest_integrity,
 )
 from ._purger import SandboxPurger
 from ._reclaim import (
@@ -170,6 +175,7 @@ from ._router import (
     SandboxTransferLimitsNotPermitted,
     SandboxUnclean,
     ScopeDisposal,
+    Selection,
 )
 from ._shim import host_tool_shim
 
@@ -212,6 +218,7 @@ __all__ = [
     "Identity",
     "Isolation",
     "IsolationScope",
+    "ListedFile",
     "OsFamily",
     "LandedArtifact",
     "MafSandboxExperimentalWarning",
@@ -256,6 +263,7 @@ __all__ = [
     "SandboxTransferLimitsNotPermitted",
     "SandboxUnclean",
     "ScopeDisposal",
+    "Selection",
     "ScopePurge",
     "SourceChannel",
     "SourceIntegrity",
@@ -264,6 +272,7 @@ __all__ = [
     "collect_outputs",
     "declaration_of",
     "fold_disposal_failures",
+    "weakest_integrity",
     "host_tool_calls_over_exec",
     "echoed_name",
     "error_detail",

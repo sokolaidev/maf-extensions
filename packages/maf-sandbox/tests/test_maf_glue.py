@@ -31,9 +31,11 @@ from maf_sandbox import (
     DisposalFailure,
     Egress,
     FailedReclaimPolicy,
+    FileStoreProvenance,
     Isolation,
     IsolationScope,
     LandedArtifact,
+    ListedFile,
     NoSandboxBackend,
     OutputDisposition,
     OutputSink,
@@ -47,9 +49,11 @@ from maf_sandbox import (
     SandboxRouter,
     SandboxSpec,
     SandboxUnclean,
+    Selection,
     SourceChannel,
     SourceIntegrity,
     TransferLimits,
+    weakest_integrity,
 )
 from maf_sandbox import maf as _maf
 from maf_sandbox._host_tools import HostToolAggregate
@@ -58,9 +62,11 @@ from maf_sandbox._router import ATTACH_REFUSALS
 from maf_sandbox.maf import (
     _ORIGINAL_ARGUMENTS_KEY,
     ISOLATION_SCOPE_KEY,
+    SOURCE_INTEGRITY_PROPERTY,
     SandboxPurger,
     SandboxToolSession,
     argument_provenance_middleware,
+    file_store_provenance_middleware,
     hidden_content_candidates,
     labelled_result_item,
     list_all_files,
@@ -213,7 +219,7 @@ class TestMakeCallerContext:
 
         assert context.current_scope() == "scope-a"
         assert context.current_thread_id() == "thread-1"
-        assert asyncio.run(context.list_files(store)) == ["a.txt"]
+        assert asyncio.run(context.list_files(store)) == [ListedFile("a.txt")]
 
     def test_the_getters_are_read_per_call_not_captured_at_build_time(self):
         """The key must follow the host's request context, not the moment the tool was built.
@@ -630,7 +636,9 @@ class TestSessionKey:
 class TestSessionListFiles:
     def test_it_returns_the_hosts_listing(self):
         store = InMemoryStore({"a.bicep": "1", "b/c.bicep": "2"})
-        assert sorted(asyncio.run(_session().list_files(store))) == ["a.bicep", "b/c.bicep"]
+        listed = asyncio.run(_session().list_files(store))
+        assert not isinstance(listed, str)
+        assert sorted(entry.name for entry in listed) == ["a.bicep", "b/c.bicep"]
 
     def test_a_failure_is_a_refusal_rather_than_an_empty_listing(self):
         """An empty list would read as "the file store is empty" and refuse for the wrong reason."""
@@ -1555,6 +1563,132 @@ class TestTheFinallyDisposesTheCallsSandbox:
         )[0]
         _call(tool, target="x")
         assert backend.disposed == backend.keys
+
+
+def _routed_pair():
+    """Two call-scoped fakes differing only in what they can do, so a spec picks between them."""
+
+    def one(name: str, capabilities):
+        return InProcessSandboxBackend(
+            name=name,
+            sandbox_per_key=True,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                capabilities=capabilities,
+                isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
+            ),
+        )
+
+    return one("weak", DEFAULT_CAPABILITIES), one("strong", _PULLS)
+
+
+#: Call-scoped, and servable only by the second of that pair.
+_ROUTED_CALL_SPEC = dataclasses.replace(_CALL_SCOPED_SPEC, requires=_PULLS)
+
+
+class TestARoutedCallDeleteReachesOnlyTheBackendThatServed:
+    """A call-scoped delete is aimed by the spec this glue forwards, not swept.
+
+    Without it a per-spec router asks every backend serving the scope, and at call scope the
+    key names a sandbox of each one's own.
+    """
+
+    def test_the_finally_deletes_only_where_the_spec_routed(self):
+        weak, strong = _routed_pair()
+        tool = _attach_with(
+            _reclaiming_body,
+            _router(weak, strong, selection=Selection.PER_SPEC),
+            spec=_ROUTED_CALL_SPEC,
+        )[0]
+        _call(tool, target="x")
+        assert strong.keys, "the spec did not route to the backend that can serve it"
+        assert strong.disposed == strong.keys
+        assert weak.disposed == [], (
+            "a backend that never served this call was asked to delete its key, and at call "
+            "scope that key names a sandbox of its own"
+        )
+
+    def test_a_sandbox_arriving_after_its_call_is_deleted_only_where_it_was_made(self):
+        """The other call site, and the one that runs while the call is already unwinding.
+
+        The create is parked *inside* the serving backend, so the call ends while it is still
+        in flight and the sandbox arrives with nothing left to clean it up. `acquire` disposes
+        it there and then, and that delete is routed too.
+        """
+        entered, released = asyncio.Event(), asyncio.Event()
+        tasks: list[asyncio.Task[None]] = []
+        outcome: dict[str, object] = {}
+
+        class _BlocksOnTheSecond(InProcessSandboxBackend):
+            """Parks the second create, where the call's own end can overtake it."""
+
+            def __init__(self, **kw) -> None:
+                super().__init__(**kw)
+                self.seen = 0
+
+            async def acquire(self, key, spec):
+                self.seen += 1
+                if self.seen == 2:
+                    entered.set()
+                    await released.wait()
+                return await super().acquire(key, spec)
+
+        weak, _ = _routed_pair()
+        strong = _BlocksOnTheSecond(
+            name="strong",
+            sandbox_per_key=True,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                capabilities=_PULLS,
+                isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
+            ),
+        )
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Acquire once, then leave a task acquiring the same key a second time."""
+                key = session.key()
+                assert not isinstance(key, str)
+                assert not isinstance(await session.acquire(key), str)
+
+                async def later() -> None:
+                    try:
+                        outcome["result"] = await session.acquire(key)
+                    except RuntimeError as raised:
+                        outcome["result"] = raised
+
+                tasks.append(asyncio.create_task(later()))
+                await entered.wait()
+                return target
+
+            return widget_run
+
+        fn = _fn(
+            _attach_with(
+                build,
+                _router(weak, strong, selection=Selection.PER_SPEC),
+                spec=_ROUTED_CALL_SPEC,
+            )[0]
+        )
+
+        async def run() -> None:
+            await fn(target="x")
+            released.set()
+            await asyncio.gather(*tasks)
+
+        asyncio.run(run())
+        assert isinstance(outcome["result"], RuntimeError)
+        assert "came back after its tool call had ended" in str(outcome["result"])
+        # The positive half first, and it is not decoration: an empty sweep is reported as a
+        # landed delete, so a regression routing to nobody raises this same `RuntimeError` and
+        # leaves the negative assertion below true. Without this line the test passes over a
+        # sandbox that was never deleted at all.
+        assert strong.disposed, "the late sandbox was not disposed where it was created"
+        assert {key.call_id for key in strong.disposed} == {strong.keys[0].call_id}
+        assert weak.disposed == [], (
+            "the late delete swept a backend the route never chose, so a sibling sandbox would "
+            "have gone with a refusal that was not about it"
+        )
 
 
 class TestADeleteThatDidNotLandIsReportedNotGuarded:
@@ -2967,9 +3101,9 @@ class TestListAllFiles:
         )
 
         assert asyncio.run(list_all_files(store)) == [
-            "a.txt",
-            "infra/main.bicep",
-            "infra/modules/net.bicep",
+            ListedFile("a.txt"),
+            ListedFile("infra/main.bicep"),
+            ListedFile("infra/modules/net.bicep"),
         ]
 
     def test_directories_are_walked_and_never_listed_as_files(self):
@@ -2991,6 +3125,255 @@ class TestListAllFiles:
 
         with pytest.raises(RuntimeError, match="store is down"):
             asyncio.run(list_all_files(store))
+
+
+class _ReadStore:
+    """A store whose `read` can be made to miss, to answer nothing, or to fail."""
+
+    def __init__(self, files: dict[str, str | None], *, fails: Exception | None = None):
+        self.files = files
+        self._fails = fails
+        self.asked: list[str] = []
+
+    async def read(self, path: str) -> str | None:
+        self.asked.append(path)
+        if self._fails is not None:
+            raise self._fails
+        return self.files.get(path)
+
+
+class TestSessionReadFile:
+    """The carrier half: the label has to survive the read, or the listing bought nothing."""
+
+    def _label(self, item):
+        return item.additional_properties.get(SOURCE_INTEGRITY_PROPERTY)
+
+    def test_it_carries_the_entrys_integrity_on_the_content_it_answers_with(self):
+        store = _ReadStore({"a.txt": "param x string"})
+
+        item = asyncio.run(
+            _session().read_file(store, ListedFile("a.txt", SourceIntegrity.UNTRUSTED))
+        )
+
+        assert item is not None and not isinstance(item, str)
+        assert item.text == "param x string"
+        assert self._label(item) == "untrusted"
+
+    def test_a_trusted_entry_carries_trusted(self):
+        store = _ReadStore({"a.txt": "1"})
+
+        item = asyncio.run(
+            _session().read_file(store, ListedFile("a.txt", SourceIntegrity.TRUSTED))
+        )
+
+        assert not isinstance(item, str) and item is not None
+        assert self._label(item) == "trusted"
+
+    def test_the_carrier_never_writes_a_security_label(self):
+        """A partial `ContentLabel` is not partial, and this is the measurement that says so.
+
+        `security_label` holds a whole label. Writing only `integrity` into it does not leave
+        confidentiality unstated — the framework fills it with `public` on the way back in, so a
+        forwarded item would classify the store's bytes public: the exact claim omitting the
+        field looks like it avoids. `labelled_result_item` refuses `untrusted` for this reason;
+        the carrier has to obey it too, two functions away.
+        """
+        from agent_framework.security import ContentLabel
+
+        assert ContentLabel.from_dict({"integrity": "untrusted"}).confidentiality is not None, (
+            "if a missing confidentiality ever stops defaulting, this carrier can reconsider "
+            "`security_label` — until then the private key is what keeps it silent"
+        )
+
+        store = _ReadStore({"a.txt": "1"})
+        item = asyncio.run(
+            _session().read_file(store, ListedFile("a.txt", SourceIntegrity.UNTRUSTED))
+        )
+
+        assert not isinstance(item, str) and item is not None
+        assert "security_label" not in item.additional_properties
+        assert self._label(item) == "untrusted"
+
+    def test_a_carried_item_does_not_count_as_labelled_to_the_result_check(self):
+        """`sandboxed_tool` refuses a result whose *every* item carries a label, because an
+        unlabelled item is where the call's own confidentiality comes from. An item that came
+        out of the store must not consume that allowance just by having been read."""
+        store = _ReadStore({"a.txt": "1"})
+        item = asyncio.run(
+            _session().read_file(store, ListedFile("a.txt", SourceIntegrity.TRUSTED))
+        )
+
+        assert not isinstance(item, str) and item is not None
+        assert "security_label" not in (getattr(item, "additional_properties", None) or {})
+
+    def test_an_unestablished_entry_carries_no_label_at_all(self):
+        """Not "untrusted written out". An item left unlabelled takes the call's own label,
+        which is where its confidentiality comes from — writing one here would replace that."""
+        store = _ReadStore({"a.txt": "1"})
+
+        item = asyncio.run(_session().read_file(store, ListedFile("a.txt", None)))
+
+        assert not isinstance(item, str) and item is not None
+        assert self._label(item) is None
+
+    def test_it_reads_the_name_the_entry_carries(self):
+        store = _ReadStore({"infra/main.bicep": "1"})
+
+        asyncio.run(_session().read_file(store, ListedFile("infra/main.bicep", None)))
+
+        assert store.asked == ["infra/main.bicep"]
+
+    def test_a_file_that_is_listed_but_gone_answers_none_rather_than_the_word(self):
+        """A miss is not an exception and must not become the string "None" in a sandbox."""
+        store = _ReadStore({"a.txt": None})
+
+        assert asyncio.run(_session().read_file(store, ListedFile("a.txt", None))) is None
+
+    def test_a_failing_read_answers_with_a_sentence_and_never_the_stores_own(self):
+        store = _ReadStore({}, fails=RuntimeError("connection string s3cr3t"))
+
+        answer = asyncio.run(_session().read_file(store, ListedFile("a.txt", None), at="files[0]"))
+
+        assert isinstance(answer, str)
+        assert "s3cr3t" not in answer
+        assert "a.txt" in answer
+
+    def test_a_refusal_about_a_hidden_expanded_name_renders_the_position_not_the_value(self):
+        """The name is a string the model typed, and when the framework expanded a reference
+        into it the name *is* the hidden content — echoing it back is the leak the whole
+        hidden-content path exists to prevent."""
+        store = _ReadStore({}, fails=RuntimeError("down"))
+
+        answer = asyncio.run(
+            _session().read_file(
+                store, ListedFile("secret.bicep", None), at="files[0]", hidden=True
+            )
+        )
+
+        assert isinstance(answer, str)
+        assert "secret.bicep" not in answer
+        assert "files[0]" in answer
+
+
+class TestListAllFilesFoldsAHostsRecord:
+    """`provenance=` is the whole difference between a label and a guess."""
+
+    def _store(self):
+        return _TreeStore(
+            {
+                "": [_Entry("a.txt", "file"), _Entry("infra", "directory")],
+                "infra": [_Entry("main.bicep", "file")],
+            }
+        )
+
+    def test_without_a_record_every_entry_is_unestablished(self):
+        """`None` is not a synonym for untrusted: it says this host has not answered."""
+        assert [entry.integrity for entry in asyncio.run(list_all_files(self._store()))] == [
+            None,
+            None,
+        ]
+
+    def test_a_recorded_path_reads_untrusted_and_the_rest_read_the_floor(self):
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)  # licenses the trusted floor
+        record.record("infra/main.bicep")
+
+        assert asyncio.run(list_all_files(self._store(), provenance=record)) == [
+            ListedFile("a.txt", SourceIntegrity.TRUSTED),
+            ListedFile("infra/main.bicep", SourceIntegrity.UNTRUSTED),
+        ]
+
+    @pytest.mark.parametrize(
+        "spelling", ["infra//main.bicep", r"infra\main.bicep", "  infra/main.bicep  "]
+    )
+    def test_the_record_is_consulted_through_the_same_key_the_walk_builds(self, spelling: str):
+        """The walk joins with `/`, so a write the provider accepted under another spelling of
+        the same file has to be found anyway — otherwise the lookup misses and a model-written
+        file lists as the host's floor, which is the failure the record exists to prevent.
+
+        Only spellings the provider *normalises* are in scope. One it rejects — a leading `/`,
+        a `.` segment — is a path it never wrote, so there is no entry to find.
+        """
+        record = FileStoreProvenance()
+        file_store_provenance_middleware(record)
+        record.record(spelling)
+
+        listed = asyncio.run(list_all_files(self._store(), provenance=record))
+
+        assert listed[1] == ListedFile("infra/main.bicep", SourceIntegrity.UNTRUSTED)
+
+    def test_a_floor_of_none_leaves_unrecorded_files_unestablished(self):
+        record = FileStoreProvenance()
+        file_store_provenance_middleware(record)
+        record.record("a.txt")
+
+        assert asyncio.run(list_all_files(self._store(), provenance=record)) == [
+            ListedFile("a.txt", SourceIntegrity.UNTRUSTED),
+            ListedFile("infra/main.bicep", None),
+        ]
+
+
+class TestWeakestIntegrity:
+    """The fold a kind applies to what it actually read.
+
+    Ordering comes from `INTEGRITY_RANK` rather than from the enum's declaration order, so a
+    member added later cannot be folded without being ranked — the same rule the host-tool
+    aggregate is held to.
+    """
+
+    def test_no_files_folds_to_trusted(self):
+        """A result deriving from no file derives nothing from the store, so the store is not
+        what would disqualify it."""
+        assert weakest_integrity([]) is SourceIntegrity.TRUSTED
+
+    def test_all_trusted_folds_to_trusted(self):
+        assert (
+            weakest_integrity(
+                [ListedFile("a", SourceIntegrity.TRUSTED), ListedFile("b", SourceIntegrity.TRUSTED)]
+            )
+            is SourceIntegrity.TRUSTED
+        )
+
+    def test_one_untrusted_file_folds_the_whole_read_to_untrusted(self):
+        assert (
+            weakest_integrity(
+                [
+                    ListedFile("a", SourceIntegrity.TRUSTED),
+                    ListedFile("b", SourceIntegrity.UNTRUSTED),
+                    ListedFile("c", SourceIntegrity.TRUSTED),
+                ]
+            )
+            is SourceIntegrity.UNTRUSTED
+        )
+
+    def test_the_weakest_wins_wherever_it_sits_in_the_listing(self):
+        """A fold that answered from the last entry, or the first, would pass the test above by
+        accident."""
+        weak = ListedFile("weak", SourceIntegrity.UNTRUSTED)
+        strong = ListedFile("strong", SourceIntegrity.TRUSTED)
+
+        assert weakest_integrity([weak, strong]) is SourceIntegrity.UNTRUSTED
+        assert weakest_integrity([strong, weak]) is SourceIntegrity.UNTRUSTED
+
+    def test_an_unestablished_file_disqualifies_the_fold_entirely(self):
+        """`None` is not "as good as untrusted, so ignore it beside one". A host that has said
+        nothing about a file has said nothing, and the fold reports that rather than inventing
+        the weakest level it happens to have seen."""
+        assert (
+            weakest_integrity([ListedFile("a", SourceIntegrity.TRUSTED), ListedFile("b", None)])
+            is None
+        )
+        assert (
+            weakest_integrity([ListedFile("a", SourceIntegrity.UNTRUSTED), ListedFile("b", None)])
+            is None
+        )
+        assert weakest_integrity([ListedFile("b", None), ListedFile("a", None)]) is None
+
+    def test_it_folds_any_iterable_not_only_a_list(self):
+        """A kind folds over what it read, which is as likely to be a generator as a list."""
+        entries = (ListedFile(name, SourceIntegrity.TRUSTED) for name in ("a", "b"))
+
+        assert weakest_integrity(entries) is SourceIntegrity.TRUSTED
 
 
 class TestListNoFiles:

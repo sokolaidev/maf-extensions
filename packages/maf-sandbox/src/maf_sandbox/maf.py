@@ -61,6 +61,7 @@ from ._protocol import (
     DisposalFailure,
     Egress,
     IsolationScope,
+    ListedFile,
     Sandbox,
     SandboxKey,
     SandboxSpec,
@@ -76,7 +77,14 @@ from ._reclaim import (
     open_unclean_notes,
     reclaim_guest_path,
 )
-from ._router import ATTACH_REFUSALS, NoSandboxBackend, SandboxRouter, SandboxUnclean
+from ._refusals import echoed_name
+from ._router import (
+    ATTACH_REFUSALS,
+    NoSandboxBackend,
+    SandboxRouter,
+    SandboxUnclean,
+    Selection,
+)
 
 if TYPE_CHECKING:
     from agent_framework import Content
@@ -94,6 +102,7 @@ _DEFAULT_LOGGER = logging.getLogger(__name__)
 
 __all__ = [
     "ISOLATION_SCOPE_KEY",
+    "SOURCE_INTEGRITY_PROPERTY",
     "file_store_provenance_middleware",
     "SandboxPurger",
     "SandboxToolSession",
@@ -636,16 +645,20 @@ def positions_holding_hidden_content(
 
 
 def make_caller_context(
-    list_files: Callable[[Any], Awaitable[list[str]]],
+    list_files: Callable[[Any], Awaitable[list[ListedFile]]],
     scope_getter: Callable[[], str],
     thread_getter: Callable[[], str | None],
 ) -> CallerContext:
     """Build the :class:`~maf_sandbox.CallerContext` a host hands to a workload factory.
 
     Args:
-        list_files: Given the file store, returns the paths the caller may act on.
-            A workload treats that listing as its injection-pinning boundary: only a name
-            present in it is ever substituted into a command.
+        list_files: Given the file store, returns the files the caller may act on, each a
+            :class:`~maf_sandbox.ListedFile` carrying the name and what the host knows about the
+            bytes at it. A workload treats the names as its injection-pinning boundary — only a
+            name present in the listing is ever substituted into a command — and reads the label
+            beside each rather than inferring one from the name.
+            :func:`list_all_files` builds this, and takes the host's ``provenance`` record so the
+            labels are what the host knows rather than what a kind could guess.
         scope_getter: The caller's user/tenant scope, read at call time.
         thread_getter: The caller's conversation id, read at call time, or ``None`` when
             no conversation is bound.
@@ -968,6 +981,20 @@ def sandbox_tool_declarations(
     return declarations
 
 
+#: Where :meth:`SandboxToolSession.read_file` records what the host knows about a file's bytes.
+#:
+#: A private key rather than the framework's ``security_label``, and the difference is not
+#: cosmetic. ``security_label`` holds a whole ``ContentLabel``, and a partial one is not partial:
+#: ``ContentLabel.from_dict({"integrity": "untrusted"})`` answers ``confidentiality=public``, so
+#: writing integrity alone classifies everything the store holds as public the moment anything
+#: parses it back. It is the same reason :func:`labelled_result_item` refuses ``untrusted``, and
+#: it keeps an item that merely came out of the store from consuming :func:`sandboxed_tool`'s
+#: rule that not every item may carry a label. This key means *what the host recorded about the
+#: source* and nothing about confidentiality, so an item carrying it makes no claim MAF acts on.
+#: A kind that wants to say something about a result item uses :func:`labelled_result_item`.
+SOURCE_INTEGRITY_PROPERTY = "maf_sandbox_source_integrity"
+
+
 def labelled_result_item(text: str, integrity: SourceIntegrity) -> Content:
     """One item of a split tool result, carrying its own integrity label.
 
@@ -1177,8 +1204,8 @@ class SandboxToolSession:
         # name against ``work_dir``, the way every other confined call on the surface does.
         return f"{self._spec.work_dir}/{_call_name(call)}"
 
-    async def list_files(self, store: Any) -> list[str] | str:
-        """The paths this caller may act on, or the message to return if they cannot be read.
+    async def list_files(self, store: Any) -> list[ListedFile] | str:
+        """The files this caller may act on, or the message to return if they cannot be read.
 
         The listing is a workload's injection-pinning boundary: only a name present in it is
         ever substituted into a command, so a name the model invented — or one it read out of
@@ -1188,11 +1215,80 @@ class SandboxToolSession:
 
         The store is passed per call rather than held: which store a workload reads is the
         workload's business, and some read more than one.
+
+        Each entry carries the label the host knows for the bytes at that name.  Read it rather
+        than inferring one from the name — see :class:`~maf_sandbox.ListedFile`, and rule 9 in
+        ``docs/sandbox/kinds/README.md``.
         """
         try:
             return await self._context.list_files(store)
         except Exception as exc:  # noqa: BLE001
             return f"Error: could not list the file store: {exc}"
+
+    async def read_file(
+        self,
+        store: Any,
+        listed: ListedFile,
+        *,
+        at: str | None = None,
+        hidden: bool = False,
+        named: str | None = None,
+    ) -> Content | str | None:
+        """The content at ``listed``, as a labelled item — or ``None`` where the file is gone.
+
+        The read surface a kind should use, in place of reaching for ``store.read`` itself.  It
+        answers with an ``agent_framework`` ``Content`` carrying the listing's own label in
+        ``additional_properties[SOURCE_INTEGRITY_PROPERTY]``, so what a kind holds says what it is
+        worth
+        rather than being a bare ``str`` whose provenance the framework lost
+        (:class:`~maf_sandbox.ListedFile`).
+
+        **Pass the listing entry, never a name.**  Taking a ``ListedFile`` is what keeps the two
+        together: a name alone would read the bytes and lose the only thing that says what they
+        are, which is the failure this whole channel exists to close.
+
+        ``None`` where the store has no such file — it was listed and then removed, and writing
+        the word ``None`` into a sandbox is not an answer.  A failure to read answers with the
+        sentence a caller returns, for the reason the listing does.
+
+        **The label is the listing's, so it is as old as the listing.**  Nothing here re-reads the
+        host's record after the bytes arrive, and MAF runs tool calls concurrently, so a file the
+        host's floor called ``trusted`` at listing time can be rewritten by the agent's own
+        ``file_access_write`` before this read returns and the model's bytes arrive under the old
+        label.  Only a ``trusted`` floor is exposed — an unestablished or untrusted entry has
+        nowhere weaker to go — so a host wiring ``floor=SourceIntegrity.TRUSTED`` is claiming the
+        store is not written under a read, not merely that its unrecorded paths are trustworthy.
+
+        ``at`` is where the caller got the name — ``"files[1]"`` — and ``hidden`` says the
+        framework rewrote that argument, which is what makes the refusal render the position
+        instead of the value.  Pass both: ``at`` alone still quotes a short printable name, and a
+        name expanded out of hidden content is exactly the value a refusal must not repeat
+        (:func:`echoed_name`, and rule 9 in ``docs/sandbox/kinds/README.md``).
+
+        ``named`` overrides that rendering, and a caller that resolved the model's spelling
+        against its listing should pass one.  :attr:`ListedFile.name` is the *host's* key, so
+        rendering from it describes a different string than the one at ``at`` — for a model that
+        asked for ``./main.bicep`` against a listing holding ``main.bicep``, the positional form
+        would report the wrong length for the value it is standing in for.  The caller knows both
+        spellings; this method only ever sees one.
+        """
+        from agent_framework import Content
+
+        try:
+            text = await store.read(listed.name)
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning(
+                f"{self._log_prefix}: could not read a listed file: %s", error_detail(exc)
+            )
+            shown = named if named is not None else echoed_name(listed.name, at=at, hidden=hidden)
+            return f"Error: {shown} could not be read from the file store"
+        if text is None:
+            return None
+        properties: dict[str, Any] = {}
+        if listed.integrity is not None:
+            # Not `security_label` — see `SOURCE_INTEGRITY_PROPERTY` for why.
+            properties[SOURCE_INTEGRITY_PROPERTY] = str(listed.integrity)
+        return Content.from_text(text, additional_properties=properties)
 
     async def acquire(self, key: SandboxKey) -> Sandbox | str:
         """A running sandbox for ``key``, or the message to return when there is none.
@@ -1290,7 +1386,9 @@ class SandboxToolSession:
             # The call ended while the backend was still creating. Its cleanup has already run the
             # delete for this key, so what came back is a sandbox nothing is left to remove: take
             # it here, and refuse rather than hand a task something it cannot have cleaned up.
-            landed = await self._router.dispose_call(key, timeout=self._router.reclaim.timeout)
+            landed = await self._router.dispose_call(
+                key, timeout=self._router.reclaim.timeout, spec=self._spec
+            )
             if landed:
                 fate = "It has been disposed and the result refused."
             else:
@@ -1425,6 +1523,7 @@ async def _dispose_the_call_sandbox(
     key: SandboxKey,
     *,
     router: SandboxRouter,
+    spec: SandboxSpec,
     prefix: str,
     logger: logging.Logger,
     timeout: float,
@@ -1434,9 +1533,13 @@ async def _dispose_the_call_sandbox(
     The whole sandbox goes, so nothing is removed from inside it first, and a transport's note
     that a stop did not reach everything is answered by the same delete.  Nothing is marked
     unclean: that refuses a key's next acquire, and this key has none.
+
+    ``spec`` is passed on rather than dropped because it is what names the backend to ask on a
+    router that selects per spec — the delete is aimed at the one that served this call, not
+    swept across every backend registered.
     """
     try:
-        landed = await router.dispose_call(key, timeout=timeout)
+        landed = await router.dispose_call(key, timeout=timeout, spec=spec)
     except (asyncio.CancelledError, GeneratorExit):
         logger.warning(
             f"{prefix}: the call's sandbox was not disposed — the call was cancelled during the "
@@ -1491,7 +1594,12 @@ async def _reclaim_the_call(
         if key.call_id:
             try:
                 undisposed = await _dispose_the_call_sandbox(
-                    key, router=router, prefix=prefix, logger=logger, timeout=timeout
+                    key,
+                    router=router,
+                    spec=spec,
+                    prefix=prefix,
+                    logger=logger,
+                    timeout=timeout,
                 )
                 if undisposed is None:
                     # The sandbox went, and every note about it went with it.
@@ -1817,6 +1925,19 @@ def sandboxed_tool(
     router.ensure_can_serve(spec)
 
     records = logger if logger is not None else _DEFAULT_LOGGER
+    if router.selection is Selection.PER_SPEC:
+        # Once, at attach, and only where the answer is not already in the host's own
+        # configuration: under the fixed selection a host reads `router.backend` and knows.
+        # Not inside `ensure_can_serve`, which `acquire` runs on every tool call — a record
+        # per call would put a log line in a warm fix-round loop for a fact that cannot change,
+        # since the route is a pure function of a spec that is fixed by now.
+        served = router.backend_for(spec)
+        records.info(
+            "%s: the %r workload routes to sandbox backend %s",
+            name,
+            spec.kind,
+            "nothing" if served is None else repr(served.name),
+        )
     session = SandboxToolSession(
         router,
         context,
@@ -1912,8 +2033,10 @@ def sandboxed_tool(
     return [decorate(reclaiming)]
 
 
-async def list_all_files(store: Any) -> list[str]:
-    """Every file in ``store``, as store-relative paths.
+async def list_all_files(
+    store: Any, *, provenance: FileStoreProvenance | None = None
+) -> list[ListedFile]:
+    """Every file in ``store``, each with what the host knows about its integrity.
 
     The listing a workload is given is its **injection-pinning boundary**: only a name that
     appears in it is ever substituted into a sandbox command, so a path the model invented
@@ -1925,8 +2048,15 @@ async def list_all_files(store: Any) -> list[str]:
 
     A failure propagates.  Answering an empty list would read as "the store has no files" and
     refuse every name for the wrong reason.
+
+    Args:
+        store: The agent file store to walk.
+        provenance: The host's record for *this* store, if it keeps one.  Each name is looked up
+            in it, so the listing carries what the host knows rather than what a kind could
+            guess.  ``None`` labels every entry ``None`` — unestablished, which is what a host
+            keeping no record honestly knows — and is not a synonym for untrusted.
     """
-    paths: list[str] = []
+    files: list[ListedFile] = []
 
     async def walk(directory: str) -> None:
         for entry in await store.list_children(directory):
@@ -1934,13 +2064,17 @@ async def list_all_files(store: Any) -> list[str]:
             if entry.type == "directory":
                 await walk(child)
             else:
-                paths.append(child)
+                files.append(
+                    ListedFile(
+                        child, None if provenance is None else provenance.integrity_of(child)
+                    )
+                )
 
     await walk("")
-    return paths
+    return files
 
 
-async def list_no_files(_store: object) -> list[str]:
+async def list_no_files(_store: object) -> list[ListedFile]:
     """Enumerate nothing — the listing for a workload with no file channel at all.
 
     Not a stub standing in for unfinished work.  ``CallerContext.list_files`` is required, so

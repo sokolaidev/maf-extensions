@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.11.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.10.0...maf-sandbox-codeact-v0.11.0) (2026-09-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* CallerContext.list_files now answers with ListedFile entries. A kind reading store.read directly is unaffected and stays unlabelled; SandboxToolSession.read_file is the surface that carries the label.
+* **codeact:** with withhold_guest_output=True, execute_code answers with two Content items rather than one string, and the recovery-route sentence is the second item rather than the last line of the first. A host that reads or asserts on the tool result's text should expect both items; a host that only runs an agent is unaffected.
+
+### Features
+
+* a kind is handed the labels of the files it was named, and reads them as labelled items ([#876](https://github.com/sokolaidev/maf-extensions/issues/876)) ([796e03b](https://github.com/sokolaidev/maf-extensions/commit/796e03bcd4ffc07fa3fd55e7a3e953d204a35e4a))
+* a timed-out run's reason for reading no output is an attribute, and a withheld result carries it ([#844](https://github.com/sokolaidev/maf-extensions/issues/844)) ([5698da1](https://github.com/sokolaidev/maf-extensions/commit/5698da16471dcd1c96cc25fc3d6451c016313500))
+* **codeact:** the withheld route sentence is its own trusted item, so hiding leaves it readable ([#857](https://github.com/sokolaidev/maf-extensions/issues/857)) ([435be26](https://github.com/sokolaidev/maf-extensions/commit/435be267b53abc856b288f366548511970dd78e8))
+
+
+### Fixes
+
+* **codeact:** a withheld tool tells the model nothing it writes to stdout or stderr comes back ([#837](https://github.com/sokolaidev/maf-extensions/issues/837)) ([66e0d78](https://github.com/sokolaidev/maf-extensions/commit/66e0d786b92697c2e4bcee286e4a89020496a97c))
+* **codeact:** who owns stderr comes from the result, so a merging backend renders correctly too ([#851](https://github.com/sokolaidev/maf-extensions/issues/851)) ([6a1dc0a](https://github.com/sokolaidev/maf-extensions/commit/6a1dc0a7a36f9fc8ef18f9c227512b4cb03dbc1b))
+
+
+### Documentation
+
+* an undeclared result costs the model's sight of it, not the host's sinks ([#834](https://github.com/sokolaidev/maf-extensions/issues/834)) ([f0b8429](https://github.com/sokolaidev/maf-extensions/commit/f0b8429dc46034a27fbc76725c9cf4de1ef60b73))
+
 ## [0.10.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.9.2...maf-sandbox-codeact-v0.10.0) (2026-09-02)
 
 

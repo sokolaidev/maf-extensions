@@ -2,6 +2,37 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.32.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.30.0...maf-sandbox-v0.32.0) (2026-09-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* CallerContext.list_files now answers with ListedFile entries. A kind reading store.read directly is unaffected and stays unlabelled; SandboxToolSession.read_file is the surface that carries the label.
+* an explicit source_integrity="trusted" is now refused where the spec opens a channel nothing establishes as trusted — the agent's file store (Capability.FILES_IN in requires), the network (egress_allow naming hosts, or Egress.UNRESTRICTED), or host tools whose registry fold is untrusted or absent. DEFAULT_CAPABILITIES holds FILES_IN, so every spec that leaves requires at its default opens the file store, and a host passing source_integrity="trusted" today gets a ValueError when the tool is attached. Declare "untrusted" or nothing, or pass nothing_survives_from= naming the channels nothing from which survives into the result. A host that declares no integrity at all is unaffected — that is the default and it is never refused. Two smaller changes ride along: source_integrity is coerced now, so a misspelling that used to declare nothing raises instead; and the confidentiality cap is written for an unrestricted run, which previously went uncapped.
+* a tool that says nothing about source_integrity now declares nothing ([#833](https://github.com/sokolaidev/maf-extensions/issues/833))
+
+### Features
+
+* a kind is handed the labels of the files it was named, and reads them as labelled items ([#876](https://github.com/sokolaidev/maf-extensions/issues/876)) ([796e03b](https://github.com/sokolaidev/maf-extensions/commit/796e03bcd4ffc07fa3fd55e7a3e953d204a35e4a))
+* a timed-out run's reason for reading no output is an attribute, and a withheld result carries it ([#844](https://github.com/sokolaidev/maf-extensions/issues/844)) ([5698da1](https://github.com/sokolaidev/maf-extensions/commit/5698da16471dcd1c96cc25fc3d6451c016313500))
+* a tool that says nothing about source_integrity now declares nothing ([#833](https://github.com/sokolaidev/maf-extensions/issues/833)) ([1a204e6](https://github.com/sokolaidev/maf-extensions/commit/1a204e69b067b7f8350def7ee7a456c370ed2699))
+* a trusted declaration is refused over a spec that opens a channel nothing establishes as trusted ([#861](https://github.com/sokolaidev/maf-extensions/issues/861)) ([ec00ce0](https://github.com/sokolaidev/maf-extensions/commit/ec00ce000cd1a0c3245d7eefe5ad79bf16cf859c))
+* **core:** a host middleware to record the integrity of content in the agent file store ([#870](https://github.com/sokolaidev/maf-extensions/issues/870)) ([fd558ac](https://github.com/sokolaidev/maf-extensions/commit/fd558acae5fa4e3258427a0b665187fe9977d274))
+* **core:** a trusted floor is refused for a filestore if no provenance middleware is constructed for it ([#875](https://github.com/sokolaidev/maf-extensions/issues/875)) ([32d9ecb](https://github.com/sokolaidev/maf-extensions/commit/32d9ecb71074df4d921593ba7f4a1f16860dae91))
+* **core:** let a kind split its result into items, each carrying its own integrity label ([#849](https://github.com/sokolaidev/maf-extensions/issues/849)) ([5ff41e8](https://github.com/sokolaidev/maf-extensions/commit/5ff41e846b0ae13669810620b03afeaf66ea0281))
+* keep exec's two streams in their own fields, and let a merged result say so ([#838](https://github.com/sokolaidev/maf-extensions/issues/838)) ([aad09ed](https://github.com/sokolaidev/maf-extensions/commit/aad09ed89baf7de687ced6e393f47c5cf1b69165))
+* **sandbox:** a router can select a backend per spec, and registration order is the preference ([#872](https://github.com/sokolaidev/maf-extensions/issues/872)) ([f60e83f](https://github.com/sokolaidev/maf-extensions/commit/f60e83f0d87fccebd86a93c8270bce2d93fae6be))
+
+
+### Documentation
+
+* a workload converts a session refusal once, at its funnel, not at each accessor ([#863](https://github.com/sokolaidev/maf-extensions/issues/863)) ([7062e0f](https://github.com/sokolaidev/maf-extensions/commit/7062e0f210e8d0e9658ceca8c91d7cec63320e08))
+* an undeclared result costs the model's sight of it, not the host's sinks ([#834](https://github.com/sokolaidev/maf-extensions/issues/834)) ([f0b8429](https://github.com/sokolaidev/maf-extensions/commit/f0b8429dc46034a27fbc76725c9cf4de1ef60b73))
+* **sandbox:** a trusted integrity label is licensed by derivation, never by authorship ([#835](https://github.com/sokolaidev/maf-extensions/issues/835)) ([352d35f](https://github.com/sokolaidev/maf-extensions/commit/352d35ff0b0efa631eec44f0a9a2979657d7e583))
+* SandboxProgramTimeout stops prescribing which attributes a withholding caller renders ([#856](https://github.com/sokolaidev/maf-extensions/issues/856)) ([fd6601d](https://github.com/sokolaidev/maf-extensions/commit/fd6601dd5f3a744f83ac3c3adad53a37b2465cd4))
+* **sandbox:** the source leg names its subject rather than a pronoun chain ([#855](https://github.com/sokolaidev/maf-extensions/issues/855)) ([0373e14](https://github.com/sokolaidev/maf-extensions/commit/0373e14c420b7ea617c781320c3357053d52c35e))
+* **sandbox:** wslc's remove is blocked on who answers its check, not on an absent one ([#848](https://github.com/sokolaidev/maf-extensions/issues/848)) ([b09272e](https://github.com/sokolaidev/maf-extensions/commit/b09272eda7f3fbc73cf1d9325ab3e7bb660aea2f))
+
 ## [0.30.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.29.1...maf-sandbox-v0.30.0) (2026-09-02)
 
 

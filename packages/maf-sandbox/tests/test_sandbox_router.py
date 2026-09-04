@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import gc
+import logging
 import math
 import typing
 
@@ -65,6 +66,7 @@ from maf_sandbox import (
     SandboxTransferLimitsNotPermitted,
     SandboxUnclean,
     ScopePurge,
+    Selection,
     TransferLimits,
     fold_disposal_failures,
     fold_host_tool_call_transfer_limits,
@@ -3263,3 +3265,458 @@ class TestASandboxThatCannotBeReclaimed:
         """A guard that refuses everything is an outage, not a guard."""
         router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE)
         assert asyncio.run(router.acquire(_KEY, _SPEC)) is not None
+
+
+def _declaring(
+    name: str,
+    *capabilities: Capability,
+    isolation: Isolation = Isolation.NONE,
+    per_call: bool = False,
+) -> InProcessSandboxBackend:
+    """A fake declaring `DEFAULT_CAPABILITIES` plus whatever it is given, and its own rung.
+
+    The pairings below are all built from this, so a routing test never turns on a difference
+    the test invented: a backend reached second is reached because of something it declares.
+    """
+    scopes = frozenset({IsolationScope.CALL, IsolationScope.CONVERSATION} if per_call else {})
+    declarations = dataclasses.replace(
+        FAKE_BACKEND_DECLARATIONS,
+        capabilities=DEFAULT_CAPABILITIES | frozenset(capabilities),
+        **({"isolation_scopes": scopes} if per_call else {}),
+    )
+    return InProcessSandboxBackend(name=name, isolation=isolation, declarations=declarations)
+
+
+def _wanting_files_out() -> SandboxSpec:
+    """A spec the plain fake cannot serve and one declaring `FILES_OUT` can."""
+    return SandboxSpec(kind="test", requires=DEFAULT_CAPABILITIES | {Capability.FILES_OUT})
+
+
+class TestPerSpecSelection:
+    """`Selection.PER_SPEC` — the router reading past the first registered backend.
+
+    Every fake here declares `none` isolation unless it is given another rung, so these routers
+    opt below the floor the way a developer machine does.
+    """
+
+    def test_the_default_selection_is_fixed(self):
+        """Opting in is the whole safety argument, so the default is pinned rather than assumed."""
+        assert SandboxRouter([_declaring("only")], min_isolation=Isolation.NONE).selection is (
+            Selection.FIXED
+        )
+
+    def test_the_fixed_selection_refuses_with_a_capable_backend_registered_and_unused(self):
+        """The behaviour #328 is about, kept working: this is the contrast every test below is
+        measured against, and it must not become a reroute by accident."""
+        weak, strong = _declaring("weak"), _declaring("strong", Capability.FILES_OUT)
+        router = SandboxRouter([weak, strong], min_isolation=Isolation.NONE)
+        with pytest.raises(SandboxCapabilityNotSupported):
+            router.ensure_can_serve(_wanting_files_out())
+        assert router.backend is weak
+
+    def test_routing_reaches_the_second_backend_for_a_spec_the_first_cannot_serve(self):
+        weak, strong = _declaring("weak"), _declaring("strong", Capability.FILES_OUT)
+        router = SandboxRouter(
+            [weak, strong], min_isolation=Isolation.NONE, selection=Selection.PER_SPEC
+        )
+        spec = _wanting_files_out()
+        router.ensure_can_serve(spec)
+        assert router.backend_for(spec) is strong
+
+    def test_the_first_registered_backend_wins_whenever_it_can_serve(self):
+        """Registration order is the preference, and it is the *only* thing ordering the
+        candidates: not cost, not latency, not which one answered fastest last time."""
+        first, second = (
+            _declaring("first", Capability.FILES_OUT),
+            _declaring("second", Capability.FILES_OUT),
+        )
+        router = SandboxRouter(
+            [first, second], min_isolation=Isolation.NONE, selection=Selection.PER_SPEC
+        )
+        assert router.backend_for(_wanting_files_out()) is first
+
+    def test_routing_serves_exactly_what_the_fixed_selection_serves_when_it_can(self):
+        """The refusal-to-service property, measured rather than argued: for a spec the first
+        backend can serve, both selections name the same backend."""
+        spec = SandboxSpec(kind="test")
+        fixed = SandboxRouter(
+            [_declaring("first"), _declaring("second")], min_isolation=Isolation.NONE
+        )
+        routed = SandboxRouter(
+            [_declaring("first"), _declaring("second")],
+            min_isolation=Isolation.NONE,
+            selection=Selection.PER_SPEC,
+        )
+        assert fixed.backend is not None
+        served = routed.backend_for(spec)
+        assert served is not None
+        assert served.name == fixed.backend.name
+
+    def test_the_route_is_the_same_answer_asked_twice(self):
+        """A pure function of the spec, which is what keeps *this* spec on one backend across
+        calls — `acquire` is get-or-create, and a route that moved would pay a cold start every
+        iteration and leave a billable sandbox behind on the one it walked away from. It says
+        nothing about the key: two specs under one key may route apart, and are meant to."""
+        router = SandboxRouter(
+            [_declaring("weak"), _declaring("strong", Capability.FILES_OUT)],
+            min_isolation=Isolation.NONE,
+            selection=Selection.PER_SPEC,
+        )
+        spec = _wanting_files_out()
+        assert router.backend_for(spec) is router.backend_for(spec)
+
+    def test_when_nothing_can_serve_the_preferred_backends_refusal_is_the_one_raised(self):
+        """Its *type* above all: these classes are exported and hosts catch them individually,
+        so inventing a new one here would be caught by nobody who catches this one today."""
+        first = _declaring("first", isolation=Isolation.CONTAINER)
+        second = _declaring("second", Capability.FILES_OUT)
+        router = SandboxRouter(
+            [first, second], min_isolation=Isolation.NONE, selection=Selection.PER_SPEC
+        )
+        spec = SandboxSpec(
+            kind="test",
+            requires=DEFAULT_CAPABILITIES | {Capability.FILES_OUT},
+            min_isolation=Isolation.CONTAINER,
+        )
+        with pytest.raises(SandboxCapabilityNotSupported) as refused:
+            router.ensure_can_serve(spec)
+        assert "'second' (SandboxBackendNotPermitted)" in str(refused.value), (
+            "the backends passed over are not named, so a host cannot see what was tried"
+        )
+
+    def test_one_candidate_is_refused_in_the_words_it_would_have_been_refused_in(self):
+        """A single-backend host must not learn a new sentence from a feature it did not turn
+        on — and every refusal message already written stays the one a reader meets."""
+        spec = _wanting_files_out()
+        fixed = SandboxRouter([_declaring("only")], min_isolation=Isolation.NONE)
+        routed = SandboxRouter(
+            [_declaring("only")], min_isolation=Isolation.NONE, selection=Selection.PER_SPEC
+        )
+        with pytest.raises(SandboxCapabilityNotSupported) as under_fixed:
+            fixed.ensure_can_serve(spec)
+        with pytest.raises(SandboxCapabilityNotSupported) as under_routing:
+            routed.ensure_can_serve(spec)
+        assert str(under_fixed.value) == str(under_routing.value)
+        # Equality alone cannot see a suffix both routers carry, so the shape is checked too.
+        assert "was tried for the" not in str(under_routing.value)
+
+    def test_a_pin_and_routing_are_two_answers_to_one_question(self):
+        with pytest.raises(ValueError, match="two answers to one question"):
+            SandboxRouter(
+                [_declaring("a")],
+                min_isolation=Isolation.NONE,
+                selected="a",
+                selection=Selection.PER_SPEC,
+            )
+
+    def test_a_selection_this_package_does_not_recognise_is_refused_at_construction(self):
+        """Coerced through `Selection()` where `min_isolation` is coerced, and for the reason:
+        a mode nobody implemented would otherwise be read as the default and route nothing."""
+        with pytest.raises(ValueError):
+            SandboxRouter(
+                [_declaring("a")],
+                min_isolation=Isolation.NONE,
+                selection=typing.cast("Selection", "sometimes"),
+            )
+
+    def test_construction_refuses_when_nothing_registered_clears_the_floor(self):
+        """A deployment that can serve no workload at all should not start with the feature
+        apparently enabled — the property `samples/01`'s README documents, kept."""
+        with pytest.raises(SandboxBackendNotPermitted, match="no registered sandbox backend"):
+            SandboxRouter([_declaring("a"), _declaring("b")], selection=Selection.PER_SPEC)
+
+    def test_a_backend_below_the_floor_is_kept_registered_and_named_rather_than_dropped(self):
+        """It is never routed to, and it is not silently gone either: disposal still reaches it,
+        and here — where *nothing* can serve the spec — the refusal names it with its rung."""
+        strong = _declaring("strong", isolation=Isolation.MICROVM)
+        weak = _declaring("weak", Capability.FILES_OUT)
+        router = SandboxRouter([strong, weak], selection=Selection.PER_SPEC)
+        assert router.enabled is True
+        with pytest.raises(SandboxCapabilityNotSupported) as refused:
+            router.ensure_can_serve(_wanting_files_out())
+        assert "'weak' (SandboxBackendNotPermitted)" in str(refused.value)
+
+    def test_a_backend_below_the_floor_is_named_once_at_construction(self, caplog):
+        """Routing past it is the promotion `min_isolation`'s own refusal is written against.
+
+        Nothing is unsafe — every candidate is checked against the floor, so the passed-over
+        backend can never serve. What it would otherwise be is unmentioned: the per-spec refusal
+        names it only when nothing serves at all. The registration keeps doing one job, since
+        disposal reaches every registered backend, so the warning says it will not serve rather
+        than that it is useless. Said once at construction, rather than raised: a weaker backend
+        beside a stronger one is the arrangement this mode is for.
+        """
+        strong = _declaring("strong", isolation=Isolation.MICROVM)
+        weak = _declaring("weak")
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox._router"):
+            SandboxRouter([strong, weak], selection=Selection.PER_SPEC)
+        assert "'weak' (none)" in caplog.text
+        assert "no workload is ever routed there" in caplog.text
+        # Its own assertion, because this half is what the warning gets wrong if anyone
+        # shortens it: `dispose` and `dispose_scope` reach every *registered* backend, so a
+        # host told to unregister this one would strand whatever it still holds. Below the
+        # floor is a statement about what may be served, never about what must be reclaimed.
+        assert "disposal still reaches it" in caplog.text
+
+    def test_a_registration_that_all_clears_the_floor_says_nothing(self, caplog):
+        """The warning has to stay rare enough to read, so the healthy arrangement is silent."""
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox._router"):
+            SandboxRouter(
+                [
+                    _declaring("a", isolation=Isolation.MICROVM),
+                    _declaring("b", isolation=Isolation.VM),
+                ],
+                selection=Selection.PER_SPEC,
+            )
+        assert caplog.text == ""
+
+    def test_nothing_clearing_the_floor_raises_rather_than_warns(self, caplog):
+        """The refusal outranks the warning, and a warning beside it would read as the whole
+        answer to a host reading its logs rather than its exception."""
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox._router"):
+            with pytest.raises(SandboxBackendNotPermitted):
+                SandboxRouter([_declaring("a"), _declaring("b")], selection=Selection.PER_SPEC)
+        assert caplog.text == ""
+
+    @pytest.mark.parametrize("field", ["capabilities", "egress_modes", "isolation_scopes"])
+    def test_a_mis_shaped_declaration_is_refused_rather_than_routed_past(self, field):
+        """The hazard routing adds to a rule the fixed selection already held.
+
+        `_declared_set` raises `SandboxBackendNotPermitted` for a field it cannot read, and
+        `_refusal_serving` catches that whole family — so past construction an unreadable
+        declaration is indistinguishable from a backend honestly refusing one spec, and the
+        *next* backend would serve while the misconfiguration went unmentioned. Under
+        `Selection.FIXED` the same declaration surfaces at the first check, because there is
+        nowhere to route past it to.
+        """
+        broken = InProcessSandboxBackend(
+            name="broken",
+            declarations=dataclasses.replace(FAKE_BACKEND_DECLARATIONS, **{field: ["closed"]}),
+        )
+        with pytest.raises(SandboxBackendNotPermitted, match=field):
+            SandboxRouter(
+                [broken, _declaring("sound", Capability.FILES_OUT)],
+                min_isolation=Isolation.NONE,
+                selection=Selection.PER_SPEC,
+            )
+
+    def test_a_mis_shaped_limits_declaration_is_refused_at_construction(self):
+        """Its own case: `_declared_limits` raises a different member of the same family."""
+        broken = InProcessSandboxBackend(
+            name="broken",
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                limits=typing.cast("SandboxLimits", DEFAULT_TRANSFER_LIMITS),
+            ),
+        )
+        with pytest.raises(SandboxTransferLimitsNotPermitted, match="limits"):
+            SandboxRouter(
+                [broken, _declaring("sound")],
+                min_isolation=Isolation.NONE,
+                selection=Selection.PER_SPEC,
+            )
+
+    def test_a_half_migrated_backend_registered_second_is_refused_at_construction(self):
+        """Under the fixed selection nothing ever reads it; under routing every registered
+        backend can be asked to serve, so every one of them is read at startup instead."""
+        stray = _declaring("stray")
+        setattr(stray, "egress_modes", frozenset({Egress.CLOSED}))
+        SandboxRouter([_declaring("good"), stray], min_isolation=Isolation.NONE)
+        with pytest.raises(SandboxBackendNotPermitted, match="egress_modes"):
+            SandboxRouter(
+                [_declaring("good"), stray],
+                min_isolation=Isolation.NONE,
+                selection=Selection.PER_SPEC,
+            )
+
+    def test_routing_has_no_fixed_backend_and_is_still_enabled(self):
+        """`enabled` moves off `backend` for exactly this: the router is perfectly able to
+        serve while the question `backend` answers has no answer."""
+        router = SandboxRouter(
+            [_declaring("a")], min_isolation=Isolation.NONE, selection=Selection.PER_SPEC
+        )
+        assert router.backend is None
+        assert router.enabled is True
+
+    def test_no_backend_at_all_is_not_enabled_under_either_selection(self):
+        assert SandboxRouter([], selection=Selection.PER_SPEC).enabled is False
+        assert SandboxRouter([]).enabled is False
+
+    def test_backend_for_answers_none_rather_than_raising_when_nothing_can_serve(self):
+        """It says *which*, never *why* — a caller wanting the reason asks `ensure_can_serve`."""
+        router = SandboxRouter(
+            [_declaring("weak")], min_isolation=Isolation.NONE, selection=Selection.PER_SPEC
+        )
+        assert router.backend_for(_wanting_files_out()) is None
+
+    def test_backend_for_answers_none_for_a_capability_this_host_denies(self):
+        """No backend property softens a denial, so there is no candidate to name."""
+        router = SandboxRouter(
+            [_declaring("a", Capability.HOST_TOOLS)],
+            min_isolation=Isolation.NONE,
+            selection=Selection.PER_SPEC,
+            denied_capabilities={Capability.HOST_TOOLS},
+        )
+        spec = SandboxSpec(kind="test", requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS})
+        assert router.backend_for(spec) is None
+
+    def test_a_host_denial_is_not_something_routing_can_try_the_next_backend_for(self):
+        """Raised once, before the loop: it is a statement about the spec against this host's
+        posture, so a second backend is not an answer to it and must not be named as if it were."""
+        router = SandboxRouter(
+            [
+                _declaring("first", Capability.HOST_TOOLS),
+                _declaring("second", Capability.HOST_TOOLS),
+            ],
+            min_isolation=Isolation.NONE,
+            selection=Selection.PER_SPEC,
+            denied_capabilities={Capability.HOST_TOOLS},
+        )
+        spec = SandboxSpec(kind="test", requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS})
+        with pytest.raises(SandboxCapabilityDenied) as refused:
+            router.ensure_can_serve(spec)
+        assert "was tried for the" not in str(refused.value)
+
+    def test_acquire_creates_on_the_backend_the_route_names(self):
+        weak, strong = _declaring("weak"), _declaring("strong", Capability.FILES_OUT)
+        router = SandboxRouter(
+            [weak, strong], min_isolation=Isolation.NONE, selection=Selection.PER_SPEC
+        )
+        asyncio.run(router.acquire(_KEY, _wanting_files_out()))
+        assert weak.keys == []
+        assert strong.keys == [_KEY]
+
+    def test_a_sandbox_refused_after_the_create_is_disposed_on_the_backend_that_made_it(self):
+        """The refusal path `acquire` owns must follow the route, not the registration: a
+        disposal aimed at the first backend would leave the real one billable and running."""
+
+        class _Stale(InProcessSandbox):
+            reclaim = None  # type: ignore[assignment]
+
+        weak = _declaring("weak")
+        strong = InProcessSandboxBackend(
+            _Stale(),
+            name="strong",
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT},
+            ),
+        )
+        router = SandboxRouter(
+            [weak, strong], min_isolation=Isolation.NONE, selection=Selection.PER_SPEC
+        )
+        with pytest.raises(TypeError, match="does not implement `Sandbox.reclaim`"):
+            asyncio.run(router.acquire(_KEY, _wanting_files_out()))
+        assert strong.disposed == [_KEY]
+        assert weak.disposed == []
+
+    def test_dispose_call_deletes_on_the_backend_the_spec_routes_to(self):
+        """Recomputed rather than remembered: a `key -> backend` map would be the unbounded
+        one `_may_be_refused` already refuses for call keys, and would answer nothing on a
+        replica that did not create the sandbox."""
+        weak = _declaring("weak", per_call=True)
+        strong = _declaring("strong", Capability.FILES_OUT, per_call=True)
+        router = SandboxRouter(
+            [weak, strong], min_isolation=Isolation.NONE, selection=Selection.PER_SPEC
+        )
+        spec = SandboxSpec(
+            kind="test",
+            requires=DEFAULT_CAPABILITIES | {Capability.FILES_OUT},
+            isolation_scope=IsolationScope.CALL,
+        )
+        call_key = dataclasses.replace(_KEY, call_id="call-1")
+        assert asyncio.run(router.dispose_call(call_key, timeout=5.0, spec=spec)) is True
+        assert strong.disposed == [call_key]
+        assert weak.disposed == []
+
+    def test_a_spec_this_host_denies_names_no_backend_to_delete_on(self):
+        """A denied spec created nothing, so its delete must reach nothing.
+
+        `_route` does not consult the host's denials — they are raised once, ahead of it — so
+        routing alone would still name a backend here, and that backend's `dispose` takes every
+        kind under the call key. Asking through `backend_for` is what keeps the two answers the
+        same question.
+        """
+        denied = _declaring("a", Capability.HOST_TOOLS, per_call=True)
+        router = SandboxRouter(
+            [denied],
+            min_isolation=Isolation.NONE,
+            selection=Selection.PER_SPEC,
+            denied_capabilities={Capability.HOST_TOOLS},
+        )
+        spec = SandboxSpec(
+            kind="test",
+            requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+            isolation_scope=IsolationScope.CALL,
+        )
+        call_key = dataclasses.replace(_KEY, call_id="call-1")
+        assert asyncio.run(router.dispose_call(call_key, timeout=5.0, spec=spec)) is True
+        assert denied.disposed == []
+
+    def test_dispose_call_without_a_spec_asks_every_backend_serving_that_scope(self):
+        """Nothing to route on, so the delete is swept rather than aimed: slower, never wrong,
+        and the shipped caller always has the spec and always passes it."""
+        weak = _declaring("weak", per_call=True)
+        strong = _declaring("strong", Capability.FILES_OUT, per_call=True)
+        router = SandboxRouter(
+            [weak, strong], min_isolation=Isolation.NONE, selection=Selection.PER_SPEC
+        )
+        call_key = dataclasses.replace(_KEY, call_id="call-1")
+        assert asyncio.run(router.dispose_call(call_key, timeout=5.0)) is True
+        assert strong.disposed == [call_key]
+        assert weak.disposed == [call_key]
+
+    def test_the_sweep_leaves_a_conversation_scoped_backend_alone(self):
+        """A backend serving one sandbox per conversation has none of this call's to delete.
+
+        Its `dispose` sweeps by scope, thread and agent and reads no `call_id`, so asking it to
+        delete a call's key takes the conversation's sandbox out from under every later call.
+        That is what the scope guard refuses for a backend the router can name; with no spec to
+        name one, the same rule has to hold per backend instead.
+        """
+        per_call = _declaring("per-call", per_call=True)
+        per_conversation = _declaring("per-conversation")
+        router = SandboxRouter(
+            [per_conversation, per_call],
+            min_isolation=Isolation.NONE,
+            selection=Selection.PER_SPEC,
+        )
+        call_key = dataclasses.replace(_KEY, call_id="call-1")
+        assert asyncio.run(router.dispose_call(call_key, timeout=5.0)) is True
+        assert per_call.disposed == [call_key]
+        assert per_conversation.disposed == [], (
+            "a conversation-scoped backend was asked to delete a call's key, and its dispose "
+            "would have taken the conversation's sandbox with it"
+        )
+
+    def test_a_sweep_with_nobody_to_ask_is_a_landed_delete(self):
+        """No backend serves the scope, so no sandbox of this call's was ever created —
+        `_dispose_each` answers an empty sweep the way it answers no backend at all."""
+        alone = _declaring("per-conversation")
+        router = SandboxRouter([alone], min_isolation=Isolation.NONE, selection=Selection.PER_SPEC)
+        call_key = dataclasses.replace(_KEY, call_id="call-1")
+        assert asyncio.run(router.dispose_call(call_key, timeout=5.0)) is True
+        assert alone.disposed == []
+
+    def test_dispose_scope_still_reaches_every_backend_under_routing(self):
+        """The one place holding more than one backend was already live, and routing does not
+        narrow it: a conversation may have been served by any of them."""
+        weak, strong = _declaring("weak"), _declaring("strong", Capability.FILES_OUT)
+        router = SandboxRouter(
+            [weak, strong], min_isolation=Isolation.NONE, selection=Selection.PER_SPEC
+        )
+        asyncio.run(router.dispose_scope("scope-a", "thread-1"))
+        assert weak.purged == [("scope-a", "thread-1")]
+        assert strong.purged == [("scope-a", "thread-1")]
+
+    def test_dispose_by_key_still_reaches_every_backend_under_routing(self):
+        """Deliberately unnarrowed, and the reason is worth stating: `dispose` takes no spec,
+        so there is nothing to route on — and a key genuinely spans backends now, which is what
+        makes the per-kind and per-backend rungs below it (#753) worth more than they were."""
+        weak, strong = _declaring("weak"), _declaring("strong", Capability.FILES_OUT)
+        router = SandboxRouter(
+            [weak, strong], min_isolation=Isolation.NONE, selection=Selection.PER_SPEC
+        )
+        asyncio.run(router.dispose(_KEY))
+        assert weak.disposed == [_KEY]
+        assert strong.disposed == [_KEY]
