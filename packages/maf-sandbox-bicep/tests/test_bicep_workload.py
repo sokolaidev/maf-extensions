@@ -989,6 +989,38 @@ class TestARewrittenArgumentIsNeverQuoted:
         assert "EMAIL" not in out, out
         assert "files[0]" in out, out
 
+    def test_the_restore_failure_banner_does_not_quote_it(self, monkeypatch):
+        """The fifth return in this function, and the one below the four that were fixed.
+
+        A BCP190/191/192 run is not an error path a caller has to provoke — it is what an
+        ordinary validation does whenever a module reference cannot be restored, and it renders
+        its own prefix rather than going through `format_diagnostics`.
+        """
+        name = f"{self.SUBSTITUTED}.bicep"
+        self._rewrite(monkeypatch, name)
+        sarif = json.dumps(
+            {
+                "runs": [
+                    {
+                        "results": [
+                            {
+                                "ruleId": "BCP192",
+                                "level": "error",
+                                "message": {"text": "could not restore the module"},
+                                "locations": [],
+                            }
+                        ]
+                    }
+                ]
+            }
+        )
+        backend = _fake_backend(_KeepsWhatItWrote(default_stdout=sarif))
+        out = _run(_tool(InMemoryStore({name: "x"}), backend), [name])
+
+        assert "MODULE RESTORE FAILED" in out, out
+        assert "EMAIL" not in out, out
+        assert "files[0]" in out, out
+
     def test_the_sandbox_write_refusal_does_not_quote_it(self, monkeypatch):
         """Reached after the read succeeded, so the read's own `hidden` verdict has already
         served its purpose and is the thing most easily dropped."""

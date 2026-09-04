@@ -570,7 +570,7 @@ async def _run_phase(
             failed_restores,
         )
         return (
-            f"{phase}({name}): MODULE RESTORE FAILED for {failed_restores} module "
+            f"{phase}({label}): MODULE RESTORE FAILED for {failed_restores} module "
             "reference(s) (BCP190/BCP191/BCP192). Module types were NOT loaded, so type "
             "checking of module inputs DID NOT RUN — this validation is INCOMPLETE. Treat "
             "it as a broken validation run, not as evidence the files are healthy: do not "
