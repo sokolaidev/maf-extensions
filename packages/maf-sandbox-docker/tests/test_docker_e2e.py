@@ -24,6 +24,7 @@ import contextlib
 import errno
 import http.server
 import ipaddress
+import json
 import os
 import posixpath
 import shutil
@@ -1202,10 +1203,14 @@ class TestAllowlistEgress:
         try:
             # Behaviour first, mechanism after: what this holds the backend to is that neither
             # direction crosses, and the option that currently achieves it is the explanation.
-            subnet = _inspected("network", net, "{{range .IPAM.Config}}{{.Subnet}}{{end}}")
+            # As JSON rather than a `range` template: a dual-stack network has one entry per
+            # family and a template concatenates them into a value that parses as neither.
+            # The IPv4 entry is chosen by family, not position, since IPv6 comes first there.
+            ipam = json.loads(_inspected("network", net, "{{json .IPAM.Config}}"))
+            v4 = next(e for e in ipam if ipaddress.ip_network(e["Subnet"]).version == 4)
             # Where the bridge would hold an address if it held one, so the probe targets the
             # same place before and after the option rather than a mechanism-shaped absence.
-            bridge = str(ipaddress.ip_network(subnet).network_address + 1)
+            bridge = str(ipaddress.ip_network(v4["Subnet"]).network_address + 1)
 
             with _a_listener_on_every_host_address() as port:
                 with socket.create_connection(("127.0.0.1", port), timeout=10):
@@ -1231,15 +1236,14 @@ class TestAllowlistEgress:
             )
 
             # The mechanism behind both, read off the engine rather than off the argv the
-            # offline suite already pins. What an absent gateway *renders* as is Docker's
-            # business — "invalid IP" on 29.7 — so that half asks only that it not parse.
+            # offline suite already pins: the mode is applied, and IPAM assigned no gateway to
+            # any family. An addressed network carries a `Gateway` in every entry, so asking
+            # for its absence holds on a dual-stack network as well as a single-stack one.
             mode = _inspected(
                 "network", net, '{{index .Options "com.docker.network.bridge.gateway_mode_ipv4"}}'
             )
             assert mode == "isolated", mode
-            gateway = _inspected("network", net, "{{range .IPAM.Config}}{{.Gateway}}{{end}}")
-            with pytest.raises(ValueError):
-                ipaddress.ip_address(gateway)
+            assert all(not entry.get("Gateway") for entry in ipam), ipam
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 

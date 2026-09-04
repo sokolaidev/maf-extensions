@@ -2898,10 +2898,11 @@ class TestAllowlistReuse:
         assert fake.matching("rm", "-f", _AL) == []
 
     def test_an_error_naming_something_else_is_not_read_as_an_absent_network(self):
-        """ "Not found" is not the same claim as "this network is not there", and only the
-        second is safe. A missing context answers `context not found` and an unknown driver
-        `plugin "…" not found` — both measured on 29.7.2 — so matching the phrase alone would
-        adopt an existing network on the strength of an error about something else."""
+        """Adoption needs a diagnostic that names this network, not the phrase on its own.
+
+        Unrelated failures borrow the words — a missing context answers `context not found`,
+        an unknown driver `plugin "…" not found` — and absence is the one verdict that is
+        safe."""
         plugin_error = 'Error response from daemon: plugin "br0" not found'
         overrides = {
             ("network", "create"): _DockerResult(1, b"", "network with name X already exists"),
@@ -3040,6 +3041,19 @@ class TestASandboxLeftOnAnAddressedBridge:
         assert fake.matching("rm", "-f", _AL) != []
         created = _run_named(fake, _AL)
         assert created.args[created.args.index("--network") + 1] == _AL_NET
+
+    def test_a_workload_that_will_not_go_fails_the_acquire_even_with_no_network(self):
+        """The network read cannot stand in for the container's removal when there is no
+        network: it says "usable" for an absence that was already true, so a workload the
+        engine refused to remove would be reused on whatever it is attached to."""
+        overrides = {("rm", "-f", _AL): _DockerResult(1, b"", "device or resource busy")}
+        backend, fake = _backend_with(
+            _machine(running=[_AL], overrides=overrides), config=_ALLOW_CONFIG
+        )
+        with pytest.raises(RuntimeError, match="is still there") as raised:
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert "device or resource busy" in str(raised.value)
+        assert fake.matching("run", "-d", "--name", _AL) == []
 
     def test_a_cold_acquire_has_nothing_to_replace(self):
         """No network yet is the ordinary first acquire, not a stale one."""

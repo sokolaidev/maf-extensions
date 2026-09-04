@@ -1780,9 +1780,11 @@ class DockerSandboxBackend:
         cost is one cold start.
 
         Raises:
-            RuntimeError: when the network is still not one this backend would build.  The
-                removals here report failure rather than raising it, and a caller that read
-                past one would reuse the workload on the bridge this exists to take away.
+            RuntimeError: when the workload is still there afterwards, or the network is still
+                not one this backend would build.  The removals report failure rather than
+                raising it, and a caller that read past one would reuse the workload on the
+                bridge this exists to take away.  Both are checked: an absent network makes the
+                network read say nothing about whether the container went.
         """
         net = _network_name(name)
         before = await self._bridge_state(net)
@@ -1795,9 +1797,15 @@ class DockerSandboxBackend:
         else:
             reason = before.reason
         logger.info("replacing sandbox %s and network %s: %s", name, net, reason)
-        await self._remove(name)
+        removal = await self._remove(name)
         await self._remove(_proxy_name(name))
         await self._remove_network(net)
+        if removal.failure is not None:
+            raise RuntimeError(
+                f"sandbox {name} is still there ({removal.failure}), so an acquire would reuse "
+                f"it on whatever network it is actually attached to rather than on one this "
+                f"backend built."
+            )
         after = await self._bridge_state(net)
         if not after.usable:
             raise RuntimeError(
