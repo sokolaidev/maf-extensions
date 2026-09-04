@@ -196,6 +196,7 @@ def _session(
     spec=_SPEC,
     name="workload_tool",
     logger=None,
+    file_store_provenance=None,
 ):
     return SandboxToolSession(
         _router(backend if backend is not None else InProcessSandboxBackend()),
@@ -204,6 +205,7 @@ def _session(
         spec,
         name=name,
         logger=logger if logger is not None else logging.getLogger("test_workload"),
+        file_store_provenance=file_store_provenance,
     )
 
 
@@ -3253,6 +3255,102 @@ class TestSessionReadFile:
         assert isinstance(answer, str)
         assert "secret.bicep" not in answer
         assert "files[0]" in answer
+
+
+class TestReadFileRefoldsAgainstTheRecord:
+    """A listing's label is as old as the listing, and the record is what re-answers it."""
+
+    def _session_with(self, record):
+        return _session(file_store_provenance=record)
+
+    def test_a_write_between_the_listing_and_the_read_lowers_the_label(self):
+        """The window this closes, driven in the order it happens in.
+
+        The host's floor calls an unrecorded path `trusted`, a kind lists it and gets that, and
+        the agent's own `file_access_write` lands on it before the kind reads. Without the
+        second fold the model's bytes arrive labelled `trusted` — which is the whole of the
+        laundering this channel exists to prevent, re-entered through timing.
+        """
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)
+        listed = ListedFile("a.txt", record.integrity_of("a.txt"))
+        assert listed.integrity is SourceIntegrity.TRUSTED, "the listing saw the floor"
+
+        record.record("a.txt")  # the agent writes, between the listing and the read
+
+        item = asyncio.run(self._session_with(record).read_file(_ReadStore({"a.txt": "1"}), listed))
+
+        assert not isinstance(item, str) and item is not None
+        assert item.additional_properties[SOURCE_INTEGRITY_PROPERTY] == "untrusted"
+
+    def test_an_unwritten_path_keeps_the_floor(self):
+        """The fold only ever lowers, so a file nothing touched reads as the host said."""
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)
+
+        item = asyncio.run(
+            self._session_with(record).read_file(
+                _ReadStore({"a.txt": "1"}), ListedFile("a.txt", SourceIntegrity.TRUSTED)
+            )
+        )
+
+        assert not isinstance(item, str) and item is not None
+        assert item.additional_properties[SOURCE_INTEGRITY_PROPERTY] == "trusted"
+
+    def test_an_unestablished_record_beats_an_established_listing(self):
+        """`None` wins the fold, as `weakest_integrity` has it. A listing folded without a
+        record and a session given one disagree in exactly this direction, and *unestablished*
+        is the honest answer when either side established nothing."""
+        record = FileStoreProvenance()  # floor None: nothing established
+        file_store_provenance_middleware(record)
+
+        item = asyncio.run(
+            self._session_with(record).read_file(
+                _ReadStore({"a.txt": "1"}), ListedFile("a.txt", SourceIntegrity.TRUSTED)
+            )
+        )
+
+        assert not isinstance(item, str) and item is not None
+        assert SOURCE_INTEGRITY_PROPERTY not in item.additional_properties
+
+    def test_the_listing_stands_where_the_session_has_no_record(self):
+        """Not every host wires one, and the absence is not a downgrade."""
+        item = asyncio.run(
+            _session().read_file(
+                _ReadStore({"a.txt": "1"}), ListedFile("a.txt", SourceIntegrity.TRUSTED)
+            )
+        )
+
+        assert not isinstance(item, str) and item is not None
+        assert item.additional_properties[SOURCE_INTEGRITY_PROPERTY] == "trusted"
+
+    def test_the_read_is_still_answered_when_the_record_lowers_it(self):
+        """Lowering a label is not a refusal: the bytes are what the kind asked for."""
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)
+        record.record("a.txt")
+
+        item = asyncio.run(
+            self._session_with(record).read_file(
+                _ReadStore({"a.txt": "param x string"}),
+                ListedFile("a.txt", SourceIntegrity.TRUSTED),
+            )
+        )
+
+        assert not isinstance(item, str) and item is not None
+        assert item.text == "param x string"
+
+    def test_a_trusted_floor_with_no_observer_is_refused_here_too(self):
+        """`integrity_of`'s refusal reaches a host that wired the record here and not into its
+        listing — the first moment anything can tell it."""
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)  # no middleware built
+
+        with pytest.raises(ValueError, match="file_store_provenance_middleware"):
+            asyncio.run(
+                self._session_with(record).read_file(
+                    _ReadStore({"a.txt": "1"}), ListedFile("a.txt", SourceIntegrity.TRUSTED)
+                )
+            )
 
 
 class TestListAllFilesFoldsAHostsRecord:

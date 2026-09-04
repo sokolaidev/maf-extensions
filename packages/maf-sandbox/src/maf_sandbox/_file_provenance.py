@@ -90,12 +90,17 @@ class FileStoreProvenance:
             ``None``, the default, means *unestablished*: this host has not said, and a caller
             must treat the answer as it treats any source the framework has not established.
 
-    **A ``TRUSTED`` floor is a claim about concurrency as well as about content.**  A caller folds
-    this record at *listing* time and reads the bytes afterwards, and the write that lands in
-    between is recorded only once the writing tool call returns — so a path answering ``trusted``
-    can hold model-written bytes by the time anything reads it.  Wire this floor only where the
-    store is not written under a read.  ``None`` and ``UNTRUSTED`` floors have nowhere weaker to
-    fall and are unaffected.
+    **Read it twice.**  A caller that folds this record into a listing and then reads the bytes
+    should fold it again at the read — :meth:`~maf_sandbox.maf.SandboxToolSession.read_file`
+    does, given the record — because a write landing in between would otherwise arrive under the
+    older answer.  The second fold is sound because this record only moves one way: an entry can
+    be added and never raised.
+
+    **One residue is not closable from here.**  A write is recorded once the writing tool call
+    *returns*, so bytes already written by a call still in flight are not yet in the record.  A
+    ``TRUSTED`` floor is therefore still a claim about that residue, though no longer about the
+    whole span between a listing and a read.  ``None`` and ``UNTRUSTED`` floors have nowhere
+    weaker to fall and are unaffected.
     """
 
     def __init__(self, *, floor: SourceIntegrity | None = None) -> None:
