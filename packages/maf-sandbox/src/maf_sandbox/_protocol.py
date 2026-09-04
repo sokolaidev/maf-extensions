@@ -1134,7 +1134,8 @@ class SandboxBackend(Protocol):
 
     ``declarations`` replaced four separate attributes — ``capabilities``, ``limits``,
     ``egress_modes`` and ``os_families`` — and a backend still carrying any of them is refused
-    when the router resolves it, rather than read as silent.  Nothing in the type system can
+    when the router reads it — the one it resolves, or every registered backend at construction
+    where it selects per spec — rather than read as silent.  Nothing in the type system can
     catch that migration: none of the four was ever a member here, so ``isinstance`` still
     holds either way, and an unnoticed ``egress_modes`` would turn a working backend into one
     that refuses every spec.

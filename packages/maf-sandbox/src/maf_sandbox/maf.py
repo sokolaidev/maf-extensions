@@ -76,7 +76,13 @@ from ._reclaim import (
     open_unclean_notes,
     reclaim_guest_path,
 )
-from ._router import ATTACH_REFUSALS, NoSandboxBackend, SandboxRouter, SandboxUnclean
+from ._router import (
+    ATTACH_REFUSALS,
+    NoSandboxBackend,
+    SandboxRouter,
+    SandboxUnclean,
+    Selection,
+)
 
 if TYPE_CHECKING:
     from agent_framework import Content
@@ -1290,7 +1296,9 @@ class SandboxToolSession:
             # The call ended while the backend was still creating. Its cleanup has already run the
             # delete for this key, so what came back is a sandbox nothing is left to remove: take
             # it here, and refuse rather than hand a task something it cannot have cleaned up.
-            landed = await self._router.dispose_call(key, timeout=self._router.reclaim.timeout)
+            landed = await self._router.dispose_call(
+                key, timeout=self._router.reclaim.timeout, spec=self._spec
+            )
             if landed:
                 fate = "It has been disposed and the result refused."
             else:
@@ -1425,6 +1433,7 @@ async def _dispose_the_call_sandbox(
     key: SandboxKey,
     *,
     router: SandboxRouter,
+    spec: SandboxSpec,
     prefix: str,
     logger: logging.Logger,
     timeout: float,
@@ -1434,9 +1443,13 @@ async def _dispose_the_call_sandbox(
     The whole sandbox goes, so nothing is removed from inside it first, and a transport's note
     that a stop did not reach everything is answered by the same delete.  Nothing is marked
     unclean: that refuses a key's next acquire, and this key has none.
+
+    ``spec`` is passed on rather than dropped because it is what names the backend to ask on a
+    router that selects per spec — the delete is aimed at the one that served this call, not
+    swept across every backend registered.
     """
     try:
-        landed = await router.dispose_call(key, timeout=timeout)
+        landed = await router.dispose_call(key, timeout=timeout, spec=spec)
     except (asyncio.CancelledError, GeneratorExit):
         logger.warning(
             f"{prefix}: the call's sandbox was not disposed — the call was cancelled during the "
@@ -1491,7 +1504,12 @@ async def _reclaim_the_call(
         if key.call_id:
             try:
                 undisposed = await _dispose_the_call_sandbox(
-                    key, router=router, prefix=prefix, logger=logger, timeout=timeout
+                    key,
+                    router=router,
+                    spec=spec,
+                    prefix=prefix,
+                    logger=logger,
+                    timeout=timeout,
                 )
                 if undisposed is None:
                     # The sandbox went, and every note about it went with it.
@@ -1817,6 +1835,19 @@ def sandboxed_tool(
     router.ensure_can_serve(spec)
 
     records = logger if logger is not None else _DEFAULT_LOGGER
+    if router.selection is Selection.PER_SPEC:
+        # Once, at attach, and only where the answer is not already in the host's own
+        # configuration: under the fixed selection a host reads `router.backend` and knows.
+        # Not inside `ensure_can_serve`, which `acquire` runs on every tool call — a record
+        # per call would put a log line in a warm fix-round loop for a fact that cannot change,
+        # since the route is a pure function of a spec that is fixed by now.
+        served = router.backend_for(spec)
+        records.info(
+            "%s: the %r workload routes to sandbox backend %s",
+            name,
+            spec.kind,
+            "nothing" if served is None else repr(served.name),
+        )
     session = SandboxToolSession(
         router,
         context,

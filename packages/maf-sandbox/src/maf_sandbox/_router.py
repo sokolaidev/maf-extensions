@@ -17,6 +17,7 @@ import math
 import weakref
 from collections.abc import AsyncGenerator, Iterable, Sequence
 from contextlib import asynccontextmanager
+from enum import StrEnum
 from typing import cast
 
 from ._host_tools_over_exec import fold_host_tool_call_transfer_limits
@@ -60,6 +61,7 @@ __all__ = [
     "SandboxTransferLimitsNotPermitted",
     "SandboxUnclean",
     "ScopeDisposal",
+    "Selection",
 ]
 
 
@@ -104,12 +106,15 @@ class SandboxBackendNotPermitted(PermissionError):
     would hide a misconfiguration, and silently proceeding with the weaker one would break
     the boundary every claim about the execution surface rests on.
 
-    The **declaration** one covers a backend this package cannot read, and it is raised at two
-    times. At construction, and again per spec: a backend still carrying one of the attributes
-    :class:`~maf_sandbox.BackendDeclarations` replaced, or a ``declarations`` that is not one —
-    both are properties of the backend alone, so the earliest moment is construction. Per spec
-    only: a ``capabilities`` or ``egress_modes`` that is not a set, which is read where the
-    match consumes it.
+    The **declaration** one covers a backend this package cannot read, and *when* it is raised
+    depends on the selection. A backend still carrying one of the attributes
+    :class:`~maf_sandbox.BackendDeclarations` replaced, or a ``declarations`` that is not one,
+    is a property of the backend alone, so it is refused at construction under either. A
+    mis-shaped field — a ``capabilities`` or ``egress_modes`` that is not a set — is read where
+    the match consumes it, so under :data:`Selection.FIXED` it surfaces per spec. Under
+    :data:`Selection.PER_SPEC` it is refused at **construction** instead, and has to be:
+    routing catches this class to try the next backend, so an unreadable declaration left until
+    then would be indistinguishable from an honest refusal and quietly routed past.
     """
 
 
@@ -438,11 +443,35 @@ def _declared_limits(backend: SandboxBackend, declared: BackendDeclarations) -> 
     )
 
 
+class Selection(StrEnum):
+    """How a router decides which registered backend serves a workload.
+
+    :data:`FIXED` is the default.  What turning on :data:`PER_SPEC` costs, and it is the reason
+    it is opt-in: a spec that is refused today becomes a *running* sandbox, which on a remote
+    backend has a price.  ``docs/sandbox/capabilities.md`` carries the argument and the
+    migration case.
+    """
+
+    #: One backend, resolved at construction — the one ``selected`` names, or the first
+    #: registered.  Every workload gets that one, and a spec it cannot serve is refused with
+    #: the other registered backends untouched, however well one of them would have done.
+    FIXED = "fixed"
+    #: The first registered backend that can serve *this* spec, decided per workload against
+    #: the same checks :meth:`SandboxRouter.ensure_can_serve` runs.  Registration order is the
+    #: preference order.  The route is a pure function of the spec and the backends'
+    #: declarations — never of load, health, latency or cost — so one spec always routes to the
+    #: same backend and the warm sandbox ``acquire`` reuses stays reachable.  Per *spec*, not
+    #: per conversation: two kinds under one key may route apart by design, which is why
+    #: :meth:`SandboxRouter.dispose` fans out across every registered backend.
+    PER_SPEC = "per_spec"
+
+
 class SandboxRouter:
     """Routes a sandbox request to a backend.
 
     Args:
-        backends: The registered backends, in preference order.
+        backends: The registered backends, in preference order — which is read past the
+            first only under ``selection=Selection.PER_SPEC``.
         min_isolation: The weakest boundary this host accepts. Defaults to
             :data:`Isolation.MICROVM`.
         min_isolation_scope: The most sharing this host accepts — how much of a conversation
@@ -453,7 +482,17 @@ class SandboxRouter:
             own spec asks for, and refuses a backend that cannot create one.
         selected: Name of the backend to use. ``None`` picks the first registered one, which
             with a single backend is the whole selection story and stays correct when more
-            arrive.
+            arrive. A pin, and refused together with ``selection=Selection.PER_SPEC``:
+            "prefer this one, and route past it when it cannot serve" is the cheapest-first
+            policy this router declines to have, wearing another name. A host that wants a
+            different preference reorders ``backends``, which is a diff a reviewer reads —
+            and a host **migrating a pinned router to per-spec selection** has to, since
+            dropping the pin makes routing start at the first registered backend and a
+            workload the pinned one was serving would otherwise move.
+        selection: How a backend is chosen — one resolved at construction
+            (:data:`Selection.FIXED`, the default, and what this package has always done), or
+            the first registered one that can serve each spec (:data:`Selection.PER_SPEC`).
+            :class:`Selection` carries why routing is opt-in.
         denied_capabilities: Capabilities this host refuses outright, whatever a backend
             declares — a spec *requiring* one is refused at attach. The hard stop for a
             posture: ``denied_capabilities={Capability.HOST_TOOLS}`` closes the
@@ -474,7 +513,12 @@ class SandboxRouter:
             declarations cannot be read — an attribute
             :class:`~maf_sandbox.BackendDeclarations` replaced, or a ``declarations`` that is
             not one. Failing here rather than at first use means a misconfigured deployment
-            cannot start with the feature apparently enabled and quietly unsafe.
+            cannot start with the feature apparently enabled and quietly unsafe. Under
+            :data:`Selection.PER_SPEC` every registered backend is read rather than one, and
+            the floor is judged across all of them together: the refusal is for a deployment
+            where *nothing* registered clears it. A single backend below the floor is not an
+            error there — it is one no spec is ever routed to, named by a warning at
+            construction, and still reached by disposal, which is why it stays registered.
         ValueError: at construction, when ``min_isolation`` is not a rung — or
             ``min_isolation_scope`` not a scope — this package recognises, raised by
             :class:`Isolation` and :class:`IsolationScope` themselves rather than surfacing as a
@@ -482,7 +526,9 @@ class SandboxRouter:
             was registered and a floor was actually compared against — or when a denied
             capability or identity is not a member this package recognises: a deny list that
             silently never matches would read as protection and provide none; or when
-            ``reclaim.timeout`` is not a finite positive number.
+            ``reclaim.timeout`` is not a finite positive number; or when ``selected`` names a
+            backend *and* ``selection`` routes per spec, which are two different answers to
+            the one question this router exists to answer.
     """
 
     def __init__(
@@ -492,6 +538,7 @@ class SandboxRouter:
         min_isolation: Isolation = Isolation.MICROVM,
         min_isolation_scope: IsolationScope = IsolationScope.CONVERSATION,
         selected: str | None = None,
+        selection: Selection = Selection.FIXED,
         denied_capabilities: Iterable[Capability] = (),
         denied_identities: Iterable[Identity] = (),
         reclaim: ReclaimConfig = DEFAULT_RECLAIM_CONFIG,
@@ -522,13 +569,33 @@ class SandboxRouter:
         self._min_isolation = Isolation(str(min_isolation))
         self._min_isolation_scope = IsolationScope(str(min_isolation_scope))
         self._selected_name = selected
+        self._selection = Selection(str(selection))
+        if self._selection is Selection.PER_SPEC and selected is not None:
+            raise ValueError(
+                f"selected={selected!r} names one backend and selection="
+                f"{str(self._selection)!r} asks for the first that can serve each spec, which "
+                "are two answers to one question. Refused rather than ranked, because both "
+                "ways of ranking them are wrong: honouring the pin makes the selection "
+                "argument silently do nothing, and treating it as a preference to route past "
+                "is the cheapest-first policy this router declines to have. Drop the pin and "
+                "put the preferred backend first in `backends`, which is the same statement "
+                "somewhere a reviewer reads it."
+            )
         self._denied_capabilities = frozenset(
             Capability(str(capability)) for capability in denied_capabilities
         )
         self._denied_identities = frozenset(
             Identity(str(identity)) for identity in denied_identities
         )
-        self._backend = self._resolve()
+        if self._selection is Selection.PER_SPEC:
+            # No one backend to resolve, so `backend` has no answer to give and `_candidates`
+            # is what every later decision reads instead. In registration order, because that
+            # order is the preference and this is the only place it is fixed.
+            self._backend = None
+            self._candidates = self._eligible()
+        else:
+            self._backend = self._resolve()
+            self._candidates = [] if self._backend is None else [self._backend]
 
     def _resolve(self) -> SandboxBackend | None:
         if not self._backends:
@@ -558,15 +625,94 @@ class SandboxRouter:
             )
         return backend
 
+    def _eligible(self) -> list[SandboxBackend]:
+        """Every registered backend, once each is readable and at least one clears the floor.
+
+        Every one of them rather than the subset above the floor, since a dropped backend would
+        still be in ``self._backends`` and that is what disposal sweeps.
+
+        The trap is what must be validated *here* rather than left to the per-spec checks:
+        :meth:`_refusal_serving` catches :data:`ATTACH_REFUSALS`, and the field readers raise
+        members of it for a declaration this package cannot read — so past this point an
+        unreadable declaration is indistinguishable from a backend honestly declining one spec,
+        and the next candidate would quietly serve.
+        """
+        if not self._backends:
+            return []
+        floor = self._min_isolation
+        rungs = [(backend, _declared_isolation(backend)) for backend in self._backends]
+        for backend in self._backends:
+            declared = _declarations(backend)
+            # Every field, not only the object: each of these raises a member of
+            # `ATTACH_REFUSALS` for a shape this package cannot read, and past this point such
+            # a raise is indistinguishable from a backend honestly refusing one spec.
+            _declared_set(backend, cast("object", declared.capabilities), "capabilities")
+            _declared_set(backend, cast("object", declared.egress_modes), "egress_modes")
+            _declared_isolation_scopes(backend, declared)
+            _declared_limits(backend, declared)
+        below = [(backend, rung) for backend, rung in rungs if not meets_floor(rung, floor)]
+        if below and len(below) != len(rungs):
+            # Warned rather than raised: a weaker backend beside a stronger one is the
+            # arrangement this mode serves. Warned rather than silent: the per-spec refusal
+            # names it only when *nothing* serves, which is not this case. Two things the
+            # message must not say — it must not advise unregistering, since `dispose` and
+            # `dispose_scope` reach every registered backend and a host that changed which
+            # one serves relies on that; and it must not promise what *will* serve, since no
+            # spec exists yet and an above-floor backend may still refuse every workload.
+            logger.warning(
+                "sandbox router: %s registered below this host's %r minimum-isolation floor, so "
+                "no workload is ever routed there and only the backends clearing it are "
+                "considered. It stays registered and disposal still reaches it, which is what "
+                "a host that changed backends relies on — so unregistering it would strand "
+                "whatever it still holds. Lower min_isolation if this host means to accept "
+                "that boundary.",
+                ", ".join(f"{backend.name!r} ({str(rung)})" for backend, rung in below),
+                str(floor),
+            )
+        if not any(meets_floor(rung, floor) for _, rung in rungs):
+            named = ", ".join(f"{backend.name!r} ({str(rung)})" for backend, rung in rungs)
+            raise SandboxBackendNotPermitted(
+                f"no registered sandbox backend meets this host's "
+                f"{str(floor)!r} minimum-isolation floor (ladder, weakest "
+                f"first: {_LADDER}). Registered: {named}. This router selects per spec, so "
+                "one backend below the floor is not an error — it is simply never routed to. "
+                "None of them clearing it is different: no workload can be served at all, and "
+                "a deployment in that state should not start with the feature apparently "
+                "enabled. A host that means to run here lowers the floor explicitly with "
+                "min_isolation."
+            )
+        return list(self._backends)
+
     @property
     def backend(self) -> SandboxBackend | None:
-        """The selected backend, or ``None`` when none is configured."""
+        """The one backend this router always uses, or ``None`` when there is no such thing.
+
+        ``None`` has two causes and they are not the same thing: no backend is configured, or
+        this router selects per spec and the question has no fixed answer. :attr:`enabled` is
+        what tells them apart, and :meth:`backend_for` is what answers the routed question.
+        """
         return self._backend
 
     @property
     def enabled(self) -> bool:
-        """Whether any backend is available. A host should attach no tools when ``False``."""
-        return self._backend is not None
+        """Whether this router has a backend to try at all. A host attaches no tools if not.
+
+        Registration rather than capability, and the gap is worth stating: a candidate is a
+        backend whose declarations could be read, where at least one of them clears this host's
+        floor.  A backend that then refuses every spec leaves this ``True`` — an empty
+        ``egress_modes`` is the plainest way, since it enforces no mode and so can serve none.
+        Whether *this* workload can be served is :meth:`ensure_can_serve`'s answer, and a much
+        stricter question.
+
+        Read off the candidates rather than off :attr:`backend`, which under
+        :data:`Selection.PER_SPEC` is ``None`` while the router is perfectly able to serve.
+        """
+        return bool(self._candidates)
+
+    @property
+    def selection(self) -> Selection:
+        """How this router chooses a backend."""
+        return self._selection
 
     @property
     def reclaim(self) -> ReclaimConfig:
@@ -603,19 +749,92 @@ class SandboxRouter:
             )
         )
 
-    def _refuse_unless_backend_can_serve(self, spec: SandboxSpec) -> None:
-        """Raise unless ``spec`` may be served: denials, floor, capabilities, guest shape,
-        limits, egress, scope.
+    def _refuse_unless_backend_can_serve(self, spec: SandboxSpec) -> SandboxBackend:
+        """The backend that will serve ``spec``, or raise saying why none of them will.
 
         The REFUSING half of the policy, shared by :meth:`ensure_can_serve` and
-        :meth:`acquire`. With no backend configured this returns: nothing runs, so nothing
-        reaches anything.
-        """
-        if self._backend is None:
-            return
+        :meth:`acquire`, and the one place the two selections meet: under
+        :data:`Selection.FIXED` the candidate list is the single resolved backend, so this is
+        exactly the one check this router has always run.
 
-        # The denials first: they are statements about the spec against this host's posture,
-        # not about what the backend could do, so no backend property softens them.
+        Callers guarantee at least one candidate. :meth:`ensure_can_serve` is where the
+        no-backend case returns instead — nothing runs there, so nothing reaches anything.
+        """
+        self._refuse_host_denials(spec)
+        served, passed_over = self._route(spec)
+        if served is None:
+            raise self._nothing_can_serve(spec, passed_over)
+        return served
+
+    def _route(
+        self, spec: SandboxSpec
+    ) -> tuple[SandboxBackend | None, list[tuple[SandboxBackend, Exception]]]:
+        """The first candidate that can serve ``spec``, and each one refused ahead of it.
+
+        A pure function of the spec, the registered backends and their declarations, and of
+        nothing else — no load, health, latency or cost is consulted. Callers may rely on that:
+        asking twice **with the same spec** cannot name two backends. It says nothing about two
+        different specs, which may route apart under one key and are meant to.
+        :class:`Selection` carries why.
+        """
+        passed_over: list[tuple[SandboxBackend, Exception]] = []
+        for backend in self._candidates:
+            refusal = self._refusal_serving(backend, spec)
+            if refusal is None:
+                return backend, passed_over
+            passed_over.append((backend, refusal))
+        return None, passed_over
+
+    def _refusal_serving(self, backend: SandboxBackend, spec: SandboxSpec) -> Exception | None:
+        """``backend``'s reason for not serving ``spec``, or ``None`` when it can serve it.
+
+        Caught through :data:`ATTACH_REFUSALS` rather than a list written here, because that
+        tuple has a test deriving its membership from this module: a refusal added later joins
+        the routing automatically instead of escaping it as an unrelated error.
+        """
+        try:
+            self._refuse_unless_this_backend_can_serve(backend, spec)
+        except ATTACH_REFUSALS as refusal:
+            return refusal
+        return None
+
+    def _nothing_can_serve(
+        self, spec: SandboxSpec, passed_over: Sequence[tuple[SandboxBackend, Exception]]
+    ) -> Exception:
+        """The refusal to raise when routing reached the end of the preference order.
+
+        The **most preferred** candidate's own refusal, with the rest named after it, and its
+        *type* is preserved deliberately: these classes are exported, hosts catch them
+        individually, and :data:`ATTACH_REFUSALS` is what ``SandboxToolSession`` matches on —
+        so a new class invented here would be caught by nobody who catches
+        :class:`SandboxCapabilityNotSupported` today.
+
+        With one candidate the message is returned untouched, so a single-backend host sees
+        exactly what it has always seen and every refusal sentence already written stays the
+        sentence a reader meets.
+        """
+        first, refusal = passed_over[0]
+        if len(passed_over) == 1:
+            return refusal
+        rest = ", ".join(
+            f"{backend.name!r} ({type(other).__name__})" for backend, other in passed_over[1:]
+        )
+        return type(refusal)(
+            f"{refusal}\n\nThat is sandbox backend {first.name!r}'s refusal, and it is the one "
+            f"raised because registration order is this router's preference order. Every other "
+            f"registered backend was tried for the {spec.kind!r} workload, in that order, and "
+            f"refused it too: {rest}. Nothing was served and nothing was created. Register a "
+            "backend that can serve this spec, in the position you want it reached, or narrow "
+            "what the workload asks for."
+        )
+
+    def _refuse_host_denials(self, spec: SandboxSpec) -> None:
+        """The two refusals no backend can soften, raised once rather than once per candidate.
+
+        ``denied_capabilities`` and ``denied_identities`` are statements about the spec
+        against this host's posture, not about what a backend could do, so routing has nothing
+        to offer them: there is no next backend to try.
+        """
         denied_capabilities = spec.requires & self._denied_capabilities
         if denied_capabilities:
             raise SandboxCapabilityDenied(
@@ -636,25 +855,35 @@ class SandboxRouter:
                 "serve it on a host whose posture permits them."
             )
 
-        declarations = _declarations(self._backend)
+    def _refuse_unless_this_backend_can_serve(
+        self, backend: SandboxBackend, spec: SandboxSpec
+    ) -> None:
+        """Raise unless ``backend`` may serve ``spec``: floor, capabilities, guest shape,
+        limits, egress, scope.
+
+        One backend's half of the policy, with the host's own denials left to
+        :meth:`_refuse_host_denials` — everything here is a question about *this* backend, so
+        everything here is a question routing can answer by trying the next one.
+        """
+        declarations = _declarations(backend)
         floor = self._effective_floor(spec)
-        declared = _declared_isolation(self._backend)
+        declared = _declared_isolation(backend)
         if not meets_floor(declared, floor):
             raise SandboxBackendNotPermitted(
                 f"the {spec.kind!r} workload requires at least {str(floor)!r} isolation, and "
-                f"sandbox backend {self._backend.name!r} declares {str(declared)!r} "
+                f"sandbox backend {backend.name!r} declares {str(declared)!r} "
                 f"(ladder, weakest first: {_LADDER}). A spec may raise this host's floor and "
                 "never lower it, so the workload is refused here rather than served behind a "
                 "boundary it was written not to trust."
             )
 
         capabilities = _declared_set(
-            self._backend, cast("object", declarations.capabilities), "capabilities"
+            backend, cast("object", declarations.capabilities), "capabilities"
         )
         missing = spec.requires - capabilities
         if missing:
             raise SandboxCapabilityNotSupported(
-                f"sandbox backend {self._backend.name!r} does not support "
+                f"sandbox backend {backend.name!r} does not support "
                 f"{', '.join(sorted(missing))}, which the {spec.kind!r} workload requires "
                 f"(it declares "
                 f"{', '.join(sorted(str(c) for c in capabilities)) or 'nothing'}). Refused "
@@ -671,7 +900,7 @@ class SandboxRouter:
             if spec.requires_os_family not in families:
                 served = ", ".join(sorted(str(family) for family in families))
                 raise SandboxOsFamilyNotSupported(
-                    f"sandbox backend {self._backend.name!r} hands out "
+                    f"sandbox backend {backend.name!r} hands out "
                     f"{served or 'no guest whose shape it states'}, and the {spec.kind!r} "
                     f"workload is written for a {str(spec.requires_os_family)!r} guest. Its "
                     "commands, its scripts and the paths it composes assume that shape, so "
@@ -680,7 +909,7 @@ class SandboxRouter:
                     "workload written for the one this backend has."
                 )
 
-        limits = _declared_limits(self._backend, declarations)
+        limits = _declared_limits(backend, declarations)
         asked_in, asked_out = spec.files_in, spec.files_out
         if spec.host_tools is not None:
             # The transport moves its own files, bounded by the registry rather than by what the
@@ -708,7 +937,7 @@ class SandboxRouter:
                 )
                 raise SandboxTransferLimitsNotPermitted(
                     f"the {spec.kind!r} workload declares {str(direction)} limits above what "
-                    f"sandbox backend {self._backend.name!r} allows: it asks for {asked}"
+                    f"sandbox backend {backend.name!r} allows: it asks for {asked}"
                     f"{folded_note} and the backend permits {ceiling}. Refused rather than "
                     "clamped: a workload served a smaller cap than it declared fails part-way "
                     "through a collection, and a partial artifact set is worse than none because "
@@ -719,13 +948,11 @@ class SandboxRouter:
         # backend must be able to enforce it. Refuse, never degrade — no more-open substitute
         # (a silent widening) and no more-isolated one (a quietly different posture). See
         # docs/sandbox/research/egress-resolution.md.
-        modes = _declared_set(
-            self._backend, cast("object", declarations.egress_modes), "egress_modes"
-        )
+        modes = _declared_set(backend, cast("object", declarations.egress_modes), "egress_modes")
         if spec.egress not in modes:
             enforced = ", ".join(sorted(str(mode) for mode in modes)) or "nothing"
             raise SandboxEgressNotEnforced(
-                f"sandbox backend {self._backend.name!r} cannot enforce the {str(spec.egress)!r} "
+                f"sandbox backend {backend.name!r} cannot enforce the {str(spec.egress)!r} "
                 f"egress the {spec.kind!r} workload runs in (it enforces {enforced}). A workload "
                 "is served in exactly the mode it declares or refused — never a different one, "
                 "because a more open mode silently widens what it reaches and a more isolated "
@@ -735,11 +962,11 @@ class SandboxRouter:
         # Resolved rather than matched, for the reason egress is: a workload runs at exactly one
         # scope. Why it is refused rather than served down a rung is `SandboxScopeNotEnforced`.
         scope = self.effective_isolation_scope(spec)
-        scopes = _declared_isolation_scopes(self._backend, declarations)
+        scopes = _declared_isolation_scopes(backend, declarations)
         if scope not in scopes:
             serves = ", ".join(sorted(str(one) for one in scopes))
             raise SandboxScopeNotEnforced(
-                f"sandbox backend {self._backend.name!r} cannot serve the {spec.kind!r} workload "
+                f"sandbox backend {backend.name!r} cannot serve the {spec.kind!r} workload "
                 f"one sandbox per {str(scope)} (it serves one per {serves}). A backend declares "
                 f"{str(IsolationScope.CALL)!r} once it folds the key's call_id into whatever "
                 "names a sandbox — until it does, two calls asking not to share would be handed "
@@ -775,7 +1002,29 @@ class SandboxRouter:
             SandboxScopeNotEnforced: when the backend cannot serve the workload at the isolation
                 scope this host and the spec resolve to.
         """
+        if not self._candidates:
+            return
         self._refuse_unless_backend_can_serve(spec)
+
+    def backend_for(self, spec: SandboxSpec) -> SandboxBackend | None:
+        """Which backend would serve ``spec``, or ``None`` when none would.
+
+        The routed counterpart to :attr:`backend`, and the form of the question that has an
+        answer under either selection: :meth:`ensure_can_serve` says *whether*, this says
+        *which*. It refuses nothing and raises nothing, so a caller wanting the reason asks
+        the other one.
+
+        Nothing is created and nothing is reached — the answer comes from declarations this
+        router already holds. It is also stable: the route is a pure function of the spec, so
+        asking twice cannot name two backends.
+        """
+        if not self._candidates:
+            return None
+        if spec.requires & self._denied_capabilities:
+            return None
+        if spec.identities & self._denied_identities:
+            return None
+        return self._route(spec)[0]
 
     def _disposal_lock(self, key: SandboxKey) -> asyncio.Lock:
         """The disposal lock for one key on the running loop (see ``__init__``)."""
@@ -789,18 +1038,21 @@ class SandboxRouter:
         # overlapping both hold it and share it, and it goes when neither does.
         return lock
 
-    async def _refuse_a_key_closed_during_the_create(self, key: SandboxKey) -> None:
+    async def _refuse_a_key_closed_during_the_create(
+        self, key: SandboxKey, backend: SandboxBackend
+    ) -> None:
         """Dispose what this acquire just created, then raise the refusal it walked into.
 
         Under the key's disposal lock, so it cannot overlap the disposal whose mark sent it
         here: two deletes for one key at once are what that lock exists to prevent, and this
-        one would otherwise be the exception.  On the selected backend directly rather than
-        through :meth:`dispose`, which would take the same lock again and clear the ledger
-        entry this refusal quotes.
+        one would otherwise be the exception.  On the backend that just served the create,
+        directly, rather than through :meth:`dispose` — which would take the same lock again,
+        clear the ledger entry this refusal quotes, and under
+        :data:`Selection.PER_SPEC` sweep backends that never saw this key.
         """
         async with self._disposal_lock(key):
             try:
-                undisposed = await self._backend.dispose(key) if self._backend else None
+                undisposed = await backend.dispose(key)
             except Exception as failed:  # noqa: BLE001 — the refusal must reach the caller
                 undisposed = str(failed)
         reported = self._unclean.get(key)
@@ -809,7 +1061,7 @@ class SandboxRouter:
         else:
             logger.warning(
                 "sandbox router: backend %s failed to dispose a sandbox refused mid-create: %s",
-                self._backend.name if self._backend else "?",
+                backend.name,
                 undisposed,
             )
             # Said out loud, not only logged: an operator who reads "disposed" stops looking,
@@ -828,7 +1080,9 @@ class SandboxRouter:
         Runs the same floor, capability, limit and egress checks as :meth:`ensure_can_serve`
         before ever reaching the backend, so a caller that skips :meth:`ensure_can_serve` is
         still refused rather than served behind a boundary or capability set the spec did not
-        agree to.
+        agree to.  Under :data:`Selection.PER_SPEC` those checks are also what *chooses* the
+        backend, and everything after the create — the reclaim refusal's disposal, the
+        mid-create disposal — is aimed at the one that served rather than at all of them.
 
         Raises:
             NoSandboxBackend: when no backend is configured. Callers that check
@@ -860,7 +1114,7 @@ class SandboxRouter:
                 reaches the caller: a backend that cannot reclaim can never clean it, and a
                 refused acquire must not leave a billable sandbox running.
         """
-        if self._backend is None:
+        if not self._candidates:
             raise NoSandboxBackend("no sandbox backend is configured")
         if key in self._unclean:
             # The code only: a detail can carry an endpoint or a raw response body, and this
@@ -875,7 +1129,7 @@ class SandboxRouter:
                 "served unclean.",
                 code=reported.code if reported is not None else None,
             )
-        self._refuse_unless_backend_can_serve(spec)
+        served = self._refuse_unless_backend_can_serve(spec)
         scope = self.effective_isolation_scope(spec)
         if scope is IsolationScope.CALL and not key.call_id:
             raise ValueError(
@@ -894,13 +1148,13 @@ class SandboxRouter:
                 "shared sandbox at the end of one call. Drop the call id, or raise the "
                 "workload's isolation_scope."
             )
-        sandbox = await self._backend.acquire(key, spec)
+        sandbox = await served.acquire(key, spec)
         if key in self._unclean:
             # Read again after the create: the check above is only as fresh as the moment
             # before the await, and a disposal that begins during it closes the key without
             # this call ever seeing the mark. One that began earlier is caught above, since a
             # disposal marks the key before its own first await.
-            await self._refuse_a_key_closed_during_the_create(key)
+            await self._refuse_a_key_closed_during_the_create(key, served)
         try:
             _refuse_a_sandbox_that_cannot_be_reclaimed(sandbox)
         except TypeError:
@@ -909,18 +1163,18 @@ class SandboxRouter:
             # sandboxes for the key are equally unreclaimable, and no other backend's are
             # touched. Its own failure is logged, never allowed to replace the refusal.
             try:
-                reported = await self._backend.dispose(key)
+                reported = await served.dispose(key)
             except Exception as undisposed:  # noqa: BLE001 — the refusal must reach the caller
                 reported = str(undisposed)
             if reported is not None:
                 logger.warning(
                     "sandbox router: backend %s failed to dispose after a reclaim refusal: %s",
-                    self._backend.name,
+                    served.name,
                     reported,
                 )
                 # A refused acquire owes nothing billable left running. This one does, so
                 # the key is closed rather than served over a sandbox nothing can reclaim.
-                self.mark_unclean(key, _coded(self._backend.name, reported))
+                self.mark_unclean(key, _coded(served.name, reported))
             raise
         return sandbox
 
@@ -983,7 +1237,9 @@ class SandboxRouter:
         self._unclean.pop(key, None)
         return True
 
-    async def dispose_call(self, key: SandboxKey, *, timeout: float) -> bool:
+    async def dispose_call(
+        self, key: SandboxKey, *, timeout: float, spec: SandboxSpec | None = None
+    ) -> bool:
         """Delete the sandbox a call-scoped key owns, bounded, and say whether it landed.
 
         :meth:`dispose_unclean`'s bound and its answer without its ledger entry, because the two
@@ -995,6 +1251,17 @@ class SandboxRouter:
         ``FailedReclaimPolicy`` is not consulted, and that is the point: it loosens an
         escalation — disposing a sandbox a removal could not clean — where this delete is the
         call's own cleanup and the separation the workload asked for.
+
+        ``spec`` is what names the backend to ask under :data:`Selection.PER_SPEC`, by routing
+        it again rather than by remembering where the sandbox went.  A ``key -> backend`` map
+        would be the shape :meth:`_may_be_refused` already refuses for the unclean ledger — an
+        unbounded map on a host that mints a key per call — and it would answer nothing on a
+        replica that did not create the sandbox.  Omitting it there leaves nothing to route on,
+        so every backend **declaring** :data:`~maf_sandbox.IsolationScope.CALL` is asked and no
+        others: slower than routing, never wrong, and the shipped caller has the spec and
+        passes it.  The exclusion is not an optimisation — a conversation-scoped backend's
+        ``dispose`` sweeps by scope, thread and agent, so asking one would delete a sandbox
+        this call never owned.
 
         Raises:
             ValueError: when ``key`` names no call, which is a conversation's key and not this
@@ -1010,12 +1277,13 @@ class SandboxRouter:
                 "because a call-scoped key has no next acquire. Use dispose(key), or "
                 "dispose_unclean(key, timeout=...) when a call could not leave it clean."
             )
-        if self._backend is not None:
-            serves = _declared_isolation_scopes(self._backend, _declarations(self._backend))
+        serving, sweep = self._serving_for_call(spec)
+        if serving is not None:
+            serves = _declared_isolation_scopes(serving, _declarations(serving))
             if IsolationScope.CALL not in serves:
                 raise ValueError(
                     f"dispose_call was given a key naming a call, and sandbox backend "
-                    f"{self._backend.name!r} does not serve that scope, so it has no sandbox of "
+                    f"{serving.name!r} does not serve that scope, so it has no sandbox of "
                     "that call's to delete. What it does have is the conversation's, which its "
                     "dispose sweeps by scope, thread and agent — deleting it out from under "
                     "every later call. Use dispose(key) for a conversation."
@@ -1026,11 +1294,11 @@ class SandboxRouter:
             async with asyncio.timeout(timeout):
                 async with self._disposal_lock(key):
                     # This backend alone. A key minted for one call was served by the backend
-                    # this router selected and by nothing else, and asking the others would
-                    # report their failures as this call's leak. None configured means nothing
-                    # was ever served, which `_dispose_each` answers as a landed delete.
-                    serving = [] if self._backend is None else [self._backend]
-                    return await self._dispose_each(key, backends=serving)
+                    # this router routed it to and by nothing else, and asking the others
+                    # would report their failures as this call's leak. Nothing to ask means
+                    # nothing was ever served, which `_dispose_each` answers as a landed
+                    # delete.
+                    return await self._dispose_each(key, backends=sweep)
         except TimeoutError:
             logger.warning(
                 "sandbox router: disposing the call sandbox %s/%s/%s/%s did not finish within %ss",
@@ -1041,6 +1309,38 @@ class SandboxRouter:
                 timeout,
             )
             return False
+
+    def _serving_for_call(
+        self, spec: SandboxSpec | None
+    ) -> tuple[SandboxBackend | None, list[SandboxBackend]]:
+        """Which backend served a call's sandbox, and which backends to ask for the delete.
+
+        Routed through :meth:`backend_for` rather than :meth:`_route`, because the host's own
+        denials are part of the question. ``_route`` does not consult them — they are raised
+        once, ahead of it — so a spec this host denies would still pick a backend here, and
+        that backend's ``dispose`` takes **every kind** under the call key. A denied spec never
+        created anything, so the honest answer is nobody.
+
+        The two returns differ only where there is no backend to name: none to ask is a landed
+        delete, and a per-spec router called without a spec has nothing to route on and asks
+        each backend that could be holding a call's sandbox at all.
+
+        **Only those**, and the filter is the same rule the scope guard above enforces for a
+        named backend. A backend serving one sandbox per conversation has none of this call's
+        to delete, and its ``dispose`` sweeps by scope, thread and agent — so asking it would
+        delete the conversation's sandbox out from under every later call.
+        """
+        if self._selection is not Selection.PER_SPEC:
+            return self._backend, ([] if self._backend is None else [self._backend])
+        if spec is None:
+            return None, [
+                backend
+                for backend in self._backends
+                if IsolationScope.CALL
+                in _declared_isolation_scopes(backend, _declarations(backend))
+            ]
+        served = self.backend_for(spec)
+        return served, ([] if served is None else [served])
 
     async def dispose_unclean(self, key: SandboxKey, *, timeout: float) -> bool:
         """Dispose a sandbox the framework could not clean, and refuse the key until one lands.
