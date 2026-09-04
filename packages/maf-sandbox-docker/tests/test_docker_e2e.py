@@ -21,10 +21,16 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
+import http.server
+import ipaddress
+import json
 import os
 import posixpath
 import shutil
+import socket
 import subprocess
+import threading
 import uuid
 
 import pytest
@@ -1076,6 +1082,47 @@ def _network_present(name: str) -> bool:
     return name in out.splitlines()
 
 
+def _inspected(kind: str, name: str, template: str) -> str:
+    return subprocess.run(
+        ["docker", *([] if kind == "container" else [kind]), "inspect", "-f", template, name],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    ).stdout.strip()
+
+
+class _OkHandler(http.server.BaseHTTPRequestHandler):
+    """Answers any GET with 200, so a probe that reaches it is unambiguous."""
+
+    def do_GET(self) -> None:  # noqa: N802 - the stdlib's dispatch name
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"reached\n")
+
+    def log_message(self, *args: object) -> None:
+        """Silence: this server logs a line per probe to stderr otherwise."""
+
+
+@contextlib.contextmanager
+def _a_listener_on_every_host_address():
+    """An HTTP server on ``0.0.0.0``, yielding its port — a host service a guest must not reach.
+
+    Bound to every address on purpose: that is the shape Docker documents as reachable from a
+    container through an addressed bridge, and the one an operator is least likely to think of
+    as exposed to a sandbox.
+    """
+    server = http.server.ThreadingHTTPServer(("0.0.0.0", 0), _OkHandler)  # noqa: S104
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_address[1]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=10)
+
+
 @pytest.mark.skipif(
     not _PROXY_IMAGE,
     reason="needs MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE naming a built proxy image (and curl in the image)",
@@ -1130,6 +1177,72 @@ class TestAllowlistEgress:
         assert purged == 1
         assert _names_on_the_machine(sandbox.container_name) == []
         assert not _network_present(net)
+
+    def test_the_bridge_holds_no_host_address_so_neither_direction_crosses(self):
+        """The allowlist is only the workload's whole egress if the bridge has no host address.
+
+        With one, Docker routes both ways around the proxy: the guest reaches host services
+        bound to a wildcard address, and the host reaches any port inside the container.
+
+        **Both probes need the test process in the daemon's own network namespace**, which is
+        the ``docker-e2e`` runner and any rootful Linux engine. Against a Docker Desktop VM,
+        or a rootless daemon whose bridge lives inside RootlessKit's own network namespace,
+        the test passes without proving anything, because the process is outside the namespace
+        the bridge is in — the mechanism assertions at the end are what still bite there.
+
+        The guest-to-host probe carries a positive control, since a listener that never came up
+        would answer ``000`` for a reason that has nothing to do with the bridge.
+        """
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(self._config())
+        spec = _spec(egress=Egress.ALLOWLIST, egress_allow=("mcr.microsoft.com",))
+
+        sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+        net = sandbox.container_name + "-net"
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/.keep", "", working_directory=_WORK))
+        try:
+            # Behaviour first, mechanism after: what this holds the backend to is that neither
+            # direction crosses, and the option that currently achieves it is the explanation.
+            # As JSON rather than a `range` template: a dual-stack network has one entry per
+            # family and a template concatenates them into a value that parses as neither.
+            # The IPv4 entry is chosen by family, not position, since IPv6 comes first there.
+            ipam = json.loads(_inspected("network", net, "{{json .IPAM.Config}}"))
+            v4 = next(e for e in ipam if ipaddress.ip_network(e["Subnet"]).version == 4)
+            # Where the bridge would hold an address if it held one, so the probe targets the
+            # same place before and after the option rather than a mechanism-shaped absence.
+            bridge = str(ipaddress.ip_network(v4["Subnet"]).network_address + 1)
+
+            with _a_listener_on_every_host_address() as port:
+                with socket.create_connection(("127.0.0.1", port), timeout=10):
+                    pass  # the control: the server is up and serving on this host
+                _, status = self._curl_status(sandbox, f"http://{bridge}:{port}/")
+                assert status == "000", f"the guest reached a host service at {bridge}:{port}"
+
+            guest_ip = _inspected(
+                "container",
+                sandbox.container_name,
+                "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+            )
+            assert guest_ip, "the workload has no address on its own network"
+            # No listener is planted, and none is needed: a refusal is the finding. The guest's
+            # stack answers a port nothing holds with a reset, so ECONNREFUSED means the packet
+            # arrived and the host routes to the container. An unroutable address cannot
+            # produce it — measured as a timeout instead — so the errno is the whole assertion.
+            with pytest.raises(OSError) as refused:
+                with socket.create_connection((guest_ip, 8080), timeout=5):
+                    pass
+            assert refused.value.errno != errno.ECONNREFUSED, (
+                f"the host routed to the guest at {guest_ip}"
+            )
+
+            # The mechanism behind both, and read as the effect rather than as the request:
+            # `.Options` echoes back what the network was created with whether or not the
+            # daemon acted on it, so IPAM is the only place that says where the bridge ended
+            # up. An addressed network carries a `Gateway` in every entry, so asking for its
+            # absence holds on a dual-stack network as well as a single-stack one.
+            assert all(not entry.get("Gateway") for entry in ipam), ipam
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
 
 class TestWhetherThisBackendCouldServeHostTools:
