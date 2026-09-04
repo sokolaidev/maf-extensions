@@ -1258,17 +1258,22 @@ class SandboxToolSession:
         the word ``None`` into a sandbox is not an answer.  A failure to read answers with the
         sentence a caller returns, for the reason the listing does.
 
-        **The label is folded again once the bytes are here**, where the session was given the
-        host's record.  A listing's label is as old as the listing, and MAF runs tool calls
-        concurrently, so a file the host's floor called ``trusted`` when it was listed can be
-        rewritten by the agent's own ``file_access_write`` before this read returns.  The record
-        is consulted a second time and the *weaker* of the two answers is used, which is sound
-        because the record only ever moves one way: :meth:`FileStoreProvenance.record` takes no
-        integrity argument, so an entry can be added but never raised.
+        **The record is folded around the read**, where the session was given one.  A listing's
+        label is as old as the listing, and MAF runs tool calls concurrently, so a file the
+        host's floor called ``trusted`` when it was listed can be rewritten before this read
+        returns.  The record is consulted *before and after* ``store.read``, and the weakest of
+        those two answers and the listing's is what the content carries.
+
+        **Both consultations are load-bearing, because the record is not monotone.**
+        :meth:`FileStoreProvenance.record` only ever adds an entry, but
+        :meth:`FileStoreProvenance.forget` removes one and returns the path to the floor — so a
+        host forgetting a path while these bytes were in flight would raise the answer if only
+        the later consultation counted.  Bracketing the read means the entry that stood when the
+        bytes were captured is in the fold whichever way the race went.
 
         **One window stays open, and it is not closable from here.**  The middleware records a
         write in a ``finally``, after the writing tool call returns, so bytes that have landed
-        under a call still running are not yet recorded and this second fold cannot see them.
+        under a call still running are not yet recorded and neither consultation can see them.
         Observing at the call boundary is what buys the record its other guarantees; narrowing
         that residue means observing somewhere else.
 
@@ -1291,6 +1296,7 @@ class SandboxToolSession:
         """
         from agent_framework import Content
 
+        before = self._recorded_integrity(listed.name)
         try:
             text = await store.read(listed.name)
         except Exception as exc:  # noqa: BLE001
@@ -1301,19 +1307,15 @@ class SandboxToolSession:
             return f"Error: {shown} could not be read from the file store"
         if text is None:
             return None
-        integrity = self._integrity_now(listed)
+        integrity = self._folded_integrity(listed, before)
         properties: dict[str, Any] = {}
         if integrity is not None:
             # Not `security_label` — see `SOURCE_INTEGRITY_PROPERTY` for why.
             properties[SOURCE_INTEGRITY_PROPERTY] = str(integrity)
         return Content.from_text(text, additional_properties=properties)
 
-    def _integrity_now(self, listed: ListedFile) -> SourceIntegrity | None:
-        """``listed``'s label, re-folded against the host's record now that the bytes are read.
-
-        The weaker of the two, through :func:`weakest_integrity`, so ``None`` beats everything:
-        a listing folded without a record and a session given one disagree in that direction,
-        and *unestablished* is the honest answer when either side has not established anything.
+    def _recorded_integrity(self, name: str) -> SourceIntegrity | None:
+        """What the host's record says about ``name`` right now, or ``None`` without one.
 
         Raises:
             ValueError: what :meth:`FileStoreProvenance.integrity_of` raises for a ``trusted``
@@ -1322,10 +1324,30 @@ class SandboxToolSession:
                 not there meets it here, which is the first moment it can be told.
         """
         record = self._file_store_provenance
-        if record is None:
+        return None if record is None else record.integrity_of(name)
+
+    def _folded_integrity(
+        self, listed: ListedFile, before: SourceIntegrity | None
+    ) -> SourceIntegrity | None:
+        """The listing's label folded with what the record said either side of the read.
+
+        The weakest of the three, through :func:`weakest_integrity`, so ``None`` beats
+        everything — *unestablished* is the honest answer wherever any of them established
+        nothing, which is also how a listing folded without a record disagrees with a session
+        given one.
+
+        ``before`` is what makes a racing :meth:`FileStoreProvenance.forget` harmless: it can
+        return a path to a ``trusted`` floor, so the answer after the read is not a lower bound
+        on the answer while the bytes were being read.  The one taken before it is.
+        """
+        if self._file_store_provenance is None:
             return listed.integrity
         return weakest_integrity(
-            (listed, ListedFile(listed.name, record.integrity_of(listed.name)))
+            (
+                listed,
+                ListedFile(listed.name, before),
+                ListedFile(listed.name, self._recorded_integrity(listed.name)),
+            )
         )
 
     async def acquire(self, key: SandboxKey) -> Sandbox | str:
@@ -1883,13 +1905,9 @@ def sandboxed_tool(
             above, carried on the session, and passed on to
             :func:`~maf_sandbox.collect_outputs` by the workload itself.
         file_store_provenance: The host's :class:`~maf_sandbox.FileStoreProvenance`, so
-            :meth:`SandboxToolSession.read_file` can fold it again once the bytes are read
-            rather than trusting a label that is as old as the listing. Pass the **same** record
-            the listing callable folds, and wire
-            :func:`~maf_sandbox.maf.file_store_provenance_middleware` against it — without that
-            middleware a ``trusted`` floor answers for model-written files, which
-            :meth:`~maf_sandbox.FileStoreProvenance.integrity_of` refuses outright. Left unset,
-            the listing's label stands.
+            :meth:`SandboxToolSession.read_file` folds it around the read rather than trusting a
+            label as old as the listing. Pass the **same** record the listing callable folds.
+            Left unset, the listing's label stands.
         also_carries_out: Passed to :func:`sandbox_tool_declarations`; ignored when
             ``declarations`` is given. For a workload carrying something out through a channel
             the spec cannot show — a wired host-tool registry, say — so the confidentiality

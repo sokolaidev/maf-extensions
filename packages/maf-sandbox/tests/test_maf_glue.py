@@ -17,6 +17,7 @@ import logging
 import math
 import re
 import threading
+from collections.abc import Callable
 from typing import Any, cast
 
 import pytest
@@ -3130,18 +3131,33 @@ class TestListAllFiles:
 
 
 class _ReadStore:
-    """A store whose `read` can be made to miss, to answer nothing, or to fail."""
+    """A store whose `read` can be made to miss, to answer nothing, or to fail.
 
-    def __init__(self, files: dict[str, str | None], *, fails: Exception | None = None):
+    ``during_read`` runs inside `read`, just before it answers, which is the only way to put
+    something between the moment the bytes are captured and the moment the caller sees them.
+    A test that arranges the same thing beforehand pins nothing about *when* a caller looks.
+    """
+
+    def __init__(
+        self,
+        files: dict[str, str | None],
+        *,
+        fails: Exception | None = None,
+        during_read: Callable[[], None] | None = None,
+    ):
         self.files = files
         self._fails = fails
+        self._during_read = during_read
         self.asked: list[str] = []
 
     async def read(self, path: str) -> str | None:
         self.asked.append(path)
         if self._fails is not None:
             raise self._fails
-        return self.files.get(path)
+        text = self.files.get(path)
+        if self._during_read is not None:
+            self._during_read()
+        return text
 
 
 class TestSessionReadFile:
@@ -3258,27 +3274,48 @@ class TestSessionReadFile:
 
 
 class TestReadFileRefoldsAgainstTheRecord:
-    """A listing's label is as old as the listing, and the record is what re-answers it."""
+    """The content's label is the weakest of the listing's and the record's, either side of the
+    read — so neither a write nor a `forget` landing while the bytes are in flight can raise
+    it."""
 
     def _session_with(self, record):
         return _session(file_store_provenance=record)
 
-    def test_a_write_between_the_listing_and_the_read_lowers_the_label(self):
-        """The window this closes, driven in the order it happens in.
+    def test_a_write_while_the_read_is_in_flight_lowers_the_label(self):
+        """A write recorded *during* the read still reaches the label.
 
-        The host's floor calls an unrecorded path `trusted`, a kind lists it and gets that, and
-        the agent's own `file_access_write` lands on it before the kind reads. Without the
-        second fold the model's bytes arrive labelled `trusted` — which is the whole of the
-        laundering this channel exists to prevent, re-entered through timing.
+        The write is made from inside `read`, so a fold taken before the await would miss it
+        and this asserts the later consultation happens at all.
         """
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
         file_store_provenance_middleware(record)
         listed = ListedFile("a.txt", record.integrity_of("a.txt"))
         assert listed.integrity is SourceIntegrity.TRUSTED, "the listing saw the floor"
 
-        record.record("a.txt")  # the agent writes, between the listing and the read
+        store = _ReadStore({"a.txt": "1"}, during_read=lambda: record.record("a.txt"))
+        item = asyncio.run(self._session_with(record).read_file(store, listed))
 
-        item = asyncio.run(self._session_with(record).read_file(_ReadStore({"a.txt": "1"}), listed))
+        assert not isinstance(item, str) and item is not None
+        assert item.additional_properties[SOURCE_INTEGRITY_PROPERTY] == "untrusted"
+
+    def test_a_forget_while_the_read_is_in_flight_cannot_raise_the_label(self):
+        """`forget` returns a path to the floor, so the record is not monotone and the answer
+        after the read is not a lower bound on the answer while the bytes were read.
+
+        Here the entry stands when the read starts, the host forgets it mid-read, and the floor
+        is `trusted` — so a fold taken only afterwards would hand back model-written bytes
+        labelled trusted. The consultation before the read is what refuses that.
+        """
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)
+        # Listed while the floor still answered, so the listing cannot be what refuses: the
+        # entry appears after it and is gone again before the later consultation runs.
+        listed = ListedFile("a.txt", record.integrity_of("a.txt"))
+        assert listed.integrity is SourceIntegrity.TRUSTED
+        record.record("a.txt")
+
+        store = _ReadStore({"a.txt": "1"}, during_read=lambda: record.forget("a.txt"))
+        item = asyncio.run(self._session_with(record).read_file(store, listed))
 
         assert not isinstance(item, str) and item is not None
         assert item.additional_properties[SOURCE_INTEGRITY_PROPERTY] == "untrusted"
@@ -3298,9 +3335,8 @@ class TestReadFileRefoldsAgainstTheRecord:
         assert item.additional_properties[SOURCE_INTEGRITY_PROPERTY] == "trusted"
 
     def test_an_unestablished_record_beats_an_established_listing(self):
-        """`None` wins the fold, as `weakest_integrity` has it. A listing folded without a
-        record and a session given one disagree in exactly this direction, and *unestablished*
-        is the honest answer when either side established nothing."""
+        """`None` wins the fold: *unestablished* is the honest answer wherever either side
+        established nothing."""
         record = FileStoreProvenance()  # floor None: nothing established
         file_store_provenance_middleware(record)
 
@@ -3314,7 +3350,7 @@ class TestReadFileRefoldsAgainstTheRecord:
         assert SOURCE_INTEGRITY_PROPERTY not in item.additional_properties
 
     def test_the_listing_stands_where_the_session_has_no_record(self):
-        """Not every host wires one, and the absence is not a downgrade."""
+        """No record is not a downgrade: the listing's label is used as it is."""
         item = asyncio.run(
             _session().read_file(
                 _ReadStore({"a.txt": "1"}), ListedFile("a.txt", SourceIntegrity.TRUSTED)
@@ -3341,8 +3377,7 @@ class TestReadFileRefoldsAgainstTheRecord:
         assert item.text == "param x string"
 
     def test_a_trusted_floor_with_no_observer_is_refused_here_too(self):
-        """`integrity_of`'s refusal reaches a host that wired the record here and not into its
-        listing — the first moment anything can tell it."""
+        """A record wired here but not into the listing meets `integrity_of`'s refusal here."""
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)  # no middleware built
 
         with pytest.raises(ValueError, match="file_store_provenance_middleware"):

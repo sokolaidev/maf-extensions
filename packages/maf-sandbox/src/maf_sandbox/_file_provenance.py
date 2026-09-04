@@ -6,7 +6,9 @@ call wrote a path.  Three invariants hold it together, and each is a property ra
 convention a caller could break.
 
 * **Every entry is untrusted**, because :meth:`FileStoreProvenance.record` takes no integrity
-  argument.  Recording twice records the same thing, which is what makes the record monotone.
+  argument.  Recording twice records the same thing, so recording only ever lowers — and
+  :meth:`FileStoreProvenance.forget` is the one thing that does not, which is why a reader
+  consults this record either side of its read rather than after it.
 * **An entry is about the path**, not a version of its bytes, and it stands until
   :meth:`FileStoreProvenance.forget`.
 * **The floor applies only to a path with no recorded entry**, so an entry always beats it and
@@ -90,11 +92,13 @@ class FileStoreProvenance:
             ``None``, the default, means *unestablished*: this host has not said, and a caller
             must treat the answer as it treats any source the framework has not established.
 
-    **Read it twice.**  A caller that folds this record into a listing and then reads the bytes
-    should fold it again at the read — :meth:`~maf_sandbox.maf.SandboxToolSession.read_file`
-    does, given the record — because a write landing in between would otherwise arrive under the
-    older answer.  The second fold is sound because this record only moves one way: an entry can
-    be added and never raised.
+    **Read it around the bytes, not after them.**  A caller that folds this record into a
+    listing and then reads should consult it again *both sides* of the read —
+    :meth:`~maf_sandbox.maf.SandboxToolSession.read_file` does, given the record — and take the
+    weakest answer.  :meth:`record` only adds, but :meth:`forget` removes, so neither
+    consultation alone bounds what this record said while the bytes were being read: a write
+    landing after the first would be missed, and a ``forget`` landing after the second would
+    raise the answer above what stood when they were captured.
 
     **One residue is not closable from here.**  A write is recorded once the writing tool call
     *returns*, so bytes already written by a call still in flight are not yet in the record.  A
@@ -132,11 +136,11 @@ class FileStoreProvenance:
         ``path`` is keyed through :func:`store_key`, here and in :meth:`integrity_of` alike, so a
         record filed under one spelling is found under every spelling of the same file.
 
-        **There is no integrity argument, and that is what makes the record monotone.**  Every
-        entry it can hold is untrusted, so recording twice is recording the same thing and no
-        caller — not this package's middleware, not a host's own — can raise a path that was
-        written by the model back to trusted.  A record whose entries could be raised would give
-        the concurrency and floor guarantees below nothing to stand on.
+        **There is no integrity argument, so recording only ever lowers.**  Every entry it can
+        hold is untrusted, so recording twice is recording the same thing and no caller — not
+        this package's middleware, not a host's own — can *record* a path back up to trusted.
+        Dropping one does raise it, which is :meth:`forget`'s whole purpose and the reason a
+        reader brackets its read rather than trusting a single later look.
 
         **An entry is about the path, not about a version of its content.**  It records that the
         model has written here, which stays true of every later version: nothing the model writes
@@ -155,6 +159,11 @@ class FileStoreProvenance:
         an observer cannot tell a delete that removed the file from one that did not, and
         forgetting on the strength of a call having been made would return a path to a trusted
         floor while the model's bytes were still in it.
+
+        **This is the one method that can raise what a path is worth**, which is why a reader
+        consults this record either side of its read rather than after it — see
+        :meth:`~maf_sandbox.maf.SandboxToolSession.read_file`.  A call to this racing a read is
+        then harmless rather than something a host has to serialise against.
         """
         with self._lock:
             self._entries.pop(store_key(path), None)
