@@ -34,11 +34,11 @@ dependencies = [
     # because maf-sandbox has not yet reached a stable API, so every release before 1.0.0 may
     # include breaking changes (see its CHANGELOG); moving either end of this range has an
     # order to it — see RELEASING.md.
-    # Widened to admit 0.32 ahead of a breaking core release, which is the point of widening
-    # it here and not in maf-sandbox-bicep or maf-sandbox-codeact: this backend calls none of
-    # the surface that release reshapes, so a published copy of it admitting the new core is
-    # safe, where a published kind admitting it would be installed beside a core its code
-    # cannot call. Those two widen in the pull request that adapts them. See RELEASING.md.
+    # Widened ahead of a breaking core release, and widened here rather than in
+    # maf-sandbox-bicep or maf-sandbox-codeact: this backend calls none of the surface that
+    # release reshapes, so a published copy of it admitting the new core is safe, where a
+    # published kind admitting it would be installed beside a core its code cannot call.
+    # Those two widen in the request that adapts them. See RELEASING.md.
     "maf-sandbox>=0.30.0,<0.33",
 ]
 
