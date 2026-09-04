@@ -1042,10 +1042,21 @@ class DockerSandboxBackend:
                 # Last thing before the sandbox is handed out. The reads that chose reuse or
                 # restart happen earlier, and this backend's lock orders nothing against another
                 # process, so a container answering those reads is not necessarily the one still
-                # here now.
+                # here now.  Refusing is not enough on its own: `exec` detaches, so a container
+                # reached this far may hold processes from earlier calls, and they keep whatever
+                # the extra attachment reaches for as long as it runs.
+                removal = await self._remove(name)
+                net = _network_name(name)
+                if removal.failure is not None:
+                    raise RuntimeError(
+                        f"sandbox {name} is not on {net} alone, so what it can reach is not what "
+                        f"this backend built — and it could not be removed ({removal.failure}), "
+                        f"so it is still running with that reach. Remove it by hand."
+                    )
                 raise RuntimeError(
-                    f"sandbox {name} is not on {_network_name(name)} alone, so what it can "
-                    f"reach is not what this backend built. Retry: the next acquire replaces it."
+                    f"sandbox {name} was not on {net} alone, so what it could reach was not what "
+                    f"this backend built. It has been removed; the next acquire builds a "
+                    f"replacement."
                 )
 
             self._registry[(key.scope, key.thread_id, key.agent_dir, spec.kind)] = name

@@ -3242,9 +3242,34 @@ class TestASandboxLeftOnAnUnusableNetwork:
                 return _DockerResult(0, (on + " ").encode(), "")
             return base(args)
 
-        backend, _ = _backend_with(swapped, config=_ALLOW_CONFIG)
-        with pytest.raises(RuntimeError, match="is not on .* alone"):
+        backend, fake = _backend_with(swapped, config=_ALLOW_CONFIG)
+        with pytest.raises(RuntimeError, match="was not on .* alone"):
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        # Refusing the acquire does not stop what is already inside: `exec` detaches, so the
+        # container may hold processes from earlier calls that keep the extra network's reach
+        # until it is gone.
+        assert fake.matching("rm", "-f", _AL) != []
+
+    def test_a_swapped_container_that_will_not_go_says_it_is_still_running(self):
+        """The removal reports failure rather than raising it, so an acquire that read past it
+        would tell an operator to retry while the workload kept the reach that was refused."""
+        base = _machine(
+            running=[_AL],
+            networks={_AL_NET: _UNADDRESSED},
+            overrides={("rm", "-f", _AL): _DockerResult(1, b"", "device or resource busy")},
+        )
+        reads = itertools.count()
+
+        def swapped(args: tuple[str, ...]) -> _DockerResult:
+            if args[:3] == ("inspect", "-f", _ATTACHED_NETWORKS_FORMAT) and args[-1] == _AL:
+                on = _AL_NET if next(reads) == 0 else "an-unrestricted-network"
+                return _DockerResult(0, (on + " ").encode(), "")
+            return base(args)
+
+        backend, _ = _backend_with(swapped, config=_ALLOW_CONFIG)
+        with pytest.raises(RuntimeError, match="still running with that reach") as raised:
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert "device or resource busy" in str(raised.value)
 
     def test_a_cold_acquire_has_nothing_to_replace(self):
         """No network yet is the ordinary first acquire, not a stale one."""
