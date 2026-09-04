@@ -304,6 +304,34 @@ class TestTheTitlesValidForTheDiff:
             "package"
         )
 
+    def test_a_renames_source_package_is_not_named_as_changing_behavior(self):
+        """release-please attributes only the destination, so the source releases nothing."""
+        pairs = [("packages/a/src/x.py", "packages/b/src/x.py"), ("packages/c/README.md",)]
+        problems = check.assess(
+            "feat: move and document",
+            ["packages/b/src/x.py", "packages/c/README.md"],
+            {},
+            pairs,
+        )
+        assert problems[1] == (
+            "no title is valid for this diff: packages/b changes behavior and packages/c "
+            "does not; split the pull request so each half has one answer"
+        )
+
+    def test_no_touched_package_changes_behavior_falls_back_to_the_paths(self):
+        """With the rename landing in tests, nothing that releases changes, so name the path."""
+        pairs = [("packages/a/src/x.py", "packages/b/tests/test_x.py"), ("packages/c/README.md",)]
+        problems = check.assess(
+            "feat: move and document",
+            ["packages/b/tests/test_x.py", "packages/c/README.md"],
+            {},
+            pairs,
+        )
+        assert problems[1] == (
+            "no title is valid for this diff: the executable change is at packages/a/src/x.py, "
+            "which release-please attributes to no package"
+        )
+
 
 class TestTestsDoNotMakeAPackageTouched:
     """A package changed only in its tests is not releasing, so it owes no executable change.
