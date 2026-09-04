@@ -4461,6 +4461,22 @@ class TestWhatASplitResultDoesToTheCallsLabel:
         assert str(label.confidentiality) == "private"
         assert str(conversation.confidentiality) == "private"
 
+    def test_a_declared_untrusted_tool_still_shows_its_trusted_item(self):
+        """Tier 1 is read per item and ahead of tier 2, so declaring costs no per-item label.
+
+        A tool declaring `untrusted` still shows a `trusted` item in its result: the guidance
+        stays visible, the derived half stays hidden, and the call's own label is `untrusted`.
+        """
+        label, seen, conversation = self._run(
+            (labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED), _text("EXIT=1")),
+            declarations={"source_integrity": "untrusted", "confidentiality": "private"},
+        )
+
+        assert seen == [_GUIDANCE, "hidden"]
+        assert str(label.integrity) == "untrusted"
+        assert str(label.confidentiality) == "private"
+        assert str(conversation.integrity) == "trusted", "hidden content does not taint"
+
     def test_a_fully_labelled_result_would_lose_it(self):
         """The counterfactual the refusal closes, built by hand because the factory refuses it."""
         from agent_framework import Content, FunctionInvocationContext, FunctionTool

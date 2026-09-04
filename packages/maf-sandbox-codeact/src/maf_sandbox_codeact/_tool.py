@@ -268,7 +268,7 @@ def make_codeact_tools(
             with sizes and the model's own declared names instead. No guest-authored text
             survives into the result — but the values that replace it were still chosen by a
             program the model wrote, so this changes what the result *holds* and not where it
-            came from: the tool declares no ``source_integrity`` either way. Requires
+            came from: the tool declares ``SourceIntegrity.UNTRUSTED`` either way. Requires
             :data:`CodeactOutputs.DECLARED`: the one mode where content can still reach the
             model and no guest-chosen name reaches the result.
 
@@ -288,12 +288,12 @@ def make_codeact_tools(
             code, the sizes, the landed names — carries no label of its own, so it takes
             whatever the call's label is; beside it sits the standing sentence naming the recovery
             route, labelled ``trusted``, because nothing a call produced reaches it and it is
-            emitted on every return path including the refusals.  **Where that call resolves
-            untrusted and the conversation is still clean** — hiding is a first-taint
-            protection, and ``default_integrity`` is the host's to move — a framework hiding
-            untrusted content hides the first and leaves the second readable, which is the
-            point: under one label the sentence went with the numbers it was there to explain.
-            Neither condition is this kind's to promise; both are measured in
+            emitted on every return path including the refusals.  **Where the conversation is
+            still clean** — hiding is a first-taint protection — a framework hiding untrusted
+            content hides the first and leaves the second readable, which is the point: under
+            one label the sentence went with the numbers it was there to explain.  The call
+            resolving untrusted is not a second condition any more, because this tool declares
+            it.  What remains is not this kind's to promise, and is measured in
             ``docs/sandbox/information-flow.md``.
 
             **What withholding gets you, exactly.** The prose and the shape are this package's,
@@ -484,12 +484,12 @@ def make_codeact_tools(
         name=EXECUTE_CODE_TOOL_NAME,
         approval_mode="always_require" if approval_gated else "never_require",
         also_carries_out=registry_carries_out,
-        # Never declared, withheld or not. What comes back is whatever a model-written
-        # `print(...)` chose to emit; withheld it is an exit status, two sizes and a presence
-        # bit per declared output, every one of them chosen by a program the model wrote. A
-        # declaration replaces the framework's input-label join rather than flooring it, so
-        # declaring anything here would tell a host's middleware to disregard the input side.
-        source_integrity=None,
+        # Withheld or not: what comes back is chosen by a program the model wrote, an exit
+        # status and two sizes being as much its choice as the text. Declared rather than
+        # omitted because a declaration replaces the other two tiers, and neither is this
+        # kind's to answer for. It does not reach the withheld route's per-item `trusted`,
+        # which is tier 1 and read first — `information-flow.md` carries both.
+        source_integrity=SourceIntegrity.UNTRUSTED,
         outbound_max_confidentiality=outbound_max_confidentiality,
         output_sink=output_sink,
         logger=logger,

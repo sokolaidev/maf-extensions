@@ -1208,22 +1208,27 @@ class TestFidesDeclarations:
     `source_integrity` is the same kind of contract read the other way round. A declared
     integrity level *replaces* the framework's input-label join rather than flooring it, so
     declaring `"trusted"` here would tell a host's middleware to disregard where the result
-    came from — and it came from a template the model wrote. The factory in
-    :mod:`maf_sandbox.maf` defaults to `"trusted"` and CAN derive an egress cap; this kind
-    asks for neither (see the comment at its `sandboxed_tool` call). These tests are what
-    hold both decisions in place.
+    came from — and it came from a template the model wrote. This kind declares `"untrusted"`,
+    which is that same replacement used the safe way round: it closes the input-label join and
+    the host's `default_integrity` together, and neither is something this package controls.
+    The factory in :mod:`maf_sandbox.maf` defaults to `None` and CAN derive an egress cap;
+    this kind asks for the first and not the second (see the comment at its `sandboxed_tool`
+    call). These tests are what hold both decisions in place.
     """
 
     def _properties(self):
         store = InMemoryStore({})
         return dict(_tool(store, _fake_backend()).additional_properties or {})
 
-    def test_the_tool_declares_nothing_at_all(self):
-        assert self._properties() == {}
+    def test_the_tool_declares_its_integrity_and_nothing_else(self):
+        assert self._properties() == {"source_integrity": "untrusted"}
 
-    def test_it_declares_no_source_integrity(self):
-        """The library default is `"trusted"`, so an empty dict here is a passed argument."""
-        assert "source_integrity" not in self._properties()
+    def test_it_declares_untrusted_rather_than_leaving_it_to_the_host(self):
+        """Silence is not the same answer. The library default is `None`, and an undeclared
+        tool takes whichever of the two remaining tiers speaks: the input-label join, or the
+        host's `default_integrity` — and a host that raised that default would get `trusted`
+        back for a result derived from a template the model wrote."""
+        assert self._properties()["source_integrity"] == "untrusted"
 
     def test_it_declares_nothing_about_confidentiality(self):
         properties = self._properties()
