@@ -492,7 +492,9 @@ def _bicep_validate_tool(
         renames: dict[str, str] = {}
         for entry_name, entry_label, entry_path in written:
             guest_relative = entry_path.removeprefix(call_directory).lstrip("/")
-            for key in (entry_name, guest_relative):
+            # The absolute path as well: it is what Bicep was handed and what it reports back,
+            # so it is the key that makes the match exact rather than a suffix guess.
+            for key in (entry_name, guest_relative, entry_path):
                 if key:
                     # Overwriting is safe because `hidden_paths` gives one destination one
                     # label: two entries reaching the same key agree on what it renders as.

@@ -283,17 +283,25 @@ class ListedFile:
     listed name is ever substituted into a command — and the label beside it is what the host
     knows about the *bytes* at that name.
 
-    **The two are not the same channel and must not be conflated.**  A name is a string the model
-    typed, whoever placed the file it points at, so a label here says nothing about the name and
-    a kind that renders a verdict renders it by position.  ``docs/sandbox/kinds/README.md`` rule 9
-    carries what a kind does with one.
+    **The two are not the same channel and must not be conflated.**  ``name`` is the *host's*
+    listing key — what the store is keyed by and what
+    :meth:`~maf_sandbox.maf.SandboxToolSession.read_file` reads back — not the model's spelling:
+    a kind resolves what the model asked for against this listing first, and the two can differ
+    (``bicep_validate`` resolves ``./main.bicep`` to a listing entry named ``main.bicep``).
+    ``integrity`` is about the bytes and says nothing about either spelling.
+
+    **Neither field decides how a name may be rendered.**  That is the hidden-content verdict,
+    which belongs to the *argument position* the name arrived at rather than to any value here,
+    and reaches :func:`~maf_sandbox.echoed_name` as ``hidden``.  A ``trusted`` label does not
+    license echoing a name and an ``untrusted`` one does not forbid it.
+    ``docs/sandbox/kinds/README.md`` rule 9 carries what a kind does with all of this.
 
     ``integrity`` is ``None`` where the host establishes nothing about the file — the same
     *unestablished* answer :meth:`FileStoreProvenance.integrity_of` gives, and not a synonym for
     untrusted.
     """
 
-    #: The store-relative path, as the caller may name it.
+    #: The store-relative path as the *host's listing* spells it, which a caller reads back by.
     name: str
     #: What the host knows about the bytes at :attr:`name`, or ``None`` for unestablished.
     integrity: SourceIntegrity | None = None

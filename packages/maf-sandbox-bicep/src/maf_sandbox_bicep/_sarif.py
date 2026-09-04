@@ -79,32 +79,46 @@ def parse_sarif(text: str) -> list[dict[str, Any]] | None:
     return diagnostics
 
 
-def _renamed(location: str, rename: Mapping[str, str] | None) -> str:
+#: What a location renders as when it matched a written file only by its trailing component.
+#:
+#: Saying "unidentified" rather than guessing is the whole point: a suffix match cannot tell a
+#: written ``main.bicep`` from an unrelated ``/vendor/main.bicep``, so naming a request position
+#: there would attribute a diagnostic to a file that has nothing to do with it.  The name is
+#: still withheld, because the alternative is echoing a path that may be the content the
+#: framework hid.
+_UNIDENTIFIED = "an unidentified file"
+
+
+def _renamed(location: str, absolute: str, rename: Mapping[str, str] | None) -> str:
     """``location`` as it may be shown, given the caller's map of every file it wrote.
 
-    Matches a trailing path component as well as the whole string, because stripping the
-    working directory is best-effort: Bicep reports whatever root it resolved, and a location
-    this run did not strip still ends in the file's name.  A match replaces the *entire*
-    location rather than the matched part — half of a path that contained the name is still
-    the name, and the surrounding directories are the sandbox's internal layout, which
-    ``format_diagnostics`` does not put in front of the model either.
+    Two matches, and only one of them attributes.
 
-    **The longest match wins, and that is what makes suffix matching safe.**  Two written files
-    can share a basename — a hidden ``main.bicep`` beside a visible ``dir/main.bicep`` — and the
-    short key suffix-matches the long file's location.  Picking the longest key means the
-    location is attributed to the file it actually names, so a diagnostic about the *visible*
-    file keeps its own spelling rather than being reported at the hidden one's position.  This
-    only works because the caller maps **every** file it wrote, visible ones to themselves;
-    a map of hidden files alone has no long key to win.
+    **Exact** — against the stripped location or the raw absolute path — identifies the file, so
+    the caller's rendering for it is used as given, request position and all.  ``absolute`` is
+    what makes this the ordinary case rather than the lucky one: Bicep is handed the path this
+    call wrote and reports it back, so the caller's own ``sandbox_path`` matches it whether or
+    not ``strip_prefix`` succeeded.
+
+    **Trailing component** — a fallback for a location this run did not strip, which still ends
+    in the file's name.  It cannot identify anything: a written ``main.bicep`` and an unrelated
+    ``/vendor/main.bicep`` match the same key equally well, and picking a longest or first match
+    only chooses between guesses.  So it renders :data:`_UNIDENTIFIED` and claims no position.
+    The name is still withheld, because a location that ends in a written file's name may *be*
+    that file, and that file's name may be content the framework hid.
+
+    Either way the *entire* location is replaced rather than the matched part: half of a path
+    that contained the name is still the name, and the directories around it are the sandbox's
+    internal layout, which ``format_diagnostics`` does not put in front of the model either.
     """
     if not rename or not location:
         return location
-    best: tuple[int, str] | None = None
-    for real, shown in rename.items():
-        if location == real or location.endswith("/" + real):
-            if best is None or len(real) > best[0]:
-                best = (len(real), shown)
-    return best[1] if best is not None else location
+    for candidate in (location, absolute):
+        if candidate and candidate in rename:
+            return rename[candidate]
+    if any(location.endswith("/" + real) for real in rename):
+        return _UNIDENTIFIED
+    return location
 
 
 def format_diagnostics(
@@ -129,10 +143,12 @@ def format_diagnostics(
     path where the file simply has an error in it.
 
     A caller passes **every file it wrote**, mapping the ones it may echo to themselves, and
-    under every spelling the compiler might use for them.  Not only the unshowable ones: see
-    :func:`_renamed` for why a map of those alone mis-attributes a diagnostic when two written
-    files share a basename.  A location matching nothing in the map is shown as the compiler
-    reported it, because a file the caller never wrote is one it cannot vouch for either way.
+    under every spelling the compiler might use for them — including the absolute path it was
+    given, which is what a real diagnostic reports and what makes the match exact rather than
+    inferred.  Not only the unshowable ones: a map of those alone cannot tell a diagnostic about
+    a visible file from one about a hidden file that shares its basename.  A location matching
+    nothing is shown as the compiler reported it, because a file the caller never wrote is one
+    it cannot vouch for either way.
     """
     if not diagnostics:
         return f"{phase}: no diagnostics"
@@ -140,8 +156,8 @@ def format_diagnostics(
     for d in diagnostics:
         loc_parts: list[str] = []
         for loc in d.get("locations", []):
-            f = _relative_location(loc.get("file", ""), strip_prefix)
-            f = _renamed(f, rename)
+            raw = loc.get("file", "")
+            f = _renamed(_relative_location(raw, strip_prefix), raw.removeprefix("file://"), rename)
             ln = loc.get("line")
             col = loc.get("column")
             if not f:

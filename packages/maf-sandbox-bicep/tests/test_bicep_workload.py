@@ -1490,10 +1490,39 @@ class TestAgainstRealBicepOutput:
     def _one_at(self, uri: str) -> list[dict[str, object]]:
         return [{"level": "error", "message": "boom", "locations": [{"file": uri, "line": 1}]}]
 
-    def test_a_rename_replaces_the_whole_location_however_little_was_stripped(self):
-        """Stripping is best-effort — Bicep reports whatever root it resolved — so a location
-        this run did not strip still ends in the name, and half a path that contained the name
-        is still the name."""
+    def test_the_absolute_path_bicep_was_given_matches_exactly(self):
+        """The ordinary case, and the only kind that carries a request position.
+
+        Bicep is handed the path this call wrote and reports it back, so the caller's own
+        `sandbox_path` is a key that matches whatever `strip_prefix` managed to remove. Exact
+        identification is what licenses naming a position at all.
+        """
+        out = format_diagnostics(
+            self._one_at("file:///w/call/secret.bicep"),
+            "lint(x)",
+            strip_prefix=None,
+            rename={"/w/call/secret.bicep": "the value at files[0]"},
+        )
+
+        assert "secret.bicep" not in out
+        assert "the value at files[0]" in out
+
+    def test_a_stripped_location_matches_exactly_too(self):
+        out = format_diagnostics(
+            self._one_at("file:///w/secret.bicep"),
+            "lint(x)",
+            strip_prefix="/w",
+            rename={"secret.bicep": "the value at files[0]"},
+        )
+
+        assert "secret.bicep" not in out
+        assert "the value at files[0]" in out
+
+    def test_a_trailing_match_withholds_the_name_and_claims_no_position(self):
+        """A location this run could not strip still ends in a written file's name, so the name
+        cannot be shown — it may be the content the framework hid. It cannot be *identified*
+        either, so naming a position would attribute a diagnostic to a file that may have
+        nothing to do with it."""
         out = format_diagnostics(
             self._one_at("/unexpected/root/secret.bicep"),
             "lint(x)",
@@ -1503,17 +1532,27 @@ class TestAgainstRealBicepOutput:
 
         assert "secret.bicep" not in out
         assert "unexpected/root" not in out
-        assert "the value at files[0]" in out
+        assert "files[0]" not in out
+        assert "an unidentified file" in out
 
-    def test_the_longest_matching_key_wins_so_a_shared_basename_keeps_its_own_file(self):
-        """Suffix matching is what makes an unstripped location safe, and what makes it
-        ambiguous. A hidden `secret.bicep` beside a visible `dir/secret.bicep` means the short
-        key suffix-matches the long file's location, and first-match would report the *visible*
-        file's diagnostic at the hidden file's position — the wrong file, which a reader would
-        then act on.
+    def test_an_unrelated_path_sharing_a_basename_is_not_attributed_to_a_position(self):
+        """The misattribution a trailing match invites: `/vendor/secret.bicep` was never written
+        by this call, and reporting its diagnostic at `files[0]` would point the reader at the
+        wrong file entirely."""
+        out = format_diagnostics(
+            self._one_at("/vendor/secret.bicep"),
+            "lint(x)",
+            strip_prefix="/w",
+            rename={"secret.bicep": "the value at files[0]"},
+        )
 
-        The short key is inserted first because insertion order is what decides a first-match
-        answer: a version of this test that leaves the order to chance passes against the bug.
+        assert "files[0]" not in out
+        assert "an unidentified file" in out
+
+    def test_a_visible_file_sharing_a_basename_keeps_its_own_name(self):
+        """Exact matching is what separates these, and it is why every written file is a key —
+        including the ones whose name may be shown. A map of hidden files alone would leave
+        `dir/secret.bicep` falling through to the trailing branch and losing its name.
         """
         rename = {"secret.bicep": "the value at files[0]", "dir/secret.bicep": "dir/secret.bicep"}
 
