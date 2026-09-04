@@ -265,6 +265,19 @@ def _machine(
                 return _DockerResult(1, b"", f"error: no such object: {name}")
             on = live_attached.get(name, [_network_name(name)])
             return _DockerResult(0, (" ".join(on) + " ").encode(), "")
+        if args[:2] == ("network", "connect"):
+            # The proxy's second leg. Without it the proxy reads as single-homed, which is the
+            # shape that means an allowlisted sandbox has no way out at all.
+            net, target = args[2], args[3]
+            live_attached.setdefault(target, [_network_name(target)]).append(net)
+            live_endpoints.setdefault(net, set()).add(target)
+            return _DockerResult(0, b"", "")
+        if args[:2] == ("network", "disconnect"):
+            net, target = args[2], args[3]
+            if net in live_attached.get(target, []):
+                live_attached[target].remove(net)
+            live_endpoints.get(net, set()).discard(target)
+            return _DockerResult(0, b"", "")
         if args[:4] == ("network", "inspect", "-f", _NETWORK_ENDPOINTS_FORMAT):
             net = args[-1]
             if net not in live_networks:
@@ -3368,6 +3381,41 @@ class TestASandboxLeftOnAnUnusableNetwork:
         with pytest.raises(RuntimeError, match="also holds someone-elses-container") as raised:
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert "can reach directly" in str(raised.value)
+        # Removing the workload leaves the peer, so a plain retry would meet the same network.
+        assert "Disconnect or remove someone-elses-container" in str(raised.value)
+        assert fake.matching("rm", "-f", _AL) != []
+
+    def test_a_proxy_that_lost_its_outbound_leg_is_caught(self):
+        """The one failure in the other direction. Everything the workload touches is right and
+        its way out is gone, so `ALLOWLIST` would be served as a silent `CLOSED` — the
+        degradation `_ensure_proxy` already refuses to create, arriving after it instead."""
+        base = _machine(running=[_AL], networks={_AL_NET: _UNADDRESSED})
+
+        def unhooked(args: tuple[str, ...]) -> _DockerResult:
+            if args[:2] == ("network", "connect"):
+                return _DockerResult(0, b"", "")  # accepted, and quietly undone afterwards
+            return base(args)
+
+        backend, fake = _backend_with(unhooked, config=_ALLOW_CONFIG)
+        with pytest.raises(RuntimeError, match="allowlist reaches nothing") as raised:
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert "its proxy is on" in str(raised.value)
+        assert fake.matching("rm", "-f", _AL) != []
+
+    def test_an_unreadable_endpoint_list_refuses_rather_than_assuming_it_is_clear(self):
+        """The fail-closed branch for a network whose membership could not be read at all —
+        distinct from one read and found to hold a peer, and just as unserveable."""
+        overrides = {
+            ("network", "inspect", "-f", _NETWORK_ENDPOINTS_FORMAT): _DockerResult(
+                1, b"", "daemon is not responding"
+            )
+        }
+        backend, fake = _backend_with(
+            _machine(running=[_AL], networks={_AL_NET: _UNADDRESSED}, overrides=overrides),
+            _ALLOW_CONFIG,
+        )
+        with pytest.raises(RuntimeError, match="could not be read"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert fake.matching("rm", "-f", _AL) != []
 
     def test_a_network_replaced_under_its_own_name_is_caught(self):
@@ -3406,7 +3454,7 @@ class TestASandboxLeftOnAnUnusableNetwork:
         backend, _ = _backend_with(unreadable_last, config=_ALLOW_CONFIG)
         with pytest.raises(RuntimeError) as raised:
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
-        assert "networks could not be read: daemon is not responding" in str(raised.value)
+        assert "networks that could not be read: daemon is not responding" in str(raised.value)
         assert "rather than" not in str(raised.value)
 
     def test_a_swapped_container_that_will_not_go_says_it_is_still_running(self):

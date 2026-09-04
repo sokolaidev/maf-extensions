@@ -1845,25 +1845,38 @@ class DockerSandboxBackend:
                 instruction.
         """
         net = _network_name(name)
+        proxy = _proxy_name(name)
+        outbound = self._config.outbound_network
         bridge = await self._bridge_state(net)
         attachment = await self._attachment_state(name, net)
         endpoints = await self._endpoints_on(net)
-        expected = {name, _proxy_name(name)}
+        proxy_legs = await self._attachment_state(proxy, net, outbound)
+        expected = {name, proxy}
+
+        retry = "It is not being handed out; the next acquire builds a replacement."
         if bridge.usable and not bridge.absent and attachment.correct and endpoints == expected:
-            return
-        if not attachment.correct:
-            reason = attachment.reason
+            if proxy_legs.correct:
+                return
+            # The one failure in the other direction: everything the workload touches is right
+            # and its way out is gone, so `ALLOWLIST` would be served as a silent `CLOSED`.
+            reason = f"its proxy {proxy_legs.reason}, so its allowlist reaches nothing"
+            remedy = retry
+        elif not attachment.correct:
+            reason, remedy = f"it {attachment.reason}", retry
         elif bridge.absent:
-            reason = f"the network {net} it should be on is gone"
+            reason, remedy = f"the network {net} it should be on is gone", retry
         elif not bridge.usable:
             reason = f"the network {net} it is on is no longer one this backend would build — "
             reason += bridge.reason
+            remedy = retry
         elif endpoints is None:
-            reason = f"the containers on {net} could not be read"
+            reason, remedy = f"the containers on {net} could not be read", retry
         elif unexpected := sorted(endpoints - expected):
             reason = f"{net} also holds {', '.join(unexpected)}, which it can reach directly"
+            # Removing the workload does not remove them, so a retry meets the same network.
+            remedy = f"Disconnect or remove {', '.join(unexpected)} from {net}, then retry."
         else:
-            reason = f"{net} does not hold this sandbox and its proxy alone"
+            reason, remedy = f"{net} does not hold this sandbox and its proxy alone", retry
         removal = await self._remove(name)
         if removal.failure is not None:
             raise RuntimeError(
@@ -1871,10 +1884,7 @@ class DockerSandboxBackend:
                 f"({removal.failure}), so it is still running with whatever that reaches. "
                 f"Remove it by hand."
             )
-        raise RuntimeError(
-            f"sandbox {name} cannot be served — {reason}. It is not being handed out; the next "
-            f"acquire builds a replacement."
-        )
+        raise RuntimeError(f"sandbox {name} cannot be served — {reason}. {remedy}")
 
     async def _endpoints_on(self, net: str) -> set[str] | None:
         """The containers attached to ``net``, or ``None`` when the read failed.
@@ -1895,13 +1905,14 @@ class DockerSandboxBackend:
             return None
         return set(result.stdout.decode("utf-8", errors="replace").split())
 
-    async def _attachment_state(self, name: str, net: str) -> _Attachment:
-        """Whether ``net`` is the only network ``name`` is on, and why not when it is not.
+    async def _attachment_state(self, name: str, *expected: str) -> _Attachment:
+        """Whether ``name`` is on exactly ``expected`` and nothing else, and why not otherwise.
 
         Membership would not do: a container holds as many endpoints as it was given, and one
         more with a route out is the allowlist gone while the expected attachment is still
-        there to find.  This backend creates a workload on exactly one network, so anything
-        else is someone else's doing.
+        there to find.  A workload has one network and the proxy has two — the sandbox's and
+        the outbound one — so both are exact sets rather than lower bounds, and a missing leg
+        fails here as loudly as an extra one.
 
         Every answer but the exact one refuses, an unreadable read included — but they refuse
         for different reasons, and a caller reporting one must not describe a topology nothing
@@ -1917,12 +1928,15 @@ class DockerSandboxBackend:
         if result.returncode != 0:
             stderr = result.stderr.strip()
             if _reads_as_absent(stderr, name):
-                return _Attachment(False, "it is no longer there")
-            return _Attachment(False, f"its networks could not be read: {stderr}")
+                return _Attachment(False, "is no longer there")
+            return _Attachment(False, f"has networks that could not be read: {stderr}")
         on = result.stdout.decode("utf-8", errors="replace").split()
-        if on == [net]:
+        if set(on) == set(expected):
             return _Attachment(correct=True)
-        return _Attachment(False, f"it is on {', '.join(on) or 'no network'} rather than {net}")
+        want = ", ".join(sorted(expected))
+        return _Attachment(
+            False, f"is on {', '.join(sorted(on)) or 'no network'} rather than {want}"
+        )
 
     async def _discard_a_sandbox_on_an_unusable_network(self, name: str) -> None:
         """Remove an allowlisted sandbox whose network is not one this backend would build.
