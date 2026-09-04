@@ -3273,6 +3273,74 @@ class TestSessionReadFile:
         assert "files[0]" in answer
 
 
+class TestTheRecordSamplesValueAndCountTogether:
+    """`state_of` answers about one instant, which is what makes the count usable at all."""
+
+    def _record(self):
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)
+        return record
+
+    def test_it_looks_at_the_record_once(self):
+        """The pair has to describe one instant, and one look is what makes that true.
+
+        Built from `integrity_of` and `generation_of` in turn it describes two: a write landing
+        between them gives the value from before it and the count from after, so a reader
+        comparing counts either side of its read sees a still interval and labels the bytes with
+        the value the write replaced. That window cannot be forced open once it is gone, so what
+        is asserted is the property that closes it.
+        """
+        looks: list[str] = []
+
+        class _Counting(FileStoreProvenance):
+            def _sample(self, path: str):  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+                looks.append(path)
+                return super()._sample(path)  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+        record = _Counting(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)
+        record.record("a.txt")
+        looks.clear()
+
+        record.state_of("a.txt")
+
+        assert looks == ["a.txt"], (
+            f"state_of took {len(looks)} snapshots, so its pair spans that many instants"
+        )
+
+    def test_it_looks_once_for_a_path_with_no_entry_either(self):
+        """The floor branch is where a second look is easiest to reintroduce, because resolving
+        it reads more of the record than the entry did."""
+        looks: list[str] = []
+
+        class _Counting(FileStoreProvenance):
+            def _sample(self, path: str):  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+                looks.append(path)
+                return super()._sample(path)  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+        record = _Counting(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)
+
+        assert record.state_of("a.txt") == (SourceIntegrity.TRUSTED, 0)
+        assert looks == ["a.txt"]
+
+    def test_a_recorded_path_reads_odd_and_a_forgotten_one_even(self):
+        """The parity the test above rests on, asserted directly so it cannot drift."""
+        record = self._record()
+        assert record.state_of("a.txt") == (SourceIntegrity.TRUSTED, 0)
+        record.record("a.txt")
+        assert record.state_of("a.txt") == (SourceIntegrity.UNTRUSTED, 1)
+        record.forget("a.txt")
+        assert record.state_of("a.txt") == (SourceIntegrity.TRUSTED, 2)
+
+    def test_forgetting_what_was_never_recorded_moves_nothing(self):
+        """A no-op forget costs no label: it did not remove an entry, so nothing moved."""
+        record = self._record()
+        record.forget("a.txt")
+
+        assert record.state_of("a.txt") == (SourceIntegrity.TRUSTED, 0)
+
+
 class TestReadFileRefoldsAgainstTheRecord:
     """The content's label is the weakest of the listing's and the record's — and only where the
     record held still for the whole read, which its mutation count is what establishes."""

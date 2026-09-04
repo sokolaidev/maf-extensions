@@ -1260,8 +1260,9 @@ class SandboxToolSession:
 
         **The label is checked across the read, not taken from the listing.**  A listing's
         label is as old as the listing, and MAF runs tool calls concurrently, so the record is
-        read either side of ``store.read`` together with
-        :meth:`FileStoreProvenance.generation_of`.  An unchanged count means the record held
+        sampled either side of ``store.read`` through
+        :meth:`FileStoreProvenance.state_of`, which answers both under one lock.  An unchanged
+        count means the record held
         still for the whole read and its answer is folded with the listing's; a changed one
         means nothing can be said about these bytes, and they carry no label at all.
 
@@ -1314,9 +1315,7 @@ class SandboxToolSession:
                 not there meets it here, which is the first moment it can be told.
         """
         record = self._file_store_provenance
-        if record is None:
-            return None, 0
-        return record.integrity_of(name), record.generation_of(name)
+        return (None, 0) if record is None else record.state_of(name)
 
     def _folded_integrity(
         self, listed: ListedFile, before: tuple[SourceIntegrity | None, int]

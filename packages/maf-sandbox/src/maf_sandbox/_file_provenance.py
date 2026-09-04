@@ -94,10 +94,11 @@ class FileStoreProvenance:
 
     **A reader wants what this record said *throughout* its read, and two readings cannot give
     it that.**  :meth:`record` only adds, but :meth:`forget` removes, so the value can move away
-    and back inside one read and leave both readings identical.  Pair
-    :meth:`integrity_of` with :meth:`generation_of`, which only counts up: equal counts either
-    side mean nothing happened in between and the reading describes the whole interval, and a
-    changed count means the reader must not claim anything.
+    and back inside one read and leave both readings identical.  Take :meth:`state_of`, which
+    samples the value and the count under one lock: equal counts either side mean nothing
+    happened in between and the reading describes the whole interval, and a changed count means
+    the reader must not claim anything.  The two accessors called in turn would answer about two
+    instants instead, and a write between them is the one arrangement the count cannot catch.
     :meth:`~maf_sandbox.maf.SandboxToolSession.read_file` does exactly that, given the record.
 
     **One residue is not closable from here.**  A write is recorded once the writing tool call
@@ -175,6 +176,32 @@ class FileStoreProvenance:
             if self._entries.pop(key, None) is not None:
                 self._generations[key] = self._generations.get(key, 0) + 1
 
+    def _sample(self, path: str) -> tuple[SourceIntegrity | None, bool, int]:
+        """This path's entry, whether anything observes writes, and its count — under one lock.
+
+        One acquisition rather than three, because a reader needs the entry and the count to
+        describe the *same* instant: taken separately, a write landing between them yields the
+        integrity from before it and the count from after, which reads as a still interval and
+        labels the bytes with the value the write replaced.
+        """
+        with self._lock:
+            key = store_key(path)
+            return self._entries.get(key), self._observed, self._generations.get(key, 0)
+
+    def state_of(self, path: str) -> tuple[SourceIntegrity | None, int]:
+        """What ``path`` is worth and how many times it has moved, sampled together.
+
+        The pair :meth:`~maf_sandbox.maf.SandboxToolSession.read_file` takes either side of a
+        read.  Calling :meth:`integrity_of` and :meth:`generation_of` in turn would answer the
+        same two questions about two different instants, which is the one arrangement the count
+        cannot rescue.
+
+        Raises:
+            ValueError: as :meth:`integrity_of` does, and for the same reason.
+        """
+        entry, observed, generation = self._sample(path)
+        return self._answer(entry, observed), generation
+
     def generation_of(self, path: str) -> int:
         """How many times ``path`` has been recorded or forgotten, counting only up.
 
@@ -189,8 +216,7 @@ class FileStoreProvenance:
         answered before, so two equal readings do not mean nothing happened.  Two equal counts
         do.
         """
-        with self._lock:
-            return self._generations.get(store_key(path), 0)
+        return self._sample(path)[2]
 
     def integrity_of(self, path: str) -> SourceIntegrity | None:
         """What ``path`` is worth, or ``None`` where nothing here establishes it.
@@ -205,9 +231,16 @@ class FileStoreProvenance:
                 the calls there is no such thing as a path a tool call wrote: every path would
                 answer trusted, model-written ones included.
         """
-        with self._lock:
-            entry = self._entries.get(store_key(path))
-            observed = self._observed
+        entry, observed, _ = self._sample(path)
+        return self._answer(entry, observed)
+
+    def _answer(self, entry: SourceIntegrity | None, observed: bool) -> SourceIntegrity | None:
+        """What a snapshot of this record means, without taking another one.
+
+        Separate from :meth:`_sample` so :meth:`state_of` can reach the same verdict from the
+        snapshot it already holds.  Looking again to resolve the floor would put a second
+        instant into a pair whose whole purpose is to describe one.
+        """
         if entry is not None:
             return entry
         if self._floor is SourceIntegrity.TRUSTED and not observed:
