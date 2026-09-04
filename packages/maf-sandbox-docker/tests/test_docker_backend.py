@@ -3082,6 +3082,36 @@ class TestAllowlistReuse:
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert fake.matching("start", _AL) == []
 
+    def test_a_conflict_left_by_a_cancelled_acquire_is_removed_by_the_next_one(self):
+        """`CancelledError` is a `BaseException`, so it passes an `except Exception` and would
+        carry past the removal that keeps a refused conflict from being restarted later. The
+        name is marked instead — synchronously, which is the one step cancellation cannot
+        interrupt — and the next acquire clears it before deciding anything.
+        """
+        base = _machine(networks={_AL_NET: _UNADDRESSED})
+        conflicted = False
+        cancelled = False
+
+        def racing(args: tuple[str, ...]) -> _DockerResult:
+            nonlocal conflicted, cancelled
+            if args[:4] == ("run", "-d", "--name", _AL) and not conflicted:
+                conflicted = True  # the racer takes the name as our create runs
+                return _DockerResult(1, b"", "Conflict. The name is already in use")
+            if args[0] == "inspect" and args[-1] == _AL and conflicted and not cancelled:
+                cancelled = True  # and the acquire is cancelled while `_adopt` inspects it
+                raise asyncio.CancelledError
+            return base(args)
+
+        backend, fake = _backend_with(racing, config=_ALLOW_CONFIG)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("rm", "-f", _AL) == []  # the cancellation skipped it, as it must
+
+        # The next acquire removes it before it reads anything about the topology.
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("rm", "-f", _AL) != []
+        assert fake.matching("start", _AL) == []
+
     def test_a_name_conflict_carrying_a_second_network_is_not_adopted(self):
         """The winner of the race may have built the container on this network *and* another;
         having the expected endpoint says nothing about the ones beside it."""

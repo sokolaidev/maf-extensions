@@ -849,6 +849,13 @@ class DockerSandboxBackend:
         #: ledger. A `dispose` clears an entry once the removal lands; a scope purge never
         #: does, because a name is not a generation and it cannot tell the two apart.
         self._undeleted: dict[tuple[str, str, str], set[str]] = {}
+        #: Container names an acquire judged unservable and did not manage to remove — a
+        #: removal the engine declined, or one skipped because the acquire was cancelled before
+        #: reaching it.  The next acquire removes them before it decides anything, because a
+        #: name is all a later reuse has to go on and a container left under one is
+        #: indistinguishable from a warm sandbox.  Marking is synchronous on purpose: it is the
+        #: one step a cancellation cannot interrupt.
+        self._unclean: set[str] = set()
         # Get-or-create serialised per (running loop, key, kind), for the same reason wslc does
         # it: a create names no container until it returns, so two acquires racing one key would
         # each build a network, a proxy and a sandbox. Per loop because an asyncio.Lock binds to
@@ -1972,7 +1979,12 @@ class DockerSandboxBackend:
         """
         net = _network_name(name)
         state = await self._bridge_state(net)
-        if not state.usable:
+        if name in self._unclean:
+            # An earlier acquire judged this name unservable and could not take it away. What
+            # is under it now cannot be told from a warm sandbox by reading, which is why the
+            # mark exists rather than another check.
+            reason = "an earlier acquire could not remove what was under this name"
+        elif not state.usable:
             reason = state.reason
         elif await self._container_is_gone(name):
             # Nothing to reuse, so nothing to discard: the create that follows builds both.
@@ -1991,11 +2003,14 @@ class DockerSandboxBackend:
         await self._remove(_proxy_name(name))
         await self._remove_network(net)
         if removal.failure is not None:
+            self._unclean.add(name)
             raise RuntimeError(
                 f"sandbox {name} is still there ({removal.failure}), so an acquire would reuse "
                 f"it on whatever network it is actually attached to rather than on one this "
                 f"backend built."
             )
+        # It went, so whatever an earlier acquire could not take away is not there either.
+        self._unclean.discard(name)
         after = await self._bridge_state(net)
         if not after.usable:
             raise RuntimeError(
@@ -2097,10 +2112,18 @@ class DockerSandboxBackend:
         except Exception as exc:  # noqa: BLE001 - a conflict nothing could read is still refused
             logger.warning("docker backend: could not read the conflict on %s: %s", name, exc)
             servable = False
+        except BaseException:
+            # Cancellation does not pass through `except Exception`, and it would carry past
+            # the removal below — which is the whole of the protection here, since a conflict
+            # left under this name is one the next acquire restarts. Marking is synchronous, so
+            # it lands whether or not anything after this point gets to run.
+            self._unclean.add(name)
+            raise
         if servable:
             return True
         removal = await self._remove(name)
         if removal.failure is not None:
+            self._unclean.add(name)
             raise RuntimeError(
                 f"container {name} took this sandbox's name, cannot be served as one, and "
                 f"could not be removed ({removal.failure}) — so it is still under that name "
