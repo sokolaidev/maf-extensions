@@ -15,12 +15,14 @@ hosts Bicep is allowed to reach — lives here and only here.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
 from maf_sandbox import (
     CallerContext,
     Egress,
+    ListedFile,
     SandboxRouter,
     SandboxSpec,
     echoed_name,
@@ -342,6 +344,10 @@ def _bicep_validate_tool(
         listing = await session.list_files(store)
         if isinstance(listing, str):
             return listing
+        # Names for the path checks below, which are about spelling; the entries themselves are
+        # kept so the read that follows carries each file's label rather than losing it.
+        listed_names = [entry.name for entry in listing]
+        listed_by_name = {entry.name: entry for entry in listing}
 
         # Every call gets a fresh directory, because the sandbox is REUSED across fix rounds
         # and only the named files are written into it.
@@ -360,10 +366,10 @@ def _bicep_validate_tool(
         call_directory = session.guest_call_path()
 
         # Validate each name against that listing (the injection guard).
-        validated: list[tuple[str, str]] = []  # (store_path, sandbox_path)
+        validated: list[tuple[ListedFile, str, int]] = []  # (listed, sandbox_path, position)
         for position, name in enumerate(files):
             sandbox_path, listing_key, rejection = resolve_listed_path(
-                name, listing, call_directory
+                name, listed_names, call_directory
             )
             named = echoed_name(name, at=f"files[{position}]", hidden=position in rewritten)
             if rejection == "unsafe":
@@ -378,16 +384,16 @@ def _bicep_validate_tool(
                     "bicep_validate: %r is not in this tool's file store listing (%d file(s) "
                     "visible) — the store wired here may be narrower than the agent's",
                     name,
-                    len(listing),
+                    len(listed_names),
                 )
                 return (
                     f"Error: {named} is not in this tool's file listing, so it was not "
                     f"validated. This listing can be narrower than the files you can read "
-                    f"elsewhere. {_listing_hint(name, listing)}"
+                    f"elsewhere. {_listing_hint(name, listed_names)}"
                 )
             # The listing's key, not the caller's spelling: "./main.bicep" validates but
             # would not read back from a store keyed "main.bicep".
-            validated.append((listing_key or name, sandbox_path))
+            validated.append((listed_by_name[listing_key or name], sandbox_path, position))
 
         # The four-branch degrade ladder — which failures may be named to the model and
         # which may only reach the log — is `session.acquire`'s, and it writes its detail
@@ -410,23 +416,46 @@ def _bicep_validate_tool(
         # Writes stay sequential rather than gathered: the ordering requirement is satisfied
         # either way, and a preview data plane has already produced one unexplained `Conflict`
         # burst — concurrency is not what to add on top of that without a reason.
+        # The verdict belongs to an argument position, and this carries one such position to
+        # every spelling that reached the same file. Two can — `["x.bicep", "./x.bicep"]`, which
+        # nothing refuses — and rendering the second at its *own* position would name an
+        # argument the framework never rewrote, while rendering it as visible would put back the
+        # name the first one withheld. So one destination takes one rendering: the one built at
+        # the position whose value really is hidden content.
+        hidden_at: dict[str, int] = {}
+        for _listed, sandbox_path, position in validated:
+            if position in rewritten:
+                hidden_at.setdefault(sandbox_path, position)
+
         results: list[str] = []
-        written: list[tuple[str, str]] = []
-        for name, sandbox_path in validated:
-            try:
-                content = await store.read(name)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "bicep_validate: could not read %r from the file store: %s", name, exc
-                )
-                results.append(f"Error: could not read {name!r} from the file store")
+        # `(store path, the spelling that may be shown, sandbox path)`. The first two differ
+        # where the framework expanded hidden content into the name; matching the listing does
+        # not make such a name safe to render.
+        written: list[tuple[str, str, str]] = []
+        for listed, sandbox_path, position in validated:
+            name = listed.name
+            expanded = hidden_at.get(sandbox_path)
+            hidden = expanded is not None
+            # The value at the expanded position, not this entry's listing key: `echoed_name`
+            # reports the length of what it is standing in for, and the two spellings differ.
+            at = f"files[{expanded if hidden else position}]"
+            named = echoed_name(files[expanded] if hidden else name, at=at, hidden=hidden)
+            item = await session.read_file(store, listed, at=at, hidden=hidden, named=named)
+            if isinstance(item, str):
+                # The session logged the detail; this is the sentence the model may see.
+                results.append(item)
                 continue
-            if content is None:
+            if item is None:
                 # A store read can miss without raising (the file was listed, then removed).
                 # Writing `None` through would put the string "None" into the sandbox and
                 # report a syntax error against a file the agent never wrote.
-                logger.warning("bicep_validate: %r is listed but has no content", name)
-                results.append(f"Error: {name!r} is listed in the file store but has no content")
+                logger.warning("bicep_validate: a listed file has no content")
+                results.append(f"Error: {named} is listed in the file store but has no content")
+                continue
+            content = item.text
+            if content is None:
+                logger.warning("bicep_validate: a listed file read back with no text")
+                results.append(f"Error: {named} is listed in the file store but has no content")
                 continue
 
             try:
@@ -439,18 +468,51 @@ def _bicep_validate_tool(
                 logger.warning(
                     "bicep_validate: could not write %r to sandbox: %s", name, error_detail(exc)
                 )
-                results.append(f"Error: could not write {name!r} to sandbox")
+                results.append(f"Error: could not write {named} to sandbox")
                 continue
-            written.append((name, sandbox_path))
+            written.append((name, name if not hidden else named, sandbox_path))
 
-        for name, sandbox_path in written:
+        # Built over every written file, not per phase: a diagnostic in one file can name
+        # another, so the loop below has to be able to rename a location it did not write.
+        #
+        # Every file, including the ones whose name may be shown, mapped to itself. `_renamed`
+        # identifies a location by *exact* membership and treats anything it can only match by
+        # trailing component as unidentified, so the visible files have to be keys too — without
+        # them a diagnostic about one would fall through to the ambiguous branch and lose its
+        # name.
+        #
+        # Under both spellings, because they can differ: the listing key is what the store is
+        # keyed by, while the compiler reports the path this call *wrote*, and
+        # `resolve_listed_path` normalises between them (a listed `./main.bicep` is written as
+        # `main.bicep`). Keying on the listing alone leaves the compiler's own spelling
+        # unmatched, which is the spelling that reaches the model.
+        renames: dict[str, str] = {}
+        for entry_name, entry_label, entry_path in written:
+            guest_relative = entry_path.removeprefix(call_directory).lstrip("/")
+            # The absolute path as well: it is what Bicep was handed and what it reports back,
+            # so it is the key that makes the match exact rather than a suffix guess.
+            for key in (entry_name, guest_relative, entry_path):
+                if key:
+                    # Overwriting is safe because `hidden_at` gives one destination one label:
+                    # two entries reaching the same key agree on what it renders as.
+                    renames[key] = entry_label
+
+        for name, label, sandbox_path in written:
             for phase, template in (
                 ("build", _build_command_for(name)),
                 ("lint", _LINT_CMD),
             ):
                 results.append(
                     await _run_phase(
-                        sandbox, phase, template, name, sandbox_path, call_directory, timeout
+                        sandbox,
+                        phase,
+                        template,
+                        name,
+                        label,
+                        sandbox_path,
+                        call_directory,
+                        timeout,
+                        renames=renames,
                     )
                 )
 
@@ -464,14 +526,28 @@ async def _run_phase(
     phase: str,
     template: str,
     name: str,
+    label: str,
     sandbox_path: str,
     working_directory: str,
     timeout: int,
+    renames: Mapping[str, str] | None = None,
 ) -> str:
     """Run one compiler phase and render its SARIF, or an error line.
 
     Both phases behave identically, so they share this rather than being written twice —
     which is how the build leg's ``2>&1`` came to be missing from one of them once already.
+
+    ``name`` is the real store path and goes only to the host's own logs; ``label`` is what may
+    appear in the result.  They differ where the framework expanded hidden content into the
+    argument this file was named by, and every line this returns reaches the model — the
+    successful ones included, since the phase prefix carries the name whatever the compiler
+    found.  Passing one string for both would put the hidden value back into the conversation
+    on the *happy* path, which is where it would be least likely to be noticed.
+
+    ``renames`` carries the same distinction for every *other* file a diagnostic can point at.
+    The phase prefix is not the only place a name reaches the model: stripping the working
+    directory off a SARIF location leaves the file name, so a diagnostic reported against an
+    expanded name renders it.
     """
     started = perf_counter()
     try:
@@ -482,10 +558,10 @@ async def _run_phase(
         )
     except TimeoutError:
         logger.warning("bicep_validate: %s exec timed out for %r after %ss", phase, name, timeout)
-        return f"{phase}({name}): Error: timed out after {timeout}s"
+        return f"{phase}({label}): Error: timed out after {timeout}s"
     except Exception as exc:  # noqa: BLE001
         logger.warning("bicep_validate: %s exec failed for %r: %s", phase, name, error_detail(exc))
-        return f"{phase}({name}): Error: exec failed"
+        return f"{phase}({label}): Error: exec failed"
     elapsed_ms = int((perf_counter() - started) * 1000)
 
     diagnostics = parse_sarif(result.stdout or "")
@@ -493,7 +569,7 @@ async def _run_phase(
         logger.warning(
             "bicep_validate: could not parse SARIF for %r; raw: %.500r", name, result.stdout or ""
         )
-        return f"{phase}({name}): Error: could not parse SARIF output"
+        return f"{phase}({label}): Error: could not parse SARIF output"
     # The one record that says the compiler actually ran. Everything else about a healthy
     # call is silent: the tool's return value looks the same whether Bicep found nothing
     # wrong or never executed, and "0 diagnostics" is the answer in both cases.
@@ -504,7 +580,9 @@ async def _run_phase(
         len(diagnostics),
         elapsed_ms,
     )
-    report = format_diagnostics(diagnostics, f"{phase}({name})", strip_prefix=working_directory)
+    report = format_diagnostics(
+        diagnostics, f"{phase}({label})", strip_prefix=working_directory, rename=renames
+    )
     failed_restores = count_restore_failures(diagnostics)
     if failed_restores:
         # Without this banner a restore-failed run reads as an ordinary diagnostic list, and
@@ -518,7 +596,7 @@ async def _run_phase(
             failed_restores,
         )
         return (
-            f"{phase}({name}): MODULE RESTORE FAILED for {failed_restores} module "
+            f"{phase}({label}): MODULE RESTORE FAILED for {failed_restores} module "
             "reference(s) (BCP190/BCP191/BCP192). Module types were NOT loaded, so type "
             "checking of module inputs DID NOT RUN — this validation is INCOMPLETE. Treat "
             "it as a broken validation run, not as evidence the files are healthy: do not "

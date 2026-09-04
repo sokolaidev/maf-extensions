@@ -89,6 +89,13 @@ class FileStoreProvenance:
             started, or written past the store object by something that is not a tool call.
             ``None``, the default, means *unestablished*: this host has not said, and a caller
             must treat the answer as it treats any source the framework has not established.
+
+    **A ``TRUSTED`` floor is a claim about concurrency as well as about content.**  A caller folds
+    this record at *listing* time and reads the bytes afterwards, and the write that lands in
+    between is recorded only once the writing tool call returns — so a path answering ``trusted``
+    can hold model-written bytes by the time anything reads it.  Wire this floor only where the
+    store is not written under a read.  ``None`` and ``UNTRUSTED`` floors have nowhere weaker to
+    fall and are unaffected.
     """
 
     def __init__(self, *, floor: SourceIntegrity | None = None) -> None:
