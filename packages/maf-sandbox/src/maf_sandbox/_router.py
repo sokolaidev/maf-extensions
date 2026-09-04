@@ -639,9 +639,15 @@ class SandboxRouter:
 
         What is checked here is what cannot wait, and routing is what makes it urgent.
 
-        Declarations are read for **all** of them — the object *and* every field's shape — so a
-        half-migrated or mis-shaped backend fails at startup rather than the first time a spec
-        happens to route as far as it. Under :data:`Selection.FIXED` only the selected backend
+        Declarations are read for **all** of them — the object, and the shape of the four
+        fields that *refuse* an unreadable value: ``capabilities``, ``egress_modes``,
+        ``isolation_scopes`` and ``limits``.  So a half-migrated or mis-shaped backend fails at
+        startup rather than the first time a spec happens to route as far as it.
+        ``os_families`` is deliberately not among them: it normalises a value it cannot read to
+        the empty set rather than raising, because a mis-shape there can only ever refuse a
+        workload and never widen anything, so there is no refusal here to route past.
+
+        Under :data:`Selection.FIXED` only the selected backend
         is ever read, and that asymmetry is the point rather than an oversight: there, a
         mis-shaped field surfaces at the first check because there is nowhere to route past it
         to. Here there is. :meth:`_refusal_serving` catches :data:`ATTACH_REFUSALS`, and
