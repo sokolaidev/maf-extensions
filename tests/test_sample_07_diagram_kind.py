@@ -135,13 +135,15 @@ class TestTheSpecSaysItLandsSomethingItCannotName:
         assert Capability.FILES_OUT in diagram_sandbox_spec().requires
 
 
-class TestTheToolDeclaresNothingAboutItsResult:
-    """`additional_properties` is a policy contract, and this tool's is empty.
+class TestTheToolDeclaresItsResultUntrusted:
+    """`additional_properties` is a policy contract, and this tool's states its integrity.
 
     A declared `source_integrity` *replaces* the framework's input-label join rather than
     flooring it, so `"trusted"` here would tell a host's middleware to disregard that the
-    result derives from the model's own DOT. `docs/sandbox/information-flow.md` is the rule,
-    and both packaged kinds carry the same assertion.
+    result derives from the model's own DOT. `"untrusted"` is that same replacement used the
+    safe way round, and it is what keeps the answer out of the host's `default_integrity`.
+    `docs/sandbox/information-flow.md` is the rule, and both packaged kinds carry the same
+    assertion.
     """
 
     def _properties(self, out_dir: Path) -> dict[str, object]:
@@ -149,13 +151,13 @@ class TestTheToolDeclaresNothingAboutItsResult:
         assert len(tools) == 1, tools
         return dict(tools[0].additional_properties or {})
 
-    def test_it_declares_no_source_integrity(self, out_dir: Path):
-        """The library default is `"trusted"`, so an absent key here is a passed argument."""
-        assert "source_integrity" not in self._properties(out_dir)
+    def test_it_declares_untrusted(self, out_dir: Path):
+        """The library default is `None`, so the key is here because it was passed."""
+        assert self._properties(out_dir)["source_integrity"] == "untrusted"
 
-    def test_it_declares_nothing_at_all(self, out_dir: Path):
-        """An added confidentiality cap would gate host calls, so keep the policy contract empty."""
-        assert self._properties(out_dir) == {}
+    def test_it_declares_that_and_nothing_else(self, out_dir: Path):
+        """An added confidentiality cap would gate host calls, so nothing else belongs here."""
+        assert self._properties(out_dir) == {"source_integrity": "untrusted"}
 
 
 class TestTheCallWritesInsideItsOwnDirectory:

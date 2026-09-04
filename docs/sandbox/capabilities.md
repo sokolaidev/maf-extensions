@@ -64,7 +64,7 @@ A single capability creates two information flows that answer to different legs 
 - **Reading bytes the kind itself consumes** — a SARIF file parsed into diagnostics, a JSON result summarised into the tool result — is a **source**, and the question is *integrity*.
 - **Landing an artifact in host state** is a **sink**, and the question is *confidentiality*: may a conversation this sensitive cause bytes to be written where they are going?
 
-The source leg is already answered by the tool's own integrity declaration, and a kind running model-written code answers it by declaring nothing, so the untrusted default applies. Nothing answered the sink leg before this capability existed.
+The source leg is already answered by the tool's own integrity declaration, and a kind running model-written code answers it by declaring `untrusted` — the default would answer it too, but through the host's `default_integrity` rather than through anything the kind said. Nothing answered the sink leg before this capability existed.
 
 `OutputDisposition.CONSUME` and `OutputDisposition.LAND` are that distinction, declared. It is a *routing* distinction and nothing more — a `CONSUME` output is stat-ed, capped and counted exactly like a landing one. What follows from the sink leg — where artifacts land, name validation, the outbound confidentiality cap — is [`hosts.md`](hosts.md)'s.
 

@@ -26,6 +26,7 @@ from maf_sandbox import (
     OutputSink,
     SandboxRouter,
     SandboxSpec,
+    SourceIntegrity,
     TransferLimits,
     collect_outputs,
     error_detail,
@@ -125,14 +126,14 @@ def make_diagram_tools(
         spec=spec,
         name=RENDER_DIAGRAM_TOOL_NAME,
         approval_mode="never_require",
-        # No integrity declaration, and authorship is not the reason. The success reference
-        # is the host's own sentence; what disqualifies `trusted` is derivation. `dot`'s
-        # failure diagnostic quotes the model's DOT source back, and which of the two comes
-        # back is decided by that source — a presence bit — so the result derives from input
-        # the framework has not established as trusted. That is the test set in
-        # `docs/sandbox/information-flow.md`. `dot` is an unlabelled argument, so the
-        # framework's input-label join answers untrusted.
-        source_integrity=None,
+        # `untrusted`, and authorship is not the reason. The success reference is the host's
+        # own sentence; what disqualifies `trusted` is derivation. `dot`'s failure diagnostic
+        # quotes the model's DOT source back, and which of the two comes back is decided by
+        # that source — a presence bit — so the result derives from input the framework has
+        # not established as trusted. Said rather than left to the default, because omitting
+        # it hands the answer to the input-label join and the host's `default_integrity`:
+        # rule 1 in `docs/sandbox/kinds/README.md`.
+        source_integrity=SourceIntegrity.UNTRUSTED,
         output_sink=sink,
         logger=logger,
     )
