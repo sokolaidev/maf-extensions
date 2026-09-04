@@ -219,7 +219,13 @@ def _machine(
     # `network rm` can refuse while an endpoint is attached, the way a real engine does.
     live_endpoints: dict[str, set[str]] = {}
     for _c in live_running | live_stopped:
-        live_endpoints.setdefault(_network_name(_c), set()).add(_c)
+        _net = _network_name(_c)
+        live_endpoints.setdefault(_net, set()).add(_c)
+        # A warm allowlisted sandbox is a workload *and* its proxy on that network, so a
+        # teardown that takes the workload and leaves the proxy still has an endpoint to trip
+        # over — which is the only reason a real `network rm` refuses one of these.
+        if _net in live_networks:
+            live_endpoints[_net].add(_proxy_name(_c))
     ranked = sorted((overrides or {}).items(), key=lambda item: len(item[0]), reverse=True)
 
     def respond(args: tuple[str, ...]) -> _DockerResult:
@@ -3197,6 +3203,32 @@ class TestASandboxLeftOnAnUnusableNetwork:
         assert fake.matching("rm", "-f", _AL) != []
         created = _run_named(fake, _AL)
         assert created.args[created.args.index("--network") + 1] == _AL_NET
+
+    @pytest.mark.parametrize(
+        "stderr",
+        [
+            'Error response from daemon: cannot remove container "/{name}": container is running',
+            _SOCKET_ERROR,
+        ],
+        ids=["a-decline-naming-the-container", "a-socket-error-borrowing-the-phrase"],
+    )
+    def test_a_removal_the_engine_declined_is_not_read_as_one_that_worked(self, stderr: str):
+        """`rm -f` reports failure rather than raising it, so what counts as "it went" is the
+        engine's own "no such object" about *this* container and nothing else.
+
+        Both halves of that carry a case, and each hides the other. A decline naming the
+        container — what a real engine says, unlike the nameless `device or resource busy`
+        above — passes a check that looks for the name alone. The socket error says `no such
+        file or directory` about the socket, and passes one that looks for the phrase alone.
+        Either way the workload is still under its name for the next acquire to serve.
+        """
+        overrides = {("rm", "-f", _AL): _DockerResult(1, b"", stderr.format(name=_AL))}
+        backend, fake = _backend_with(
+            _machine(running=[_AL], overrides=overrides), config=_ALLOW_CONFIG
+        )
+        with pytest.raises(RuntimeError, match="is still there"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("run", "-d", "--name", _AL) == []
 
     def test_a_read_that_raises_still_reaches_the_removal(self):
         """`_docker` propagates a timeout rather than returning one, so every fixture built on
