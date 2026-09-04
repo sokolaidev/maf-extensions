@@ -10,7 +10,9 @@ convention a caller could break.
 * **An entry is about the path**, not a version of its bytes, and it stands until
   :meth:`FileStoreProvenance.forget`.
 * **The floor applies only to a path with no recorded entry**, so an entry always beats it and
-  a trusted floor can never lift bytes the model wrote.
+  a trusted floor can never lift bytes the model wrote — and a *trusted* floor is refused
+  outright unless a middleware was built against the record, since without one there are no
+  entries for it to lose to.
 
 ``docs/sandbox/hosts.md`` carries why the boundary is the tool call rather than the store, and
 ``docs/sandbox/research/labelling-the-file-store.md`` the measurements behind it.
@@ -95,6 +97,17 @@ class FileStoreProvenance:
         # while the middleware recording writes runs on the event loop.
         self._lock = threading.Lock()
         self._entries: dict[str, SourceIntegrity] = {}
+        self._observed = False
+
+    def _note_observer(self) -> None:
+        """Mark that a middleware has been built against this record.
+
+        Private because constructing :func:`~maf_sandbox.file_store_provenance_middleware` is the
+        only supported way to lift the refusal in :meth:`integrity_of` — a caller that could set
+        this directly could clear the refusal without restoring the observation it stands for.
+        """
+        with self._lock:
+            self._observed = True
 
     @property
     def floor(self) -> SourceIntegrity | None:
@@ -139,10 +152,29 @@ class FileStoreProvenance:
 
         An entry answers for as long as it stands; only :meth:`forget` removes one.  A path with
         no entry takes :attr:`floor`.
+
+        Raises:
+            ValueError: where the floor is :data:`~maf_sandbox.SourceIntegrity.TRUSTED` and no
+                middleware was ever built against this record.  The
+                floor is a claim about the paths *no tool call wrote*, and with nothing observing
+                the calls there is no such thing as a path a tool call wrote: every path would
+                answer trusted, model-written ones included.
         """
         with self._lock:
             entry = self._entries.get(store_key(path))
-        return self._floor if entry is None else entry
+            observed = self._observed
+        if entry is not None:
+            return entry
+        if self._floor is SourceIntegrity.TRUSTED and not observed:
+            raise ValueError(
+                "FileStoreProvenance was given floor=SourceIntegrity.TRUSTED and no "
+                "file_store_provenance_middleware was ever built against it, so nothing records "
+                "what the model writes and every path would answer trusted — model-written files "
+                "included. Wire file_store_provenance_middleware(record) into the agent's "
+                "middleware beside the information-flow middleware, or drop floor= and let an "
+                "unwritten path stay unestablished."
+            )
+        return self._floor
 
     def __len__(self) -> int:
         """How many paths carry an entry. For a host's own assertions and this suite's."""
