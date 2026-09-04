@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.14.0...maf-sandbox-docker-v0.14.1) (2026-09-04)
+
+
+### Fixes
+
+* admit maf-sandbox 0.32 in the backends' range ([#880](https://github.com/sokolaidev/maf-extensions/issues/880)) ([fe9f543](https://github.com/sokolaidev/maf-extensions/commit/fe9f543d7cf31e7475178935e97f11557c869155))
+
 ## [0.14.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.13.0...maf-sandbox-docker-v0.14.0) (2026-09-02)
 
 
