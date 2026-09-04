@@ -840,13 +840,14 @@ def sandbox_tool_declarations(
     ``max_allowed_confidentiality`` caps how confidential a conversation may be and still be
     allowed to call it.
 
-    **Nothing is declared by default**, and the omission is the fail-safe answer rather than a
-    gap to fill in.  A declaration overrides rather than floors: the tracker discards the
-    call's input-label join for it.  So ``"trusted"`` is honest only where the result does not
-    derive from input the framework has not established as trusted — which authorship does not
-    settle, a compiler being deterministic *about* a template the model wrote.  Undeclared,
-    the join decides, and it falls back to the framework's untrusted default where no argument
-    carries a label.
+    **Nothing is declared by default, and that is a delegation rather than a fail-safe.**  A
+    declaration overrides rather than floors: the tracker discards the call's input-label join
+    for it.  So ``"trusted"`` is honest only where the result does not derive from input the
+    framework has not established as trusted — which authorship does not settle, a compiler
+    being deterministic *about* a template the model wrote.  Undeclared, two things answer
+    instead: the join, which propagates whatever labels the arguments carry, and the host's
+    ``default_integrity`` where they carry none.  A workload that cannot vouch for its result
+    says ``"untrusted"`` rather than leaving it to either.
 
     **An explicit ``"trusted"`` is refused where the spec opens a channel nothing establishes as
     trusted.**
@@ -1835,9 +1836,11 @@ def sandboxed_tool(
         source_integrity: A :class:`~maf_sandbox.SourceIntegrity`, passed to
             :func:`sandbox_tool_declarations`; ignored when
             ``declarations`` is given. ``None`` is the default and declares no integrity at
-            all, which is what a workload whose result is whatever model-written code chose to
-            emit wants. A workload that has earned a label states it here rather than through
-            ``declarations=``, which is refused alongside a sink.
+            all, which hands the answer to the input-label join and the host's
+            ``default_integrity``; a workload whose result is whatever model-written code
+            chose to emit says :data:`~maf_sandbox.SourceIntegrity.UNTRUSTED` instead of
+            leaving it to those. A workload that has earned a label states it here rather
+            than through ``declarations=``, which is refused alongside a sink.
         outbound_max_confidentiality: Passed to :func:`sandbox_tool_declarations`; ignored when
             ``declarations`` is given. Read that function before setting it — it is off by
             default for a reason.

@@ -4462,15 +4462,10 @@ class TestWhatASplitResultDoesToTheCallsLabel:
         assert str(conversation.confidentiality) == "private"
 
     def test_a_declared_untrusted_tool_still_shows_its_trusted_item(self):
-        """The combination both shipped kinds reach once they declare, and the one row this
-        class did not cover: a tier-2 `untrusted` declaration on the tool beside a tier-1
-        `trusted` item in its result.
+        """Tier 1 is read per item and ahead of tier 2, so declaring costs no per-item label.
 
-        The question is whether declaring at tier 2 costs the split. It does not — tier 1 is
-        read per item and ahead of the declaration, so the guidance stays visible while the
-        derived half is still hidden, and the call's own label is `untrusted` either way. A
-        kind can therefore say what its result is without giving up per-item labelling, which
-        is what makes declaring safe to adopt before the per-item work lands.
+        A tool declaring `untrusted` still shows a `trusted` item in its result: the guidance
+        stays visible, the derived half stays hidden, and the call's own label is `untrusted`.
         """
         label, seen, conversation = self._run(
             (labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED), _text("EXIT=1")),

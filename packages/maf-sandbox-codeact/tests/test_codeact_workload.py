@@ -3343,13 +3343,11 @@ class TestWhatAFidesHostSeesOfAWithheldResult:
         assert seen == ["hidden", _WITHHELD_ROUTE]
 
     def test_a_raised_host_default_no_longer_decides_the_call(self):
-        """What the declaration is for, measured on the route that used to lose.
+        """A raised `default_integrity` does not reach this call: the declaration replaces it.
 
-        The unlabelled half takes the call's label, and that label used to come from the
-        host's `default_integrity` — so a host that raised it got a trusted call and nothing
-        was hidden at all, for a result derived from a program the model wrote. A tier-2
-        declaration *replaces* that default rather than flooring it, so the same host now gets
-        the same answer as every other: untrusted, and the derived half hidden.
+        The unlabelled half takes the call's label, so without a declaration that label is
+        whatever the host set. Tier 2 replaces the default rather than flooring it, which is
+        what makes this host's answer the same as every other's.
         """
         from agent_framework.security import IntegrityLabel
 

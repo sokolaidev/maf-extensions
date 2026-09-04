@@ -259,16 +259,10 @@ def make_bicep_tools(
         spec=bicep_sandbox_spec(image, image_id, egress=egress),
         name=BICEP_VALIDATE_TOOL_NAME,
         approval_mode="never_require",
-        # The compiler is first-party, and what it is deterministic *about* is a template the
-        # model wrote: a diagnostic quotes the identifiers of the source, and every location
-        # names a file the caller passed. So the result does not derive from wholly trusted
-        # input and cannot claim to.
-        #
-        # Declared rather than left to the default, because a declaration is the only one of
-        # the three tiers this kind controls. Silence hands the answer to the input-label join
-        # — which knows nothing about which argument the body read — and to the host's
-        # `default_integrity`, which a host may raise. Both would then answer `trusted` for a
-        # result derived from a template the model wrote.
+        # What the compiler is deterministic *about* is a template the model wrote, so the
+        # result does not derive from wholly trusted input. Declared rather than omitted
+        # because a declaration replaces the other two tiers, and neither is this kind's to
+        # answer for — `information-flow.md` carries why.
         source_integrity=SourceIntegrity.UNTRUSTED,
         # No confidentiality key on purpose — a host's confidentiality tiers are the host's
         # classification, and declaring one here can activate a policy leg a given host keeps

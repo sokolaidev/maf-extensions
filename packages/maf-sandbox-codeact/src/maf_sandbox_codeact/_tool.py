@@ -484,16 +484,11 @@ def make_codeact_tools(
         name=EXECUTE_CODE_TOOL_NAME,
         approval_mode="always_require" if approval_gated else "never_require",
         also_carries_out=registry_carries_out,
-        # `untrusted`, withheld or not. What comes back is whatever a model-written
-        # `print(...)` chose to emit; withheld it is an exit status, two sizes and a presence
-        # bit per declared output, every one of them chosen by a program the model wrote.
-        #
-        # Declared rather than left to the default, because a declaration is the only one of
-        # the three tiers this kind controls. Silence hands the answer to the input-label join
-        # — which knows nothing about which argument the body read — and to the host's
-        # `default_integrity`, which a host may raise. Both would then answer `trusted` for the
-        # output of a program the model wrote. The per-item `trusted` on the withheld route's
-        # standing guidance is unaffected: tier 1 is read ahead of this.
+        # Withheld or not: what comes back is chosen by a program the model wrote, an exit
+        # status and two sizes being as much its choice as the text. Declared rather than
+        # omitted because a declaration replaces the other two tiers, and neither is this
+        # kind's to answer for. It does not reach the withheld route's per-item `trusted`,
+        # which is tier 1 and read first — `information-flow.md` carries both.
         source_integrity=SourceIntegrity.UNTRUSTED,
         outbound_max_confidentiality=outbound_max_confidentiality,
         output_sink=output_sink,
