@@ -15,6 +15,7 @@ hosts Bicep is allowed to reach — lives here and only here.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
@@ -416,9 +417,9 @@ def _bicep_validate_tool(
         # either way, and a preview data plane has already produced one unexplained `Conflict`
         # burst — concurrency is not what to add on top of that without a reason.
         results: list[str] = []
-        # Three, not two: a name the framework expanded is not safe to render even after it
-        # matched the listing, and the phase reports below run long after `hidden` fell out
-        # of scope. `label` is what may be shown; `name` stays raw for the host's own logs.
+        # `(store path, the spelling that may be shown, sandbox path)`. The first two differ
+        # where the framework expanded hidden content into the name; matching the listing does
+        # not make such a name safe to render.
         written: list[tuple[str, str, str]] = []
         for listed, sandbox_path, position in validated:
             name = listed.name
@@ -466,6 +467,10 @@ def _bicep_validate_tool(
                 (name, name if not hidden else echoed_name(name, at=at, hidden=True), sandbox_path)
             )
 
+        # Built over every written file, not per phase: a diagnostic in one file can name
+        # another, so the loop below has to be able to rename a location it did not write.
+        renames = {name: label for name, label, _ in written if label != name}
+
         for name, label, sandbox_path in written:
             for phase, template in (
                 ("build", _build_command_for(name)),
@@ -473,7 +478,15 @@ def _bicep_validate_tool(
             ):
                 results.append(
                     await _run_phase(
-                        sandbox, phase, template, name, label, sandbox_path, call_directory, timeout
+                        sandbox,
+                        phase,
+                        template,
+                        name,
+                        label,
+                        sandbox_path,
+                        call_directory,
+                        timeout,
+                        renames=renames,
                     )
                 )
 
@@ -491,6 +504,7 @@ async def _run_phase(
     sandbox_path: str,
     working_directory: str,
     timeout: int,
+    renames: Mapping[str, str] | None = None,
 ) -> str:
     """Run one compiler phase and render its SARIF, or an error line.
 
@@ -503,6 +517,11 @@ async def _run_phase(
     successful ones included, since the phase prefix carries the name whatever the compiler
     found.  Passing one string for both would put the hidden value back into the conversation
     on the *happy* path, which is where it would be least likely to be noticed.
+
+    ``renames`` carries the same distinction for every *other* file a diagnostic can point at.
+    The phase prefix is not the only place a name reaches the model: stripping the working
+    directory off a SARIF location leaves the file name, so a diagnostic reported against an
+    expanded name renders it.
     """
     started = perf_counter()
     try:
@@ -535,7 +554,9 @@ async def _run_phase(
         len(diagnostics),
         elapsed_ms,
     )
-    report = format_diagnostics(diagnostics, f"{phase}({label})", strip_prefix=working_directory)
+    report = format_diagnostics(
+        diagnostics, f"{phase}({label})", strip_prefix=working_directory, rename=renames
+    )
     failed_restores = count_restore_failures(diagnostics)
     if failed_restores:
         # Without this banner a restore-failed run reads as an ordinary diagnostic list, and

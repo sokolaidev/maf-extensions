@@ -8,6 +8,7 @@ testable and has been since the first commit.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
 __all__ = ["RESTORE_FAILURE_RULES", "count_restore_failures", "format_diagnostics", "parse_sarif"]
@@ -78,8 +79,30 @@ def parse_sarif(text: str) -> list[dict[str, Any]] | None:
     return diagnostics
 
 
+def _renamed(location: str, rename: Mapping[str, str] | None) -> str:
+    """``location`` as it may be shown, given the caller's map of unshowable names.
+
+    Matches a trailing path component as well as the whole string, because stripping the
+    working directory is best-effort: Bicep reports whatever root it resolved, and a location
+    this run did not strip still ends in the file's name.  A match replaces the *entire*
+    location rather than the matched part — half of a path that contained the name is still
+    the name, and the surrounding directories are the sandbox's internal layout, which
+    ``format_diagnostics`` does not put in front of the model either.
+    """
+    if not rename or not location:
+        return location
+    for real, shown in rename.items():
+        if location == real or location.endswith("/" + real):
+            return shown
+    return location
+
+
 def format_diagnostics(
-    diagnostics: list[dict[str, Any]], phase: str, *, strip_prefix: str | None = None
+    diagnostics: list[dict[str, Any]],
+    phase: str,
+    *,
+    strip_prefix: str | None = None,
+    rename: Mapping[str, str] | None = None,
 ) -> str:
     """Render a compact human-readable summary of SARIF diagnostics.
 
@@ -88,6 +111,14 @@ def format_diagnostics(
     ``file:///maf-sandbox/work/8f2c1d/main.bicep`` — which puts the sandbox's internal layout into
     the model's context, and gives the *same* file a different path on every round because
     the directory is per-call.  Stripped, it reads ``main.bicep``: the name the agent used.
+
+    ``rename`` maps a stripped location to what may be shown in its place, and exists because
+    stripping the directory is not the same as making the name safe.  A name the framework
+    expanded out of hidden content reaches here having matched the caller's listing, and the
+    compiler then reports diagnostics *against* it — so a location renders the hidden value on
+    the ordinary path where the file simply has an error in it.  A caller passes the entries
+    whose spelling it may not echo; anything absent is shown as the compiler reported it,
+    because a location the caller never wrote is one the caller cannot vouch for either way.
     """
     if not diagnostics:
         return f"{phase}: no diagnostics"
@@ -96,6 +127,7 @@ def format_diagnostics(
         loc_parts: list[str] = []
         for loc in d.get("locations", []):
             f = _relative_location(loc.get("file", ""), strip_prefix)
+            f = _renamed(f, rename)
             ln = loc.get("line")
             col = loc.get("column")
             if not f:

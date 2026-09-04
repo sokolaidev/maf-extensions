@@ -62,6 +62,7 @@ from maf_sandbox._router import ATTACH_REFUSALS
 from maf_sandbox.maf import (
     _ORIGINAL_ARGUMENTS_KEY,
     ISOLATION_SCOPE_KEY,
+    SOURCE_INTEGRITY_PROPERTY,
     SandboxPurger,
     SandboxToolSession,
     argument_provenance_middleware,
@@ -3145,7 +3146,7 @@ class TestSessionReadFile:
     """The carrier half: the label has to survive the read, or the listing bought nothing."""
 
     def _label(self, item):
-        return item.additional_properties.get("security_label")
+        return item.additional_properties.get(SOURCE_INTEGRITY_PROPERTY)
 
     def test_it_carries_the_entrys_integrity_on_the_content_it_answers_with(self):
         store = _ReadStore({"a.txt": "param x string"})
@@ -3156,7 +3157,7 @@ class TestSessionReadFile:
 
         assert item is not None and not isinstance(item, str)
         assert item.text == "param x string"
-        assert self._label(item) == {"integrity": "untrusted"}
+        assert self._label(item) == "untrusted"
 
     def test_a_trusted_entry_carries_trusted(self):
         store = _ReadStore({"a.txt": "1"})
@@ -3166,23 +3167,44 @@ class TestSessionReadFile:
         )
 
         assert not isinstance(item, str) and item is not None
-        assert self._label(item) == {"integrity": "trusted"}
+        assert self._label(item) == "trusted"
 
-    def test_the_label_spelling_is_the_frameworks_and_carries_no_confidentiality(self):
-        """`ContentLabel.to_dict` also writes `confidentiality: public`. Copying that through
-        would claim a confidentiality over bytes read out of a store, in a vocabulary that is
-        the host's — so only the integrity entry travels, and its spelling is not a literal."""
-        from agent_framework.security import ContentLabel, IntegrityLabel
+    def test_the_carrier_never_writes_a_security_label(self):
+        """A partial `ContentLabel` is not partial, and this is the measurement that says so.
+
+        `security_label` holds a whole label. Writing only `integrity` into it does not leave
+        confidentiality unstated — the framework fills it with `public` on the way back in, so a
+        forwarded item would classify the store's bytes public: the exact claim omitting the
+        field looks like it avoids. `labelled_result_item` refuses `untrusted` for this reason;
+        the carrier has to obey it too, two functions away.
+        """
+        from agent_framework.security import ContentLabel
+
+        assert ContentLabel.from_dict({"integrity": "untrusted"}).confidentiality is not None, (
+            "if a missing confidentiality ever stops defaulting, this carrier can reconsider "
+            "`security_label` — until then the private key is what keeps it silent"
+        )
 
         store = _ReadStore({"a.txt": "1"})
         item = asyncio.run(
             _session().read_file(store, ListedFile("a.txt", SourceIntegrity.UNTRUSTED))
         )
 
-        framework = ContentLabel(integrity=IntegrityLabel.UNTRUSTED).to_dict()
         assert not isinstance(item, str) and item is not None
-        assert self._label(item) == {"integrity": framework["integrity"]}
-        assert "confidentiality" not in self._label(item)
+        assert "security_label" not in item.additional_properties
+        assert self._label(item) == "untrusted"
+
+    def test_a_carried_item_does_not_count_as_labelled_to_the_result_check(self):
+        """`sandboxed_tool` refuses a result whose *every* item carries a label, because an
+        unlabelled item is where the call's own confidentiality comes from. An item that came
+        out of the store must not consume that allowance just by having been read."""
+        store = _ReadStore({"a.txt": "1"})
+        item = asyncio.run(
+            _session().read_file(store, ListedFile("a.txt", SourceIntegrity.TRUSTED))
+        )
+
+        assert not isinstance(item, str) and item is not None
+        assert "security_label" not in (getattr(item, "additional_properties", None) or {})
 
     def test_an_unestablished_entry_carries_no_label_at_all(self):
         """Not "untrusted written out". An item left unlabelled takes the call's own label,

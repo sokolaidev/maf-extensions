@@ -950,6 +950,45 @@ class TestARewrittenArgumentIsNeverQuoted:
         assert "build(" in out and "lint(" in out, out
         assert out.count("files[0]") == 2, out
 
+    def test_a_diagnostic_location_does_not_quote_it(self, monkeypatch):
+        """The leak the empty-SARIF happy-path test could not see.
+
+        `format_diagnostics` strips the working directory off a location and leaves the file
+        name, so a compiler diagnostic reported *against* an expanded name renders it — on the
+        ordinary path where the file simply has an error in it, which is the common case for
+        this tool rather than an edge one.
+        """
+        name = f"{self.SUBSTITUTED}.bicep"
+        self._rewrite(monkeypatch, name)
+        sarif = json.dumps(
+            {
+                "runs": [
+                    {
+                        "results": [
+                            {
+                                "level": "error",
+                                "message": {"text": "expected a value"},
+                                "locations": [
+                                    {
+                                        "physicalLocation": {
+                                            "artifactLocation": {"uri": f"file:///w/{name}"},
+                                            "region": {"startLine": 3},
+                                        }
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+        )
+        backend = _fake_backend(_KeepsWhatItWrote(default_stdout=sarif))
+        out = _run(_tool(InMemoryStore({name: "x"}), backend), [name])
+
+        assert "expected a value" in out, out
+        assert "EMAIL" not in out, out
+        assert "files[0]" in out, out
+
     def test_the_sandbox_write_refusal_does_not_quote_it(self, monkeypatch):
         """Reached after the read succeeded, so the read's own `hidden` verdict has already
         served its purpose and is the thing most easily dropped."""

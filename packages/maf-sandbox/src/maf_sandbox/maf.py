@@ -102,6 +102,7 @@ _DEFAULT_LOGGER = logging.getLogger(__name__)
 
 __all__ = [
     "ISOLATION_SCOPE_KEY",
+    "SOURCE_INTEGRITY_PROPERTY",
     "file_store_provenance_middleware",
     "SandboxPurger",
     "SandboxToolSession",
@@ -980,6 +981,17 @@ def sandbox_tool_declarations(
     return declarations
 
 
+#: Where :meth:`SandboxToolSession.read_file` records what the host knows about a file's bytes.
+#:
+#: A private key rather than the framework's ``security_label``, and the difference is not
+#: cosmetic. ``security_label`` holds a whole ``ContentLabel``: writing only ``integrity`` into it
+#: yields ``confidentiality: public`` when the framework reads it back, which would classify
+#: everything the store holds as public. This key means *what the host recorded about the source*
+#: and nothing about confidentiality, so an item carrying it makes no claim MAF acts on. A kind
+#: that wants to say something about a result item uses :func:`labelled_result_item`.
+SOURCE_INTEGRITY_PROPERTY = "maf_sandbox_source_integrity"
+
+
 def labelled_result_item(text: str, integrity: SourceIntegrity) -> Content:
     """One item of a split tool result, carrying its own integrity label.
 
@@ -1217,7 +1229,8 @@ class SandboxToolSession:
 
         The read surface a kind should use, in place of reaching for ``store.read`` itself.  It
         answers with an ``agent_framework`` ``Content`` carrying the listing's own label in
-        ``additional_properties["security_label"]``, so what a kind holds says what it is worth
+        ``additional_properties[SOURCE_INTEGRITY_PROPERTY]``, so what a kind holds says what it is
+        worth
         rather than being a bare ``str`` whose provenance the framework lost
         (:class:`~maf_sandbox.ListedFile`).
 
@@ -1246,7 +1259,6 @@ class SandboxToolSession:
         (:func:`echoed_name`, and rule 9 in ``docs/sandbox/kinds/README.md``).
         """
         from agent_framework import Content
-        from agent_framework.security import ContentLabel, IntegrityLabel
 
         try:
             text = await store.read(listed.name)
@@ -1262,14 +1274,15 @@ class SandboxToolSession:
             return None
         properties: dict[str, Any] = {}
         if listed.integrity is not None:
-            # The key name and the value spelling come from the framework's own serialization,
-            # as `labelled_result_item` takes them, rather than from a literal here that would
-            # be a second copy of them. Only the integrity entry: `to_dict` also writes
-            # `confidentiality: public`, and this library has no confidentiality value to give —
-            # those are the host's, and claiming one over bytes read out of a store is a claim
-            # nothing here can support.
-            label = ContentLabel(integrity=IntegrityLabel(str(listed.integrity))).to_dict()
-            properties["security_label"] = {"integrity": label["integrity"]}
+            # Deliberately **not** `security_label`. That key is a whole `ContentLabel`, and a
+            # partial one is not partial: measured, `ContentLabel.from_dict({"integrity": ...})`
+            # answers `confidentiality=public`, so writing integrity alone classifies the store's
+            # bytes public the moment anything parses it back — the very claim omitting the field
+            # looks like it avoids. It is also what `labelled_result_item` refuses `untrusted`
+            # for, so writing one here would contradict this module two functions away, and it
+            # would make a forwarded item count as labelled against `sandboxed_tool`'s "not every
+            # item may carry a label" rule.
+            properties[SOURCE_INTEGRITY_PROPERTY] = str(listed.integrity)
         return Content.from_text(text, additional_properties=properties)
 
     async def acquire(self, key: SandboxKey) -> Sandbox | str:
