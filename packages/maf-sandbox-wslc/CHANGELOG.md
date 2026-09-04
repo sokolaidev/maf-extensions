@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.15.0...maf-sandbox-wslc-v0.15.1) (2026-09-04)
+
+
+### Fixes
+
+* admit maf-sandbox 0.32 in the backends' range ([#880](https://github.com/sokolaidev/maf-extensions/issues/880)) ([fe9f543](https://github.com/sokolaidev/maf-extensions/commit/fe9f543d7cf31e7475178935e97f11557c869155))
+* **wslc:** remove's refusal names who answers the confinement check ([#843](https://github.com/sokolaidev/maf-extensions/issues/843)) ([6dc0c8b](https://github.com/sokolaidev/maf-extensions/commit/6dc0c8b7d83ffdd3d76db98073b8ed7f28a619f9))
+
 ## [0.15.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.14.1...maf-sandbox-wslc-v0.15.0) (2026-09-02)
 
 
