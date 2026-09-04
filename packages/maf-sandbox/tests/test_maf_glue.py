@@ -3274,21 +3274,25 @@ class TestSessionReadFile:
 
 
 class TestReadFileRefoldsAgainstTheRecord:
-    """The content's label is the weakest of the listing's and the record's, either side of the
-    read — so neither a write nor a `forget` landing while the bytes are in flight can raise
-    it."""
+    """The content's label is the weakest of the listing's and the record's — and only where the
+    record held still for the whole read, which its mutation count is what establishes."""
 
     def _session_with(self, record):
         return _session(file_store_provenance=record)
 
-    def test_a_write_while_the_read_is_in_flight_lowers_the_label(self):
-        """A write recorded *during* the read still reaches the label.
-
-        The write is made from inside `read`, so a fold taken before the await would miss it
-        and this asserts the later consultation happens at all.
-        """
+    def _trusted_floor(self):
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
         file_store_provenance_middleware(record)
+        return record
+
+    def test_a_write_while_the_read_is_in_flight_leaves_the_bytes_unlabelled(self):
+        """A record that moved during the read describes neither end of it.
+
+        The write is made from inside `read`, so it lands after the first look and before the
+        second. Nothing here can say what the record held when the bytes were captured, and
+        *unestablished* is what that honestly is.
+        """
+        record = self._trusted_floor()
         listed = ListedFile("a.txt", record.integrity_of("a.txt"))
         assert listed.integrity is SourceIntegrity.TRUSTED, "the listing saw the floor"
 
@@ -3296,26 +3300,54 @@ class TestReadFileRefoldsAgainstTheRecord:
         item = asyncio.run(self._session_with(record).read_file(store, listed))
 
         assert not isinstance(item, str) and item is not None
-        assert item.additional_properties[SOURCE_INTEGRITY_PROPERTY] == "untrusted"
+        assert SOURCE_INTEGRITY_PROPERTY not in item.additional_properties
 
     def test_a_forget_while_the_read_is_in_flight_cannot_raise_the_label(self):
-        """`forget` returns a path to the floor, so the record is not monotone and the answer
-        after the read is not a lower bound on the answer while the bytes were read.
-
-        Here the entry stands when the read starts, the host forgets it mid-read, and the floor
-        is `trusted` — so a fold taken only afterwards would hand back model-written bytes
-        labelled trusted. The consultation before the read is what refuses that.
-        """
-        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
-        file_store_provenance_middleware(record)
-        # Listed while the floor still answered, so the listing cannot be what refuses: the
-        # entry appears after it and is gone again before the later consultation runs.
+        """`forget` returns a path to the floor, so a later look alone can read higher than
+        what stood when the bytes were captured. The count refuses instead."""
+        record = self._trusted_floor()
         listed = ListedFile("a.txt", record.integrity_of("a.txt"))
         assert listed.integrity is SourceIntegrity.TRUSTED
         record.record("a.txt")
 
         store = _ReadStore({"a.txt": "1"}, during_read=lambda: record.forget("a.txt"))
         item = asyncio.run(self._session_with(record).read_file(store, listed))
+
+        assert not isinstance(item, str) and item is not None
+        assert SOURCE_INTEGRITY_PROPERTY not in item.additional_properties
+
+    def test_a_record_then_forget_inside_one_read_is_not_read_as_no_change(self):
+        """The cycle two equal readings cannot tell from stillness.
+
+        Both looks answer `trusted` — the entry is created and dropped between them — while the
+        bytes were captured with the model's write recorded. Only the count separates this from
+        a read nothing touched, because it moves twice and never returns to where it was.
+        """
+        record = self._trusted_floor()
+        listed = ListedFile("a.txt", record.integrity_of("a.txt"))
+        assert listed.integrity is SourceIntegrity.TRUSTED
+
+        def write_then_delete() -> None:
+            record.record("a.txt")
+            record.forget("a.txt")
+
+        store = _ReadStore({"a.txt": "1"}, during_read=write_then_delete)
+        item = asyncio.run(self._session_with(record).read_file(store, listed))
+
+        assert record.integrity_of("a.txt") is SourceIntegrity.TRUSTED, "both looks agree"
+        assert not isinstance(item, str) and item is not None
+        assert SOURCE_INTEGRITY_PROPERTY not in item.additional_properties
+
+    def test_a_read_nothing_touched_keeps_the_record_s_answer(self):
+        """The count is not a blanket downgrade: a still record still answers."""
+        record = self._trusted_floor()
+        record.record("a.txt")
+
+        item = asyncio.run(
+            self._session_with(record).read_file(
+                _ReadStore({"a.txt": "1"}), ListedFile("a.txt", SourceIntegrity.UNTRUSTED)
+            )
+        )
 
         assert not isinstance(item, str) and item is not None
         assert item.additional_properties[SOURCE_INTEGRITY_PROPERTY] == "untrusted"

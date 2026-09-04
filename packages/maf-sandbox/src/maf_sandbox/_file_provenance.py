@@ -92,13 +92,13 @@ class FileStoreProvenance:
             ``None``, the default, means *unestablished*: this host has not said, and a caller
             must treat the answer as it treats any source the framework has not established.
 
-    **Read it around the bytes, not after them.**  A caller that folds this record into a
-    listing and then reads should consult it again *both sides* of the read —
-    :meth:`~maf_sandbox.maf.SandboxToolSession.read_file` does, given the record — and take the
-    weakest answer.  :meth:`record` only adds, but :meth:`forget` removes, so neither
-    consultation alone bounds what this record said while the bytes were being read: a write
-    landing after the first would be missed, and a ``forget`` landing after the second would
-    raise the answer above what stood when they were captured.
+    **A reader wants what this record said *throughout* its read, and two readings cannot give
+    it that.**  :meth:`record` only adds, but :meth:`forget` removes, so the value can move away
+    and back inside one read and leave both readings identical.  Pair
+    :meth:`integrity_of` with :meth:`generation_of`, which only counts up: equal counts either
+    side mean nothing happened in between and the reading describes the whole interval, and a
+    changed count means the reader must not claim anything.
+    :meth:`~maf_sandbox.maf.SandboxToolSession.read_file` does exactly that, given the record.
 
     **One residue is not closable from here.**  A write is recorded once the writing tool call
     *returns*, so bytes already written by a call still in flight are not yet in the record.  A
@@ -113,6 +113,9 @@ class FileStoreProvenance:
         # while the middleware recording writes runs on the event loop.
         self._lock = threading.Lock()
         self._entries: dict[str, SourceIntegrity] = {}
+        #: How many times each path has been recorded or forgotten.  Only ever counts up, which
+        #: is what lets a reader tell "unchanged" from "changed back" — see :meth:`generation_of`.
+        self._generations: dict[str, int] = {}
         self._observed = False
 
     def _note_observer(self) -> None:
@@ -149,7 +152,9 @@ class FileStoreProvenance:
         floor, and a trusted floor would then answer for a file the model demonstrably wrote.
         """
         with self._lock:
-            self._entries[store_key(path)] = SourceIntegrity.UNTRUSTED
+            key = store_key(path)
+            self._entries[key] = SourceIntegrity.UNTRUSTED
+            self._generations[key] = self._generations.get(key, 0) + 1
 
     def forget(self, path: str) -> None:
         """Drop any entry for ``path``, returning it to :attr:`floor`.
@@ -166,7 +171,26 @@ class FileStoreProvenance:
         then harmless rather than something a host has to serialise against.
         """
         with self._lock:
-            self._entries.pop(store_key(path), None)
+            key = store_key(path)
+            if self._entries.pop(key, None) is not None:
+                self._generations[key] = self._generations.get(key, 0) + 1
+
+    def generation_of(self, path: str) -> int:
+        """How many times ``path`` has been recorded or forgotten, counting only up.
+
+        For a reader that wants what this record said *throughout* an interval rather than at
+        one instant.  Sample this either side of the interval: an unchanged count means no
+        transition happened in between, so a single :meth:`integrity_of` describes the whole of
+        it.  A changed count means the record moved and the reader cannot say what it held while
+        the bytes were in flight.
+
+        **Counting rather than comparing is the point.**  :meth:`record` and :meth:`forget` can
+        both run inside one interval and leave :meth:`integrity_of` answering exactly what it
+        answered before, so two equal readings do not mean nothing happened.  Two equal counts
+        do.
+        """
+        with self._lock:
+            return self._generations.get(store_key(path), 0)
 
     def integrity_of(self, path: str) -> SourceIntegrity | None:
         """What ``path`` is worth, or ``None`` where nothing here establishes it.

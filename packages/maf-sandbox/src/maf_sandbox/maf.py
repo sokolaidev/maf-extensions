@@ -1258,28 +1258,18 @@ class SandboxToolSession:
         the word ``None`` into a sandbox is not an answer.  A failure to read answers with the
         sentence a caller returns, for the reason the listing does.
 
-        **The record is folded around the read**, where the session was given one.  A listing's
-        label is as old as the listing, and MAF runs tool calls concurrently, so a file the
-        host's floor called ``trusted`` when it was listed can be rewritten before this read
-        returns.  The record is consulted *before and after* ``store.read``, and the weakest of
-        those two answers and the listing's is what the content carries.
-
-        **Both consultations are load-bearing, because the record is not monotone.**
-        :meth:`FileStoreProvenance.record` only ever adds an entry, but
-        :meth:`FileStoreProvenance.forget` removes one and returns the path to the floor — so a
-        host forgetting a path while these bytes were in flight would raise the answer if only
-        the later consultation counted.  Bracketing the read means the entry that stood when the
-        bytes were captured is in the fold whichever way the race went.
-
-        **One window stays open, and it is not closable from here.**  The middleware records a
-        write in a ``finally``, after the writing tool call returns, so bytes that have landed
-        under a call still running are not yet recorded and neither consultation can see them.
-        Observing at the call boundary is what buys the record its other guarantees; narrowing
-        that residue means observing somewhere else.
+        **The label is checked across the read, not taken from the listing.**  A listing's
+        label is as old as the listing, and MAF runs tool calls concurrently, so the record is
+        read either side of ``store.read`` together with
+        :meth:`FileStoreProvenance.generation_of`.  An unchanged count means the record held
+        still for the whole read and its answer is folded with the listing's; a changed one
+        means nothing can be said about these bytes, and they carry no label at all.
 
         Without a record on the session the listing's label stands, and a host wiring
         ``floor=SourceIntegrity.TRUSTED`` is then claiming the store is not written under a read
-        rather than merely that its unrecorded paths are trustworthy.
+        rather than merely that its unrecorded paths are trustworthy.  A ``trusted`` floor still
+        answers for bytes written by a call that has not returned, which is the one thing the
+        record cannot see.
 
         ``at`` is where the caller got the name — ``"files[1]"`` — and ``hidden`` says the
         framework rewrote that argument, which is what makes the refusal render the position
@@ -1296,7 +1286,7 @@ class SandboxToolSession:
         """
         from agent_framework import Content
 
-        before = self._recorded_integrity(listed.name)
+        before = self._recorded_state(listed.name)
         try:
             text = await store.read(listed.name)
         except Exception as exc:  # noqa: BLE001
@@ -1314,8 +1304,8 @@ class SandboxToolSession:
             properties[SOURCE_INTEGRITY_PROPERTY] = str(integrity)
         return Content.from_text(text, additional_properties=properties)
 
-    def _recorded_integrity(self, name: str) -> SourceIntegrity | None:
-        """What the host's record says about ``name`` right now, or ``None`` without one.
+    def _recorded_state(self, name: str) -> tuple[SourceIntegrity | None, int]:
+        """What the host's record says about ``name``, and how many times it has moved.
 
         Raises:
             ValueError: what :meth:`FileStoreProvenance.integrity_of` raises for a ``trusted``
@@ -1324,31 +1314,31 @@ class SandboxToolSession:
                 not there meets it here, which is the first moment it can be told.
         """
         record = self._file_store_provenance
-        return None if record is None else record.integrity_of(name)
+        if record is None:
+            return None, 0
+        return record.integrity_of(name), record.generation_of(name)
 
     def _folded_integrity(
-        self, listed: ListedFile, before: SourceIntegrity | None
+        self, listed: ListedFile, before: tuple[SourceIntegrity | None, int]
     ) -> SourceIntegrity | None:
-        """The listing's label folded with what the record said either side of the read.
+        """The listing's label folded with what the record said across the read.
 
-        The weakest of the three, through :func:`weakest_integrity`, so ``None`` beats
-        everything — *unestablished* is the honest answer wherever any of them established
-        nothing, which is also how a listing folded without a record disagrees with a session
-        given one.
+        **A reading either side is not enough, and the count is what closes it.**  A path can be
+        recorded and then forgotten while one read is in flight, which leaves both readings
+        equal and neither of them true of the moment the bytes were captured — the model's write
+        happened between them.  :meth:`FileStoreProvenance.generation_of` only counts up, so an
+        unchanged count is the thing two equal readings are not: proof that nothing happened.
 
-        ``before`` is what makes a racing :meth:`FileStoreProvenance.forget` harmless: it can
-        return a path to a ``trusted`` floor, so the answer after the read is not a lower bound
-        on the answer while the bytes were being read.  The one taken before it is.
+        Where it did change, this answers ``None``.  *Unestablished* is what a reader that
+        cannot say honestly says, and it is what :func:`weakest_integrity` already treats as
+        beating every level.
         """
         if self._file_store_provenance is None:
             return listed.integrity
-        return weakest_integrity(
-            (
-                listed,
-                ListedFile(listed.name, before),
-                ListedFile(listed.name, self._recorded_integrity(listed.name)),
-            )
-        )
+        integrity, generation = before
+        if generation != self._recorded_state(listed.name)[1]:
+            return None
+        return weakest_integrity((listed, ListedFile(listed.name, integrity)))
 
     async def acquire(self, key: SandboxKey) -> Sandbox | str:
         """A running sandbox for ``key``, or the message to return when there is none.
