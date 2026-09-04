@@ -3017,6 +3017,19 @@ class TestAllowlistReuse:
         sandbox = asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert sandbox.container_name == _AL
 
+    def test_a_network_reported_taken_then_gone_fails_rather_than_adopting_nothing(self):
+        """ "Already exists" and then "no such network" is not an adoption: nothing established
+        what a workload there would reach. Returning would leave `_ensure_proxy` to fail on a
+        network nobody built, reporting a proxy problem for a network race."""
+        overrides = {
+            ("network", "create"): _DockerResult(1, b"", "network with name X already exists")
+        }
+        backend, fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
+        with pytest.raises(RuntimeError, match="was gone when it was read"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        # The misleading failure this replaces: the proxy never gets to be the thing that fails.
+        assert fake.matching("run", "-d", "--name", _AL_PROXY) == []
+
     def test_a_network_that_appeared_since_the_check_is_not_adopted_on_its_name(self):
         """`create` compares nothing but the name, and the lock is local to one backend and
         loop, so "already exists" can be a network something else put there after the acquire
@@ -3243,12 +3256,32 @@ class TestASandboxLeftOnAnUnusableNetwork:
             return base(args)
 
         backend, fake = _backend_with(swapped, config=_ALLOW_CONFIG)
-        with pytest.raises(RuntimeError, match="was not on .* alone"):
+        with pytest.raises(RuntimeError, match="cannot be served"):
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         # Refusing the acquire does not stop what is already inside: `exec` detaches, so the
         # container may hold processes from earlier calls that keep the extra network's reach
         # until it is gone.
         assert fake.matching("rm", "-f", _AL) != []
+
+    def test_an_unreadable_final_read_does_not_describe_a_topology(self):
+        """The final read refuses on anything but the exact attachment, and an unreadable
+        answer is one of those — but nothing looked at a network, so the refusal must not
+        report one. It says what the daemon said instead."""
+        base = _machine(running=[_AL], networks={_AL_NET: _UNADDRESSED})
+        reads = itertools.count()
+
+        def unreadable_last(args: tuple[str, ...]) -> _DockerResult:
+            if args[:3] == ("inspect", "-f", _ATTACHED_NETWORKS_FORMAT) and args[-1] == _AL:
+                if next(reads) == 0:
+                    return _DockerResult(0, (_AL_NET + " ").encode(), "")
+                return _DockerResult(1, b"", "daemon is not responding")
+            return base(args)
+
+        backend, _ = _backend_with(unreadable_last, config=_ALLOW_CONFIG)
+        with pytest.raises(RuntimeError) as raised:
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert "networks could not be read: daemon is not responding" in str(raised.value)
+        assert "rather than" not in str(raised.value)
 
     def test_a_swapped_container_that_will_not_go_says_it_is_still_running(self):
         """The removal reports failure rather than raising it, so an acquire that read past it
@@ -3267,7 +3300,9 @@ class TestASandboxLeftOnAnUnusableNetwork:
             return base(args)
 
         backend, _ = _backend_with(swapped, config=_ALLOW_CONFIG)
-        with pytest.raises(RuntimeError, match="still running with that reach") as raised:
+        with pytest.raises(
+            RuntimeError, match="still running with whatever that reaches"
+        ) as raised:
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert "device or resource busy" in str(raised.value)
 

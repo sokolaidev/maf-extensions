@@ -374,6 +374,19 @@ class _Removal:
 
 
 @dataclass(frozen=True)
+class _Attachment:
+    """Whether a container is on exactly the network it should be, and why not when it is not.
+
+    ``reason`` separates the three ways to fail — on other networks, gone, or unreadable —
+    because a caller reports it, and "not attached" is a claim about a topology that an
+    unreadable inspect never established.
+    """
+
+    correct: bool
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class _BridgeState:
     """Whether a network is one an allowlisted workload may sit on, and why not when it is not.
 
@@ -1038,7 +1051,12 @@ class DockerSandboxBackend:
                     key.thread_id,
                     key.agent_dir,
                 )
-            if egress_id and not await self._attached_only_to(name, _network_name(name)):
+            attachment = (
+                await self._attachment_state(name, _network_name(name))
+                if egress_id
+                else _Attachment(correct=True)
+            )
+            if not attachment.correct:
                 # Last thing before the sandbox is handed out. The reads that chose reuse or
                 # restart happen earlier, and this backend's lock orders nothing against another
                 # process, so a container answering those reads is not necessarily the one still
@@ -1046,17 +1064,15 @@ class DockerSandboxBackend:
                 # reached this far may hold processes from earlier calls, and they keep whatever
                 # the extra attachment reaches for as long as it runs.
                 removal = await self._remove(name)
-                net = _network_name(name)
                 if removal.failure is not None:
                     raise RuntimeError(
-                        f"sandbox {name} is not on {net} alone, so what it can reach is not what "
-                        f"this backend built — and it could not be removed ({removal.failure}), "
-                        f"so it is still running with that reach. Remove it by hand."
+                        f"sandbox {name} cannot be served — {attachment.reason} — and it could "
+                        f"not be removed ({removal.failure}), so it is still running with "
+                        f"whatever that reaches. Remove it by hand."
                     )
                 raise RuntimeError(
-                    f"sandbox {name} was not on {net} alone, so what it could reach was not what "
-                    f"this backend built. It has been removed; the next acquire builds a "
-                    f"replacement."
+                    f"sandbox {name} cannot be served — {attachment.reason}. It is not being "
+                    f"handed out; the next acquire builds a replacement."
                 )
 
             self._registry[(key.scope, key.thread_id, key.agent_dir, spec.kind)] = name
@@ -1754,8 +1770,17 @@ class DockerSandboxBackend:
             return
         if _NETWORK_EXISTS in result.stderr.lower():
             existing = await self._bridge_state(net)
-            if existing.usable:
+            if existing.usable and not existing.absent:
                 return
+            if existing.absent:
+                # Reported as taken and gone by the time it was read. Returning here would
+                # leave the proxy to fail on a network nobody built, which reports the wrong
+                # thing entirely; the create is the next acquire's to make.
+                raise RuntimeError(
+                    f"network {net} was reported as already existing and was gone when it was "
+                    f"read, so nothing here established what a workload on it would reach. "
+                    f"Retry: the next acquire creates it."
+                )
             raise RuntimeError(
                 f"network {net} already exists and {existing.reason}, so an allowlisted "
                 f"workload on it could reach the host around the proxy. It appeared between "
@@ -1817,15 +1842,17 @@ class DockerSandboxBackend:
             return False
         return _reads_as_absent(result.stderr, name)
 
-    async def _attached_only_to(self, name: str, net: str) -> bool:
-        """Whether ``net`` is the only network ``name`` is on.
+    async def _attachment_state(self, name: str, net: str) -> _Attachment:
+        """Whether ``net`` is the only network ``name`` is on, and why not when it is not.
 
         Membership would not do: a container holds as many endpoints as it was given, and one
         more with a route out is the allowlist gone while the expected attachment is still
         there to find.  This backend creates a workload on exactly one network, so anything
         else is someone else's doing.
 
-        Unreadable counts as not attached, like every other read on this path.
+        Every answer but the exact one refuses, an unreadable read included — but they refuse
+        for different reasons, and a caller reporting one must not describe a topology nothing
+        established.
         """
         result = await self._docker(
             "inspect",
@@ -1835,8 +1862,14 @@ class DockerSandboxBackend:
             timeout=self._config.command_timeout_seconds,
         )
         if result.returncode != 0:
-            return False
-        return result.stdout.decode("utf-8", errors="replace").split() == [net]
+            stderr = result.stderr.strip()
+            if _reads_as_absent(stderr, name):
+                return _Attachment(False, "it is no longer there")
+            return _Attachment(False, f"its networks could not be read: {stderr}")
+        on = result.stdout.decode("utf-8", errors="replace").split()
+        if on == [net]:
+            return _Attachment(correct=True)
+        return _Attachment(False, f"it is on {', '.join(on) or 'no network'} rather than {net}")
 
     async def _discard_a_sandbox_on_an_unusable_network(self, name: str) -> None:
         """Remove an allowlisted sandbox whose network is not one this backend would build.
@@ -1864,9 +1897,9 @@ class DockerSandboxBackend:
             # `_ensure_network` would build a fresh one and attach nothing to it, so a reuse
             # would hand back a container sitting on whatever it is actually on.
             reason = "its network is gone, so the workload is not on the one it should be"
-        elif not await self._attached_only_to(name, net):
+        elif not (attachment := await self._attachment_state(name, net)).correct:
             # The network is one this backend would build; being on it is a separate fact.
-            reason = "the workload is not attached to it"
+            reason = attachment.reason
         else:
             return
         logger.info("replacing sandbox %s and network %s: %s", name, net, reason)
@@ -1968,7 +2001,9 @@ class DockerSandboxBackend:
         # someone else, and restarting it runs its entrypoint before anything has established
         # what it is attached to — a side effect no verdict here can take back. A stopped race
         # is left to the next acquire, which discards it before it decides anything.
-        return await self._is_running(name) and await self._attached_only_to(name, on_network)
+        if not await self._is_running(name):
+            return False
+        return (await self._attachment_state(name, on_network)).correct
 
     async def _remove(self, target: str) -> _Removal:
         """Force-remove ``target``. Never raises; reports what it did.
