@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.32.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.10.0...maf-sandbox-codeact-v0.32.0) (2026-09-04)
+## [0.11.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.10.0...maf-sandbox-codeact-v0.11.0) (2026-09-04)
 
 
 ### ⚠ BREAKING CHANGES
