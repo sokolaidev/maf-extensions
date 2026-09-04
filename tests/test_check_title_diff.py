@@ -55,14 +55,15 @@ class TestAssess:
         )
         assert problems
         assert "non-behavioral" in problems[0]
-        assert "valid title prefixes are:" in problems[1]
+        assert "titles valid for this diff: feat:, fix:, perf:, revert:" in problems[1]
+        assert "valid title prefixes are:" in problems[2]
         for title_type in check._VALID_TYPES:
-            assert f"{title_type}:" in problems[1]
-            assert f"{title_type}(...):" in problems[1]
-            assert f"{title_type}!:" in problems[1]
-            assert f"{title_type}(...)!:" in problems[1]
-        assert "use a behavior type" in problems[1]
-        assert "separate pull request" in problems[1]
+            assert f"{title_type}:" in problems[2]
+            assert f"{title_type}(...):" in problems[2]
+            assert f"{title_type}!:" in problems[2]
+            assert f"{title_type}(...)!:" in problems[2]
+        assert "use a behavior type" in problems[2]
+        assert "separate pull request" in problems[2]
 
     def test_chore_title_on_changed_tests_is_allowed(self):
         before = "def run() -> int:\n    return 1\n"
@@ -208,6 +209,74 @@ class TestAssess:
             ["packages/example/src/example.py"],
             {"packages/example/src/example.py": (None, source)},
             [("packages/example/README.md", "packages/example/src/example.py")],
+        )
+
+
+class TestTheTitlesValidForTheDiff:
+    """The refusal names the prefixes this diff would take, not the ones the parser accepts.
+
+    An author reads the static list, finds the prefix they already used, and learns nothing.
+    Each case below is a different answer to "so what should I call it", including the one
+    where the honest answer is that no title works and the pull request has to be split.
+    """
+
+    _BEFORE = "def run() -> int:\n    return 1\n"
+    _AFTER = "def run() -> int:\n    return 2\n"
+
+    def test_an_executable_diff_admits_the_behavior_titles(self):
+        problems = check.assess(
+            "chore: update implementation",
+            ["packages/a/src/a.py"],
+            {"packages/a/src/a.py": (self._BEFORE, self._AFTER)},
+        )
+        assert problems[1] == (
+            "titles valid for this diff: feat:, fix:, perf:, revert:; "
+            "a (scope) and a ! are optional"
+        )
+
+    def test_a_documentation_diff_admits_the_non_behavior_titles(self):
+        problems = check.assess("feat: document the API", ["packages/a/README.md"], {})
+        assert problems[1] == (
+            "titles valid for this diff: docs:, refactor:, test:, build:, ci:, chore:; "
+            "a (scope) and a ! are optional"
+        )
+
+    def test_the_admitted_titles_are_ordered_the_same_way_every_run(self):
+        """`_VALID_TYPES` orders them, so the line can be quoted and compared across runs."""
+        problems = check.assess("feat: document the API", ["packages/a/README.md"], {})
+        kinds = [kind for kind in check._VALID_TYPES if f"{kind}:" in problems[1]]
+        assert kinds == [kind for kind in check._VALID_TYPES if kind in check._DOCUMENTATION_TYPES]
+
+    def test_a_package_touched_without_behavior_leaves_no_valid_title(self):
+        """Every touched package owes an executable change, so one docs-only package deadlocks.
+
+        Both prefixes are refused, and naming either would send the author back around the
+        loop. Only splitting the pull request resolves it.
+        """
+        paths = ["packages/a/src/a.py", "packages/b/README.md"]
+        pairs = [("packages/a/src/a.py",), ("packages/b/README.md",)]
+        changed = {"packages/a/src/a.py": (self._BEFORE, self._AFTER)}
+        expected = (
+            "no title is valid for this diff: packages/a changes behavior and packages/b "
+            "does not; split the pull request so each half has one answer"
+        )
+        assert check.assess("feat: two packages", paths, changed, pairs)[1] == expected
+        assert check.assess("chore: two packages", paths, changed, pairs)[1] == expected
+
+    def test_an_executable_change_no_package_releases_names_the_path(self):
+        """A rename into a package's tests: attributed to nobody, still executable to the rule.
+
+        There is no prefix to offer, so the line names the path instead of inventing one.
+        """
+        problems = check.assess(
+            "feat: move module",
+            ["packages/b/tests/test_mod.py"],
+            {},
+            [("packages/a/src/mod.py", "packages/b/tests/test_mod.py")],
+        )
+        assert problems[1] == (
+            "no title is valid for this diff: the executable change is at "
+            "packages/a/src/mod.py, which release-please attributes to no package"
         )
 
 

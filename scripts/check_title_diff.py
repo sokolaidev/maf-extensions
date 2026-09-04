@@ -150,6 +150,53 @@ def title_type(title: str) -> str | None:
     return match.group("type") if match else None
 
 
+def _package_list(packages: set[str]) -> str:
+    return ", ".join(f"packages/{name}" for name in sorted(packages))
+
+
+def _valid_titles(
+    *,
+    behavior_present: bool,
+    product_executable: bool,
+    documentation_only_packages: set[str],
+    executable_packages: set[str],
+    executable_paths: set[str],
+) -> str:
+    """Return the line naming the titles this diff admits, whichever one was proposed.
+
+    The static prefix list answers "is this title well formed", which a refused title usually
+    already is, so an author reading it sees their own prefix listed as valid and cannot tell
+    what was wrong. This answers the question they are actually holding.
+
+    There is a third answer, and only a line that reads the diff can give it: a pull request
+    that changes one package's behavior while touching another's documentation is refused
+    under every prefix, because each touched package owes an executable change separately.
+    Saying "use a behavior type" there would send its author around the loop again.
+    """
+    if behavior_present or not product_executable:
+        admitted = _BEHAVIOR_TYPES if behavior_present else _DOCUMENTATION_TYPES
+        # Ordered by `_VALID_TYPES` rather than by the set: iteration order over strings varies
+        # between runs, and a diagnostic that reorders itself is one nobody can quote.
+        kinds = ", ".join(f"{kind}:" for kind in _VALID_TYPES if kind in admitted)
+        return f"titles valid for this diff: {kinds}; a (scope) and a ! are optional"
+    if documentation_only_packages:
+        return (
+            "no title is valid for this diff: "
+            + _package_list(executable_packages)
+            + " changes behavior and "
+            + _package_list(documentation_only_packages)
+            + " does not; split the pull request so each half has one answer"
+        )
+    # Nothing is touched but something is executable, which a rename out of a released path
+    # into a package's tests is: the behavior rule finds no package to attribute it to, and
+    # the documentation rule still sees the executable source. Neither half can be retitled.
+    return (
+        "no title is valid for this diff: the executable change is at "
+        + ", ".join(sorted(executable_paths))
+        + ", which release-please attributes to no package"
+    )
+
+
 def assess(
     title: str,
     changed_paths: list[str],
@@ -199,9 +246,17 @@ def assess(
     product_executable = bool(executable_packages)
 
     behavior_present = bool(touched_packages) and not (touched_packages - executable_packages)
+    valid_titles = _valid_titles(
+        behavior_present=behavior_present,
+        product_executable=product_executable,
+        documentation_only_packages=touched_packages - executable_packages,
+        executable_packages=executable_packages,
+        executable_paths=executable_paths,
+    )
     if kind in _BEHAVIOR_TYPES and not behavior_present:
         return [
             f"{kind}: no executable change was found for the changed files",
+            valid_titles,
             "retitle the pull request to match the changed files or include a behavior change",
         ]
     if kind in _DOCUMENTATION_TYPES and product_executable:
@@ -213,6 +268,7 @@ def assess(
         )
         return [
             f"{kind}: this title describes a non-behavioral change, but the diff changes executable code",
+            valid_titles,
             "valid title prefixes are: "
             + valid_prefixes
             + "; if the behavior change is intentional, use a behavior type; otherwise move the "
