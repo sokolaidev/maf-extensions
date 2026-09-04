@@ -195,6 +195,10 @@ def _machine(
     ``running`` prints ``true``, one only in ``stopped`` prints ``false``, one in neither errors
     like a missing container. ``image inspect`` succeeds for a known image and errors otherwise.
 
+    ``rm -f`` takes a container out of that state, so a test can watch a replacement be built
+    rather than only watch the removal go by: without it every removed container is still
+    running on the next read and the acquire reuses it.
+
     ``networks`` maps a network name to what ``network inspect`` prints for the gateway-mode
     format — one word per address family, so ``"isolated isolated"`` is a network this backend
     built, ``"isolated"`` one addressed on IPv6 only, and ``""`` one built before either option
@@ -205,7 +209,8 @@ def _machine(
     The longest matching ``overrides`` prefix wins, so a per-path ``cp`` answer beats a
     catch-all one however the mapping was written.
     """
-    present = set(running) | set(stopped)
+    live_running = set(running)
+    live_stopped = set(stopped)
     live_networks = dict(networks or {})
     ranked = sorted((overrides or {}).items(), key=lambda item: len(item[0]), reverse=True)
 
@@ -213,6 +218,11 @@ def _machine(
         for prefix, result in ranked:
             if args[: len(prefix)] == prefix:
                 return result
+        if args[:2] == ("rm", "-f"):
+            name = args[-1]
+            live_running.discard(name)
+            live_stopped.discard(name)
+            return _DockerResult(0, name.encode() + b"\n", "")
         if args[:2] == ("image", "inspect"):
             image = args[2]
             return (
@@ -239,12 +249,12 @@ def _machine(
             return _DockerResult(0, _owned_directory_tar(".", 0, 0o755), "")
         if args[0] == "inspect":
             name = args[-1]
-            if name not in present:
+            if name not in live_running | live_stopped:
                 return _DockerResult(1, b"", f"Error: No such object: {name}")
-            state = "true" if name in running else "false"
+            state = "true" if name in live_running else "false"
             return _DockerResult(0, state.encode() + b"\n", "")
         if args[:2] == ("ps", "-a") or args[0] == "ps":
-            names = [*running, *stopped] if "-a" in args else list(running)
+            names = [*live_running, *live_stopped] if "-a" in args else list(live_running)
             return _DockerResult(0, "".join(f"{n}\n" for n in names).encode(), "")
         if args[0] == "logs":
             return _DockerResult(0, b"listening on 3128\n", "")
@@ -2924,6 +2934,16 @@ class TestASandboxLeftOnAnAddressedBridge:
         assert fake.matching("rm", "-f", _AL_PROXY) != []
         assert fake.matching("network", "rm", _AL_NET) != []
 
+    def test_the_workload_is_rebuilt_rather_than_reused(self):
+        """The removals are only half of it: what the caller gets back has to be a container
+        built on the replacement network, not the warm one the reuse branch would have found."""
+        backend, fake = _backend_with(self._machine_with_an_addressed_bridge(), _ALLOW_CONFIG)
+        sandbox = asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert sandbox.container_name == _AL
+        created = _run_named(fake, _AL)
+        assert created.args[created.args.index("--network") + 1] == _AL_NET
+        assert fake.calls.index(fake.only("network", "rm", _AL_NET)) < fake.calls.index(created)
+
     def test_the_removal_precedes_the_read_that_would_have_reused_it(self):
         """Ordering is the whole of it: a discard after that read reuses a container it has
         already decided to keep, and the replacement never happens."""
@@ -2937,13 +2957,19 @@ class TestASandboxLeftOnAnAddressedBridge:
         """The read decides whether a warm sandbox is kept, so an answer that is neither
         "unaddressed" nor "no such network" cannot be taken as good news — the sandbox goes,
         and an acquire that still cannot prove the bridge is unaddressed refuses rather than
-        serving one it has no answer for."""
+        serving one it has no answer for.
+
+        It refuses for the reason it actually has, though: nothing read a mode here, so the
+        failure names the daemon's own answer instead of claiming an address it never saw.
+        """
         overrides = {("network", "inspect"): _DockerResult(1, b"", "daemon is not responding")}
         backend, fake = _backend_with(
             _machine(running=[_AL], overrides=overrides), config=_ALLOW_CONFIG
         )
-        with pytest.raises(RuntimeError, match="still has a bridge with a host address"):
+        with pytest.raises(RuntimeError) as raised:
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert "gateway modes could not be read: daemon is not responding" in str(raised.value)
+        assert "holds a host address" not in str(raised.value)
         assert fake.matching("rm", "-f", _AL) != []
         assert fake.matching("run", "-d", "--name", _AL) == []
 
@@ -2964,8 +2990,9 @@ class TestASandboxLeftOnAnAddressedBridge:
         backend, fake = _backend_with(
             _machine(running=[_AL], networks={_AL_NET: ""}, overrides=overrides), _ALLOW_CONFIG
         )
-        with pytest.raises(RuntimeError, match="still has a bridge with a host address"):
+        with pytest.raises(RuntimeError, match="could not be replaced") as raised:
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert "its bridge holds a host address" in str(raised.value)
         assert fake.matching("run", "-d", "--name", _AL) == []
 
     def test_an_unaddressed_bridge_keeps_its_warm_sandbox(self):

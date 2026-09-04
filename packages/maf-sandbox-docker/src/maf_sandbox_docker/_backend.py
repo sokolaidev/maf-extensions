@@ -16,7 +16,8 @@ Egress is :data:`~maf_sandbox.Egress.CLOSED` by default — every container is c
 ``--network none`` — and :data:`~maf_sandbox.Egress.ALLOWLIST` when a proxy image is
 configured: an internal network whose bridge holds no host address, carrying a dual-homed
 CONNECT proxy that is then the workload's only route out.  That bridge needs Docker Engine
-28.0.0; ``CLOSED`` creates no network and needs no such engine.
+28.0.0, and only a run that builds one does — ``CLOSED``, and an ``ALLOWLIST`` spec naming no
+hosts, both get ``--network none`` and no such engine.
 
 The ``os_families`` field of its :class:`~maf_sandbox.BackendDeclarations` is read from the
 daemon, by :meth:`DockerSandboxBackend.create` and only there: a daemon running ``linux``
@@ -352,6 +353,20 @@ class _Removal:
 
     removed: bool
     failure: DisposalFailure | None = None
+
+
+@dataclass(frozen=True)
+class _BridgeState:
+    """Whether a network's bridge is one an allowlisted workload may sit on, and why not.
+
+    Only ``unaddressed`` is safe, and a network that is not there counts as safe because a
+    create follows.  ``reason`` keeps a bridge read as addressed apart from one that could not
+    be read at all: both refuse, but a caller reporting a daemon that would not answer must not
+    claim it saw an address.
+    """
+
+    unaddressed: bool
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -1690,30 +1705,31 @@ class DockerSandboxBackend:
         if result.returncode == 0:
             return
         if _NETWORK_EXISTS in result.stderr.lower():
-            if await self._bridge_holds_no_host_address(net):
+            existing = await self._bridge_state(net)
+            if existing.unaddressed:
                 return
             raise RuntimeError(
-                f"network {net} already exists and its bridge holds a host address, so an "
-                f"allowlisted workload on it would reach the host around the proxy. Something "
-                f"outside this backend created it after the acquire checked; remove it and "
-                f"retry."
+                f"network {net} already exists and {existing.reason}, so an allowlisted "
+                f"workload on it could reach the host around the proxy. Something outside this "
+                f"backend created it after the acquire checked; remove it and retry."
             )
         detail = result.stderr.strip()
         if any(opt in result.stderr for opt in _GATEWAY_MODE_OPTS):
             detail += (
                 f" — an allowlisted sandbox needs a bridge with no host address, so this "
                 f"backend requires Docker Engine {_GATEWAY_MODE_MIN_ENGINE} or newer to serve "
-                f"{str(Egress.ALLOWLIST)!r}. Run the workload {str(Egress.CLOSED)!r}, which "
-                f"needs no network at all, or move to an engine that takes the mode."
+                f"{str(Egress.ALLOWLIST)!r} with hosts on the list. Move to an engine that "
+                f"takes the mode, or run a workload that builds no network: "
+                f"{str(Egress.CLOSED)!r}, or an empty allowlist, which reaches the same nothing."
             )
         raise RuntimeError(f"docker could not create network {net}: {detail}")
 
-    async def _bridge_holds_no_host_address(self, net: str) -> bool:
+    async def _bridge_state(self, net: str) -> _BridgeState:
         """Whether ``net`` is one this backend would build — absent counts, since a create follows.
 
-        Anything else is false, an unreadable inspect included: the answer decides whether a
-        warm sandbox is kept, and keeping one whose bridge cannot be shown to be unaddressed
-        would serve the workload a route the allowlist does not cover.
+        Anything the read does not establish is unsafe, an unreadable inspect included: the
+        answer decides whether a warm sandbox is kept, and keeping one whose bridge cannot be
+        shown unaddressed would serve the workload a route the allowlist does not cover.
         """
         result = await self._docker(
             "network",
@@ -1724,10 +1740,14 @@ class DockerSandboxBackend:
             timeout=self._config.command_timeout_seconds,
         )
         if result.returncode != 0:
-            stderr = result.stderr.lower()
-            return any(absent in stderr for absent in _NETWORK_ABSENT)
+            stderr = result.stderr.strip()
+            if any(absent in stderr.lower() for absent in _NETWORK_ABSENT):
+                return _BridgeState(unaddressed=True)
+            return _BridgeState(False, f"its gateway modes could not be read: {stderr}")
         modes = result.stdout.decode("utf-8", errors="replace").split()
-        return modes == [_GATEWAY_MODE_ISOLATED] * len(_GATEWAY_MODE_OPTS)
+        if modes == [_GATEWAY_MODE_ISOLATED] * len(_GATEWAY_MODE_OPTS):
+            return _BridgeState(unaddressed=True)
+        return _BridgeState(False, "its bridge holds a host address")
 
     async def _discard_a_sandbox_on_an_addressed_bridge(self, name: str) -> None:
         """Remove an allowlisted sandbox whose network is not one this backend would build.
@@ -1738,25 +1758,23 @@ class DockerSandboxBackend:
         cost is one cold start.
 
         Raises:
-            RuntimeError: when the network is still addressed afterwards.  The removals here
-                report failure rather than raising it, and a caller that read past one would
-                reuse the workload on the bridge this exists to take away.
+            RuntimeError: when the network is still not one this backend would build.  The
+                removals here report failure rather than raising it, and a caller that read
+                past one would reuse the workload on the bridge this exists to take away.
         """
         net = _network_name(name)
-        if await self._bridge_holds_no_host_address(net):
+        before = await self._bridge_state(net)
+        if before.unaddressed:
             return
-        logger.info(
-            "network %s has a bridge with a host address; replacing it and the sandbox on it",
-            net,
-        )
+        logger.info("network %s: %s; replacing it and the sandbox on it", net, before.reason)
         await self._remove(name)
         await self._remove(_proxy_name(name))
         await self._remove_network(net)
-        if not await self._bridge_holds_no_host_address(net):
+        after = await self._bridge_state(net)
+        if not after.unaddressed:
             raise RuntimeError(
-                f"network {net} still has a bridge with a host address after the sandbox on it "
-                f"was removed, so an allowlisted workload cannot be served here without "
-                f"reaching the host around the proxy. Remove the network by hand and retry."
+                f"network {net} could not be replaced — {after.reason}. An allowlisted workload "
+                f"cannot be served here without a route to the host around the proxy."
             )
 
     async def _ensure_proxy(self, name: str, key: SandboxKey, spec: SandboxSpec) -> None:
