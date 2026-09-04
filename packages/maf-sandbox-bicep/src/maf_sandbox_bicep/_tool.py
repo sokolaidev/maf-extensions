@@ -25,6 +25,7 @@ from maf_sandbox import (
     ListedFile,
     SandboxRouter,
     SandboxSpec,
+    SourceIntegrity,
     echoed_name,
     error_detail,
 )
@@ -268,7 +269,7 @@ def make_bicep_tools(
         # — which knows nothing about which argument the body read — and to the host's
         # `default_integrity`, which a host may raise. Both would then answer `trusted` for a
         # result derived from a template the model wrote.
-        source_integrity="untrusted",
+        source_integrity=SourceIntegrity.UNTRUSTED,
         # No confidentiality key on purpose — a host's confidentiality tiers are the host's
         # classification, and declaring one here can activate a policy leg a given host keeps
         # dormant. `TestFidesDeclarations` pins the resulting dict.

@@ -268,7 +268,7 @@ def make_codeact_tools(
             with sizes and the model's own declared names instead. No guest-authored text
             survives into the result — but the values that replace it were still chosen by a
             program the model wrote, so this changes what the result *holds* and not where it
-            came from: the tool declares ``source_integrity="untrusted"`` either way. Requires
+            came from: the tool declares ``SourceIntegrity.UNTRUSTED`` either way. Requires
             :data:`CodeactOutputs.DECLARED`: the one mode where content can still reach the
             model and no guest-chosen name reaches the result.
 
@@ -494,7 +494,7 @@ def make_codeact_tools(
         # `default_integrity`, which a host may raise. Both would then answer `trusted` for the
         # output of a program the model wrote. The per-item `trusted` on the withheld route's
         # standing guidance is unaffected: tier 1 is read ahead of this.
-        source_integrity="untrusted",
+        source_integrity=SourceIntegrity.UNTRUSTED,
         outbound_max_confidentiality=outbound_max_confidentiality,
         output_sink=output_sink,
         logger=logger,
