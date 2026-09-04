@@ -6,8 +6,9 @@ exception and goes to every backend registered.
 
 Isolation is the axis acts 1 and 2 argue about. Egress is the other one, and acts 3 and 4 are
 where it is shown — act 3 in arithmetic, act 4 with an agent doing work that cannot succeed
-without the network it asked for. Read this directory's README for why the pairing is Docker
-beside the in-process backend, and what #328 would change.
+without the network it asked for. Act 6 is the same refusal as act 2, served instead: a host
+that opts into per-spec selection gets the second backend tried. Read this directory's README
+for why the pairing is Docker beside the in-process backend.
 """
 
 # /// script
@@ -53,6 +54,17 @@ from maf_sandbox_docker import (
     DockerSandboxConfig,
     proxy_build_context,
 )
+
+#: Whether the installed core can select a backend **per spec**. `Selection` shipped with #328;
+#: before it, `SandboxRouter` resolved one backend at construction and act 6 has nothing to
+#: show. The import is the marker rather than a version comparison, for the reason sample 15
+#: gives about its own: the symbol is what the code needs, where a version string is a proxy
+#: for it. This sample resolves the *published* wheel, so it straddles the release rather than
+#: waiting for it.
+try:
+    from maf_sandbox import Selection as _Selection
+except ImportError:  # the published core before #328
+    _Selection = None
 
 #: A tiny image for acts 1, 2 and 5, because nothing there compiles anything — the point is
 #: which backend runs the command, not what the command is. Act 4 runs a real compiler and
@@ -439,17 +451,94 @@ async def act_five_disposal_reaches_everyone() -> tuple[int, int]:
     return purge.disposed, len(registered)
 
 
+async def act_six_the_spec_picks() -> bool:
+    """Act 2's refusal, served — the same two backends, in the same order, one keyword apart.
+
+    This is the whole of what per-spec selection changes, and running it directly after act 2
+    is the argument: nothing about the backends differs, nothing about the spec differs, and
+    the router reads past the first one only because the host asked it to.
+
+    The *plain* spec is here for the property that makes the feature safe to have at all.
+    Both backends can serve it, and it goes to the first registered one — the same backend the
+    fixed selection resolves to. Routing can only ever serve what is refused today; it never
+    moves a workload that already runs, which is why turning it on cannot quietly relocate
+    existing traffic onto a backend that charges for it.
+
+    Returns whether the act ran, so the footer counts what happened rather than what this file
+    hoped for.
+    """
+    print("== 6. The spec picks, when the host asks it to ==\n")
+    if _Selection is None:
+        print(f"{MEASURED}core supports per-spec selection: no")
+        print("  The published `maf-sandbox` this run resolved predates `Selection`, so there")
+        print("  is nothing here to show. Every other act is the shipped behaviour on each")
+        print("  version this sample runs against, and none of them is affected.\n")
+        return False
+    print(f"{MEASURED}core supports per-spec selection: yes")
+
+    local, container = backends()
+    # The same list, in the same order, as act 2 — which refused. `selection=` is the only
+    # difference between the two routers, and `selected=` is absent because a pin and a route
+    # are two answers to one question and the router refuses them together.
+    router = SandboxRouter([local, container], min_isolation=FLOOR, selection=_Selection.PER_SPEC)
+
+    needs_files_out = SandboxSpec(
+        kind=KIND, image=IMAGE, requires=DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
+    )
+    plain = SandboxSpec(kind=KIND, image=IMAGE)
+    for label, spec in (("files_out", needs_files_out), ("plain", plain)):
+        chosen = router.backend_for(spec)
+        print(f"{MEASURED}routed {label} spec -> {(None if chosen is None else chosen.name)!r}")
+
+    print()
+    try:
+        # Routing decided; this is what proves the decision reached a real container rather
+        # than only a report about one. Same `finally` discipline as act 5, and for the same
+        # reason: one of these is a Docker container with no auto-delete timer behind it.
+        sandbox = await router.acquire(KEY, needs_files_out)
+        await sandbox.write_file(
+            f"{needs_files_out.work_dir}/marker",
+            "routed per spec\n",
+            working_directory=needs_files_out.work_dir,
+        )
+        result = await sandbox.exec(
+            "cat marker", working_directory=needs_files_out.work_dir, timeout=60
+        )
+        print(f"{MEASURED}the routed backend runs: {result.stdout.strip()!r}")
+    finally:
+        # No total printed, and the omission is deliberate: one sandbox was created here,
+        # and `dispose_scope` asks both backends — the in-process one answers a purge with
+        # a fixed number of its own, so a total printed here would not be a measurement of
+        # this act. Act 5 is where the disposal claim is made, over two acquires that
+        # really happened on two backends.
+        await router.dispose_scope(KEY.scope, KEY.thread_id)
+        print("  the routed sandbox is disposed, by the same scope purge act 5 measures\n")
+
+    print("  The refusal in act 2 and the route here differ by `selection=` and nothing else.")
+    print("  It is off by default, and the reason is a bill rather than a scruple: what it")
+    print("  changes is that a refusal becomes a running sandbox, and on a remote backend a")
+    print("  running sandbox has a price. Registration order is the preference, and the route")
+    print("  is a pure function of the spec — never load, latency or cost — so a conversation")
+    print("  keeps landing on one backend and its warm sandbox stays reusable.\n")
+    return True
+
+
 async def main() -> int:
-    """Five acts. Every number in the footer is read back, not written down."""
+    """Six acts, and every number in the footer is read back rather than written down.
+
+    Two of the six can be absent from a healthy run, and each says so out loud: act 4 when its
+    four variables are unset, act 6 when the core this run resolved predates the feature.
+    """
     act_one_the_switch()
     act_two_the_spec_cannot_pick()
     act_three_the_other_axis()
     restored = await act_four_the_egress_the_workload_asked_for()
     disposed, registered = await act_five_disposal_reaches_everyone()
+    routed = await act_six_the_spec_picks()
 
-    ran = 5 if restored else 4
+    ran = 4 + (1 if restored else 0) + (1 if routed else 0)
     print(
-        f"{MEASURED}Completed {ran} of 5 acts. "
+        f"{MEASURED}Completed {ran} of 6 acts. "
         f"Disposed {disposed} sandbox(es) across {registered} backends."
     )
     return 0

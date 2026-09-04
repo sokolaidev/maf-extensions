@@ -4,7 +4,8 @@ Every sample before this one hands `SandboxRouter` a single backend. This one re
 
 ```
 app  ->  maf_sandbox (router)  ->  [ in-process | docker ]  ->  the sandbox
-                                          ^ chosen at construction, not per call
+                                          ^ chosen at construction by default,
+                                            or per spec when the host asks (act 6)
 ```
 
 ## The short version
@@ -38,7 +39,11 @@ The refusals in act 2 are not staged. The two backends declare genuinely differe
 
 So a spec asking for `container` isolation gets `SandboxBackendNotPermitted`, and a spec requiring `FILES_OUT` gets `SandboxCapabilityNotSupported` — while a backend declaring both sits registered beside the one refusing. That pairing is also why this sample uses Docker rather than two in-process backends: with two instances of one class the difference would be something the sample invented, and the lesson would be worth less.
 
-**Selecting per spec is [#328](https://github.com/sokolaidev/maf-extensions/issues/328)**, and `docs/sandbox/capabilities.md` states where it stands: the match refuses rather than reroutes, and the generalization is pinned to that issue. The proposal it was decided from describes it as though it had shipped — that mismatch is [#329](https://github.com/sokolaidev/maf-extensions/issues/329). If #328 lands, this sample gains an act rather than needing a rewrite: the refusals become the *opted-out* behaviour and the reroute becomes visible beside them.
+**Act 6 is the other half of that**, and it is why act 2 is worth reading first. `SandboxRouter(backends, selection=Selection.PER_SPEC)` reads past the first backend, so the very spec act 2 is refused for is served — same two backends, same order, one keyword apart. It is **off by default**, which is the arrangement [#328](https://github.com/sokolaidev/maf-extensions/issues/328) settled on: routing can only ever serve a spec that is *refused* today, so what it changes is that a refusal becomes a running sandbox, and on a remote backend a running sandbox has a price.
+
+Act 6 prints two routes and the second is the one to look at. The `files_out` spec goes to `docker`, which is the feature. The plain spec both backends can serve stays on `in-process`, the first registered — because routing must never move a workload that already runs, and a router that simply preferred the stronger backend would have moved it. The live check requires both, for the reason it requires act 4's restore pair: either answer alone is consistent with a router doing something else entirely.
+
+**It skips itself against an older core**, and says so on a `[measured]` line. This sample resolves the *published* `maf-sandbox`, so for a while the wheel it installs will not have `Selection` — the act reports that rather than falling silent, and the check refuses a run that claims it cannot route and then prints a route.
 
 ## Why disposal reaching both matters
 
@@ -94,7 +99,7 @@ What act 4 does **not** try to show is that the proxy denies an unlisted host. T
 
 ## Run
 
-Acts 1, 2, 3 and 5 need a Docker-compatible engine and nothing else. Act 4 needs two locally built images and a chat model, and skips itself with instructions when any of them is missing.
+Acts 1, 2, 3, 5 and 6 need a Docker-compatible engine and nothing else. Act 4 needs two locally built images and a chat model, and skips itself with instructions when any of them is missing. Act 6 additionally needs a `maf-sandbox` new enough to carry `Selection`, and skips itself on an older one.
 
 ```bash
 # The Bicep sandbox, built from this repository — the same guest sample 05 uses.
@@ -121,4 +126,4 @@ There is one thing in acts 4 and 5 worth knowing if you adapt it. A fresh contai
 
 ## Where this sits
 
-Sample 10 removed the sandbox and the model to show policy. This one puts a real container back and keeps the subject on policy: the router is the only thing in the stack whose job is to say no, and until now nothing showed it choosing between two things it could have said yes to.
+Sample 10 removed the sandbox and the model to show policy. This one puts a real container back and keeps the subject on policy: the router is the only thing in the stack whose job is to say no — and, since act 6, the only thing whose job is to choose which backend gets to say yes.

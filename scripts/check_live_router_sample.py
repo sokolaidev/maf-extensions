@@ -16,6 +16,14 @@ a sandbox that confines nothing — a container with the host's network would re
 and a container that could not start would fail under both. Only the pair says the deployment's
 wiring is what decided it.
 
+The **routed pair**, for the same reason in a different axis. Act 6 routes two specs, and both
+answers are required: the one act 2 was refused for must reach `docker`, and the one both
+backends can serve must stay on `in-process`. The first alone would be consistent with a router
+that simply preferred the stronger backend, which is the behaviour that would quietly move
+existing traffic onto a billable one. Act 6 is also the only act allowed to be missing, and only
+when the run says out loud that the core it resolved predates the feature — a claim this file
+then holds it to, by refusing a run that says it cannot route and prints a route anyway.
+
 Every line this file reads carries the `[measured]` tag, and act 4 puts a model's prose into the
 same stream. The sample runs that prose through `quoted()`, which prefixes `> ` to any line
 impersonating the tag — so a forged measurement is a quotation here and matches nothing.
@@ -52,6 +60,29 @@ _REFUSALS = ("SandboxBackendNotPermitted", "SandboxCapabilityNotSupported")
 #: the router merely agreeing that it could.
 _EXECUTED = "routed"
 
+#: Whether the core the sample *resolved* can select a backend per spec. Act 6 is the only act
+#: allowed to be absent from a healthy run, and this line is what makes the absence a
+#: measurement rather than a silence — the same objection act 4's assertions exist to answer,
+#: since a skipped act reads exactly like a passing one.
+_ROUTING_SUPPORT = re.compile(
+    rf"^\s*{re.escape(_TAG)}\s+core supports per-spec selection:\s+(yes|no)\s*$",
+    re.MULTILINE,
+)
+
+#: What each routed spec has to resolve to, and why each answer is the interesting one. The
+#: `files_out` spec is act 2's refusal served instead, which is the whole feature. The `plain`
+#: one going to the **first registered** backend is the property that makes the feature safe:
+#: routing can only serve what is refused today, and must never move what already runs.
+_ROUTED = {"files_out": "docker", "plain": "in-process"}
+
+_ROUTED_LINE = re.compile(
+    rf"^\s*{re.escape(_TAG)}\s+routed (\w+) spec\s+->\s+'([^']*)'", re.MULTILINE
+)
+
+#: What act 6's container printed. Distinct from act 5's marker on purpose: a check that
+#: accepted either would pass on a run where act 6 quietly re-read act 5's file.
+_ROUTED_EXECUTED = "routed per spec"
+
 #: `[measured] AVM restore under egress closed: FAILED`, and its allowlisted twin. The verdicts
 #: are read back from whether the compiler reported BCP192, not from what the sample hoped for.
 _RESTORE = re.compile(
@@ -68,7 +99,7 @@ _RESTORE_EXPECTED = {"closed": "FAILED", "allowlist": "RESTORED"}
 #: what it observed — the first from `dispose_scope`'s return, the second from the list it
 #: registered — so these compare measurements, not literals the sample printed.
 _FOOTER = re.compile(
-    rf"{re.escape(_TAG)}\s+Completed\s+(\d+)\s+of\s+5\s+acts\.\s+Disposed\s+(\d+)\s+"
+    rf"{re.escape(_TAG)}\s+Completed\s+(\d+)\s+of\s+6\s+acts\.\s+Disposed\s+(\d+)\s+"
     r"sandbox\(es\)\s+across\s+(\d+)\s+backends",
     re.IGNORECASE,
 )
@@ -146,8 +177,75 @@ def assess(output: str) -> list[str]:
             )
 
     failures.extend(_assess_restore(output))
-    failures.extend(_assess_footer(output))
+    routed, routing_failures = _assess_routing(output)
+    failures.extend(routing_failures)
+    failures.extend(_assess_footer(output, routed=routed))
     return failures
+
+
+def _assess_routing(output: str) -> tuple[bool, list[str]]:
+    """Act 6, and whether it was entitled to be absent.
+
+    Returns the entitlement as well as the failures, because the footer's act count depends on
+    it: five of six is a healthy run against an older core and a broken one against a current
+    core, and nothing else in the output can tell those apart.
+    """
+    support = _ROUTING_SUPPORT.search(output)
+    if support is None:
+        return False, [
+            "no 'core supports per-spec selection' line — act 6 did not say whether the core "
+            "this run resolved can route, so a missing routing act cannot be told apart from "
+            "a broken one, and a skipped act reads exactly like a passing one"
+        ]
+
+    routed = dict(_ROUTED_LINE.findall(output))
+    if support.group(1) == "no":
+        if routed:
+            # Both claims are about the same run and they contradict each other, so neither
+            # can be read. Refused rather than resolved in favour of one, on `_assess_restore`'s
+            # policy for a doubled verdict.
+            return False, [
+                "the run says the core cannot select per spec and then printed a route for "
+                f"{', '.join(sorted(routed))} — one of those is not a measurement of this run"
+            ]
+        return False, []
+
+    failures: list[str] = []
+    for spec, expected in _ROUTED.items():
+        if spec not in routed:
+            failures.append(
+                f"no 'routed {spec} spec' line — act 6 reported no route for it, and both "
+                "routes are required: one is the feature and the other is what keeps it safe"
+            )
+        elif routed[spec] != expected:
+            failures.append(
+                f"the {spec} spec routed to {routed[spec]!r}, expected exactly {expected!r} — "
+                + (
+                    "this is the spec act 2 is refused for, so anything else means the router "
+                    "did not read past the backend that refuses it"
+                    if spec == "files_out"
+                    else "both backends can serve this one, so anything but the first "
+                    "registered means routing moved a workload that already ran — which is "
+                    "the behaviour that would relocate existing traffic onto a billable backend"
+                )
+            )
+
+    executed = _measured_line(output, "the routed backend runs:")
+    if executed is None:
+        failures.append(
+            "no measured 'the routed backend runs:' line — the router chose a backend "
+            "showed the choice reaching a container rather than only a report about one"
+        )
+    else:
+        printed = re.search(r"the routed backend runs:\s*'([^']*)'", executed)
+        actual = printed.group(1) if printed else ""
+        if actual != _ROUTED_EXECUTED:
+            failures.append(
+                f"the routed backend printed {actual!r}, expected exactly "
+                f"{_ROUTED_EXECUTED!r} — its own marker, not act 5's, so a run that re-read "
+                "the earlier act's file cannot answer for this one"
+            )
+    return True, failures
 
 
 def _assess_restore(output: str) -> list[str]:
@@ -194,20 +292,24 @@ def _assess_restore(output: str) -> list[str]:
     return failures
 
 
-def _assess_footer(output: str) -> list[str]:
+def _assess_footer(output: str, *, routed: bool) -> list[str]:
     """The three counts, and the one that carries the sample's claim."""
     footer = _FOOTER.search(output)
     if footer is None:
         return [
-            "no 'Completed N of 5 acts. Disposed N sandbox(es) across N backends.' line — the "
+            "no 'Completed N of 6 acts. Disposed N sandbox(es) across N backends.' line — the "
             "sample did not run to completion"
         ]
     acts, disposed, registered = (int(group) for group in footer.groups())
     failures: list[str] = []
-    if acts != 5:
+    # Six when the resolved core can route and five when it cannot — act 6 is the one act
+    # entitled to be absent, and `_assess_routing` has already held the run to saying so.
+    expected_acts = 6 if routed else 5
+    if acts != expected_acts:
         failures.append(
-            f"only {acts} of 5 acts completed — act 4 skips itself when any of its four "
-            "variables is unset, and a skipped egress act is the one result that reads exactly "
+            f"{acts} of 6 acts completed, expected {expected_acts} — act 4 skips itself when "
+            "any of its four variables is unset, and act 6 only when the resolved core "
+            "predates per-spec selection; a skipped act is the one result that reads exactly "
             "like a passing one"
         )
     if registered != 2:
@@ -242,8 +344,9 @@ def main(argv: list[str]) -> int:
             print(f"  - {reason}", file=sys.stderr)
         return 1
     print(
-        "OK  the router selected by name, refused what it could not serve, gave a real workload "
-        "exactly the egress it asked for and nothing else, and disposed across both backends"
+        "OK  the router selected by name, refused what it could not serve, routed past the "
+        "refusal where the host asked it to, gave a real workload exactly the egress it asked "
+        "for and nothing else, and disposed across both backends"
     )
     return 0
 

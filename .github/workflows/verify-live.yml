@@ -934,8 +934,11 @@ jobs:
   sample-11:
     name: samples/11_router_two_backends against a live container
     # The router's own job — which backend serves, what it refuses, what it lets a workload
-    # reach, and who disposal reaches. Acts 1, 2, 3 and 5 exercise the router (maf-sandbox) and
-    # the backend it selects (maf-sandbox-docker) and nothing else. Act 4 adds the Bicep kind,
+    # reach, who disposal reaches, and which backend a spec routes to. Acts 1, 2, 3, 5 and 6
+    # exercise the router (maf-sandbox) and the backend it selects (maf-sandbox-docker) and
+    # nothing else. Act 6 needs a published core carrying `Selection` and reports on a
+    # `[measured]` line when the one it resolved does not, which the check reads rather than
+    # inferring from a missing act. Act 4 adds the Bicep kind,
     # because the only honest way to show egress deciding an outcome is a workload that cannot
     # do its job without the network it asked for — so a maf-sandbox-bicep release can change
     # what this sample does, and the allowlist it runs under is that package's, not the
@@ -1045,11 +1048,14 @@ jobs:
           uv run --no-project samples/11_router_two_backends/agent.py | tee /tmp/sample11-out.txt
           # Strict, like sample 10's, and for the same reason: every line the check reads
           # carries the `[measured]` tag, which the sample takes away from anything the model
-          # said before printing it. Two assertions carry the job — the disposal count, 2 when
-          # only one of the two registered backends was serving, and act 4's restore pair,
-          # where the module must fail to restore under `closed` and succeed under the
-          # allowlist, because either verdict alone is consistent with a sandbox that confines
-          # nothing. stdlib-only, so the runner's own python3 runs it.
+          # said before printing it. Three assertions carry the job — the disposal count, 2 when
+          # only one of the two registered backends was serving; act 4's restore pair, where the
+          # module must fail to restore under `closed` and succeed under the allowlist, because
+          # either verdict alone is consistent with a sandbox that confines nothing; and act 6's
+          # routed pair, where the refused spec must reach `docker` and the servable one must
+          # stay on the first registered backend, because the first alone is consistent with a
+          # router that just prefers the stronger one. stdlib-only, so the runner's own python3
+          # runs it.
           python3 "$HARNESS"/scripts/check_live_router_sample.py /tmp/sample11-out.txt
 
       - name: Assert the published version the sample resolved
