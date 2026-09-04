@@ -34,11 +34,6 @@ dependencies = [
     # order to it — see RELEASING.md. This package imports `Capability` at module scope, so a
     # ceiling excluding the in-tree wheel resolves PyPI's older release in the clean-env wheel
     # smoke and dies on ImportError.
-    # Widened ahead of a breaking core release, and widened here rather than in
-    # maf-sandbox-bicep or maf-sandbox-codeact: this backend calls none of the surface that
-    # release reshapes, so a published copy of it admitting the new core is safe, where a
-    # published kind admitting it would be installed beside a core its code cannot call.
-    # Those two widen in the request that adapts them. See RELEASING.md.
     "maf-sandbox>=0.30.0,<0.33",
 ]
 
