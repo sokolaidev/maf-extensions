@@ -2837,6 +2837,17 @@ class TestAllowlistTopology:
         run = fake.only("run")
         assert run.args[run.args.index("--network") + 1] == "none"
 
+    def test_an_allowlist_naming_no_hosts_builds_no_network_either(self):
+        """`ALLOWLIST` with nothing on the list reaches what `CLOSED` reaches, so it takes the
+        same branch — which is why the engine floor this backend documents binds only a run
+        that names hosts. A spec asking for the mode but no host never reaches the option."""
+        spec = SandboxSpec(kind="bicep", image="bicep-sandbox:local", egress=Egress.ALLOWLIST)
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, spec))
+        assert fake.matching("network", "create") == []
+        run = fake.only("run")
+        assert run.args[run.args.index("--network") + 1] == "none"
+
 
 class TestAnEmptyProxyImageIsNoProxyConfigured:
     """`""` is what an unset environment variable becomes, and it used to split the two reads.
