@@ -150,6 +150,51 @@ def title_type(title: str) -> str | None:
     return match.group("type") if match else None
 
 
+def _package_clause(packages: set[str], singular: str, plural: str) -> str:
+    """Name the packages and agree the verb with how many there are."""
+    names = ", ".join(f"packages/{name}" for name in sorted(packages))
+    return f"{names} {singular if len(packages) == 1 else plural}"
+
+
+def _valid_titles(
+    *,
+    behavior_present: bool,
+    product_executable: bool,
+    documentation_only_packages: set[str],
+    releasing_executable_packages: set[str],
+    executable_paths: set[str],
+) -> str:
+    """Return the line naming the prefixes this diff would take.
+
+    Three answers, not two: a diff that changes one package's behavior while touching
+    another's documentation is refused under every prefix, because each touched package owes
+    an executable change separately.
+    """
+    if behavior_present or not product_executable:
+        admitted = _BEHAVIOR_TYPES if behavior_present else _DOCUMENTATION_TYPES
+        # Ordered by `_VALID_TYPES` rather than by the set: iteration order over strings varies
+        # between runs, and a diagnostic that reorders itself is one nobody can quote.
+        kinds = ", ".join(f"{kind}:" for kind in _VALID_TYPES if kind in admitted)
+        return f"titles valid for this diff: {kinds}; a (scope) and a ! are optional"
+    if documentation_only_packages and releasing_executable_packages:
+        return (
+            "no title is valid for this diff: "
+            + _package_clause(releasing_executable_packages, "changes", "change")
+            + " behavior and "
+            + _package_clause(documentation_only_packages, "does", "do")
+            + " not; split the pull request so each half has one answer"
+        )
+    # Reached when no package both releases and changes: the behavior rule finds nothing to
+    # attribute the change to, and the documentation rule still sees it.
+    paths = sorted(executable_paths)
+    lead = "the executable changes are at" if len(paths) > 1 else "the executable change is at"
+    return (
+        f"no title is valid for this diff: {lead} "
+        + ", ".join(paths)
+        + ", which release-please attributes to no package"
+    )
+
+
 def assess(
     title: str,
     changed_paths: list[str],
@@ -199,9 +244,19 @@ def assess(
     product_executable = bool(executable_packages)
 
     behavior_present = bool(touched_packages) and not (touched_packages - executable_packages)
+    valid_titles = _valid_titles(
+        behavior_present=behavior_present,
+        product_executable=product_executable,
+        documentation_only_packages=touched_packages - executable_packages,
+        # Intersected with what is touched: a rename's source package is executable, but
+        # release-please attributes only the destination, so the source releases nothing.
+        releasing_executable_packages=touched_packages & executable_packages,
+        executable_paths=executable_paths,
+    )
     if kind in _BEHAVIOR_TYPES and not behavior_present:
         return [
             f"{kind}: no executable change was found for the changed files",
+            valid_titles,
             "retitle the pull request to match the changed files or include a behavior change",
         ]
     if kind in _DOCUMENTATION_TYPES and product_executable:
@@ -213,6 +268,7 @@ def assess(
         )
         return [
             f"{kind}: this title describes a non-behavioral change, but the diff changes executable code",
+            valid_titles,
             "valid title prefixes are: "
             + valid_prefixes
             + "; if the behavior change is intentional, use a behavior type; otherwise move the "
