@@ -4,12 +4,13 @@ Every sample before this one hands `SandboxRouter` a single backend. This one re
 
 ```
 app  ->  maf_sandbox (router)  ->  [ in-process | docker ]  ->  the sandbox
-                                          ^ chosen at construction, not per call
+                                          ^ chosen at construction by default,
+                                            or per spec when the host asks (act 6)
 ```
 
 ## The short version
 
-**Which backend serves is a deployment decision, made once.** `SandboxRouter(backends, selected=DOCKER_BACKEND)` names it. Omit `selected=` and you get whichever was registered first. That is the whole mechanism — one argument, and the workload above never learns which one answered.
+**By default, which backend serves is a deployment decision made once.** `SandboxRouter(backends, selected=DOCKER_BACKEND)` names it. Omit `selected=` and you get whichever was registered first. That is the whole mechanism under the default selection — one argument, and the workload above never learns which one answered. Act 6 is the other selection, where the spec picks instead.
 
 `selected=` is matched against a backend's `name`, and each backend package exports its own so a host reading that choice out of configuration does not have to build a backend to learn it ([#411](https://github.com/sokolaidev/maf-extensions/issues/411)):
 
@@ -19,9 +20,9 @@ from maf_sandbox_docker import BACKEND_NAME as DOCKER_BACKEND
 
 Aliased at the import because every backend package exports that same symbol — a host registering Docker beside ACAS would otherwise have the second `from … import BACKEND_NAME` shadow the first, with nothing to say so. The in-process backend has no constant, deliberately: its name is a constructor parameter with a default, so it belongs to whoever registers it, and the sample reads it back with `.name`.
 
-**A spec can raise the bar. It cannot change who serves.** If the selected backend cannot meet what a spec asks for, the router refuses. It does not look at the other backend, even when the other backend would obviously do. Act 2 shows both refusals with `docker` registered and unused.
+**A spec can raise the bar. By default it cannot change who serves.** If the selected backend cannot meet what a spec asks for, the router refuses. It does not look at the other backend, even when the other backend would obviously do. Act 2 shows both refusals with `docker` registered and unused. Act 6 is the same pair of backends with `selection=Selection.PER_SPEC`, where the spec *does* pick — the two acts differ by one keyword and nothing else.
 
-**Disposal is the exception.** `dispose` and `dispose_scope` go to *every* registered backend, which is the one place holding more than one is live at run time.
+**Disposal reaches every backend, whichever one served.** `dispose` and `dispose_scope` go to *every* registered backend — under the default selection that is the only place holding more than one is live at run time, and under per-spec selection it is what keeps a backend the route passed over from stranding whatever it still holds.
 
 **And egress is decided by the deployment, not the workload.** Act 4 runs one agent against one Bicep file twice, changing nothing but whether the backend has an egress proxy — and the compiler succeeds once and fails once.
 
@@ -38,7 +39,11 @@ The refusals in act 2 are not staged. The two backends declare genuinely differe
 
 So a spec asking for `container` isolation gets `SandboxBackendNotPermitted`, and a spec requiring `FILES_OUT` gets `SandboxCapabilityNotSupported` — while a backend declaring both sits registered beside the one refusing. That pairing is also why this sample uses Docker rather than two in-process backends: with two instances of one class the difference would be something the sample invented, and the lesson would be worth less.
 
-**Selecting per spec is [#328](https://github.com/sokolaidev/maf-extensions/issues/328)**, and `docs/sandbox/capabilities.md` states where it stands: the match refuses rather than reroutes, and the generalization is pinned to that issue. The proposal it was decided from describes it as though it had shipped — that mismatch is [#329](https://github.com/sokolaidev/maf-extensions/issues/329). If #328 lands, this sample gains an act rather than needing a rewrite: the refusals become the *opted-out* behaviour and the reroute becomes visible beside them.
+**Act 6 is the other half of that**, and it is why act 2 is worth reading first. `SandboxRouter(backends, selection=Selection.PER_SPEC)` reads past the first backend, so the very spec act 2 is refused for is served — same two backends, same order, one keyword apart. It is **off by default**, which is the arrangement [#328](https://github.com/sokolaidev/maf-extensions/issues/328) settled on: routing can only ever serve a spec that is *refused* today, so what it changes is that a refusal becomes a running sandbox, and on a remote backend a running sandbox has a price.
+
+Act 6 prints two routes and the second is the one to look at. The `files_out` spec goes to `docker`, which is the feature. The plain spec both backends can serve stays on `in-process`, the first registered — because routing must never move a workload that already runs, and a router that simply preferred the stronger backend would have moved it. The live check requires both, for the reason it requires act 4's restore pair: either answer alone is consistent with a router doing something else entirely.
+
+**Act 6 is not optional.** This sample's floor names `maf-sandbox>=0.32`, the release that carries `Selection`, so the act has nothing to feature-detect and the live check requires all six acts. A skipped act 6 is a failure, for the reason a skipped act 4 is: it reads exactly like a passing one.
 
 ## Why disposal reaching both matters
 
@@ -94,7 +99,7 @@ What act 4 does **not** try to show is that the proxy denies an unlisted host. T
 
 ## Run
 
-Acts 1, 2, 3 and 5 need a Docker-compatible engine and nothing else. Act 4 needs two locally built images and a chat model, and skips itself with instructions when any of them is missing.
+Acts 1, 2, 3, 5 and 6 need a Docker-compatible engine and nothing else. Act 4 needs two locally built images and a chat model, and skips itself with instructions when any of them is missing.
 
 ```bash
 # The Bicep sandbox, built from this repository — the same guest sample 05 uses.
@@ -115,10 +120,10 @@ az login   # the model is reached with DefaultAzureCredential; there is no API k
 cd samples/11_router_two_backends && uv run agent.py
 ```
 
-The image acts 1, 2 and 5 use is the same dev-container base samples 06 and 08 use, and the command run inside it is `cat` on a file the sample wrote: those acts are about which backend runs a command, not what the command is.
+The image acts 1, 2, 5 and 6 use is the same dev-container base samples 06 and 08 use, and the command run inside it is `cat` on a file the sample wrote: those acts are about which backend runs a command, not what the command is.
 
-There is one thing in acts 4 and 5 worth knowing if you adapt it. A fresh container has nothing at `work_dir`, so `exec` cannot change into it — the sample writes a file first, which creates the parents. That ordering is not decoration; it is why every kind pushes its inputs before running anything.
+There is one thing in acts 4, 5 and 6 worth knowing if you adapt it. A fresh container has nothing at `work_dir`, so `exec` cannot change into it — each of those acts writes a file first, which creates the parents. That ordering is not decoration; it is why every kind pushes its inputs before running anything.
 
 ## Where this sits
 
-Sample 10 removed the sandbox and the model to show policy. This one puts a real container back and keeps the subject on policy: the router is the only thing in the stack whose job is to say no, and until now nothing showed it choosing between two things it could have said yes to.
+Sample 10 removed the sandbox and the model to show policy. This one puts a real container back and keeps the subject on policy: the router is the only thing in the stack whose job is to say no — and, since act 6, the only thing whose job is to choose which backend gets to say yes.
