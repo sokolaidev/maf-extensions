@@ -3221,8 +3221,8 @@ class TestASandboxLeftOnAnUnusableNetwork:
         """Two options are asked for, so both families have to be read back.
 
         A daemon that took one and not the other leaves the bridge addressed on the half a
-        first-entry read never looks at — and it is reachable by no live run here, since CI's
-        daemon is single-stack.
+        first-entry read never looks at — and no live test here reaches it, since CI's daemon is
+        single-stack.
         """
         backend, fake = _backend_with(
             _machine(running=[_AL], networks={_AL_NET: _ADDRESSED_ON_THE_SECOND_FAMILY}),
@@ -3266,6 +3266,9 @@ class TestASandboxLeftOnAnUnusableNetwork:
         with pytest.raises(RuntimeError, match="could not be replaced") as raised:
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert "its bridge holds 172.20.0.1" in str(raised.value)
+        # The refusal has to read in the safe direction: the route is what stops the workload
+        # being served, not something serving it would require.
+        assert "while a route to the host around the proxy may still exist" in str(raised.value)
         assert fake.matching("run", "-d", "--name", _AL) == []
 
     def test_an_unaddressed_bridge_keeps_its_warm_sandbox(self):

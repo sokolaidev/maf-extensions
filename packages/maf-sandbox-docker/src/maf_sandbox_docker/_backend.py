@@ -1784,7 +1784,7 @@ class DockerSandboxBackend:
                 f" — an allowlisted sandbox needs a bridge with no host address, so this "
                 f"backend requires Docker Engine {_GATEWAY_MODE_MIN_ENGINE} or newer to serve "
                 f"{str(Egress.ALLOWLIST)!r} with hosts on the list. Move to an engine that "
-                f"takes the mode, or run a workload that builds no network: "
+                f"takes the mode, or use a spec that builds no network: "
                 f"{str(Egress.CLOSED)!r}, or an empty allowlist, which reaches the same nothing."
             )
         raise RuntimeError(f"docker could not create network {net}: {detail}")
@@ -1892,7 +1892,8 @@ class DockerSandboxBackend:
         if not after.usable:
             raise RuntimeError(
                 f"network {net} could not be replaced — {after.reason}. An allowlisted workload "
-                f"cannot be served here without a route to the host around the proxy."
+                f"cannot be served here while a route to the host around the proxy may still "
+                f"exist."
             )
 
     async def _ensure_proxy(self, name: str, key: SandboxKey, spec: SandboxSpec) -> None:
