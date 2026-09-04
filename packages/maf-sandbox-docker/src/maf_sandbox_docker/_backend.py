@@ -1051,32 +1051,13 @@ class DockerSandboxBackend:
                     key.thread_id,
                     key.agent_dir,
                 )
-            attachment = (
-                await self._attachment_state(name, _network_name(name))
-                if egress_id
-                else _Attachment(correct=True)
-            )
-            if not attachment.correct:
-                # Last thing before the sandbox is handed out. The reads that chose reuse or
-                # restart happen earlier, and this backend's lock orders nothing against another
-                # process, so a container answering those reads is not necessarily the one still
-                # here now.  Refusing is not enough on its own: `exec` detaches, so a container
-                # reached this far may hold processes from earlier calls, and they keep whatever
-                # the extra attachment reaches for as long as it runs.
-                removal = await self._remove(name)
-                if removal.failure is not None:
-                    raise RuntimeError(
-                        f"sandbox {name} cannot be served — {attachment.reason} — and it could "
-                        f"not be removed ({removal.failure}), so it is still running with "
-                        f"whatever that reaches. Remove it by hand."
-                    )
-                raise RuntimeError(
-                    f"sandbox {name} cannot be served — {attachment.reason}. It is not being "
-                    f"handed out; the next acquire builds a replacement."
-                )
+            # Ahead of the topology check below, because collecting them is several more
+            # awaited calls and anything read before them is only as current as they are long.
+            facts = await self._container_facts(name, spec)
+            if egress_id:
+                await self._refuse_a_sandbox_that_is_not_on_what_this_backend_built(name)
 
             self._registry[(key.scope, key.thread_id, key.agent_dir, spec.kind)] = name
-            facts = await self._container_facts(name, spec)
             return _DockerSandbox(
                 self._docker,
                 name,
@@ -1841,6 +1822,44 @@ class DockerSandboxBackend:
         if result.returncode == 0:
             return False
         return _reads_as_absent(result.stderr, name)
+
+    async def _refuse_a_sandbox_that_is_not_on_what_this_backend_built(self, name: str) -> None:
+        """The last word before an allowlisted sandbox is handed out: network *and* attachment.
+
+        Both, because the name is shared: a network swapped for an addressed one under the same
+        name satisfies an attachment check that only compares names, and a container moved off
+        an intact network satisfies a bridge check that only reads the network.  Neither read
+        alone establishes what the workload can reach.
+
+        Raises:
+            RuntimeError: when either is wrong.  The container goes first — ``exec`` detaches,
+                so one that reached this point may hold processes from earlier calls, and they
+                keep whatever the wrong topology reaches for as long as it runs.  A removal the
+                engine declined is reported as such, since that is the opposite instruction.
+        """
+        net = _network_name(name)
+        bridge = await self._bridge_state(net)
+        attachment = await self._attachment_state(name, net)
+        if bridge.usable and not bridge.absent and attachment.correct:
+            return
+        if not attachment.correct:
+            reason = attachment.reason
+        elif bridge.absent:
+            reason = f"the network {net} it should be on is gone"
+        else:
+            reason = f"the network {net} it is on is no longer one this backend would build — "
+            reason += bridge.reason
+        removal = await self._remove(name)
+        if removal.failure is not None:
+            raise RuntimeError(
+                f"sandbox {name} cannot be served — {reason} — and it could not be removed "
+                f"({removal.failure}), so it is still running with whatever that reaches. "
+                f"Remove it by hand."
+            )
+        raise RuntimeError(
+            f"sandbox {name} cannot be served — {reason}. It is not being handed out; the next "
+            f"acquire builds a replacement."
+        )
 
     async def _attachment_state(self, name: str, net: str) -> _Attachment:
         """Whether ``net`` is the only network ``name`` is on, and why not when it is not.

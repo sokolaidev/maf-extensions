@@ -264,6 +264,16 @@ def _machine(
             if live_networks.pop(net, None) is None:
                 return _DockerResult(1, b"", f"Error: No such network: {net}")
             return _DockerResult(0, net.encode() + b"\n", "")
+        if args[:2] == ("network", "create"):
+            # A create the engine accepted leaves a network the reads after it can find, and
+            # one it refused as taken leaves whatever was already there — so a test cannot end
+            # up running a workload on a network this responder says does not exist.
+            net = args[-1]
+            if net in live_networks:
+                return _DockerResult(1, b"", f"network with name {net} already exists")
+            modes = [o.split("=", 1)[1] for o in args if o.startswith("com.docker.network.")]
+            live_networks[net] = " ".join(modes)
+            return _DockerResult(0, net.encode() + b"\n", "")
         if args[:3] == ("inspect", "-f", "{{.Config.User}}"):
             return _DockerResult(0, b"\n", "")
         if args[0] == "cp" and args[1].endswith(":/"):
@@ -3027,7 +3037,6 @@ class TestAllowlistReuse:
         backend, fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
         with pytest.raises(RuntimeError, match="was gone when it was read"):
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
-        # The misleading failure this replaces: the proxy never gets to be the thing that fails.
         assert fake.matching("run", "-d", "--name", _AL_PROXY) == []
 
     def test_a_network_that_appeared_since_the_check_is_not_adopted_on_its_name(self):
@@ -3262,6 +3271,45 @@ class TestASandboxLeftOnAnUnusableNetwork:
         # container may hold processes from earlier calls that keep the extra network's reach
         # until it is gone.
         assert fake.matching("rm", "-f", _AL) != []
+
+    def test_an_attachment_changed_during_fact_collection_is_still_caught(self):
+        """Collecting the container's facts is several more awaited calls, so a check made
+        before them is only as current as they are long. The topology read comes after."""
+        base = _machine(running=[_AL], networks={_AL_NET: _UNADDRESSED})
+        facts_done = False
+
+        def moved_while_reading(args: tuple[str, ...]) -> _DockerResult:
+            nonlocal facts_done
+            if args[:3] == ("inspect", "-f", "{{.Config.User}}"):
+                facts_done = True
+            if args[:3] == ("inspect", "-f", _ATTACHED_NETWORKS_FORMAT) and args[-1] == _AL:
+                on = "an-unrestricted-network" if facts_done else _AL_NET
+                return _DockerResult(0, (on + " ").encode(), "")
+            return base(args)
+
+        backend, fake = _backend_with(moved_while_reading, config=_ALLOW_CONFIG)
+        with pytest.raises(RuntimeError, match="cannot be served"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("rm", "-f", _AL) != []
+
+    def test_a_network_replaced_under_its_own_name_is_caught(self):
+        """The attachment compares names, so a network swapped for an addressed one keeps
+        satisfying it. Both the bridge and the attachment are read at the end for that reason:
+        neither on its own establishes what the workload can reach."""
+        base = _machine(running=[_AL], networks={_AL_NET: _UNADDRESSED})
+        bridge_reads = itertools.count()
+
+        def replaced(args: tuple[str, ...]) -> _DockerResult:
+            if args[:2] == ("network", "inspect") and args[-1] == _AL_NET:
+                # Built by this backend while the acquire and its network setup look at it,
+                # someone else's by the time the sandbox would be handed out.
+                modes = _UNADDRESSED if next(bridge_reads) < 2 else ""
+                return _DockerResult(0, modes.encode() + b"\n", "")
+            return base(args)
+
+        backend, _ = _backend_with(replaced, config=_ALLOW_CONFIG)
+        with pytest.raises(RuntimeError, match="no longer one this backend would build"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
 
     def test_an_unreadable_final_read_does_not_describe_a_topology(self):
         """The final read refuses on anything but the exact attachment, and an unreadable
