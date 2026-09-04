@@ -1014,6 +1014,25 @@ class TestARewrittenArgumentIsNeverQuoted:
             }
         )
 
+    def test_a_second_spelling_of_one_file_cannot_downgrade_its_rendering(self, monkeypatch):
+        """Nothing refuses two spellings of one file, so both produce the same rename keys.
+
+        `bicep_validate` has no duplicate guard, and `resolve_listed_path` normalises
+        `./x.bicep` and `x.bicep` to the same destination. Written in request order, the visible
+        entry overwrites the hidden one's positional rendering and the hidden value comes back.
+        For one file there is one rendering, and it has to be the safe one.
+        """
+        name = f"{self.SUBSTITUTED}.bicep"
+        self._rewrite(monkeypatch, name)  # only the first position is expanded
+        backend = _fake_backend(
+            _KeepsWhatItWrote(default_stdout=self._sarif_at(f"file:///w/{name}"))
+        )
+
+        out = _run(_tool(InMemoryStore({name: "x"}), backend), [name, f"./{name}"])
+
+        assert "EMAIL" not in out, out
+        assert "files[0]" in out, out
+
     def test_the_compilers_own_spelling_is_renamed_too(self, monkeypatch):
         """`resolve_listed_path` normalises between the listing key and the path this call
         writes — a listed `./x.bicep` is written as `x.bicep` — and the compiler reports the

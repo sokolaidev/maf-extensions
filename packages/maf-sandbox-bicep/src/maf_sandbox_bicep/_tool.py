@@ -416,6 +416,16 @@ def _bicep_validate_tool(
         # Writes stay sequential rather than gathered: the ordering requirement is satisfied
         # either way, and a preview data plane has already produced one unexplained `Conflict`
         # burst — concurrency is not what to add on top of that without a reason.
+        # Hidden-ness is a property of the *file*, not of the position that asked for it.
+        # Two spellings can resolve to one destination — `["x.bicep", "./x.bicep"]`, which
+        # nothing refuses — and if only one was expanded, the other would render the name for
+        # the same file: in its phase prefix, in its refusals, and in the rename map. One
+        # destination, one rendering, and it is the safe one wherever any request for it was
+        # expanded.
+        hidden_paths = {
+            sandbox_path for _listed, sandbox_path, position in validated if position in rewritten
+        }
+
         results: list[str] = []
         # `(store path, the spelling that may be shown, sandbox path)`. The first two differ
         # where the framework expanded hidden content into the name; matching the listing does
@@ -424,7 +434,7 @@ def _bicep_validate_tool(
         for listed, sandbox_path, position in validated:
             name = listed.name
             at = f"files[{position}]"
-            hidden = position in rewritten
+            hidden = sandbox_path in hidden_paths
             item = await session.read_file(store, listed, at=at, hidden=hidden)
             if isinstance(item, str):
                 # The session logged the detail; this is the sentence the model may see.
@@ -484,6 +494,8 @@ def _bicep_validate_tool(
             guest_relative = entry_path.removeprefix(call_directory).lstrip("/")
             for key in (entry_name, guest_relative):
                 if key:
+                    # Overwriting is safe because `hidden_paths` gives one destination one
+                    # label: two entries reaching the same key agree on what it renders as.
                     renames[key] = entry_label
 
         for name, label, sandbox_path in written:
