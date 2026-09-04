@@ -22,7 +22,7 @@ Four channels exist and none is on by default: a file store, an output sink, a h
 
 ## `requires` is assembled from the wired channels
 
-`_codeact_spec` builds the set rather than stating one, at [`_tool.py:561`](../../../packages/maf-sandbox-codeact/src/maf_sandbox_codeact/_tool.py):
+`_codeact_spec` builds the set rather than stating one, at [`_tool.py:562`](../../../packages/maf-sandbox-codeact/src/maf_sandbox_codeact/_tool.py):
 
 ```python
 collects = outputs is not CodeactOutputs.NONE
@@ -43,7 +43,7 @@ Two consequences worth stating plainly. A registry drops wslc twice over — it 
 
 ## Egress: a derived mode, closed by default
 
-The spec carries **one mode**, and this kind computes it rather than accepting it: `_effective_egress` ([`_tool.py:498`](../../../packages/maf-sandbox-codeact/src/maf_sandbox_codeact/_tool.py)) unions what the kind needs with what the deployment added, and `egress = Egress.ALLOWLIST if effective_egress else Egress.CLOSED`. Named hosts run `ALLOWLIST` with those hosts as the payload; no hosts at all runs `CLOSED`, which is what a caller that says nothing gets — the program computes and cannot fetch.
+The spec carries **one mode**, and this kind computes it rather than accepting it: `_effective_egress` ([`_tool.py:499`](../../../packages/maf-sandbox-codeact/src/maf_sandbox_codeact/_tool.py)) unions what the kind needs with what the deployment added, and `egress = Egress.ALLOWLIST if effective_egress else Egress.CLOSED`. Named hosts run `ALLOWLIST` with those hosts as the payload; no hosts at all runs `CLOSED`, which is what a caller that says nothing gets — the program computes and cannot fetch.
 
 **`UNRESTRICTED` is not expressible, and that is the design rather than an omission.** This sandbox runs model-written code, and unconfined model-written code reaching anything is the exfiltration case an allowlist exists to prevent. There is no argument to pass and no host list that produces it: the derivation has two outcomes and neither is the open posture. Where [`bicep`](bicep.md) takes a mode as an argument — a fixed compiler is low-risk unconfined, and the in-process dev sample needs it — this kind refuses to offer one.
 

@@ -61,6 +61,7 @@ from ._protocol import (
     DisposalFailure,
     Egress,
     IsolationScope,
+    ListedFile,
     Sandbox,
     SandboxKey,
     SandboxSpec,
@@ -76,6 +77,7 @@ from ._reclaim import (
     open_unclean_notes,
     reclaim_guest_path,
 )
+from ._refusals import echoed_name
 from ._router import (
     ATTACH_REFUSALS,
     NoSandboxBackend,
@@ -642,16 +644,20 @@ def positions_holding_hidden_content(
 
 
 def make_caller_context(
-    list_files: Callable[[Any], Awaitable[list[str]]],
+    list_files: Callable[[Any], Awaitable[list[ListedFile]]],
     scope_getter: Callable[[], str],
     thread_getter: Callable[[], str | None],
 ) -> CallerContext:
     """Build the :class:`~maf_sandbox.CallerContext` a host hands to a workload factory.
 
     Args:
-        list_files: Given the file store, returns the paths the caller may act on.
-            A workload treats that listing as its injection-pinning boundary: only a name
-            present in it is ever substituted into a command.
+        list_files: Given the file store, returns the files the caller may act on, each a
+            :class:`~maf_sandbox.ListedFile` carrying the name and what the host knows about the
+            bytes at it. A workload treats the names as its injection-pinning boundary — only a
+            name present in the listing is ever substituted into a command — and reads the label
+            beside each rather than inferring one from the name.
+            :func:`list_all_files` builds this, and takes the host's ``provenance`` record so the
+            labels are what the host knows rather than what a kind could guess.
         scope_getter: The caller's user/tenant scope, read at call time.
         thread_getter: The caller's conversation id, read at call time, or ``None`` when
             no conversation is bound.
@@ -1183,8 +1189,8 @@ class SandboxToolSession:
         # name against ``work_dir``, the way every other confined call on the surface does.
         return f"{self._spec.work_dir}/{_call_name(call)}"
 
-    async def list_files(self, store: Any) -> list[str] | str:
-        """The paths this caller may act on, or the message to return if they cannot be read.
+    async def list_files(self, store: Any) -> list[ListedFile] | str:
+        """The files this caller may act on, or the message to return if they cannot be read.
 
         The listing is a workload's injection-pinning boundary: only a name present in it is
         ever substituted into a command, so a name the model invented — or one it read out of
@@ -1194,11 +1200,53 @@ class SandboxToolSession:
 
         The store is passed per call rather than held: which store a workload reads is the
         workload's business, and some read more than one.
+
+        Each entry carries the label the host knows for the bytes at that name.  Read it rather
+        than inferring one from the name — see :class:`~maf_sandbox.ListedFile`, and rule 9 in
+        ``docs/sandbox/kinds/README.md``.
         """
         try:
             return await self._context.list_files(store)
         except Exception as exc:  # noqa: BLE001
             return f"Error: could not list the file store: {exc}"
+
+    async def read_file(
+        self, store: Any, listed: ListedFile, *, at: str | None = None
+    ) -> Content | str | None:
+        """The content at ``listed``, as a labelled item — or ``None`` where the file is gone.
+
+        The read surface a kind should use, in place of reaching for ``store.read`` itself.  It
+        answers with an ``agent_framework`` ``Content`` carrying the listing's own label in
+        ``additional_properties["security_label"]``, so what a kind holds says what it is worth
+        rather than being a bare ``str`` whose provenance the framework lost
+        (:class:`~maf_sandbox.ListedFile`).
+
+        **Pass the listing entry, never a name.**  Taking a ``ListedFile`` is what keeps the two
+        together: a name alone would read the bytes and lose the only thing that says what they
+        are, which is the failure this whole channel exists to close.
+
+        ``None`` where the store has no such file — it was listed and then removed, and writing
+        the word ``None`` into a sandbox is not an answer.  A failure to read answers with the
+        sentence a caller returns, for the reason the listing does.
+
+        ``at`` is where the caller got the name — ``"files[1]"`` — and is what the refusal names
+        in place of the value, since a name is a string the model typed (:func:`echoed_name`).
+        """
+        from agent_framework import Content
+
+        try:
+            text = await store.read(listed.name)
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning(
+                f"{self._log_prefix}: could not read a listed file: %s", error_detail(exc)
+            )
+            return f"Error: {echoed_name(listed.name, at=at)} could not be read from the file store"
+        if text is None:
+            return None
+        properties: dict[str, Any] = {}
+        if listed.integrity is not None:
+            properties["security_label"] = {"integrity": str(listed.integrity)}
+        return Content.from_text(text, additional_properties=properties)
 
     async def acquire(self, key: SandboxKey) -> Sandbox | str:
         """A running sandbox for ``key``, or the message to return when there is none.
@@ -1943,8 +1991,10 @@ def sandboxed_tool(
     return [decorate(reclaiming)]
 
 
-async def list_all_files(store: Any) -> list[str]:
-    """Every file in ``store``, as store-relative paths.
+async def list_all_files(
+    store: Any, *, provenance: FileStoreProvenance | None = None
+) -> list[ListedFile]:
+    """Every file in ``store``, each with what the host knows about its integrity.
 
     The listing a workload is given is its **injection-pinning boundary**: only a name that
     appears in it is ever substituted into a sandbox command, so a path the model invented
@@ -1956,8 +2006,15 @@ async def list_all_files(store: Any) -> list[str]:
 
     A failure propagates.  Answering an empty list would read as "the store has no files" and
     refuse every name for the wrong reason.
+
+    Args:
+        store: The agent file store to walk.
+        provenance: The host's record for *this* store, if it keeps one.  Each name is looked up
+            in it, so the listing carries what the host knows rather than what a kind could
+            guess.  ``None`` labels every entry ``None`` — unestablished, which is what a host
+            keeping no record honestly knows — and is not a synonym for untrusted.
     """
-    paths: list[str] = []
+    files: list[ListedFile] = []
 
     async def walk(directory: str) -> None:
         for entry in await store.list_children(directory):
@@ -1965,13 +2022,17 @@ async def list_all_files(store: Any) -> list[str]:
             if entry.type == "directory":
                 await walk(child)
             else:
-                paths.append(child)
+                files.append(
+                    ListedFile(
+                        child, None if provenance is None else provenance.integrity_of(child)
+                    )
+                )
 
     await walk("")
-    return paths
+    return files
 
 
-async def list_no_files(_store: object) -> list[str]:
+async def list_no_files(_store: object) -> list[ListedFile]:
     """Enumerate nothing — the listing for a workload with no file channel at all.
 
     Not a stub standing in for unfinished work.  ``CallerContext.list_files`` is required, so

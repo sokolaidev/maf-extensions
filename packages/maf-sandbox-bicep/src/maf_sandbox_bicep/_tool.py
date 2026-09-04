@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from maf_sandbox import (
     CallerContext,
     Egress,
+    ListedFile,
     SandboxRouter,
     SandboxSpec,
     echoed_name,
@@ -342,6 +343,10 @@ def _bicep_validate_tool(
         listing = await session.list_files(store)
         if isinstance(listing, str):
             return listing
+        # Names for the path checks below, which are about spelling; the entries themselves are
+        # kept so the read that follows carries each file's label rather than losing it.
+        listed_names = [entry.name for entry in listing]
+        listed_by_name = {entry.name: entry for entry in listing}
 
         # Every call gets a fresh directory, because the sandbox is REUSED across fix rounds
         # and only the named files are written into it.
@@ -360,10 +365,10 @@ def _bicep_validate_tool(
         call_directory = session.guest_call_path()
 
         # Validate each name against that listing (the injection guard).
-        validated: list[tuple[str, str]] = []  # (store_path, sandbox_path)
+        validated: list[tuple[ListedFile, str, int]] = []  # (listed, sandbox_path, position)
         for position, name in enumerate(files):
             sandbox_path, listing_key, rejection = resolve_listed_path(
-                name, listing, call_directory
+                name, listed_names, call_directory
             )
             named = echoed_name(name, at=f"files[{position}]", hidden=position in rewritten)
             if rejection == "unsafe":
@@ -378,16 +383,16 @@ def _bicep_validate_tool(
                     "bicep_validate: %r is not in this tool's file store listing (%d file(s) "
                     "visible) — the store wired here may be narrower than the agent's",
                     name,
-                    len(listing),
+                    len(listed_names),
                 )
                 return (
                     f"Error: {named} is not in this tool's file listing, so it was not "
                     f"validated. This listing can be narrower than the files you can read "
-                    f"elsewhere. {_listing_hint(name, listing)}"
+                    f"elsewhere. {_listing_hint(name, listed_names)}"
                 )
             # The listing's key, not the caller's spelling: "./main.bicep" validates but
             # would not read back from a store keyed "main.bicep".
-            validated.append((listing_key or name, sandbox_path))
+            validated.append((listed_by_name[listing_key or name], sandbox_path, position))
 
         # The four-branch degrade ladder — which failures may be named to the model and
         # which may only reach the log — is `session.acquire`'s, and it writes its detail
@@ -412,21 +417,31 @@ def _bicep_validate_tool(
         # burst — concurrency is not what to add on top of that without a reason.
         results: list[str] = []
         written: list[tuple[str, str]] = []
-        for name, sandbox_path in validated:
-            try:
-                content = await store.read(name)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "bicep_validate: could not read %r from the file store: %s", name, exc
-                )
-                results.append(f"Error: could not read {name!r} from the file store")
+        for listed, sandbox_path, position in validated:
+            name = listed.name
+            at = f"files[{position}]"
+            item = await session.read_file(store, listed, at=at)
+            if isinstance(item, str):
+                # The session logged the detail; this is the sentence the model may see.
+                results.append(item)
                 continue
-            if content is None:
+            if item is None:
                 # A store read can miss without raising (the file was listed, then removed).
                 # Writing `None` through would put the string "None" into the sandbox and
                 # report a syntax error against a file the agent never wrote.
-                logger.warning("bicep_validate: %r is listed but has no content", name)
-                results.append(f"Error: {name!r} is listed in the file store but has no content")
+                logger.warning("bicep_validate: a listed file has no content")
+                results.append(
+                    f"Error: {echoed_name(name, at=at)} is listed in the file store but has no "
+                    "content"
+                )
+                continue
+            content = item.text
+            if content is None:
+                logger.warning("bicep_validate: a listed file read back with no text")
+                results.append(
+                    f"Error: {echoed_name(name, at=at)} is listed in the file store but has no "
+                    "content"
+                )
                 continue
 
             try:

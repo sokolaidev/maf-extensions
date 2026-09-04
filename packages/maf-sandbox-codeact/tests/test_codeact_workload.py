@@ -41,6 +41,7 @@ from maf_sandbox import (
     HostToolRegistry,
     Identity,
     LandedArtifact,
+    ListedFile,
     MafSandboxHostToolsWarning,
     NameNormalization,
     OutputSink,
@@ -403,8 +404,8 @@ class _ListedButGoneStore:
     async def read(self, name: str) -> str | None:
         return None
 
-    async def list(self) -> list[str]:
-        return [self._name]
+    async def list(self) -> list[ListedFile]:
+        return [ListedFile(self._name)]
 
 
 #: Transfer limits the router accepts for a *folded* spec (#393). Generous on purpose, so these

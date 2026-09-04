@@ -12,7 +12,7 @@ The split is what lets the same tool run against any of them unchanged, and it i
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Literal, Protocol, runtime_checkable
@@ -37,6 +37,7 @@ __all__ = [
     "Identity",
     "Isolation",
     "IsolationScope",
+    "ListedFile",
     "OsFamily",
     "OutputDisposition",
     "Sandbox",
@@ -51,6 +52,7 @@ __all__ = [
     "SourceIntegrity",
     "TransferLimits",
     "fold_disposal_failures",
+    "weakest_integrity",
     "CallerContext",
     "meets_floor",
 ]
@@ -271,6 +273,51 @@ class SourceIntegrity(StrEnum):
 INTEGRITY_RANK: Mapping[SourceIntegrity, int] = {
     level: rank for rank, level in enumerate((SourceIntegrity.UNTRUSTED, SourceIntegrity.TRUSTED))
 }
+
+
+@dataclass(frozen=True)
+class ListedFile:
+    """One file a caller may act on, and what the host knows about its integrity.
+
+    What :attr:`CallerContext.list_files` answers with.  The name is the injection pin — only a
+    listed name is ever substituted into a command — and the label beside it is what the host
+    knows about the *bytes* at that name.
+
+    **The two are not the same channel and must not be conflated.**  A name is a string the model
+    typed, whoever placed the file it points at, so a label here says nothing about the name and
+    a kind that renders a verdict renders it by position.  ``docs/sandbox/kinds/README.md`` rule 9
+    carries what a kind does with one.
+
+    ``integrity`` is ``None`` where the host establishes nothing about the file — the same
+    *unestablished* answer :meth:`FileStoreProvenance.integrity_of` gives, and not a synonym for
+    untrusted.
+    """
+
+    #: The store-relative path, as the caller may name it.
+    name: str
+    #: What the host knows about the bytes at :attr:`name`, or ``None`` for unestablished.
+    integrity: SourceIntegrity | None = None
+
+
+def weakest_integrity(files: Iterable[ListedFile]) -> SourceIntegrity | None:
+    """The weakest integrity across ``files`` — what a result deriving from all of them is worth.
+
+    ``None`` wins over everything, because a source the host establishes nothing about
+    disqualifies a ``trusted`` claim exactly as an untrusted one does
+    (:class:`SourceIntegrity`).  An empty listing answers :data:`SourceIntegrity.TRUSTED`: a
+    result deriving from no file at all derives nothing from the store, and the caller's own
+    sources are its business rather than this fold's.
+
+    The ordering is :data:`INTEGRITY_RANK`, which this repository requires to be data with an
+    exhaustiveness test rather than a comparison written by hand.
+    """
+    weakest = SourceIntegrity.TRUSTED
+    for listed in files:
+        if listed.integrity is None:
+            return None
+        if INTEGRITY_RANK[listed.integrity] < INTEGRITY_RANK[weakest]:
+            weakest = listed.integrity
+    return weakest
 
 
 class SourceChannel(StrEnum):
@@ -1210,11 +1257,14 @@ class CallerContext:
     :class:`SandboxKey` a property of the host's request context instead of something a
     caller — or a model — can supply.
 
-    ``list_files`` receives the file store and returns the paths the caller may act on.
+    ``list_files`` receives the file store and returns the files the caller may act on, each as
+    a :class:`ListedFile` carrying the name and what the host knows about the bytes at it.
     Workloads use it as their injection-pinning boundary: only a name present in that listing
-    is ever substituted into a command.
+    is ever substituted into a command.  The label beside it is a second thing entirely — see
+    :class:`ListedFile`, and rule 9 in ``docs/sandbox/kinds/README.md`` for what a kind does
+    with one.
     """
 
     current_scope: Callable[[], str]
     current_thread_id: Callable[[], str | None]
-    list_files: Callable[[Any], Awaitable[list[str]]]
+    list_files: Callable[[Any], Awaitable[list[ListedFile]]]

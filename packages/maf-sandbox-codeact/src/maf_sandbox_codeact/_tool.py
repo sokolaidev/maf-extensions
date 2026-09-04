@@ -44,6 +44,7 @@ from maf_sandbox import (
     Egress,
     ExecResult,
     HostToolRun,
+    ListedFile,
     NameNormalization,
     OutputSink,
     SandboxArtifactNameInvalid,
@@ -1010,7 +1011,7 @@ async def _execute(
         )
         if isinstance(resolved, str):
             return resolved
-        read = await _read_listed_files(store, resolved, tally)
+        read = await _read_listed_files(session, store, resolved, tally)
         if isinstance(read, str):
             return read
         shared = read
@@ -1155,7 +1156,7 @@ async def _resolve_listed_files(
     reserved: Mapping[str, str],
     withhold: bool = False,
     candidates: frozenset[str] | None = None,
-) -> list[str] | str:
+) -> list[ListedFile] | str:
     """Match each requested name against the caller's listing, or answer with the refusal.
 
     The listing is the injection-pinning boundary: a name the model invented, or read out of a
@@ -1178,8 +1179,10 @@ async def _resolve_listed_files(
             logger.warning("execute_code: the file listing could not be read: %s", listing)
             return "Error: this tool's file listing could not be read, so nothing was shared."
         return listing
-    known = set(listing)
-    resolved: list[str] = []
+    listed_by_name = {entry.name: entry for entry in listing}
+    known = set(listed_by_name)
+    resolved: list[ListedFile] = []
+    seen: set[str] = set()
     for position, name in enumerate(files):
         at = f"files[{position}]"
         hidden = position in rewritten
@@ -1197,7 +1200,7 @@ async def _resolve_listed_files(
         refusal = _inside_a_reserved_file(name, reserved, action="shared", at=at, hidden=hidden)
         if refusal is not None:
             return refusal
-        if name in resolved:
+        if name in seen:
             # One read and one write per name. Repeating one buys the caller nothing and
             # multiplies both, which is the cheapest way to amplify against the byte ceilings.
             return f"Error: {named} was listed twice."
@@ -1210,9 +1213,10 @@ async def _resolve_listed_files(
             )
             return (
                 f"Error: {named} is not in this tool's file listing, so it was not shared. "
-                f"{_listing_hint(name, listing, withhold=withhold)}"
+                f"{_listing_hint(name, sorted(known), withhold=withhold)}"
             )
-        resolved.append(name)
+        resolved.append(listed_by_name[name])
+        seen.add(name)
     return resolved
 
 
@@ -1242,7 +1246,10 @@ def _listing_hint(name: str, listing: list[str], *, withhold: bool = False) -> s
 
 
 async def _read_listed_files(
-    store: AgentFileStore, names: list[str], tally: _InboundTally
+    session: SandboxToolSession,
+    store: AgentFileStore,
+    files: list[ListedFile],
+    tally: _InboundTally,
 ) -> list[tuple[str, str]] | str:
     """Read every requested file into memory, or answer with the refusal.
 
@@ -1250,28 +1257,37 @@ async def _read_listed_files(
     write: a tally applied to the finished set bounds what crosses into the sandbox and nothing
     about what this process spent getting there.
 
-    Text only: ``AgentFileStore.read`` answers with ``str``, and this path encodes what it
-    is given.  The protocol's ``write_file`` takes ``bytes``, so the boundary below is not what
-    stands in the way of a binary input — but this function and the tally would both have to
-    learn about it.
+    Read through the session rather than the store, so each file arrives as a labelled item
+    saying what the host knows about its bytes (:class:`~maf_sandbox.ListedFile`).  What this
+    kind does with that is rule 9's, and today it is nothing: one string under one label cannot
+    say that one of five files was trusted, which is what
+    `#853 <https://github.com/sokolaidev/maf-extensions/issues/853>`_ opens.
     """
     read: list[tuple[str, str]] = []
-    for name in names:
-        try:
-            content = await store.read(name)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("execute_code: could not read %r from the file store: %s", name, exc)
-            return f"Error: could not read {name!r} from the file store"
-        if content is None:
+    for position, listed in enumerate(files):
+        item = await session.read_file(store, listed, at=f"files[{position}]")
+        if isinstance(item, str):
+            return item
+        if item is None:
             # A store read can miss without raising (the file was listed, then removed). Writing
             # `None` through would put the string "None" into the sandbox for the program to
             # parse.
-            logger.warning("execute_code: %r is listed but has no content", name)
-            return f"Error: {name!r} is listed in the file store but has no content"
-        over_cap = tally.add(name, content)
+            logger.warning("execute_code: a listed file has no content")
+            return (
+                f"Error: {echoed_name(listed.name, at=f'files[{position}]')} is listed in the "
+                "file store but has no content"
+            )
+        content = item.text
+        if content is None:
+            logger.warning("execute_code: a listed file read back with no text")
+            return (
+                f"Error: {echoed_name(listed.name, at=f'files[{position}]')} is listed in the "
+                "file store but has no content"
+            )
+        over_cap = tally.add(listed.name, content)
         if over_cap is not None:
             return over_cap
-        read.append((name, content))
+        read.append((listed.name, content))
     return read
 
 

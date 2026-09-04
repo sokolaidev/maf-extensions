@@ -34,6 +34,7 @@ from maf_sandbox import (
     Isolation,
     IsolationScope,
     LandedArtifact,
+    ListedFile,
     NoSandboxBackend,
     OutputDisposition,
     OutputSink,
@@ -214,7 +215,7 @@ class TestMakeCallerContext:
 
         assert context.current_scope() == "scope-a"
         assert context.current_thread_id() == "thread-1"
-        assert asyncio.run(context.list_files(store)) == ["a.txt"]
+        assert asyncio.run(context.list_files(store)) == [ListedFile("a.txt")]
 
     def test_the_getters_are_read_per_call_not_captured_at_build_time(self):
         """The key must follow the host's request context, not the moment the tool was built.
@@ -631,7 +632,9 @@ class TestSessionKey:
 class TestSessionListFiles:
     def test_it_returns_the_hosts_listing(self):
         store = InMemoryStore({"a.bicep": "1", "b/c.bicep": "2"})
-        assert sorted(asyncio.run(_session().list_files(store))) == ["a.bicep", "b/c.bicep"]
+        listed = asyncio.run(_session().list_files(store))
+        assert not isinstance(listed, str)
+        assert sorted(entry.name for entry in listed) == ["a.bicep", "b/c.bicep"]
 
     def test_a_failure_is_a_refusal_rather_than_an_empty_listing(self):
         """An empty list would read as "the file store is empty" and refuse for the wrong reason."""
@@ -3094,9 +3097,9 @@ class TestListAllFiles:
         )
 
         assert asyncio.run(list_all_files(store)) == [
-            "a.txt",
-            "infra/main.bicep",
-            "infra/modules/net.bicep",
+            ListedFile("a.txt"),
+            ListedFile("infra/main.bicep"),
+            ListedFile("infra/modules/net.bicep"),
         ]
 
     def test_directories_are_walked_and_never_listed_as_files(self):
