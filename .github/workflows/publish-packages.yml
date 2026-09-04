@@ -938,6 +938,12 @@ jobs:
       # Passed down to the called workflow, which mints the Azure OIDC token.
       id-token: write
       contents: read
+    # Required for the called jobs' own `environment: live-verify` secrets to resolve, which
+    # reads as redundant and is not: a called workflow gets that environment's `vars` from the
+    # `environment:` key alone, but its secrets arrive empty unless the caller inherits
+    # (actions/runner#4453). Nothing here has a secret of its own to pass — the repository and
+    # the organisation both hold none — so inheriting costs nothing and is the whole mechanism.
+    secrets: inherit
 
   # A live check that never started cannot say so itself: a run displaced from its concurrency
   # group is cancelled while still pending, before a single step executes. Nor can the cancellation
