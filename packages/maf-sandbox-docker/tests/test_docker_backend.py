@@ -2606,6 +2606,32 @@ class TestDispose:
 
 
 class TestDisposeScope:
+    def test_an_acquire_that_raises_after_the_run_still_leaves_a_disposable_name(self):
+        """The container is running once `run` returns, so every awaited call after it is one
+        the acquire can raise on with a container already there.
+
+        The capability read is one of them: it has no fallback, so a timeout there leaves the
+        container up and the acquire raising. The labels are the disposal's source of truth
+        only while the listing works, and the registry is what covers it when it does not — so
+        a name recorded after the facts read would be missing from both.
+        """
+        base = _machine()
+
+        def a_capability_read_that_hangs(args: tuple[str, ...]) -> _DockerResult:
+            if args[:3] == ("inspect", "-f", "{{.HostConfig.CapDrop}}"):
+                raise TimeoutError("docker inspect timed out")
+            if args[:1] == ("ps",):
+                return _DockerResult(1, b"", "daemon is not responding")
+            return base(args)
+
+        backend, fake = _backend_with(a_capability_read_that_hangs)
+        with pytest.raises(TimeoutError):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert fake.matching("run", "-d", "--name", _NAME) != [], "the container was created"
+
+        asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+        assert fake.matching("rm", "-f", _NAME) != []
+
     def test_a_dispose_landing_mid_purge_neither_crashes_nor_is_clobbered(self):
         """Teardown for one key is not serialized, so the purge reconciles against the live
         record: it must not index a prefix a `dispose` removed, nor drop a name it added."""
@@ -3016,11 +3042,40 @@ class TestAllowlistReuse:
             return base(args)
 
         backend, fake = _backend_with(taking_the_option_without_acting, config=_ALLOW_CONFIG)
-        with pytest.raises(RuntimeError, match="was created but its bridge holds"):
+        with pytest.raises(RuntimeError, match="was created but its bridge holds") as raised:
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert "It has been removed" in str(raised.value)
         assert fake.matching("run", "-d", "--name", _AL) == []
         assert fake.matching("run", "-d", "--name", _AL_PROXY) == []
         assert fake.matching("network", "rm", _AL_NET) != []
+
+    def test_a_created_network_that_will_not_go_says_it_is_still_under_its_name(self):
+        """`_remove_network` reports failure rather than raising it, and folds "refused" in with
+        "was not there", so the state is what says which happened.
+
+        The difference reaches the caller: a network that survived meets the existing-network
+        refusal on the next acquire, so "retry" is the one instruction that cannot work.
+        """
+        base = _machine(overrides={("network", "rm"): _DockerResult(1, b"", "permission denied")})
+        created = False
+
+        def taking_the_option_without_acting(args: tuple[str, ...]) -> _DockerResult:
+            nonlocal created
+            if args[:2] == ("network", "create"):
+                created = True
+                return _DockerResult(0, args[-1].encode() + b"\n", "")
+            if args[:2] == ("network", "inspect") and args[-1] == _AL_NET:
+                if not created:
+                    return _DockerResult(1, b"", f"network {_AL_NET} not found")
+                return _DockerResult(0, _ADDRESSED.encode() + b"\n", "")
+            return base(args)
+
+        backend, fake = _backend_with(taking_the_option_without_acting, config=_ALLOW_CONFIG)
+        with pytest.raises(RuntimeError, match="was created but its bridge holds") as raised:
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert "still under that name" in str(raised.value)
+        assert "It has been removed" not in str(raised.value)
+        assert fake.matching("run", "-d", "--name", _AL) == []
 
     def test_a_network_reported_taken_then_gone_fails_rather_than_adopting_nothing(self):
         """ "Already exists" and then "no such network" is not an adoption: nothing established

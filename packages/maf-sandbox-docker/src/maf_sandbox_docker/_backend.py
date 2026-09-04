@@ -1039,8 +1039,11 @@ class DockerSandboxBackend:
                     key.thread_id,
                     key.agent_dir,
                 )
-            facts = await self._container_facts(name, spec)
+            # Before the facts read, which is several awaited calls and can raise: the container
+            # is running by now, and a name the registry never saw is one the disposal fallback
+            # cannot reach when a label listing fails.
             self._registry[(key.scope, key.thread_id, key.agent_dir, spec.kind)] = name
+            facts = await self._container_facts(name, spec)
             return _DockerSandbox(
                 self._docker,
                 name,
@@ -1736,10 +1739,19 @@ class DockerSandboxBackend:
             # later in this acquire reads this network again, since the proxy and the workload
             # are about to join it. It is this call's own, so it goes with the refusal.
             await self._remove_network(net)
+            # Its own result folds "refused" together with "was not there", so the state is read
+            # instead: a network that survived leaves the next acquire the existing-network
+            # refusal, which a retry cannot get past.
+            aftermath = (
+                "It has been removed; retry."
+                if (await self._bridge_state(net)).absent
+                else "It could not be removed either, so it is still under that name and the "
+                "next acquire will refuse it as an existing one. Remove it by hand."
+            )
             raise RuntimeError(
                 f"network {net} was created but {built.reason or 'it was gone when it was read'}"
                 f", so nothing here established that an allowlisted workload on it would be held "
-                f"to the proxy. It has been removed; retry."
+                f"to the proxy. {aftermath}"
             )
         if _NETWORK_EXISTS in result.stderr.lower():
             existing = await self._bridge_state(net)
