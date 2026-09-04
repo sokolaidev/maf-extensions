@@ -56,8 +56,8 @@ from maf_sandbox_docker import (
     proxy_build_context,
 )
 
-#: A tiny image for acts 1, 2 and 5, because nothing there compiles anything — the point is
-#: which backend runs the command, not what the command is. Act 4 runs a real compiler and
+#: A tiny image for acts 1, 2, 5 and 6, because nothing there compiles anything — the point
+#: is which backend runs the command, not what the command is. Act 4 runs a real compiler and
 #: brings its own image.
 IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 
@@ -65,14 +65,15 @@ IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 #: serves one request, so they are constants, and `dispose_scope` uses them at the end.
 KEY = SandboxKey(scope="samples", thread_id="11-two-backends", agent_dir="operator")
 
-#: The workload kind acts 1, 2 and 5 ask for. Named once because it is quoted back inside both
-#: refusal messages: a typo in one of the four specs would still route, still refuse, and still
-#: print a sentence about a kind this sample never mentions anywhere else.
+#: The workload kind acts 1, 2, 5 and 6 ask for. Named once because it is quoted back inside
+#: both refusal messages and both of act 6's routes: a typo in one spec would still route,
+#: still refuse, and still print a sentence about a kind this sample mentions nowhere else.
 KIND = "operator"
 
-#: The floor this host is willing to go down to. The router floor-checks the backend it
-#: resolves to, not the whole list, and refuses at construction — `NONE` is the bottom
-#: rung, so either of these clears it.
+#: The floor this host is willing to go down to. Under the default selection the router
+#: floor-checks the backend it resolves to; selecting per spec it checks the whole
+#: registration, refusing only when nothing clears the floor. Either way this is construction
+#: time, and `NONE` is the bottom rung, so both backends clear it.
 FLOOR = Isolation.NONE
 
 #: Act 4's agent, and the file it validates. The file lives beside this one and contains a
@@ -98,8 +99,8 @@ _RESTORE_FAILED = "BCP192"
 #: and act 4's whole claim is that it can tell that apart from a sandbox that never came up.
 _PHASES = re.compile(r"^build\(.*^lint\(", re.MULTILINE | re.DOTALL)
 
-#: Everything act 4 needs. The other four acts need none of it, so this is read inside act 4
-#: rather than at startup — a reader with only Docker still sees four fifths of the sample.
+#: Everything act 4 needs. The other five acts need none of it, so this is read inside act 4
+#: rather than at startup — a reader with only Docker still sees five sixths of the sample.
 #: `BICEP_SANDBOX_IMAGE` and `MAF_EGRESS_PROXY_IMAGE` are local image references, built rather
 #: than pulled; the model is reached with `DefaultAzureCredential`, so there is no key here.
 ACT_FOUR_VARS = (

@@ -20,9 +20,9 @@ from maf_sandbox_docker import BACKEND_NAME as DOCKER_BACKEND
 
 Aliased at the import because every backend package exports that same symbol — a host registering Docker beside ACAS would otherwise have the second `from … import BACKEND_NAME` shadow the first, with nothing to say so. The in-process backend has no constant, deliberately: its name is a constructor parameter with a default, so it belongs to whoever registers it, and the sample reads it back with `.name`.
 
-**A spec can raise the bar. It cannot change who serves.** If the selected backend cannot meet what a spec asks for, the router refuses. It does not look at the other backend, even when the other backend would obviously do. Act 2 shows both refusals with `docker` registered and unused.
+**A spec can raise the bar. By default it cannot change who serves.** If the selected backend cannot meet what a spec asks for, the router refuses. It does not look at the other backend, even when the other backend would obviously do. Act 2 shows both refusals with `docker` registered and unused. Act 6 is the same pair of backends with `selection=Selection.PER_SPEC`, where the spec *does* pick — the two acts differ by one keyword and nothing else.
 
-**Disposal is the exception.** `dispose` and `dispose_scope` go to *every* registered backend, which is the one place holding more than one is live at run time.
+**Disposal reaches every backend, whichever one served.** `dispose` and `dispose_scope` go to *every* registered backend — under the default selection that is the only place holding more than one is live at run time, and under per-spec selection it is what keeps a backend the route passed over from stranding whatever it still holds.
 
 **And egress is decided by the deployment, not the workload.** Act 4 runs one agent against one Bicep file twice, changing nothing but whether the backend has an egress proxy — and the compiler succeeds once and fails once.
 
@@ -120,7 +120,7 @@ az login   # the model is reached with DefaultAzureCredential; there is no API k
 cd samples/11_router_two_backends && uv run agent.py
 ```
 
-The image acts 1, 2 and 5 use is the same dev-container base samples 06 and 08 use, and the command run inside it is `cat` on a file the sample wrote: those acts are about which backend runs a command, not what the command is.
+The image acts 1, 2, 5 and 6 use is the same dev-container base samples 06 and 08 use, and the command run inside it is `cat` on a file the sample wrote: those acts are about which backend runs a command, not what the command is.
 
 There is one thing in acts 4 and 5 worth knowing if you adapt it. A fresh container has nothing at `work_dir`, so `exec` cannot change into it — the sample writes a file first, which creates the parents. That ordering is not decoration; it is why every kind pushes its inputs before running anything.
 
