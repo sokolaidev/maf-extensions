@@ -1226,7 +1226,13 @@ class SandboxToolSession:
             return f"Error: could not list the file store: {exc}"
 
     async def read_file(
-        self, store: Any, listed: ListedFile, *, at: str | None = None, hidden: bool = False
+        self,
+        store: Any,
+        listed: ListedFile,
+        *,
+        at: str | None = None,
+        hidden: bool = False,
+        named: str | None = None,
     ) -> Content | str | None:
         """The content at ``listed``, as a labelled item — or ``None`` where the file is gone.
 
@@ -1258,6 +1264,13 @@ class SandboxToolSession:
         instead of the value.  Pass both: ``at`` alone still quotes a short printable name, and a
         name expanded out of hidden content is exactly the value a refusal must not repeat
         (:func:`echoed_name`, and rule 9 in ``docs/sandbox/kinds/README.md``).
+
+        ``named`` overrides that rendering, and a caller that resolved the model's spelling
+        against its listing should pass one.  :attr:`ListedFile.name` is the *host's* key, so
+        rendering from it describes a different string than the one at ``at`` — for a model that
+        asked for ``./main.bicep`` against a listing holding ``main.bicep``, the positional form
+        would report the wrong length for the value it is standing in for.  The caller knows both
+        spellings; this method only ever sees one.
         """
         from agent_framework import Content
 
@@ -1267,10 +1280,8 @@ class SandboxToolSession:
             self._logger.warning(
                 f"{self._log_prefix}: could not read a listed file: %s", error_detail(exc)
             )
-            return (
-                f"Error: {echoed_name(listed.name, at=at, hidden=hidden)} could not be read "
-                "from the file store"
-            )
+            shown = named if named is not None else echoed_name(listed.name, at=at, hidden=hidden)
+            return f"Error: {shown} could not be read from the file store"
         if text is None:
             return None
         properties: dict[str, Any] = {}

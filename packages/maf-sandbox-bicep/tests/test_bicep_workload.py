@@ -1015,12 +1015,12 @@ class TestARewrittenArgumentIsNeverQuoted:
         )
 
     def test_a_second_spelling_of_one_file_cannot_downgrade_its_rendering(self, monkeypatch):
-        """Nothing refuses two spellings of one file, so both produce the same rename keys.
+        """One file has one rendering, whichever spelling asked for it.
 
-        `bicep_validate` has no duplicate guard, and `resolve_listed_path` normalises
-        `./x.bicep` and `x.bicep` to the same destination. Written in request order, the visible
-        entry overwrites the hidden one's positional rendering and the hidden value comes back.
-        For one file there is one rendering, and it has to be the safe one.
+        `bicep_validate` has no duplicate guard and `resolve_listed_path` normalises `./x.bicep`
+        and `x.bicep` to one destination, so a call can name the same file twice with only one
+        of those positions expanded. Both entries then have to render as the expanded one: the
+        name withheld, and the position that really holds hidden content.
         """
         name = f"{self.SUBSTITUTED}.bicep"
         self._rewrite(monkeypatch, name)  # only the first position is expanded
@@ -1032,6 +1032,8 @@ class TestARewrittenArgumentIsNeverQuoted:
 
         assert "EMAIL" not in out, out
         assert "files[0]" in out, out
+        # files[1] was never expanded, so attributing anything to it names the wrong argument.
+        assert "files[1]" not in out, out
 
     def test_the_compilers_own_spelling_is_renamed_too(self, monkeypatch):
         """`resolve_listed_path` normalises between the listing key and the path this call

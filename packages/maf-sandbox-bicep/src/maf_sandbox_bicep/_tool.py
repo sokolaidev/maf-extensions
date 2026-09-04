@@ -416,15 +416,16 @@ def _bicep_validate_tool(
         # Writes stay sequential rather than gathered: the ordering requirement is satisfied
         # either way, and a preview data plane has already produced one unexplained `Conflict`
         # burst — concurrency is not what to add on top of that without a reason.
-        # Hidden-ness is a property of the *file*, not of the position that asked for it.
-        # Two spellings can resolve to one destination — `["x.bicep", "./x.bicep"]`, which
-        # nothing refuses — and if only one was expanded, the other would render the name for
-        # the same file: in its phase prefix, in its refusals, and in the rename map. One
-        # destination, one rendering, and it is the safe one wherever any request for it was
-        # expanded.
-        hidden_paths = {
-            sandbox_path for _listed, sandbox_path, position in validated if position in rewritten
-        }
+        # Hidden-ness is a property of the *file*, not of the position that asked for it, and
+        # what is remembered is the position that was actually expanded. Two spellings can
+        # resolve to one destination — `["x.bicep", "./x.bicep"]`, which nothing refuses — and
+        # if only one was expanded, rendering the other at its *own* position would attribute
+        # the file to an argument the framework never rewrote. One destination, one rendering,
+        # naming the position whose value really is hidden content.
+        hidden_at: dict[str, int] = {}
+        for _listed, sandbox_path, position in validated:
+            if position in rewritten:
+                hidden_at.setdefault(sandbox_path, position)
 
         results: list[str] = []
         # `(store path, the spelling that may be shown, sandbox path)`. The first two differ
@@ -433,9 +434,13 @@ def _bicep_validate_tool(
         written: list[tuple[str, str, str]] = []
         for listed, sandbox_path, position in validated:
             name = listed.name
-            at = f"files[{position}]"
-            hidden = sandbox_path in hidden_paths
-            item = await session.read_file(store, listed, at=at, hidden=hidden)
+            expanded = hidden_at.get(sandbox_path)
+            hidden = expanded is not None
+            # The value at the expanded position, not this entry's listing key: `echoed_name`
+            # reports the length of what it is standing in for, and the two spellings differ.
+            at = f"files[{expanded if hidden else position}]"
+            named = echoed_name(files[expanded] if hidden else name, at=at, hidden=hidden)
+            item = await session.read_file(store, listed, at=at, hidden=hidden, named=named)
             if isinstance(item, str):
                 # The session logged the detail; this is the sentence the model may see.
                 results.append(item)
@@ -445,18 +450,12 @@ def _bicep_validate_tool(
                 # Writing `None` through would put the string "None" into the sandbox and
                 # report a syntax error against a file the agent never wrote.
                 logger.warning("bicep_validate: a listed file has no content")
-                results.append(
-                    f"Error: {echoed_name(name, at=at, hidden=hidden)} is listed in the file "
-                    "store but has no content"
-                )
+                results.append(f"Error: {named} is listed in the file store but has no content")
                 continue
             content = item.text
             if content is None:
                 logger.warning("bicep_validate: a listed file read back with no text")
-                results.append(
-                    f"Error: {echoed_name(name, at=at, hidden=hidden)} is listed in the file "
-                    "store but has no content"
-                )
+                results.append(f"Error: {named} is listed in the file store but has no content")
                 continue
 
             try:
@@ -469,20 +468,18 @@ def _bicep_validate_tool(
                 logger.warning(
                     "bicep_validate: could not write %r to sandbox: %s", name, error_detail(exc)
                 )
-                results.append(
-                    f"Error: could not write {echoed_name(name, at=at, hidden=hidden)} to sandbox"
-                )
+                results.append(f"Error: could not write {named} to sandbox")
                 continue
-            written.append(
-                (name, name if not hidden else echoed_name(name, at=at, hidden=True), sandbox_path)
-            )
+            written.append((name, name if not hidden else named, sandbox_path))
 
         # Built over every written file, not per phase: a diagnostic in one file can name
         # another, so the loop below has to be able to rename a location it did not write.
         #
-        # Every file, including the ones whose name may be shown, mapped to itself. Two written
-        # files can share a basename, and `_renamed` resolves that by preferring the longest
-        # matching key — which needs the long key to be present at all.
+        # Every file, including the ones whose name may be shown, mapped to itself. `_renamed`
+        # identifies a location by *exact* membership and treats anything it can only match by
+        # trailing component as unidentified, so the visible files have to be keys too — without
+        # them a diagnostic about one would fall through to the ambiguous branch and lose its
+        # name.
         #
         # Under both spellings, because they can differ: the listing key is what the store is
         # keyed by, while the compiler reports the path this call *wrote*, and

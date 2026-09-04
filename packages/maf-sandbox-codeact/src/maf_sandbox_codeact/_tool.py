@@ -1158,17 +1158,19 @@ async def _resolve_listed_files(
     reserved: Mapping[str, str],
     withhold: bool = False,
     candidates: frozenset[str] | None = None,
-) -> tuple[list[ListedFile], frozenset[int]] | str:
+) -> tuple[list[tuple[ListedFile, str]], frozenset[int]] | str:
     """Match each requested name against the caller's listing, or answer with the refusal.
 
     The listing is the injection-pinning boundary: a name the model invented, or read out of a
     poisoned file, has nowhere to go.  Which is why a listing that cannot be read is a refusal
     rather than an empty one — every name would then be refused for the wrong reason.
 
-    Answers with the entries **and** the positions among them the framework expanded, because a
-    refusal about a file downstream has to render those by position rather than echo the name
-    back.  Returned rather than left to be recomputed: the verdict belongs to a position, and
-    the fallback answer costs a pass over the variable store that this call already paid for.
+    Answers with each entry **and the spelling a refusal about it may use**, plus the positions
+    among them the framework expanded.  The rendering is made here because this is the only place
+    that holds both spellings: the model's, and the listing key it resolved to.  Rendering later
+    from :attr:`ListedFile.name` would report the length of the host's key while claiming to
+    stand in for the value at the model's position, and the two differ whenever the listing
+    normalised anything.
     """
     if not files:
         return [], frozenset()
@@ -1188,7 +1190,7 @@ async def _resolve_listed_files(
         return listing
     listed_by_name = {entry.name: entry for entry in listing}
     known = set(listed_by_name)
-    resolved: list[ListedFile] = []
+    resolved: list[tuple[ListedFile, str]] = []
     resolved_hidden: set[int] = set()
     seen: set[str] = set()
     for position, name in enumerate(files):
@@ -1225,7 +1227,7 @@ async def _resolve_listed_files(
             )
         if hidden:
             resolved_hidden.add(len(resolved))
-        resolved.append(listed_by_name[name])
+        resolved.append((listed_by_name[name], named))
         seen.add(name)
     return resolved, frozenset(resolved_hidden)
 
@@ -1258,7 +1260,7 @@ def _listing_hint(name: str, listing: list[str], *, withhold: bool = False) -> s
 async def _read_listed_files(
     session: SandboxToolSession,
     store: AgentFileStore,
-    files: list[ListedFile],
+    files: list[tuple[ListedFile, str]],
     tally: _InboundTally,
     *,
     rewritten: frozenset[int] = frozenset(),
@@ -1279,10 +1281,10 @@ async def _read_listed_files(
     listing is not what makes a name safe to echo.
     """
     read: list[tuple[str, str, str]] = []
-    for position, listed in enumerate(files):
+    for position, (listed, named) in enumerate(files):
         at = f"files[{position}]"
         hidden = position in rewritten
-        item = await session.read_file(store, listed, at=at, hidden=hidden)
+        item = await session.read_file(store, listed, at=at, hidden=hidden, named=named)
         if isinstance(item, str):
             return item
         if item is None:
@@ -1290,18 +1292,11 @@ async def _read_listed_files(
             # `None` through would put the string "None" into the sandbox for the program to
             # parse.
             logger.warning("execute_code: a listed file has no content")
-            return (
-                f"Error: {echoed_name(listed.name, at=at, hidden=hidden)} is listed in the "
-                "file store but has no content"
-            )
+            return f"Error: {named} is listed in the file store but has no content"
         content = item.text
         if content is None:
             logger.warning("execute_code: a listed file read back with no text")
-            return (
-                f"Error: {echoed_name(listed.name, at=at, hidden=hidden)} is listed in the "
-                "file store but has no content"
-            )
-        named = echoed_name(listed.name, at=at, hidden=hidden)
+            return f"Error: {named} is listed in the file store but has no content"
         over_cap = tally.add(listed.name, content, named=named)
         if over_cap is not None:
             return over_cap
