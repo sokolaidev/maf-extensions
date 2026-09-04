@@ -1,8 +1,9 @@
 """The release-order gate, whose `assess` is a pure function and so is tested in full here.
 
-Two cases carry the rest: below 1.0.0 a breaking change cuts a *minor*, so `fix!:` crosses a
-ceiling that `fix:` does not; and `packages/maf-sandbox-acas/` must not read as the core
-package, which a prefix match missing the trailing separator gets wrong.
+Three cases carry the rest: below 1.0.0 a breaking change cuts a *minor*, so `fix!:` crosses a
+ceiling that `fix:` does not; `packages/maf-sandbox-acas/` must not read as the core package,
+which a prefix match missing the trailing separator gets wrong; and the core's own `tests/` are
+excluded from its attribution, so a change confined to them reaches no ceiling at all.
 """
 
 from __future__ import annotations
@@ -17,7 +18,8 @@ from pathlib import Path
 
 import pytest
 
-_SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_SCRIPTS = _REPO_ROOT / "scripts"
 sys.path.insert(0, str(_SCRIPTS))  # the script imports `pypi_index` for the retrying reader
 _SCRIPT = _SCRIPTS / "check_release_order.py"
 _spec = importlib.util.spec_from_file_location("check_release_order", _SCRIPT)
@@ -26,6 +28,7 @@ check = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(check)
 
 _CORE_FILE = "packages/maf-sandbox/src/maf_sandbox/_protocol.py"
+_CORE_TEST_FILE = "packages/maf-sandbox/tests/test_maf_glue.py"
 
 
 class _Response:
@@ -67,8 +70,33 @@ def _patch_urlopen(
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
 
 
-def _repo(tmp_path: Path, version: str, ceilings: dict[str, str]) -> Path:
-    """A tree with maf-sandbox at `version` and one dependent per entry in `ceilings`."""
+def _repo(
+    tmp_path: Path,
+    version: str,
+    ceilings: dict[str, str],
+    excluded: list[str] | None = None,
+) -> Path:
+    """A tree with maf-sandbox at `version` and one dependent per entry in `ceilings`.
+
+    It carries a `release-please-config.json` because attribution reads the core component's
+    `exclude-paths` out of it. `excluded` overrides that list, which is how a test shows the
+    exclusion is read rather than restated in the script.
+    """
+    (tmp_path / "release-please-config.json").write_text(
+        json.dumps(
+            {
+                "packages": {
+                    "packages/maf-sandbox": {
+                        "package-name": "maf-sandbox",
+                        "exclude-paths": (
+                            ["packages/maf-sandbox/tests"] if excluded is None else excluded
+                        ),
+                    }
+                }
+            }
+        ),
+        "utf-8",
+    )
     core = tmp_path / "packages" / "maf-sandbox"
     core.mkdir(parents=True)
     (core / "pyproject.toml").write_text(
@@ -101,11 +129,9 @@ class TestWhichTitlesCutWhichRelease:
         assert check.next_version((0, 6, 1), title) == (0, 6, 2)
 
     def test_the_patch_types_are_the_releasing_types_that_are_not_feat(self):
-        sections = json.loads(
-            (Path(__file__).resolve().parent.parent / "release-please-config.json").read_text(
-                "utf-8"
-            )
-        )["changelog-sections"]
+        sections = json.loads((_REPO_ROOT / "release-please-config.json").read_text("utf-8"))[
+            "changelog-sections"
+        ]
         releasing = {s["type"] for s in sections if not s.get("hidden")}
         assert check._PATCH_TYPES == releasing - {"feat"}, (
             "the types this script treats as a patch have drifted from the ones "
@@ -127,24 +153,50 @@ class TestWhichTitlesCutWhichRelease:
 
 
 class TestWhatCountsAsTouchingTheCore:
-    """Attribution is by directory, the way release-please does it."""
+    """Attribution is by directory minus `exclude-paths`, the way release-please does it.
+
+    Against this tree's own config, so what these assert is what the next core pull request
+    gets rather than what a fixture was told to say.
+    """
 
     def test_a_core_source_file_counts(self):
-        assert check.touches_core([_CORE_FILE])
+        assert check.touches_core([_CORE_FILE], _REPO_ROOT)
 
     def test_a_sibling_sharing_the_prefix_does_not(self):
         assert not check.touches_core(
-            ["packages/maf-sandbox-acas/src/maf_sandbox_acas/_backend.py"]
+            ["packages/maf-sandbox-acas/src/maf_sandbox_acas/_backend.py"], _REPO_ROOT
         )
 
     def test_a_windows_separator_still_counts(self):
-        assert check.touches_core([_CORE_FILE.replace("/", "\\")])
+        assert check.touches_core([_CORE_FILE.replace("/", "\\")], _REPO_ROOT)
 
     @pytest.mark.parametrize(
         "path", ["docs/sandbox/research/files-out.md", "samples/07_docker_diagram/agent.py"]
     )
     def test_a_path_outside_packages_does_not(self, path: str):
-        assert not check.touches_core([path])
+        assert not check.touches_core([path], _REPO_ROOT)
+
+    def test_the_core_s_own_tests_do_not_count(self):
+        assert not check.touches_core([_CORE_TEST_FILE], _REPO_ROOT)
+
+    def test_an_excluded_path_with_a_windows_separator_does_not_count_either(self):
+        assert not check.touches_core([_CORE_TEST_FILE.replace("/", "\\")], _REPO_ROOT)
+
+    def test_a_core_test_beside_a_core_source_change_still_counts(self):
+        """The exclusion drops paths, not commits: one attributed file is enough."""
+        assert check.touches_core([_CORE_TEST_FILE, _CORE_FILE], _REPO_ROOT)
+
+    def test_a_tests_directory_under_src_still_counts(self):
+        """`exclude-paths` names `packages/maf-sandbox/tests` only; a nested one ships."""
+        assert check.touches_core(
+            ["packages/maf-sandbox/src/maf_sandbox/tests/fake.py"], _REPO_ROOT
+        )
+
+    def test_the_exclusion_comes_from_the_config(self, tmp_path: Path):
+        """Adding one there needs no edit here, which is the whole point of reading it."""
+        repo = _repo(tmp_path, "0.6.1", {}, excluded=["packages/maf-sandbox/fixtures"])
+        assert not check.touches_core(["packages/maf-sandbox/fixtures/tree.json"], repo)
+        assert check.touches_core([_CORE_TEST_FILE], repo)
 
 
 class TestConsequences:
@@ -179,6 +231,18 @@ class TestConsequences:
         repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
         changed = ["packages/maf-sandbox-acas/src/maf_sandbox_acas/_backend.py"]
         assert check.consequences("feat: a thing", changed, repo) == []
+
+    def test_a_breaking_title_over_the_core_s_tests_alone_says_nothing(self, tmp_path: Path):
+        """No core release follows, so naming its consequence asks a reviewer to accept a
+        version nobody is going to cut."""
+        repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
+        assert check.consequences("fix!: a thing", [_CORE_TEST_FILE], repo) == []
+
+    def test_a_core_test_beside_a_dependent_change_says_nothing_either(self, tmp_path: Path):
+        """The shape this hits in practice: a dependent's fix that repairs the core's suite."""
+        repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
+        changed = [_CORE_TEST_FILE, "packages/maf-sandbox-acas/src/maf_sandbox_acas/_backend.py"]
+        assert check.consequences("fix!: a thing", changed, repo) == []
 
     def test_a_chore_on_the_core_releases_nothing_and_says_nothing(self, tmp_path: Path):
         repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
@@ -232,6 +296,16 @@ class TestItFailsSoTheConsequenceIsRead:
         monkeypatch.setattr(check.Path, "resolve", lambda self: repo / "scripts" / "x.py")
         assert check.main(["prog", "ci: a workflow tweak"]) == 0
 
+    def test_a_breaking_title_over_the_core_s_tests_alone_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A core test alone cuts no core version, so no ceiling is reached and there is
+        nothing to override."""
+        repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
+        monkeypatch.setattr(check.sys, "stdin", io.StringIO(_CORE_TEST_FILE))
+        monkeypatch.setattr(check.Path, "resolve", lambda self: repo / "scripts" / "x.py")
+        assert check.main(["prog", "fix!: a thing"]) == 0
+
     def test_it_says_that_merging_over_it_is_the_move(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ):
@@ -254,6 +328,50 @@ class TestItFailsSoTheConsequenceIsRead:
         captured = capsys.readouterr()
         assert "maf-sandbox-acas" in captured.out
         assert captured.err == ""
+
+
+class TestWhatItSaysWhenThereIsNothingToRead:
+    """The pass line names a release only where one follows.
+
+    Three requests reach no ceiling and only one of them cuts a version, so a single line for
+    all three tells two of them something untrue about a release they do not make.
+    """
+
+    def _out(
+        self,
+        repo: Path,
+        title: str,
+        changed: str,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> str:
+        monkeypatch.setattr(check.sys, "stdin", io.StringIO(changed))
+        monkeypatch.setattr(check.Path, "resolve", lambda self: repo / "scripts" / "x.py")
+        check.main(["prog", title])
+        return capsys.readouterr().out
+
+    def test_a_change_attributed_to_no_core_names_no_release(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
+        out = self._out(repo, "fix!: a thing", _CORE_TEST_FILE, monkeypatch, capsys)
+        assert "no maf-sandbox release is attributed to this change" in out
+        assert "already admits" not in out
+
+    def test_a_non_releasing_title_over_the_core_names_no_release_either(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
+        out = self._out(repo, "chore: a thing", _CORE_FILE, monkeypatch, capsys)
+        assert "this title releases no maf-sandbox version" in out
+        assert "already admits" not in out
+
+    def test_a_release_every_ceiling_admits_is_the_one_that_says_so(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.8"})
+        out = self._out(repo, "feat: a thing", _CORE_FILE, monkeypatch, capsys)
+        assert "every dependent's ceiling already admits" in out
 
 
 class TestPublishedVersionsAreSortedSemantically:
@@ -289,9 +407,8 @@ class TestTheVersionThisTreeDeclaresIsOneEveryDependentAdmits:
     """
 
     def test_no_dependent_excludes_it(self):
-        repo_root = Path(__file__).resolve().parent.parent
-        declared = check.core_version(repo_root)
-        bounds = check.ceilings(repo_root)
+        declared = check.core_version(_REPO_ROOT)
+        bounds = check.ceilings(_REPO_ROOT)
         assert bounds, "expected at least one package to declare a maf-sandbox ceiling"
         shown = ".".join(str(part) for part in declared)
         for package, ceiling in sorted(bounds.items()):

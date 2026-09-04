@@ -381,8 +381,9 @@ class TestTestsAreExcludedFromAttribution:
     every remaining one is excluded. So a core change that repairs a dependent's suite keeps
     the core and drops the dependent.
 
-    `scripts/check_title_diff.py` applies the same rule at pull-request time, and the two have
-    to agree — the gate exists so a title cannot claim what the changelog will not say.
+    `scripts/check_title_diff.py` and `scripts/check_release_order.py` apply the same rule at
+    pull-request time, and all three have to agree — the gates exist so a title cannot claim
+    what the changelog will not say, nor a check report a release nothing is going to cut.
     """
 
     @pytest.mark.parametrize("package_path", PACKAGE_PATHS)
@@ -402,8 +403,8 @@ class TestTestsAreExcludedFromAttribution:
             "here releases nothing, however real the change in it."
         )
 
-    def test_the_gate_reads_the_same_rule(self):
-        """One rule, two enforcement points. This fails if the gate stops applying it."""
+    def test_the_title_gate_reads_the_same_rule(self):
+        """This fails if the title gate stops applying it."""
         sys.path.insert(0, str(REPO_ROOT / "scripts"))
         import check_title_diff
 
@@ -418,6 +419,16 @@ class TestTestsAreExcludedFromAttribution:
             )
             == []
         ), "check_title_diff still counts a test-only touch as a package change"
+
+    def test_the_release_order_gate_reads_the_same_rule(self):
+        """And this if the release-order gate stops applying it."""
+        sys.path.insert(0, str(REPO_ROOT / "scripts"))
+        import check_release_order
+
+        core_test = "packages/maf-sandbox/tests/test_maf_glue.py"
+        assert not check_release_order.touches_core([core_test], REPO_ROOT), (
+            "check_release_order still reads a core test-only change as a core release"
+        )
 
 
 class TestReleasePullRequestsKeepThemselvesCurrent:

@@ -29,6 +29,7 @@ the Release PR, where the version has stopped being a prediction.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 import tomllib
@@ -111,13 +112,34 @@ def next_version(current: tuple[int, ...], title: str) -> tuple[int, ...] | None
     return None
 
 
-def touches_core(paths: list[str]) -> bool:
+def excluded_paths(repo_root: Path) -> list[str]:
+    """The core component's ``exclude-paths``, read from ``release-please-config.json``.
+
+    Read rather than copied: these are the paths release-please drops from the component's
+    slice of a commit before deciding whether to release it, and a second list here is a list
+    that can disagree with the one doing the releasing.
+    """
+    config = json.loads((repo_root / "release-please-config.json").read_text("utf-8"))
+    component = config["packages"][_CORE_DIR.rstrip("/")]
+    return [path.replace("\\", "/").rstrip("/") for path in component.get("exclude-paths", [])]
+
+
+def touches_core(paths: list[str], repo_root: Path) -> bool:
     """Whether any changed path is attributed to maf-sandbox itself.
 
     Attribution is by directory, the same way release-please does it — and the trailing
     separator matters, or every sibling under `packages/maf-sandbox-*` reads as the core.
+    Paths the component excludes are attributed to nobody, so a change whose only core files
+    are its tests releases no core and there is no consequence to state.
     """
-    return any(path.replace("\\", "/").startswith(_CORE_DIR) for path in paths)
+    excluded = excluded_paths(repo_root)
+    for path in paths:
+        normalized = path.replace("\\", "/")
+        if not normalized.startswith(_CORE_DIR):
+            continue
+        if not any(normalized == skip or normalized.startswith(f"{skip}/") for skip in excluded):
+            return True
+    return False
 
 
 def ceilings(repo_root: Path) -> dict[str, tuple[int, ...]]:
@@ -145,7 +167,7 @@ def core_version(repo_root: Path) -> tuple[int, ...]:
 
 def consequences(title: str, paths: list[str], repo_root: Path) -> list[str]:
     """What follows from this title's version against the dependents' ceilings, or nothing."""
-    if not touches_core(paths):
+    if not touches_core(paths, repo_root):
         return []
     current = core_version(repo_root)
     proposed = next_version(current, title)
@@ -169,6 +191,20 @@ def consequences(title: str, paths: list[str], repo_root: Path) -> list[str]:
     ]
 
 
+def pass_line(title: str, paths: list[str], repo_root: Path) -> str:
+    """Why this request reaches no ceiling, which is not always the same reason.
+
+    Three do: one attributed to no core, one whose title releases nothing, and one whose
+    release every ceiling admits. Only the third is about a version, so only the third names
+    one — a green line claiming a release that is not coming misleads as readily as a red one.
+    """
+    if not touches_core(paths, repo_root):
+        return "release order: no maf-sandbox release is attributed to this change"
+    if next_version(core_version(repo_root), title) is None:
+        return "release order: this title releases no maf-sandbox version"
+    return "release order: every dependent's ceiling already admits what this would release"
+
+
 def main(argv: list[str]) -> int:
     """CLI entry: read changed paths from stdin and the title from argv, and print what follows.
 
@@ -179,12 +215,13 @@ def main(argv: list[str]) -> int:
     if len(argv) != 2:
         print(f"usage: {argv[0]} <pull-request-title>", file=sys.stderr)
         return 2
+    repo_root = Path(__file__).resolve().parent.parent
     paths = [line.strip() for line in sys.stdin.read().splitlines() if line.strip()]
-    notices = consequences(argv[1], paths, Path(__file__).resolve().parent.parent)
+    notices = consequences(argv[1], paths, repo_root)
     for notice in notices:
         print(notice)
     if not notices:
-        print("release order: every dependent's ceiling already admits what this would release")
+        print(pass_line(argv[1], paths, repo_root))
         return 0
     print(
         "merge over this once the consequence above is read and accepted — that is what a "
