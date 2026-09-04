@@ -591,11 +591,14 @@ def _host_tools_channel_is_established_as_trusted(spec: SandboxSpec) -> bool:
     reads :attr:`~maf_sandbox.SandboxSpec.host_tools` rather than asking the kind for a copy
     that could disagree with it.
 
-    Two of the fold's three states clear it.  ``TRUSTED`` because every registered source is,
-    and ``None`` because there is no source at all: an unstamped tool folds in as ``UNTRUSTED``
-    precisely so that ``None`` can never mean nobody answered.  Both rest on the host's own
-    declaration that its tools bring nothing external in, which is the basis
-    ``also_carries_out`` rests on too and which nothing here can check.
+    Two of the fold's three states clear it, and **only** those two.  ``TRUSTED`` because every
+    registered source is, and ``None`` because there is no source at all: an unstamped tool folds
+    in as ``UNTRUSTED`` precisely so that ``None`` can never mean nobody answered.  Both rest on
+    the host's own declaration that its tools bring nothing external in, which is the basis
+    ``also_carries_out`` rests on too and which nothing here can check.  Anything else — an
+    ``UNTRUSTED`` fold, or a value this package has no name for — clears nothing, so a member
+    added to :class:`~maf_sandbox.SourceIntegrity` later does not become proof of trust by
+    default.
 
     A spec requiring the capability while carrying **no** surface clears nothing.
     :class:`~maf_sandbox.SandboxSpec` refuses a surface without the capability and not the
@@ -603,7 +606,16 @@ def _host_tools_channel_is_established_as_trusted(spec: SandboxSpec) -> bool:
     """
     if spec.host_tools is None:
         return False
-    return spec.host_tools.result_integrity is not SourceIntegrity.UNTRUSTED
+    fold = spec.host_tools.result_integrity
+    if fold is None:
+        return True
+    try:
+        return SourceIntegrity(str(fold)) is SourceIntegrity.TRUSTED
+    except ValueError:
+        # A value this package has no name for clears nothing. `HostToolAggregate` is a public
+        # frozen dataclass and its annotation binds nothing at runtime, so the fold reaching here
+        # is whatever a host put in it.
+        return False
 
 
 def _source_channels_not_established_as_trusted(
@@ -662,8 +674,10 @@ def _unlicensed_trusted_claim_refusal(
     """
     named = "; ".join(_channel_clause(channel, spec) for channel in sorted(unestablished))
     remedy = (
-        "Move the claim to source_integrity=, where nothing_survives_from= can be read beside "
-        "it: an explicit mapping is written verbatim, so no escape is honoured here."
+        "Drop the declarations= mapping and pass source_integrity= instead, where "
+        "nothing_survives_from= is read beside it. While a mapping is given both keywords are "
+        "ignored, so adding one without dropping the mapping would leave the tool declaring "
+        "nothing at all. Or drop the 'trusted' claim from the mapping."
         if through_mapping
         else (
             f"Declare {str(SourceIntegrity.UNTRUSTED)!r}, or nothing, if anything from them may "

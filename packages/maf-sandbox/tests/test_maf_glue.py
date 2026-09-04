@@ -491,6 +491,25 @@ class TestTheTrustedClaimIsCheckedAgainstTheSpec:
             "source_integrity": "trusted"
         }
 
+    def test_a_raw_string_fold_does_not_clear_the_channel(self):
+        """`HostToolAggregate` is a public frozen dataclass and its annotation binds nothing at
+        runtime, so the fold reaching the check is whatever a host put in it. An identity test
+        against the enum would let the raw string `"untrusted"` through as if it cleared."""
+        spec = _serving_host_tools(_a_fold(cast(Any, "untrusted")))
+        with pytest.raises(ValueError, match="host tools"):
+            sandbox_tool_declarations(spec, source_integrity="trusted")
+
+    def test_a_raw_trusted_string_still_clears(self):
+        assert sandbox_tool_declarations(
+            _serving_host_tools(_a_fold(cast(Any, "trusted"))), source_integrity="trusted"
+        ) == {"source_integrity": "trusted"}
+
+    def test_a_fold_value_this_package_cannot_name_clears_nothing(self):
+        """Fail closed, so a member added to `SourceIntegrity` later is not proof of trust."""
+        spec = _serving_host_tools(_a_fold(cast(Any, "provisionally-trusted")))
+        with pytest.raises(ValueError, match="host tools"):
+            sandbox_tool_declarations(spec, source_integrity="trusted")
+
     def test_a_fold_settles_its_own_channel_and_no_other(self):
         """A registry folding to trusted clears one row while the store behind the same call
         stays unestablished."""
@@ -979,7 +998,7 @@ class TestAttachedToolShape:
     def test_the_mapping_refusal_sends_the_claim_to_the_keyword(self):
         """No escape is honoured beside an explicit mapping, so the remedy cannot be to name
         one here — it is to move the claim where `nothing_survives_from` is read."""
-        with pytest.raises(ValueError, match="Move the claim to source_integrity="):
+        with pytest.raises(ValueError, match=re.escape("Drop the declarations= mapping")):
             self._tool(declarations={"source_integrity": "trusted"})
 
     def test_an_untrusted_mapping_is_written_over_any_spec(self):
