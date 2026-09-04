@@ -30,6 +30,9 @@ Seven things live here, and each of them had begun to exist twice before it did:
   :func:`hidden_content_candidates` — which of a call's arguments the host's information-flow
   middleware rewrote, so a refusal names a position rather than quoting content the framework
   hid. Here because the answer comes from that middleware.
+- :func:`file_store_provenance_middleware` — records an agent-driven file-store write into a
+  host's :class:`~maf_sandbox.FileStoreProvenance`. Here because it is a ``FunctionMiddleware``;
+  the record it fills is stdlib-only and lives beside the protocol vocabulary.
 """
 
 from __future__ import annotations
@@ -43,22 +46,25 @@ import math
 import posixpath
 import sys
 import threading
-from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
 from ._error_detail import error_detail
+from ._file_provenance import FILE_STORE_WRITE_TOOLS, PATH_ARGUMENT, FileStoreProvenance
 from ._outputs import OutputSink, landing_outputs, missing_sink_refusal, spec_lands_artifacts
 from ._protocol import (
     CallerContext,
     Capability,
     DisposalFailure,
+    Egress,
     IsolationScope,
     Sandbox,
     SandboxKey,
     SandboxSpec,
+    SourceChannel,
     SourceIntegrity,
 )
 from ._purger import SandboxPurger
@@ -88,6 +94,7 @@ _DEFAULT_LOGGER = logging.getLogger(__name__)
 
 __all__ = [
     "ISOLATION_SCOPE_KEY",
+    "file_store_provenance_middleware",
     "SandboxPurger",
     "SandboxToolSession",
     "labelled_result_item",
@@ -229,6 +236,115 @@ def argument_provenance_middleware() -> Any:
                 record.closed = True
 
     return _ArgumentProvenance()
+
+
+def file_store_provenance_middleware(
+    record: FileStoreProvenance, *, also_observes: frozenset[str] | set[str] = frozenset()
+) -> Any:
+    """Middleware that records an agent-driven file-store write into ``record``.
+
+    Wire it beside the host's information-flow middleware, the way
+    :func:`~maf_sandbox.argument_provenance_middleware` is wired::
+
+        provenance = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        Agent(..., middleware=[
+            LabelTrackingFunctionMiddleware(),
+            file_store_provenance_middleware(provenance),
+        ])
+
+    **Order does not matter, because the path is read after the body has run.** The
+    information-flow middleware expands a variable reference in any string argument, the path
+    included, and it edits the call's arguments in place — so reading afterwards sees the name
+    the store was written under whichever side of that middleware this sits on. The name is then
+    keyed through :func:`~maf_sandbox.store_key`, because the provider normalises before it
+    writes. What this never needs is the content's own label: a write reaching these tools is
+    model-driven however the content got there, so unlike
+    :func:`~maf_sandbox.positions_holding_hidden_content` no private framework record is read.
+
+    **The entry is written in a ``finally``**, because a body can commit to the store and then
+    raise, and an entry is what stops those bytes answering the host's floor.  What an entry
+    then means, and why that survives concurrent writes to one path, is
+    :meth:`~maf_sandbox.FileStoreProvenance.record`'s to say.
+
+    **A recorded write is not the same as a successful one, and a delete is recorded too.** The
+    tools answer a refusal with a *string* rather than raising, so nothing here can tell a write
+    that landed from one that was refused — and the same is true of a delete. Every observed call
+    therefore marks its path untrusted, which is the conservative direction in both cases: a
+    refused write marks a path the model did not change, and a failed delete keeps the entry for
+    bytes that are still there. Forgetting a path on a delete would do the opposite, returning it
+    to a trusted floor while the model's content remained, so the middleware never calls
+    :meth:`FileStoreProvenance.forget` — that is the host's, for when it can establish removal.
+
+    **A trusted floor is refused without this, and building this is what lifts it.** Constructing
+    the middleware marks the record, and
+    :meth:`~maf_sandbox.FileStoreProvenance.integrity_of` refuses a ``TRUSTED`` floor on a
+    record nothing was ever built against — where no write is observed every path answers the
+    floor, model-written ones included. It proves construction rather than wiring: a host that
+    builds this and never adds it to the chain is past what a record can see.
+
+    Args:
+        record: Where observed writes land, and what a kind reads back.
+        also_observes: Extra tool names to treat as file-store writes, for a host that wires a
+            write surface of its own. Each must name its path in a ``file_name`` argument.
+    """
+    from agent_framework import FunctionMiddleware
+
+    # Reaching past the record's own surface, deliberately: the marker is private so that
+    # constructing this factory stays the only supported way to lift the trusted-floor
+    # refusal, and the record cannot expose it publicly without becoming the escape hatch it
+    # exists to close. The two cannot live in one module — the record is stdlib-only and this
+    # imports `agent_framework`.
+    record._note_observer()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    observed = FILE_STORE_WRITE_TOOLS | frozenset(also_observes)
+
+    class _FileStoreProvenance(FunctionMiddleware):  # type: ignore[misc]
+        async def process(self, context: Any, call_next: Any) -> None:
+            name = getattr(getattr(context, "function", None), "name", None)
+            if name not in observed:
+                await call_next()
+                return
+            try:
+                await call_next()
+            finally:
+                # Read here rather than before `call_next`: the path must be the expanded one.
+                path = _store_path_named_by(context)
+                if path is None:
+                    _DEFAULT_LOGGER.warning(
+                        "file_store_provenance_middleware: %r ran without a %r argument, so "
+                        "the path it wrote is unknown and nothing was recorded for it.",
+                        name,
+                        PATH_ARGUMENT,
+                    )
+                else:
+                    record.record(path)
+
+    return _FileStoreProvenance()
+
+
+def _write_call_arguments(context: Any) -> Mapping[str, Any] | None:
+    """The call's arguments as a mapping, or ``None`` where they are not one.
+
+    A call's arguments are a mapping *or* a model, and the framework keeps whichever it was
+    given, so a model is dumped before it is read — duck-typed, as
+    ``_spellings_before_rewriting`` does it, because this package does not depend on the
+    framework's validation library.
+    """
+    arguments: Any = getattr(context, "arguments", None)
+    dump = getattr(arguments, "model_dump", None)
+    if callable(dump):
+        arguments = dump()
+    if not isinstance(arguments, Mapping):
+        return None
+    return cast("Mapping[str, Any]", arguments)
+
+
+def _store_path_named_by(context: Any) -> str | None:
+    """The store path this call names, or ``None`` where it names none this can read."""
+    arguments = _write_call_arguments(context)
+    if arguments is None:
+        return None
+    path: Any = arguments.get(PATH_ARGUMENT)
+    return path if isinstance(path, str) and path else None
 
 
 def _reachable_middleware() -> Any | None:
@@ -554,6 +670,145 @@ def make_caller_context(
     )
 
 
+def _reaches_the_network(spec: SandboxSpec) -> bool:
+    """Whether this workload can reach a host outside its sandbox.
+
+    Both halves are load-bearing, and one predicate answers for the confidentiality cap and the
+    trusted-claim refusal alike.  An ``unrestricted`` run names nothing and reaches everything,
+    so the mode has to be read; an ``allowlist`` run with an empty list reaches nothing, so the
+    payload has to be read too.
+    """
+    return spec.egress is Egress.UNRESTRICTED or bool(spec.egress_allow)
+
+
+def _open_source_channels(spec: SandboxSpec) -> frozenset[SourceChannel]:
+    """Every channel into this workload's result that ``spec`` opens, established or not.
+
+    Read off the spec alone, so it answers before the sandbox exists and before any call.
+    """
+    opened = {SourceChannel.EGRESS} if _reaches_the_network(spec) else set[SourceChannel]()
+    if Capability.FILES_IN in spec.requires:
+        opened.add(SourceChannel.FILE_STORE)
+    if Capability.HOST_TOOLS in spec.requires:
+        opened.add(SourceChannel.HOST_TOOLS)
+    return frozenset(opened)
+
+
+def _host_tools_channel_is_established_as_trusted(spec: SandboxSpec) -> bool:
+    """Whether the spec's own host-tool surface establishes that channel **as trusted**.
+
+    Not the same as establishing it at all: a fold of ``UNTRUSTED`` establishes the channel,
+    and answers ``False`` here, because a claim of ``trusted`` over a source known to be
+    untrusted is refused for the same reason as one over a source nothing has settled.
+
+    The fold is taken once, when a host seals its registry, and it rides on the spec — so this
+    reads :attr:`~maf_sandbox.SandboxSpec.host_tools` rather than asking the kind for a copy
+    that could disagree with it.
+
+    Two of the fold's three states clear it, and **only** those two.  ``TRUSTED`` because every
+    registered source is, and ``None`` because there is no source at all: an unstamped tool folds
+    in as ``UNTRUSTED`` precisely so that ``None`` can never mean nobody answered.  Both rest on
+    the host's own declaration that its tools bring nothing external in, which is the basis
+    ``also_carries_out`` rests on too and which nothing here can check.  Anything else — an
+    ``UNTRUSTED`` fold, or a value this package has no name for — clears nothing, so a member
+    added to :class:`~maf_sandbox.SourceIntegrity` later does not become proof of trust by
+    default.
+
+    A spec requiring the capability while carrying **no** surface clears nothing.
+    :class:`~maf_sandbox.SandboxSpec` refuses a surface without the capability and not the
+    converse, so such a spec is legal — and its channel is open with no fold to answer for it.
+    """
+    if spec.host_tools is None:
+        return False
+    fold = spec.host_tools.result_integrity
+    if fold is None:
+        return True
+    try:
+        return SourceIntegrity(str(fold)) is SourceIntegrity.TRUSTED
+    except ValueError:
+        # A value this package has no name for clears nothing. `HostToolAggregate` is a public
+        # frozen dataclass and its annotation binds nothing at runtime, so the fold reaching here
+        # is whatever a host put in it.
+        return False
+
+
+def _source_channels_not_established_as_trusted(
+    spec: SandboxSpec, cleared: frozenset[SourceChannel]
+) -> frozenset[SourceChannel]:
+    """The open channels this spec does not establish as trusted, after the caller's own claim.
+
+    Both a channel nothing settles and one a fold settled as *untrusted* are in here: the claim
+    being checked is ``trusted``, and neither licenses it.
+    """
+    unestablished = _open_source_channels(spec) - cleared
+    if _host_tools_channel_is_established_as_trusted(spec):
+        unestablished -= {SourceChannel.HOST_TOOLS}
+    return unestablished
+
+
+def _channel_clause(channel: SourceChannel, spec: SandboxSpec) -> str:
+    """One open channel, named by the spec field and the value that opened it.
+
+    The field rather than the channel alone, because a kind whose ``requires`` and
+    ``egress_allow`` are assembled out of shared sub-specs is reading a refusal about a channel
+    it never wrote.  Naming the field is what sends its author to the composition site.
+    """
+    if channel is SourceChannel.FILE_STORE:
+        return f"the agent's file store (requires holds {str(Capability.FILES_IN)!r})"
+    if channel is SourceChannel.EGRESS:
+        if spec.egress is Egress.UNRESTRICTED:
+            return f"the network (egress is {str(Egress.UNRESTRICTED)!r})"
+        return f"the network (egress_allow names {', '.join(spec.egress_allow)})"
+    if spec.host_tools is None:
+        return (
+            f"host tools (requires holds {str(Capability.HOST_TOOLS)!r} and the spec carries no "
+            "registry fold)"
+        )
+    return f"host tools (the registry folds to {str(SourceIntegrity.UNTRUSTED)!r})"
+
+
+def _unlicensed_trusted_claim_refusal(
+    spec: SandboxSpec,
+    unestablished: frozenset[SourceChannel],
+    *,
+    asked_by: str,
+    through_mapping: bool,
+) -> ValueError:
+    """The refusal for a ``"trusted"`` claim over channels nothing establishes as trusted.
+
+    ``unestablished`` holds both kinds: a channel nothing has settled, and one a registry fold
+    settled as *untrusted*.  Neither licenses the claim, which is why they are refused together.
+
+    Returned rather than raised so each caller keeps its own control flow visible, and written
+    once so the keyword path and the verbatim-mapping path cannot drift into telling a host two
+    different stories — the shape :func:`~maf_sandbox.missing_sink_refusal` already has.
+
+    ``through_mapping`` picks the remedy, because the escape is a keyword and an explicit
+    ``declarations=`` mapping is written verbatim with no keyword read beside it.
+    """
+    named = "; ".join(_channel_clause(channel, spec) for channel in sorted(unestablished))
+    remedy = (
+        "Drop the declarations= mapping and pass source_integrity= instead, where "
+        "nothing_survives_from= is read beside it. While a mapping is given both keywords are "
+        "ignored, so adding one without dropping the mapping would leave the tool declaring "
+        "nothing at all. Or drop the 'trusted' claim from the mapping."
+        if through_mapping
+        else (
+            f"Declare {str(SourceIntegrity.UNTRUSTED)!r}, or nothing, if anything from them may "
+            "survive into the result. Only where none does — as text, as a number, or as the "
+            "presence of a line — name each in nothing_survives_from, a claim written as given "
+            "that nothing here can check."
+        )
+    )
+    return ValueError(
+        f"{asked_by}: the {spec.kind!r} workload declares "
+        f"source_integrity={str(SourceIntegrity.TRUSTED)!r}, and its spec opens channels "
+        f"nothing establishes as {str(SourceIntegrity.TRUSTED)!r}: {named}. A declaration "
+        "replaces the call's input-label join, so anything reaching the result through those "
+        f"would be labelled trusted on no such establishment. {remedy}"
+    )
+
+
 def sandbox_tool_declarations(
     spec: SandboxSpec,
     *,
@@ -561,6 +816,7 @@ def sandbox_tool_declarations(
     outbound_max_confidentiality: str | None = None,
     output_sink: OutputSink | None = None,
     also_carries_out: bool = False,
+    nothing_survives_from: Iterable[SourceChannel] = (),
     isolation_scope: IsolationScope | None = None,
 ) -> dict[str, Any]:
     """The information-flow declarations a sandbox workload's tool carries.
@@ -579,6 +835,18 @@ def sandbox_tool_declarations(
     the join decides, and it falls back to the framework's untrusted default where no argument
     carries a label.
 
+    **An explicit ``"trusted"`` is refused where the spec opens a channel nothing establishes as
+    trusted.**
+    A spec names the channels its workload opens before the sandbox exists — the agent's file
+    store it reads, a host its program may fetch from, a registry it may call back through —
+    and of those only the registry can be established as trusted, by the fold a host seals onto
+    :attr:`~maf_sandbox.SandboxSpec.host_tools`.  So a ``"trusted"`` claim over any of the
+    others is a statement the framework will act on and nobody can check.  Where a channel is
+    open but nothing from it
+    survives into the result — host-authored fixtures written in, a fixed sentence written back
+    — the caller says so with ``nothing_survives_from``.  Declaring nothing is never refused:
+    there is no claim in it to refuse.
+
     **What that default costs is the model's sight of the result, not the host's sinks.**
     FIDES hides an untrusted result by default — the item is replaced by a variable reference
     the model can pass to another tool without reading — and hidden content does not taint
@@ -595,9 +863,9 @@ def sandbox_tool_declarations(
     it can change which calls are gated or refused.  That is the host's decision to make with
     its own classification in hand, never a default a library picks.  When it *is* passed, the
     key is written only if this tool can carry something out at all: the spec permits egress
-    (``egress_allow`` non-empty), or the spec declares an output that **lands** in
-    ``output_sink``.  Capping a workload with neither would gate calls for a flow that does not
-    exist.
+    (``egress_allow`` names hosts, or the run is ``unrestricted``), or the spec declares an
+    output that **lands** in ``output_sink``.  Capping a workload with neither would gate calls
+    for a flow that does not exist.
 
     The sink half of that condition is not symmetry for its own sake.  The rule was once
     ``egress_allow`` alone, on the premise that a sandbox with no network cannot carry anything
@@ -616,10 +884,21 @@ def sandbox_tool_declarations(
     them, and :class:`~maf_sandbox.OutputSink` carries no cap of its own to be combined.
 
     Args:
-        spec: The sandbox this workload asks for; ``egress_allow``, ``declared_outputs`` and
-            ``outputs_named_at_call_time`` are what is read.
+        spec: The sandbox this workload asks for; ``egress``, ``egress_allow``, ``requires``,
+            ``host_tools``, ``declared_outputs`` and ``outputs_named_at_call_time`` are what is
+            read.
         source_integrity: Integrity label for this tool's results, or ``None`` (the default)
-            to declare none.
+            to declare none. Coerced, as every other value this package deserializes is: a
+            misspelling would otherwise declare nothing at all, silently, and the framework
+            logs that once and moves on.
+        nothing_survives_from: The channels this workload opens and derives **nothing** from,
+            each named as a :class:`~maf_sandbox.SourceChannel`. A claim about the tool body's
+            own result, which no spec holds and this library cannot verify — ``also_carries_out``
+            is the same kind of claim, owned by the caller and only routed here. Naming a
+            channel the spec does not open is refused, so a deployment that later opens one is
+            asked the question again rather than finding it pre-answered; and naming any
+            without declaring ``"trusted"`` is refused, so a later ``"trusted"`` cannot inherit
+            a clearance nobody re-examined.
         outbound_max_confidentiality: The host's cap for outbound tools, in the host's own
             vocabulary, or ``None`` (the default) to declare none.
         output_sink: Where this workload's artifacts land, if it lands any. Read together with
@@ -639,10 +918,41 @@ def sandbox_tool_declarations(
             means.
     """
     declarations: dict[str, Any] = {}
-    if source_integrity is not None:
-        declarations["source_integrity"] = source_integrity
+    # Coerced for the reason the scope below is, and this one is the value FIDES acts on: it
+    # accepts two spellings and treats every other as absent, so an uncoerced typo here is a
+    # tool that declares nothing while its author reads the keyword and believes otherwise.
+    claimed = None if source_integrity is None else SourceIntegrity(str(source_integrity))
+    cleared = frozenset(SourceChannel(str(channel)) for channel in nothing_survives_from)
+    over_claimed = cleared - _open_source_channels(spec)
+    if over_claimed:
+        named = ", ".join(sorted(str(channel) for channel in over_claimed))
+        raise ValueError(
+            f"the {spec.kind!r} workload names {named} in nothing_survives_from, and its spec "
+            "does not open that. A channel cleared before the spec opens it is cleared without "
+            "being looked at, and the spec that opens it later inherits the claim. Name only "
+            "what this spec opens."
+        )
+    if cleared and claimed is not SourceIntegrity.TRUSTED:
+        declared = None if claimed is None else str(claimed)
+        raise ValueError(
+            f"the {spec.kind!r} workload passes nothing_survives_from and declares "
+            f"source_integrity={declared!r}. Only a {str(SourceIntegrity.TRUSTED)!r} "
+            "declaration reads that claim, so here nothing does — and a later one would find "
+            f"it already made. Drop it, or declare {str(SourceIntegrity.TRUSTED)!r}."
+        )
+    if claimed is SourceIntegrity.TRUSTED:
+        unestablished = _source_channels_not_established_as_trusted(spec, cleared)
+        if unestablished:
+            raise _unlicensed_trusted_claim_refusal(
+                spec,
+                unestablished,
+                asked_by="sandbox_tool_declarations",
+                through_mapping=False,
+            )
+    if claimed is not None:
+        declarations["source_integrity"] = str(claimed)
     lands_artifacts = output_sink is not None and spec_lands_artifacts(spec)
-    carries_something_out = bool(spec.egress_allow) or lands_artifacts or also_carries_out
+    carries_something_out = _reaches_the_network(spec) or lands_artifacts or also_carries_out
     if outbound_max_confidentiality is not None and carries_something_out:
         declarations["max_allowed_confidentiality"] = outbound_max_confidentiality
     # Coerced for the reason `SandboxSpec.__post_init__` coerces its own, and this argument is
@@ -1327,6 +1637,7 @@ def sandboxed_tool(
     outbound_max_confidentiality: str | None = None,
     output_sink: OutputSink | None = None,
     also_carries_out: bool = False,
+    nothing_survives_from: Iterable[SourceChannel] = (),
     on_reclaim_failure: Callable[[ReclaimFailure], Awaitable[None]] | None = None,
     reclaim_timeout: float | None = None,
     logger: logging.Logger | None = None,
@@ -1348,13 +1659,19 @@ def sandboxed_tool(
     3. **Key from the host, not from the model** — see :meth:`SandboxToolSession.key`.
     4. **Sanitized failure surfaces** — see :meth:`SandboxToolSession.acquire`.
     5. **Declared information flow** — see :func:`sandbox_tool_declarations`.
-    6. **Three spec-consistency refusals**, all placed after the attach gate so that the first
+    6. **Four spec-consistency refusals**, all placed after the attach gate so that the first
        point above keeps its promise.  ``output_sink`` may not be combined with an explicit
        ``declarations=``, which wins verbatim and would leave the tool carrying a derivation
        blind to its own sink; a ``spec`` declaring an output that lands is refused without a
-       sink, because such a tool cannot honour its own spec; and a ``spec`` declaring any
+       sink, because such a tool cannot honour its own spec; a ``spec`` declaring any
        output without requiring :data:`~maf_sandbox.Capability.FILES_OUT` is refused, because
-       the capability match is what stands between it and a backend with no pull surface.
+       the capability match is what stands between it and a backend with no pull surface; and
+       an explicit ``source_integrity="trusted"`` is refused over a ``spec`` that opens a
+       channel nothing establishes *as trusted* — see :func:`sandbox_tool_declarations`, which
+       owns the rule and the escape.  That last one reads a verbatim ``declarations=`` mapping
+       too, for the one key: the mapping is otherwise untouched, but a check the derivation
+       alone holds is walked past by the hand-built mapping, which is exactly what a kind
+       outside this repository writes.  No escape is read beside such a mapping.
     7. **Reclaim what the call owned**, for an ``async`` body — a synchronous one cannot
        ``await`` :meth:`SandboxToolSession.acquire`, so it holds no sandbox and owns nothing.
        A body that took a path from
@@ -1400,7 +1717,10 @@ def sandboxed_tool(
         approval_mode: MAF's per-tool approval setting.
         declarations: ``additional_properties`` to write verbatim, for a workload that wants
             full control. Defaults to :func:`sandbox_tool_declarations` over ``spec``.
-            Refused together with ``output_sink``.
+            Refused together with ``output_sink``. Written verbatim, and *read* for one key:
+            a ``source_integrity`` of ``"trusted"`` is held to the same spec check the
+            derivation applies. Nothing else in the mapping is inspected, nothing is derived
+            into it, and no keyword is honoured beside it.
         source_integrity: Passed to :func:`sandbox_tool_declarations`; ignored when
             ``declarations`` is given. ``None`` is the default and declares no integrity at
             all, which is what a workload whose result is whatever model-written code chose to
@@ -1416,6 +1736,11 @@ def sandboxed_tool(
             ``declarations`` is given. For a workload carrying something out through a channel
             the spec cannot show — a wired host-tool registry, say — so the confidentiality
             cap is derived by the one rule rather than hand-built into ``declarations=``.
+        nothing_survives_from: Passed to :func:`sandbox_tool_declarations`; ignored when
+            ``declarations`` is given, which is refused on its own ``"trusted"`` rather than
+            cleared by a keyword. The channels this workload opens and derives nothing from —
+            read that function before reaching for it, since declaring ``"untrusted"`` costs
+            the model's sight of the result and nothing else.
         on_reclaim_failure: Called with a :class:`~maf_sandbox.ReclaimFailure` when the call
             left its sandbox unclean — its guest path could not be removed, or a program it
             stopped may have left something running — **after** the framework has acted on it.
@@ -1455,6 +1780,15 @@ def sandboxed_tool(
             "than the one the host chose. Drop declarations= and pass "
             "outbound_max_confidentiality, or write the cap into the mapping yourself."
         )
+    # The one key read out of a verbatim mapping, and raw: FIDES acts on exactly this spelling
+    # (`IntegrityLabel(value)`, anything else logged and dropped), so an unrecognised value is
+    # not a claim to refuse — and the mapping's vocabulary is the host's, not this package's.
+    if declarations is not None and declarations.get("source_integrity") == SourceIntegrity.TRUSTED:
+        unestablished = _source_channels_not_established_as_trusted(spec, frozenset())
+        if unestablished:
+            raise _unlicensed_trusted_claim_refusal(
+                spec, unestablished, asked_by=name, through_mapping=True
+            )
     if spec_lands_artifacts(spec) and output_sink is None:
         raise missing_sink_refusal(spec, landing_outputs(spec), asked_by=name)
     if (spec.declared_outputs or spec.outputs_named_at_call_time) and (
@@ -1501,6 +1835,7 @@ def sandboxed_tool(
             outbound_max_confidentiality=outbound_max_confidentiality,
             output_sink=output_sink,
             also_carries_out=also_carries_out,
+            nothing_survives_from=nothing_survives_from,
             isolation_scope=router.effective_isolation_scope(spec),
         )
     )

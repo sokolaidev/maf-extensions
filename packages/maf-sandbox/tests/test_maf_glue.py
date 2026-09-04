@@ -15,6 +15,7 @@ import dataclasses
 import enum
 import logging
 import math
+import re
 import threading
 from typing import Any, cast
 
@@ -46,9 +47,12 @@ from maf_sandbox import (
     SandboxRouter,
     SandboxSpec,
     SandboxUnclean,
+    SourceChannel,
     SourceIntegrity,
+    TransferLimits,
 )
 from maf_sandbox import maf as _maf
+from maf_sandbox._host_tools import HostToolAggregate
 from maf_sandbox._reclaim import note_unclean
 from maf_sandbox._router import ATTACH_REFUSALS
 from maf_sandbox.maf import (
@@ -80,6 +84,39 @@ _SPEC = SandboxSpec(
     work_dir="/maf-sandbox/work",
 )
 _NO_EGRESS_SPEC = SandboxSpec(kind="test", work_dir="/maf-sandbox/work")
+
+#: A spec that opens no channel the framework cannot establish — no file store, no network, no
+#: host tools.  `DEFAULT_CAPABILITIES` holds `FILES_IN`, so a spec saying nothing about
+#: `requires` opens one, and this is what a workload declaring `trusted` must be able to show.
+_NO_CHANNEL_SPEC = SandboxSpec(
+    kind="test", work_dir="/maf-sandbox/work", requires=frozenset({Capability.EXEC})
+)
+
+
+def _a_fold(result_integrity: SourceIntegrity | None) -> HostToolAggregate:
+    """A sealed host-tool surface whose fold is `result_integrity` and nothing else of note."""
+    return HostToolAggregate(
+        result_integrity=result_integrity,
+        outbound_caps=frozenset(),
+        identities=frozenset(),
+        requires_approval=False,
+        has_undeclared=False,
+        response_limits=TransferLimits(1024, 1024, 1),
+        max_host_tool_calls_per_run=1,
+    )
+
+
+def _serving_host_tools(fold: HostToolAggregate | None) -> SandboxSpec:
+    """A spec requiring HOST_TOOLS, carrying `fold` — or requiring it and carrying none, which
+    `SandboxSpec` permits because only the other direction can slip past a deny list."""
+    return SandboxSpec(
+        kind="test",
+        work_dir="/maf-sandbox/work",
+        requires=frozenset({Capability.EXEC, Capability.HOST_TOOLS}),
+        host_tools=fold,
+    )
+
+
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-1")
 
 #: A spec that declares outputs must require the capability that reads them back — the pull
@@ -232,9 +269,27 @@ class TestSandboxToolDeclarations:
         assert sandbox_tool_declarations(_SPEC) == {}
 
     def test_an_integrity_label_is_written_when_one_is_passed(self):
-        assert sandbox_tool_declarations(_SPEC, source_integrity="trusted") == {
+        assert sandbox_tool_declarations(_NO_CHANNEL_SPEC, source_integrity="trusted") == {
             "source_integrity": "trusted"
         }
+
+    def test_an_untrusted_label_is_written_over_any_spec_at_all(self):
+        """Only the `trusted` claim is checked: `untrusted` asserts nothing to check."""
+        assert sandbox_tool_declarations(_SPEC, source_integrity="untrusted") == {
+            "source_integrity": "untrusted"
+        }
+
+    def test_a_label_passed_as_the_enum_is_written_as_its_value(self):
+        """Coerced like every other value this package deserializes, so the dict holds a str."""
+        assert sandbox_tool_declarations(
+            _NO_CHANNEL_SPEC, source_integrity=SourceIntegrity.TRUSTED
+        ) == {"source_integrity": "trusted"}
+
+    def test_a_misspelt_label_is_refused_rather_than_silently_declaring_nothing(self):
+        """FIDES accepts two spellings and drops the rest with a log line, so an uncoerced typo
+        is a tool that declares nothing while its author believes it declared something."""
+        with pytest.raises(ValueError, match="Trusted"):
+            sandbox_tool_declarations(_NO_CHANNEL_SPEC, source_integrity="Trusted")
 
     def test_the_call_scope_is_written_only_when_there_is_something_to_say(self):
         """The conversation-scoped sandbox is what a tool carrying no such key already means."""
@@ -318,6 +373,211 @@ class TestSandboxToolDeclarations:
         assert sandbox_tool_declarations(
             _NO_EGRESS_SPEC, outbound_max_confidentiality="private", also_carries_out=True
         ) == {"max_allowed_confidentiality": "private"}
+
+
+# ---------------------------------------------------------------------------
+# A `trusted` claim is checked against the channels the spec opens
+# ---------------------------------------------------------------------------
+
+
+class TestTheTrustedClaimIsCheckedAgainstTheSpec:
+    """The rule `docs/sandbox/information-flow.md` states, executed rather than read.
+
+    A declaration replaces the call's input-label join, so `trusted` is honest only where every
+    surviving source is established *as trusted*. A spec names the channels its workload opens
+    before the sandbox exists, and of the three only host tools can be established — by a fold a
+    host seals onto the spec.
+    """
+
+    @pytest.mark.parametrize(
+        ("spec", "named"),
+        [
+            (_NO_EGRESS_SPEC, "requires holds 'files_in'"),
+            (
+                SandboxSpec(
+                    kind="test",
+                    work_dir="/w",
+                    requires=frozenset({Capability.EXEC}),
+                    egress=Egress.ALLOWLIST,
+                    egress_allow=("pypi.org",),
+                ),
+                "egress_allow names pypi.org",
+            ),
+            (
+                SandboxSpec(
+                    kind="test",
+                    work_dir="/w",
+                    requires=frozenset({Capability.EXEC}),
+                    egress=Egress.UNRESTRICTED,
+                ),
+                "egress is 'unrestricted'",
+            ),
+            (_serving_host_tools(None), "the spec carries no registry fold"),
+            (
+                _serving_host_tools(_a_fold(SourceIntegrity.UNTRUSTED)),
+                "the registry folds to 'untrusted'",
+            ),
+        ],
+    )
+    def test_each_open_channel_refuses_and_names_the_field_that_opened_it(self, spec, named):
+        """The field and its value, not the channel alone: a kind whose `requires` came from a
+        shared sub-spec is reading a refusal about a channel it never wrote, and the field is
+        what sends its author to the composition site."""
+        with pytest.raises(ValueError, match=re.escape(named)):
+            sandbox_tool_declarations(spec, source_integrity="trusted")
+
+    def test_a_spec_that_opens_nothing_is_not_refused(self):
+        assert sandbox_tool_declarations(_NO_CHANNEL_SPEC, source_integrity="trusted") == {
+            "source_integrity": "trusted"
+        }
+
+    def test_an_allowlist_naming_no_host_reaches_nothing_and_is_not_refused(self):
+        """The mode is half the answer and the payload is the other half: an allowlist run with
+        an empty list reaches nothing at all."""
+        spec = SandboxSpec(
+            kind="test",
+            work_dir="/w",
+            requires=frozenset({Capability.EXEC}),
+            egress=Egress.ALLOWLIST,
+        )
+        assert sandbox_tool_declarations(spec, source_integrity="trusted") == {
+            "source_integrity": "trusted"
+        }
+
+    def test_every_open_channel_is_named_in_one_refusal(self):
+        with pytest.raises(ValueError) as refusal:
+            sandbox_tool_declarations(_SPEC, source_integrity="trusted")
+        assert "requires holds 'files_in'" in str(refusal.value)
+        assert "egress_allow names example.invalid" in str(refusal.value)
+
+    def test_declaring_nothing_is_never_refused(self):
+        """A caller who made no claim is never told its claim was rejected."""
+        assert sandbox_tool_declarations(_SPEC) == {}
+
+    def test_an_unrestricted_run_is_capped_like_an_allowlisted_one(self):
+        """The cap reads the mode as well as the payload: a run that reaches everything and
+        names nothing carries as much out as one naming hosts."""
+        spec = SandboxSpec(
+            kind="test",
+            work_dir="/w",
+            requires=frozenset({Capability.EXEC}),
+            egress=Egress.UNRESTRICTED,
+        )
+        assert sandbox_tool_declarations(spec, outbound_max_confidentiality="private") == {
+            "max_allowed_confidentiality": "private"
+        }
+
+    def test_an_allowlist_naming_no_host_is_not_capped(self):
+        """The other half of the same predicate: it reaches nothing, so there is no flow to gate."""
+        spec = SandboxSpec(
+            kind="test",
+            work_dir="/w",
+            requires=frozenset({Capability.EXEC}),
+            egress=Egress.ALLOWLIST,
+        )
+        assert sandbox_tool_declarations(spec, outbound_max_confidentiality="private") == {}
+
+    def test_a_trusted_fold_establishes_that_channel_with_no_escape_needed(self):
+        spec = _serving_host_tools(_a_fold(SourceIntegrity.TRUSTED))
+        assert sandbox_tool_declarations(spec, source_integrity="trusted") == {
+            "source_integrity": "trusted"
+        }
+
+    def test_a_fold_with_no_sources_at_all_establishes_that_channel_too(self):
+        """`None` is not "nobody answered" — an unstamped tool folds in as `untrusted`, so this
+        state is reachable only where every tool is stamped and every stamp says `source=None`."""
+        spec = _serving_host_tools(_a_fold(None))
+        assert sandbox_tool_declarations(spec, source_integrity="trusted") == {
+            "source_integrity": "trusted"
+        }
+
+    def test_a_raw_string_fold_does_not_clear_the_channel(self):
+        """`HostToolAggregate` is a public frozen dataclass and its annotation binds nothing at
+        runtime, so the fold reaching the check is whatever a host put in it. An identity test
+        against the enum would let the raw string `"untrusted"` through as if it cleared."""
+        spec = _serving_host_tools(_a_fold(cast(Any, "untrusted")))
+        with pytest.raises(ValueError, match="host tools"):
+            sandbox_tool_declarations(spec, source_integrity="trusted")
+
+    def test_a_raw_trusted_string_still_clears(self):
+        assert sandbox_tool_declarations(
+            _serving_host_tools(_a_fold(cast(Any, "trusted"))), source_integrity="trusted"
+        ) == {"source_integrity": "trusted"}
+
+    def test_a_fold_value_this_package_cannot_name_clears_nothing(self):
+        """Fail closed, so a member added to `SourceIntegrity` later is not proof of trust."""
+        spec = _serving_host_tools(_a_fold(cast(Any, "provisionally-trusted")))
+        with pytest.raises(ValueError, match="host tools"):
+            sandbox_tool_declarations(spec, source_integrity="trusted")
+
+    def test_a_fold_settles_its_own_channel_and_no_other(self):
+        """A registry folding to trusted clears one row while the store behind the same call
+        stays unestablished."""
+        spec = SandboxSpec(
+            kind="test",
+            work_dir="/w",
+            requires=frozenset({Capability.EXEC, Capability.FILES_IN, Capability.HOST_TOOLS}),
+            host_tools=_a_fold(SourceIntegrity.TRUSTED),
+        )
+        with pytest.raises(ValueError, match=re.escape("requires holds 'files_in'")) as refusal:
+            sandbox_tool_declarations(spec, source_integrity="trusted")
+        assert "host tools" not in str(refusal.value)
+
+
+class TestTheEscapeFromTheTrustedRefusal:
+    """A claim the caller owns and this library only routes, as `also_carries_out` is."""
+
+    def test_clearing_the_open_channel_lets_the_claim_stand(self):
+        assert sandbox_tool_declarations(
+            _NO_EGRESS_SPEC,
+            source_integrity="trusted",
+            nothing_survives_from=(SourceChannel.FILE_STORE,),
+        ) == {"source_integrity": "trusted"}
+
+    def test_clearing_one_of_two_still_refuses_and_names_only_the_rest(self):
+        with pytest.raises(ValueError) as refusal:
+            sandbox_tool_declarations(
+                _SPEC,
+                source_integrity="trusted",
+                nothing_survives_from=(SourceChannel.FILE_STORE,),
+            )
+        assert "egress_allow names example.invalid" in str(refusal.value)
+        assert "files_in" not in str(refusal.value)
+
+    def test_naming_a_channel_the_spec_does_not_open_is_refused(self):
+        """Fail-open where `also_carries_out` fails safe, which is why this one is asymmetric:
+        a channel cleared before the spec opens it is cleared without being looked at."""
+        with pytest.raises(ValueError, match="does not open that"):
+            sandbox_tool_declarations(
+                _NO_CHANNEL_SPEC,
+                source_integrity="trusted",
+                nothing_survives_from=(SourceChannel.EGRESS,),
+            )
+
+    def test_naming_host_tools_a_fold_already_cleared_is_a_consistent_stronger_claim(self):
+        """Judged against what the spec *opens*, not against what survives the fold."""
+        spec = _serving_host_tools(_a_fold(SourceIntegrity.TRUSTED))
+        assert sandbox_tool_declarations(
+            spec,
+            source_integrity="trusted",
+            nothing_survives_from=(SourceChannel.HOST_TOOLS,),
+        ) == {"source_integrity": "trusted"}
+
+    def test_the_escape_without_a_trusted_claim_is_refused(self):
+        """Nothing reads it there, and a later `trusted` would inherit a clearance nobody
+        re-examined."""
+        with pytest.raises(ValueError, match="Only a 'trusted' declaration reads that claim"):
+            sandbox_tool_declarations(
+                _NO_EGRESS_SPEC, nothing_survives_from=(SourceChannel.FILE_STORE,)
+            )
+
+    def test_an_unknown_channel_is_refused_at_the_boundary(self):
+        with pytest.raises(ValueError, match="file-store"):
+            sandbox_tool_declarations(
+                _NO_EGRESS_SPEC,
+                source_integrity="trusted",
+                nothing_survives_from=cast(Any, ("file-store",)),
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -681,9 +941,9 @@ class TestAttachedToolShape:
         assert self._tool().additional_properties == {}
 
     def test_an_integrity_label_reaches_the_tool_when_one_is_passed(self):
-        assert self._tool(source_integrity="trusted").additional_properties == {
-            "source_integrity": "trusted"
-        }
+        assert self._tool(
+            spec=_NO_CHANNEL_SPEC, source_integrity="trusted"
+        ).additional_properties == {"source_integrity": "trusted"}
 
     def test_explicit_declarations_win_over_the_derivation(self):
         assert self._tool(declarations={"source_integrity": "untrusted"}).additional_properties == {
@@ -712,6 +972,9 @@ class TestAttachedToolShape:
             _router(_pulling_backend()),
             spec=_LANDING_SPEC,
             source_integrity="trusted",
+            # `_LANDING_SPEC` requires FILES_IN, so the claim needs the escape to stand: this
+            # workload writes host-authored fixtures in and derives nothing from them.
+            nothing_survives_from=(SourceChannel.FILE_STORE,),
             outbound_max_confidentiality="private",
             output_sink=_SINK,
         )
@@ -725,9 +988,35 @@ class TestAttachedToolShape:
             source_integrity="trusted", declarations={"source_integrity": "untrusted"}
         ).additional_properties == {"source_integrity": "untrusted"}
 
+    def test_a_trusted_claim_in_an_explicit_mapping_is_refused_too(self):
+        """The mapping is written verbatim and is still read for this one key. A check the
+        derivation alone held would be walked past by exactly the hand-built mapping a kind
+        outside this repository writes."""
+        with pytest.raises(ValueError, match=re.escape("requires holds 'files_in'")):
+            self._tool(declarations={"source_integrity": "trusted"})
+
+    def test_the_mapping_refusal_sends_the_claim_to_the_keyword(self):
+        """No escape is honoured beside an explicit mapping, so the remedy cannot be to name
+        one here — it is to move the claim where `nothing_survives_from` is read."""
+        with pytest.raises(ValueError, match=re.escape("Drop the declarations= mapping")):
+            self._tool(declarations={"source_integrity": "trusted"})
+
+    def test_an_untrusted_mapping_is_written_over_any_spec(self):
+        """Only the trusted claim is read out of the mapping; nothing else in it is inspected."""
+        assert self._tool(
+            declarations={"source_integrity": "untrusted", "house_key": "kept"}
+        ).additional_properties == {"source_integrity": "untrusted", "house_key": "kept"}
+
+    def test_an_unknown_spelling_in_a_mapping_passes_through(self):
+        """FIDES believes two spellings and logs the rest away, so an unrecognised value is not
+        a claim to refuse — and the mapping's vocabulary is the host's, not this library's."""
+        assert self._tool(declarations={"source_integrity": "Trusted"}).additional_properties == {
+            "source_integrity": "Trusted"
+        }
+
     def test_the_declarations_dict_is_not_shared_with_the_caller(self):
         declarations = {"source_integrity": "trusted"}
-        tool = self._tool(declarations=declarations)
+        tool = self._tool(spec=_NO_CHANNEL_SPEC, declarations=declarations)
         declarations["source_integrity"] = "tampered"
         assert tool.additional_properties == {"source_integrity": "trusted"}
 
