@@ -518,8 +518,10 @@ async def act_six_the_spec_picks() -> bool:
     print("  It is off by default, and the reason is a bill rather than a scruple: what it")
     print("  changes is that a refusal becomes a running sandbox, and on a remote backend a")
     print("  running sandbox has a price. Registration order is the preference, and the route")
-    print("  is a pure function of the spec — never load, latency or cost — so a conversation")
-    print("  keeps landing on one backend and its warm sandbox stays reusable.\n")
+    print("  is a pure function of the spec — never load, latency or cost — so one spec")
+    print("  always routes to the same backend and its warm sandbox stays reusable. Per")
+    print("  spec rather than per conversation: two kinds under one key may route apart,")
+    print("  by design, which is why disposal asks every registered backend.\n")
     return True
 
 
