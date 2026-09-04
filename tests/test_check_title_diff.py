@@ -55,14 +55,15 @@ class TestAssess:
         )
         assert problems
         assert "non-behavioral" in problems[0]
-        assert "valid title prefixes are:" in problems[1]
+        assert "titles valid for this diff: feat:, fix:, perf:, revert:" in problems[1]
+        assert "valid title prefixes are:" in problems[2]
         for title_type in check._VALID_TYPES:
-            assert f"{title_type}:" in problems[1]
-            assert f"{title_type}(...):" in problems[1]
-            assert f"{title_type}!:" in problems[1]
-            assert f"{title_type}(...)!:" in problems[1]
-        assert "use a behavior type" in problems[1]
-        assert "separate pull request" in problems[1]
+            assert f"{title_type}:" in problems[2]
+            assert f"{title_type}(...):" in problems[2]
+            assert f"{title_type}!:" in problems[2]
+            assert f"{title_type}(...)!:" in problems[2]
+        assert "use a behavior type" in problems[2]
+        assert "separate pull request" in problems[2]
 
     def test_chore_title_on_changed_tests_is_allowed(self):
         before = "def run() -> int:\n    return 1\n"
@@ -208,6 +209,127 @@ class TestAssess:
             ["packages/example/src/example.py"],
             {"packages/example/src/example.py": (None, source)},
             [("packages/example/README.md", "packages/example/src/example.py")],
+        )
+
+
+class TestTheTitlesValidForTheDiff:
+    """The second refusal line names the prefixes this diff would take.
+
+    Three answers are covered: the behavior types, the non-behavior types, and the two ways a
+    diff admits no title at all.
+    """
+
+    _BEFORE = "def run() -> int:\n    return 1\n"
+    _AFTER = "def run() -> int:\n    return 2\n"
+
+    def test_an_executable_diff_admits_the_behavior_titles(self):
+        problems = check.assess(
+            "chore: update implementation",
+            ["packages/a/src/a.py"],
+            {"packages/a/src/a.py": (self._BEFORE, self._AFTER)},
+        )
+        assert problems[1] == (
+            "titles valid for this diff: feat:, fix:, perf:, revert:; "
+            "a (scope) and a ! are optional"
+        )
+
+    def test_a_documentation_diff_admits_the_non_behavior_titles(self):
+        problems = check.assess("feat: document the API", ["packages/a/README.md"], {})
+        assert problems[1] == (
+            "titles valid for this diff: docs:, refactor:, test:, build:, ci:, chore:; "
+            "a (scope) and a ! are optional"
+        )
+
+    def test_the_admitted_titles_are_ordered_the_same_way_every_run(self):
+        """`_VALID_TYPES` orders them, so the line can be quoted and compared across runs."""
+        problems = check.assess("feat: document the API", ["packages/a/README.md"], {})
+        kinds = [kind for kind in check._VALID_TYPES if f"{kind}:" in problems[1]]
+        assert kinds == [kind for kind in check._VALID_TYPES if kind in check._DOCUMENTATION_TYPES]
+
+    def test_a_package_touched_without_behavior_leaves_no_valid_title(self):
+        """Every touched package owes an executable change, so one docs-only package deadlocks."""
+        paths = ["packages/a/src/a.py", "packages/b/README.md"]
+        pairs = [("packages/a/src/a.py",), ("packages/b/README.md",)]
+        changed = {"packages/a/src/a.py": (self._BEFORE, self._AFTER)}
+        expected = (
+            "no title is valid for this diff: packages/a changes behavior and packages/b "
+            "does not; split the pull request so each half has one answer"
+        )
+        assert check.assess("feat: two packages", paths, changed, pairs)[1] == expected
+        assert check.assess("chore: two packages", paths, changed, pairs)[1] == expected
+
+    def test_an_executable_change_no_package_releases_names_the_path(self):
+        """A rename into a package's tests: attributed to nobody, still executable to the rule."""
+        problems = check.assess(
+            "feat: move module",
+            ["packages/b/tests/test_mod.py"],
+            {},
+            [("packages/a/src/mod.py", "packages/b/tests/test_mod.py")],
+        )
+        assert problems[1] == (
+            "no title is valid for this diff: the executable change is at "
+            "packages/a/src/mod.py, which release-please attributes to no package"
+        )
+
+    def test_several_packages_on_each_side_agree_their_verbs(self):
+        paths = [
+            "packages/a/src/a.py",
+            "packages/c/src/c.py",
+            "packages/b/README.md",
+            "packages/d/README.md",
+        ]
+        changed = {
+            "packages/a/src/a.py": (self._BEFORE, self._AFTER),
+            "packages/c/src/c.py": (self._BEFORE, self._AFTER),
+        }
+        problems = check.assess("feat: four packages", paths, changed, [(p,) for p in paths])
+        assert problems[1] == (
+            "no title is valid for this diff: packages/a, packages/c change behavior and "
+            "packages/b, packages/d do not; split the pull request so each half has one answer"
+        )
+
+    def test_several_unreleased_paths_agree_their_verb(self):
+        problems = check.assess(
+            "feat: move two modules",
+            ["packages/b/tests/test_x.py", "packages/b/tests/test_y.py"],
+            {},
+            [
+                ("packages/a/src/x.py", "packages/b/tests/test_x.py"),
+                ("packages/a/src/y.py", "packages/b/tests/test_y.py"),
+            ],
+        )
+        assert problems[1] == (
+            "no title is valid for this diff: the executable changes are at "
+            "packages/a/src/x.py, packages/a/src/y.py, which release-please attributes to no "
+            "package"
+        )
+
+    def test_a_renames_source_package_is_not_named_as_changing_behavior(self):
+        """release-please attributes only the destination, so the source releases nothing."""
+        pairs = [("packages/a/src/x.py", "packages/b/src/x.py"), ("packages/c/README.md",)]
+        problems = check.assess(
+            "feat: move and document",
+            ["packages/b/src/x.py", "packages/c/README.md"],
+            {},
+            pairs,
+        )
+        assert problems[1] == (
+            "no title is valid for this diff: packages/b changes behavior and packages/c "
+            "does not; split the pull request so each half has one answer"
+        )
+
+    def test_no_touched_package_changes_behavior_falls_back_to_the_paths(self):
+        """With the rename landing in tests, nothing that releases changes, so name the path."""
+        pairs = [("packages/a/src/x.py", "packages/b/tests/test_x.py"), ("packages/c/README.md",)]
+        problems = check.assess(
+            "feat: move and document",
+            ["packages/b/tests/test_x.py", "packages/c/README.md"],
+            {},
+            pairs,
+        )
+        assert problems[1] == (
+            "no title is valid for this diff: the executable change is at packages/a/src/x.py, "
+            "which release-please attributes to no package"
         )
 
 
