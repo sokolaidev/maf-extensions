@@ -483,7 +483,10 @@ class SandboxRouter:
             arrive. A pin, and refused together with ``selection=Selection.PER_SPEC``:
             "prefer this one, and route past it when it cannot serve" is the cheapest-first
             policy this router declines to have, wearing another name. A host that wants a
-            different preference reorders ``backends``, which is a diff a reviewer reads.
+            different preference reorders ``backends``, which is a diff a reviewer reads —
+            and a host **migrating a pinned router to per-spec selection** has to, since
+            dropping the pin makes routing start at the first registered backend and a
+            workload the pinned one was serving would otherwise move.
         selection: How a backend is chosen — one resolved at construction
             (:data:`Selection.FIXED`, the default, and what this package has always done), or
             the first registered one that can serve each spec (:data:`Selection.PER_SPEC`).
@@ -658,13 +661,18 @@ class SandboxRouter:
             # every registered backend precisely so a host that changed which one serves does
             # not strand what the previous one still holds. Below the floor is a statement about
             # what may be *served*, never about what must be reclaimed.
+            #
+            # It promises nothing about what *will* serve either. No spec exists yet, so an
+            # above-floor backend may still refuse this host's every workload on capabilities,
+            # egress, limits or scope — "considered" is the whole of what clearing the floor
+            # earns, and a warning claiming an outcome would be one more thing to disbelieve.
             logger.warning(
                 "sandbox router: %s registered below this host's %r minimum-isolation floor, so "
-                "no workload is ever routed there and a backend clearing the floor serves "
-                "instead. It stays registered and disposal still reaches it, which is what a "
-                "host that changed backends relies on — so unregistering it would strand "
-                "whatever it still holds. Lower min_isolation if this host means to accept that "
-                "boundary.",
+                "no workload is ever routed there and only the backends clearing it are "
+                "considered. It stays registered and disposal still reaches it, which is what "
+                "a host that changed backends relies on — so unregistering it would strand "
+                "whatever it still holds. Lower min_isolation if this host means to accept "
+                "that boundary.",
                 ", ".join(f"{backend.name!r} ({str(rung)})" for backend, rung in below),
                 str(floor),
             )

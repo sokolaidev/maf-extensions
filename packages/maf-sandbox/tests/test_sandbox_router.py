@@ -3297,12 +3297,6 @@ class TestPerSpecSelection:
 
     Every fake here declares `none` isolation unless it is given another rung, so these routers
     opt below the floor the way a developer machine does.
-
-    The property the whole feature rests on, and the one worth naming before the tests: routing
-    is *refusal-to-service* and nothing else. A router with no pin routes to the first
-    registered backend exactly as the fixed selection resolves to it, so no workload that runs
-    today moves anywhere — only a workload that is refused today can end up somewhere new. That
-    is why the opt-in is about a bill rather than about correctness.
     """
 
     def test_the_default_selection_is_fixed(self):

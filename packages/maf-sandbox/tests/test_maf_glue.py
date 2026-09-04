@@ -47,6 +47,7 @@ from maf_sandbox import (
     SandboxRouter,
     SandboxSpec,
     SandboxUnclean,
+    Selection,
     SourceChannel,
     SourceIntegrity,
     TransferLimits,
@@ -1555,6 +1556,133 @@ class TestTheFinallyDisposesTheCallsSandbox:
         )[0]
         _call(tool, target="x")
         assert backend.disposed == backend.keys
+
+
+def _routed_pair():
+    """Two call-scoped fakes differing only in what they can do, so a spec picks between them."""
+
+    def one(name: str, capabilities):
+        return InProcessSandboxBackend(
+            name=name,
+            sandbox_per_key=True,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                capabilities=capabilities,
+                isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
+            ),
+        )
+
+    return one("weak", DEFAULT_CAPABILITIES), one("strong", _PULLS)
+
+
+#: Call-scoped, and servable only by the second of that pair.
+_ROUTED_CALL_SPEC = dataclasses.replace(_CALL_SCOPED_SPEC, requires=_PULLS)
+
+
+class TestARoutedCallDeleteReachesOnlyTheBackendThatServed:
+    """The spec this glue forwards is what aims a call-scoped delete on a per-spec router.
+
+    `SandboxRouter.dispose_call` routes on the spec rather than remembering where the sandbox
+    went, so the caller has to hand it one. Given none, a per-spec router falls back to asking
+    every backend that serves the scope — correct where nothing else is known, and wrong here,
+    because the router holds a second backend whose sandbox for this key is a *sibling* of the
+    one this call owns.
+
+    Both cleanup paths are covered, and they are different call sites: the `finally` that runs
+    when a body returns, and the one inside `acquire` for a sandbox that arrived after its call
+    had already ended.
+    """
+
+    def test_the_finally_deletes_only_where_the_spec_routed(self):
+        weak, strong = _routed_pair()
+        tool = _attach_with(
+            _reclaiming_body,
+            _router(weak, strong, selection=Selection.PER_SPEC),
+            spec=_ROUTED_CALL_SPEC,
+        )[0]
+        _call(tool, target="x")
+        assert strong.keys, "the spec did not route to the backend that can serve it"
+        assert strong.disposed == strong.keys
+        assert weak.disposed == [], (
+            "a backend that never served this call was asked to delete its key, and at call "
+            "scope that key names a sandbox of its own"
+        )
+
+    def test_a_sandbox_arriving_after_its_call_is_deleted_only_where_it_was_made(self):
+        """The other call site, and the one that runs while the call is already unwinding.
+
+        The create is parked *inside* the serving backend, so the call ends while it is still
+        in flight and the sandbox arrives with nothing left to clean it up. `acquire` disposes
+        it there and then, and that delete is routed too.
+        """
+        entered, released = asyncio.Event(), asyncio.Event()
+        tasks: list[asyncio.Task[None]] = []
+        outcome: dict[str, object] = {}
+
+        class _BlocksOnTheSecond(InProcessSandboxBackend):
+            """Parks the second create, where the call's own end can overtake it."""
+
+            def __init__(self, **kw) -> None:
+                super().__init__(**kw)
+                self.seen = 0
+
+            async def acquire(self, key, spec):
+                self.seen += 1
+                if self.seen == 2:
+                    entered.set()
+                    await released.wait()
+                return await super().acquire(key, spec)
+
+        weak, _ = _routed_pair()
+        strong = _BlocksOnTheSecond(
+            name="strong",
+            sandbox_per_key=True,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                capabilities=_PULLS,
+                isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
+            ),
+        )
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Acquire once, then leave a task acquiring the same key a second time."""
+                key = session.key()
+                assert not isinstance(key, str)
+                assert not isinstance(await session.acquire(key), str)
+
+                async def later() -> None:
+                    try:
+                        outcome["result"] = await session.acquire(key)
+                    except RuntimeError as raised:
+                        outcome["result"] = raised
+
+                tasks.append(asyncio.create_task(later()))
+                await entered.wait()
+                return target
+
+            return widget_run
+
+        fn = _fn(
+            _attach_with(
+                build,
+                _router(weak, strong, selection=Selection.PER_SPEC),
+                spec=_ROUTED_CALL_SPEC,
+            )[0]
+        )
+
+        async def run() -> None:
+            await fn(target="x")
+            released.set()
+            await asyncio.gather(*tasks)
+
+        asyncio.run(run())
+        assert isinstance(outcome["result"], RuntimeError)
+        assert "came back after its tool call had ended" in str(outcome["result"])
+        assert weak.disposed == [], (
+            "the late delete swept a backend the route never chose, so a sibling sandbox would "
+            "have gone with a refusal that was not about it"
+        )
 
 
 class TestADeleteThatDidNotLandIsReportedNotGuarded:
