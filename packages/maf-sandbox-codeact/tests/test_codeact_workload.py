@@ -81,6 +81,7 @@ from maf_sandbox_codeact._tool import (
     _OUTPUTS_ARGUMENT,
     _PROGRAM_FILENAME,
     _SMALLEST_MANIFEST,
+    _WITHHELD_OUTPUTS_FOLDER,
     _WITHHELD_ROUTE,
     _WORK_DIR,
     _format_landed,
@@ -4170,3 +4171,159 @@ class TestTheSpecCarriesItsHostToolSurface:
         spec = codeact_sandbox_spec(host_tools=_registry(_exchange_rate))
         backend = _backend(capabilities=_CALLS)
         SandboxRouter([backend], min_isolation=backend.isolation).ensure_can_serve(spec)
+
+
+class _PerCallSink(_RecordingSink):
+    """A sink that declares it lands each call under a folder of its own.
+
+    `make_file_store_sink` is the packaged one; this records what it was handed instead, so the
+    kind's rendering is tested against the *claim* rather than against one store's behaviour.
+    """
+
+    def __init__(self, normalization: NameNormalization = NameNormalization.NFC) -> None:
+        super().__init__(normalization)
+        self.sink = dataclasses.replace(self.sink, per_call=True)
+
+    async def deliver(self, artifact: Artifact) -> LandedArtifact:
+        await super().deliver(artifact)
+        return LandedArtifact(
+            name=artifact.name,
+            display=f"{artifact.call_id}/{artifact.name}",
+            handle=f"blob://{artifact.name}?sig=secret",
+        )
+
+
+class TestOutputsLandInAFolderOfTheirOwn:
+    """What a host gets for wiring a sink that keeps each call's landings apart: the model is
+    told where to look instead of which names landed."""
+
+    def _folder(self, route: str) -> str:
+        """The id the route sentence names, so a test can compare it with the run's own."""
+        assert "` where its outputs land." in route, route
+        return route.rsplit("under `", 1)[-1].split("/`", 1)[0]
+
+    def test_the_call_id_the_run_used_is_what_reaches_the_sink(self):
+        """One id for the guest directory and the landing folder: two would say the run and its
+        outputs belonged to different calls."""
+        sandbox = _ProducingSandbox()
+        sink = _PerCallSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink)
+
+        _run_producing(tool, sandbox, {"a.csv": b"1"}, outputs=["a.csv"])
+
+        assert [artifact.call_id for artifact in sink.delivered] == [
+            _run_dirs(sandbox)[0].rsplit("/", 1)[-1]
+        ]
+
+    def test_a_sink_that_does_not_land_per_call_is_handed_the_id_anyway(self):
+        """So a host swapping one sink for the other changes nothing in this package."""
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink)
+
+        _run_producing(tool, sandbox, {"a.csv": b"1"}, outputs=["a.csv"])
+
+        assert sink.delivered[0].call_id == _run_dirs(sandbox)[0].rsplit("/", 1)[-1]
+
+    def test_a_withheld_result_names_the_folder_beside_the_route(self):
+        sandbox = _ProducingSandbox()
+        sink = _PerCallSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink, withhold_guest_output=True)
+        sandbox.produces = {"a.csv": b"1"}
+
+        route = _route(tool, "print('hi')", outputs=["a.csv"])
+
+        assert route.startswith(_WITHHELD_ROUTE)
+        assert self._folder(route) == _run_dirs(sandbox)[0].rsplit("/", 1)[-1]
+
+    def test_it_names_the_folder_on_a_path_that_never_reached_the_collection(self):
+        """The sentence is labelled trusted, so it has to be on every return path — and the
+        one that matters is a refusal, where a model still has to know where to look for what
+        an earlier call left."""
+        sandbox = _ProducingSandbox()
+        tool = _pulling_tool(
+            sandbox, CodeactOutputs.DECLARED, _PerCallSink(), withhold_guest_output=True
+        )
+
+        route = _route(tool, "print('hi')", outputs=["../escape.csv"])
+
+        assert route.startswith(_WITHHELD_ROUTE)
+        assert len(self._folder(route)) == 32, route
+
+    def test_a_withheld_result_says_nothing_about_which_names_landed(self):
+        """The presence bits are the channel a model was measured encoding through, and the
+        folder answers the same question without one."""
+        sandbox = _ProducingSandbox()
+        tool = _pulling_tool(
+            sandbox, CodeactOutputs.DECLARED, _PerCallSink(), withhold_guest_output=True
+        )
+
+        out = _run_producing(tool, sandbox, {"a.csv": b"1"}, outputs=["a.csv", "b.csv"])
+
+        assert "a.csv" not in out, out
+        assert "b.csv" not in out, out
+        assert "Not written" not in out, out
+
+    def test_a_withheld_result_without_the_claim_still_names_them(self):
+        """The list goes only where something else answers the same question."""
+        sandbox = _ProducingSandbox()
+        tool = _pulling_tool(
+            sandbox, CodeactOutputs.DECLARED, _RecordingSink(), withhold_guest_output=True
+        )
+
+        out = _run_producing(tool, sandbox, {"a.csv": b"1"}, outputs=["a.csv", "b.csv"])
+
+        assert "a.csv" in out, out
+        assert "Not written" in out, out
+
+    def test_a_sink_that_does_not_land_per_call_leaves_the_route_alone(self):
+        sandbox = _ProducingSandbox()
+        tool = _pulling_tool(
+            sandbox, CodeactOutputs.DECLARED, _RecordingSink(), withhold_guest_output=True
+        )
+        sandbox.produces = {"a.csv": b"1"}
+
+        assert _route(tool, "print('hi')", outputs=["a.csv"]) == _WITHHELD_ROUTE
+
+    def test_the_shown_rendering_still_names_each_landing(self):
+        """Nothing is hidden there, so the sink's own line — which names the folder and the
+        file together — is what the model reads."""
+        sandbox = _ProducingSandbox()
+        sink = _PerCallSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink)
+
+        out = _run_producing(tool, sandbox, {"a.csv": b"1"}, outputs=["a.csv", "b.csv"])
+
+        assert f"{sink.delivered[0].call_id}/a.csv" in out, out
+        assert "Not written by the program" in out, out
+
+    def test_the_description_names_the_folder_instead_of_promising_each_file(self):
+        tool = _pulling_tool(
+            _ProducingSandbox(),
+            CodeactOutputs.DECLARED,
+            _PerCallSink(),
+            withhold_guest_output=True,
+        )
+        description = _callable(tool).__doc__ or ""
+
+        assert "into a folder named for this call" in description
+        assert "List the folder to see what a run actually wrote." in description
+        assert "the result confirms each name that landed" not in description
+        assert "A run that saved files also names each one." not in description
+
+    def test_the_description_is_unchanged_for_a_sink_that_says_nothing(self):
+        tool = _pulling_tool(
+            _ProducingSandbox(),
+            CodeactOutputs.DECLARED,
+            _RecordingSink(),
+            withhold_guest_output=True,
+        )
+        description = _callable(tool).__doc__ or ""
+
+        assert "the result confirms each name that landed" in description
+        assert "into a folder named for this call" not in description
+
+    def test_the_folder_sentence_is_written_once(self):
+        """It is interpolated into the route rather than assembled at the call site, so the
+        constant is what a host reads and what this suite asserts."""
+        assert "{folder}" in _WITHHELD_OUTPUTS_FOLDER
