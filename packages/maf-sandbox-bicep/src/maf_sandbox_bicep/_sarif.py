@@ -79,13 +79,7 @@ def parse_sarif(text: str) -> list[dict[str, Any]] | None:
     return diagnostics
 
 
-#: What a location renders as when it matched a written file only by its trailing component.
-#:
-#: Saying "unidentified" rather than guessing is the whole point: a suffix match cannot tell a
-#: written ``main.bicep`` from an unrelated ``/vendor/main.bicep``, so naming a request position
-#: there would attribute a diagnostic to a file that has nothing to do with it.  The name is
-#: still withheld, because the alternative is echoing a path that may be the content the
-#: framework hid.
+#: What a location renders as when :func:`_renamed` could not identify it.
 _UNIDENTIFIED = "an unidentified file"
 
 

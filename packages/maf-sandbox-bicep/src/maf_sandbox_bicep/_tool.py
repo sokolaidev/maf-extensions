@@ -416,12 +416,12 @@ def _bicep_validate_tool(
         # Writes stay sequential rather than gathered: the ordering requirement is satisfied
         # either way, and a preview data plane has already produced one unexplained `Conflict`
         # burst — concurrency is not what to add on top of that without a reason.
-        # Hidden-ness is a property of the *file*, not of the position that asked for it, and
-        # what is remembered is the position that was actually expanded. Two spellings can
-        # resolve to one destination — `["x.bicep", "./x.bicep"]`, which nothing refuses — and
-        # if only one was expanded, rendering the other at its *own* position would attribute
-        # the file to an argument the framework never rewrote. One destination, one rendering,
-        # naming the position whose value really is hidden content.
+        # The verdict belongs to an argument position, and this carries one such position to
+        # every spelling that reached the same file. Two can — `["x.bicep", "./x.bicep"]`, which
+        # nothing refuses — and rendering the second at its *own* position would name an
+        # argument the framework never rewrote, while rendering it as visible would put back the
+        # name the first one withheld. So one destination takes one rendering: the one built at
+        # the position whose value really is hidden content.
         hidden_at: dict[str, int] = {}
         for _listed, sandbox_path, position in validated:
             if position in rewritten:
@@ -493,8 +493,8 @@ def _bicep_validate_tool(
             # so it is the key that makes the match exact rather than a suffix guess.
             for key in (entry_name, guest_relative, entry_path):
                 if key:
-                    # Overwriting is safe because `hidden_paths` gives one destination one
-                    # label: two entries reaching the same key agree on what it renders as.
+                    # Overwriting is safe because `hidden_at` gives one destination one label:
+                    # two entries reaching the same key agree on what it renders as.
                     renames[key] = entry_label
 
         for name, label, sandbox_path in written:

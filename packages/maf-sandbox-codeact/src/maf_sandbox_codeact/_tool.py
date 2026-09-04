@@ -996,7 +996,6 @@ async def _execute(
     # host-tool call under the registry's `response_limits`.
     limits = session.spec.files_in
     tally = _InboundTally(limits)
-    #: `(store path, the spelling a refusal may use, content)` per file read out of the store.
     shared: list[tuple[str, str, str]] = []
     inbound = len(files) + (2 if host_tool_call is not None else 1)
     over_cap = _over_file_count(
