@@ -111,15 +111,26 @@ A host wires three things.
 
 ```python
 router = SandboxRouter([AcasSandboxBackend(config)])
-context = make_caller_context(list_all_files, lambda: scope, lambda: thread_id)
+record = FileStoreProvenance()  # what the host knows about the bytes in `store`
+context = make_caller_context(
+    lambda s: list_all_files(s, provenance=record), lambda: scope, lambda: thread_id
+)
 tools = make_bicep_tools(router, store, agent_dir, context, image=image)
 
-agent = Agent(client=client, name=agent_dir, instructions=..., tools=tools)
+agent = Agent(
+    client=client,
+    name=agent_dir,
+    instructions=...,
+    tools=tools,
+    # Without this the record observes nothing, every entry lists as unestablished, and a
+    # `trusted` floor would be refused for the reason `FileStoreProvenance` gives.
+    middleware=[file_store_provenance_middleware(record)],
+)
 ```
 
 **The request context.** `make_caller_context` takes *callables*, read per call, rather than values. A sandbox is keyed by `(scope, thread_id, agent_dir)` — and by `call_id` as well for a workload that runs one sandbox per call, and a host that builds one agent and serves many conversations with it would — if the scope and thread were captured at construction time — let one conversation address another conversation's sandbox. Nothing in this stack accepts a scope, a thread id or a file path from the model: the file store listing is the boundary that decides what a name is allowed to resolve to.
 
-`list_all_files` above is `maf_sandbox.maf`'s — it walks the store's `list_children` one level at a time and answers store-relative paths. It sits beside `make_caller_context` rather than in core because it reads `FileStoreEntry.type`, which is the framework's. A workload with no file channel at all passes `list_no_files`, which is a stated decision rather than an empty lambda the next reader has to interpret. Either way a failure to enumerate **propagates**: answering an empty list would read as "the store has no files" and refuse every name for the wrong reason.
+`list_all_files` above is `maf_sandbox.maf`'s — it walks the store's `list_children` one level at a time and answers `ListedFile` entries: a store-relative path, and what the host knows about the bytes at it. `provenance=` is what supplies the second half, and leaving it off is not neutral — every entry then reads `None`, *unestablished*, and a kind reading that store can never label anything from it. Pair the record with `file_store_provenance_middleware(record)` on the agent, which is what makes it observe the model's own writes; [`hosts.md`](hosts.md) carries the wiring and the one window it leaves open. It sits beside `make_caller_context` rather than in core because it reads `FileStoreEntry.type`, which is the framework's. A workload with no file channel at all passes `list_no_files`, which is a stated decision rather than an empty lambda the next reader has to interpret. Either way a failure to enumerate **propagates**: answering an empty list would read as "the store has no files" and refuse every name for the wrong reason.
 
 **Disposal.** `SandboxPurger` participates in thread deletion, so deleting a conversation takes its sandboxes with it, and `dispose_scope` deletes by service-side label — which reclaims sandboxes the calling replica never created. A host that serves one conversation at a time can let `router.scope(scope, thread_id)` make that call for it: an async context manager that disposes however its block ends, and afterwards reports the count and — when the delete did not land — the reason, because zero reclaimed reads the same whether there was nothing to reclaim or nothing worked. One disposal is the framework's own: a sandbox it could not clean after a call — a removal that failed, or a stop that did not reach the program's whole process group — is disposed before the next call can reuse it, and the host loosens that on the router, never a kind ([`tool-call.md`](tool-call.md) § Cleanup).
 

@@ -44,6 +44,7 @@ from maf_sandbox import (
     Egress,
     ExecResult,
     HostToolRun,
+    ListedFile,
     NameNormalization,
     OutputSink,
     SandboxArtifactNameInvalid,
@@ -995,7 +996,7 @@ async def _execute(
     # host-tool call under the registry's `response_limits`.
     limits = session.spec.files_in
     tally = _InboundTally(limits)
-    shared: list[tuple[str, str]] = []
+    shared: list[tuple[str, str, str]] = []
     inbound = len(files) + (2 if host_tool_call is not None else 1)
     over_cap = _over_file_count(
         inbound, limits, calls_host_tool=host_tool_call is not None
@@ -1005,12 +1006,13 @@ async def _execute(
     if over_cap is not None:
         return over_cap
     if store is not None:
-        resolved = await _resolve_listed_files(
+        resolution = await _resolve_listed_files(
             session, store, files, reserved=reserved, withhold=withhold, candidates=rewritten
         )
-        if isinstance(resolved, str):
-            return resolved
-        read = await _read_listed_files(store, resolved, tally)
+        if isinstance(resolution, str):
+            return resolution
+        resolved, resolved_hidden = resolution
+        read = await _read_listed_files(session, store, resolved, tally, rewritten=resolved_hidden)
         if isinstance(read, str):
             return read
         shared = read
@@ -1032,9 +1034,9 @@ async def _execute(
     )
     shared_dir = layout.work if layout is not None else call_directory
 
-    for name, content in shared:
+    for name, named, content in shared:
         refusal = await _write_shared(
-            sandbox, name, f"{shared_dir}/{name}", content, working_directory=shared_dir
+            sandbox, name, named, f"{shared_dir}/{name}", content, working_directory=shared_dir
         )
         if refusal is not None:
             return refusal
@@ -1155,15 +1157,22 @@ async def _resolve_listed_files(
     reserved: Mapping[str, str],
     withhold: bool = False,
     candidates: frozenset[str] | None = None,
-) -> list[str] | str:
+) -> tuple[list[tuple[ListedFile, str]], frozenset[int]] | str:
     """Match each requested name against the caller's listing, or answer with the refusal.
 
     The listing is the injection-pinning boundary: a name the model invented, or read out of a
     poisoned file, has nowhere to go.  Which is why a listing that cannot be read is a refusal
     rather than an empty one — every name would then be refused for the wrong reason.
+
+    Answers with each entry **and the spelling a refusal about it may use**, plus the positions
+    among them the framework expanded.  The rendering is made here because this is the only place
+    that holds both spellings: the model's, and the listing key it resolved to.  Rendering later
+    from :attr:`ListedFile.name` would report the length of the host's key while claiming to
+    stand in for the value at the model's position, and the two differ whenever the listing
+    normalised anything.
     """
     if not files:
-        return []
+        return [], frozenset()
     # Asked before the first await, not beside the loop that uses it: the framework's accessor
     # is not scoped to the call, so every suspension before asking is a chance for the answer
     # to come back empty. See `positions_holding_hidden_content`.
@@ -1178,8 +1187,11 @@ async def _resolve_listed_files(
             logger.warning("execute_code: the file listing could not be read: %s", listing)
             return "Error: this tool's file listing could not be read, so nothing was shared."
         return listing
-    known = set(listing)
-    resolved: list[str] = []
+    listed_by_name = {entry.name: entry for entry in listing}
+    known = set(listed_by_name)
+    resolved: list[tuple[ListedFile, str]] = []
+    resolved_hidden: set[int] = set()
+    seen: set[str] = set()
     for position, name in enumerate(files):
         at = f"files[{position}]"
         hidden = position in rewritten
@@ -1197,7 +1209,7 @@ async def _resolve_listed_files(
         refusal = _inside_a_reserved_file(name, reserved, action="shared", at=at, hidden=hidden)
         if refusal is not None:
             return refusal
-        if name in resolved:
+        if name in seen:
             # One read and one write per name. Repeating one buys the caller nothing and
             # multiplies both, which is the cheapest way to amplify against the byte ceilings.
             return f"Error: {named} was listed twice."
@@ -1210,10 +1222,13 @@ async def _resolve_listed_files(
             )
             return (
                 f"Error: {named} is not in this tool's file listing, so it was not shared. "
-                f"{_listing_hint(name, listing, withhold=withhold)}"
+                f"{_listing_hint(name, sorted(known), withhold=withhold)}"
             )
-        resolved.append(name)
-    return resolved
+        if hidden:
+            resolved_hidden.add(len(resolved))
+        resolved.append((listed_by_name[name], named))
+        seen.add(name)
+    return resolved, frozenset(resolved_hidden)
 
 
 #: Capped so a large file store cannot flood the model's context.
@@ -1242,36 +1257,49 @@ def _listing_hint(name: str, listing: list[str], *, withhold: bool = False) -> s
 
 
 async def _read_listed_files(
-    store: AgentFileStore, names: list[str], tally: _InboundTally
-) -> list[tuple[str, str]] | str:
+    session: SandboxToolSession,
+    store: AgentFileStore,
+    files: list[tuple[ListedFile, str]],
+    tally: _InboundTally,
+    *,
+    rewritten: frozenset[int] = frozenset(),
+) -> list[tuple[str, str, str]] | str:
     """Read every requested file into memory, or answer with the refusal.
 
     Each file is counted **as it arrives**, so a breach stops the next read rather than the
     write: a tally applied to the finished set bounds what crosses into the sandbox and nothing
     about what this process spent getting there.
 
-    Text only: ``AgentFileStore.read`` answers with ``str``, and this path encodes what it
-    is given.  The protocol's ``write_file`` takes ``bytes``, so the boundary below is not what
-    stands in the way of a binary input — but this function and the tally would both have to
-    learn about it.
+    Read through the session rather than the store, so each file arrives as a labelled item
+    saying what the host knows about its bytes (:class:`~maf_sandbox.ListedFile`).
+
+    ``rewritten`` carries the argument positions the framework expanded, and every refusal below
+    renders those by position: a name that came out of hidden content is the one value a refusal
+    must not repeat.  Each file is answered with that rendering beside its real name, because the
+    write that follows this read is where the verdict would otherwise be lost — matching the
+    listing is not what makes a name safe to echo.
     """
-    read: list[tuple[str, str]] = []
-    for name in names:
-        try:
-            content = await store.read(name)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("execute_code: could not read %r from the file store: %s", name, exc)
-            return f"Error: could not read {name!r} from the file store"
-        if content is None:
+    read: list[tuple[str, str, str]] = []
+    for position, (listed, named) in enumerate(files):
+        at = f"files[{position}]"
+        hidden = position in rewritten
+        item = await session.read_file(store, listed, at=at, hidden=hidden, named=named)
+        if isinstance(item, str):
+            return item
+        if item is None:
             # A store read can miss without raising (the file was listed, then removed). Writing
             # `None` through would put the string "None" into the sandbox for the program to
             # parse.
-            logger.warning("execute_code: %r is listed but has no content", name)
-            return f"Error: {name!r} is listed in the file store but has no content"
-        over_cap = tally.add(name, content)
+            logger.warning("execute_code: a listed file has no content")
+            return f"Error: {named} is listed in the file store but has no content"
+        content = item.text
+        if content is None:
+            logger.warning("execute_code: a listed file read back with no text")
+            return f"Error: {named} is listed in the file store but has no content"
+        over_cap = tally.add(listed.name, content, named=named)
         if over_cap is not None:
             return over_cap
-        read.append((name, content))
+        read.append((listed.name, named, content))
     return read
 
 
@@ -1328,8 +1356,15 @@ class _InboundTally:
         self._limits = limits
         self._total = 0
 
-    def add(self, name: str, content: str) -> str | None:
-        """Count one file, or answer with the refusal that should stop the next read."""
+    def add(self, name: str, content: str, *, named: str | None = None) -> str | None:
+        """Count one file, or answer with the refusal that should stop the next read.
+
+        ``named`` is how the file may be spelled in a refusal, and defaults to ``repr(name)`` —
+        which is what a caller naming a constant wants.  A caller counting a file the model
+        named passes the position-safe rendering instead: these two refusals reach the model,
+        and a name the framework expanded out of hidden content is not the caller's to echo.
+        """
+        shown = named if named is not None else repr(name)
         try:
             size = len(content.encode())
         except UnicodeEncodeError:
@@ -1337,12 +1372,12 @@ class _InboundTally:
             # encoded. This tally runs outside the guarded write, so without this the turn
             # dies here rather than the model being told what to fix.
             return (
-                f"Error: {name!r} is not valid UTF-8 and cannot be written into the sandbox. "
+                f"Error: {shown} is not valid UTF-8 and cannot be written into the sandbox. "
                 f"Nothing was shared."
             )
         if size > self._limits.max_bytes_per_file:
             return (
-                f"Error: {name!r} is {size} bytes and this tool writes at most "
+                f"Error: {shown} is {size} bytes and this tool writes at most "
                 f"{self._limits.max_bytes_per_file} bytes per file. Nothing was shared."
             )
         self._total += size
@@ -1358,19 +1393,25 @@ class _InboundTally:
 async def _write_shared(
     sandbox: Sandbox,
     name: str,
+    named: str,
     guest_path: str,
     content: str,
     *,
     working_directory: str,
 ) -> str | None:
-    """Put one already-read file store file into the run's directory, or answer with the refusal."""
+    """Put one already-read file store file into the run's directory, or answer with the refusal.
+
+    ``name`` is the real store path — the guest path is built from it and the host's log records
+    it — while ``named`` is the only spelling that may appear in the refusal.  They differ where
+    the framework expanded hidden content into the argument this file was named by.
+    """
     try:
         await sandbox.write_file(guest_path, content, working_directory=working_directory)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "execute_code: could not write %r into the sandbox: %s", name, error_detail(exc)
         )
-        return f"Error: could not share {name!r} into the sandbox"
+        return f"Error: could not share {named} into the sandbox"
     return None
 
 
