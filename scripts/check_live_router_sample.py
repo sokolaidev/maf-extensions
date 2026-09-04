@@ -3,7 +3,7 @@
     python samples/11_router_two_backends/agent.py | tee out.txt
     python scripts/check_live_router_sample.py out.txt   # or: ... | python …
 
-Two assertions carry this file, and they are load-bearing for different reasons.
+Four assertions carry this file, and they are load-bearing for different reasons.
 
 The **disposal count**. A sandbox is acquired on each of the two registered backends and only
 one of them is serving, so `dispose_scope` returning **2** is the whole claim that disposal fans
@@ -15,6 +15,12 @@ outcomes are required: `FAILED` closed, `RESTORED` allowlisted. Either alone is 
 a sandbox that confines nothing — a container with the host's network would restore under both,
 and a container that could not start would fail under both. Only the pair says the deployment's
 wiring is what decided it.
+
+The **routed pair**, for the same reason in a different axis, and the **cleanup line** beside it — `dispose_scope` reports a failure rather than raising one, so an act that discarded its answer would leak a container while the run read clean. Act 6 routes two specs, and both
+answers are required: the one act 2 was refused for must reach `docker`, and the one both
+backends can serve must stay on `in-process`. The first alone would be consistent with a router
+that simply preferred the stronger backend, which is the behaviour that would quietly move
+existing traffic onto a billable one.
 
 Every line this file reads carries the `[measured]` tag, and act 4 puts a model's prose into the
 same stream. The sample runs that prose through `quoted()`, which prefixes `> ` to any line
@@ -52,6 +58,20 @@ _REFUSALS = ("SandboxBackendNotPermitted", "SandboxCapabilityNotSupported")
 #: the router merely agreeing that it could.
 _EXECUTED = "routed"
 
+#: What each routed spec has to resolve to, and why each answer is the interesting one. The
+#: `files_out` spec is act 2's refusal served instead, which is the whole feature. The `plain`
+#: one going to the **first registered** backend is the property that makes the feature safe:
+#: routing can only serve what is refused today, and must never move what already runs.
+_ROUTED = {"files_out": "docker", "plain": "in-process"}
+
+_ROUTED_LINE = re.compile(
+    rf"^\s*{re.escape(_TAG)}\s+routed (\S+) spec\s+->\s+'([^']*)'", re.MULTILINE
+)
+
+#: What act 6's container printed. Distinct from act 5's marker on purpose: a check that
+#: accepted either would pass on a run where act 6 quietly re-read act 5's file.
+_ROUTED_EXECUTED = "routed per spec"
+
 #: `[measured] AVM restore under egress closed: FAILED`, and its allowlisted twin. The verdicts
 #: are read back from whether the compiler reported BCP192, not from what the sample hoped for.
 _RESTORE = re.compile(
@@ -68,10 +88,38 @@ _RESTORE_EXPECTED = {"closed": "FAILED", "allowlist": "RESTORED"}
 #: what it observed — the first from `dispose_scope`'s return, the second from the list it
 #: registered — so these compare measurements, not literals the sample printed.
 _FOOTER = re.compile(
-    rf"{re.escape(_TAG)}\s+Completed\s+(\d+)\s+of\s+5\s+acts\.\s+Disposed\s+(\d+)\s+"
+    rf"^\s*{re.escape(_TAG)}\s+Completed\s+(\d+)\s+of\s+6\s+acts\.\s+Disposed\s+(\d+)\s+"
     r"sandbox\(es\)\s+across\s+(\d+)\s+backends",
-    re.IGNORECASE,
+    re.IGNORECASE | re.MULTILINE,
 )
+
+#: `[measured] act 6 cleanup: disposed=2 undisposed=none`. Both halves are required and
+#: neither is enough alone: `undisposed` catches a purge that reported a failure, and the
+#: count catches a sweep that never reached the backend holding the container — silence from
+#: a backend nobody asked reads exactly like success.
+_CLEANUP = re.compile(
+    rf"^\s*{re.escape(_TAG)}\s+act 6 cleanup:\s*disposed=(\d+)\s+undisposed=(.+?)\s*$",
+    re.MULTILINE,
+)
+
+#: What act 6's purge has to report. One from the in-process fake, which answers a fixed
+#: number whatever it holds, and one real container from docker — so a total of 1 is docker
+#: sweeping nothing, which is the leak this pair exists to catch.
+_CLEANUP_EXPECTED = 2
+
+
+def _measured_lines(output: str, needle: str) -> list[str]:
+    """Every tagged line holding ``needle``, stripped.
+
+    Callers that must not accept a second, contradicting one count these rather than taking
+    the first — the ambiguity the routed pair rejects, which a marker read with
+    :func:`_measured_line` would otherwise keep.
+    """
+    return [
+        line.lstrip()
+        for line in output.splitlines()
+        if line.lstrip().startswith(_TAG) and needle in line.lstrip()
+    ]
 
 
 def _measured_line(output: str, needle: str) -> str | None:
@@ -146,7 +194,106 @@ def assess(output: str) -> list[str]:
             )
 
     failures.extend(_assess_restore(output))
+    failures.extend(_assess_routing(output))
     failures.extend(_assess_footer(output))
+    return failures
+
+
+def _assess_routing(output: str) -> list[str]:
+    """Act 6's two routes, and that the route reached a container rather than only a report.
+
+    Each route is required **exactly once**, on the same policy `_assess_restore` applies to a
+    doubled verdict: the sample prints each one once, so a second came from somewhere else and
+    neither can be read. A label this file does not expect is refused for the same reason.
+    """
+    seen: dict[str, list[str]] = {}
+    for spec, backend in _ROUTED_LINE.findall(output):
+        seen.setdefault(spec, []).append(backend)
+
+    failures: list[str] = []
+    for spec, expected in _ROUTED.items():
+        answers = seen.get(spec, [])
+        if not answers:
+            failures.append(
+                f"no 'routed {spec} spec' line — act 6 reported no route for it, and both "
+                "routes are required: one is the feature and the other is what keeps it safe"
+            )
+        elif len(answers) > 1:
+            failures.append(
+                f"'routed {spec} spec' appears {len(answers)} times, saying "
+                f"{', '.join(answers)} — the sample prints it once, so something else is "
+                "writing measured routes into this stream and none of them can be trusted"
+            )
+        elif answers[0] != expected:
+            failures.append(
+                f"the {spec} spec routed to {answers[0]!r}, expected exactly {expected!r} — "
+                + (
+                    "this is the spec act 2 is refused for, so anything else means the router "
+                    "did not read past the backend that refuses it"
+                    if spec == "files_out"
+                    else "both backends can serve this one, so anything but the first "
+                    "registered means routing moved a workload that already ran — which is "
+                    "the behaviour that would relocate existing traffic onto a billable backend"
+                )
+            )
+
+    unexpected = sorted(set(seen) - set(_ROUTED))
+    if unexpected:
+        failures.append(
+            f"act 6 printed a route for {', '.join(unexpected)}, which this check knows "
+            "nothing about — an unrecognised measured route is either a sample this file has "
+            "fallen behind or a line something else wrote, and neither may pass silently"
+        )
+
+    markers = _measured_lines(output, "the routed backend runs:")
+    if not markers:
+        failures.append(
+            "no measured 'the routed backend runs:' line — the router chose a backend and "
+            "nothing showed the choice reaching a container rather than only a report about it"
+        )
+    elif len(markers) > 1:
+        failures.append(
+            f"'the routed backend runs:' appears {len(markers)} times — the act prints it "
+            "once, so taking the first would read whichever came first rather than measure"
+        )
+    else:
+        executed = markers[0]
+        printed = re.search(r"the routed backend runs:\s*'([^']*)'", executed)
+        actual = printed.group(1) if printed else ""
+        if actual != _ROUTED_EXECUTED:
+            failures.append(
+                f"the routed backend printed {actual!r}, expected exactly "
+                f"{_ROUTED_EXECUTED!r} — its own marker, not act 5's, so a run that re-read "
+                "the earlier act's file cannot answer for this one"
+            )
+
+    cleanup = _CLEANUP.findall(output)
+    if not cleanup:
+        failures.append(
+            "no measured 'act 6 cleanup:' line — `dispose_scope` reports a failure rather "
+            "than raising one, so without this the act's container can be left running and "
+            "every other line here still reads healthy"
+        )
+    elif len(cleanup) > 1:
+        failures.append(
+            f"'act 6 cleanup:' appears {len(cleanup)} times — the act prints it once, so "
+            "none of them can be trusted"
+        )
+    else:
+        disposed, undisposed = cleanup[0]
+        if undisposed != "none":
+            failures.append(
+                f"act 6's purge reported {undisposed!r} — a sandbox it created is still "
+                "there, and on a backend that charges for one that is a leak rather than a "
+                "warning"
+            )
+        if int(disposed) != _CLEANUP_EXPECTED:
+            failures.append(
+                f"act 6's purge disposed {disposed}, expected exactly {_CLEANUP_EXPECTED} — "
+                "one from the in-process backend's fixed answer and one real container from "
+                "docker, so anything less means the sweep never reached the backend the route "
+                "chose and 'nothing was reported' is silence rather than success"
+            )
     return failures
 
 
@@ -195,20 +342,29 @@ def _assess_restore(output: str) -> list[str]:
 
 
 def _assess_footer(output: str) -> list[str]:
-    """The three counts, and the one that carries the sample's claim."""
-    footer = _FOOTER.search(output)
-    if footer is None:
+    """The three counts, and the one that carries the sample's claim.
+
+    Required exactly once, on the policy every other measurement here follows: a second
+    footer contradicting the first cannot be resolved by taking either.
+    """
+    footers = _FOOTER.findall(output)
+    if not footers:
         return [
-            "no 'Completed N of 5 acts. Disposed N sandbox(es) across N backends.' line — the "
+            "no 'Completed N of 6 acts. Disposed N sandbox(es) across N backends.' line — the "
             "sample did not run to completion"
         ]
-    acts, disposed, registered = (int(group) for group in footer.groups())
+    if len(footers) > 1:
+        return [
+            f"the footer appears {len(footers)} times — the sample prints it once, so a second "
+            "came from somewhere else and neither can be read"
+        ]
+    acts, disposed, registered = (int(group) for group in footers[0])
     failures: list[str] = []
-    if acts != 5:
+    if acts != 6:
         failures.append(
-            f"only {acts} of 5 acts completed — act 4 skips itself when any of its four "
-            "variables is unset, and a skipped egress act is the one result that reads exactly "
-            "like a passing one"
+            f"only {acts} of 6 acts completed — act 4 skips itself when any of its four "
+            "variables is unset, and a skipped act is the one result that reads exactly like "
+            "a passing one"
         )
     if registered != 2:
         failures.append(
@@ -242,8 +398,9 @@ def main(argv: list[str]) -> int:
             print(f"  - {reason}", file=sys.stderr)
         return 1
     print(
-        "OK  the router selected by name, refused what it could not serve, gave a real workload "
-        "exactly the egress it asked for and nothing else, and disposed across both backends"
+        "OK  the router selected by name, refused what it could not serve, routed past the "
+        "refusal where the host asked it to, gave a real workload exactly the egress it asked "
+        "for and nothing else, and disposed across both backends"
     )
     return 0
 
