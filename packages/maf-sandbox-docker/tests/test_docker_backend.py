@@ -195,9 +195,9 @@ def _machine(
     ``running`` prints ``true``, one only in ``stopped`` prints ``false``, one in neither errors
     like a missing container. ``image inspect`` succeeds for a known image and errors otherwise.
 
-    ``rm -f`` takes a container out of that state, so a test can watch a replacement be built
-    rather than only watch the removal go by: without it every removed container is still
-    running on the next read and the acquire reuses it.
+    ``rm -f`` takes a container out of that state, because ``acquire`` reads it again after a
+    removal: a responder still answering "running" there sends a replacement test down the
+    reuse branch, where it asserts nothing about the rebuild it was written for.
 
     ``networks`` maps a network name to what ``network inspect`` prints for the gateway-mode
     format — one word per address family, so ``"isolated isolated"`` is a network this backend
