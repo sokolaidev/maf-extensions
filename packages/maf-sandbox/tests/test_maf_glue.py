@@ -4352,6 +4352,15 @@ class TestALabelledResultItem:
         with pytest.raises(ValueError, match="Leave the item unlabelled"):
             labelled_result_item("EXIT=1", SourceIntegrity.UNTRUSTED)
 
+    def test_the_route_it_names_is_spelled_as_the_enum(self):
+        """The message is where a kind author is sent to fix this, so it is where the spelling
+        to reach for has to appear. `sandboxed_tool` takes a `str`, and a `StrEnum` satisfies
+        that, so nothing in the signature can point at `SourceIntegrity` on its own."""
+        with pytest.raises(ValueError) as refused:
+            labelled_result_item("EXIT=1", SourceIntegrity.UNTRUSTED)
+
+        assert "sandboxed_tool(source_integrity=SourceIntegrity.UNTRUSTED)" in str(refused.value)
+
     def test_a_level_that_is_neither_is_refused(self):
         with pytest.raises(ValueError, match="withheld"):
             labelled_result_item("EXIT=1", cast(Any, "withheld"))
