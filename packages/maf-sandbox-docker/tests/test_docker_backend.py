@@ -39,6 +39,7 @@ from maf_sandbox import (
 
 from maf_sandbox_docker import BACKEND_NAME, DockerSandboxBackend, DockerSandboxConfig
 from maf_sandbox_docker._backend import (
+    _ATTACHED_NETWORKS_FORMAT,
     _GATEWAY_MODE_ISOLATED,
     _GATEWAY_MODE_OPTS,
     _container_name,
@@ -188,12 +189,16 @@ def _machine(
     images: Sequence[str] = ("bicep-sandbox:local",),
     overrides: dict[tuple[str, ...], _DockerResult] | None = None,
     networks: Mapping[str, str] | None = None,
+    attached: Mapping[str, Sequence[str]] | None = None,
 ):
     """A responder describing which containers and images exist, and how a command answers.
 
     ``docker inspect -f {{.State.Running}}`` decides existence and running state — a name in
     ``running`` prints ``true``, one only in ``stopped`` prints ``false``, one in neither errors
     like a missing container. ``image inspect`` succeeds for a known image and errors otherwise.
+
+    ``attached`` maps a container to the networks it is on; one not listed reports the network
+    this backend would have created it on, which is what a sandbox it built looks like.
 
     ``rm -f`` takes a container out of that state, because ``acquire`` reads it again after a
     removal: a responder still answering "running" there sends a replacement test down the
@@ -230,6 +235,12 @@ def _machine(
                 if image in images
                 else _DockerResult(1, b"", "No such image")
             )
+        if args[:3] == ("inspect", "-f", _ATTACHED_NETWORKS_FORMAT):
+            name = args[-1]
+            if name not in live_running | live_stopped:
+                return _DockerResult(1, b"", f"error: no such object: {name}")
+            on = (attached or {}).get(name, [_network_name(name)])
+            return _DockerResult(0, (" ".join(on) + " ").encode(), "")
         if args[:2] == ("network", "inspect"):
             net = args[-1]
             modes = live_networks.get(net)
@@ -2914,6 +2925,49 @@ class TestAllowlistReuse:
         assert plugin_error in str(raised.value)
         assert fake.matching("run", "-d", "--name", _AL) == []
 
+    def _machine_losing_the_name_race(self, on: Sequence[str]):
+        """A responder where the container appears only once the create has tried and lost.
+
+        That interleaving is the whole of the adoption path: a container present any earlier
+        is found by the reuse reads and never reaches it, which is why a static fixture tests
+        nothing here however it is attached.
+        """
+        base = _machine(networks={_AL_NET: _UNADDRESSED})
+        appeared = False
+
+        def racing(args: tuple[str, ...]) -> _DockerResult:
+            nonlocal appeared
+            if args[:4] == ("run", "-d", "--name", _AL):
+                appeared = True
+                return _DockerResult(1, b"", "Conflict. The name is already in use")
+            if args[:3] == ("inspect", "-f", _ATTACHED_NETWORKS_FORMAT) and args[-1] == _AL:
+                return _DockerResult(0, (" ".join(on) + " ").encode(), "")
+            if args[0] == "inspect" and args[-1] == _AL:
+                if not appeared:
+                    return _DockerResult(1, b"", f"error: no such object: {_AL}")
+                state = b"true\n" if "Running" in args[2] else b"running\n"
+                return _DockerResult(0, state, "")
+            return base(args)
+
+        return racing
+
+    def test_a_name_conflict_is_not_adopted_onto_someone_elses_network(self):
+        """Adoption recovers a name the create lost to a racing process, and a name is all it
+        proves: whoever won chose that container's topology. An allowlisted acquire that took
+        it would return a workload on a network it never built and cannot describe."""
+        backend, _ = _backend_with(
+            self._machine_losing_the_name_race(["an-unrestricted-network"]), _ALLOW_CONFIG
+        )
+        with pytest.raises(RuntimeError, match="could not create container"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+    def test_a_name_conflict_is_adopted_when_the_container_is_on_the_right_network(self):
+        """The recovery still works for the case it exists for — a racing acquire of this same
+        backend, which builds the container on exactly this network."""
+        backend, _ = _backend_with(self._machine_losing_the_name_race([_AL_NET]), _ALLOW_CONFIG)
+        sandbox = asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert sandbox.container_name == _AL
+
     def test_a_network_that_appeared_since_the_check_is_not_adopted_on_its_name(self):
         """`create` compares nothing but the name, and the lock is local to one backend and
         loop, so "already exists" can be a network something else put there after the acquire
@@ -3078,6 +3132,23 @@ class TestASandboxLeftOnAnUnusableNetwork:
         overrides = {("inspect", "-f", "{{.State.Status}}"): _DockerResult(1, b"", stderr)}
         backend, fake = _backend_with(
             _machine(running=[_AL], overrides=overrides), config=_ALLOW_CONFIG
+        )
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("rm", "-f", _AL) != []
+        created = _run_named(fake, _AL)
+        assert created.args[created.args.index("--network") + 1] == _AL_NET
+
+    def test_a_workload_moved_off_its_own_network_is_rebuilt(self):
+        """A network this backend would build is not the same fact as the workload being on
+        it: `docker network disconnect` followed by `connect` leaves the name, the network and
+        the modes all intact while the container reaches somewhere else entirely."""
+        backend, fake = _backend_with(
+            _machine(
+                running=[_AL],
+                networks={_AL_NET: _UNADDRESSED},
+                attached={_AL: ["some-other-network"]},
+            ),
+            _ALLOW_CONFIG,
         )
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert fake.matching("rm", "-f", _AL) != []

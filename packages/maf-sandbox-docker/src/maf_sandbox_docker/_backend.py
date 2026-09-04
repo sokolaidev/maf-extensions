@@ -134,6 +134,10 @@ _GATEWAY_MODE_OPTS = (
 _GATEWAY_MODE_ISOLATED = "isolated"
 #: The engine that accepts the mode above; an older one rejects the value, naming the option.
 _GATEWAY_MODE_MIN_ENGINE = "28.0.0"
+#: Lists the networks a container is attached to, space-separated.  A container this backend
+#: did not create carries whatever its creator chose, so a matching *name* is never evidence
+#: of a topology.
+_ATTACHED_NETWORKS_FORMAT = "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}"
 #: Reads every mode back off a network, space-separated, an option the network does not carry
 #: printing empty.  Built from the options themselves so a family can never be set without
 #: being checked: reading one of two would adopt a network still addressed on the other.
@@ -1677,7 +1681,10 @@ class DockerSandboxBackend:
 
         result = await self._docker(*args, timeout=self._config.command_timeout_seconds)
         if result.returncode != 0:
-            if _ALREADY_IN_USE in result.stderr.lower() and await self._adopt(name):
+            required = _network_name(name) if allowlisting else None
+            if _ALREADY_IN_USE in result.stderr.lower() and await self._adopt(
+                name, on_network=required
+            ):
                 logger.info("container %s already existed; adopted it instead of creating", name)
                 return image
             raise RuntimeError(f"docker could not create container {name}: {result.stderr.strip()}")
@@ -1792,6 +1799,24 @@ class DockerSandboxBackend:
             return False
         return _reads_as_absent(result.stderr, name)
 
+    async def _attached_to(self, name: str, net: str) -> bool:
+        """Whether ``name`` is on ``net``.
+
+        Unreadable counts as not attached, like every other read on this path: the answer
+        decides whether an allowlisted workload may be handed back, and a container that
+        cannot be shown to be on its own network may be on any other.
+        """
+        result = await self._docker(
+            "inspect",
+            "-f",
+            _ATTACHED_NETWORKS_FORMAT,
+            name,
+            timeout=self._config.command_timeout_seconds,
+        )
+        if result.returncode != 0:
+            return False
+        return net in result.stdout.decode("utf-8", errors="replace").split()
+
     async def _discard_a_sandbox_on_an_unusable_network(self, name: str) -> None:
         """Remove an allowlisted sandbox whose network is not one this backend would build.
 
@@ -1808,15 +1833,21 @@ class DockerSandboxBackend:
                 network read say nothing about whether the container went.
         """
         net = _network_name(name)
-        before = await self._bridge_state(net)
-        if before.absent and not await self._container_is_gone(name):
+        state = await self._bridge_state(net)
+        if not state.usable:
+            reason = state.reason
+        elif await self._container_is_gone(name):
+            # Nothing to reuse, so nothing to discard: the create that follows builds both.
+            return
+        elif state.absent:
             # `_ensure_network` would build a fresh one and attach nothing to it, so a reuse
             # would hand back a container sitting on whatever it is actually on.
             reason = "its network is gone, so the workload is not on the one it should be"
-        elif before.usable:
-            return
+        elif not await self._attached_to(name, net):
+            # The network is one this backend would build; being on it is a separate fact.
+            reason = "the workload is not attached to it"
         else:
-            reason = before.reason
+            return
         logger.info("replacing sandbox %s and network %s: %s", name, net, reason)
         removal = await self._remove(name)
         await self._remove(_proxy_name(name))
@@ -1894,17 +1925,25 @@ class DockerSandboxBackend:
             await asyncio.sleep(_PROXY_READY_DELAY_S)
         raise RuntimeError(f"egress proxy {proxy} never reported listening")
 
-    async def _adopt(self, name: str) -> bool:
+    async def _adopt(self, name: str, *, on_network: str | None = None) -> bool:
         """Whether an existing ``name`` is running, or could be started — the reuse path again.
 
         The check that sent ``acquire`` down the create branch can be out of date by the time
         ``run`` executes: two acquires for one key race, or a transient failure hid a container
         that is right there.  Without this the name stays taken and every acquire for that key
         fails from then on.
+
+        ``on_network`` is the network an allowlisted workload must be attached to, and it is
+        what keeps the name conflict from becoming a way in: whoever won the race chose that
+        container's topology, and a name says nothing about it.  Refusing here costs the
+        recovery above for one acquire, which is the cheaper of the two failures.
         """
-        if await self._is_running(name):
-            return True
-        return await self._exists(name) and await self._restart(name)
+        usable = await self._is_running(name)
+        if not usable:
+            usable = await self._exists(name) and await self._restart(name)
+        if not usable:
+            return False
+        return on_network is None or await self._attached_to(name, on_network)
 
     async def _remove(self, target: str) -> _Removal:
         """Force-remove ``target``. Never raises; reports what it did.
