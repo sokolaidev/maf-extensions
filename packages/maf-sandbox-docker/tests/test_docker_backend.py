@@ -3055,17 +3055,25 @@ class TestASandboxLeftOnAnUnusableNetwork:
         assert "device or resource busy" in str(raised.value)
         assert fake.matching("run", "-d", "--name", _AL) == []
 
-    def test_a_container_read_that_fails_is_not_read_as_no_container(self):
+    @pytest.mark.parametrize(
+        "stderr",
+        [
+            "daemon not responding",
+            # A socket error carries the errno underneath it, and "no such file or directory"
+            # is the absence phrase said about something that is not this container.
+            "Cannot connect to the Docker daemon at unix:///var/run/docker.sock: "
+            "connect: no such file or directory",
+        ],
+        ids=["opaque", "socket-error-borrowing-the-phrase"],
+    )
+    def test_a_container_read_that_fails_is_not_read_as_no_container(self, stderr: str):
         """Skipping the rebuild needs proof the container is gone, not a failure to see it.
 
-        `_exists` reports absence for any failed read, which is the safe way round for a
-        caller deciding whether to create and the wrong way round here: a daemon that answers
-        nothing for one call and normally for the next leaves the workload on its old
-        attachment with a fresh network built beside it.
+        The proof has to name this container. An absence phrase said about something else —
+        the socket the daemon was not listening on — leaves the workload on its old
+        attachment with a fresh network built beside it, once the next read succeeds.
         """
-        overrides = {
-            ("inspect", "-f", "{{.State.Status}}"): _DockerResult(1, b"", "daemon not responding")
-        }
+        overrides = {("inspect", "-f", "{{.State.Status}}"): _DockerResult(1, b"", stderr)}
         backend, fake = _backend_with(
             _machine(running=[_AL], overrides=overrides), config=_ALLOW_CONFIG
         )

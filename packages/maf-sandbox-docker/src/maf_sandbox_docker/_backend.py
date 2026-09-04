@@ -138,11 +138,12 @@ _GATEWAY_MODE_MIN_ENGINE = "28.0.0"
 #: printing empty.  Built from the options themselves so a family can never be set without
 #: being checked: reading one of two would adopt a network still addressed on the other.
 _GATEWAY_MODE_FORMAT = " ".join('{{index .Options "' + opt + '"}}' for opt in _GATEWAY_MODE_OPTS)
-#: What the engine says for a network that is not there — read only alongside the network's
-#: own name, never on its own.  Absence is the one answer a caller may treat as safe, and
-#: unrelated failures use these words too: a missing context reports `context not found`, an
-#: unknown driver `plugin "…" not found`.  Docker's real answers name the network they mean.
-_NETWORK_ABSENT = ("not found", _NO_SUCH)
+#: What the engine says for a network or container that is not there — read only alongside
+#: that target's own name, never on its own.  Absence is the one answer a caller may treat as
+#: safe, and unrelated failures use these words too: a missing context reports `context not
+#: found`, an unknown driver `plugin "…" not found`, an unreachable daemon can carry `no such
+#: file or directory` from its socket.  Docker's real answers name the target they mean.
+_ABSENT_TARGET = ("not found", _NO_SUCH)
 
 _PROXY_PORT = 3128
 _ALLOW_ENV = "MAF_SANDBOX_ALLOW"
@@ -285,16 +286,17 @@ def _proxy_name(container: str) -> str:
     return f"{container}{_PROXY_SUFFIX}"
 
 
-def _reads_as_absent(stderr: str, net: str) -> bool:
-    """Whether ``stderr`` is the engine saying ``net`` is not there.
+def _reads_as_absent(stderr: str, target: str) -> bool:
+    """Whether ``stderr`` is the engine saying ``target`` — a network or a container — is gone.
 
-    The phrase alone will not do, because absence is the one answer a caller may treat as
-    safe and unrelated failures borrow the words: a missing context answers ``context not
-    found`` and an unknown driver ``plugin "…" not found``, neither of which says anything
-    about this network.  Requiring the name keeps those on the unreadable side.
+    The phrase alone will not do, because absence is the one answer a caller may treat as safe
+    and unrelated failures borrow the words: a missing context answers ``context not found``,
+    an unknown driver ``plugin "…" not found``, and a daemon that cannot be reached can carry
+    ``no such file or directory`` from the socket underneath it.  None of them says anything
+    about this target, so requiring the name keeps them all on the unreadable side.
     """
     lowered = stderr.lower()
-    return net.lower() in lowered and any(phrase in lowered for phrase in _NETWORK_ABSENT)
+    return target.lower() in lowered and any(phrase in lowered for phrase in _ABSENT_TARGET)
 
 
 def _single_rooted(guest_path: str) -> str:
@@ -1788,7 +1790,7 @@ class DockerSandboxBackend:
         )
         if result.returncode == 0:
             return False
-        return _NO_SUCH in result.stderr.lower()
+        return _reads_as_absent(result.stderr, name)
 
     async def _discard_a_sandbox_on_an_unusable_network(self, name: str) -> None:
         """Remove an allowlisted sandbox whose network is not one this backend would build.
@@ -1909,7 +1911,9 @@ class DockerSandboxBackend:
 
         A container docker says it does not have is a removal that has nothing to do, not a
         failure: the sweep tries names the registry remembers, and one already gone is the
-        ordinary case.
+        ordinary case.  Docker has to say so about *this* container, though — a daemon that
+        could not be reached says nothing about whether the container is there, and callers
+        read the failure to decide whether a sandbox may still be served.
         """
         # Dropped before the call, so a failed removal cannot leave stale facts behind.
         self._forget_facts(target)
@@ -1925,7 +1929,7 @@ class DockerSandboxBackend:
             )
         if result.returncode == 0:
             return _Removal(removed=True)
-        if _NO_SUCH in result.stderr.lower():
+        if _reads_as_absent(result.stderr, target):
             return _Removal(removed=False)
         logger.warning(
             "docker backend: failed to remove container %s: %s", target, result.stderr.strip()
