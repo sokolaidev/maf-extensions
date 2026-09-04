@@ -3590,6 +3590,30 @@ class TestPerSpecSelection:
         assert strong.disposed == [call_key]
         assert weak.disposed == []
 
+    def test_a_spec_this_host_denies_names_no_backend_to_delete_on(self):
+        """A denied spec created nothing, so its delete must reach nothing.
+
+        `_route` does not consult the host's denials — they are raised once, ahead of it — so
+        routing alone would still name a backend here, and that backend's `dispose` takes every
+        kind under the call key. Asking through `backend_for` is what keeps the two answers the
+        same question.
+        """
+        denied = _declaring("a", Capability.HOST_TOOLS, per_call=True)
+        router = SandboxRouter(
+            [denied],
+            min_isolation=Isolation.NONE,
+            selection=Selection.PER_SPEC,
+            denied_capabilities={Capability.HOST_TOOLS},
+        )
+        spec = SandboxSpec(
+            kind="test",
+            requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+            isolation_scope=IsolationScope.CALL,
+        )
+        call_key = dataclasses.replace(_KEY, call_id="call-1")
+        assert asyncio.run(router.dispose_call(call_key, timeout=5.0, spec=spec)) is True
+        assert denied.disposed == []
+
     def test_dispose_call_without_a_spec_asks_every_backend_serving_that_scope(self):
         """Nothing to route on, so the delete is swept rather than aimed: slower, never wrong,
         and the shipped caller always has the spec and always passes it."""

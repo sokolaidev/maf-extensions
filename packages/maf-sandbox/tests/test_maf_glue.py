@@ -1580,17 +1580,10 @@ _ROUTED_CALL_SPEC = dataclasses.replace(_CALL_SCOPED_SPEC, requires=_PULLS)
 
 
 class TestARoutedCallDeleteReachesOnlyTheBackendThatServed:
-    """The spec this glue forwards is what aims a call-scoped delete on a per-spec router.
+    """A call-scoped delete is aimed by the spec this glue forwards, not swept.
 
-    `SandboxRouter.dispose_call` routes on the spec rather than remembering where the sandbox
-    went, so the caller has to hand it one. Given none, a per-spec router falls back to asking
-    every backend that serves the scope — correct where nothing else is known, and wrong here,
-    because the router holds a second backend whose sandbox for this key is a *sibling* of the
-    one this call owns.
-
-    Both cleanup paths are covered, and they are different call sites: the `finally` that runs
-    when a body returns, and the one inside `acquire` for a sandbox that arrived after its call
-    had already ended.
+    Without it a per-spec router asks every backend serving the scope, and at call scope the
+    key names a sandbox of each one's own.
     """
 
     def test_the_finally_deletes_only_where_the_spec_routed(self):
@@ -1679,6 +1672,12 @@ class TestARoutedCallDeleteReachesOnlyTheBackendThatServed:
         asyncio.run(run())
         assert isinstance(outcome["result"], RuntimeError)
         assert "came back after its tool call had ended" in str(outcome["result"])
+        # The positive half first, and it is not decoration: an empty sweep is reported as a
+        # landed delete, so a regression routing to nobody raises this same `RuntimeError` and
+        # leaves the negative assertion below true. Without this line the test passes over a
+        # sandbox that was never deleted at all.
+        assert strong.disposed, "the late sandbox was not disposed where it was created"
+        assert {key.call_id for key in strong.disposed} == {strong.keys[0].call_id}
         assert weak.disposed == [], (
             "the late delete swept a backend the route never chose, so a sibling sandbox would "
             "have gone with a refusal that was not about it"

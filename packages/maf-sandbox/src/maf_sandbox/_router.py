@@ -1320,9 +1320,15 @@ class SandboxRouter:
     ) -> tuple[SandboxBackend | None, list[SandboxBackend]]:
         """Which backend served a call's sandbox, and which backends to ask for the delete.
 
-        The two differ only where there is no backend to name: none to ask is a landed delete,
-        and a per-spec router called without a spec has nothing to route on and asks each
-        backend that could be holding a call's sandbox at all.
+        Routed through :meth:`backend_for` rather than :meth:`_route`, because the host's own
+        denials are part of the question. ``_route`` does not consult them — they are raised
+        once, ahead of it — so a spec this host denies would still pick a backend here, and
+        that backend's ``dispose`` takes **every kind** under the call key. A denied spec never
+        created anything, so the honest answer is nobody.
+
+        The two returns differ only where there is no backend to name: none to ask is a landed
+        delete, and a per-spec router called without a spec has nothing to route on and asks
+        each backend that could be holding a call's sandbox at all.
 
         **Only those**, and the filter is the same rule the scope guard above enforces for a
         named backend. A backend serving one sandbox per conversation has none of this call's
@@ -1338,7 +1344,7 @@ class SandboxRouter:
                 if IsolationScope.CALL
                 in _declared_isolation_scopes(backend, _declarations(backend))
             ]
-        served = self._route(spec)[0]
+        served = self.backend_for(spec)
         return served, ([] if served is None else [served])
 
     async def dispose_unclean(self, key: SandboxKey, *, timeout: float) -> bool:
