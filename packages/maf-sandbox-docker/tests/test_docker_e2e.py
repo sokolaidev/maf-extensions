@@ -1178,6 +1178,36 @@ class TestAllowlistEgress:
         assert _names_on_the_machine(sandbox.container_name) == []
         assert not _network_present(net)
 
+    def test_a_peer_joined_to_the_sandboxs_network_refuses_the_next_acquire(self):
+        """A container on the sandbox's own network is reachable by the workload, and a
+        dual-homed one is a route around the proxy. The offline suite pins the refusal against
+        a responder; this puts a real container on a real network and re-acquires.
+        """
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(self._config())
+        spec = _spec(egress=Egress.ALLOWLIST, egress_allow=("mcr.microsoft.com",))
+        peer = f"maf-e2e-peer-{uuid.uuid4().hex[:8]}"
+
+        assert _IMAGE, "the module's skip guard, restated for the type checker"
+        sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+        net = sandbox.container_name + "-net"
+        try:
+            subprocess.run(
+                ["docker", "run", "-d", "--name", peer, "--network", net, _IMAGE, "sleep", "120"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=True,
+            )
+            with pytest.raises(RuntimeError) as raised:
+                asyncio.run(backend.acquire(_key(scope), spec))
+            assert peer in str(raised.value), raised.value
+            # The remedy has to name the peer, because removing the workload does not move it.
+            assert "Disconnect or remove" in str(raised.value)
+        finally:
+            subprocess.run(["docker", "rm", "-f", peer], capture_output=True, timeout=120)
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
     def test_the_bridge_holds_no_host_address_so_neither_direction_crosses(self):
         """The allowlist is only the workload's whole egress if the bridge has no host address.
 
