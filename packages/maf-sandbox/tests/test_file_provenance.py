@@ -61,7 +61,7 @@ class TestWhatTheRecordAnswers:
 
     def test_an_unknown_path_takes_the_hosts_floor(self):
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
-        record.note_observer()
+        file_store_provenance_middleware(record)  # a wired host, which is what these assume
         assert record.integrity_of("placed-by-the-host.json") is SourceIntegrity.TRUSTED
 
     def test_the_floor_is_coerced_like_every_other_boundary_value(self):
@@ -96,7 +96,7 @@ class TestWhatTheRecordAnswers:
 
     def test_forgetting_a_path_returns_it_to_the_floor(self):
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
-        record.note_observer()
+        file_store_provenance_middleware(record)  # a wired host, which is what these assume
         record.record("gone.txt")
         record.forget("gone.txt")
         assert record.integrity_of("gone.txt") is SourceIntegrity.TRUSTED
@@ -131,7 +131,7 @@ class TestWhatTheMiddlewareRecords:
 
     def test_the_host_can_still_forget_a_path_it_established_is_gone(self):
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
-        record.note_observer()
+        file_store_provenance_middleware(record)  # a wired host, which is what these assume
         record.record("a.txt")
         record.forget("a.txt")
         assert record.integrity_of("a.txt") is SourceIntegrity.TRUSTED

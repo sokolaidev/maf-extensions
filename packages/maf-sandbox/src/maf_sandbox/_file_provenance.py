@@ -99,19 +99,12 @@ class FileStoreProvenance:
         self._entries: dict[str, SourceIntegrity] = {}
         self._observed = False
 
-    def note_observer(self) -> None:
-        """Record that a middleware has been built against this record.
+    def _note_observer(self) -> None:
+        """Mark that a middleware has been built against this record.
 
-        Called by :func:`~maf_sandbox.file_store_provenance_middleware`, which is the only thing
-        that fills a record — so until it has been called, every path is unwritten because
-        nothing was ever watching, and not because nothing was written.  A ``trusted`` floor
-        cannot be honoured in that state, and :meth:`integrity_of` refuses rather than answering
-        from it.
-
-        **It proves construction, not wiring.**  A host can build the middleware and never add it
-        to the agent's chain, and nothing here can see that: a record has no view of the chain it
-        is not on.  What this closes is the mistake that is actually made — declaring a floor and
-        forgetting the middleware entirely.
+        Private because constructing :func:`~maf_sandbox.file_store_provenance_middleware` is the
+        only supported way to lift the refusal in :meth:`integrity_of` — a caller that could set
+        this directly could clear the refusal without restoring the observation it stands for.
         """
         with self._lock:
             self._observed = True
@@ -162,7 +155,7 @@ class FileStoreProvenance:
 
         Raises:
             ValueError: where the floor is :data:`~maf_sandbox.SourceIntegrity.TRUSTED` and no
-                middleware was ever built against this record — see :meth:`note_observer`.  The
+                middleware was ever built against this record.  The
                 floor is a claim about the paths *no tool call wrote*, and with nothing observing
                 the calls there is no such thing as a path a tool call wrote: every path would
                 answer trusted, model-written ones included.
