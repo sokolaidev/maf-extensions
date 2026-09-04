@@ -35,7 +35,11 @@ dependencies = [
     # import, and that one fails at the call, where no import check is looking. The number
     # itself is below, and `scripts/set_dependents_range.py` moves it — so this says which
     # release the floor is for, never which release that is.
-    "maf-sandbox>=0.31.0,<0.32",
+    # 0.32.0, not 0.31.0: this release is breaking, so it lands outside every published
+    # dependent's `<0.32` ceiling — a version nothing already installed can reach is one
+    # that breaks nobody. Typed into the squash box as `Release-As: 0.32.0`; core 0.31.0
+    # is skipped. The backends widened separately, in #880, because they can.
+    "maf-sandbox>=0.32.0,<0.33",
     # The `@tool` decorator. MAF is a genuine dependency of the tool itself, not of the host
     # application.
     "agent-framework-core>=1.13.0,<2",
