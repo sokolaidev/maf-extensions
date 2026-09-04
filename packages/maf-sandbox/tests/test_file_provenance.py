@@ -256,12 +256,23 @@ class TestTheWriteToolSetMatchesTheFramework:
         )
 
     def test_every_observed_tool_names_its_path_the_same_way(self):
-        """The middleware reads one argument name for all four, so they must agree on it."""
+        """The middleware reads one argument name for all four, so they must agree on it.
+
+        Read out of the module source rather than through `inspect.signature`: these tools are
+        closures built inside `FileAccessProvider`'s context hook and decorated into `FunctionTool`s,
+        so they are not attributes of the class and there is nothing to take a signature from
+        without constructing a provider and driving that hook.
+        """
         agent_framework = pytest.importorskip("agent_framework")
         import inspect
         import re
 
-        source = inspect.getsource(inspect.getmodule(agent_framework.FileAccessProvider))
+        module = inspect.getmodule(agent_framework.FileAccessProvider)
+        assert module is not None, (
+            "FileAccessProvider has no resolvable module, so its write tools' signatures cannot "
+            "be read and nothing checks that they still name their path `file_name`."
+        )
+        source = inspect.getsource(module)
         for tool in sorted(FILE_STORE_WRITE_TOOLS):
             signature = re.search(rf"async def {tool}\(([^)]*)\)", source)
             assert signature is not None, f"{tool} is no longer defined where this reads it"

@@ -18,6 +18,7 @@ convention a caller could break.
 
 from __future__ import annotations
 
+import re
 import threading
 
 from ._protocol import SourceIntegrity
@@ -47,6 +48,9 @@ FILE_STORE_WRITE_TOOLS = frozenset(
 #: The argument every one of those tools names its path with.
 PATH_ARGUMENT = "file_name"
 
+#: One pass over the string, rather than a loop that rescans it for each pair it removes.
+_REPEATED_SEPARATORS = re.compile(r"/+")
+
 
 def store_key(path: str) -> str:
     """``path`` as the store will hold it, so a record files under the key a read will use.
@@ -64,10 +68,7 @@ def store_key(path: str) -> str:
     *collapsing* half is mirrored; the rejections that raise are the provider's to make, and a
     path it refuses is one it never wrote.
     """
-    collapsed = path.strip().replace("\\", "/")
-    while "//" in collapsed:
-        collapsed = collapsed.replace("//", "/")
-    return collapsed
+    return _REPEATED_SEPARATORS.sub("/", path.strip().replace("\\", "/"))
 
 
 class FileStoreProvenance:
