@@ -103,7 +103,7 @@ _HEALTHY = f"""\
   [measured] routed plain spec -> 'in-process'
 
   [measured] the routed backend runs: 'routed per spec'
-  the routed sandbox is disposed, by the same scope purge act 5 measures
+  [measured] act 6 cleanup: clean
 
   [measured] Completed 6 of 6 acts. Disposed 2 sandbox(es) across 2 backends.
 """
@@ -333,6 +333,17 @@ class TestAModelCannotForgeAMeasurement:
         assert any("appears 2 times" in r for r in reasons), reasons
         assert any("none of them can be trusted" in r for r in reasons), reasons
 
+    def test_a_quoted_footer_cannot_supply_the_completion(self):
+        """The footer was the one pattern not line-anchored, so a reply quoting it could hide
+        a real five-of-six run behind a six-of-six the model wrote."""
+        forged = _HEALTHY.replace(
+            "  [measured] Completed 6 of 6 acts.",
+            "> [measured] Completed 6 of 6 acts. Disposed 2 sandbox(es) across 2 backends.\n"
+            "  [measured] Completed 5 of 6 acts.",
+        )
+        reasons = check.assess(forged)
+        assert any("5 of 6 acts completed" in r for r in reasons), reasons
+
     def test_untagged_prose_answers_nothing(self):
         """Every needle this file looks for, written by the model, tagged by nobody."""
         prose = (
@@ -385,6 +396,48 @@ class TestTheRoutingAct:
             "  [measured] routed plain spec -> 'in-process'\n",
             "  [measured] routed plain spec -> 'in-process'\n"
             "  [measured] routed novel spec -> 'docker'\n",
+        )
+        reasons = check.assess(extra)
+        assert any("knows nothing about" in r for r in reasons), reasons
+
+    def test_a_purge_that_left_something_behind_is_caught(self):
+        """`dispose_scope` reports a failure rather than raising one, so the act prints what
+        it said. Without reading that, a leaked container passes with every other line intact."""
+        leaked = _HEALTHY.replace(
+            "act 6 cleanup: clean", "act 6 cleanup: refused: the engine said no"
+        )
+        reasons = check.assess(leaked)
+        assert any("still there" in r for r in reasons), reasons
+
+    def test_a_missing_cleanup_line_is_caught(self):
+        reasons = check.assess(_HEALTHY.replace("  [measured] act 6 cleanup: clean\n", ""))
+        assert any("act 6 cleanup" in r for r in reasons), reasons
+
+    def test_a_doubled_cleanup_line_is_refused(self):
+        doubled = _HEALTHY.replace(
+            "  [measured] act 6 cleanup: clean\n",
+            "  [measured] act 6 cleanup: clean\n  [measured] act 6 cleanup: refused\n",
+        )
+        reasons = check.assess(doubled)
+        assert any("appears 2 times" in r for r in reasons), reasons
+
+    def test_a_second_execution_marker_is_refused_rather_than_resolved(self):
+        """The first-match-wins the routed pair rejects, kept out of the marker too."""
+        doubled = _HEALTHY.replace(
+            "  [measured] the routed backend runs: 'routed per spec'\n",
+            "  [measured] the routed backend runs: 'routed per spec'\n"
+            "  [measured] the routed backend runs: 'something else'\n",
+        )
+        reasons = check.assess(doubled)
+        assert any("appears 2 times" in r for r in reasons), reasons
+
+    def test_a_route_label_with_punctuation_is_still_seen(self):
+        """`\\w+` would skip `novel-route` entirely, so the unexpected-label check never
+        fired on exactly the labels least likely to be ours."""
+        extra = _HEALTHY.replace(
+            "  [measured] routed plain spec -> 'in-process'\n",
+            "  [measured] routed plain spec -> 'in-process'\n"
+            "  [measured] routed novel-route spec -> 'docker'\n",
         )
         reasons = check.assess(extra)
         assert any("knows nothing about" in r for r in reasons), reasons

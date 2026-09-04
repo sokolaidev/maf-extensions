@@ -444,16 +444,8 @@ async def act_five_disposal_reaches_everyone() -> tuple[int, int]:
 async def act_six_the_spec_picks() -> None:
     """Act 2's refusal, served — the same two backends, in the same order, one keyword apart.
 
-    This is the whole of what per-spec selection changes, and running it directly after act 2
-    is the argument: nothing about the backends differs, nothing about the spec differs, and
-    the router reads past the first one only because the host asked it to.
-
-    The *plain* spec is here for the property that makes the feature safe to have at all.
-    Both backends can serve it, and it goes to the first registered one — the same backend the
-    fixed selection resolves to. Routing can only ever serve what is refused today; it never
-    moves a workload that already runs, which is why turning it on cannot quietly relocate
-    existing traffic onto a backend that charges for it.
-
+    Two specs are routed rather than one. The *plain* one both backends can serve goes to the
+    first registered, which is what says routing never moves a workload that already runs.
     """
     print("== 6. The spec picks, when the host asks it to ==\n")
 
@@ -487,13 +479,15 @@ async def act_six_the_spec_picks() -> None:
         )
         print(f"{MEASURED}the routed backend runs: {result.stdout.strip()!r}")
     finally:
-        # No total printed, and the omission is deliberate: one sandbox was created here,
-        # and `dispose_scope` asks both backends — the in-process one answers a purge with
-        # a fixed number of its own, so a total printed here would not be a measurement of
-        # this act. Act 5 is where the disposal claim is made, over two acquires that
-        # really happened on two backends.
-        await router.dispose_scope(KEY.scope, KEY.thread_id)
-        print("  the routed sandbox is disposed, by the same scope purge act 5 measures\n")
+        # What the purge *said*, not how many it counted. The count is act 5's claim, made
+        # over two acquires that really happened; here the in-process backend answers with a
+        # fixed number of its own, so a total would not be a measurement. Whether anything
+        # was left behind is a measurement, and it is the one that matters — `dispose_scope`
+        # reports a failure rather than raising it, so discarding its answer is how this act
+        # leaks a container while the run still reads clean.
+        purge = await router.dispose_scope(KEY.scope, KEY.thread_id)
+        left = "clean" if purge.undisposed is None else str(purge.undisposed)
+        print(f"{MEASURED}act 6 cleanup: {left}\n")
 
     print("  The refusal in act 2 and the route here differ by `selection=` and nothing else.")
     print("  It is off by default, and the reason is a bill rather than a scruple: what it")
@@ -508,8 +502,8 @@ async def act_six_the_spec_picks() -> None:
 async def main() -> int:
     """Six acts, and every number in the footer is read back rather than written down.
 
-    One of the six can be absent from a healthy run and says so out loud: act 4, when any of
-    its four variables is unset.
+    Act 4 skips itself when any of its four variables is unset, and the footer then reports
+    five. That is a partial run, not a healthy one: the live check requires six.
     """
     act_one_the_switch()
     act_two_the_spec_cannot_pick()

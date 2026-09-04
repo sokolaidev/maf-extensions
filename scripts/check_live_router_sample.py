@@ -3,7 +3,7 @@
     python samples/11_router_two_backends/agent.py | tee out.txt
     python scripts/check_live_router_sample.py out.txt   # or: ... | python …
 
-Two assertions carry this file, and they are load-bearing for different reasons.
+Four assertions carry this file, and they are load-bearing for different reasons.
 
 The **disposal count**. A sandbox is acquired on each of the two registered backends and only
 one of them is serving, so `dispose_scope` returning **2** is the whole claim that disposal fans
@@ -16,7 +16,7 @@ a sandbox that confines nothing — a container with the host's network would re
 and a container that could not start would fail under both. Only the pair says the deployment's
 wiring is what decided it.
 
-The **routed pair**, for the same reason in a different axis. Act 6 routes two specs, and both
+The **routed pair**, for the same reason in a different axis, and the **cleanup line** beside it — `dispose_scope` reports a failure rather than raising one, so an act that discarded its answer would leak a container while the run read clean. Act 6 routes two specs, and both
 answers are required: the one act 2 was refused for must reach `docker`, and the one both
 backends can serve must stay on `in-process`. The first alone would be consistent with a router
 that simply preferred the stronger backend, which is the behaviour that would quietly move
@@ -65,7 +65,7 @@ _EXECUTED = "routed"
 _ROUTED = {"files_out": "docker", "plain": "in-process"}
 
 _ROUTED_LINE = re.compile(
-    rf"^\s*{re.escape(_TAG)}\s+routed (\w+) spec\s+->\s+'([^']*)'", re.MULTILINE
+    rf"^\s*{re.escape(_TAG)}\s+routed (\S+) spec\s+->\s+'([^']*)'", re.MULTILINE
 )
 
 #: What act 6's container printed. Distinct from act 5's marker on purpose: a check that
@@ -88,10 +88,29 @@ _RESTORE_EXPECTED = {"closed": "FAILED", "allowlist": "RESTORED"}
 #: what it observed — the first from `dispose_scope`'s return, the second from the list it
 #: registered — so these compare measurements, not literals the sample printed.
 _FOOTER = re.compile(
-    rf"{re.escape(_TAG)}\s+Completed\s+(\d+)\s+of\s+6\s+acts\.\s+Disposed\s+(\d+)\s+"
+    rf"^\s*{re.escape(_TAG)}\s+Completed\s+(\d+)\s+of\s+6\s+acts\.\s+Disposed\s+(\d+)\s+"
     r"sandbox\(es\)\s+across\s+(\d+)\s+backends",
-    re.IGNORECASE,
+    re.IGNORECASE | re.MULTILINE,
 )
+
+#: `[measured] act 6 cleanup: clean`, or whatever `dispose_scope` reported instead. Its own
+#: line rather than a count, because the count is act 5's: the in-process backend answers a
+#: purge with a fixed number, where what it says about a *failure* is a measurement.
+_CLEANUP = re.compile(rf"^\s*{re.escape(_TAG)}\s+act 6 cleanup:\s*(.+?)\s*$", re.MULTILINE)
+
+
+def _measured_lines(output: str, needle: str) -> list[str]:
+    """Every tagged line holding ``needle``, stripped.
+
+    Callers that must not accept a second, contradicting one count these rather than taking
+    the first — the ambiguity the routed pair rejects, which a marker read with
+    :func:`_measured_line` would otherwise keep.
+    """
+    return [
+        line.lstrip()
+        for line in output.splitlines()
+        if line.lstrip().startswith(_TAG) and needle in line.lstrip()
+    ]
 
 
 def _measured_line(output: str, needle: str) -> str | None:
@@ -217,13 +236,19 @@ def _assess_routing(output: str) -> list[str]:
             "fallen behind or a line something else wrote, and neither may pass silently"
         )
 
-    executed = _measured_line(output, "the routed backend runs:")
-    if executed is None:
+    markers = _measured_lines(output, "the routed backend runs:")
+    if not markers:
         failures.append(
             "no measured 'the routed backend runs:' line — the router chose a backend and "
             "nothing showed the choice reaching a container rather than only a report about it"
         )
+    elif len(markers) > 1:
+        failures.append(
+            f"'the routed backend runs:' appears {len(markers)} times — the act prints it "
+            "once, so taking the first would read whichever came first rather than measure"
+        )
     else:
+        executed = markers[0]
         printed = re.search(r"the routed backend runs:\s*'([^']*)'", executed)
         actual = printed.group(1) if printed else ""
         if actual != _ROUTED_EXECUTED:
@@ -232,6 +257,24 @@ def _assess_routing(output: str) -> list[str]:
                 f"{_ROUTED_EXECUTED!r} — its own marker, not act 5's, so a run that re-read "
                 "the earlier act's file cannot answer for this one"
             )
+
+    cleanup = _CLEANUP.findall(output)
+    if not cleanup:
+        failures.append(
+            "no measured 'act 6 cleanup:' line — `dispose_scope` reports a failure rather "
+            "than raising one, so without this the act's container can be left running and "
+            "every other line here still reads healthy"
+        )
+    elif len(cleanup) > 1:
+        failures.append(
+            f"'act 6 cleanup:' appears {len(cleanup)} times, saying {', '.join(cleanup)} — "
+            "the act prints it once, so none of them can be trusted"
+        )
+    elif cleanup[0] != "clean":
+        failures.append(
+            f"act 6's purge reported {cleanup[0]!r} — a sandbox it created is still there, "
+            "and on a backend that charges for one that is a leak rather than a warning"
+        )
     return failures
 
 
