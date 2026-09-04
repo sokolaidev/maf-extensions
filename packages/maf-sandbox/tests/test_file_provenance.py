@@ -72,35 +72,31 @@ class TestWhatTheRecordAnswers:
     def test_a_recorded_entry_beats_a_trusted_floor(self):
         """The whole point: a trusted store default can never lift bytes the model wrote."""
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
-        record.record("notes.bicep", integrity=SourceIntegrity.UNTRUSTED, content=_PAYLOAD)
-        assert record.integrity_of("notes.bicep", _PAYLOAD) is SourceIntegrity.UNTRUSTED
+        record.record("notes.bicep", integrity=SourceIntegrity.UNTRUSTED)
+        assert record.integrity_of("notes.bicep") is SourceIntegrity.UNTRUSTED
 
-    def test_an_entry_answers_only_while_the_bytes_still_match(self):
-        """Bound to the content, not to the path: an overwrite this never saw falls to the
-        floor rather than going on being answered from a record of what the path used to hold."""
-        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
-        record.record("notes.bicep", integrity=SourceIntegrity.UNTRUSTED, content=_PAYLOAD)
-        assert record.integrity_of("notes.bicep", "something else entirely") is (
-            SourceIntegrity.TRUSTED
-        )
-
-    def test_an_entry_with_no_digest_is_served_for_the_path(self):
-        """What an edit records. Sticky-untrusted is the conservative direction."""
+    def test_an_entry_answers_whatever_the_path_now_holds(self):
+        """An entry is about the path, not a version of its bytes. Binding it to a digest would
+        send a path whose content changed to the floor — and a trusted floor would then answer
+        for a file the model demonstrably wrote."""
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
         record.record("notes.bicep", integrity=SourceIntegrity.UNTRUSTED)
-        assert record.integrity_of("notes.bicep", "anything at all") is SourceIntegrity.UNTRUSTED
-
-    def test_an_entry_answers_when_the_caller_read_nothing_back(self):
-        """A caller with no content in hand still gets the entry rather than the floor."""
-        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
-        record.record("notes.bicep", integrity=SourceIntegrity.UNTRUSTED, content=_PAYLOAD)
         assert record.integrity_of("notes.bicep") is SourceIntegrity.UNTRUSTED
+
+    def test_recording_a_path_twice_is_the_same_answer(self):
+        """Monotone, which is what makes the answer independent of the order two concurrent
+        writes to one path happen to finish in."""
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        record.record("a.txt", integrity=SourceIntegrity.UNTRUSTED)
+        record.record("a.txt", integrity=SourceIntegrity.UNTRUSTED)
+        assert record.integrity_of("a.txt") is SourceIntegrity.UNTRUSTED
+        assert len(record) == 1
 
     def test_forgetting_a_path_returns_it_to_the_floor(self):
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
-        record.record("gone.txt", integrity=SourceIntegrity.UNTRUSTED, content="x")
+        record.record("gone.txt", integrity=SourceIntegrity.UNTRUSTED)
         record.forget("gone.txt")
-        assert record.integrity_of("gone.txt", "x") is SourceIntegrity.TRUSTED
+        assert record.integrity_of("gone.txt") is SourceIntegrity.TRUSTED
         assert len(record) == 0
 
 
@@ -110,26 +106,7 @@ class TestWhatTheMiddlewareRecords:
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
         middleware = file_store_provenance_middleware(record)
         asyncio.run(_run(middleware, _Context(tool, file_name="notes.bicep", content=_PAYLOAD)))
-        assert record.integrity_of("notes.bicep", _PAYLOAD) is SourceIntegrity.UNTRUSTED
-
-    def test_a_write_is_bound_to_the_bytes_it_wrote(self):
-        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
-        middleware = file_store_provenance_middleware(record)
-        asyncio.run(
-            _run(middleware, _Context("file_access_write", file_name="a.txt", content=_PAYLOAD))
-        )
-        assert record.integrity_of("a.txt", "replaced out of band") is SourceIntegrity.TRUSTED
-
-    def test_an_edit_records_no_digest_because_its_result_is_not_in_the_call(self):
-        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
-        middleware = file_store_provenance_middleware(record)
-        asyncio.run(
-            _run(
-                middleware,
-                _Context("file_access_replace", file_name="a.txt", old_string="x", new_string="y"),
-            )
-        )
-        assert record.integrity_of("a.txt", "whatever it holds now") is SourceIntegrity.UNTRUSTED
+        assert record.integrity_of("notes.bicep") is SourceIntegrity.UNTRUSTED
 
     def test_a_delete_keeps_the_path_untrusted(self):
         """A delete's outcome is unknowable here — the tool answers a failure with a sentence,
@@ -139,7 +116,7 @@ class TestWhatTheMiddlewareRecords:
         middleware = file_store_provenance_middleware(record)
         asyncio.run(_run(middleware, _Context("file_access_write", file_name="a.txt", content="x")))
         asyncio.run(_run(middleware, _Context("file_access_delete", file_name="a.txt")))
-        assert record.integrity_of("a.txt", "x") is SourceIntegrity.UNTRUSTED
+        assert record.integrity_of("a.txt") is SourceIntegrity.UNTRUSTED
 
     def test_a_delete_of_a_path_never_written_still_marks_it(self):
         """Same reason from the other side: the call may have failed and left host bytes, but it
@@ -151,9 +128,9 @@ class TestWhatTheMiddlewareRecords:
 
     def test_the_host_can_still_forget_a_path_it_established_is_gone(self):
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
-        record.record("a.txt", integrity=SourceIntegrity.UNTRUSTED, content="x")
+        record.record("a.txt", integrity=SourceIntegrity.UNTRUSTED)
         record.forget("a.txt")
-        assert record.integrity_of("a.txt", "x") is SourceIntegrity.TRUSTED
+        assert record.integrity_of("a.txt") is SourceIntegrity.TRUSTED
 
     def test_the_path_is_read_after_the_body_so_an_expanded_name_is_recorded(self):
         """The information-flow middleware expands a variable reference in any string argument,
@@ -171,8 +148,8 @@ class TestWhatTheMiddlewareRecords:
             await middleware.process(context, call_next)
 
         asyncio.run(expand_then_run())
-        assert record.integrity_of("notes.bicep", "x") is SourceIntegrity.UNTRUSTED
-        assert record.integrity_of("[var_abc123]", "x") is SourceIntegrity.TRUSTED
+        assert record.integrity_of("notes.bicep") is SourceIntegrity.UNTRUSTED
+        assert record.integrity_of("[var_abc123]") is SourceIntegrity.TRUSTED
 
     def test_a_tool_that_is_not_a_write_records_nothing(self):
         record = FileStoreProvenance()
@@ -187,11 +164,12 @@ class TestWhatTheMiddlewareRecords:
         context = _Context("file_access_write")
         context.arguments = _Model(file_name="a.txt", content=_PAYLOAD)
         asyncio.run(_run(middleware, context))
-        assert record.integrity_of("a.txt", _PAYLOAD) is SourceIntegrity.UNTRUSTED
+        assert record.integrity_of("a.txt") is SourceIntegrity.UNTRUSTED
 
-    def test_a_body_that_raises_records_nothing(self):
-        """Nothing was written, so nothing is claimed about the path."""
-        record = FileStoreProvenance()
+    def test_a_body_that_commits_and_then_raises_still_records(self):
+        """The entry is written in a `finally`. A tool that reaches the store and then fails
+        would otherwise leave the bytes it wrote answering the host's floor."""
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
         middleware = file_store_provenance_middleware(record)
         asyncio.run(
             _run(
@@ -200,7 +178,27 @@ class TestWhatTheMiddlewareRecords:
                 raises=True,
             )
         )
-        assert len(record) == 0
+        assert record.integrity_of("a.txt") is SourceIntegrity.UNTRUSTED
+
+    def test_two_concurrent_writes_to_one_path_agree(self):
+        """Calls run concurrently and finish in an order nothing here controls. Both record the
+        same fact about the path, so neither can leave it answering the floor."""
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        middleware = file_store_provenance_middleware(record)
+
+        async def write(content: str, hold: float) -> None:
+            async def call_next() -> None:
+                await asyncio.sleep(hold)
+
+            await middleware.process(
+                _Context("file_access_write", file_name="shared.txt", content=content), call_next
+            )
+
+        async def both() -> None:
+            await asyncio.gather(write("first", 0.02), write("second", 0.0))
+
+        asyncio.run(both())
+        assert record.integrity_of("shared.txt") is SourceIntegrity.UNTRUSTED
 
     def test_a_write_naming_no_path_warns_rather_than_recording_silently(self, caplog):
         record = FileStoreProvenance()
@@ -214,7 +212,7 @@ class TestWhatTheMiddlewareRecords:
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
         middleware = file_store_provenance_middleware(record, also_observes={"house_write"})
         asyncio.run(_run(middleware, _Context("house_write", file_name="a.txt", content="x")))
-        assert record.integrity_of("a.txt", "x") is SourceIntegrity.UNTRUSTED
+        assert record.integrity_of("a.txt") is SourceIntegrity.UNTRUSTED
 
     def test_the_call_still_runs_for_every_tool(self):
         """The middleware observes; it never stands between a call and its body."""
@@ -302,8 +300,8 @@ class TestTheStoreKeyMatchesTheProvider:
 
     def test_a_record_filed_under_one_spelling_is_found_under_another(self):
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
-        record.record("dir\\a.txt", integrity=SourceIntegrity.UNTRUSTED, content="x")
-        assert record.integrity_of("dir/a.txt", "x") is SourceIntegrity.UNTRUSTED
+        record.record("dir\\a.txt", integrity=SourceIntegrity.UNTRUSTED)
+        assert record.integrity_of("dir/a.txt") is SourceIntegrity.UNTRUSTED
 
     def test_a_write_records_under_the_normalised_key(self):
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
@@ -311,4 +309,4 @@ class TestTheStoreKeyMatchesTheProvider:
         asyncio.run(
             _run(middleware, _Context("file_access_write", file_name="dir//a.txt", content="x"))
         )
-        assert record.integrity_of("dir/a.txt", "x") is SourceIntegrity.UNTRUSTED
+        assert record.integrity_of("dir/a.txt") is SourceIntegrity.UNTRUSTED

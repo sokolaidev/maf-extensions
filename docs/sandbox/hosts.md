@@ -158,16 +158,16 @@ provenance = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
 middleware = [LabelTrackingFunctionMiddleware(), file_store_provenance_middleware(provenance)]
 
 # …and later, wherever the host answers what a name is worth:
-integrity = provenance.integrity_of("notes.bicep", "the bytes just read back")
+integrity = provenance.integrity_of("notes.bicep")
 ```
 
-That list goes on the agent's `middleware=`. Order does not matter: what the record takes off a call is the *path*, which is a name the model typed and which no expansion rewrites.
+That list goes on the agent's `middleware=`. Order does not matter, but not because the path is untouched: the information-flow middleware expands a variable reference in **any** string argument, `file_name` included, and edits the call's arguments in place. The record reads the path *after* the body has run, so it sees the name the store was written under whichever side of that middleware it sits on, and keys it through `store_key` because the provider normalises before it writes.
 
 **An observed write always records `untrusted`, and nothing is resolved to decide that.** Every route by which the model puts bytes into the store runs through the model: content behind a `[var_id]` is there because the middleware *hid* it, and it hides what is untrusted; content typed into `content=` was authored by the model. So the record needs no access to the framework's variable store, and the answer does not depend on `hide_threshold` staying where it is — a host that moves it makes the first of those two less precise and this still records untrusted, which is the fail-safe direction.
 
 **The floor is the host's, and an entry always beats it.** `floor=` says what applies to a path *no tool call ever wrote* — content placed before the run, or written past the store object by another process. `None`, the default, means unestablished: this host has not said. A recorded entry wins over the floor unconditionally, which is the property the whole record exists for — a trusted floor can never lift bytes the model wrote.
 
-**An entry is bound to the bytes, not to the path.** A write records the content's digest beside the label and the entry answers only while the path still holds those bytes, so an overwrite this never saw falls back to the floor rather than going on answering from a record of what the path used to hold. The two *edit* tools describe a change rather than a result, so their entries carry no digest and stay untrusted for the path outright — the conservative direction. A delete forgets the path.
+**An entry is about the path, not about a version of its content.** It records that the model has written there, which stays true of every later version — nothing the model writes afterwards makes the file host-authored again. Binding an entry to a digest of the bytes would say the opposite: a path whose content changed would stop matching and fall to the floor, and a trusted floor would then answer for a file the model demonstrably wrote. It also makes the record **monotone**, which is what keeps it right when two calls write one path at once, and when a body commits to the store and then raises — the entry is written in a `finally`, so those bytes never answer the floor. Nothing here forgets a path: a delete is recorded like any other mutation, because the tools answer a failed delete with a sentence rather than an exception and an observer cannot tell one from a success. `FileStoreProvenance.forget` is the host's, for when it can establish the file is gone.
 
 **One record, one store.** A path is the whole key: the tools carry no store identity to key on, so a host wiring two providers over two stores needs one record each. Reading a kind against the wrong one answers about a file it never read.
 

@@ -50,12 +50,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
 from ._error_detail import error_detail
-from ._file_provenance import (
-    FILE_STORE_WRITE_TOOLS,
-    PATH_ARGUMENT,
-    WHOLE_CONTENT_ARGUMENT,
-    FileStoreProvenance,
-)
+from ._file_provenance import FILE_STORE_WRITE_TOOLS, PATH_ARGUMENT, FileStoreProvenance
 from ._outputs import OutputSink, landing_outputs, missing_sink_refusal, spec_lands_artifacts
 from ._protocol import (
     CallerContext,
@@ -263,6 +258,14 @@ def file_store_provenance_middleware(
     model-driven however the content got there, so unlike
     :func:`~maf_sandbox.positions_holding_hidden_content` no private framework record is read.
 
+    **The entry is written in a ``finally``, and it is about the path rather than its bytes.**
+    Neither is tidiness. A body may commit to the store and then raise, and an entry written only
+    on the way out of a successful call would leave those bytes answering the host's floor. And
+    calls run concurrently: two writes to one path finish in an order nothing here controls, so an
+    entry that described a *version* of the content could be overwritten by one describing a
+    version the store no longer holds. Recording the path alone is monotone — every observed write
+    records the same thing — which is what makes the answer independent of that order.
+
     **A recorded write is not the same as a successful one, and a delete is recorded too.** The
     tools answer a refusal with a *string* rather than raising, so nothing here can tell a write
     that landed from one that was refused — and the same is true of a delete. Every observed call
@@ -270,8 +273,7 @@ def file_store_provenance_middleware(
     refused write marks a path the model did not change, and a failed delete keeps the entry for
     bytes that are still there. Forgetting a path on a delete would do the opposite, returning it
     to a trusted floor while the model's content remained, so the middleware never calls
-    :meth:`FileStoreProvenance.forget` — that is the host's, for when it can establish removal. A
-    body that *raises* records nothing, which is the same direction: nothing was written.
+    :meth:`FileStoreProvenance.forget` — that is the host's, for when it can establish removal.
 
     Args:
         record: Where observed writes land, and what a kind reads back.
@@ -288,28 +290,22 @@ def file_store_provenance_middleware(
             if name not in observed:
                 await call_next()
                 return
-            await call_next()
-            # Read *after* the body: the information-flow middleware expands a variable
-            # reference in any string argument, this one included, and it does that in place.
-            # Reading first would file the entry under `[var_id]` while the store holds the
-            # name that expanded to — a lookup miss, and a miss falls to the host's floor.
-            # Reading afterwards is correct whichever side of that middleware this sits on.
-            path = _store_path_named_by(context)
-            if path is None:
-                # Nothing to key an entry on. Loud rather than silent: the tool ran, so a
-                # write may have landed, and this record now has a hole a reader cannot see.
-                _DEFAULT_LOGGER.warning(
-                    "file_store_provenance_middleware: %r ran without a %r argument, so the "
-                    "path it wrote is unknown and nothing was recorded for it.",
-                    name,
-                    PATH_ARGUMENT,
-                )
-                return
-            record.record(
-                path,
-                integrity=SourceIntegrity.UNTRUSTED,
-                content=_whole_store_content_named_by(context),
-            )
+            try:
+                await call_next()
+            finally:
+                # In a `finally`, and read afterwards, for two separate reasons. A body may
+                # commit to the store and then raise, and an entry is what keeps those bytes
+                # from answering the host's floor. And the path must be the expanded one.
+                path = _store_path_named_by(context)
+                if path is None:
+                    _DEFAULT_LOGGER.warning(
+                        "file_store_provenance_middleware: %r ran without a %r argument, so "
+                        "the path it wrote is unknown and nothing was recorded for it.",
+                        name,
+                        PATH_ARGUMENT,
+                    )
+                else:
+                    record.record(path, integrity=SourceIntegrity.UNTRUSTED)
 
     return _FileStoreProvenance()
 
@@ -338,20 +334,6 @@ def _store_path_named_by(context: Any) -> str | None:
         return None
     path: Any = arguments.get(PATH_ARGUMENT)
     return path if isinstance(path, str) and path else None
-
-
-def _whole_store_content_named_by(context: Any) -> str | None:
-    """The whole content this call writes, where the call carries it.
-
-    ``None`` for the edit tools, whose arguments describe a change rather than a result — an
-    entry recorded from one of those carries no digest, and :meth:`FileStoreProvenance.record`
-    says what that costs.
-    """
-    arguments = _write_call_arguments(context)
-    if arguments is None:
-        return None
-    content: Any = arguments.get(WHOLE_CONTENT_ARGUMENT)
-    return content if isinstance(content, str) else None
 
 
 def _reachable_middleware() -> Any | None:

@@ -30,7 +30,6 @@ so a trusted floor can never lift bytes the model wrote.
 
 from __future__ import annotations
 
-import hashlib
 import threading
 
 from ._protocol import SourceIntegrity
@@ -38,7 +37,6 @@ from ._protocol import SourceIntegrity
 __all__ = [
     "FILE_STORE_WRITE_TOOLS",
     "PATH_ARGUMENT",
-    "WHOLE_CONTENT_ARGUMENT",
     "FileStoreProvenance",
     "store_key",
 ]
@@ -84,22 +82,6 @@ def store_key(path: str) -> str:
     return collapsed
 
 
-#: The argument carrying the whole of a file's new content, on the one tool that has it.
-#: ``file_access_replace`` and ``file_access_replace_lines`` describe an *edit*, so what the
-#: path ends up holding is not in their arguments and an entry for them carries no digest.
-WHOLE_CONTENT_ARGUMENT = "content"
-
-
-def _digest(content: str) -> str:
-    """A content digest, for binding an entry to the bytes it describes rather than to a path.
-
-    Not a security primitive and not defending against a chosen-prefix attack: both sides of
-    every comparison are content this process already holds, and the question asked is "are
-    these the same bytes", never "did someone forge these bytes".
-    """
-    return hashlib.sha256(content.encode("utf-8", errors="surrogatepass")).hexdigest()
-
-
 class FileStoreProvenance:
     """What a host knows about the integrity of the content in one agent file store.
 
@@ -123,30 +105,30 @@ class FileStoreProvenance:
         # Guarded because a synchronous tool body runs on a `asyncio.to_thread` pool thread
         # while the middleware recording writes runs on the event loop.
         self._lock = threading.Lock()
-        self._entries: dict[str, tuple[SourceIntegrity, str | None]] = {}
+        self._entries: dict[str, SourceIntegrity] = {}
 
     @property
     def floor(self) -> SourceIntegrity | None:
         """What a path with no recorded entry is worth, as the host declared it."""
         return self._floor
 
-    def record(self, path: str, *, integrity: SourceIntegrity, content: str | None = None) -> None:
-        """Record that ``path`` holds content of ``integrity``.
+    def record(self, path: str, *, integrity: SourceIntegrity) -> None:
+        """Record that an agent-driven call wrote ``path``.
 
         ``path`` is keyed through :func:`store_key`, here and in :meth:`integrity_of` alike, so a
         record filed under one spelling is found under every spelling of the same file.
 
-        ``content`` binds the entry to the bytes it describes: where it is given, the entry is
-        served only while the path still holds those bytes, so an overwrite this never saw
-        cannot keep serving the old answer. Where it is not — an edit, whose result is not in
-        the call that made it — the entry has no digest and is served for the path outright,
-        which is the conservative direction for the untrusted entries this records.
+        **An entry is about the path, not about a version of its content.**  It records that the
+        model has written here, which stays true of every later version: nothing the model writes
+        afterwards makes the file host-authored again.  Binding the entry to a digest of the bytes
+        would say the opposite — a path whose content changed would stop matching and fall to the
+        floor, and a trusted floor would then answer for a file the model demonstrably wrote.
+        That also makes the record **monotone**, which is what keeps it correct when two calls
+        write the same path at once: both record the same thing, so the order they finish in
+        cannot change the answer.
         """
         with self._lock:
-            self._entries[store_key(path)] = (
-                SourceIntegrity(str(integrity)),
-                None if content is None else _digest(content),
-            )
+            self._entries[store_key(path)] = SourceIntegrity(str(integrity))
 
     def forget(self, path: str) -> None:
         """Drop any entry for ``path``, returning it to :attr:`floor`.
@@ -160,22 +142,15 @@ class FileStoreProvenance:
         with self._lock:
             self._entries.pop(store_key(path), None)
 
-    def integrity_of(self, path: str, content: str | None = None) -> SourceIntegrity | None:
+    def integrity_of(self, path: str) -> SourceIntegrity | None:
         """What ``path`` is worth, or ``None`` where nothing here establishes it.
 
-        ``content`` is what the caller just read. Pass it wherever you have it: an entry
-        carrying a digest answers only while the bytes still match, and falls to the floor when
-        they do not, so a path rewritten by something that is not a tool call cannot go on
-        being answered from a record of what it used to hold.
+        An entry answers for as long as it stands; only :meth:`forget` removes one.  A path with
+        no entry takes :attr:`floor`.
         """
         with self._lock:
             entry = self._entries.get(store_key(path))
-        if entry is None:
-            return self._floor
-        integrity, digest = entry
-        if digest is not None and content is not None and _digest(content) != digest:
-            return self._floor
-        return integrity
+        return self._floor if entry is None else entry
 
     def __len__(self) -> int:
         """How many paths carry an entry. For a host's own assertions and this suite's."""
