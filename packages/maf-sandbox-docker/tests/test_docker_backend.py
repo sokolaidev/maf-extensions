@@ -43,6 +43,7 @@ from maf_sandbox_docker._backend import (
     _ATTACHED_NETWORKS_FORMAT,
     _GATEWAY_MODE_ISOLATED,
     _GATEWAY_MODE_OPTS,
+    _NETWORK_ENDPOINTS_FORMAT,
     _container_name,
     _DockerResult,
     _network_name,
@@ -191,6 +192,7 @@ def _machine(
     overrides: dict[tuple[str, ...], _DockerResult] | None = None,
     networks: Mapping[str, str] | None = None,
     attached: Mapping[str, Sequence[str]] | None = None,
+    peers: Mapping[str, Sequence[str]] | None = None,
 ):
     """A responder describing which containers and images exist, and how a command answers.
 
@@ -218,6 +220,12 @@ def _machine(
     live_stopped = set(stopped)
     live_networks = dict(networks or {})
     live_attached = {k: list(v) for k, v in (attached or {}).items()}
+    live_endpoints: dict[str, set[str]] = {}
+    # A container the test declares as already there is already on its network, the way
+    # one this responder created would be.
+    for _c in live_running | live_stopped:
+        for _n in live_attached.get(_c, [_network_name(_c)]):
+            live_endpoints.setdefault(_n, set()).add(_c)
     ranked = sorted((overrides or {}).items(), key=lambda item: len(item[0]), reverse=True)
 
     def respond(args: tuple[str, ...]) -> _DockerResult:
@@ -229,6 +237,8 @@ def _machine(
             live_running.discard(name)
             live_stopped.discard(name)
             live_attached.pop(name, None)
+            for holders in live_endpoints.values():
+                holders.discard(name)
             return _DockerResult(0, name.encode() + b"\n", "")
         if args[:3] == ("run", "-d", "--name"):
             # A create the engine accepted leaves a running container on the network it was
@@ -238,7 +248,9 @@ def _machine(
             name = args[3]
             live_running.add(name)
             if "--network" in args:
-                live_attached[name] = [args[args.index("--network") + 1]]
+                net = args[args.index("--network") + 1]
+                live_attached[name] = [net]
+                live_endpoints.setdefault(net, set()).add(name)
             return _DockerResult(0, name.encode() + b"\n", "")
         if args[:2] == ("image", "inspect"):
             image = args[2]
@@ -253,6 +265,13 @@ def _machine(
                 return _DockerResult(1, b"", f"error: no such object: {name}")
             on = live_attached.get(name, [_network_name(name)])
             return _DockerResult(0, (" ".join(on) + " ").encode(), "")
+        if args[:4] == ("network", "inspect", "-f", _NETWORK_ENDPOINTS_FORMAT):
+            net = args[-1]
+            if net not in live_networks:
+                return _DockerResult(1, b"", f"Error response from daemon: network {net} not found")
+            # What this responder has put on it, plus any intruder a test named.
+            on = live_endpoints.get(net, set()) | set((peers or {}).get(net, ()))
+            return _DockerResult(0, (" ".join(sorted(on)) + " ").encode(), "")
         if args[:2] == ("network", "inspect"):
             net = args[-1]
             modes = live_networks.get(net)
@@ -261,6 +280,7 @@ def _machine(
             return _DockerResult(0, modes.encode() + b"\n", "")
         if args[:2] == ("network", "rm"):
             net = args[-1]
+            live_endpoints.pop(net, None)
             if live_networks.pop(net, None) is None:
                 return _DockerResult(1, b"", f"Error: No such network: {net}")
             return _DockerResult(0, net.encode() + b"\n", "")
@@ -2964,6 +2984,11 @@ class TestAllowlistReuse:
                 return _DockerResult(1, b"", "Conflict. The name is already in use")
             if args[:3] == ("inspect", "-f", _ATTACHED_NETWORKS_FORMAT) and args[-1] == _AL:
                 return _DockerResult(0, (" ".join(on) + " ").encode(), "")
+            if args[:4] == ("network", "inspect", "-f", _NETWORK_ENDPOINTS_FORMAT):
+                # The racer's container is this responder's invention, so the network's own
+                # endpoint list has to know about it too.
+                held = {_AL_PROXY} | ({_AL} if appeared else set())
+                return _DockerResult(0, (" ".join(sorted(held)) + " ").encode(), "")
             if args[0] == "inspect" and args[-1] == _AL:
                 if not appeared:
                     return _DockerResult(1, b"", f"error: no such object: {_AL}")
@@ -3324,6 +3349,25 @@ class TestASandboxLeftOnAnUnusableNetwork:
         backend, fake = _backend_with(moved_while_reading, config=_ALLOW_CONFIG)
         with pytest.raises(RuntimeError, match="cannot be served"):
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("rm", "-f", _AL) != []
+
+    def test_a_third_container_on_the_sandboxs_network_is_caught(self):
+        """The workload's own attachment can be exactly right while the network it sits on
+        holds a peer. Containers on one internal network reach each other, so a peer holding a
+        second network is a route around the proxy that no allowlist describes — measured on
+        29.7.2: the workload reaches such a peer, and the peer holds `bridge`.
+        """
+        backend, fake = _backend_with(
+            _machine(
+                running=[_AL],
+                networks={_AL_NET: _UNADDRESSED},
+                peers={_AL_NET: ["someone-elses-container"]},
+            ),
+            _ALLOW_CONFIG,
+        )
+        with pytest.raises(RuntimeError, match="also holds someone-elses-container") as raised:
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert "can reach directly" in str(raised.value)
         assert fake.matching("rm", "-f", _AL) != []
 
     def test_a_network_replaced_under_its_own_name_is_caught(self):

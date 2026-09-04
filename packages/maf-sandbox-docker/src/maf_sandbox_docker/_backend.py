@@ -138,6 +138,10 @@ _GATEWAY_MODE_MIN_ENGINE = "28.0.0"
 #: endpoint too many is the allowlist gone.  A container this backend did not create carries
 #: whatever its creator chose, so a matching *name* is never evidence of a topology.
 _ATTACHED_NETWORKS_FORMAT = "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}"
+#: Lists the containers attached to a network, space-separated.  Who else is on the sandbox's
+#: own network decides what the workload can reach as surely as its own attachment does: a
+#: peer there is directly reachable, and a dual-homed one is a route around the proxy.
+_NETWORK_ENDPOINTS_FORMAT = "{{range $k, $v := .Containers}}{{$v.Name}} {{end}}"
 #: Reads every mode back off a network, space-separated, an option the network does not carry
 #: printing empty.  Built from the options themselves so a family can never be set without
 #: being checked: reading one of two would adopt a network still addressed on the other.
@@ -1824,31 +1828,42 @@ class DockerSandboxBackend:
         return _reads_as_absent(result.stderr, name)
 
     async def _refuse_a_sandbox_that_is_not_on_what_this_backend_built(self, name: str) -> None:
-        """The last word before an allowlisted sandbox is handed out: network *and* attachment.
+        """The last word before an allowlisted sandbox is handed out: the whole topology.
 
-        Both, because the name is shared: a network swapped for an addressed one under the same
-        name satisfies an attachment check that only compares names, and a container moved off
-        an intact network satisfies a bridge check that only reads the network.  Neither read
-        alone establishes what the workload can reach.
+        Three reads, because each is satisfiable while the others are wrong.  A network swapped
+        for an addressed one under the same name passes an attachment check that compares
+        names; a container moved off an intact network passes a bridge check that only reads
+        the network; and both pass while a *third* container sits on that network holding a
+        second one, which the workload reaches directly and which routes around the proxy for
+        it.  What the workload can reach is a property of all three.
 
         Raises:
-            RuntimeError: when either is wrong.  The container goes first — ``exec`` detaches,
-                so one that reached this point may hold processes from earlier calls, and they
-                keep whatever the wrong topology reaches for as long as it runs.  A removal the
-                engine declined is reported as such, since that is the opposite instruction.
+            RuntimeError: when any of them is wrong.  The container goes first — ``exec``
+                detaches, so one that reached this point may hold processes from earlier calls,
+                and they keep whatever the wrong topology reaches for as long as it runs.  A
+                removal the engine declined is reported as such, since that is the opposite
+                instruction.
         """
         net = _network_name(name)
         bridge = await self._bridge_state(net)
         attachment = await self._attachment_state(name, net)
-        if bridge.usable and not bridge.absent and attachment.correct:
+        endpoints = await self._endpoints_on(net)
+        expected = {name, _proxy_name(name)}
+        if bridge.usable and not bridge.absent and attachment.correct and endpoints == expected:
             return
         if not attachment.correct:
             reason = attachment.reason
         elif bridge.absent:
             reason = f"the network {net} it should be on is gone"
-        else:
+        elif not bridge.usable:
             reason = f"the network {net} it is on is no longer one this backend would build — "
             reason += bridge.reason
+        elif endpoints is None:
+            reason = f"the containers on {net} could not be read"
+        elif unexpected := sorted(endpoints - expected):
+            reason = f"{net} also holds {', '.join(unexpected)}, which it can reach directly"
+        else:
+            reason = f"{net} does not hold this sandbox and its proxy alone"
         removal = await self._remove(name)
         if removal.failure is not None:
             raise RuntimeError(
@@ -1860,6 +1875,25 @@ class DockerSandboxBackend:
             f"sandbox {name} cannot be served — {reason}. It is not being handed out; the next "
             f"acquire builds a replacement."
         )
+
+    async def _endpoints_on(self, net: str) -> set[str] | None:
+        """The containers attached to ``net``, or ``None`` when the read failed.
+
+        The sandbox's own network is meant to hold two: the workload and its proxy.  A third
+        one there is reachable by the workload directly, and if it holds a second network it
+        is a route around the proxy that no allowlist describes.
+        """
+        result = await self._docker(
+            "network",
+            "inspect",
+            "-f",
+            _NETWORK_ENDPOINTS_FORMAT,
+            net,
+            timeout=self._config.command_timeout_seconds,
+        )
+        if result.returncode != 0:
+            return None
+        return set(result.stdout.decode("utf-8", errors="replace").split())
 
     async def _attachment_state(self, name: str, net: str) -> _Attachment:
         """Whether ``net`` is the only network ``name`` is on, and why not when it is not.
