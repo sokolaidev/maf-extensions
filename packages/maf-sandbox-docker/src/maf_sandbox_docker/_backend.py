@@ -855,6 +855,13 @@ class DockerSandboxBackend:
         #: name is all a later reuse has to go on and a container left under one is
         #: indistinguishable from a warm sandbox.  Marking is synchronous on purpose: it is the
         #: one step a cancellation cannot interrupt.
+        #:
+        #: Only the conflict path marks, and the asymmetry is the point rather than an
+        #: oversight: there, the create failing on this name is knowledge no later read can
+        #: recover — a conflict attached correctly passes every topology check there is.  The
+        #: checks before a sandbox is served know nothing the next acquire cannot read again,
+        #: so a cancellation among them needs no mark, and marking would cost a healthy
+        #: sandbox on every cancelled call.
         self._unclean: set[str] = set()
         # Get-or-create serialised per (running loop, key, kind), for the same reason wslc does
         # it: a create names no container until it returns, so two acquires racing one key would
