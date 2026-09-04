@@ -138,12 +138,10 @@ _GATEWAY_MODE_MIN_ENGINE = "28.0.0"
 #: The driver the option above belongs to.  A gateway mode is a bridge setting and means
 #: nothing on any other driver, so the driver is read back alongside it.
 _BRIDGE_DRIVER = "bridge"
-#: Reads back what the engine *did*: the driver, the internal flag, and the IPAM entries, which
-#: carry a `Gateway` only where the bridge holds a host address.  Deliberately not `.Options` —
-#: that echoes back the request the network was created with, whether or not the daemon acted on
-#: it, so every engine before the one named above reads as isolated while its bridge stays
-#: addressed.  Those engines are the case this check exists to catch, so what was asked for
-#: cannot be the thing checked.
+#: Reads what the engine *did*: the driver, the internal flag, and the IPAM entries, which carry
+#: a `Gateway` only where the bridge holds a host address.  Deliberately not `.Options`, which is
+#: the request echoed back whether or not the daemon acted on it, and so cannot tell a bridge
+#: that ended up unaddressed from one that did not.
 _NETWORK_EFFECT_FORMAT = "{{.Driver}}|{{.Internal}}|{{json .IPAM.Config}}"
 #: What the engine says for a network or container that is not there — read only alongside
 #: that target's own name, never on its own.  Absence is the one answer a caller may treat as
@@ -1730,7 +1728,19 @@ class DockerSandboxBackend:
         args.append(net)
         result = await self._docker(*args, timeout=self._config.command_timeout_seconds)
         if result.returncode == 0:
-            return
+            built = await self._bridge_state(net)
+            if built.usable and not built.absent:
+                return
+            # A create the engine accepted is not evidence of what it built: an option a daemon
+            # does not act on is stored and reported back the same as one it applied. Nothing
+            # later in this acquire reads this network again, since the proxy and the workload
+            # are about to join it. It is this call's own, so it goes with the refusal.
+            await self._remove_network(net)
+            raise RuntimeError(
+                f"network {net} was created but {built.reason or 'it was gone when it was read'}"
+                f", so nothing here established that an allowlisted workload on it would be held "
+                f"to the proxy. It has been removed; retry."
+            )
         if _NETWORK_EXISTS in result.stderr.lower():
             existing = await self._bridge_state(net)
             if existing.usable and not existing.absent:
@@ -1745,10 +1755,9 @@ class DockerSandboxBackend:
                     f"Retry: the next acquire creates it."
                 )
             raise RuntimeError(
-                f"network {net} already exists and {existing.reason}, so an allowlisted "
-                f"workload on it could reach the host around the proxy. It appeared between "
-                f"this acquire's check and its create — by whom is not something this backend "
-                f"can see, another instance of it included. Remove it and retry."
+                f"network {net} already exists and {existing.reason}, so nothing here "
+                f"established that an allowlisted workload on it would be held to the proxy. "
+                f"Remove it and retry."
             )
         detail = result.stderr.strip()
         if any(opt in result.stderr for opt in _GATEWAY_MODE_OPTS):
@@ -1763,11 +1772,6 @@ class DockerSandboxBackend:
 
     async def _bridge_state(self, net: str) -> _BridgeState:
         """Whether ``net`` is one this backend would build — absent counts, since a create follows.
-
-        Reads the effect rather than the request.  An engine stores an option it does not act
-        on and reports it back unchanged, so asking a network which gateway mode it was given
-        answers the same on every engine.  What separates them is whether the bridge ended up
-        with a host address, and that is what is read here.
 
         Anything the read does not establish is unsafe, an unreadable inspect included: the
         answer decides whether a warm sandbox is kept, and keeping one whose bridge cannot be
@@ -1802,14 +1806,7 @@ class DockerSandboxBackend:
         if internal != "true":
             return _BridgeState(False, reason="it is not an internal network")
         if addresses:
-            return _BridgeState(
-                False,
-                reason=(
-                    f"its bridge holds {', '.join(addresses)} though this backend asked for no "
-                    f"address — an engine before {_GATEWAY_MODE_MIN_ENGINE} stores the gateway "
-                    f"mode and ignores it"
-                ),
-            )
+            return _BridgeState(False, reason=f"its bridge holds {', '.join(addresses)}")
         return _BridgeState(usable=True)
 
     async def _container_is_gone(self, name: str) -> bool:
