@@ -1006,12 +1006,13 @@ async def _execute(
     if over_cap is not None:
         return over_cap
     if store is not None:
-        resolved = await _resolve_listed_files(
+        resolution = await _resolve_listed_files(
             session, store, files, reserved=reserved, withhold=withhold, candidates=rewritten
         )
-        if isinstance(resolved, str):
-            return resolved
-        read = await _read_listed_files(session, store, resolved, tally)
+        if isinstance(resolution, str):
+            return resolution
+        resolved, resolved_hidden = resolution
+        read = await _read_listed_files(session, store, resolved, tally, rewritten=resolved_hidden)
         if isinstance(read, str):
             return read
         shared = read
@@ -1156,15 +1157,20 @@ async def _resolve_listed_files(
     reserved: Mapping[str, str],
     withhold: bool = False,
     candidates: frozenset[str] | None = None,
-) -> list[ListedFile] | str:
+) -> tuple[list[ListedFile], frozenset[int]] | str:
     """Match each requested name against the caller's listing, or answer with the refusal.
 
     The listing is the injection-pinning boundary: a name the model invented, or read out of a
     poisoned file, has nowhere to go.  Which is why a listing that cannot be read is a refusal
     rather than an empty one — every name would then be refused for the wrong reason.
+
+    Answers with the entries **and** the positions among them the framework expanded, because a
+    refusal about a file downstream has to render those by position rather than echo the name
+    back.  Returned rather than left to be recomputed: the verdict belongs to a position, and
+    the fallback answer costs a pass over the variable store that this call already paid for.
     """
     if not files:
-        return []
+        return [], frozenset()
     # Asked before the first await, not beside the loop that uses it: the framework's accessor
     # is not scoped to the call, so every suspension before asking is a chance for the answer
     # to come back empty. See `positions_holding_hidden_content`.
@@ -1182,6 +1188,7 @@ async def _resolve_listed_files(
     listed_by_name = {entry.name: entry for entry in listing}
     known = set(listed_by_name)
     resolved: list[ListedFile] = []
+    resolved_hidden: set[int] = set()
     seen: set[str] = set()
     for position, name in enumerate(files):
         at = f"files[{position}]"
@@ -1215,9 +1222,11 @@ async def _resolve_listed_files(
                 f"Error: {named} is not in this tool's file listing, so it was not shared. "
                 f"{_listing_hint(name, sorted(known), withhold=withhold)}"
             )
+        if hidden:
+            resolved_hidden.add(len(resolved))
         resolved.append(listed_by_name[name])
         seen.add(name)
-    return resolved
+    return resolved, frozenset(resolved_hidden)
 
 
 #: Capped so a large file store cannot flood the model's context.
@@ -1250,6 +1259,8 @@ async def _read_listed_files(
     store: AgentFileStore,
     files: list[ListedFile],
     tally: _InboundTally,
+    *,
+    rewritten: frozenset[int] = frozenset(),
 ) -> list[tuple[str, str]] | str:
     """Read every requested file into memory, or answer with the refusal.
 
@@ -1258,14 +1269,17 @@ async def _read_listed_files(
     about what this process spent getting there.
 
     Read through the session rather than the store, so each file arrives as a labelled item
-    saying what the host knows about its bytes (:class:`~maf_sandbox.ListedFile`).  What this
-    kind does with that is rule 9's, and today it is nothing: one string under one label cannot
-    say that one of five files was trusted, which is what
-    `#853 <https://github.com/sokolaidev/maf-extensions/issues/853>`_ opens.
+    saying what the host knows about its bytes (:class:`~maf_sandbox.ListedFile`).
+
+    ``rewritten`` carries the argument positions the framework expanded, and every refusal below
+    renders those by position: a name that came out of hidden content is the one value a refusal
+    must not repeat.
     """
     read: list[tuple[str, str]] = []
     for position, listed in enumerate(files):
-        item = await session.read_file(store, listed, at=f"files[{position}]")
+        at = f"files[{position}]"
+        hidden = position in rewritten
+        item = await session.read_file(store, listed, at=at, hidden=hidden)
         if isinstance(item, str):
             return item
         if item is None:
@@ -1274,14 +1288,14 @@ async def _read_listed_files(
             # parse.
             logger.warning("execute_code: a listed file has no content")
             return (
-                f"Error: {echoed_name(listed.name, at=f'files[{position}]')} is listed in the "
+                f"Error: {echoed_name(listed.name, at=at, hidden=hidden)} is listed in the "
                 "file store but has no content"
             )
         content = item.text
         if content is None:
             logger.warning("execute_code: a listed file read back with no text")
             return (
-                f"Error: {echoed_name(listed.name, at=f'files[{position}]')} is listed in the "
+                f"Error: {echoed_name(listed.name, at=at, hidden=hidden)} is listed in the "
                 "file store but has no content"
             )
         over_cap = tally.add(listed.name, content)

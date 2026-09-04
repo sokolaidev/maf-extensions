@@ -1211,7 +1211,7 @@ class SandboxToolSession:
             return f"Error: could not list the file store: {exc}"
 
     async def read_file(
-        self, store: Any, listed: ListedFile, *, at: str | None = None
+        self, store: Any, listed: ListedFile, *, at: str | None = None, hidden: bool = False
     ) -> Content | str | None:
         """The content at ``listed``, as a labelled item — or ``None`` where the file is gone.
 
@@ -1229,10 +1229,14 @@ class SandboxToolSession:
         the word ``None`` into a sandbox is not an answer.  A failure to read answers with the
         sentence a caller returns, for the reason the listing does.
 
-        ``at`` is where the caller got the name — ``"files[1]"`` — and is what the refusal names
-        in place of the value, since a name is a string the model typed (:func:`echoed_name`).
+        ``at`` is where the caller got the name — ``"files[1]"`` — and ``hidden`` says the
+        framework rewrote that argument, which is what makes the refusal render the position
+        instead of the value.  Pass both: ``at`` alone still quotes a short printable name, and a
+        name expanded out of hidden content is exactly the value a refusal must not repeat
+        (:func:`echoed_name`, and rule 9 in ``docs/sandbox/kinds/README.md``).
         """
         from agent_framework import Content
+        from agent_framework.security import ContentLabel, IntegrityLabel
 
         try:
             text = await store.read(listed.name)
@@ -1240,12 +1244,22 @@ class SandboxToolSession:
             self._logger.warning(
                 f"{self._log_prefix}: could not read a listed file: %s", error_detail(exc)
             )
-            return f"Error: {echoed_name(listed.name, at=at)} could not be read from the file store"
+            return (
+                f"Error: {echoed_name(listed.name, at=at, hidden=hidden)} could not be read "
+                "from the file store"
+            )
         if text is None:
             return None
         properties: dict[str, Any] = {}
         if listed.integrity is not None:
-            properties["security_label"] = {"integrity": str(listed.integrity)}
+            # The key name and the value spelling come from the framework's own serialization,
+            # as `labelled_result_item` takes them, rather than from a literal here that would
+            # be a second copy of them. Only the integrity entry: `to_dict` also writes
+            # `confidentiality: public`, and this library has no confidentiality value to give —
+            # those are the host's, and claiming one over bytes read out of a store is a claim
+            # nothing here can support.
+            label = ContentLabel(integrity=IntegrityLabel(str(listed.integrity))).to_dict()
+            properties["security_label"] = {"integrity": label["integrity"]}
         return Content.from_text(text, additional_properties=properties)
 
     async def acquire(self, key: SandboxKey) -> Sandbox | str:

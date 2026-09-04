@@ -420,7 +420,8 @@ def _bicep_validate_tool(
         for listed, sandbox_path, position in validated:
             name = listed.name
             at = f"files[{position}]"
-            item = await session.read_file(store, listed, at=at)
+            hidden = position in rewritten
+            item = await session.read_file(store, listed, at=at, hidden=hidden)
             if isinstance(item, str):
                 # The session logged the detail; this is the sentence the model may see.
                 results.append(item)
@@ -431,16 +432,16 @@ def _bicep_validate_tool(
                 # report a syntax error against a file the agent never wrote.
                 logger.warning("bicep_validate: a listed file has no content")
                 results.append(
-                    f"Error: {echoed_name(name, at=at)} is listed in the file store but has no "
-                    "content"
+                    f"Error: {echoed_name(name, at=at, hidden=hidden)} is listed in the file "
+                    "store but has no content"
                 )
                 continue
             content = item.text
             if content is None:
                 logger.warning("bicep_validate: a listed file read back with no text")
                 results.append(
-                    f"Error: {echoed_name(name, at=at)} is listed in the file store but has no "
-                    "content"
+                    f"Error: {echoed_name(name, at=at, hidden=hidden)} is listed in the file "
+                    "store but has no content"
                 )
                 continue
 
