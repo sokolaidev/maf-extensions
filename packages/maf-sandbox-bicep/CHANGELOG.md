@@ -2,6 +2,17 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.32.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.11.0...maf-sandbox-bicep-v0.32.0) (2026-09-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* CallerContext.list_files now answers with ListedFile entries. A kind reading store.read directly is unaffected and stays unlabelled; SandboxToolSession.read_file is the surface that carries the label.
+
+### Features
+
+* a kind is handed the labels of the files it was named, and reads them as labelled items ([#876](https://github.com/sokolaidev/maf-extensions/issues/876)) ([796e03b](https://github.com/sokolaidev/maf-extensions/commit/796e03bcd4ffc07fa3fd55e7a3e953d204a35e4a))
+
 ## [0.11.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.10.1...maf-sandbox-bicep-v0.11.0) (2026-09-02)
 
 
