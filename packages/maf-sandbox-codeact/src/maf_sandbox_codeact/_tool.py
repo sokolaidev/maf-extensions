@@ -268,7 +268,7 @@ def make_codeact_tools(
             with sizes and the model's own declared names instead. No guest-authored text
             survives into the result — but the values that replace it were still chosen by a
             program the model wrote, so this changes what the result *holds* and not where it
-            came from: the tool declares no ``source_integrity`` either way. Requires
+            came from: the tool declares ``source_integrity="untrusted"`` either way. Requires
             :data:`CodeactOutputs.DECLARED`: the one mode where content can still reach the
             model and no guest-chosen name reaches the result.
 
@@ -484,12 +484,17 @@ def make_codeact_tools(
         name=EXECUTE_CODE_TOOL_NAME,
         approval_mode="always_require" if approval_gated else "never_require",
         also_carries_out=registry_carries_out,
-        # Never declared, withheld or not. What comes back is whatever a model-written
+        # `untrusted`, withheld or not. What comes back is whatever a model-written
         # `print(...)` chose to emit; withheld it is an exit status, two sizes and a presence
-        # bit per declared output, every one of them chosen by a program the model wrote. A
-        # declaration replaces the framework's input-label join rather than flooring it, so
-        # declaring anything here would tell a host's middleware to disregard the input side.
-        source_integrity=None,
+        # bit per declared output, every one of them chosen by a program the model wrote.
+        #
+        # Declared rather than left to the default, because a declaration is the only one of
+        # the three tiers this kind controls. Silence hands the answer to the input-label join
+        # — which knows nothing about which argument the body read — and to the host's
+        # `default_integrity`, which a host may raise. Both would then answer `trusted` for the
+        # output of a program the model wrote. The per-item `trusted` on the withheld route's
+        # standing guidance is unaffected: tier 1 is read ahead of this.
+        source_integrity="untrusted",
         outbound_max_confidentiality=outbound_max_confidentiality,
         output_sink=output_sink,
         logger=logger,

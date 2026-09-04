@@ -4461,6 +4461,27 @@ class TestWhatASplitResultDoesToTheCallsLabel:
         assert str(label.confidentiality) == "private"
         assert str(conversation.confidentiality) == "private"
 
+    def test_a_declared_untrusted_tool_still_shows_its_trusted_item(self):
+        """The combination both shipped kinds reach once they declare, and the one row this
+        class did not cover: a tier-2 `untrusted` declaration on the tool beside a tier-1
+        `trusted` item in its result.
+
+        The question is whether declaring at tier 2 costs the split. It does not — tier 1 is
+        read per item and ahead of the declaration, so the guidance stays visible while the
+        derived half is still hidden, and the call's own label is `untrusted` either way. A
+        kind can therefore say what its result is without giving up per-item labelling, which
+        is what makes declaring safe to adopt before the per-item work lands.
+        """
+        label, seen, conversation = self._run(
+            (labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED), _text("EXIT=1")),
+            declarations={"source_integrity": "untrusted", "confidentiality": "private"},
+        )
+
+        assert seen == [_GUIDANCE, "hidden"]
+        assert str(label.integrity) == "untrusted"
+        assert str(label.confidentiality) == "private"
+        assert str(conversation.integrity) == "trusted", "hidden content does not taint"
+
     def test_a_fully_labelled_result_would_lose_it(self):
         """The counterfactual the refusal closes, built by hand because the factory refuses it."""
         from agent_framework import Content, FunctionInvocationContext, FunctionTool

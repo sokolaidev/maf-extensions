@@ -1103,24 +1103,24 @@ class TestWithholdingIsRefusedWhereItCouldNotBeHonest:
         )
 
 
-class TestWithholdingDeclaresNoIntegrityEither:
+class TestWithholdingDeclaresUntrustedToo:
     """Withholding takes the guest's *text* out of the result, not the guest out of its
     derivation: the exit status, each stream's size and every output's presence bit are chosen
-    by a program the model wrote. So there is nothing here to call trusted — and a declaration
-    would not be a floor under the framework's input-label join, it would replace it."""
+    by a program the model wrote. So there is nothing here to call trusted, and the declaration
+    says so on both renderings rather than only on the noisier one."""
 
-    def test_a_withholding_tool_declares_no_source_integrity(self):
+    def test_a_withholding_tool_declares_untrusted(self):
         tool = _withholding_tool(_ScriptedSandbox())
-        assert "source_integrity" not in dict(tool.additional_properties or {})
+        assert dict(tool.additional_properties or {})["source_integrity"] == "untrusted"
 
-    def test_a_withholding_tool_declares_nothing_at_all(self):
+    def test_a_withholding_tool_declares_that_and_nothing_else(self):
         tool = _withholding_tool(_ScriptedSandbox())
-        assert dict(tool.additional_properties or {}) == {}
+        assert dict(tool.additional_properties or {}) == {"source_integrity": "untrusted"}
 
-    def test_a_showing_tool_declares_nothing_either(self):
+    def test_a_showing_tool_declares_untrusted_too(self):
         """The two renderings differ in what the result holds, never in what it claims."""
         tool = _tool(_backend(capabilities=_PULLS), **_landing(CodeactOutputs.DECLARED))
-        assert "source_integrity" not in dict(tool.additional_properties or {})
+        assert dict(tool.additional_properties or {})["source_integrity"] == "untrusted"
 
     def _with_registry(self, *tools: Callable[..., Any]):
         return _tool(
@@ -1140,7 +1140,7 @@ class TestWithholdingDeclaresNoIntegrityEither:
         workload makes none — so a trusted source, a sink-only tool and an unstamped one all
         read alike."""
         tool = self._with_registry(registered)
-        assert "source_integrity" not in dict(tool.additional_properties or {})
+        assert dict(tool.additional_properties or {})["source_integrity"] == "untrusted"
 
 
 class TestTheModelIsToldUpFront:
@@ -1315,22 +1315,25 @@ class TestMakeCodeactTools:
 
 
 class TestFidesDeclarations:
-    """This tool declares no `source_integrity`, and that is a decision, not an omission.
+    """This tool declares `source_integrity="untrusted"`, and says so rather than implying it.
 
-    `sandbox_tool_declarations`'s default is `"trusted"`, and the argument that has to hold
-    for it is that the result derives from wholly trusted input. Here what comes back is
-    whatever a model-written `print(...)` chose to emit, so the tracker's untrusted default is
-    the honest reading, and it is also the fail-safe direction.
+    What comes back is whatever a model-written `print(...)` chose to emit, so untrusted is the
+    honest reading. Reaching it by *declaring* rather than by silence is the point: an
+    undeclared tool takes whichever of the other two tiers speaks — the input-label join, which
+    knows nothing about which argument the body read, or the host's `default_integrity`, which
+    a host may raise. Neither is this package's to control, and both answer `trusted` when
+    asked.
     """
 
-    def test_it_declares_nothing(self):
+    def test_it_declares_untrusted(self):
         tool = _tool(_backend())
-        assert dict(tool.additional_properties or {}) == {}
+        assert dict(tool.additional_properties or {}) == {"source_integrity": "untrusted"}
 
-    def test_an_empty_registry_declares_nothing_either(self):
-        """Nothing callable is nothing carried, whatever cap the host holds."""
+    def test_an_empty_registry_carries_no_cap_but_still_declares(self):
+        """Nothing callable is no *cap* carried, whatever the host holds — the integrity
+        declaration is about this tool's own result and does not depend on a registry."""
         tool = _host_tool_calling_tool(_registry(), outbound_max_confidentiality="private")
-        assert dict(tool.additional_properties or {}) == {}
+        assert dict(tool.additional_properties or {}) == {"source_integrity": "untrusted"}
 
     def test_an_opened_allowlist_makes_the_hosts_cap_apply(self):
         """A named host is a way out, so the flow the cap gates exists — and unlike the
@@ -1344,12 +1347,15 @@ class TestFidesDeclarations:
             egress_allow=("index.example",),
             outbound_max_confidentiality="private",
         )
-        assert dict(tool.additional_properties or {}) == {"max_allowed_confidentiality": "private"}
+        assert dict(tool.additional_properties or {}) == {
+            "source_integrity": "untrusted",
+            "max_allowed_confidentiality": "private",
+        }
 
-    def test_a_closed_allowlist_leaves_it_unwritten(self):
+    def test_a_closed_allowlist_leaves_the_cap_unwritten(self):
         """The other side of the same bound: the default must not start declaring a flow."""
         tool = _tool(_backend(capabilities=_PULLS), outbound_max_confidentiality="private")
-        assert dict(tool.additional_properties or {}) == {}
+        assert dict(tool.additional_properties or {}) == {"source_integrity": "untrusted"}
 
     def test_a_registry_with_no_sink_tool_leaves_the_cap_unwritten(self):
         """A source brings data *in* and pure computation carries nothing at all, so the flow
@@ -1357,7 +1363,7 @@ class TestFidesDeclarations:
         calls for nothing."""
         registry = _registry(_exchange_rate, _round_half_up)
         tool = _host_tool_calling_tool(registry, outbound_max_confidentiality="private")
-        assert dict(tool.additional_properties or {}) == {}
+        assert dict(tool.additional_properties or {}) == {"source_integrity": "untrusted"}
 
     def test_a_sink_tool_makes_the_hosts_cap_apply_with_nothing_landing(self):
         """Egress is closed and no artifact lands, and the surface carries something out
@@ -1367,7 +1373,10 @@ class TestFidesDeclarations:
         tool = _host_tool_calling_tool(
             _registry(_log_to_crm), outbound_max_confidentiality="private"
         )
-        assert dict(tool.additional_properties or {}) == {"max_allowed_confidentiality": "private"}
+        assert dict(tool.additional_properties or {}) == {
+            "source_integrity": "untrusted",
+            "max_allowed_confidentiality": "private",
+        }
 
     def test_a_sink_tool_beside_an_output_sink_still_attaches(self):
         """`sandboxed_tool` refuses an explicit mapping together with a sink, and there is
@@ -1379,7 +1388,10 @@ class TestFidesDeclarations:
             outbound_max_confidentiality="private",
             **_landing(CodeactOutputs.DECLARED),
         )
-        assert dict(tool.additional_properties or {}) == {"max_allowed_confidentiality": "private"}
+        assert dict(tool.additional_properties or {}) == {
+            "source_integrity": "untrusted",
+            "max_allowed_confidentiality": "private",
+        }
 
     def test_an_unstamped_tool_carries_the_hosts_cap_as_a_sink_tool_would(self):
         """Nobody answered the sink question, so the fold sees no sink to write a cap from —
@@ -1390,13 +1402,16 @@ class TestFidesDeclarations:
         tool = _host_tool_calling_tool(
             _registry(_unstamped_lookup), outbound_max_confidentiality="private"
         )
-        assert dict(tool.additional_properties or {}) == {"max_allowed_confidentiality": "private"}
+        assert dict(tool.additional_properties or {}) == {
+            "source_integrity": "untrusted",
+            "max_allowed_confidentiality": "private",
+        }
 
-    def test_no_source_integrity_is_declared_however_the_registry_is_stamped(self):
+    def test_untrusted_is_declared_however_the_registry_is_stamped(self):
         """A registry of trusted lookups does not make a model-written `print(...)` trusted."""
         registry = _registry(_exchange_rate, _log_to_crm)
         tool = _host_tool_calling_tool(registry, outbound_max_confidentiality="private")
-        assert "source_integrity" not in dict(tool.additional_properties or {})
+        assert dict(tool.additional_properties or {})["source_integrity"] == "untrusted"
 
 
 class TestWhatARegistryDoesBeyondTheSpec:
@@ -2814,12 +2829,15 @@ class TestTheSinkIsTheHostsChoice:
             **_landing(CodeactOutputs.DECLARED),
             outbound_max_confidentiality="private",
         )
-        assert dict(tool.additional_properties or {}) == {"max_allowed_confidentiality": "private"}
+        assert dict(tool.additional_properties or {}) == {
+            "source_integrity": "untrusted",
+            "max_allowed_confidentiality": "private",
+        }
 
-    def test_it_still_declares_no_source_integrity(self):
+    def test_it_still_declares_untrusted(self):
         """Landing files changes nothing about where the tool's *result* came from."""
         tool = _tool(_backend(capabilities=_PULLS), **_landing(CodeactOutputs.DECLARED))
-        assert "source_integrity" not in dict(tool.additional_properties or {})
+        assert dict(tool.additional_properties or {})["source_integrity"] == "untrusted"
 
 
 # ---------------------------------------------------------------------------
@@ -3324,9 +3342,15 @@ class TestWhatAFidesHostSeesOfAWithheldResult:
         seen, _, _ = self._processed(tool, files=[], outputs=[])
         assert seen == ["hidden", _WITHHELD_ROUTE]
 
-    def test_hiding_follows_the_call_label_rather_than_the_split(self):
-        """The unlabelled half takes the call's label, and a host owns `default_integrity` —
-        so a host that raised it gets a trusted call and nothing is hidden at all."""
+    def test_a_raised_host_default_no_longer_decides_the_call(self):
+        """What the declaration is for, measured on the route that used to lose.
+
+        The unlabelled half takes the call's label, and that label used to come from the
+        host's `default_integrity` — so a host that raised it got a trusted call and nothing
+        was hidden at all, for a result derived from a program the model wrote. A tier-2
+        declaration *replaces* that default rather than flooring it, so the same host now gets
+        the same answer as every other: untrusted, and the derived half hidden.
+        """
         from agent_framework.security import IntegrityLabel
 
         tool = _withholding_tool(_ScriptedSandbox(ExecResult(stdout="42")))
@@ -3334,8 +3358,8 @@ class TestWhatAFidesHostSeesOfAWithheldResult:
         seen, result, _ = self._processed(
             tool, host_default=IntegrityLabel.TRUSTED, files=[], outputs=[]
         )
-        assert "hidden" not in seen, seen
-        assert str(result.integrity) == "trusted"
+        assert "hidden" in seen, seen
+        assert str(result.integrity) == "untrusted"
 
     def test_the_conversation_stays_trusted(self):
         """Only visible items taint, and the visible one is a constant this package ships."""
