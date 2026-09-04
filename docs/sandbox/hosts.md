@@ -140,6 +140,41 @@ Two composition rules. **`Identity.USER` never attaches**: managed identities ar
 
 The `USER` host-tool refusal used to be read as the fourth, and it was not. It named C′'s three prerequisites — per-run minting, audience ⊆ egress, and the ephemeral `exec` env channel — but it fires on a **host-tool call**, whose body runs host-side under option B, where the credential never enters the sandbox at all. Two of those three bound a different mechanism: an `exec` env channel exists to hand a token *to a guest*, and the egress cell bounds where a *guest* can spend one. Only per-run minting was ever B's, and B is what that refusal guards, so B is what shipped. C′'s channel remains open on its own issue, where the constraint that decides it is recorded: `maf-sandbox-acas` cannot carry it, because the SDK's `exec` takes a command and a working directory and no environment, and smuggling a token through the command line reintroduces the visibility that ruled out `write_file`.
 
+## File-store provenance — what a kind reads, and what it is worth
+
+A kind that reads the agent's file store reads content the framework can no longer label. `AgentFileStore` holds a `str` and returns a `str`, and the information-flow middleware expands a variable reference into the bytes it stands for *before* the tool body that writes them runs — so nothing that reaches the store says what it was worth. That is [#841](https://github.com/sokolaidev/maf-extensions/issues/841), and [`research/labelling-the-file-store.md`](research/labelling-the-file-store.md) is where the three candidate seams were measured.
+
+**What is recoverable is who wrote it, and only at the call boundary.** A write through `FileAccessProvider` is a *tool call*, and a tool call is the unambiguous signal that the model drove it. `FileStoreProvenance` is the record, `file_store_provenance_middleware` fills it, and a host wires the two beside its information-flow middleware:
+
+```python
+from agent_framework.security import LabelTrackingFunctionMiddleware
+
+from maf_sandbox import FileStoreProvenance, SourceIntegrity
+from maf_sandbox.maf import file_store_provenance_middleware
+
+# This host has established its own initial files as trusted by its own means — placing them
+# is not what makes them so, since integrity is established by derivation and never by
+# authorship. The floor is what a path with no recorded write is worth; drop `floor=` and such
+# a path stays unestablished instead.
+provenance = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+middleware = [LabelTrackingFunctionMiddleware(), file_store_provenance_middleware(provenance)]
+
+# …and later, wherever the host answers what a name is worth:
+integrity = provenance.integrity_of("notes.bicep")
+```
+
+That list goes on the agent's `middleware=`. Order does not matter, but not because the path is untouched: the information-flow middleware expands a variable reference in **any** string argument, `file_name` included, and edits the call's arguments in place. The record reads the path *after* the body has run, so it sees the name the store was written under whichever side of that middleware it sits on, and keys it through `store_key` because the provider normalises before it writes.
+
+**An observed write always records `untrusted`, and nothing is resolved to decide that.** Every route by which the model puts bytes into the store runs through the model: content behind a `[var_id]` is there because the middleware *hid* it, and it hides what is untrusted; content typed into `content=` was authored by the model. So the record needs no access to the framework's variable store, and the answer does not depend on `hide_threshold` staying where it is — a host that moves it makes the first of those two less precise and this still records untrusted, which is the fail-safe direction.
+
+**The floor is the host's, and an entry always beats it.** `floor=` says what applies to a path with **no recorded entry** — content placed before the agent starts, or written past the store object by another process without one having been recorded first. It is not a statement about the bytes: once a path has an entry, a later out-of-band overwrite still answers `untrusted`, because the entry stands until the host forgets it. `None`, the default, means unestablished: this host has not said. A recorded entry wins over the floor unconditionally, which is the property the whole record exists for — a trusted floor can never lift bytes the model wrote.
+
+**An entry is about the path, not about a version of its content.** It records that the model has written there, which stays true of every later version — nothing the model writes afterwards makes the file host-authored again. Binding an entry to a digest of the bytes would say the opposite: a path whose content changed would stop matching and fall to the floor, and a trusted floor would then answer for a file the model demonstrably wrote. It also makes the record **monotone**, which is what keeps it right when two calls write one path at once, and when a body commits to the store and then raises — the entry is written in a `finally`, so those bytes never answer the floor. Nothing here forgets a path: a delete is recorded like any other mutation, because the tools answer a failed delete with a sentence rather than an exception and an observer cannot tell one from a success. `FileStoreProvenance.forget` is the host's, for when it can establish the file is gone.
+
+**One record, one store.** A path is the whole key: the tools carry no store identity to key on, so a host wiring two providers over two stores needs one record each. Reading a kind against the wrong one answers about a file it never read.
+
+Two limits worth stating plainly. A refusal the tools return as a *string* rather than an exception still records, so a write refused for an existing name marks the path untrusted when the file may be untouched — conservative, and better than parsing a human sentence for whether it meant failure. And `FILE_STORE_WRITE_TOOLS` is a copy of a private upstream constant; a divergence alarm in the suite fails when the framework's own set changes, because a write tool this does not observe is a path the record would answer from the floor.
+
 ## Where the storage base comes from
 
 A guest path is relative to something, and today that something is owned by nobody. A workload declares `work_dir` in its spec, no backend reads it, no backend creates it, and the protocol does not promise it exists. Every kind then composes absolute paths from a base the stack only hopes is there.
@@ -160,6 +195,7 @@ The second is the open question. **Something still needs a real absolute path in
 
 | Decision | State | Tracking |
 |---|---|---|
+| A kind can be told what the content it read out of the agent file store is worth | **partly shipped** — the *source* is in: `FileStoreProvenance`, `file_store_provenance_middleware` and a host-declared floor. An agent-driven write records `untrusted` against the normalised path and beats any floor; the entry is about the path rather than a version of its bytes, so it stands until the host calls `forget()`, which is what keeps concurrent writes and a commit-then-raise correct. A path with **no recorded entry** takes the floor, and `None` leaves it unestablished. No kind consults the record yet: the *delivery* (the listing callable returning labels beside names) and the *carrier* (`Content` in place of `str` on a kind's read path) are not built | [#841](https://github.com/sokolaidev/maf-extensions/issues/841) (open) |
 | The host writes and the library never does — `Artifact`, `LandedArtifact`, `OutputSink`, `NameNormalization`, `collect_outputs` in the stdlib-only core | shipped | [#113](https://github.com/sokolaidev/maf-extensions/pull/113) (merged); umbrella [#109](https://github.com/sokolaidev/maf-extensions/issues/109) (open) |
 | Call-time output names — `outputs_named_at_call_time`, `DeclaredOutput.name`, `collect_outputs(outputs=...)` refused without the flag | shipped | [#156](https://github.com/sokolaidev/maf-extensions/pull/156) (merged); the CodeAct channel that needed it, [#132](https://github.com/sokolaidev/maf-extensions/issues/132) (closed) |
 | Name invariant, NFC, case-only collisions compared lowercase, `portable_file_name()` | shipped | [#113](https://github.com/sokolaidev/maf-extensions/pull/113) (merged) |

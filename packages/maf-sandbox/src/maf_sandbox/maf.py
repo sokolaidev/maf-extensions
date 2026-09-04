@@ -30,6 +30,9 @@ Seven things live here, and each of them had begun to exist twice before it did:
   :func:`hidden_content_candidates` — which of a call's arguments the host's information-flow
   middleware rewrote, so a refusal names a position rather than quoting content the framework
   hid. Here because the answer comes from that middleware.
+- :func:`file_store_provenance_middleware` — records an agent-driven file-store write into a
+  host's :class:`~maf_sandbox.FileStoreProvenance`. Here because it is a ``FunctionMiddleware``;
+  the record it fills is stdlib-only and lives beside the protocol vocabulary.
 """
 
 from __future__ import annotations
@@ -50,6 +53,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
 from ._error_detail import error_detail
+from ._file_provenance import FILE_STORE_WRITE_TOOLS, PATH_ARGUMENT, FileStoreProvenance
 from ._outputs import OutputSink, landing_outputs, missing_sink_refusal, spec_lands_artifacts
 from ._protocol import (
     CallerContext,
@@ -90,6 +94,7 @@ _DEFAULT_LOGGER = logging.getLogger(__name__)
 
 __all__ = [
     "ISOLATION_SCOPE_KEY",
+    "file_store_provenance_middleware",
     "SandboxPurger",
     "SandboxToolSession",
     "labelled_result_item",
@@ -231,6 +236,102 @@ def argument_provenance_middleware() -> Any:
                 record.closed = True
 
     return _ArgumentProvenance()
+
+
+def file_store_provenance_middleware(
+    record: FileStoreProvenance, *, also_observes: frozenset[str] | set[str] = frozenset()
+) -> Any:
+    """Middleware that records an agent-driven file-store write into ``record``.
+
+    Wire it beside the host's information-flow middleware, the way
+    :func:`~maf_sandbox.argument_provenance_middleware` is wired::
+
+        provenance = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        Agent(..., middleware=[
+            LabelTrackingFunctionMiddleware(),
+            file_store_provenance_middleware(provenance),
+        ])
+
+    **Order does not matter, because the path is read after the body has run.** The
+    information-flow middleware expands a variable reference in any string argument, the path
+    included, and it edits the call's arguments in place — so reading afterwards sees the name
+    the store was written under whichever side of that middleware this sits on. The name is then
+    keyed through :func:`~maf_sandbox.store_key`, because the provider normalises before it
+    writes. What this never needs is the content's own label: a write reaching these tools is
+    model-driven however the content got there, so unlike
+    :func:`~maf_sandbox.positions_holding_hidden_content` no private framework record is read.
+
+    **The entry is written in a ``finally``**, because a body can commit to the store and then
+    raise, and an entry is what stops those bytes answering the host's floor.  What an entry
+    then means, and why that survives concurrent writes to one path, is
+    :meth:`~maf_sandbox.FileStoreProvenance.record`'s to say.
+
+    **A recorded write is not the same as a successful one, and a delete is recorded too.** The
+    tools answer a refusal with a *string* rather than raising, so nothing here can tell a write
+    that landed from one that was refused — and the same is true of a delete. Every observed call
+    therefore marks its path untrusted, which is the conservative direction in both cases: a
+    refused write marks a path the model did not change, and a failed delete keeps the entry for
+    bytes that are still there. Forgetting a path on a delete would do the opposite, returning it
+    to a trusted floor while the model's content remained, so the middleware never calls
+    :meth:`FileStoreProvenance.forget` — that is the host's, for when it can establish removal.
+
+    Args:
+        record: Where observed writes land, and what a kind reads back.
+        also_observes: Extra tool names to treat as file-store writes, for a host that wires a
+            write surface of its own. Each must name its path in a ``file_name`` argument.
+    """
+    from agent_framework import FunctionMiddleware
+
+    observed = FILE_STORE_WRITE_TOOLS | frozenset(also_observes)
+
+    class _FileStoreProvenance(FunctionMiddleware):  # type: ignore[misc]
+        async def process(self, context: Any, call_next: Any) -> None:
+            name = getattr(getattr(context, "function", None), "name", None)
+            if name not in observed:
+                await call_next()
+                return
+            try:
+                await call_next()
+            finally:
+                # Read here rather than before `call_next`: the path must be the expanded one.
+                path = _store_path_named_by(context)
+                if path is None:
+                    _DEFAULT_LOGGER.warning(
+                        "file_store_provenance_middleware: %r ran without a %r argument, so "
+                        "the path it wrote is unknown and nothing was recorded for it.",
+                        name,
+                        PATH_ARGUMENT,
+                    )
+                else:
+                    record.record(path)
+
+    return _FileStoreProvenance()
+
+
+def _write_call_arguments(context: Any) -> Mapping[str, Any] | None:
+    """The call's arguments as a mapping, or ``None`` where they are not one.
+
+    A call's arguments are a mapping *or* a model, and the framework keeps whichever it was
+    given, so a model is dumped before it is read — duck-typed, as
+    ``_spellings_before_rewriting`` does it, because this package does not depend on the
+    framework's validation library.
+    """
+    arguments: Any = getattr(context, "arguments", None)
+    dump = getattr(arguments, "model_dump", None)
+    if callable(dump):
+        arguments = dump()
+    if not isinstance(arguments, Mapping):
+        return None
+    return cast("Mapping[str, Any]", arguments)
+
+
+def _store_path_named_by(context: Any) -> str | None:
+    """The store path this call names, or ``None`` where it names none this can read."""
+    arguments = _write_call_arguments(context)
+    if arguments is None:
+        return None
+    path: Any = arguments.get(PATH_ARGUMENT)
+    return path if isinstance(path, str) and path else None
 
 
 def _reachable_middleware() -> Any | None:
