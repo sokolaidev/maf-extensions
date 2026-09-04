@@ -995,7 +995,7 @@ class DockerSandboxBackend:
             if egress_id:
                 # Before the reuse decision reads it: this can remove the very container the
                 # reads below would otherwise find warm.
-                await self._discard_a_sandbox_on_an_addressed_bridge(name)
+                await self._discard_a_sandbox_on_an_unusable_network(name)
             running = await self._is_running(name)
             stopped = not running and await self._exists(name)
             if not running:
@@ -1771,7 +1771,26 @@ class DockerSandboxBackend:
             return _BridgeState(usable=True)
         return _BridgeState(False, reason="its bridge holds a host address")
 
-    async def _discard_a_sandbox_on_an_addressed_bridge(self, name: str) -> None:
+    async def _container_is_gone(self, name: str) -> bool:
+        """Whether ``name`` is definitely not a container on this engine.
+
+        The opposite of :meth:`_exists` where the daemon will not answer: that one reports
+        absence for any failed read, which is the safe way round for a caller deciding whether
+        to *create*, and the wrong way round for one deciding whether a rebuild can be skipped.
+        Only the engine's own "no such object" counts as gone.
+        """
+        result = await self._docker(
+            "inspect",
+            "-f",
+            "{{.State.Status}}",
+            name,
+            timeout=self._config.command_timeout_seconds,
+        )
+        if result.returncode == 0:
+            return False
+        return _NO_SUCH in result.stderr.lower()
+
+    async def _discard_a_sandbox_on_an_unusable_network(self, name: str) -> None:
         """Remove an allowlisted sandbox whose network is not one this backend would build.
 
         Its network goes with it, and it cannot go the other way round: the workload holds an
@@ -1788,7 +1807,7 @@ class DockerSandboxBackend:
         """
         net = _network_name(name)
         before = await self._bridge_state(net)
-        if before.absent and await self._exists(name):
+        if before.absent and not await self._container_is_gone(name):
             # `_ensure_network` would build a fresh one and attach nothing to it, so a reuse
             # would hand back a container sitting on whatever it is actually on.
             reason = "its network is gone, so the workload is not on the one it should be"

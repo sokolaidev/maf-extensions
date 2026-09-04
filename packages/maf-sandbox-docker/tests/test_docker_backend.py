@@ -2942,7 +2942,7 @@ class TestAllowlistReuse:
         assert fake.matching("run", "-d", "--name", _AL) == []
 
 
-class TestASandboxLeftOnAnAddressedBridge:
+class TestASandboxLeftOnAnUnusableNetwork:
     """A network whose bridge holds a host address is replaced, and the sandbox goes with it.
 
     `network create` compares nothing but the name, so an existing network is adopted whatever
@@ -3054,6 +3054,25 @@ class TestASandboxLeftOnAnAddressedBridge:
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert "device or resource busy" in str(raised.value)
         assert fake.matching("run", "-d", "--name", _AL) == []
+
+    def test_a_container_read_that_fails_is_not_read_as_no_container(self):
+        """Skipping the rebuild needs proof the container is gone, not a failure to see it.
+
+        `_exists` reports absence for any failed read, which is the safe way round for a
+        caller deciding whether to create and the wrong way round here: a daemon that answers
+        nothing for one call and normally for the next leaves the workload on its old
+        attachment with a fresh network built beside it.
+        """
+        overrides = {
+            ("inspect", "-f", "{{.State.Status}}"): _DockerResult(1, b"", "daemon not responding")
+        }
+        backend, fake = _backend_with(
+            _machine(running=[_AL], overrides=overrides), config=_ALLOW_CONFIG
+        )
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("rm", "-f", _AL) != []
+        created = _run_named(fake, _AL)
+        assert created.args[created.args.index("--network") + 1] == _AL_NET
 
     def test_a_cold_acquire_has_nothing_to_replace(self):
         """No network yet is the ordinary first acquire, not a stale one."""
