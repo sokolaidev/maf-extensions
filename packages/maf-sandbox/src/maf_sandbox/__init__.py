@@ -135,6 +135,7 @@ from ._protocol import (
     Identity,
     Isolation,
     IsolationScope,
+    ListedFile,
     OsFamily,
     OutputDisposition,
     Sandbox,
@@ -150,6 +151,7 @@ from ._protocol import (
     TransferLimits,
     fold_disposal_failures,
     meets_floor,
+    weakest_integrity,
 )
 from ._purger import SandboxPurger
 from ._reclaim import (
@@ -216,6 +218,7 @@ __all__ = [
     "Identity",
     "Isolation",
     "IsolationScope",
+    "ListedFile",
     "OsFamily",
     "LandedArtifact",
     "MafSandboxExperimentalWarning",
@@ -269,6 +272,7 @@ __all__ = [
     "collect_outputs",
     "declaration_of",
     "fold_disposal_failures",
+    "weakest_integrity",
     "host_tool_calls_over_exec",
     "echoed_name",
     "error_detail",

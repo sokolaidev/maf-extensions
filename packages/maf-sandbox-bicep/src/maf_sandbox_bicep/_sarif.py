@@ -8,6 +8,7 @@ testable and has been since the first commit.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
 __all__ = ["RESTORE_FAILURE_RULES", "count_restore_failures", "format_diagnostics", "parse_sarif"]
@@ -78,8 +79,48 @@ def parse_sarif(text: str) -> list[dict[str, Any]] | None:
     return diagnostics
 
 
+#: What a location renders as when :func:`_renamed` could not identify it.
+_UNIDENTIFIED = "an unidentified file"
+
+
+def _renamed(location: str, absolute: str, rename: Mapping[str, str] | None) -> str:
+    """``location`` as it may be shown, given the caller's map of every file it wrote.
+
+    Two matches, and only one of them attributes.
+
+    **Exact** — against the stripped location or the raw absolute path — identifies the file, so
+    the caller's rendering for it is used as given, request position and all.  ``absolute`` is
+    what makes this the ordinary case rather than the lucky one: Bicep is handed the path this
+    call wrote and reports it back, so the caller's own ``sandbox_path`` matches it whether or
+    not ``strip_prefix`` succeeded.
+
+    **Trailing component** — a fallback for a location this run did not strip, which still ends
+    in the file's name.  It cannot identify anything: a written ``main.bicep`` and an unrelated
+    ``/vendor/main.bicep`` match the same key equally well, and picking a longest or first match
+    only chooses between guesses.  So it renders :data:`_UNIDENTIFIED` and claims no position.
+    The name is still withheld, because a location that ends in a written file's name may *be*
+    that file, and that file's name may be content the framework hid.
+
+    Either way the *entire* location is replaced rather than the matched part: half of a path
+    that contained the name is still the name, and the directories around it are the sandbox's
+    internal layout, which ``format_diagnostics`` does not put in front of the model either.
+    """
+    if not rename or not location:
+        return location
+    for candidate in (location, absolute):
+        if candidate and candidate in rename:
+            return rename[candidate]
+    if any(location.endswith("/" + real) for real in rename):
+        return _UNIDENTIFIED
+    return location
+
+
 def format_diagnostics(
-    diagnostics: list[dict[str, Any]], phase: str, *, strip_prefix: str | None = None
+    diagnostics: list[dict[str, Any]],
+    phase: str,
+    *,
+    strip_prefix: str | None = None,
+    rename: Mapping[str, str] | None = None,
 ) -> str:
     """Render a compact human-readable summary of SARIF diagnostics.
 
@@ -88,6 +129,20 @@ def format_diagnostics(
     ``file:///maf-sandbox/work/8f2c1d/main.bicep`` — which puts the sandbox's internal layout into
     the model's context, and gives the *same* file a different path on every round because
     the directory is per-call.  Stripped, it reads ``main.bicep``: the name the agent used.
+
+    ``rename`` maps a location to what may be shown in its place, and exists because stripping
+    the directory is not the same as making the name safe.  A name the framework expanded out of
+    hidden content reaches here having matched the caller's listing, and the compiler then
+    reports diagnostics *against* it — so a location renders the hidden value on the ordinary
+    path where the file simply has an error in it.
+
+    A caller passes **every file it wrote**, mapping the ones it may echo to themselves, and
+    under every spelling the compiler might use for them — including the absolute path it was
+    given, which is what a real diagnostic reports and what makes the match exact rather than
+    inferred.  Not only the unshowable ones: a map of those alone cannot tell a diagnostic about
+    a visible file from one about a hidden file that shares its basename.  A location matching
+    nothing is shown as the compiler reported it, because a file the caller never wrote is one
+    it cannot vouch for either way.
     """
     if not diagnostics:
         return f"{phase}: no diagnostics"
@@ -95,7 +150,8 @@ def format_diagnostics(
     for d in diagnostics:
         loc_parts: list[str] = []
         for loc in d.get("locations", []):
-            f = _relative_location(loc.get("file", ""), strip_prefix)
+            raw = loc.get("file", "")
+            f = _renamed(_relative_location(raw, strip_prefix), raw.removeprefix("file://"), rename)
             ln = loc.get("line")
             col = loc.get("column")
             if not f:
