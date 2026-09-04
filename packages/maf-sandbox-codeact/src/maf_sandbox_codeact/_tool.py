@@ -288,12 +288,12 @@ def make_codeact_tools(
             code, the sizes, the landed names — carries no label of its own, so it takes
             whatever the call's label is; beside it sits the standing sentence naming the recovery
             route, labelled ``trusted``, because nothing a call produced reaches it and it is
-            emitted on every return path including the refusals.  **Where that call resolves
-            untrusted and the conversation is still clean** — hiding is a first-taint
-            protection, and ``default_integrity`` is the host's to move — a framework hiding
-            untrusted content hides the first and leaves the second readable, which is the
-            point: under one label the sentence went with the numbers it was there to explain.
-            Neither condition is this kind's to promise; both are measured in
+            emitted on every return path including the refusals.  **Where the conversation is
+            still clean** — hiding is a first-taint protection — a framework hiding untrusted
+            content hides the first and leaves the second readable, which is the point: under
+            one label the sentence went with the numbers it was there to explain.  The call
+            resolving untrusted is not a second condition any more, because this tool declares
+            it.  What remains is not this kind's to promise, and is measured in
             ``docs/sandbox/information-flow.md``.
 
             **What withholding gets you, exactly.** The prose and the shape are this package's,
