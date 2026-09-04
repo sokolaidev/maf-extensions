@@ -305,11 +305,17 @@ def make_codeact_tools(
             declared output is one further bit**, since the program decides whether to write it
             and the result says of every declared name whether it landed — up to
             ``files_out.max_files`` of them, which is therefore the width of the widest channel
-            left. So what stops crossing is guest-authored *text*, not every guest-chosen *bit*:
-            about ten bits a call at the default cap, which a tool-fluent model reads as its
-            return path rather than stumbling into, and a host that must close it should not
-            attach this workload at all. The sink's ``display`` is deliberately *not* rendered
-            here — see :func:`_format_landed`.
+            left. **A producer's note is one more, and it is a size threshold rather than a
+            size**: core's host-tool transport writes one for exactly one condition — output
+            that exceeded the cap the host set — so a program picks that bit by choosing how
+            much to print. Its text is a fixed sentence carrying no number; what a *backend*
+            declaring ``producer_owns_stderr`` puts there is bounded by that backend rather than
+            by this kind, and it is surfaced whole for the reason :func:`_format_withheld`
+            gives. So what stops crossing is guest-authored *text*, not every guest-chosen
+            *bit*: about ten bits a call at the default cap, eleven where a note can appear,
+            which a tool-fluent model reads as its return path rather than stumbling into, and a
+            host that must close it should not attach this workload at all. The sink's
+            ``display`` is deliberately *not* rendered here — see :func:`_format_landed`.
         outbound_max_confidentiality: The host's cap for tools that carry something out, in the
             host's own vocabulary. Off by default and written only when something can actually
             leave: an artifact landing in the sink, a host tool that carries something out, or
