@@ -996,7 +996,8 @@ async def _execute(
     # host-tool call under the registry's `response_limits`.
     limits = session.spec.files_in
     tally = _InboundTally(limits)
-    shared: list[tuple[str, str]] = []
+    #: `(store path, the spelling a refusal may use, content)` per file read out of the store.
+    shared: list[tuple[str, str, str]] = []
     inbound = len(files) + (2 if host_tool_call is not None else 1)
     over_cap = _over_file_count(
         inbound, limits, calls_host_tool=host_tool_call is not None
@@ -1034,9 +1035,9 @@ async def _execute(
     )
     shared_dir = layout.work if layout is not None else call_directory
 
-    for name, content in shared:
+    for name, named, content in shared:
         refusal = await _write_shared(
-            sandbox, name, f"{shared_dir}/{name}", content, working_directory=shared_dir
+            sandbox, name, named, f"{shared_dir}/{name}", content, working_directory=shared_dir
         )
         if refusal is not None:
             return refusal
@@ -1261,7 +1262,7 @@ async def _read_listed_files(
     tally: _InboundTally,
     *,
     rewritten: frozenset[int] = frozenset(),
-) -> list[tuple[str, str]] | str:
+) -> list[tuple[str, str, str]] | str:
     """Read every requested file into memory, or answer with the refusal.
 
     Each file is counted **as it arrives**, so a breach stops the next read rather than the
@@ -1273,9 +1274,11 @@ async def _read_listed_files(
 
     ``rewritten`` carries the argument positions the framework expanded, and every refusal below
     renders those by position: a name that came out of hidden content is the one value a refusal
-    must not repeat.
+    must not repeat.  Each file is answered with that rendering beside its real name, because the
+    write that follows this read is where the verdict would otherwise be lost — matching the
+    listing is not what makes a name safe to echo.
     """
-    read: list[tuple[str, str]] = []
+    read: list[tuple[str, str, str]] = []
     for position, listed in enumerate(files):
         at = f"files[{position}]"
         hidden = position in rewritten
@@ -1298,10 +1301,11 @@ async def _read_listed_files(
                 f"Error: {echoed_name(listed.name, at=at, hidden=hidden)} is listed in the "
                 "file store but has no content"
             )
-        over_cap = tally.add(listed.name, content)
+        named = echoed_name(listed.name, at=at, hidden=hidden)
+        over_cap = tally.add(listed.name, content, named=named)
         if over_cap is not None:
             return over_cap
-        read.append((listed.name, content))
+        read.append((listed.name, named, content))
     return read
 
 
@@ -1358,8 +1362,15 @@ class _InboundTally:
         self._limits = limits
         self._total = 0
 
-    def add(self, name: str, content: str) -> str | None:
-        """Count one file, or answer with the refusal that should stop the next read."""
+    def add(self, name: str, content: str, *, named: str | None = None) -> str | None:
+        """Count one file, or answer with the refusal that should stop the next read.
+
+        ``named`` is how the file may be spelled in a refusal, and defaults to ``repr(name)`` —
+        which is what a caller naming a constant wants.  A caller counting a file the model
+        named passes the position-safe rendering instead: these two refusals reach the model,
+        and a name the framework expanded out of hidden content is not the caller's to echo.
+        """
+        shown = named if named is not None else repr(name)
         try:
             size = len(content.encode())
         except UnicodeEncodeError:
@@ -1367,12 +1378,12 @@ class _InboundTally:
             # encoded. This tally runs outside the guarded write, so without this the turn
             # dies here rather than the model being told what to fix.
             return (
-                f"Error: {name!r} is not valid UTF-8 and cannot be written into the sandbox. "
+                f"Error: {shown} is not valid UTF-8 and cannot be written into the sandbox. "
                 f"Nothing was shared."
             )
         if size > self._limits.max_bytes_per_file:
             return (
-                f"Error: {name!r} is {size} bytes and this tool writes at most "
+                f"Error: {shown} is {size} bytes and this tool writes at most "
                 f"{self._limits.max_bytes_per_file} bytes per file. Nothing was shared."
             )
         self._total += size
@@ -1388,19 +1399,25 @@ class _InboundTally:
 async def _write_shared(
     sandbox: Sandbox,
     name: str,
+    named: str,
     guest_path: str,
     content: str,
     *,
     working_directory: str,
 ) -> str | None:
-    """Put one already-read file store file into the run's directory, or answer with the refusal."""
+    """Put one already-read file store file into the run's directory, or answer with the refusal.
+
+    ``name`` is the real store path — the guest path is built from it and the host's log records
+    it — while ``named`` is the only spelling that may appear in the refusal.  They differ where
+    the framework expanded hidden content into the argument this file was named by.
+    """
     try:
         await sandbox.write_file(guest_path, content, working_directory=working_directory)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "execute_code: could not write %r into the sandbox: %s", name, error_detail(exc)
         )
-        return f"Error: could not share {name!r} into the sandbox"
+        return f"Error: could not share {named} into the sandbox"
     return None
 
 

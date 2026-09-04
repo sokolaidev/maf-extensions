@@ -936,6 +936,37 @@ class TestARewrittenArgumentIsNeverQuoted:
 
         assert "'mian.bicep'" in out, out
 
+    def test_a_successful_phase_report_does_not_quote_it(self, monkeypatch):
+        """The leak that outlives the read, and the worst of the set because it needs nothing to
+        go wrong. Matching the listing is not what makes a name safe to echo — a `[var_id]` the
+        framework expanded can name a file that is genuinely there — and every phase line carries
+        the name whatever the compiler found, so on the happy path the hidden value is reported
+        twice and no refusal is involved."""
+        name = f"{self.SUBSTITUTED}.bicep"
+        self._rewrite(monkeypatch, name)
+        out = _run(_tool(InMemoryStore({name: "x"}), _fake_backend()), [name])
+
+        assert "EMAIL" not in out, out
+        assert "build(" in out and "lint(" in out, out
+        assert out.count("files[0]") == 2, out
+
+    def test_the_sandbox_write_refusal_does_not_quote_it(self, monkeypatch):
+        """Reached after the read succeeded, so the read's own `hidden` verdict has already
+        served its purpose and is the thing most easily dropped."""
+        name = f"{self.SUBSTITUTED}.bicep"
+        self._rewrite(monkeypatch, name)
+
+        class _RefusesToWrite(_KeepsWhatItWrote):
+            async def write_file(self, *args, **kwargs):
+                raise RuntimeError("no space left on device")
+
+        backend = _fake_backend(_RefusesToWrite(default_stdout=_EMPTY_SARIF))
+        out = _run(_tool(InMemoryStore({name: "x"}), backend), [name])
+
+        assert "EMAIL" not in out, out
+        assert "files[0]" in out, out
+        assert "could not write" in out, out
+
     def test_the_whole_list_is_asked_about_once(self, monkeypatch):
         asked: list[tuple[list[str], str | None]] = []
 

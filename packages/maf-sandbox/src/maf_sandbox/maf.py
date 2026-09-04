@@ -1229,6 +1229,16 @@ class SandboxToolSession:
         the word ``None`` into a sandbox is not an answer.  A failure to read answers with the
         sentence a caller returns, for the reason the listing does.
 
+        **The label is the listing's, so it is as old as the listing.**  Nothing here re-reads the
+        host's record after the bytes arrive, and MAF runs tool calls concurrently, so a file the
+        host's floor called ``trusted`` at listing time can be rewritten by the agent's own
+        ``file_access_write`` before this read returns and the model's bytes arrive under the old
+        label.  Only a ``trusted`` floor is exposed — an unestablished or untrusted entry has
+        nowhere weaker to go — and closing it needs the record at read time, which this method has
+        no way to reach; `#879 <https://github.com/sokolaidev/maf-extensions/issues/879>`_ carries
+        that.  Until then a host wiring ``floor=SourceIntegrity.TRUSTED`` is claiming the store is
+        not concurrently written, not merely that its unrecorded paths are trustworthy.
+
         ``at`` is where the caller got the name — ``"files[1]"`` — and ``hidden`` says the
         framework rewrote that argument, which is what makes the refusal render the position
         instead of the value.  Pass both: ``at`` alone still quotes a short printable name, and a

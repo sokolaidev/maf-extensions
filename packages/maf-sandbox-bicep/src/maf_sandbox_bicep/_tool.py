@@ -416,7 +416,10 @@ def _bicep_validate_tool(
         # either way, and a preview data plane has already produced one unexplained `Conflict`
         # burst — concurrency is not what to add on top of that without a reason.
         results: list[str] = []
-        written: list[tuple[str, str]] = []
+        # Three, not two: a name the framework expanded is not safe to render even after it
+        # matched the listing, and the phase reports below run long after `hidden` fell out
+        # of scope. `label` is what may be shown; `name` stays raw for the host's own logs.
+        written: list[tuple[str, str, str]] = []
         for listed, sandbox_path, position in validated:
             name = listed.name
             at = f"files[{position}]"
@@ -455,18 +458,22 @@ def _bicep_validate_tool(
                 logger.warning(
                     "bicep_validate: could not write %r to sandbox: %s", name, error_detail(exc)
                 )
-                results.append(f"Error: could not write {name!r} to sandbox")
+                results.append(
+                    f"Error: could not write {echoed_name(name, at=at, hidden=hidden)} to sandbox"
+                )
                 continue
-            written.append((name, sandbox_path))
+            written.append(
+                (name, name if not hidden else echoed_name(name, at=at, hidden=True), sandbox_path)
+            )
 
-        for name, sandbox_path in written:
+        for name, label, sandbox_path in written:
             for phase, template in (
                 ("build", _build_command_for(name)),
                 ("lint", _LINT_CMD),
             ):
                 results.append(
                     await _run_phase(
-                        sandbox, phase, template, name, sandbox_path, call_directory, timeout
+                        sandbox, phase, template, name, label, sandbox_path, call_directory, timeout
                     )
                 )
 
@@ -480,6 +487,7 @@ async def _run_phase(
     phase: str,
     template: str,
     name: str,
+    label: str,
     sandbox_path: str,
     working_directory: str,
     timeout: int,
@@ -488,6 +496,13 @@ async def _run_phase(
 
     Both phases behave identically, so they share this rather than being written twice —
     which is how the build leg's ``2>&1`` came to be missing from one of them once already.
+
+    ``name`` is the real store path and goes only to the host's own logs; ``label`` is what may
+    appear in the result.  They differ where the framework expanded hidden content into the
+    argument this file was named by, and every line this returns reaches the model — the
+    successful ones included, since the phase prefix carries the name whatever the compiler
+    found.  Passing one string for both would put the hidden value back into the conversation
+    on the *happy* path, which is where it would be least likely to be noticed.
     """
     started = perf_counter()
     try:
@@ -498,10 +513,10 @@ async def _run_phase(
         )
     except TimeoutError:
         logger.warning("bicep_validate: %s exec timed out for %r after %ss", phase, name, timeout)
-        return f"{phase}({name}): Error: timed out after {timeout}s"
+        return f"{phase}({label}): Error: timed out after {timeout}s"
     except Exception as exc:  # noqa: BLE001
         logger.warning("bicep_validate: %s exec failed for %r: %s", phase, name, error_detail(exc))
-        return f"{phase}({name}): Error: exec failed"
+        return f"{phase}({label}): Error: exec failed"
     elapsed_ms = int((perf_counter() - started) * 1000)
 
     diagnostics = parse_sarif(result.stdout or "")
@@ -509,7 +524,7 @@ async def _run_phase(
         logger.warning(
             "bicep_validate: could not parse SARIF for %r; raw: %.500r", name, result.stdout or ""
         )
-        return f"{phase}({name}): Error: could not parse SARIF output"
+        return f"{phase}({label}): Error: could not parse SARIF output"
     # The one record that says the compiler actually ran. Everything else about a healthy
     # call is silent: the tool's return value looks the same whether Bicep found nothing
     # wrong or never executed, and "0 diagnostics" is the answer in both cases.
@@ -520,7 +535,7 @@ async def _run_phase(
         len(diagnostics),
         elapsed_ms,
     )
-    report = format_diagnostics(diagnostics, f"{phase}({name})", strip_prefix=working_directory)
+    report = format_diagnostics(diagnostics, f"{phase}({label})", strip_prefix=working_directory)
     failed_restores = count_restore_failures(diagnostics)
     if failed_restores:
         # Without this banner a restore-failed run reads as an ordinary diagnostic list, and
