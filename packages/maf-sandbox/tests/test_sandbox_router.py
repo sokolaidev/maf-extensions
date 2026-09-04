@@ -3431,8 +3431,7 @@ class TestPerSpecSelection:
 
     def test_a_backend_below_the_floor_is_kept_registered_and_named_rather_than_dropped(self):
         """It is never routed to, and it is not silently gone either: disposal still reaches it,
-        and the per-spec refusal names it with its rung — where a host has a workload in hand to
-        make sense of the sentence."""
+        and here — where *nothing* can serve the spec — the refusal names it with its rung."""
         strong = _declaring("strong", isolation=Isolation.MICROVM)
         weak = _declaring("weak", Capability.FILES_OUT)
         router = SandboxRouter([strong, weak], selection=Selection.PER_SPEC)
@@ -3445,10 +3444,11 @@ class TestPerSpecSelection:
         """Routing past it is the promotion `min_isolation`'s own refusal is written against.
 
         Nothing is unsafe — every candidate is checked against the floor, so the passed-over
-        backend can never serve — but it is then never used and never named, and a registration
-        doing nothing is the misconfiguration the floor refusal exists to surface. Said once, at
-        construction, rather than raised: a weaker backend registered beside a stronger one is
-        the arrangement this mode is for.
+        backend can never serve. What it would otherwise be is unmentioned: the per-spec refusal
+        names it only when nothing serves at all. The registration keeps doing one job, since
+        disposal reaches every registered backend, so the warning says it will not serve rather
+        than that it is useless. Said once at construction, rather than raised: a weaker backend
+        beside a stronger one is the arrangement this mode is for.
         """
         strong = _declaring("strong", isolation=Isolation.MICROVM)
         weak = _declaring("weak")
@@ -3456,6 +3456,11 @@ class TestPerSpecSelection:
             SandboxRouter([strong, weak], selection=Selection.PER_SPEC)
         assert "'weak' (none)" in caplog.text
         assert "no workload is ever routed there" in caplog.text
+        # Its own assertion, because this half is what the warning gets wrong if anyone
+        # shortens it: `dispose` and `dispose_scope` reach every *registered* backend, so a
+        # host told to unregister this one would strand whatever it still holds. Below the
+        # floor is a statement about what may be served, never about what must be reclaimed.
+        assert "disposal still reaches it" in caplog.text
 
     def test_a_registration_that_all_clears_the_floor_says_nothing(self, caplog):
         """The warning has to stay rare enough to read, so the healthy arrangement is silent."""

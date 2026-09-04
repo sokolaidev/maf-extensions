@@ -512,8 +512,8 @@ class SandboxRouter:
             :data:`Selection.PER_SPEC` every registered backend is read rather than one, and
             the floor is judged across all of them together: the refusal is for a deployment
             where *nothing* registered clears it. A single backend below the floor is not an
-            error there — it is one no spec is ever routed to, and it is named in the per-spec
-            refusal, which is where a host has a workload in hand to make sense of it.
+            error there — it is one no spec is ever routed to, named by a warning at
+            construction, and still reached by disposal, which is why it stays registered.
         ValueError: at construction, when ``min_isolation`` is not a rung — or
             ``min_isolation_scope`` not a scope — this package recognises, raised by
             :class:`Isolation` and :class:`IsolationScope` themselves rather than surfacing as a
@@ -623,11 +623,14 @@ class SandboxRouter:
     def _eligible(self) -> list[SandboxBackend]:
         """Every registered backend, once each is readable and at least one clears the floor.
 
-        Every one of them, deliberately, rather than the subset above the floor: the floor is
-        the *first* check :meth:`_refuse_unless_this_backend_can_serve` runs, so a backend
-        below it is refused per spec with its rung and the floor named, in the refusal the
-        host actually reads. Pre-filtering it out here would delete that sentence and leave a
-        registered backend that is never mentioned again.
+        Every one of them, deliberately, rather than the subset above the floor. Two reasons,
+        and the second is the load-bearing one. The floor is the *first* check
+        :meth:`_refuse_unless_this_backend_can_serve` runs, so a below-floor backend refuses per
+        spec with its rung and the floor named — which the host reads **only when no later
+        candidate serves**, since a successful route discards the refusals it passed over; the
+        warning below is what names it on every other route. And a backend this list dropped
+        would still be in ``self._backends``, so the filtering would buy nothing: disposal
+        sweeps that, not this.
 
         What is checked here is what cannot wait. Declarations are read for **all** of them,
         so a half-migrated backend fails at startup rather than the first time a spec happens
@@ -650,11 +653,18 @@ class SandboxRouter:
             # host registers a backend below its floor, routing quietly passes over it in favour
             # of one that clears it, and nothing ever says so. The per-spec refusal names it only
             # when *nothing* can serve, which is exactly the case this one is not.
+            #
+            # It does not advise unregistering, and must not: `dispose` and `dispose_scope` ask
+            # every registered backend precisely so a host that changed which one serves does
+            # not strand what the previous one still holds. Below the floor is a statement about
+            # what may be *served*, never about what must be reclaimed.
             logger.warning(
                 "sandbox router: %s registered below this host's %r minimum-isolation floor, so "
-                "no workload is ever routed there; a stronger backend serves instead and the "
-                "registration is doing nothing. Remove it, or lower min_isolation if this host "
-                "means to accept that boundary.",
+                "no workload is ever routed there and a backend clearing the floor serves "
+                "instead. It stays registered and disposal still reaches it, which is what a "
+                "host that changed backends relies on — so unregistering it would strand "
+                "whatever it still holds. Lower min_isolation if this host means to accept that "
+                "boundary.",
                 ", ".join(f"{backend.name!r} ({str(rung)})" for backend, rung in below),
                 str(floor),
             )
@@ -760,17 +770,9 @@ class SandboxRouter:
     ) -> tuple[SandboxBackend | None, list[tuple[SandboxBackend, Exception]]]:
         """The first candidate that can serve ``spec``, and each one refused ahead of it.
 
-        A pure function of the spec, the registered backends and their declarations — never
-        of load, health, latency or cost, and that is load-bearing rather than austere.
-        :meth:`acquire` is get-or-create, so a route that moved between calls would pay a cold
-        start every iteration of a fix-round loop and leave a billable sandbox behind on the
-        backend it walked away from. It also has to hold on a host whose replicas share no
-        memory, where nothing this router recorded would be readable anyway.
-
-        Cost is absent for a second reason: no backend can honestly declare it. What a
-        sandbox costs belongs to the deployment — tier, region, group policy — and none of it
-        is visible here. The isolation ladder is already the monotone proxy, and
-        ``min_isolation`` is already the host's statement of what it will pay for.
+        A pure function of the spec, the registered backends and their declarations, and of
+        nothing else — no load, health, latency or cost is consulted. Callers may rely on that:
+        asking twice cannot name two backends. :class:`Selection` carries why.
         """
         passed_over: list[tuple[SandboxBackend, Exception]] = []
         for backend in self._candidates:
