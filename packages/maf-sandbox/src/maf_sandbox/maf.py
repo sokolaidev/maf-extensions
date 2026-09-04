@@ -984,11 +984,14 @@ def sandbox_tool_declarations(
 #: Where :meth:`SandboxToolSession.read_file` records what the host knows about a file's bytes.
 #:
 #: A private key rather than the framework's ``security_label``, and the difference is not
-#: cosmetic. ``security_label`` holds a whole ``ContentLabel``: writing only ``integrity`` into it
-#: yields ``confidentiality: public`` when the framework reads it back, which would classify
-#: everything the store holds as public. This key means *what the host recorded about the source*
-#: and nothing about confidentiality, so an item carrying it makes no claim MAF acts on. A kind
-#: that wants to say something about a result item uses :func:`labelled_result_item`.
+#: cosmetic. ``security_label`` holds a whole ``ContentLabel``, and a partial one is not partial:
+#: ``ContentLabel.from_dict({"integrity": "untrusted"})`` answers ``confidentiality=public``, so
+#: writing integrity alone classifies everything the store holds as public the moment anything
+#: parses it back. It is the same reason :func:`labelled_result_item` refuses ``untrusted``, and
+#: it keeps an item that merely came out of the store from consuming :func:`sandboxed_tool`'s
+#: rule that not every item may carry a label. This key means *what the host recorded about the
+#: source* and nothing about confidentiality, so an item carrying it makes no claim MAF acts on.
+#: A kind that wants to say something about a result item uses :func:`labelled_result_item`.
 SOURCE_INTEGRITY_PROPERTY = "maf_sandbox_source_integrity"
 
 
@@ -1274,14 +1277,7 @@ class SandboxToolSession:
             return None
         properties: dict[str, Any] = {}
         if listed.integrity is not None:
-            # Deliberately **not** `security_label`. That key is a whole `ContentLabel`, and a
-            # partial one is not partial: measured, `ContentLabel.from_dict({"integrity": ...})`
-            # answers `confidentiality=public`, so writing integrity alone classifies the store's
-            # bytes public the moment anything parses it back — the very claim omitting the field
-            # looks like it avoids. It is also what `labelled_result_item` refuses `untrusted`
-            # for, so writing one here would contradict this module two functions away, and it
-            # would make a forwarded item count as labelled against `sandboxed_tool`'s "not every
-            # item may carry a label" rule.
+            # Not `security_label` — see `SOURCE_INTEGRITY_PROPERTY` for why.
             properties[SOURCE_INTEGRITY_PROPERTY] = str(listed.integrity)
         return Content.from_text(text, additional_properties=properties)
 

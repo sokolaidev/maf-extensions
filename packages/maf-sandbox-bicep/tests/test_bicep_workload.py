@@ -951,12 +951,11 @@ class TestARewrittenArgumentIsNeverQuoted:
         assert out.count("files[0]") == 2, out
 
     def test_a_diagnostic_location_does_not_quote_it(self, monkeypatch):
-        """The leak the empty-SARIF happy-path test could not see.
+        """A diagnostic location renders the file name, so it needs the position too.
 
-        `format_diagnostics` strips the working directory off a location and leaves the file
-        name, so a compiler diagnostic reported *against* an expanded name renders it — on the
-        ordinary path where the file simply has an error in it, which is the common case for
-        this tool rather than an edge one.
+        `format_diagnostics` strips the working directory off a location and leaves the name, and
+        this is the ordinary path for this tool rather than an error one: it is reached whenever
+        the compiler has anything to say about the file.
         """
         name = f"{self.SUBSTITUTED}.bicep"
         self._rewrite(monkeypatch, name)
@@ -1033,11 +1032,11 @@ class TestARewrittenArgumentIsNeverQuoted:
         assert "files[0]" in out, out
 
     def test_the_restore_failure_banner_does_not_quote_it(self, monkeypatch):
-        """The fifth return in this function, and the one below the four that were fixed.
+        """The restore banner builds its own prefix, so the rename map does not reach it.
 
         A BCP190/191/192 run is not an error path a caller has to provoke — it is what an
-        ordinary validation does whenever a module reference cannot be restored, and it renders
-        its own prefix rather than going through `format_diagnostics`.
+        ordinary validation answers whenever a module reference cannot be restored — and this
+        branch returns before `format_diagnostics` renders anything.
         """
         name = f"{self.SUBSTITUTED}.bicep"
         self._rewrite(monkeypatch, name)
@@ -1494,8 +1493,8 @@ class TestAgainstRealBicepOutput:
         file's diagnostic at the hidden file's position — the wrong file, which a reader would
         then act on.
 
-        The short key is inserted first on purpose: with first-match this passes or fails on
-        dict ordering, which is exactly why the tool-level version of this test proved nothing.
+        The short key is inserted first because insertion order is what decides a first-match
+        answer: a version of this test that leaves the order to chance passes against the bug.
         """
         rename = {"secret.bicep": "the value at files[0]", "dir/secret.bicep": "dir/secret.bicep"}
 

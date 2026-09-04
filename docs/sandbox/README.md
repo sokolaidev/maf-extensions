@@ -117,7 +117,15 @@ context = make_caller_context(
 )
 tools = make_bicep_tools(router, store, agent_dir, context, image=image)
 
-agent = Agent(client=client, name=agent_dir, instructions=..., tools=tools)
+agent = Agent(
+    client=client,
+    name=agent_dir,
+    instructions=...,
+    tools=tools,
+    # Without this the record observes nothing, every entry lists as unestablished, and a
+    # `trusted` floor would be refused for the reason `FileStoreProvenance` gives.
+    middleware=[file_store_provenance_middleware(record)],
+)
 ```
 
 **The request context.** `make_caller_context` takes *callables*, read per call, rather than values. A sandbox is keyed by `(scope, thread_id, agent_dir)` — and by `call_id` as well for a workload that runs one sandbox per call, and a host that builds one agent and serves many conversations with it would — if the scope and thread were captured at construction time — let one conversation address another conversation's sandbox. Nothing in this stack accepts a scope, a thread id or a file path from the model: the file store listing is the boundary that decides what a name is allowed to resolve to.
