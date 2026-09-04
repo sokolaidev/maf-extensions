@@ -936,6 +936,171 @@ class TestARewrittenArgumentIsNeverQuoted:
 
         assert "'mian.bicep'" in out, out
 
+    def test_a_successful_phase_report_does_not_quote_it(self, monkeypatch):
+        """The leak that outlives the read, and the worst of the set because it needs nothing to
+        go wrong. Matching the listing is not what makes a name safe to echo — a `[var_id]` the
+        framework expanded can name a file that is genuinely there — and every phase line carries
+        the name whatever the compiler found, so on the happy path the hidden value is reported
+        twice and no refusal is involved."""
+        name = f"{self.SUBSTITUTED}.bicep"
+        self._rewrite(monkeypatch, name)
+        out = _run(_tool(InMemoryStore({name: "x"}), _fake_backend()), [name])
+
+        assert "EMAIL" not in out, out
+        assert "build(" in out and "lint(" in out, out
+        assert out.count("files[0]") == 2, out
+
+    def test_a_diagnostic_location_does_not_quote_it(self, monkeypatch):
+        """A diagnostic location renders the file name, so it needs the position too.
+
+        `format_diagnostics` strips the working directory off a location and leaves the name, and
+        this is the ordinary path for this tool rather than an error one: it is reached whenever
+        the compiler has anything to say about the file.
+        """
+        name = f"{self.SUBSTITUTED}.bicep"
+        self._rewrite(monkeypatch, name)
+        sarif = json.dumps(
+            {
+                "runs": [
+                    {
+                        "results": [
+                            {
+                                "level": "error",
+                                "message": {"text": "expected a value"},
+                                "locations": [
+                                    {
+                                        "physicalLocation": {
+                                            "artifactLocation": {"uri": f"file:///w/{name}"},
+                                            "region": {"startLine": 3},
+                                        }
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+        )
+        backend = _fake_backend(_KeepsWhatItWrote(default_stdout=sarif))
+        out = _run(_tool(InMemoryStore({name: "x"}), backend), [name])
+
+        assert "expected a value" in out, out
+        assert "EMAIL" not in out, out
+        assert "files[0]" in out, out
+
+    @staticmethod
+    def _sarif_at(*uris: str) -> str:
+        return json.dumps(
+            {
+                "runs": [
+                    {
+                        "results": [
+                            {
+                                "level": "error",
+                                "message": {"text": "expected a value"},
+                                "locations": [
+                                    {
+                                        "physicalLocation": {
+                                            "artifactLocation": {"uri": u},
+                                            "region": {"startLine": 1},
+                                        }
+                                    }
+                                ],
+                            }
+                            for u in uris
+                        ]
+                    }
+                ]
+            }
+        )
+
+    def test_a_second_spelling_of_one_file_cannot_downgrade_its_rendering(self, monkeypatch):
+        """One file has one rendering, whichever spelling asked for it.
+
+        `bicep_validate` has no duplicate guard and `resolve_listed_path` normalises `./x.bicep`
+        and `x.bicep` to one destination, so a call can name the same file twice with only one
+        of those positions expanded. Both entries then have to render as the expanded one: the
+        name withheld, and the position that really holds hidden content.
+        """
+        name = f"{self.SUBSTITUTED}.bicep"
+        self._rewrite(monkeypatch, name)  # only the first position is expanded
+        backend = _fake_backend(
+            _KeepsWhatItWrote(default_stdout=self._sarif_at(f"file:///w/{name}"))
+        )
+
+        out = _run(_tool(InMemoryStore({name: "x"}), backend), [name, f"./{name}"])
+
+        assert "EMAIL" not in out, out
+        assert "files[0]" in out, out
+        # files[1] was never expanded, so attributing anything to it names the wrong argument.
+        assert "files[1]" not in out, out
+
+    def test_the_compilers_own_spelling_is_renamed_too(self, monkeypatch):
+        """`resolve_listed_path` normalises between the listing key and the path this call
+        writes — a listed `./x.bicep` is written as `x.bicep` — and the compiler reports the
+        path it was given. Keying the map on the listing alone leaves that spelling unmatched,
+        which is the one that reaches the model."""
+        listed = f"./{self.SUBSTITUTED}.bicep"
+        asked = f"{self.SUBSTITUTED}.bicep"
+        self._rewrite(monkeypatch, asked)
+        backend = _fake_backend(
+            _KeepsWhatItWrote(default_stdout=self._sarif_at(f"file:///w/{asked}"))
+        )
+
+        out = _run(_tool(InMemoryStore({listed: "x"}), backend), [asked])
+
+        assert "EMAIL" not in out, out
+        assert "files[0]" in out, out
+
+    def test_the_restore_failure_banner_does_not_quote_it(self, monkeypatch):
+        """The restore banner builds its own prefix, so the rename map does not reach it.
+
+        A BCP190/191/192 run is not an error path a caller has to provoke — it is what an
+        ordinary validation answers whenever a module reference cannot be restored — and this
+        branch returns before `format_diagnostics` renders anything.
+        """
+        name = f"{self.SUBSTITUTED}.bicep"
+        self._rewrite(monkeypatch, name)
+        sarif = json.dumps(
+            {
+                "runs": [
+                    {
+                        "results": [
+                            {
+                                "ruleId": "BCP192",
+                                "level": "error",
+                                "message": {"text": "could not restore the module"},
+                                "locations": [],
+                            }
+                        ]
+                    }
+                ]
+            }
+        )
+        backend = _fake_backend(_KeepsWhatItWrote(default_stdout=sarif))
+        out = _run(_tool(InMemoryStore({name: "x"}), backend), [name])
+
+        assert "MODULE RESTORE FAILED" in out, out
+        assert "EMAIL" not in out, out
+        assert "files[0]" in out, out
+
+    def test_the_sandbox_write_refusal_does_not_quote_it(self, monkeypatch):
+        """Reached after the read succeeded, so the read's own `hidden` verdict has already
+        served its purpose and is the thing most easily dropped."""
+        name = f"{self.SUBSTITUTED}.bicep"
+        self._rewrite(monkeypatch, name)
+
+        class _RefusesToWrite(_KeepsWhatItWrote):
+            async def write_file(self, *args, **kwargs):
+                raise RuntimeError("no space left on device")
+
+        backend = _fake_backend(_RefusesToWrite(default_stdout=_EMPTY_SARIF))
+        out = _run(_tool(InMemoryStore({name: "x"}), backend), [name])
+
+        assert "EMAIL" not in out, out
+        assert "files[0]" in out, out
+        assert "could not write" in out, out
+
     def test_the_whole_list_is_asked_about_once(self, monkeypatch):
         asked: list[tuple[list[str], str | None]] = []
 
@@ -1323,6 +1488,94 @@ class TestAgainstRealBicepOutput:
         assert "main.bicep:1" in out
         assert strip_prefix not in out
         assert "file://" not in out
+
+    def _one_at(self, uri: str) -> list[dict[str, object]]:
+        return [{"level": "error", "message": "boom", "locations": [{"file": uri, "line": 1}]}]
+
+    def test_the_absolute_path_bicep_was_given_matches_exactly(self):
+        """The ordinary case, and the only kind that carries a request position.
+
+        Bicep is handed the path this call wrote and reports it back, so the caller's own
+        `sandbox_path` is a key that matches whatever `strip_prefix` managed to remove. Exact
+        identification is what licenses naming a position at all.
+        """
+        out = format_diagnostics(
+            self._one_at("file:///w/call/secret.bicep"),
+            "lint(x)",
+            strip_prefix=None,
+            rename={"/w/call/secret.bicep": "the value at files[0]"},
+        )
+
+        assert "secret.bicep" not in out
+        assert "the value at files[0]" in out
+
+    def test_a_stripped_location_matches_exactly_too(self):
+        out = format_diagnostics(
+            self._one_at("file:///w/secret.bicep"),
+            "lint(x)",
+            strip_prefix="/w",
+            rename={"secret.bicep": "the value at files[0]"},
+        )
+
+        assert "secret.bicep" not in out
+        assert "the value at files[0]" in out
+
+    def test_a_trailing_match_withholds_the_name_and_claims_no_position(self):
+        """A location this run could not strip still ends in a written file's name, so the name
+        cannot be shown — it may be the content the framework hid. It cannot be *identified*
+        either, so naming a position would attribute a diagnostic to a file that may have
+        nothing to do with it."""
+        out = format_diagnostics(
+            self._one_at("/unexpected/root/secret.bicep"),
+            "lint(x)",
+            strip_prefix="/other",
+            rename={"secret.bicep": "the value at files[0]"},
+        )
+
+        assert "secret.bicep" not in out
+        assert "unexpected/root" not in out
+        assert "files[0]" not in out
+        assert "an unidentified file" in out
+
+    def test_an_unrelated_path_sharing_a_basename_is_not_attributed_to_a_position(self):
+        """The misattribution a trailing match invites: `/vendor/secret.bicep` was never written
+        by this call, and reporting its diagnostic at `files[0]` would point the reader at the
+        wrong file entirely."""
+        out = format_diagnostics(
+            self._one_at("/vendor/secret.bicep"),
+            "lint(x)",
+            strip_prefix="/w",
+            rename={"secret.bicep": "the value at files[0]"},
+        )
+
+        assert "files[0]" not in out
+        assert "an unidentified file" in out
+
+    def test_a_visible_file_sharing_a_basename_keeps_its_own_name(self):
+        """Exact matching is what separates these, and it is why every written file is a key —
+        including the ones whose name may be shown. A map of hidden files alone would leave
+        `dir/secret.bicep` falling through to the trailing branch and losing its name.
+        """
+        rename = {"secret.bicep": "the value at files[0]", "dir/secret.bicep": "dir/secret.bicep"}
+
+        out = format_diagnostics(
+            self._one_at("/w/dir/secret.bicep"), "lint(x)", strip_prefix="/w", rename=rename
+        )
+
+        assert "dir/secret.bicep" in out
+        assert "files[0]" not in out
+
+    def test_a_location_the_caller_never_wrote_is_left_alone(self):
+        """A file the caller did not write is one it cannot vouch for either way, and silently
+        renaming it would attribute a diagnostic to a file that has nothing to do with it."""
+        out = format_diagnostics(
+            self._one_at("/w/vendor/other.bicep"),
+            "lint(x)",
+            strip_prefix="/w",
+            rename={"main.bicep": "the value at files[0]"},
+        )
+
+        assert "vendor/other.bicep" in out
 
     def test_rendering_omits_a_column_bicep_does_not_provide(self):
         """Real Bicep emits charOffset, not startColumn — so print the line, not ':None'."""

@@ -31,12 +31,14 @@ from ._protocol import (
     EntryKind,
     ExecResult,
     Isolation,
+    ListedFile,
     Sandbox,
     SandboxBackend,
     SandboxEntry,
     SandboxKey,
     SandboxSpec,
     ScopePurge,
+    SourceIntegrity,
 )
 from .paths import (
     confine_resolve_guest_delete_path,
@@ -513,20 +515,33 @@ class InMemoryStore:
     than raising, because a kind is expected to handle "listed but has no content" as data,
     not as an exception.
 
-    ``list`` is deliberately ``async def list(self) -> list[str]`` — no other parameter — so
-    the *unbound* method matches :class:`~maf_sandbox.CallerContext`'s
-    ``list_files: Callable[[Any], Awaitable[list[str]]]`` exactly.
+    ``list`` is deliberately ``async def list(self) -> list[ListedFile]`` — no other parameter —
+    so the *unbound* method matches :class:`~maf_sandbox.CallerContext`'s
+    ``list_files: Callable[[Any], Awaitable[list[ListedFile]]]`` exactly.
     ``list_files=InMemoryStore.list`` works with no wrapper.
+
+    Entries carry ``integrity=None`` **by default**: a double keeps no provenance record, and
+    *unestablished* is what a host without one honestly knows.  Pass ``integrity`` to the
+    constructor to give every file a label, or ``labels`` to give them one each — a test that
+    needs a kind to see trusted and untrusted files side by side says so there.
     """
 
-    def __init__(self, files: dict[str, str]) -> None:
+    def __init__(
+        self,
+        files: dict[str, str],
+        *,
+        integrity: SourceIntegrity | None = None,
+        labels: dict[str, SourceIntegrity | None] | None = None,
+    ) -> None:
         self.files: dict[str, str] = dict(files)
+        self.integrity = integrity
+        self.labels: dict[str, SourceIntegrity | None] = dict(labels or {})
 
     async def read(self, name: str) -> str | None:
         return self.files.get(name)
 
-    async def list(self) -> list[str]:
-        return list(self.files)
+    async def list(self) -> list[ListedFile]:
+        return [ListedFile(name, self.labels.get(name, self.integrity)) for name in self.files]
 
 
 # Holds this module's backend and sandbox to the protocols they implement, inside this

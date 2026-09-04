@@ -15,6 +15,7 @@ import dataclasses
 import enum
 import logging
 import math
+import re
 import threading
 from typing import Any, cast
 
@@ -30,9 +31,11 @@ from maf_sandbox import (
     DisposalFailure,
     Egress,
     FailedReclaimPolicy,
+    FileStoreProvenance,
     Isolation,
     IsolationScope,
     LandedArtifact,
+    ListedFile,
     NoSandboxBackend,
     OutputDisposition,
     OutputSink,
@@ -46,17 +49,24 @@ from maf_sandbox import (
     SandboxRouter,
     SandboxSpec,
     SandboxUnclean,
+    Selection,
+    SourceChannel,
     SourceIntegrity,
+    TransferLimits,
+    weakest_integrity,
 )
 from maf_sandbox import maf as _maf
+from maf_sandbox._host_tools import HostToolAggregate
 from maf_sandbox._reclaim import note_unclean
 from maf_sandbox._router import ATTACH_REFUSALS
 from maf_sandbox.maf import (
     _ORIGINAL_ARGUMENTS_KEY,
     ISOLATION_SCOPE_KEY,
+    SOURCE_INTEGRITY_PROPERTY,
     SandboxPurger,
     SandboxToolSession,
     argument_provenance_middleware,
+    file_store_provenance_middleware,
     hidden_content_candidates,
     labelled_result_item,
     list_all_files,
@@ -80,6 +90,39 @@ _SPEC = SandboxSpec(
     work_dir="/maf-sandbox/work",
 )
 _NO_EGRESS_SPEC = SandboxSpec(kind="test", work_dir="/maf-sandbox/work")
+
+#: A spec that opens no channel the framework cannot establish — no file store, no network, no
+#: host tools.  `DEFAULT_CAPABILITIES` holds `FILES_IN`, so a spec saying nothing about
+#: `requires` opens one, and this is what a workload declaring `trusted` must be able to show.
+_NO_CHANNEL_SPEC = SandboxSpec(
+    kind="test", work_dir="/maf-sandbox/work", requires=frozenset({Capability.EXEC})
+)
+
+
+def _a_fold(result_integrity: SourceIntegrity | None) -> HostToolAggregate:
+    """A sealed host-tool surface whose fold is `result_integrity` and nothing else of note."""
+    return HostToolAggregate(
+        result_integrity=result_integrity,
+        outbound_caps=frozenset(),
+        identities=frozenset(),
+        requires_approval=False,
+        has_undeclared=False,
+        response_limits=TransferLimits(1024, 1024, 1),
+        max_host_tool_calls_per_run=1,
+    )
+
+
+def _serving_host_tools(fold: HostToolAggregate | None) -> SandboxSpec:
+    """A spec requiring HOST_TOOLS, carrying `fold` — or requiring it and carrying none, which
+    `SandboxSpec` permits because only the other direction can slip past a deny list."""
+    return SandboxSpec(
+        kind="test",
+        work_dir="/maf-sandbox/work",
+        requires=frozenset({Capability.EXEC, Capability.HOST_TOOLS}),
+        host_tools=fold,
+    )
+
+
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-1")
 
 #: A spec that declares outputs must require the capability that reads them back — the pull
@@ -176,7 +219,7 @@ class TestMakeCallerContext:
 
         assert context.current_scope() == "scope-a"
         assert context.current_thread_id() == "thread-1"
-        assert asyncio.run(context.list_files(store)) == ["a.txt"]
+        assert asyncio.run(context.list_files(store)) == [ListedFile("a.txt")]
 
     def test_the_getters_are_read_per_call_not_captured_at_build_time(self):
         """The key must follow the host's request context, not the moment the tool was built.
@@ -232,9 +275,27 @@ class TestSandboxToolDeclarations:
         assert sandbox_tool_declarations(_SPEC) == {}
 
     def test_an_integrity_label_is_written_when_one_is_passed(self):
-        assert sandbox_tool_declarations(_SPEC, source_integrity="trusted") == {
+        assert sandbox_tool_declarations(_NO_CHANNEL_SPEC, source_integrity="trusted") == {
             "source_integrity": "trusted"
         }
+
+    def test_an_untrusted_label_is_written_over_any_spec_at_all(self):
+        """Only the `trusted` claim is checked: `untrusted` asserts nothing to check."""
+        assert sandbox_tool_declarations(_SPEC, source_integrity="untrusted") == {
+            "source_integrity": "untrusted"
+        }
+
+    def test_a_label_passed_as_the_enum_is_written_as_its_value(self):
+        """Coerced like every other value this package deserializes, so the dict holds a str."""
+        assert sandbox_tool_declarations(
+            _NO_CHANNEL_SPEC, source_integrity=SourceIntegrity.TRUSTED
+        ) == {"source_integrity": "trusted"}
+
+    def test_a_misspelt_label_is_refused_rather_than_silently_declaring_nothing(self):
+        """FIDES accepts two spellings and drops the rest with a log line, so an uncoerced typo
+        is a tool that declares nothing while its author believes it declared something."""
+        with pytest.raises(ValueError, match="Trusted"):
+            sandbox_tool_declarations(_NO_CHANNEL_SPEC, source_integrity="Trusted")
 
     def test_the_call_scope_is_written_only_when_there_is_something_to_say(self):
         """The conversation-scoped sandbox is what a tool carrying no such key already means."""
@@ -321,6 +382,211 @@ class TestSandboxToolDeclarations:
 
 
 # ---------------------------------------------------------------------------
+# A `trusted` claim is checked against the channels the spec opens
+# ---------------------------------------------------------------------------
+
+
+class TestTheTrustedClaimIsCheckedAgainstTheSpec:
+    """The rule `docs/sandbox/information-flow.md` states, executed rather than read.
+
+    A declaration replaces the call's input-label join, so `trusted` is honest only where every
+    surviving source is established *as trusted*. A spec names the channels its workload opens
+    before the sandbox exists, and of the three only host tools can be established — by a fold a
+    host seals onto the spec.
+    """
+
+    @pytest.mark.parametrize(
+        ("spec", "named"),
+        [
+            (_NO_EGRESS_SPEC, "requires holds 'files_in'"),
+            (
+                SandboxSpec(
+                    kind="test",
+                    work_dir="/w",
+                    requires=frozenset({Capability.EXEC}),
+                    egress=Egress.ALLOWLIST,
+                    egress_allow=("pypi.org",),
+                ),
+                "egress_allow names pypi.org",
+            ),
+            (
+                SandboxSpec(
+                    kind="test",
+                    work_dir="/w",
+                    requires=frozenset({Capability.EXEC}),
+                    egress=Egress.UNRESTRICTED,
+                ),
+                "egress is 'unrestricted'",
+            ),
+            (_serving_host_tools(None), "the spec carries no registry fold"),
+            (
+                _serving_host_tools(_a_fold(SourceIntegrity.UNTRUSTED)),
+                "the registry folds to 'untrusted'",
+            ),
+        ],
+    )
+    def test_each_open_channel_refuses_and_names_the_field_that_opened_it(self, spec, named):
+        """The field and its value, not the channel alone: a kind whose `requires` came from a
+        shared sub-spec is reading a refusal about a channel it never wrote, and the field is
+        what sends its author to the composition site."""
+        with pytest.raises(ValueError, match=re.escape(named)):
+            sandbox_tool_declarations(spec, source_integrity="trusted")
+
+    def test_a_spec_that_opens_nothing_is_not_refused(self):
+        assert sandbox_tool_declarations(_NO_CHANNEL_SPEC, source_integrity="trusted") == {
+            "source_integrity": "trusted"
+        }
+
+    def test_an_allowlist_naming_no_host_reaches_nothing_and_is_not_refused(self):
+        """The mode is half the answer and the payload is the other half: an allowlist run with
+        an empty list reaches nothing at all."""
+        spec = SandboxSpec(
+            kind="test",
+            work_dir="/w",
+            requires=frozenset({Capability.EXEC}),
+            egress=Egress.ALLOWLIST,
+        )
+        assert sandbox_tool_declarations(spec, source_integrity="trusted") == {
+            "source_integrity": "trusted"
+        }
+
+    def test_every_open_channel_is_named_in_one_refusal(self):
+        with pytest.raises(ValueError) as refusal:
+            sandbox_tool_declarations(_SPEC, source_integrity="trusted")
+        assert "requires holds 'files_in'" in str(refusal.value)
+        assert "egress_allow names example.invalid" in str(refusal.value)
+
+    def test_declaring_nothing_is_never_refused(self):
+        """A caller who made no claim is never told its claim was rejected."""
+        assert sandbox_tool_declarations(_SPEC) == {}
+
+    def test_an_unrestricted_run_is_capped_like_an_allowlisted_one(self):
+        """The cap reads the mode as well as the payload: a run that reaches everything and
+        names nothing carries as much out as one naming hosts."""
+        spec = SandboxSpec(
+            kind="test",
+            work_dir="/w",
+            requires=frozenset({Capability.EXEC}),
+            egress=Egress.UNRESTRICTED,
+        )
+        assert sandbox_tool_declarations(spec, outbound_max_confidentiality="private") == {
+            "max_allowed_confidentiality": "private"
+        }
+
+    def test_an_allowlist_naming_no_host_is_not_capped(self):
+        """The other half of the same predicate: it reaches nothing, so there is no flow to gate."""
+        spec = SandboxSpec(
+            kind="test",
+            work_dir="/w",
+            requires=frozenset({Capability.EXEC}),
+            egress=Egress.ALLOWLIST,
+        )
+        assert sandbox_tool_declarations(spec, outbound_max_confidentiality="private") == {}
+
+    def test_a_trusted_fold_establishes_that_channel_with_no_escape_needed(self):
+        spec = _serving_host_tools(_a_fold(SourceIntegrity.TRUSTED))
+        assert sandbox_tool_declarations(spec, source_integrity="trusted") == {
+            "source_integrity": "trusted"
+        }
+
+    def test_a_fold_with_no_sources_at_all_establishes_that_channel_too(self):
+        """`None` is not "nobody answered" — an unstamped tool folds in as `untrusted`, so this
+        state is reachable only where every tool is stamped and every stamp says `source=None`."""
+        spec = _serving_host_tools(_a_fold(None))
+        assert sandbox_tool_declarations(spec, source_integrity="trusted") == {
+            "source_integrity": "trusted"
+        }
+
+    def test_a_raw_string_fold_does_not_clear_the_channel(self):
+        """`HostToolAggregate` is a public frozen dataclass and its annotation binds nothing at
+        runtime, so the fold reaching the check is whatever a host put in it. An identity test
+        against the enum would let the raw string `"untrusted"` through as if it cleared."""
+        spec = _serving_host_tools(_a_fold(cast(Any, "untrusted")))
+        with pytest.raises(ValueError, match="host tools"):
+            sandbox_tool_declarations(spec, source_integrity="trusted")
+
+    def test_a_raw_trusted_string_still_clears(self):
+        assert sandbox_tool_declarations(
+            _serving_host_tools(_a_fold(cast(Any, "trusted"))), source_integrity="trusted"
+        ) == {"source_integrity": "trusted"}
+
+    def test_a_fold_value_this_package_cannot_name_clears_nothing(self):
+        """Fail closed, so a member added to `SourceIntegrity` later is not proof of trust."""
+        spec = _serving_host_tools(_a_fold(cast(Any, "provisionally-trusted")))
+        with pytest.raises(ValueError, match="host tools"):
+            sandbox_tool_declarations(spec, source_integrity="trusted")
+
+    def test_a_fold_settles_its_own_channel_and_no_other(self):
+        """A registry folding to trusted clears one row while the store behind the same call
+        stays unestablished."""
+        spec = SandboxSpec(
+            kind="test",
+            work_dir="/w",
+            requires=frozenset({Capability.EXEC, Capability.FILES_IN, Capability.HOST_TOOLS}),
+            host_tools=_a_fold(SourceIntegrity.TRUSTED),
+        )
+        with pytest.raises(ValueError, match=re.escape("requires holds 'files_in'")) as refusal:
+            sandbox_tool_declarations(spec, source_integrity="trusted")
+        assert "host tools" not in str(refusal.value)
+
+
+class TestTheEscapeFromTheTrustedRefusal:
+    """A claim the caller owns and this library only routes, as `also_carries_out` is."""
+
+    def test_clearing_the_open_channel_lets_the_claim_stand(self):
+        assert sandbox_tool_declarations(
+            _NO_EGRESS_SPEC,
+            source_integrity="trusted",
+            nothing_survives_from=(SourceChannel.FILE_STORE,),
+        ) == {"source_integrity": "trusted"}
+
+    def test_clearing_one_of_two_still_refuses_and_names_only_the_rest(self):
+        with pytest.raises(ValueError) as refusal:
+            sandbox_tool_declarations(
+                _SPEC,
+                source_integrity="trusted",
+                nothing_survives_from=(SourceChannel.FILE_STORE,),
+            )
+        assert "egress_allow names example.invalid" in str(refusal.value)
+        assert "files_in" not in str(refusal.value)
+
+    def test_naming_a_channel_the_spec_does_not_open_is_refused(self):
+        """Fail-open where `also_carries_out` fails safe, which is why this one is asymmetric:
+        a channel cleared before the spec opens it is cleared without being looked at."""
+        with pytest.raises(ValueError, match="does not open that"):
+            sandbox_tool_declarations(
+                _NO_CHANNEL_SPEC,
+                source_integrity="trusted",
+                nothing_survives_from=(SourceChannel.EGRESS,),
+            )
+
+    def test_naming_host_tools_a_fold_already_cleared_is_a_consistent_stronger_claim(self):
+        """Judged against what the spec *opens*, not against what survives the fold."""
+        spec = _serving_host_tools(_a_fold(SourceIntegrity.TRUSTED))
+        assert sandbox_tool_declarations(
+            spec,
+            source_integrity="trusted",
+            nothing_survives_from=(SourceChannel.HOST_TOOLS,),
+        ) == {"source_integrity": "trusted"}
+
+    def test_the_escape_without_a_trusted_claim_is_refused(self):
+        """Nothing reads it there, and a later `trusted` would inherit a clearance nobody
+        re-examined."""
+        with pytest.raises(ValueError, match="Only a 'trusted' declaration reads that claim"):
+            sandbox_tool_declarations(
+                _NO_EGRESS_SPEC, nothing_survives_from=(SourceChannel.FILE_STORE,)
+            )
+
+    def test_an_unknown_channel_is_refused_at_the_boundary(self):
+        with pytest.raises(ValueError, match="file-store"):
+            sandbox_tool_declarations(
+                _NO_EGRESS_SPEC,
+                source_integrity="trusted",
+                nothing_survives_from=cast(Any, ("file-store",)),
+            )
+
+
+# ---------------------------------------------------------------------------
 # SandboxToolSession.key — the host keys the sandbox, never the model
 # ---------------------------------------------------------------------------
 
@@ -370,7 +636,9 @@ class TestSessionKey:
 class TestSessionListFiles:
     def test_it_returns_the_hosts_listing(self):
         store = InMemoryStore({"a.bicep": "1", "b/c.bicep": "2"})
-        assert sorted(asyncio.run(_session().list_files(store))) == ["a.bicep", "b/c.bicep"]
+        listed = asyncio.run(_session().list_files(store))
+        assert not isinstance(listed, str)
+        assert sorted(entry.name for entry in listed) == ["a.bicep", "b/c.bicep"]
 
     def test_a_failure_is_a_refusal_rather_than_an_empty_listing(self):
         """An empty list would read as "the file store is empty" and refuse for the wrong reason."""
@@ -681,9 +949,9 @@ class TestAttachedToolShape:
         assert self._tool().additional_properties == {}
 
     def test_an_integrity_label_reaches_the_tool_when_one_is_passed(self):
-        assert self._tool(source_integrity="trusted").additional_properties == {
-            "source_integrity": "trusted"
-        }
+        assert self._tool(
+            spec=_NO_CHANNEL_SPEC, source_integrity="trusted"
+        ).additional_properties == {"source_integrity": "trusted"}
 
     def test_explicit_declarations_win_over_the_derivation(self):
         assert self._tool(declarations={"source_integrity": "untrusted"}).additional_properties == {
@@ -712,6 +980,9 @@ class TestAttachedToolShape:
             _router(_pulling_backend()),
             spec=_LANDING_SPEC,
             source_integrity="trusted",
+            # `_LANDING_SPEC` requires FILES_IN, so the claim needs the escape to stand: this
+            # workload writes host-authored fixtures in and derives nothing from them.
+            nothing_survives_from=(SourceChannel.FILE_STORE,),
             outbound_max_confidentiality="private",
             output_sink=_SINK,
         )
@@ -725,9 +996,35 @@ class TestAttachedToolShape:
             source_integrity="trusted", declarations={"source_integrity": "untrusted"}
         ).additional_properties == {"source_integrity": "untrusted"}
 
+    def test_a_trusted_claim_in_an_explicit_mapping_is_refused_too(self):
+        """The mapping is written verbatim and is still read for this one key. A check the
+        derivation alone held would be walked past by exactly the hand-built mapping a kind
+        outside this repository writes."""
+        with pytest.raises(ValueError, match=re.escape("requires holds 'files_in'")):
+            self._tool(declarations={"source_integrity": "trusted"})
+
+    def test_the_mapping_refusal_sends_the_claim_to_the_keyword(self):
+        """No escape is honoured beside an explicit mapping, so the remedy cannot be to name
+        one here — it is to move the claim where `nothing_survives_from` is read."""
+        with pytest.raises(ValueError, match=re.escape("Drop the declarations= mapping")):
+            self._tool(declarations={"source_integrity": "trusted"})
+
+    def test_an_untrusted_mapping_is_written_over_any_spec(self):
+        """Only the trusted claim is read out of the mapping; nothing else in it is inspected."""
+        assert self._tool(
+            declarations={"source_integrity": "untrusted", "house_key": "kept"}
+        ).additional_properties == {"source_integrity": "untrusted", "house_key": "kept"}
+
+    def test_an_unknown_spelling_in_a_mapping_passes_through(self):
+        """FIDES believes two spellings and logs the rest away, so an unrecognised value is not
+        a claim to refuse — and the mapping's vocabulary is the host's, not this library's."""
+        assert self._tool(declarations={"source_integrity": "Trusted"}).additional_properties == {
+            "source_integrity": "Trusted"
+        }
+
     def test_the_declarations_dict_is_not_shared_with_the_caller(self):
         declarations = {"source_integrity": "trusted"}
-        tool = self._tool(declarations=declarations)
+        tool = self._tool(spec=_NO_CHANNEL_SPEC, declarations=declarations)
         declarations["source_integrity"] = "tampered"
         assert tool.additional_properties == {"source_integrity": "trusted"}
 
@@ -1266,6 +1563,132 @@ class TestTheFinallyDisposesTheCallsSandbox:
         )[0]
         _call(tool, target="x")
         assert backend.disposed == backend.keys
+
+
+def _routed_pair():
+    """Two call-scoped fakes differing only in what they can do, so a spec picks between them."""
+
+    def one(name: str, capabilities):
+        return InProcessSandboxBackend(
+            name=name,
+            sandbox_per_key=True,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                capabilities=capabilities,
+                isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
+            ),
+        )
+
+    return one("weak", DEFAULT_CAPABILITIES), one("strong", _PULLS)
+
+
+#: Call-scoped, and servable only by the second of that pair.
+_ROUTED_CALL_SPEC = dataclasses.replace(_CALL_SCOPED_SPEC, requires=_PULLS)
+
+
+class TestARoutedCallDeleteReachesOnlyTheBackendThatServed:
+    """A call-scoped delete is aimed by the spec this glue forwards, not swept.
+
+    Without it a per-spec router asks every backend serving the scope, and at call scope the
+    key names a sandbox of each one's own.
+    """
+
+    def test_the_finally_deletes_only_where_the_spec_routed(self):
+        weak, strong = _routed_pair()
+        tool = _attach_with(
+            _reclaiming_body,
+            _router(weak, strong, selection=Selection.PER_SPEC),
+            spec=_ROUTED_CALL_SPEC,
+        )[0]
+        _call(tool, target="x")
+        assert strong.keys, "the spec did not route to the backend that can serve it"
+        assert strong.disposed == strong.keys
+        assert weak.disposed == [], (
+            "a backend that never served this call was asked to delete its key, and at call "
+            "scope that key names a sandbox of its own"
+        )
+
+    def test_a_sandbox_arriving_after_its_call_is_deleted_only_where_it_was_made(self):
+        """The other call site, and the one that runs while the call is already unwinding.
+
+        The create is parked *inside* the serving backend, so the call ends while it is still
+        in flight and the sandbox arrives with nothing left to clean it up. `acquire` disposes
+        it there and then, and that delete is routed too.
+        """
+        entered, released = asyncio.Event(), asyncio.Event()
+        tasks: list[asyncio.Task[None]] = []
+        outcome: dict[str, object] = {}
+
+        class _BlocksOnTheSecond(InProcessSandboxBackend):
+            """Parks the second create, where the call's own end can overtake it."""
+
+            def __init__(self, **kw) -> None:
+                super().__init__(**kw)
+                self.seen = 0
+
+            async def acquire(self, key, spec):
+                self.seen += 1
+                if self.seen == 2:
+                    entered.set()
+                    await released.wait()
+                return await super().acquire(key, spec)
+
+        weak, _ = _routed_pair()
+        strong = _BlocksOnTheSecond(
+            name="strong",
+            sandbox_per_key=True,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                capabilities=_PULLS,
+                isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
+            ),
+        )
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Acquire once, then leave a task acquiring the same key a second time."""
+                key = session.key()
+                assert not isinstance(key, str)
+                assert not isinstance(await session.acquire(key), str)
+
+                async def later() -> None:
+                    try:
+                        outcome["result"] = await session.acquire(key)
+                    except RuntimeError as raised:
+                        outcome["result"] = raised
+
+                tasks.append(asyncio.create_task(later()))
+                await entered.wait()
+                return target
+
+            return widget_run
+
+        fn = _fn(
+            _attach_with(
+                build,
+                _router(weak, strong, selection=Selection.PER_SPEC),
+                spec=_ROUTED_CALL_SPEC,
+            )[0]
+        )
+
+        async def run() -> None:
+            await fn(target="x")
+            released.set()
+            await asyncio.gather(*tasks)
+
+        asyncio.run(run())
+        assert isinstance(outcome["result"], RuntimeError)
+        assert "came back after its tool call had ended" in str(outcome["result"])
+        # The positive half first, and it is not decoration: an empty sweep is reported as a
+        # landed delete, so a regression routing to nobody raises this same `RuntimeError` and
+        # leaves the negative assertion below true. Without this line the test passes over a
+        # sandbox that was never deleted at all.
+        assert strong.disposed, "the late sandbox was not disposed where it was created"
+        assert {key.call_id for key in strong.disposed} == {strong.keys[0].call_id}
+        assert weak.disposed == [], (
+            "the late delete swept a backend the route never chose, so a sibling sandbox would "
+            "have gone with a refusal that was not about it"
+        )
 
 
 class TestADeleteThatDidNotLandIsReportedNotGuarded:
@@ -2678,9 +3101,9 @@ class TestListAllFiles:
         )
 
         assert asyncio.run(list_all_files(store)) == [
-            "a.txt",
-            "infra/main.bicep",
-            "infra/modules/net.bicep",
+            ListedFile("a.txt"),
+            ListedFile("infra/main.bicep"),
+            ListedFile("infra/modules/net.bicep"),
         ]
 
     def test_directories_are_walked_and_never_listed_as_files(self):
@@ -2702,6 +3125,255 @@ class TestListAllFiles:
 
         with pytest.raises(RuntimeError, match="store is down"):
             asyncio.run(list_all_files(store))
+
+
+class _ReadStore:
+    """A store whose `read` can be made to miss, to answer nothing, or to fail."""
+
+    def __init__(self, files: dict[str, str | None], *, fails: Exception | None = None):
+        self.files = files
+        self._fails = fails
+        self.asked: list[str] = []
+
+    async def read(self, path: str) -> str | None:
+        self.asked.append(path)
+        if self._fails is not None:
+            raise self._fails
+        return self.files.get(path)
+
+
+class TestSessionReadFile:
+    """The carrier half: the label has to survive the read, or the listing bought nothing."""
+
+    def _label(self, item):
+        return item.additional_properties.get(SOURCE_INTEGRITY_PROPERTY)
+
+    def test_it_carries_the_entrys_integrity_on_the_content_it_answers_with(self):
+        store = _ReadStore({"a.txt": "param x string"})
+
+        item = asyncio.run(
+            _session().read_file(store, ListedFile("a.txt", SourceIntegrity.UNTRUSTED))
+        )
+
+        assert item is not None and not isinstance(item, str)
+        assert item.text == "param x string"
+        assert self._label(item) == "untrusted"
+
+    def test_a_trusted_entry_carries_trusted(self):
+        store = _ReadStore({"a.txt": "1"})
+
+        item = asyncio.run(
+            _session().read_file(store, ListedFile("a.txt", SourceIntegrity.TRUSTED))
+        )
+
+        assert not isinstance(item, str) and item is not None
+        assert self._label(item) == "trusted"
+
+    def test_the_carrier_never_writes_a_security_label(self):
+        """A partial `ContentLabel` is not partial, and this is the measurement that says so.
+
+        `security_label` holds a whole label. Writing only `integrity` into it does not leave
+        confidentiality unstated — the framework fills it with `public` on the way back in, so a
+        forwarded item would classify the store's bytes public: the exact claim omitting the
+        field looks like it avoids. `labelled_result_item` refuses `untrusted` for this reason;
+        the carrier has to obey it too, two functions away.
+        """
+        from agent_framework.security import ContentLabel
+
+        assert ContentLabel.from_dict({"integrity": "untrusted"}).confidentiality is not None, (
+            "if a missing confidentiality ever stops defaulting, this carrier can reconsider "
+            "`security_label` — until then the private key is what keeps it silent"
+        )
+
+        store = _ReadStore({"a.txt": "1"})
+        item = asyncio.run(
+            _session().read_file(store, ListedFile("a.txt", SourceIntegrity.UNTRUSTED))
+        )
+
+        assert not isinstance(item, str) and item is not None
+        assert "security_label" not in item.additional_properties
+        assert self._label(item) == "untrusted"
+
+    def test_a_carried_item_does_not_count_as_labelled_to_the_result_check(self):
+        """`sandboxed_tool` refuses a result whose *every* item carries a label, because an
+        unlabelled item is where the call's own confidentiality comes from. An item that came
+        out of the store must not consume that allowance just by having been read."""
+        store = _ReadStore({"a.txt": "1"})
+        item = asyncio.run(
+            _session().read_file(store, ListedFile("a.txt", SourceIntegrity.TRUSTED))
+        )
+
+        assert not isinstance(item, str) and item is not None
+        assert "security_label" not in (getattr(item, "additional_properties", None) or {})
+
+    def test_an_unestablished_entry_carries_no_label_at_all(self):
+        """Not "untrusted written out". An item left unlabelled takes the call's own label,
+        which is where its confidentiality comes from — writing one here would replace that."""
+        store = _ReadStore({"a.txt": "1"})
+
+        item = asyncio.run(_session().read_file(store, ListedFile("a.txt", None)))
+
+        assert not isinstance(item, str) and item is not None
+        assert self._label(item) is None
+
+    def test_it_reads_the_name_the_entry_carries(self):
+        store = _ReadStore({"infra/main.bicep": "1"})
+
+        asyncio.run(_session().read_file(store, ListedFile("infra/main.bicep", None)))
+
+        assert store.asked == ["infra/main.bicep"]
+
+    def test_a_file_that_is_listed_but_gone_answers_none_rather_than_the_word(self):
+        """A miss is not an exception and must not become the string "None" in a sandbox."""
+        store = _ReadStore({"a.txt": None})
+
+        assert asyncio.run(_session().read_file(store, ListedFile("a.txt", None))) is None
+
+    def test_a_failing_read_answers_with_a_sentence_and_never_the_stores_own(self):
+        store = _ReadStore({}, fails=RuntimeError("connection string s3cr3t"))
+
+        answer = asyncio.run(_session().read_file(store, ListedFile("a.txt", None), at="files[0]"))
+
+        assert isinstance(answer, str)
+        assert "s3cr3t" not in answer
+        assert "a.txt" in answer
+
+    def test_a_refusal_about_a_hidden_expanded_name_renders_the_position_not_the_value(self):
+        """The name is a string the model typed, and when the framework expanded a reference
+        into it the name *is* the hidden content — echoing it back is the leak the whole
+        hidden-content path exists to prevent."""
+        store = _ReadStore({}, fails=RuntimeError("down"))
+
+        answer = asyncio.run(
+            _session().read_file(
+                store, ListedFile("secret.bicep", None), at="files[0]", hidden=True
+            )
+        )
+
+        assert isinstance(answer, str)
+        assert "secret.bicep" not in answer
+        assert "files[0]" in answer
+
+
+class TestListAllFilesFoldsAHostsRecord:
+    """`provenance=` is the whole difference between a label and a guess."""
+
+    def _store(self):
+        return _TreeStore(
+            {
+                "": [_Entry("a.txt", "file"), _Entry("infra", "directory")],
+                "infra": [_Entry("main.bicep", "file")],
+            }
+        )
+
+    def test_without_a_record_every_entry_is_unestablished(self):
+        """`None` is not a synonym for untrusted: it says this host has not answered."""
+        assert [entry.integrity for entry in asyncio.run(list_all_files(self._store()))] == [
+            None,
+            None,
+        ]
+
+    def test_a_recorded_path_reads_untrusted_and_the_rest_read_the_floor(self):
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)  # licenses the trusted floor
+        record.record("infra/main.bicep")
+
+        assert asyncio.run(list_all_files(self._store(), provenance=record)) == [
+            ListedFile("a.txt", SourceIntegrity.TRUSTED),
+            ListedFile("infra/main.bicep", SourceIntegrity.UNTRUSTED),
+        ]
+
+    @pytest.mark.parametrize(
+        "spelling", ["infra//main.bicep", r"infra\main.bicep", "  infra/main.bicep  "]
+    )
+    def test_the_record_is_consulted_through_the_same_key_the_walk_builds(self, spelling: str):
+        """The walk joins with `/`, so a write the provider accepted under another spelling of
+        the same file has to be found anyway — otherwise the lookup misses and a model-written
+        file lists as the host's floor, which is the failure the record exists to prevent.
+
+        Only spellings the provider *normalises* are in scope. One it rejects — a leading `/`,
+        a `.` segment — is a path it never wrote, so there is no entry to find.
+        """
+        record = FileStoreProvenance()
+        file_store_provenance_middleware(record)
+        record.record(spelling)
+
+        listed = asyncio.run(list_all_files(self._store(), provenance=record))
+
+        assert listed[1] == ListedFile("infra/main.bicep", SourceIntegrity.UNTRUSTED)
+
+    def test_a_floor_of_none_leaves_unrecorded_files_unestablished(self):
+        record = FileStoreProvenance()
+        file_store_provenance_middleware(record)
+        record.record("a.txt")
+
+        assert asyncio.run(list_all_files(self._store(), provenance=record)) == [
+            ListedFile("a.txt", SourceIntegrity.UNTRUSTED),
+            ListedFile("infra/main.bicep", None),
+        ]
+
+
+class TestWeakestIntegrity:
+    """The fold a kind applies to what it actually read.
+
+    Ordering comes from `INTEGRITY_RANK` rather than from the enum's declaration order, so a
+    member added later cannot be folded without being ranked — the same rule the host-tool
+    aggregate is held to.
+    """
+
+    def test_no_files_folds_to_trusted(self):
+        """A result deriving from no file derives nothing from the store, so the store is not
+        what would disqualify it."""
+        assert weakest_integrity([]) is SourceIntegrity.TRUSTED
+
+    def test_all_trusted_folds_to_trusted(self):
+        assert (
+            weakest_integrity(
+                [ListedFile("a", SourceIntegrity.TRUSTED), ListedFile("b", SourceIntegrity.TRUSTED)]
+            )
+            is SourceIntegrity.TRUSTED
+        )
+
+    def test_one_untrusted_file_folds_the_whole_read_to_untrusted(self):
+        assert (
+            weakest_integrity(
+                [
+                    ListedFile("a", SourceIntegrity.TRUSTED),
+                    ListedFile("b", SourceIntegrity.UNTRUSTED),
+                    ListedFile("c", SourceIntegrity.TRUSTED),
+                ]
+            )
+            is SourceIntegrity.UNTRUSTED
+        )
+
+    def test_the_weakest_wins_wherever_it_sits_in_the_listing(self):
+        """A fold that answered from the last entry, or the first, would pass the test above by
+        accident."""
+        weak = ListedFile("weak", SourceIntegrity.UNTRUSTED)
+        strong = ListedFile("strong", SourceIntegrity.TRUSTED)
+
+        assert weakest_integrity([weak, strong]) is SourceIntegrity.UNTRUSTED
+        assert weakest_integrity([strong, weak]) is SourceIntegrity.UNTRUSTED
+
+    def test_an_unestablished_file_disqualifies_the_fold_entirely(self):
+        """`None` is not "as good as untrusted, so ignore it beside one". A host that has said
+        nothing about a file has said nothing, and the fold reports that rather than inventing
+        the weakest level it happens to have seen."""
+        assert (
+            weakest_integrity([ListedFile("a", SourceIntegrity.TRUSTED), ListedFile("b", None)])
+            is None
+        )
+        assert (
+            weakest_integrity([ListedFile("a", SourceIntegrity.UNTRUSTED), ListedFile("b", None)])
+            is None
+        )
+        assert weakest_integrity([ListedFile("b", None), ListedFile("a", None)]) is None
+
+    def test_it_folds_any_iterable_not_only_a_list(self):
+        """A kind folds over what it read, which is as likely to be a generator as a list."""
+        entries = (ListedFile(name, SourceIntegrity.TRUSTED) for name in ("a", "b"))
+
+        assert weakest_integrity(entries) is SourceIntegrity.TRUSTED
 
 
 class TestListNoFiles:

@@ -24,6 +24,7 @@ from maf_sandbox import (
     EntryKind,
     ExecResult,
     Isolation,
+    ListedFile,
     Sandbox,
     SandboxBackend,
     SandboxEntry,
@@ -31,6 +32,7 @@ from maf_sandbox import (
     SandboxLimits,
     SandboxSpec,
     SandboxTransferCapExceeded,
+    SourceIntegrity,
     TransferLimits,
 )
 from maf_sandbox.testing import (
@@ -246,7 +248,7 @@ class TestInMemoryStore:
 
     def test_list_returns_every_name(self):
         store = InMemoryStore({"a.bicep": "x", "b.bicep": "y"})
-        assert sorted(asyncio.run(store.list())) == ["a.bicep", "b.bicep"]
+        assert sorted(e.name for e in asyncio.run(store.list())) == ["a.bicep", "b.bicep"]
 
     def test_construction_copies_the_callers_dict(self):
         source = {"a.bicep": "x"}
@@ -262,7 +264,8 @@ class TestInMemoryStore:
             current_thread_id=lambda: "thread-1",
             list_files=InMemoryStore.list,
         )
-        assert sorted(asyncio.run(context.list_files(store))) == ["a.bicep", "b.bicep"]
+        listed = asyncio.run(context.list_files(store))
+        assert sorted(entry.name for entry in listed) == ["a.bicep", "b.bicep"]
 
 
 class TestInProcessSandboxRunCode:
@@ -1042,3 +1045,27 @@ class TestTheFakeCanHandOutOneSandboxPerKey:
         purge = asyncio.run(backend.dispose_scope(self._KEY.scope, self._KEY.thread_id))
         assert purge.undisposed is not None
         assert asyncio.run(backend.acquire(self._KEY, self._SPEC)) is first
+
+
+class TestInMemoryStoreLabels:
+    """A double keeps no provenance record, so `None` is what it honestly knows — and a test
+    that needs a kind to see trusted and untrusted files side by side says so at construction."""
+
+    def test_every_entry_is_unestablished_by_default(self):
+        store = InMemoryStore({"a.bicep": "x"})
+        assert asyncio.run(store.list()) == [ListedFile("a.bicep", None)]
+
+    def test_one_label_can_cover_the_whole_store(self):
+        store = InMemoryStore({"a.bicep": "x"}, integrity=SourceIntegrity.TRUSTED)
+        assert asyncio.run(store.list()) == [ListedFile("a.bicep", SourceIntegrity.TRUSTED)]
+
+    def test_a_per_file_label_wins_over_the_store_wide_one(self):
+        store = InMemoryStore(
+            {"host.json": "x", "model.bicep": "y"},
+            integrity=SourceIntegrity.TRUSTED,
+            labels={"model.bicep": SourceIntegrity.UNTRUSTED},
+        )
+        assert sorted(asyncio.run(store.list()), key=lambda e: e.name) == [
+            ListedFile("host.json", SourceIntegrity.TRUSTED),
+            ListedFile("model.bicep", SourceIntegrity.UNTRUSTED),
+        ]
