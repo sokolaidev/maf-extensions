@@ -1,6 +1,6 @@
 # Withheld output through a live model
 
-> A measurement, not a proposal. [#805](https://github.com/sokolaidev/maf-extensions/issues/805) rewrote the description a withholding `execute_code` shows before its first call, on four runs that showed a model printing its answer into a channel that discards it. This is the same measurement run against the head that shipped in [#837](https://github.com/sokolaidev/maf-extensions/pull/837), beside the head it replaced — and the thing it found on the way, which is that the residual channels a withheld result leaves are the first place a model goes. The decided design lives in [`../kinds/codeact.md`](../kinds/codeact.md); what to do about the channel is [#859](https://github.com/sokolaidev/maf-extensions/issues/859).
+> A measurement, not a proposal. [#805](https://github.com/sokolaidev/maf-extensions/issues/805) rewrote the description a withholding `execute_code` shows before its first call, on four runs that showed a model printing its answer into a channel that discards it. This is the same measurement run against the head that shipped in [#837](https://github.com/sokolaidev/maf-extensions/pull/837), beside the head it replaced — and the thing it found on the way, which is that the residual channels a withheld result leaves are the first place a model goes. The decided design lives in [`../kinds/codeact.md`](../kinds/codeact.md); what to do about the channel was [#859](https://github.com/sokolaidev/maf-extensions/issues/859), and what shipped is at the foot of this page.
 
 ## What was run
 
@@ -72,3 +72,7 @@ The cheapest of them built a byte protocol out of the three channels: eight decl
 **Measured, and it was the case that mattered most:** content the model did not compute. Four further runs with a file store wired, on the same model and wiring, in which a host-seeded token and total reached the model on three of four. What is *not* established there either is a rate, and one run of the four failed to extract anything within twenty minutes.
 
 **Not tested:** a model that is not tool-fluent. [#805](https://github.com/sokolaidev/maf-extensions/issues/805) recorded `minimax-m3` printing its answer on four of four runs against the old head; this record's four are a different model, so the two counts are not two samples of one thing.
+
+## What shipped after this record
+
+[#859](https://github.com/sokolaidev/maf-extensions/issues/859) closed with [#899](https://github.com/sokolaidev/maf-extensions/pull/899): a withheld result now says whether the program exited with status 0 and nothing else about the run — no exit code, and no size for either stream. The landed and not-written names stay, bounded by `files_out.max_files`. Every table above measured the rendering before that change, and the narrowed one has not been measured: this record is of what the model did with roughly seventy bits a call, not with ten. Moving the landed names out of the result altogether is [#897](https://github.com/sokolaidev/maf-extensions/issues/897).
