@@ -138,7 +138,10 @@ _GATEWAY_MODE_MIN_ENGINE = "28.0.0"
 #: printing empty.  Built from the options themselves so a family can never be set without
 #: being checked: reading one of two would adopt a network still addressed on the other.
 _GATEWAY_MODE_FORMAT = " ".join('{{index .Options "' + opt + '"}}' for opt in _GATEWAY_MODE_OPTS)
-#: What `network inspect` reports for a network that is not there.
+#: What the engine says for a network that is not there — read only alongside the network's
+#: own name, never on its own.  Absence is the one answer a caller may treat as safe, and
+#: unrelated failures use these words too: a missing context reports `context not found`, an
+#: unknown driver `plugin "…" not found`.  Docker's real answers name the network they mean.
 _NETWORK_ABSENT = ("not found", _NO_SUCH)
 
 _PROXY_PORT = 3128
@@ -280,6 +283,18 @@ def _network_name(container: str) -> str:
 def _proxy_name(container: str) -> str:
     """The egress proxy paired with a sandbox container, derived from its name."""
     return f"{container}{_PROXY_SUFFIX}"
+
+
+def _reads_as_absent(stderr: str, net: str) -> bool:
+    """Whether ``stderr`` is the engine saying ``net`` is not there.
+
+    The phrase alone will not do, because absence is the one answer a caller may treat as
+    safe and unrelated failures borrow the words: a missing context answers ``context not
+    found`` and an unknown driver ``plugin "…" not found``, neither of which says anything
+    about this network.  Requiring the name keeps those on the unreadable side.
+    """
+    lowered = stderr.lower()
+    return net.lower() in lowered and any(phrase in lowered for phrase in _NETWORK_ABSENT)
 
 
 def _single_rooted(guest_path: str) -> str:
@@ -1748,7 +1763,7 @@ class DockerSandboxBackend:
         )
         if result.returncode != 0:
             stderr = result.stderr.strip()
-            if any(absent in stderr.lower() for absent in _NETWORK_ABSENT):
+            if _reads_as_absent(stderr, net):
                 return _BridgeState(usable=True, absent=True)
             return _BridgeState(False, reason=f"its gateway modes could not be read: {stderr}")
         modes = result.stdout.decode("utf-8", errors="replace").split()

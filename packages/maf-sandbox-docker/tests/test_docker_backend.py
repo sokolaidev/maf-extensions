@@ -2897,6 +2897,22 @@ class TestAllowlistReuse:
         assert sandbox.container_name == _AL
         assert fake.matching("rm", "-f", _AL) == []
 
+    def test_an_error_naming_something_else_is_not_read_as_an_absent_network(self):
+        """ "Not found" is not the same claim as "this network is not there", and only the
+        second is safe. A missing context answers `context not found` and an unknown driver
+        `plugin "…" not found` — both measured on 29.7.2 — so matching the phrase alone would
+        adopt an existing network on the strength of an error about something else."""
+        plugin_error = 'Error response from daemon: plugin "br0" not found'
+        overrides = {
+            ("network", "create"): _DockerResult(1, b"", "network with name X already exists"),
+            ("network", "inspect"): _DockerResult(1, b"", plugin_error),
+        }
+        backend, fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
+        with pytest.raises(RuntimeError, match="could not be read") as raised:
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert plugin_error in str(raised.value)
+        assert fake.matching("run", "-d", "--name", _AL) == []
+
     def test_a_network_that_appeared_since_the_check_is_not_adopted_on_its_name(self):
         """`create` compares nothing but the name, and the lock is local to one backend and
         loop, so "already exists" can be a network something else put there after the acquire

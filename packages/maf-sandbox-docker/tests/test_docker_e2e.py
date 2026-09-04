@@ -1184,9 +1184,10 @@ class TestAllowlistEgress:
         bound to a wildcard address, and the host reaches any port inside the container.
 
         **Both probes need the test process in the daemon's own network namespace**, which is
-        the ``docker-e2e`` runner and any native Linux engine. Against a Docker Desktop VM the
-        test passes without proving anything, because the process is outside the VM the bridge
-        lives in — the mechanism assertions at the end are what still bite there.
+        the ``docker-e2e`` runner and any rootful Linux engine. Against a Docker Desktop VM,
+        or a rootless daemon whose bridge lives inside RootlessKit's own network namespace,
+        the test passes without proving anything, because the process is outside the namespace
+        the bridge is in — the mechanism assertions at the end are what still bite there.
 
         The guest-to-host probe carries a positive control, since a listener that never came up
         would answer ``000`` for a reason that has nothing to do with the bridge.
