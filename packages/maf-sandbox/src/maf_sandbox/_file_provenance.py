@@ -22,10 +22,12 @@ without this module resolving anything.  That reading does not depend on the fra
 ``hide_threshold`` staying where it is: a host that moves it makes the *first* bullet less
 precise, and this still records untrusted, which is the fail-safe direction.
 
-**Everything else is the host's to declare.** Content placed before the agent started, or
-**Everything else is the host's to declare.** Content placed before the agent started, or
-written past the store object by another process, is not a tool call and is not observed here.
-so a trusted floor can never lift bytes the model wrote.
+**Everything else is the host's to declare.** A host that knows how its store is fed says so
+once with ``floor=``, and the floor applies to a path with **no recorded entry** — content
+placed before the agent started, or written past the store object by another process, is not a
+tool call and is never observed here. An entry, once written, stands until the host forgets it,
+so a later out-of-band overwrite of a path the model wrote keeps answering untrusted and a
+trusted floor can never lift bytes the model wrote.
 """
 
 from __future__ import annotations
