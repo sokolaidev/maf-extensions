@@ -888,11 +888,12 @@ def _withholding_tool(sandbox: InProcessSandbox, sink: _RecordingSink | None = N
 
 
 class TestWithheldResultFormat:
-    """With the streams withheld, every line of the result is something the host observed.
+    """With the streams withheld, the result says whether the program exited cleanly and nothing
+    else about the run.
 
-    The shape is fixed rather than elided the way `_format_result`'s is: a model reading this
-    has nothing else to go on, and a section that vanishes when it is zero is one it cannot
-    rely on.
+    One bit and no sizes: every value a program chooses is a channel, and only the landed list
+    drives an edit. The shape is fixed rather than elided the way `_format_result`'s is, so a
+    model reading it has one line it can rely on.
     """
 
     def _out(self, result: ExecResult) -> str:
@@ -914,25 +915,28 @@ class TestWithheldResultFormat:
         assert "NameError" not in out
         assert "Traceback" not in out
 
-    def test_the_streams_are_reported_as_byte_counts(self):
-        out = self._out(ExecResult(stdout="42\n", stderr="warning\n"))
-        assert "stdout: 3 bytes" in out
-        assert "stderr: 8 bytes" in out
+    def test_the_streams_are_not_sized(self):
+        """A size is a value the program chooses — `sys.stdout.write("x" * n)` makes it `n` —
+        and a model reads it straight off the result as the number it wanted back."""
+        out = self._out(ExecResult(stdout="x" * 824693, stderr="warning\n"))
+        assert "bytes" not in out
+        assert "824693" not in out
+        assert "8" not in out
 
-    def test_bytes_are_counted_as_utf_8_not_as_characters(self):
-        """A count that said 2 for four bytes would be a claim about the wrong thing."""
-        out = self._out(ExecResult(stdout="é☃"))
-        assert "stdout: 5 bytes" in out
-
-    def test_a_zero_exit_code_is_named_here_unlike_the_shown_format(self):
+    def test_a_clean_exit_is_named_here_unlike_the_shown_format(self):
         """With the streams gone it is the only thing that says the program worked at all."""
-        assert "exit code: 0" in self._out(ExecResult(stdout="42\n"))
+        assert "exited with status 0" in self._out(ExecResult(stdout="42\n"))
 
-    def test_a_non_zero_exit_code_is_named(self):
-        assert "exit code: 1" in self._out(ExecResult(stdout="", stderr="boom\n", exit_code=1))
+    def test_a_non_zero_exit_is_named_without_its_number(self):
+        """Eight bits the program chooses, and no value of them drives an edit without the
+        text it would explain."""
+        out = self._out(ExecResult(stdout="", stderr="boom\n", exit_code=117))
+        assert "non-zero status" in out
+        assert "117" not in out
+        assert "exit code" not in out
 
     def test_every_result_names_the_route_that_still_carries_content(self):
-        """An exit code on its own leaves a model nothing it can act on — and the sentence is
+        """The exit line on its own leaves a model nothing it can act on — and the sentence is
         an item of its own, so hiding the call-derived half leaves this one readable."""
         out = self._out(ExecResult(stdout="", stderr="boom\n", exit_code=1))
         assert "declared output" not in out, "the report still splices the route in"
@@ -945,11 +949,11 @@ class TestWithheldResultFormat:
         route here."""
         out = self._out(ExecResult(stdout=""))
         assert "printed nothing" not in out
-        assert "stdout: 0 bytes" in out
+        assert out == "The program exited with status 0."
 
-    def test_the_whole_result_is_fixed_and_in_one_order(self):
+    def test_the_whole_result_is_one_fixed_line(self):
         out = self._out(ExecResult(stdout="42\n", stderr="warning\n", exit_code=3))
-        assert out.splitlines()[:3] == ["exit code: 3", "stdout: 3 bytes", "stderr: 8 bytes"]
+        assert out == "The program exited with a non-zero status."
 
 
 class TestWithholdingStillLandsFiles:
@@ -1043,7 +1047,7 @@ class TestWithholdingStillLandsFiles:
 
         assert sink.names == ["why.txt"], "the one channel left was skipped on a failed run"
         assert "- why.txt" in out
-        assert "exit code: 1" in out
+        assert "non-zero status" in out
 
     def test_a_failed_program_showing_its_streams_still_skips_collection(self):
         """The pre-existing rule is unchanged where the traceback does come back."""
@@ -1055,19 +1059,17 @@ class TestWithholdingStillLandsFiles:
         assert sink.names == []
 
 
-class TestAWithheldStreamIsSizedNotDecoded:
-    """`_stream_bytes` runs outside every guarded block in `_execute`, so anything it raises
-    escapes the tool body and kills the caller's turn rather than answering the model."""
+class TestAWithheldStreamIsNeverRead:
+    """Nothing in the withheld rendering reads the stream text — not to render it and not to
+    measure it — so a `str` a plain encode refuses, which a backend's JSON can carry through,
+    cannot raise out of a body that runs outside every guarded block in `_execute`."""
 
-    def test_a_lone_surrogate_is_counted_rather_than_raising(self):
-        """A backend's JSON carries one through as a `str` a plain encode refuses — the trap
-        `_InboundTally.add` already guards on the way in."""
+    def test_a_lone_surrogate_is_never_touched(self):
         out = _run(
             _withholding_tool(_ScriptedSandbox(ExecResult(stdout="ok\udcff"))), "print('hi')"
         )
 
-        assert "stdout: 5 bytes" in out
-        assert "exit code: 0" in out
+        assert out == "The program exited with status 0."
 
 
 class TestWithholdingIsRefusedWhereItCouldNotBeHonest:
@@ -1105,7 +1107,7 @@ class TestWithholdingIsRefusedWhereItCouldNotBeHonest:
 
 class TestWithholdingDeclaresUntrustedToo:
     """Withholding takes the guest's *text* out of the result, not the guest out of its
-    derivation: the exit status, each stream's size and every output's presence bit are chosen
+    derivation: the exit status and every output's presence bit are chosen
     by a program the model wrote. So there is nothing here to call trusted, and the declaration
     says so on both renderings rather than only on the noisier one."""
 
@@ -1213,9 +1215,9 @@ class TestTheModelIsToldUpFront:
             assert received not in head, received
 
     def test_the_head_is_transport_neutral_about_the_shape(self):
-        """One head serves both renderings, and the transport's is a single merged `output`
-        count — so a head promising a size per stream contradicts the `Returns:` below it in
-        exactly the wiring where the model most needs them to agree."""
+        """One head serves both renderings, so it names what the model learns and never a size
+        or a code — both values a program chooses, and both read straight off a result as the
+        number a model wanted back."""
         registry = _registry(_round_half_up)
         merged = (
             _callable(
@@ -1231,8 +1233,10 @@ class TestTheModelIsToldUpFront:
         split = _callable(_withholding_tool(_ScriptedSandbox())).__doc__ or ""
 
         for description in (merged, split):
-            assert "how large the output" in description
-            assert "never what was in it" in description
+            assert "whether the program exited cleanly" in description
+            assert "never what was in either stream" in description
+            assert "how large" not in description
+            assert "exit code" not in description
             assert "bytes each" not in description
             assert "stream received" not in description
 
@@ -3054,49 +3058,43 @@ class TestOnAMergedResultStderrIsTheProducers:
     a note about the run rather than guest text — the host-tool transport's launcher merges,
     and a backend that cannot separate the streams declares the same thing.
 
-    Reducing that note to a byte count reports the one thing it exists to prevent: a program
-    whose output was dropped for its size reads back as one that printed nothing.
+    Withholding that note reports the one thing it exists to prevent: a program whose output
+    was dropped for its size reads back as one that printed nothing.
     """
 
     def test_the_producers_note_is_surfaced_whole(self):
         note = "the program's output was larger than the host will read and was not returned"
         out = _format_withheld(ExecResult(stdout="", stderr=note, producer_owns_stderr=True))
 
-        assert f"note: {note}" in out
-        assert "exit code: 0" in out
+        assert out == f"The program exited with status 0.\nnote: {note}"
 
-    def test_the_merged_stream_is_one_count_not_two(self):
-        """Naming `stderr` there would tell a model its stderr write vanished."""
+    def test_the_merged_stream_is_not_sized_either(self):
+        """The one stream the launcher hands back is the program's, and it is a channel like
+        the two it merged."""
         out = _format_withheld(ExecResult(stdout="a\nb", stderr="", producer_owns_stderr=True))
 
-        assert "output: 3 bytes" in out
-        assert "stdout:" not in out
-        assert "stderr:" not in out
+        assert out == "The program exited with status 0."
 
     def test_a_run_with_no_note_says_nothing_in_its_place(self):
         out = _format_withheld(ExecResult(stdout="hi", stderr="", producer_owns_stderr=True))
 
         assert "note:" not in out
 
-    def test_the_plain_path_keeps_both_counts(self):
+    def test_the_plain_path_withholds_the_programs_stderr_whole(self):
         """Undeclared, `stderr` is the program's own and is withheld like `stdout`."""
         out = _format_withheld(ExecResult(stdout="a", stderr="boom"))
 
-        assert "stdout: 1 bytes" in out
-        assert "stderr: 4 bytes" in out
+        assert out == "The program exited with status 0."
 
     def test_the_result_decides_it_rather_than_the_wiring(self):
-        """The reach the field buys: a *backend* that merges gets the merged rendering too.
-
-        Nothing about this result came from the host-tool transport, and the previous rule —
-        branch on whether this kind wired one — would have sized the producer's note away.
-        """
+        """The reach the field buys: a *backend* that merges gets the producer's note surfaced
+        too, with nothing about this result having come from the host-tool transport."""
         out = _format_withheld(
             ExecResult(stdout="printed", stderr="a note", producer_owns_stderr=True)
         )
 
         assert "note: a note" in out
-        assert "stderr:" not in out
+        assert "printed" not in out
 
     def test_a_wired_registry_selects_the_transport_rendering(self):
         """The wiring, not just the renderer: a tool built with host tools has to pass it."""
@@ -3111,10 +3109,11 @@ class TestOnAMergedResultStderrIsTheProducers:
             "print(_round_half_up(value=3.6))",
         )
 
-        assert "output:" in out, out
+        assert "The program exited with" in out, out
+        assert "stdout:" not in out, out
         assert "the host said 4" not in out
 
-    def test_the_description_names_one_stream_where_the_transport_merges_them(self):
+    def test_the_description_names_the_hosts_note_where_the_transport_merges_them(self):
         sandbox = _CallingSandbox("_round_half_up", {"value": 3.6})
         tool = _calling_tool(
             sandbox,
@@ -3124,9 +3123,9 @@ class TestOnAMergedResultStderrIsTheProducers:
         )
         description = _callable(tool).__doc__ or ""
 
-        assert "and stderr together" in description
         assert "``note`` line is the host's" in description
-        assert "How many bytes of stdout and of stderr" not in description
+        assert "and stderr together" not in description
+        assert "How many bytes" not in description
 
 
 class TestAWithheldTimeoutQuotesNothing:
@@ -3272,7 +3271,7 @@ class TestAWithheldResultSplits:
         answer = _items(_withholding_tool(_ScriptedSandbox(ExecResult(stdout="42"))), "print(1)")
 
         assert [str(item.text) for item in answer] == [
-            "exit code: 0\nstdout: 2 bytes\nstderr: 0 bytes",
+            "The program exited with status 0.",
             _WITHHELD_ROUTE,
         ]
 

@@ -140,7 +140,7 @@ _NO_OUTPUT = (
 )
 
 #: Closes every result a withholding host returns, as an item of its own labelled trusted. A
-#: sentence rather than a silence, because the exit code alone leaves a model nothing to act on;
+#: sentence rather than a silence, because the exit line alone leaves a model nothing to act on;
 #: it names the route without promising a reader, which is the host's wiring rather than this
 #: kind's to claim. The label holds only while nothing a call produced reaches it and it stays
 #: on every return path, refusals included.
@@ -148,6 +148,12 @@ _WITHHELD_ROUTE = (
     "What the program printed is not read back as text. To surface a value, write it into a "
     "declared output rather than printing it."
 )
+
+#: The one line a withheld result says about the run: zero or not, never the number. An exit
+#: status is eight bits a program chooses, and no value of it drives an edit the model can make
+#: without the text.
+_WITHHELD_EXITED_CLEANLY = "The program exited with status 0."
+_WITHHELD_EXITED_WITH_ERROR = "The program exited with a non-zero status."
 
 
 class CodeactOutputs(StrEnum):
@@ -265,47 +271,45 @@ def make_codeact_tools(
             :data:`CodeactOutputs.NONE`, and refused at attach without one.
         outputs: How a program's output files are named. See :class:`CodeactOutputs`.
         withhold_guest_output: Keep what the program printed out of the tool result, and answer
-            with sizes and the model's own declared names instead. No guest-authored text
-            survives into the result — but the values that replace it were still chosen by a
-            program the model wrote, so this changes what the result *holds* and not where it
-            came from: the tool declares ``SourceIntegrity.UNTRUSTED`` either way. Requires
-            :data:`CodeactOutputs.DECLARED`: the one mode where content can still reach the
-            model and no guest-chosen name reaches the result.
+            with whether it exited cleanly and the model's own declared names instead. No
+            guest-authored text survives into the result — but the values that replace it were
+            still chosen by a program the model wrote, so this changes what the result *holds*
+            and not where it came from: the tool declares ``SourceIntegrity.UNTRUSTED`` either
+            way. Requires :data:`CodeactOutputs.DECLARED`: the one mode where content can still
+            reach the model and no guest-chosen name reaches the result.
 
-            A size here is the UTF-8 length of the text the stream came back as, not the count
-            of bytes the program wrote: ``ExecResult`` states no decoding contract, so a
-            backend replacing an undecodable byte changes the number and none of them can be
-            un-done (#465). See :func:`_stream_bytes`.
+            The exit status is rendered as one bit, zero or not, and the streams are not sized
+            at all. Both are values the program chooses, so both are channels, and neither
+            drives an edit the model can make without the text; which declared outputs landed
+            does.
 
-            The rendering follows the transport. Off the host-tool-call transport the result
-            names the exit code and a size for ``stdout`` and for ``stderr`` separately. On it,
-            the launcher merges the program's stderr into its stdout, so there is one ``output``
-            size and ``stderr`` is the host's — its note about the run is surfaced whole under
-            ``note:``, since withholding it would report a dropped output as a program that
-            printed nothing.
+            On the host-tool-call transport ``stderr`` is the launcher's rather than the
+            program's, and its note about the run is surfaced whole under ``note:`` —
+            withholding it would report a dropped output as a program that printed nothing.
 
-            **The result is two items, not one string.**  The call-derived half — the exit
-            code, the sizes, the landed names — carries no label of its own, so it takes
-            whatever the call's label is; beside it sits the standing sentence naming the recovery
-            route, labelled ``trusted``, because nothing a call produced reaches it and it is
-            emitted on every return path including the refusals.  **Where the conversation is
-            still clean** — hiding is a first-taint protection — a framework hiding untrusted
-            content hides the first and leaves the second readable, which is the point: under
-            one label the sentence went with the numbers it was there to explain.  The call
-            resolving untrusted is not a second condition any more, because this tool declares
-            it.  What remains is not this kind's to promise, and is measured in
-            ``docs/sandbox/information-flow.md``.
+            **The result is two items, not one string.**  The call-derived half — the exit line
+            and the landed names — carries no label of its own, so it takes whatever the call's
+            label is; beside it sits the standing sentence naming the recovery route, labelled
+            ``trusted``, because nothing a call produced reaches it and it is emitted on every
+            return path including the refusals.  **Where the conversation is still clean** —
+            hiding is a first-taint protection — a framework hiding untrusted content hides the
+            first and leaves the second readable, which is the point: under one label the
+            sentence went with the line it was there to explain.  The call resolving untrusted
+            is not a second condition any more, because this tool declares it.  What remains is
+            not this kind's to promise, and is measured in ``docs/sandbox/information-flow.md``.
 
             **What withholding gets you, exactly.** The prose and the shape are this package's,
             and the artifact names are the model's own — but what fills them is the program's
-            to choose, and it is a channel rather than a leak-free boundary. The exit status is
-            8 bits; each stream's size is a few more, chosen by padding; and **each declared
-            output is one further bit**, since the program decides whether to write it and the
-            result says of every declared name whether it landed — up to ``files_out.max_files``
-            of them. So what stops crossing is guest-authored *text*, not every guest-chosen
-            *bit* — a narrow per-call channel rather than the open one a rendered ``stdout`` is,
-            and a host that must close it should not attach this workload at all. The sink's
-            ``display`` is deliberately *not* rendered here — see :func:`_format_landed`.
+            to choose, and it is a channel rather than a leak-free boundary. Whether the program
+            exited cleanly is one bit and whether it finished in time is another; **each
+            declared output is one further bit**, since the program decides whether to write it
+            and the result says of every declared name whether it landed — up to
+            ``files_out.max_files`` of them, which is therefore the width of the widest channel
+            left. So what stops crossing is guest-authored *text*, not every guest-chosen *bit*:
+            about ten bits a call at the default cap, which a tool-fluent model reads as its
+            return path rather than stumbling into, and a host that must close it should not
+            attach this workload at all. The sink's ``display`` is deliberately *not* rendered
+            here — see :func:`_format_landed`.
         outbound_max_confidentiality: The host's cap for tools that carry something out, in the
             host's own vocabulary. Off by default and written only when something can actually
             leave: an artifact landing in the sink, a host tool that carries something out, or
@@ -484,9 +488,9 @@ def make_codeact_tools(
         name=EXECUTE_CODE_TOOL_NAME,
         approval_mode="always_require" if approval_gated else "never_require",
         also_carries_out=registry_carries_out,
-        # Withheld or not: what comes back is chosen by a program the model wrote, an exit
-        # status and two sizes being as much its choice as the text. Declared rather than
-        # omitted because a declaration replaces the other two tiers, and neither is this
+        # Withheld or not: what comes back is chosen by a program the model wrote, an exit bit
+        # and a presence bit per output being as much its choice as the text. Declared rather
+        # than omitted because a declaration replaces the other two tiers, and neither is this
         # kind's to answer for. It does not reach the withheld route's per-item `trusted`,
         # which is tier 1 and read first — `information-flow.md` carries both.
         source_integrity=SourceIntegrity.UNTRUSTED,
@@ -624,9 +628,10 @@ _DESCRIPTION_HEAD = """Run a short Python program inside a sandbox and return wh
 
 #: The withholding head. The paragraph above it is not merely untrue in that mode — it
 #: instructs the one behaviour the mode exists to redirect, and it is the first thing the model
-#: reads, so a withheld tool built on it argues with its own `Returns:` section. This one stays
-#: transport-neutral about the shape and says "how large" rather than a count of bytes written:
-#: `Returns:` is where one merged size is told from two, and neither is what the program wrote.
+#: reads, so a withheld tool built on it argues with its own `Returns:` section. This one names
+#: what the model learns — whether the program exited cleanly, and which declared outputs it
+#: wrote — and neither a size nor a code, which are values a program chooses and a model reads
+#: as its return path.
 #: The claim sits on the streams rather than on `print`, because the withholding does: `logging`
 #: defaults to stderr and a traceback goes there too, so a model told about `print` alone reads
 #: those as a channel that comes back. And it offers the streams no use at all — naming one,
@@ -639,12 +644,12 @@ _DESCRIPTION_HEAD_WITHHELD = """Run a short Python program inside a sandbox and 
         as ``python3 program.py`` in a sandbox with {network}
 
         **Nothing your program writes to stdout or stderr comes back — not as a value, not to
-        debug with.**  You get the exit code and how large the output was, never what was in it,
-        so nothing you write there can show you anything, even when the program fails.  That
-        covers every route to those streams: ``print``, writes to ``sys.stdout`` or
-        ``sys.stderr``, the ``logging`` and ``warnings`` modules, tracebacks, and whatever a
-        subprocess you start prints.  Write everything you need to see — results and diagnostics
-        alike — into a declared output instead.
+        debug with.**  You learn whether the program exited cleanly and which declared outputs
+        it wrote, never what was in either stream, so nothing you write there can show you
+        anything, even when the program fails.  That covers every route to those streams:
+        ``print``, writes to ``sys.stdout`` or ``sys.stderr``, the ``logging`` and ``warnings``
+        modules, tracebacks, and whatever a subprocess you start prints.  Write everything you
+        need to see — results and diagnostics alike — into a declared output instead.
 
         Write a complete, self-contained program every time.  Each call gets a fresh working
         directory: nothing you did not pass in to *this* call is in it."""
@@ -729,17 +734,16 @@ _DESCRIPTION_RETURNS_HOST_TOOL_CALLED = """The program's output — stdout and s
 #: Replaces `_DESCRIPTION_RETURNS` where the host withholds guest output, which makes that
 #: sentence untrue. In the description rather than only in the result, because a model told up
 #: front writes to a declared output on its first call.
-_DESCRIPTION_RETURNS_WITHHELD = """How many bytes of stdout and of stderr came back, and the
-            exit code — **never what the program printed, which does not come back.**  Write
-            anything you need to see into a declared output instead."""
+_DESCRIPTION_RETURNS_WITHHELD = """Whether the program exited with status 0 — **never what it
+            printed, which does not come back.**  Write anything you need to see into a
+            declared output instead."""
 
-#: The same for a run served over the host-tool-call transport, which merges the program's
-#: stderr into its stdout: naming two streams there would tell a model its stderr write
-#: vanished. A `note` line is the host's, never the program's.
-_DESCRIPTION_RETURNS_WITHHELD_HOST_TOOL_CALLED = """How many bytes of output came back — stdout
-            and stderr together — and the exit code, **never what the program printed, which
-            does not come back.**  A ``note`` line is the host's remark about the run.  Write
-            anything you need to see into a declared output instead."""
+#: The same for a run served over the host-tool-call transport, whose result carries the
+#: launcher's `note` line — the host's, never the program's.
+_DESCRIPTION_RETURNS_WITHHELD_HOST_TOOL_CALLED = """Whether the program exited with status 0 —
+            **never what it printed, which does not come back.**  A ``note`` line is the host's
+            remark about the run.  Write anything you need to see into a declared output
+            instead."""
 
 #: Appended to whichever of the two above applies.  Where it wraps is model-facing text, so the
 #: break sits where the plain sentence needs it, not where this fragment reads best.
@@ -1746,43 +1750,21 @@ def _format_result(result: ExecResult) -> str:
     return "\n\n".join(sections) if sections else _NO_OUTPUT
 
 
-def _stream_bytes(text: str | None) -> int:
-    """The UTF-8 size of the text a stream came back as — **not** the bytes the program wrote.
-
-    The two differ by a backend-dependent amount, since ``ExecResult`` states no decoding
-    contract, and nothing here can recover the original count.
-
-    ``surrogatepass`` because a lone surrogate arrives as a ``str`` a plain encode refuses, and
-    this runs outside every guarded block, where a raise would end the caller's turn.
-    """
-    return len((text or "").encode("utf-8", errors="surrogatepass"))
-
-
 def _format_withheld(result: ExecResult) -> str:
-    """Render one run for a host that withholds guest text: sizes, not content.
+    """Render one run for a host that withholds guest text: the exit as one bit, and no sizes.
 
-    Fixed shape and fixed order, empty streams included, and the exit code named on every run
-    unlike :func:`_format_result`'s — with the content gone it is the only thing left that says
-    whether the program worked.
+    The streams are neither rendered nor measured: a size is a value the program chooses as
+    surely as the text, and it tells the model nothing the text would not. The route sentence
+    is not here either — it closes every result a withholding tool returns and is attached
+    where that is true of all of them.
 
-    The route sentence is not here: it closes every result a withholding tool returns, this
-    one included, and is attached where that is true of all of them.
-
-    ``ExecResult.producer_owns_stderr`` decides who owns ``stderr``. Where it is set that
-    field is the producer's, not the guest's, and holds its note about the run — the one that
-    tells a dropped output apart from a program that printed nothing. Withholding it would
-    report the first as the second, so it is surfaced whole and only ``stdout`` is sized.
+    ``ExecResult.producer_owns_stderr`` decides who owns ``stderr``. Where it is set that field
+    is the producer's note about the run, not the guest's — the one that tells a dropped output
+    apart from a program that printed nothing — so it is surfaced whole.
     """
+    line = _WITHHELD_EXITED_CLEANLY if result.exit_code == 0 else _WITHHELD_EXITED_WITH_ERROR
     if result.producer_owns_stderr:
         note = (result.stderr or "").rstrip("\n")
-        lines = [f"exit code: {result.exit_code}", f"output: {_stream_bytes(result.stdout)} bytes"]
         if note:
-            lines.append(f"note: {note}")
-        return "\n".join(lines)
-    return "\n".join(
-        (
-            f"exit code: {result.exit_code}",
-            f"stdout: {_stream_bytes(result.stdout)} bytes",
-            f"stderr: {_stream_bytes(result.stderr)} bytes",
-        )
-    )
+            return f"{line}\nnote: {note}"
+    return line

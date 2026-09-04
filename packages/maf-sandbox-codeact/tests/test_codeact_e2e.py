@@ -307,9 +307,9 @@ class TestWithheldOutputAgainstARealInterpreter:
     """`withhold_guest_output` against a real guest, because the fake cannot disagree with it.
 
     Offline, the streams and the exit code are supplied from a dict by the same package that
-    renders them. Here a real interpreter writes them, the backend decodes them, and the sizes
-    are of whatever that produced — which is the one part of this mode's contract no in-process
-    fake can put under strain.
+    renders them. Here a real interpreter writes them and the backend decodes them, and the
+    result must still hold none of it — which is the one part of this mode's contract no
+    in-process fake can put under strain.
     """
 
     #: Printed by the programs below, and asserted absent. A distinctive string so its arrival
@@ -348,9 +348,8 @@ class TestWithheldOutputAgainstARealInterpreter:
         assert self._SECRET in answer, answer
         assert "to stderr" in answer, answer
 
-    def test_the_shape_carries_the_exit_code_and_the_real_sizes(self):
-        """The sizes are of what the backend actually decoded, which is the number the offline
-        suite takes on trust."""
+    def test_the_shape_says_whether_it_exited_cleanly_and_never_how_much_it_wrote(self):
+        """A real program filled both streams, and the result sizes neither."""
         sink = _RecordingSink()
         answer = _run_in_a_container(
             f"import sys\nprint('{self._SECRET}')\nprint('to stderr', file=sys.stderr)\n",
@@ -360,9 +359,9 @@ class TestWithheldOutputAgainstARealInterpreter:
             outputs=[],
         )
 
-        assert "exit code: 0" in answer, answer
-        assert f"stdout: {len(self._SECRET) + 1} bytes" in answer, answer
-        assert "stderr: 10 bytes" in answer, answer
+        assert "exited with status 0" in answer, answer
+        assert "bytes" not in answer, answer
+        assert str(len(self._SECRET) + 1) not in answer, answer
 
     def test_a_declared_file_lands_and_is_named_by_the_declared_spelling(self):
         sink = _RecordingSink()
@@ -394,13 +393,13 @@ class TestWithheldOutputAgainstARealInterpreter:
             outputs=["why.txt"],
         )
 
-        assert "exit code: 1" in answer, answer
+        assert "non-zero status" in answer, answer
         assert sink.names == ["why.txt"]
         assert sink.contents["why.txt"] == b"ValueError: bad row 7"
         assert self._SECRET not in answer, answer
 
     def test_the_route_is_its_own_trusted_item_against_a_real_container(self):
-        """The split, end to end: a real container, a real exit code, and the labels a
+        """The split, end to end: a real container, a real non-zero exit, and the labels a
         framework would hide the first item by, from a conversation still clean enough."""
         answer = _items_in_a_container(
             "import sys\nprint('noise')\nsys.exit(1)\n",
@@ -411,7 +410,7 @@ class TestWithheldOutputAgainstARealInterpreter:
         )
 
         assert len(answer) == 2, answer
-        assert "exit code: 1" in str(answer[0].text)
+        assert "non-zero status" in str(answer[0].text)
         assert (answer[0].additional_properties or {}).get("security_label") is None, (
             "the call-derived half must stay unlabelled, or it replaces the call's confidentiality"
         )
