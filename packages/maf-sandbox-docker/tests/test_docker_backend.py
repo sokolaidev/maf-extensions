@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import asyncio
 import io
+import itertools
 import logging
 import sys
 import tarfile
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 import pytest
 from maf_sandbox import (
@@ -38,10 +39,25 @@ from maf_sandbox import (
 
 from maf_sandbox_docker import BACKEND_NAME, DockerSandboxBackend, DockerSandboxConfig
 from maf_sandbox_docker._backend import (
+    _GATEWAY_MODE_ISOLATED,
+    _GATEWAY_MODE_OPTS,
     _container_name,
     _DockerResult,
     _network_name,
     _proxy_name,
+)
+
+#: What `network inspect` prints for a network this backend built: an internal bridge whose
+#: IPAM entry carries a subnet and no gateway, which is what an isolated gateway mode leaves.
+_UNADDRESSED = 'bridge|true|[{"Subnet":"172.20.0.0/16"}]'
+#: The same network with its bridge addressed. Every other field matches, so the `Gateway` in
+#: the IPAM entry is the whole difference — and it is a route to the host in both directions.
+_ADDRESSED = 'bridge|true|[{"Subnet":"172.20.0.0/16","Gateway":"172.20.0.1"}]'
+#: Dual-stack, with only the second family addressed: what a daemon that took one of the two
+#: options and not the other leaves. The IPv4 entry alone reads as safe, so this is the shape
+#: that separates reading every entry from reading the first.
+_ADDRESSED_ON_THE_SECOND_FAMILY = (
+    'bridge|true|[{"Subnet":"172.20.0.0/16"},{"Subnet":"fd00::/64","Gateway":"fd00::1"}]'
 )
 
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
@@ -180,6 +196,7 @@ def _machine(
     stopped: Sequence[str] = (),
     images: Sequence[str] = ("bicep-sandbox:local",),
     overrides: dict[tuple[str, ...], _DockerResult] | None = None,
+    networks: Mapping[str, str] | None = None,
 ):
     """A responder describing which containers and images exist, and how a command answers.
 
@@ -187,16 +204,55 @@ def _machine(
     ``running`` prints ``true``, one only in ``stopped`` prints ``false``, one in neither errors
     like a missing container. ``image inspect`` succeeds for a known image and errors otherwise.
 
+    ``rm -f`` takes a container out of that state, because ``acquire`` reads it again after a
+    removal and a responder still answering "running" sends the acquire down its reuse branch.
+
+    ``networks`` maps a network name to what ``network inspect`` prints for the effect format
+    — ``_UNADDRESSED`` for one this backend built, ``_ADDRESSED`` for one whose bridge kept a
+    host address. A name absent from it answers "not found", the cold path an acquire that has
+    yet to build one takes. ``network rm`` removes the name, and refuses while anything is
+    still attached, the way a real engine does; override ``("network", "rm")`` to model one
+    that fails for another reason.
+
     The longest matching ``overrides`` prefix wins, so a per-path ``cp`` answer beats a
     catch-all one however the mapping was written.
     """
-    present = set(running) | set(stopped)
+    live_running = set(running)
+    live_stopped = set(stopped)
+    live_networks = dict(networks or {})
+    # Who is on each network, so `network rm` can refuse while an endpoint is still attached,
+    # the way a real engine does.
+    live_endpoints: dict[str, set[str]] = {}
+    for _c in live_running | live_stopped:
+        _net = _network_name(_c)
+        live_endpoints.setdefault(_net, set()).add(_c)
+        # A warm allowlisted sandbox is a workload *and* its proxy on that network, so a
+        # teardown that takes the workload and leaves the proxy still has an endpoint to trip
+        # over — which is the only reason a real `network rm` refuses one of these.
+        if _net in live_networks:
+            live_endpoints[_net].add(_proxy_name(_c))
     ranked = sorted((overrides or {}).items(), key=lambda item: len(item[0]), reverse=True)
 
     def respond(args: tuple[str, ...]) -> _DockerResult:
         for prefix, result in ranked:
             if args[: len(prefix)] == prefix:
                 return result
+        if args[:2] == ("rm", "-f"):
+            name = args[-1]
+            live_running.discard(name)
+            live_stopped.discard(name)
+            for holders in live_endpoints.values():
+                holders.discard(name)
+            return _DockerResult(0, name.encode() + b"\n", "")
+        if args[:3] == ("run", "-d", "--name"):
+            # A create the engine accepted leaves a running container on the network it was
+            # given, which the reads after it are entitled to find.
+            name = args[3]
+            live_running.add(name)
+            if "--network" in args:
+                net = args[args.index("--network") + 1]
+                live_endpoints.setdefault(net, set()).add(name)
+            return _DockerResult(0, name.encode() + b"\n", "")
         if args[:2] == ("image", "inspect"):
             image = args[2]
             return (
@@ -204,6 +260,44 @@ def _machine(
                 if image in images
                 else _DockerResult(1, b"", "No such image")
             )
+        if args[:2] == ("network", "connect"):
+            net, target = args[2], args[3]
+            live_endpoints.setdefault(net, set()).add(target)
+            return _DockerResult(0, b"", "")
+        if args[:2] == ("network", "disconnect"):
+            net, target = args[2], args[3]
+            live_endpoints.get(net, set()).discard(target)
+            return _DockerResult(0, b"", "")
+        if args[:2] == ("network", "inspect"):
+            net = args[-1]
+            modes = live_networks.get(net)
+            if modes is None:
+                return _DockerResult(1, b"", f"Error response from daemon: network {net} not found")
+            return _DockerResult(0, modes.encode() + b"\n", "")
+        if args[:2] == ("network", "rm"):
+            net = args[-1]
+            if live_endpoints.get(net):
+                # What a real engine says while a container still holds an endpoint, so a
+                # teardown that removed the network before the containers fails here.
+                held = ", ".join(sorted(live_endpoints[net]))
+                return _DockerResult(1, b"", f"error: network {net} has active endpoints: {held}")
+            live_endpoints.pop(net, None)
+            if live_networks.pop(net, None) is None:
+                return _DockerResult(1, b"", f"Error: No such network: {net}")
+            return _DockerResult(0, net.encode() + b"\n", "")
+        if args[:2] == ("network", "create"):
+            # A create the engine accepted leaves a network the reads after it can find, and
+            # one it refused as taken leaves whatever was already there — so a test cannot end
+            # up running a workload on a network this responder says does not exist.
+            net = args[-1]
+            if net in live_networks:
+                return _DockerResult(1, b"", f"network with name {net} already exists")
+            # Derived from the argv so the create and the read that follows it cannot disagree:
+            # a create that stopped asking for the mode reads back as an addressed bridge.
+            modes = [o.split("=", 1)[1] for o in args if o.startswith("com.docker.network.")]
+            asked = modes == [_GATEWAY_MODE_ISOLATED] * len(_GATEWAY_MODE_OPTS)
+            live_networks[net] = _UNADDRESSED if asked else _ADDRESSED
+            return _DockerResult(0, net.encode() + b"\n", "")
         if args[:3] == ("inspect", "-f", "{{.Config.User}}"):
             return _DockerResult(0, b"\n", "")
         if args[0] == "cp" and args[1].endswith(":/"):
@@ -212,12 +306,12 @@ def _machine(
             return _DockerResult(0, _owned_directory_tar(".", 0, 0o755), "")
         if args[0] == "inspect":
             name = args[-1]
-            if name not in present:
+            if name not in live_running | live_stopped:
                 return _DockerResult(1, b"", f"Error: No such object: {name}")
-            state = "true" if name in running else "false"
+            state = "true" if name in live_running else "false"
             return _DockerResult(0, state.encode() + b"\n", "")
         if args[:2] == ("ps", "-a") or args[0] == "ps":
-            names = [*running, *stopped] if "-a" in args else list(running)
+            names = [*live_running, *live_stopped] if "-a" in args else list(live_running)
             return _DockerResult(0, "".join(f"{n}\n" for n in names).encode(), "")
         if args[0] == "logs":
             return _DockerResult(0, b"listening on 3128\n", "")
@@ -2518,6 +2612,32 @@ class TestDispose:
 
 
 class TestDisposeScope:
+    def test_an_acquire_that_raises_after_the_run_still_leaves_a_disposable_name(self):
+        """The container is running once `run` returns, so every awaited call after it is one
+        the acquire can raise on with a container already there.
+
+        The capability read is one of them: it has no fallback, so a timeout there leaves the
+        container up and the acquire raising. The labels are the disposal's source of truth
+        only while the listing works, and the registry is what covers it when it does not — so
+        a name recorded after the facts read would be missing from both.
+        """
+        base = _machine()
+
+        def a_capability_read_that_hangs(args: tuple[str, ...]) -> _DockerResult:
+            if args[:3] == ("inspect", "-f", "{{.HostConfig.CapDrop}}"):
+                raise TimeoutError("docker inspect timed out")
+            if args[:1] == ("ps",):
+                return _DockerResult(1, b"", "daemon is not responding")
+            return base(args)
+
+        backend, fake = _backend_with(a_capability_read_that_hangs)
+        with pytest.raises(TimeoutError):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert fake.matching("run", "-d", "--name", _NAME) != [], "the container was created"
+
+        asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+        assert fake.matching("rm", "-f", _NAME) != []
+
     def test_a_dispose_landing_mid_purge_neither_crashes_nor_is_clobbered(self):
         """Teardown for one key is not serialized, so the purge reconciles against the live
         record: it must not index a prefix a `dispose` removed, nor drop a name it added."""
@@ -2753,6 +2873,17 @@ class TestAllowlistTopology:
         assert args[:3] == ("network", "create", "--internal")
         assert args[-1] == _AL_NET
 
+    def test_the_networks_bridge_is_given_no_host_address(self):
+        """Both families, not just IPv4: a daemon with IPv6 enabled would keep the v6 half
+        addressed, and a bridge address is a route to the host the allowlist does not cover."""
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        args = fake.only("network", "create").args
+        assert [args[i + 1] for i, a in enumerate(args) if a == "--opt"] == [
+            "com.docker.network.bridge.gateway_mode_ipv4=isolated",
+            "com.docker.network.bridge.gateway_mode_ipv6=isolated",
+        ]
+
     def test_the_proxy_carries_the_allowlist_and_the_role_label(self):
         backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
@@ -2785,6 +2916,17 @@ class TestAllowlistTopology:
         """An empty allowlist denies everything for free — no network, no proxy burned on it."""
         backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
         asyncio.run(backend.acquire(_KEY, _SPEC))  # _SPEC has egress_allow=()
+        assert fake.matching("network", "create") == []
+        run = fake.only("run")
+        assert run.args[run.args.index("--network") + 1] == "none"
+
+    def test_an_allowlist_naming_no_hosts_builds_no_network_either(self):
+        """`ALLOWLIST` with nothing on the list reaches what `CLOSED` reaches, so it takes the
+        same branch — which is why the engine floor this backend documents binds only a sandbox
+        that names hosts. A spec asking for the mode but no host never reaches the option."""
+        spec = SandboxSpec(kind="bicep", image="bicep-sandbox:local", egress=Egress.ALLOWLIST)
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, spec))
         assert fake.matching("network", "create") == []
         run = fake.only("run")
         assert run.args[run.args.index("--network") + 1] == "none"
@@ -2829,12 +2971,477 @@ class TestAllowlistReuse:
         overrides = {
             ("network", "create"): _DockerResult(1, b"", "network with name X already exists")
         }
-        backend, _ = _backend_with(
-            _machine(running=[_AL], overrides=overrides), config=_ALLOW_CONFIG
+        backend, fake = _backend_with(
+            _machine(running=[_AL], overrides=overrides, networks={_AL_NET: _UNADDRESSED}),
+            config=_ALLOW_CONFIG,
         )
         # Does not raise: the existing network is adopted, the running workload reused.
         sandbox = asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert sandbox.container_name == _AL
+        assert fake.matching("rm", "-f", _AL) == []
+
+    def test_an_error_naming_something_else_is_not_read_as_an_absent_network(self):
+        """Adoption needs a diagnostic that names this network, not the phrase on its own.
+
+        Unrelated failures borrow the words — a missing context answers `context not found`,
+        an unknown driver `plugin "…" not found` — and absence is the one verdict that is
+        safe."""
+        plugin_error = 'Error response from daemon: plugin "br0" not found'
+        overrides = {
+            ("network", "create"): _DockerResult(1, b"", "network with name X already exists"),
+            ("network", "inspect"): _DockerResult(1, b"", plugin_error),
+        }
+        backend, fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
+        with pytest.raises(RuntimeError, match="could not be read") as raised:
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert plugin_error in str(raised.value)
+        assert fake.matching("run", "-d", "--name", _AL) == []
+
+    def test_a_name_conflict_is_adopted_rather_than_failing_the_acquire(self):
+        """A create that loses the name to a racing acquire of the same key recovers by taking
+        what is there. Without it the name stays taken and every acquire for that key fails
+        from then on.
+
+        The container appears only once the create has tried and lost, which is the whole of
+        the adoption path: one present any earlier is found by the reuse reads and never
+        reaches it, so a static fixture tests nothing here.
+        """
+        base = _machine(networks={_AL_NET: _UNADDRESSED})
+        appeared = False
+
+        def racing(args: tuple[str, ...]) -> _DockerResult:
+            nonlocal appeared
+            if args[:4] == ("run", "-d", "--name", _AL):
+                appeared = True
+                return _DockerResult(1, b"", "Conflict. The name is already in use")
+            if args[0] == "inspect" and args[-1] == _AL:
+                if not appeared:
+                    return _DockerResult(1, b"", f"error: no such object: {_AL}")
+                state = b"true\n" if "Running" in args[2] else b"running\n"
+                return _DockerResult(0, state, "")
+            return base(args)
+
+        backend, _ = _backend_with(racing, _ALLOW_CONFIG)
+        sandbox = asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert sandbox.container_name == _AL
+
+    def test_a_created_network_is_read_back_before_the_workload_joins_it(self):
+        """A create the engine accepted is not evidence of what it built: a daemon that takes
+        an option without acting on it answers exactly as one that applied it.
+
+        This is the first acquire, so there is no earlier network to have been judged — the
+        proxy and the workload are about to join what this call just made, and no later read
+        looks at it again. The refusal takes the network with it, since it is this call's own.
+        """
+        base = _machine()
+        built: dict[str, str] = {}
+
+        def taking_the_option_without_acting(args: tuple[str, ...]) -> _DockerResult:
+            if args[:2] == ("network", "create"):
+                built[args[-1]] = _ADDRESSED
+                return _DockerResult(0, args[-1].encode() + b"\n", "")
+            if args[:2] == ("network", "inspect") and args[-1] in built:
+                return _DockerResult(0, built[args[-1]].encode() + b"\n", "")
+            if args[:2] == ("network", "rm") and args[-1] in built:
+                del built[args[-1]]
+                return _DockerResult(0, args[-1].encode() + b"\n", "")
+            return base(args)
+
+        backend, fake = _backend_with(taking_the_option_without_acting, config=_ALLOW_CONFIG)
+        with pytest.raises(RuntimeError, match="was created but its bridge holds") as raised:
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert "It has been removed" in str(raised.value)
+        assert fake.matching("run", "-d", "--name", _AL) == []
+        assert fake.matching("run", "-d", "--name", _AL_PROXY) == []
+        assert fake.matching("network", "rm", _AL_NET) != []
+
+    def test_a_created_network_that_will_not_go_says_it_is_still_under_its_name(self):
+        """`_remove_network` reports failure rather than raising it, and folds "refused" in with
+        "was not there", so the state is what says which happened.
+
+        The difference reaches the caller: a network that survived meets the existing-network
+        refusal on the next acquire, so "retry" is the one instruction that cannot work.
+        """
+        base = _machine(overrides={("network", "rm"): _DockerResult(1, b"", "permission denied")})
+        created = False
+
+        def taking_the_option_without_acting(args: tuple[str, ...]) -> _DockerResult:
+            nonlocal created
+            if args[:2] == ("network", "create"):
+                created = True
+                return _DockerResult(0, args[-1].encode() + b"\n", "")
+            if args[:2] == ("network", "inspect") and args[-1] == _AL_NET:
+                if not created:
+                    return _DockerResult(1, b"", f"network {_AL_NET} not found")
+                return _DockerResult(0, _ADDRESSED.encode() + b"\n", "")
+            return base(args)
+
+        backend, fake = _backend_with(taking_the_option_without_acting, config=_ALLOW_CONFIG)
+        with pytest.raises(RuntimeError, match="was created but its bridge holds") as raised:
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert "still under that name" in str(raised.value)
+        assert "It has been removed" not in str(raised.value)
+        assert fake.matching("run", "-d", "--name", _AL) == []
+
+    def test_a_cancelled_readback_takes_the_network_it_just_created(self):
+        """`_bridge_state` catches `Exception`, so a cancellation passes it by.
+
+        The window is narrow and what sits in it is unreachable afterwards: the network exists,
+        no container carries its name yet, and the sweep finds a sandbox's network through its
+        container. Nothing would ever collect it.
+        """
+        base = _machine()
+        created = False
+
+        def cancelled_after_the_create(args: tuple[str, ...]) -> _DockerResult:
+            nonlocal created
+            if args[:2] == ("network", "create"):
+                created = True
+                return _DockerResult(0, args[-1].encode() + b"\n", "")
+            if args[:2] == ("network", "inspect") and args[-1] == _AL_NET and created:
+                raise asyncio.CancelledError
+            return base(args)
+
+        backend, fake = _backend_with(cancelled_after_the_create, config=_ALLOW_CONFIG)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("network", "rm", _AL_NET) != []
+
+    def test_a_network_reported_taken_then_gone_fails_rather_than_adopting_nothing(self):
+        """ "Already exists" and then "no such network" is not an adoption: nothing established
+        what a workload there would reach. Returning would leave `_ensure_proxy` to fail on a
+        network nobody built, reporting a proxy problem for a network race."""
+        overrides = {
+            ("network", "create"): _DockerResult(1, b"", "network with name X already exists")
+        }
+        backend, fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
+        with pytest.raises(RuntimeError, match="was gone when it was read"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("run", "-d", "--name", _AL_PROXY) == []
+
+    def test_a_network_that_appeared_since_the_check_is_not_adopted_on_its_name(self):
+        """`create` compares nothing but the name, and the lock is local to one backend and
+        loop, so "already exists" can be a network something else put there after the acquire
+        looked. Adopting it on the name alone is the whole hole reopened.
+
+        The responder answers the acquire's own look with "not found" and every later one with
+        an addressed bridge, which is that interleaving and no other.
+        """
+        base = _machine(
+            overrides={
+                ("network", "create"): _DockerResult(1, b"", "network with name X already exists")
+            }
+        )
+        looks = itertools.count()
+
+        def racing(args: tuple[str, ...]) -> _DockerResult:
+            if args[:2] == ("network", "inspect") and args[-1] == _AL_NET:
+                if next(looks) == 0:
+                    return _DockerResult(1, b"", f"network {_AL_NET} not found")
+                return _DockerResult(0, _ADDRESSED.encode() + b"\n", "")
+            return base(args)
+
+        backend, fake = _backend_with(racing, config=_ALLOW_CONFIG)
+        with pytest.raises(RuntimeError, match="already exists and its bridge holds"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("run", "-d", "--name", _AL) == []
+
+
+class TestASandboxLeftOnAnUnusableNetwork:
+    """A network whose bridge holds a host address is replaced, and the sandbox goes with it.
+
+    `network create` compares nothing but the name, so an existing network is adopted whatever
+    its options — which makes the check a separate read. The workload cannot be kept across
+    the replacement: it holds an endpoint on the network, so the network will not remove while
+    it is attached, and reconnecting the container elsewhere would leave it addressing a proxy
+    that no longer resolves.
+    """
+
+    def _machine_with_an_addressed_bridge(self):
+        return _machine(running=[_AL], networks={_AL_NET: _ADDRESSED})
+
+    def test_the_sandbox_its_proxy_and_the_network_are_all_removed(self):
+        backend, fake = _backend_with(self._machine_with_an_addressed_bridge(), _ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("rm", "-f", _AL) != []
+        assert fake.matching("rm", "-f", _AL_PROXY) != []
+        assert fake.matching("network", "rm", _AL_NET) != []
+
+    def test_the_workload_is_rebuilt_rather_than_reused(self):
+        """The removals are only half of it: what the caller gets back has to be a container
+        built on the replacement network, not the warm one the reuse branch would have found."""
+        backend, fake = _backend_with(self._machine_with_an_addressed_bridge(), _ALLOW_CONFIG)
+        sandbox = asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert sandbox.container_name == _AL
+        created = _run_named(fake, _AL)
+        assert created.args[created.args.index("--network") + 1] == _AL_NET
+        assert fake.calls.index(fake.only("network", "rm", _AL_NET)) < fake.calls.index(created)
+
+    def test_the_removal_precedes_the_read_that_would_have_reused_it(self):
+        """Ordering is the whole of it: a discard after that read reuses a container it has
+        already decided to keep, and the replacement never happens."""
+        backend, fake = _backend_with(self._machine_with_an_addressed_bridge(), _ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        removed = fake.calls.index(fake.only("network", "rm", _AL_NET))
+        read = fake.calls.index(fake.matching("inspect", "-f", "{{.State.Running}}", _AL)[0])
+        assert removed < read
+
+    def test_an_unreadable_network_is_replaced_rather_than_trusted(self):
+        """The read decides whether a warm sandbox is kept, so an answer that is neither
+        "unaddressed" nor "no such network" cannot be taken as good news — the sandbox goes,
+        and an acquire that still cannot prove the bridge is unaddressed refuses rather than
+        serving one it has no answer for.
+
+        It refuses for the reason it actually has, though: nothing read a mode here, so the
+        failure names the daemon's own answer instead of claiming an address it never saw.
+        """
+        overrides = {("network", "inspect"): _DockerResult(1, b"", "daemon is not responding")}
+        backend, fake = _backend_with(
+            _machine(running=[_AL], overrides=overrides), config=_ALLOW_CONFIG
+        )
+        with pytest.raises(RuntimeError) as raised:
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert "it could not be read: daemon is not responding" in str(raised.value)
+        assert "its bridge holds" not in str(raised.value)
+        assert fake.matching("rm", "-f", _AL) != []
+        assert fake.matching("run", "-d", "--name", _AL) == []
+
+    def test_the_bridge_is_judged_by_the_address_it_has_not_the_mode_it_was_asked_for(self):
+        """`.Options` is the request, echoed back whether or not the daemon acted on it, so it
+        reads the same for a bridge that ended up addressed and one that did not. Only the
+        effect separates them, which is why the template may not ask for the request."""
+        backend, fake = _backend_with(self._machine_with_an_addressed_bridge(), _ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        read = fake.matching("network", "inspect")[0].args
+        template = read[read.index("-f") + 1]
+        assert ".Options" not in template
+        assert ".IPAM.Config" in template and ".Driver" in template and ".Internal" in template
+
+    def test_a_bridge_addressed_on_the_second_family_only_is_replaced(self):
+        """Two options are asked for, so both families have to be read back.
+
+        A daemon that took one and not the other leaves the bridge addressed on the half a
+        first-entry read never looks at — and no live test here reaches it, since CI's daemon is
+        single-stack.
+        """
+        backend, fake = _backend_with(
+            _machine(running=[_AL], networks={_AL_NET: _ADDRESSED_ON_THE_SECOND_FAMILY}),
+            _ALLOW_CONFIG,
+        )
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("rm", "-f", _AL) != []
+        assert fake.matching("network", "rm", _AL_NET) != []
+
+    def test_a_network_that_is_not_a_bridge_is_replaced(self):
+        """A gateway mode is a bridge option, so on any other driver it is accepted and means
+        nothing — the network is whatever that driver makes it, which is not this backend's to
+        describe."""
+        macvlan = 'macvlan|true|[{"Subnet":"172.20.0.0/16"}]'
+        backend, fake = _backend_with(
+            _machine(running=[_AL], networks={_AL_NET: macvlan}), _ALLOW_CONFIG
+        )
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("rm", "-f", _AL) != []
+        assert fake.matching("network", "rm", _AL_NET) != []
+
+    def test_a_network_that_is_not_internal_is_replaced(self):
+        """An unaddressed bridge on a network that is not internal still forwards outward, so
+        the address is only half of it."""
+        outward = 'bridge|false|[{"Subnet":"172.20.0.0/16"}]'
+        backend, fake = _backend_with(
+            _machine(running=[_AL], networks={_AL_NET: outward}), _ALLOW_CONFIG
+        )
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("rm", "-f", _AL) != []
+        assert fake.matching("network", "rm", _AL_NET) != []
+
+    def test_a_network_that_will_not_go_away_fails_the_acquire(self):
+        """The removals report failure rather than raising it, so reading past them would hand
+        back the warm workload on the bridge this was trying to take away."""
+        overrides = {("network", "rm"): _DockerResult(1, b"", "network has active endpoints")}
+        backend, fake = _backend_with(
+            _machine(running=[_AL], networks={_AL_NET: _ADDRESSED}, overrides=overrides),
+            _ALLOW_CONFIG,
+        )
+        with pytest.raises(RuntimeError, match="could not be replaced") as raised:
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert "its bridge holds 172.20.0.1" in str(raised.value)
+        # The refusal has to read in the safe direction: the route is what stops the workload
+        # being served, not something serving it would require.
+        assert "while a route to the host around the proxy may still exist" in str(raised.value)
+        assert fake.matching("run", "-d", "--name", _AL) == []
+
+    def test_an_unaddressed_bridge_keeps_its_warm_sandbox(self):
+        backend, fake = _backend_with(
+            _machine(running=[_AL], networks={_AL_NET: _UNADDRESSED}), _ALLOW_CONFIG
+        )
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("rm", "-f", _AL) == []
+        assert fake.matching("network", "rm", _AL_NET) == []
+
+    def test_a_workload_that_outlived_its_network_is_rebuilt(self):
+        """Absence is safe for a sandbox about to be created and not for one already running:
+        a container cannot be on a network that is not there, so what it is on instead is
+        outside this backend's account of it. Building a fresh network beside it and reusing
+        it anyway would leave the allowlist describing something the workload never joined."""
+        backend, fake = _backend_with(_machine(running=[_AL]), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("rm", "-f", _AL) != []
+        created = _run_named(fake, _AL)
+        assert created.args[created.args.index("--network") + 1] == _AL_NET
+
+    def test_a_workload_that_will_not_go_fails_the_acquire_even_with_no_network(self):
+        """The network read cannot stand in for the container's removal when there is no
+        network: it says "usable" for an absence that was already true, so a workload the
+        engine refused to remove would be reused on whatever it is attached to."""
+        overrides = {("rm", "-f", _AL): _DockerResult(1, b"", "device or resource busy")}
+        backend, fake = _backend_with(
+            _machine(running=[_AL], overrides=overrides), config=_ALLOW_CONFIG
+        )
+        with pytest.raises(RuntimeError, match="is still there") as raised:
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert "device or resource busy" in str(raised.value)
+        assert fake.matching("run", "-d", "--name", _AL) == []
+
+    #: A socket error carries the errno underneath it, so it says an absence phrase about
+    #: something that is not this container. Named rather than inlined: two adjacent literals
+    #: in a list read as a missing comma, and here that would silently drop a case.
+    _SOCKET_ERROR = (
+        "Cannot connect to the Docker daemon at unix:///var/run/docker.sock: "
+        "connect: no such file or directory"
+    )
+
+    @pytest.mark.parametrize(
+        "stderr",
+        ["daemon not responding", _SOCKET_ERROR],
+        ids=["opaque", "socket-error-borrowing-the-phrase"],
+    )
+    def test_a_container_read_that_fails_is_not_read_as_no_container(self, stderr: str):
+        """Skipping the rebuild needs proof the container is gone, not a failure to see it.
+
+        The proof has to name this container. An absence phrase said about something else —
+        the socket the daemon was not listening on — leaves the workload on its old
+        attachment with a fresh network built beside it, once the next read succeeds.
+        """
+        overrides = {("inspect", "-f", "{{.State.Status}}"): _DockerResult(1, b"", stderr)}
+        backend, fake = _backend_with(
+            _machine(running=[_AL], overrides=overrides), config=_ALLOW_CONFIG
+        )
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("rm", "-f", _AL) != []
+        created = _run_named(fake, _AL)
+        assert created.args[created.args.index("--network") + 1] == _AL_NET
+
+    @pytest.mark.parametrize(
+        "stderr",
+        [
+            'Error response from daemon: cannot remove container "/{name}": container is running',
+            _SOCKET_ERROR,
+        ],
+        ids=["a-decline-naming-the-container", "a-socket-error-borrowing-the-phrase"],
+    )
+    def test_a_removal_the_engine_declined_is_not_read_as_one_that_worked(self, stderr: str):
+        """`rm -f` reports failure rather than raising it, so what counts as "it went" is the
+        engine's own "no such object" about *this* container: the phrase and the name together.
+
+        Either half alone admits a case. A decline naming the container carries no absence
+        phrase; the socket error carries one, about the socket. The workload is still under its
+        name in both.
+        """
+        overrides = {("rm", "-f", _AL): _DockerResult(1, b"", stderr.format(name=_AL))}
+        backend, fake = _backend_with(
+            _machine(running=[_AL], overrides=overrides), config=_ALLOW_CONFIG
+        )
+        with pytest.raises(RuntimeError, match="is still there"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("run", "-d", "--name", _AL) == []
+
+    def test_a_read_that_raises_still_reaches_the_removal(self):
+        """`_docker` propagates a timeout rather than returning one, so a read fails by raising
+        as well as by answering, and raising refuses too: `exec` detaches, so a warm sandbox
+        kept on an unread bridge goes on running whatever earlier calls started."""
+        base = _machine(running=[_AL], networks={_AL_NET: _UNADDRESSED})
+
+        def timing_out(args: tuple[str, ...]) -> _DockerResult:
+            if args[:2] == ("network", "inspect") and args[-1] == _AL_NET:
+                raise TimeoutError("docker network inspect timed out")
+            return base(args)
+
+        backend, fake = _backend_with(timing_out, config=_ALLOW_CONFIG)
+        with pytest.raises(RuntimeError, match="could not be read") as raised:
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert "timed out" in str(raised.value)
+        assert fake.matching("rm", "-f", _AL) != []
+
+    def test_a_network_swapped_under_its_own_name_is_caught_by_the_second_read(self):
+        """A name is not a network. One replaced between the read that kept the warm sandbox
+        and the create that finds the name taken is read again there, and refused — so the
+        window between the two is not a way to have an addressed bridge accepted."""
+        base = _machine(running=[_AL], networks={_AL_NET: _UNADDRESSED})
+        bridge_reads = itertools.count()
+
+        def replaced(args: tuple[str, ...]) -> _DockerResult:
+            if args[:2] == ("network", "inspect") and args[-1] == _AL_NET:
+                # This backend's while the discard looks at it, someone else's by the create.
+                effect = _UNADDRESSED if next(bridge_reads) < 1 else _ADDRESSED
+                return _DockerResult(0, effect.encode() + b"\n", "")
+            return base(args)
+
+        backend, fake = _backend_with(replaced, config=_ALLOW_CONFIG)
+        with pytest.raises(RuntimeError, match="already exists and its bridge holds"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("run", "-d", "--name", _AL_PROXY) == []
+
+    def test_a_cold_acquire_has_nothing_to_replace(self):
+        """No network yet is the ordinary first acquire, not a stale one."""
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("network", "rm", _AL_NET) == []
+
+    def test_a_closed_sandbox_is_never_read_for_a_network_it_has_none_of(self):
+        backend, fake = _backend_with(_machine(running=[_NAME]), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _SPEC))  # _SPEC has egress_allow=()
+        assert fake.matching("network", "inspect") == []
+
+
+class TestAnEngineThatWillNotBuildAnUnaddressedBridge:
+    """The mode arrived in Docker Engine 28.0.0; an older daemon rejects the value by name.
+
+    Refused rather than served on an addressed bridge: that bridge is a route to the host the
+    allowlist does not cover, so the weaker topology is not a fallback.
+    """
+
+    _REJECTED = _DockerResult(
+        1,
+        b"",
+        "Error response from daemon: failed to parse "
+        "com.docker.network.bridge.gateway_mode_ipv4 value: isolated "
+        "(unknown gateway mode isolated)",
+    )
+
+    def test_the_acquire_fails_naming_the_engine_the_mode_needs(self):
+        backend, _ = _backend_with(
+            _machine(overrides={("network", "create"): self._REJECTED}), config=_ALLOW_CONFIG
+        )
+        with pytest.raises(RuntimeError, match="28.0.0"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+    def test_no_workload_is_started_on_the_weaker_topology_instead(self):
+        backend, fake = _backend_with(
+            _machine(overrides={("network", "create"): self._REJECTED}), config=_ALLOW_CONFIG
+        )
+        with pytest.raises(RuntimeError):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("run") == []
+
+    def test_an_unrelated_create_failure_does_not_blame_the_engine_version(self):
+        overrides = {
+            ("network", "create"): _DockerResult(1, b"", "could not find an available subnet")
+        }
+        backend, _ = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
+        with pytest.raises(RuntimeError, match="available subnet") as raised:
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert "28.0.0" not in str(raised.value)
 
 
 class TestAllowlistTeardown:

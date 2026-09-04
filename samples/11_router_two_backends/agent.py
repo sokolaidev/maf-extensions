@@ -6,8 +6,9 @@ exception and goes to every backend registered.
 
 Isolation is the axis acts 1 and 2 argue about. Egress is the other one, and acts 3 and 4 are
 where it is shown — act 3 in arithmetic, act 4 with an agent doing work that cannot succeed
-without the network it asked for. Read this directory's README for why the pairing is Docker
-beside the in-process backend, and what #328 would change.
+without the network it asked for. Act 6 is the same refusal as act 2, served instead: a host
+that opts into per-spec selection gets the second backend tried. Read this directory's README
+for why the pairing is Docker beside the in-process backend.
 """
 
 # /// script
@@ -43,6 +44,7 @@ from maf_sandbox import (
     SandboxKey,
     SandboxRouter,
     SandboxSpec,
+    Selection,
 )
 from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox.testing import InProcessSandboxBackend
@@ -54,8 +56,8 @@ from maf_sandbox_docker import (
     proxy_build_context,
 )
 
-#: A tiny image for acts 1, 2 and 5, because nothing there compiles anything — the point is
-#: which backend runs the command, not what the command is. Act 4 runs a real compiler and
+#: A tiny image for acts 1, 2, 5 and 6, because nothing there compiles anything — the point
+#: is which backend runs the command, not what the command is. Act 4 runs a real compiler and
 #: brings its own image.
 IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 
@@ -63,14 +65,15 @@ IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 #: serves one request, so they are constants, and `dispose_scope` uses them at the end.
 KEY = SandboxKey(scope="samples", thread_id="11-two-backends", agent_dir="operator")
 
-#: The workload kind acts 1, 2 and 5 ask for. Named once because it is quoted back inside both
-#: refusal messages: a typo in one of the four specs would still route, still refuse, and still
-#: print a sentence about a kind this sample never mentions anywhere else.
+#: The workload kind acts 1, 2, 5 and 6 ask for. Named once because it is quoted back inside
+#: both refusal messages and both of act 6's routes: a typo in one spec would still route,
+#: still refuse, and still print a sentence about a kind this sample mentions nowhere else.
 KIND = "operator"
 
-#: The floor this host is willing to go down to. The router floor-checks the backend it
-#: resolves to, not the whole list, and refuses at construction — `NONE` is the bottom
-#: rung, so either of these clears it.
+#: The floor this host is willing to go down to. Under the default selection the router
+#: floor-checks the backend it resolves to; selecting per spec it checks the whole
+#: registration, refusing only when nothing clears the floor. Either way this is construction
+#: time, and `NONE` is the bottom rung, so both backends clear it.
 FLOOR = Isolation.NONE
 
 #: Act 4's agent, and the file it validates. The file lives beside this one and contains a
@@ -96,8 +99,8 @@ _RESTORE_FAILED = "BCP192"
 #: and act 4's whole claim is that it can tell that apart from a sandbox that never came up.
 _PHASES = re.compile(r"^build\(.*^lint\(", re.MULTILINE | re.DOTALL)
 
-#: Everything act 4 needs. The other four acts need none of it, so this is read inside act 4
-#: rather than at startup — a reader with only Docker still sees four fifths of the sample.
+#: Everything act 4 needs. The other five acts need none of it, so this is read inside act 4
+#: rather than at startup — a reader with only Docker still sees five sixths of the sample.
 #: `BICEP_SANDBOX_IMAGE` and `MAF_EGRESS_PROXY_IMAGE` are local image references, built rather
 #: than pulled; the model is reached with `DefaultAzureCredential`, so there is no key here.
 ACT_FOUR_VARS = (
@@ -395,7 +398,7 @@ async def act_four_the_egress_the_workload_asked_for() -> tuple[bool, bool] | No
 
 
 async def act_five_disposal_reaches_everyone() -> tuple[int, int]:
-    """The one place holding more than one backend is live at run time.
+    """Disposal fans out to every registered backend, not only the one that served.
 
     Returns what it observed — sandboxes disposed, and how many backends were registered — so
     the footer reports measurements rather than the numbers this file expects.
@@ -439,17 +442,80 @@ async def act_five_disposal_reaches_everyone() -> tuple[int, int]:
     return purge.disposed, len(registered)
 
 
+async def act_six_the_spec_picks() -> None:
+    """Act 2's refusal, served — the same two backends, in the same order, one keyword apart.
+
+    Two specs are routed rather than one. The *plain* one both backends can serve goes to the
+    first registered, which is what says routing never moves a workload that already runs.
+    """
+    print("== 6. The spec picks, when the host asks it to ==\n")
+
+    local, container = backends()
+    # The same list, in the same order, as act 2 — which refused. `selection=` is the only
+    # difference between the two routers, and `selected=` is absent because a pin and a route
+    # are two answers to one question and the router refuses them together.
+    router = SandboxRouter([local, container], min_isolation=FLOOR, selection=Selection.PER_SPEC)
+
+    needs_files_out = SandboxSpec(
+        kind=KIND, image=IMAGE, requires=DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
+    )
+    plain = SandboxSpec(kind=KIND, image=IMAGE)
+    for label, spec in (("files_out", needs_files_out), ("plain", plain)):
+        chosen = router.backend_for(spec)
+        print(f"{MEASURED}routed {label} spec -> {(None if chosen is None else chosen.name)!r}")
+
+    print()
+    try:
+        # Routing decided; this is what proves the decision reached a real container rather
+        # than only a report about one. Same `finally` discipline as act 5, and for the same
+        # reason: one of these is a Docker container with no auto-delete timer behind it.
+        sandbox = await router.acquire(KEY, needs_files_out)
+        await sandbox.write_file(
+            f"{needs_files_out.work_dir}/marker",
+            "routed per spec\n",
+            working_directory=needs_files_out.work_dir,
+        )
+        result = await sandbox.exec(
+            "cat marker", working_directory=needs_files_out.work_dir, timeout=60
+        )
+        print(f"{MEASURED}the routed backend runs: {result.stdout.strip()!r}")
+    finally:
+        # Both halves, and neither is enough alone. `dispose_scope` reports a failure rather
+        # than raising it, so an act discarding its answer leaks a container while the run
+        # reads clean — that is `undisposed`. But silence only says nobody complained, and a
+        # backend never reached cannot complain, so the count says the sweep happened: the
+        # in-process fake answers 1 whatever it holds, and the second is the container docker
+        # really removed. A total of 1 is docker sweeping nothing.
+        purge = await router.dispose_scope(KEY.scope, KEY.thread_id)
+        left = "none" if purge.undisposed is None else str(purge.undisposed)
+        print(f"{MEASURED}act 6 cleanup: disposed={purge.disposed} undisposed={left}\n")
+
+    print("  The refusal in act 2 and the route here differ by `selection=` and nothing else.")
+    print("  It is off by default, and the reason is a bill rather than a scruple: what it")
+    print("  changes is that a refusal becomes a running sandbox, and on a remote backend a")
+    print("  running sandbox has a price. Registration order is the preference, and the route")
+    print("  is a pure function of the spec — never load, latency or cost — so one spec")
+    print("  always routes to the same backend and its warm sandbox stays reusable. Per")
+    print("  spec rather than per conversation: two kinds under one key may route apart,")
+    print("  by design, which is why disposal asks every registered backend.\n")
+
+
 async def main() -> int:
-    """Five acts. Every number in the footer is read back, not written down."""
+    """Six acts, and every number in the footer is read back rather than written down.
+
+    Act 4 skips itself when any of its four variables is unset, and the footer then reports
+    five. That is a partial run, not a healthy one: the live check requires six.
+    """
     act_one_the_switch()
     act_two_the_spec_cannot_pick()
     act_three_the_other_axis()
     restored = await act_four_the_egress_the_workload_asked_for()
     disposed, registered = await act_five_disposal_reaches_everyone()
+    await act_six_the_spec_picks()
 
-    ran = 5 if restored else 4
+    ran = 5 + (1 if restored else 0)
     print(
-        f"{MEASURED}Completed {ran} of 5 acts. "
+        f"{MEASURED}Completed {ran} of 6 acts. "
         f"Disposed {disposed} sandbox(es) across {registered} backends."
     )
     return 0

@@ -14,7 +14,10 @@ utility VM, which the ladder classifies at ``container`` — and no configuratio
 
 Egress is :data:`~maf_sandbox.Egress.CLOSED` by default — every container is created
 ``--network none`` — and :data:`~maf_sandbox.Egress.ALLOWLIST` when a proxy image is
-configured, enforced by topology exactly as ``maf-sandbox-wslc`` does it.
+configured: an internal network whose bridge holds no host address, carrying a dual-homed
+CONNECT proxy that is then the workload's only route out.  That bridge needs Docker Engine
+28.0.0, and only a sandbox that builds one does — ``CLOSED``, and an ``ALLOWLIST`` spec naming no
+hosts, both get ``--network none`` and no such engine.
 
 The ``os_families`` field of its :class:`~maf_sandbox.BackendDeclarations` is read from the
 daemon, by :meth:`DockerSandboxBackend.create` and only there: a daemon running ``linux``
@@ -27,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
+import json
 import logging
 import posixpath
 import re
@@ -118,6 +122,33 @@ _ALREADY_IN_USE = "already in use"
 #: exists`) — a different string from the container conflict above, and adopting the existing
 #: network is how warm reuse of an allowlisted sandbox works on the second acquire.
 _NETWORK_EXISTS = "already exists"
+
+#: Bridge driver options that leave an `--internal` network's bridge with no host address.
+#: That address is what the allowlist's confinement turns on: with one, a container reaches
+#: host services bound to a wildcard address without passing the proxy, and a port it listens
+#: on is reachable from the host. Both families are set — a daemon with IPv6 enabled would
+#: otherwise keep the v6 half addressed.
+_GATEWAY_MODE_OPTS = (
+    "com.docker.network.bridge.gateway_mode_ipv4",
+    "com.docker.network.bridge.gateway_mode_ipv6",
+)
+_GATEWAY_MODE_ISOLATED = "isolated"
+#: The engine that accepts the mode above; an older one rejects the value, naming the option.
+_GATEWAY_MODE_MIN_ENGINE = "28.0.0"
+#: The driver the option above belongs to.  A gateway mode is a bridge setting and means
+#: nothing on any other driver, so the driver is read back alongside it.
+_BRIDGE_DRIVER = "bridge"
+#: Reads what the engine *did*: the driver, the internal flag, and the IPAM entries, which carry
+#: a `Gateway` only where the bridge holds a host address.  Deliberately not `.Options`, which is
+#: the request echoed back whether or not the daemon acted on it, and so cannot tell a bridge
+#: that ended up unaddressed from one that did not.
+_NETWORK_EFFECT_FORMAT = "{{.Driver}}|{{.Internal}}|{{json .IPAM.Config}}"
+#: What the engine says for a network or container that is not there — read only alongside
+#: that target's own name, never on its own.  Absence is the one answer a caller may treat as
+#: safe, and unrelated failures use these words too: a missing context reports `context not
+#: found`, an unknown driver `plugin "…" not found`, an unreachable daemon can carry `no such
+#: file or directory` from its socket.  Docker's real answers name the target they mean.
+_ABSENT_TARGET = ("not found", _NO_SUCH)
 
 _PROXY_PORT = 3128
 _ALLOW_ENV = "MAF_SANDBOX_ALLOW"
@@ -260,6 +291,16 @@ def _proxy_name(container: str) -> str:
     return f"{container}{_PROXY_SUFFIX}"
 
 
+def _reads_as_absent(stderr: str, target: str) -> bool:
+    """Whether ``stderr`` is the engine saying ``target`` — a network or a container — is gone.
+
+    Every other failure, including one borrowing the words about something else, is left to
+    the caller as unreadable.  Why that matters is with ``_ABSENT_TARGET``.
+    """
+    lowered = stderr.lower()
+    return target.lower() in lowered and any(phrase in lowered for phrase in _ABSENT_TARGET)
+
+
 def _single_rooted(guest_path: str) -> str:
     """``guest_path_and_ancestors``'s normal form: the segments, under exactly one leading slash.
 
@@ -331,6 +372,27 @@ class _Removal:
 
     removed: bool
     failure: DisposalFailure | None = None
+
+
+@dataclass(frozen=True)
+class _BridgeState:
+    """Whether a network is one an allowlisted workload may sit on, and why not when it is not.
+
+    ``usable`` holds for the two safe answers together — the bridge holds no host address, or
+    there is no such network and a create follows — because most callers ask only that.
+
+    ``absent`` separates the second, which is safe only for a workload about to be created: a
+    container already running cannot be on a network that is not there, so reusing one would
+    leave it wherever it actually is, which is no longer this backend's to describe.
+
+    ``reason`` keeps a bridge read as addressed apart from one that could not be read at all.
+    Both refuse, but a caller reporting a daemon that would not answer must not claim it saw
+    an address.
+    """
+
+    usable: bool
+    absent: bool = False
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -920,13 +982,24 @@ class DockerSandboxBackend:
         than leaving a sandbox that declares an allowlist and enforces nothing. Reused, restarted
         and created are logged at INFO.
 
+        An allowlisted sandbox is not reused when its network's bridge holds a host address:
+        that sandbox and its network are removed and rebuilt, because the address is a route
+        the allowlist does not cover.
+
         Raises:
             SandboxOsFamilyNotSupported: when this backend declared a guest family and the
                 daemon a cold acquire would create or start a container on no longer runs it.
+            RuntimeError: when an allowlisted workload cannot be given a network whose bridge
+                holds no host address — the engine will not build one, or one that is already
+                there could not be removed.
         """
         egress_id = self._egress_id(spec)
         name = _container_name(key, spec.kind, egress_id)
         async with self._acquire_lock(key, spec.kind):
+            if egress_id:
+                # Before the reuse decision reads it: this can remove the very container the
+                # reads below would otherwise find warm.
+                await self._discard_a_sandbox_on_an_unusable_network(name)
             running = await self._is_running(name)
             stopped = not running and await self._exists(name)
             if not running:
@@ -966,7 +1039,9 @@ class DockerSandboxBackend:
                     key.thread_id,
                     key.agent_dir,
                 )
-
+            # Before the facts read, which is several awaited calls and can raise: the container
+            # is running by now, and a name the registry never saw is one the disposal fallback
+            # cannot reach when a label listing fails.
             self._registry[(key.scope, key.thread_id, key.agent_dir, spec.kind)] = name
             facts = await self._container_facts(name, spec)
             return _DockerSandbox(
@@ -1639,15 +1714,187 @@ class DockerSandboxBackend:
 
         ``network create`` reports an existing name as "already exists" (not the container
         conflict's "already in use"), and adopting it rather than failing is what lets a second
-        acquire of an allowlisted sandbox reuse its network.
+        acquire of an allowlisted sandbox reuse its network — but only a network whose bridge
+        holds no host address, which is checked here rather than taken from the caller's
+        earlier read.  ``create`` compares nothing but the name and this backend's lock is
+        local to one instance and loop, so a network can arrive between that read and this
+        call; adopting on the name alone would serve the workload a route the allowlist does
+        not cover.
+
+        An engine that will not take the options fails the acquire, for the same reason.
         """
         args = ["network", "create", "--internal"]
+        for opt in _GATEWAY_MODE_OPTS:
+            args += ["--opt", f"{opt}={_GATEWAY_MODE_ISOLATED}"]
         for label, value in _sandbox_labels(key, spec).items():
             args += ["--label", f"{label}={value}"]
         args.append(net)
         result = await self._docker(*args, timeout=self._config.command_timeout_seconds)
-        if result.returncode != 0 and _NETWORK_EXISTS not in result.stderr.lower():
-            raise RuntimeError(f"docker could not create network {net}: {result.stderr.strip()}")
+        if result.returncode == 0:
+            try:
+                built = await self._bridge_state(net)
+            except BaseException:
+                # `_bridge_state` catches `Exception`, so what arrives here is a cancellation.
+                # The network exists and nothing refers to it yet: no container carries its
+                # name, and the sweep reaches a sandbox's network through its container.
+                await self._remove_network(net)
+                raise
+            if built.usable and not built.absent:
+                return
+            # A create the engine accepted is not evidence of what it built: an option a daemon
+            # does not act on is stored and reported back the same as one it applied. Nothing
+            # later in this acquire reads this network again, since the proxy and the workload
+            # are about to join it. It is this call's own, so it goes with the refusal.
+            await self._remove_network(net)
+            # Its own result folds "refused" together with "was not there", so the state is read
+            # instead: a network that survived leaves the next acquire the existing-network
+            # refusal, which a retry cannot get past.
+            aftermath = (
+                "It has been removed; retry."
+                if (await self._bridge_state(net)).absent
+                else "It could not be removed either, so it is still under that name and the "
+                "next acquire will refuse it as an existing one. Remove it by hand."
+            )
+            raise RuntimeError(
+                f"network {net} was created but {built.reason or 'it was gone when it was read'}"
+                f", so nothing here established that an allowlisted workload on it would be held "
+                f"to the proxy. {aftermath}"
+            )
+        if _NETWORK_EXISTS in result.stderr.lower():
+            existing = await self._bridge_state(net)
+            if existing.usable and not existing.absent:
+                return
+            if existing.absent:
+                # Reported as taken and gone by the time it was read. Returning here would
+                # leave the proxy to fail on a network nobody built, which reports the wrong
+                # thing entirely; the create is the next acquire's to make.
+                raise RuntimeError(
+                    f"network {net} was reported as already existing and was gone when it was "
+                    f"read, so nothing here established what a workload on it would reach. "
+                    f"Retry: the next acquire creates it."
+                )
+            raise RuntimeError(
+                f"network {net} already exists and {existing.reason}, so nothing here "
+                f"established that an allowlisted workload on it would be held to the proxy. "
+                f"Remove it and retry."
+            )
+        detail = result.stderr.strip()
+        if any(opt in result.stderr for opt in _GATEWAY_MODE_OPTS):
+            detail += (
+                f" — an allowlisted sandbox needs a bridge with no host address, so this "
+                f"backend requires Docker Engine {_GATEWAY_MODE_MIN_ENGINE} or newer to serve "
+                f"{str(Egress.ALLOWLIST)!r} with hosts on the list. Move to an engine that "
+                f"takes the mode, or use a spec that builds no network: "
+                f"{str(Egress.CLOSED)!r}, or an empty allowlist, which reaches the same nothing."
+            )
+        raise RuntimeError(f"docker could not create network {net}: {detail}")
+
+    async def _bridge_state(self, net: str) -> _BridgeState:
+        """Whether ``net`` is one this backend would build — absent counts, since a create follows.
+
+        Anything the read does not establish is unsafe, an unreadable inspect included: the
+        answer decides whether a warm sandbox is kept, and keeping one whose bridge cannot be
+        shown unaddressed would serve the workload a route the allowlist does not cover.
+        """
+        try:
+            result = await self._docker(
+                "network",
+                "inspect",
+                "-f",
+                _NETWORK_EFFECT_FORMAT,
+                net,
+                timeout=self._config.command_timeout_seconds,
+            )
+        except Exception as exc:  # noqa: BLE001 - an unreadable read is unreadable either way
+            return _BridgeState(False, reason=f"it could not be read: {exc}")
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            if _reads_as_absent(stderr, net):
+                return _BridgeState(usable=True, absent=True)
+            return _BridgeState(False, reason=f"it could not be read: {stderr}")
+        answer = result.stdout.decode("utf-8", errors="replace").strip()
+        try:
+            driver, internal, ipam = answer.split("|", 2)
+            addresses = [e["Gateway"] for e in json.loads(ipam) if e.get("Gateway")]
+        except (ValueError, TypeError, AttributeError):
+            # A template that did not render, or IPAM shaped in some way this does not read.
+            # Unknown rather than safe, and quoted so the reason names what came back.
+            return _BridgeState(False, reason=f"it could not be read: the engine said {answer!r}")
+        if driver != _BRIDGE_DRIVER:
+            return _BridgeState(False, reason=f"it is a {driver} network rather than a bridge")
+        if internal != "true":
+            return _BridgeState(False, reason="it is not an internal network")
+        if addresses:
+            return _BridgeState(False, reason=f"its bridge holds {', '.join(addresses)}")
+        return _BridgeState(usable=True)
+
+    async def _container_is_gone(self, name: str) -> bool:
+        """Whether ``name`` is definitely not a container on this engine.
+
+        The opposite of :meth:`_exists` where the daemon will not answer: that one reports
+        absence for any failed read, which is the safe way round for a caller deciding whether
+        to *create*, and the wrong way round for one deciding whether a rebuild can be skipped.
+        Only the engine's own "no such object" counts as gone.
+        """
+        try:
+            result = await self._docker(
+                "inspect",
+                "-f",
+                "{{.State.Status}}",
+                name,
+                timeout=self._config.command_timeout_seconds,
+            )
+        except Exception:  # noqa: BLE001 - unreadable is not proof it went
+            return False
+        if result.returncode == 0:
+            return False
+        return _reads_as_absent(result.stderr, name)
+
+    async def _discard_a_sandbox_on_an_unusable_network(self, name: str) -> None:
+        """Remove an allowlisted sandbox whose network is not one this backend would build.
+
+        Its network goes with it, and it cannot go the other way round: the workload holds an
+        endpoint, so the network will not remove while it is attached, and reconnecting the
+        container elsewhere would leave it addressing a proxy that no longer resolves.  The
+        cost is one cold start.
+
+        Raises:
+            RuntimeError: when the workload is still there afterwards, or the network is still
+                not one this backend would build.  The removals report failure rather than
+                raising it, and a caller that read past one would reuse the workload on the
+                bridge this exists to take away.  Both are checked: an absent network makes the
+                network read say nothing about whether the container went.
+        """
+        net = _network_name(name)
+        state = await self._bridge_state(net)
+        if not state.usable:
+            reason = state.reason
+        elif await self._container_is_gone(name):
+            # Nothing to reuse, so nothing to discard: the create that follows builds both.
+            return
+        elif state.absent:
+            # `_ensure_network` would build a fresh one and attach nothing to it, so a reuse
+            # would hand back a container sitting on whatever it is actually on.
+            reason = "its network is gone, so the workload is not on the one it should be"
+        else:
+            return
+        logger.info("replacing sandbox %s and network %s: %s", name, net, reason)
+        removal = await self._remove(name)
+        await self._remove(_proxy_name(name))
+        await self._remove_network(net)
+        if removal.failure is not None:
+            raise RuntimeError(
+                f"sandbox {name} is still there ({removal.failure}), so an acquire would reuse "
+                f"it on whatever network it is actually attached to rather than on one this "
+                f"backend built."
+            )
+        after = await self._bridge_state(net)
+        if not after.usable:
+            raise RuntimeError(
+                f"network {net} could not be replaced — {after.reason}. An allowlisted workload "
+                f"cannot be served here while a route to the host around the proxy may still "
+                f"exist."
+            )
 
     async def _ensure_proxy(self, name: str, key: SandboxKey, spec: SandboxSpec) -> None:
         """Put a fresh filtering proxy on the sandbox's network, dual-homed and confirmed listening.
@@ -1716,17 +1963,24 @@ class DockerSandboxBackend:
         ``run`` executes: two acquires for one key race, or a transient failure hid a container
         that is right there.  Without this the name stays taken and every acquire for that key
         fails from then on.
+
+        A conflict here is another acquire of the same key rather than an arbitrary container:
+        the name is derived from the key and salted per installation, so placing one under it
+        deliberately means holding the daemon socket, which is already root on the host.
         """
-        if await self._is_running(name):
-            return True
-        return await self._exists(name) and await self._restart(name)
+        usable = await self._is_running(name)
+        if not usable:
+            usable = await self._exists(name) and await self._restart(name)
+        return usable
 
     async def _remove(self, target: str) -> _Removal:
         """Force-remove ``target``. Never raises; reports what it did.
 
         A container docker says it does not have is a removal that has nothing to do, not a
         failure: the sweep tries names the registry remembers, and one already gone is the
-        ordinary case.
+        ordinary case.  Docker has to say so about *this* container, though — a daemon that
+        could not be reached says nothing about whether the container is there, and callers
+        read the failure to decide whether a sandbox may still be served.
         """
         # Dropped before the call, so a failed removal cannot leave stale facts behind.
         self._forget_facts(target)
@@ -1742,7 +1996,7 @@ class DockerSandboxBackend:
             )
         if result.returncode == 0:
             return _Removal(removed=True)
-        if _NO_SUCH in result.stderr.lower():
+        if _reads_as_absent(result.stderr, target):
             return _Removal(removed=False)
         logger.warning(
             "docker backend: failed to remove container %s: %s", target, result.stderr.strip()

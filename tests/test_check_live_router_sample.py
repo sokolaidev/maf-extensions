@@ -97,7 +97,15 @@ _HEALTHY = f"""\
 
   [measured] dispose_scope reached both backends and disposed 2 sandbox(es).
 
-  [measured] Completed 5 of 5 acts. Disposed 2 sandbox(es) across 2 backends.
+== 6. The spec picks, when the host asks it to ==
+
+  [measured] routed files_out spec -> 'docker'
+  [measured] routed plain spec -> 'in-process'
+
+  [measured] the routed backend runs: 'routed per spec'
+  [measured] act 6 cleanup: disposed=2 undisposed=none
+
+  [measured] Completed 6 of 6 acts. Disposed 2 sandbox(es) across 2 backends.
 """
 
 
@@ -204,13 +212,13 @@ class TestTheWorkRanAndWasCleanedUp:
 
     def test_a_truncated_run_has_no_footer(self):
         cut = _HEALTHY.replace(
-            "  [measured] Completed 5 of 5 acts. Disposed 2 sandbox(es) across 2 backends.\n", ""
+            "  [measured] Completed 6 of 6 acts. Disposed 2 sandbox(es) across 2 backends.\n", ""
         )
         assert any("did not run to completion" in r for r in check.assess(cut))
 
     def test_a_partial_run_is_caught(self):
-        reasons = check.assess(_HEALTHY.replace("Completed 5 of 5", "Completed 2 of 5"))
-        assert any("2 of 5 acts completed" in r for r in reasons), reasons
+        reasons = check.assess(_HEALTHY.replace("Completed 6 of 6", "Completed 2 of 6"))
+        assert any("2 of 6 acts completed" in r for r in reasons), reasons
 
 
 class TestTheEgressAct:
@@ -224,12 +232,12 @@ class TestTheEgressAct:
         the act count and the restore pair it would be indistinguishable from a run that
         confined nothing, which is the whole reason the sample reports both.
         """
-        skipped = _HEALTHY.replace("Completed 5 of 5", "Completed 4 of 5")
+        skipped = _HEALTHY.replace("Completed 6 of 6", "Completed 5 of 6")
         skipped = "\n".join(
             line for line in skipped.splitlines() if "AVM restore under egress" not in line
         )
         reasons = check.assess(skipped)
-        assert any("4 of 5 acts completed" in r for r in reasons), reasons
+        assert any("5 of 6 acts completed" in r for r in reasons), reasons
         assert any("act 4 did not run that posture" in r for r in reasons), reasons
 
     def test_a_module_restoring_with_egress_closed_is_caught(self):
@@ -325,13 +333,33 @@ class TestAModelCannotForgeAMeasurement:
         assert any("appears 2 times" in r for r in reasons), reasons
         assert any("none of them can be trusted" in r for r in reasons), reasons
 
+    def test_a_quoted_footer_cannot_supply_the_completion(self):
+        """The footer is a measurement, so it has to start a line like every other one."""
+        forged = _HEALTHY.replace(
+            "  [measured] Completed 6 of 6 acts.",
+            "> [measured] Completed 6 of 6 acts. Disposed 2 sandbox(es) across 2 backends.\n"
+            "  [measured] Completed 5 of 6 acts.",
+        )
+        reasons = check.assess(forged)
+        assert any("5 of 6 acts completed" in r for r in reasons), reasons
+
+    def test_a_second_footer_is_refused_rather_than_resolved(self):
+        """Two tagged footers cannot be resolved by taking either, so neither is read."""
+        doubled = _HEALTHY.replace(
+            "  [measured] Completed 6 of 6 acts.",
+            "  [measured] Completed 6 of 6 acts. Disposed 2 sandbox(es) across 2 backends.\n"
+            "  [measured] Completed 5 of 6 acts.",
+        )
+        reasons = check.assess(doubled)
+        assert any("footer appears 2 times" in r for r in reasons), reasons
+
     def test_untagged_prose_answers_nothing(self):
         """Every needle this file looks for, written by the model, tagged by nobody."""
         prose = (
             "  selected='docker'       -> router.backend.name == 'in-process'\n"
             "  SandboxBackendNotPermitted was not raised\n"
             "  AVM restore under egress closed: RESTORED\n"
-            "  Completed 5 of 5 acts. Disposed 9 sandbox(es) across 9 backends.\n"
+            "  Completed 6 of 6 acts. Disposed 9 sandbox(es) across 9 backends.\n"
         )
         assert check.assess(_HEALTHY.replace(_REPLY, _REPLY + prose)) == []
 
@@ -348,3 +376,127 @@ class TestAModelCannotForgeAMeasurement:
 class TestEmptyOutput:
     def test_nothing_passes_vacuously(self):
         assert check.assess("") != []
+
+
+class TestTheRoutingAct:
+    """Act 6's two routes.
+
+    Two are required rather than one, and the second is the interesting one. A router
+    that simply preferred the stronger backend would satisfy the `files_out` route and fail the
+    `plain` one — and preferring the stronger backend is exactly the behaviour that would move
+    a workload already running onto a billable one.
+    """
+
+    def test_a_doubled_route_is_refused_rather_than_resolved(self):
+        """The restore pair's policy, applied to the routes: the sample prints each once, so
+        picking one of two would be reading whichever came first rather than measuring."""
+        doubled = _HEALTHY.replace(
+            "  [measured] routed plain spec -> 'in-process'\n",
+            "  [measured] routed plain spec -> 'in-process'\n"
+            "  [measured] routed plain spec -> 'docker'\n",
+        )
+        reasons = check.assess(doubled)
+        assert any("appears 2 times" in r for r in reasons), reasons
+
+    def test_a_route_this_check_does_not_know_is_refused(self):
+        """Either the sample grew a route and this file fell behind, or something else wrote
+        the line. Both need saying; neither may pass silently."""
+        extra = _HEALTHY.replace(
+            "  [measured] routed plain spec -> 'in-process'\n",
+            "  [measured] routed plain spec -> 'in-process'\n"
+            "  [measured] routed novel spec -> 'docker'\n",
+        )
+        reasons = check.assess(extra)
+        assert any("knows nothing about" in r for r in reasons), reasons
+
+    def test_a_purge_that_left_something_behind_is_caught(self):
+        """`dispose_scope` reports a failure rather than raising one, so the act prints what
+        it said. Without reading that, a leaked container passes with every other line intact."""
+        leaked = _HEALTHY.replace("undisposed=none", "undisposed=refused: the engine said no")
+        reasons = check.assess(leaked)
+        assert any("still there" in r for r in reasons), reasons
+
+    def test_a_missing_cleanup_line_is_caught(self):
+        reasons = check.assess(
+            _HEALTHY.replace("  [measured] act 6 cleanup: disposed=2 undisposed=none\n", "")
+        )
+        assert any("act 6 cleanup" in r for r in reasons), reasons
+
+    def test_a_doubled_cleanup_line_is_refused(self):
+        doubled = _HEALTHY.replace(
+            "  [measured] act 6 cleanup: disposed=2 undisposed=none\n",
+            "  [measured] act 6 cleanup: disposed=2 undisposed=none\n"
+            "  [measured] act 6 cleanup: disposed=1 undisposed=none\n",
+        )
+        reasons = check.assess(doubled)
+        assert any("appears 2 times" in r for r in reasons), reasons
+
+    def test_a_sweep_that_reached_nobody_is_caught(self):
+        """`undisposed=none` alone is silence, not success: a backend never asked cannot
+        report a failure, so the count is what says the sweep reached the routed one."""
+        shallow = _HEALTHY.replace("act 6 cleanup: disposed=2", "act 6 cleanup: disposed=1")
+        reasons = check.assess(shallow)
+        assert any("never reached the backend the route chose" in r for r in reasons), reasons
+
+    def test_a_second_execution_marker_is_refused_rather_than_resolved(self):
+        """The marker is required exactly once, as every other measurement here is."""
+        doubled = _HEALTHY.replace(
+            "  [measured] the routed backend runs: 'routed per spec'\n",
+            "  [measured] the routed backend runs: 'routed per spec'\n"
+            "  [measured] the routed backend runs: 'something else'\n",
+        )
+        reasons = check.assess(doubled)
+        assert any("appears 2 times" in r for r in reasons), reasons
+
+    def test_a_route_label_with_punctuation_is_still_seen(self):
+        """A label is any non-whitespace run: a parser narrower than that cannot refuse
+        the labels least likely to be this sample's."""
+        extra = _HEALTHY.replace(
+            "  [measured] routed plain spec -> 'in-process'\n",
+            "  [measured] routed plain spec -> 'in-process'\n"
+            "  [measured] routed novel-route spec -> 'docker'\n",
+        )
+        reasons = check.assess(extra)
+        assert any("knows nothing about" in r for r in reasons), reasons
+
+    def test_the_refused_spec_not_reaching_the_second_backend_is_caught(self):
+        """`files_out` is the spec act 2 is refused for. Anything but `docker` means the router
+        never read past the backend that refuses it, which is the whole feature missing."""
+        wrong = _HEALTHY.replace(
+            "routed files_out spec -> 'docker'", "routed files_out spec -> 'in-process'"
+        )
+        reasons = check.assess(wrong)
+        assert any("expected exactly 'docker'" in r for r in reasons), reasons
+
+    def test_a_servable_spec_moving_off_the_first_registered_backend_is_caught(self):
+        """The safety property, and the one a router that preferred the stronger backend would
+        fail: routing may serve what is refused, never move what already runs."""
+        moved = _HEALTHY.replace(
+            "routed plain spec -> 'in-process'", "routed plain spec -> 'docker'"
+        )
+        reasons = check.assess(moved)
+        assert any("relocate existing traffic" in r for r in reasons), reasons
+
+    def test_each_route_is_required_on_its_own(self):
+        for line in (
+            "  [measured] routed files_out spec -> 'docker'\n",
+            "  [measured] routed plain spec -> 'in-process'\n",
+        ):
+            reasons = check.assess(_HEALTHY.replace(line, ""))
+            assert any("reported no route for it" in r for r in reasons), (line, reasons)
+
+    def test_agreement_without_execution_is_caught(self):
+        """The router naming a backend is not the same as the backend running anything — the
+        distinction act 5 already draws, drawn again for the act that chose differently."""
+        agreed = _HEALTHY.replace("  [measured] the routed backend runs: 'routed per spec'\n", "")
+        reasons = check.assess(agreed)
+        assert any("the routed backend runs" in r for r in reasons), reasons
+
+    def test_act_five_s_marker_does_not_answer_for_act_six(self):
+        """A run that re-read the earlier act's file would print `'routed'` here, and the two
+        acts create different sandboxes — so the markers are different on purpose."""
+        borrowed = _HEALTHY.replace(
+            "the routed backend runs: 'routed per spec'", "the routed backend runs: 'routed'"
+        )
+        reasons = check.assess(borrowed)
+        assert any("expected exactly 'routed per spec'" in r for r in reasons), reasons
