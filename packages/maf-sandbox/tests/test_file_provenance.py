@@ -61,6 +61,7 @@ class TestWhatTheRecordAnswers:
 
     def test_an_unknown_path_takes_the_hosts_floor(self):
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)
         assert record.integrity_of("placed-by-the-host.json") is SourceIntegrity.TRUSTED
 
     def test_the_floor_is_coerced_like_every_other_boundary_value(self):
@@ -95,6 +96,7 @@ class TestWhatTheRecordAnswers:
 
     def test_forgetting_a_path_returns_it_to_the_floor(self):
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)
         record.record("gone.txt")
         record.forget("gone.txt")
         assert record.integrity_of("gone.txt") is SourceIntegrity.TRUSTED
@@ -129,6 +131,7 @@ class TestWhatTheMiddlewareRecords:
 
     def test_the_host_can_still_forget_a_path_it_established_is_gone(self):
         record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)
         record.record("a.txt")
         record.forget("a.txt")
         assert record.integrity_of("a.txt") is SourceIntegrity.TRUSTED
@@ -391,3 +394,43 @@ class TestBothMiddlewareOrders:
             "the real path falls to the host's floor"
         )
         assert len(record) == 1
+
+
+class TestATrustedFloorNeedsAnObserver:
+    """A trusted floor is a claim about the paths *no tool call wrote*.
+
+    With nothing observing the calls there is no such thing as a path a tool call wrote, so every
+    path would answer trusted — model-written ones included. That is the one combination of floor
+    and wiring that inverts the guarantee the record exists for, and it is refused.
+    """
+
+    def test_a_trusted_floor_with_no_middleware_is_refused(self):
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        with pytest.raises(ValueError, match="no file_store_provenance_middleware"):
+            record.integrity_of("placed-by-the-host.json")
+
+    def test_building_the_middleware_is_what_lifts_the_refusal(self):
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)
+        assert record.integrity_of("placed-by-the-host.json") is SourceIntegrity.TRUSTED
+
+    def test_a_recorded_path_answers_without_an_observer(self):
+        """The refusal guards the floor, not the record: an entry is evidence in itself."""
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        record.record("notes.bicep")
+        assert record.integrity_of("notes.bicep") is SourceIntegrity.UNTRUSTED
+
+    @pytest.mark.parametrize("floor", [None, SourceIntegrity.UNTRUSTED])
+    def test_only_a_trusted_floor_is_refused(self, floor):
+        """The other floors are conservative without an observer, so there is nothing to refuse:
+        `None` answers unestablished and `untrusted` answers untrusted, both of which are true of
+        a path nobody watched."""
+        record = FileStoreProvenance(floor=floor)
+        assert record.integrity_of("anything.txt") is floor
+
+    def test_the_refusal_names_both_ways_out(self):
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        with pytest.raises(ValueError) as refusal:
+            record.integrity_of("a.txt")
+        assert "Wire file_store_provenance_middleware(record)" in str(refusal.value)
+        assert "drop floor=" in str(refusal.value)
