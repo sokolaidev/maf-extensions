@@ -213,11 +213,10 @@ class TestAssess:
 
 
 class TestTheTitlesValidForTheDiff:
-    """The refusal names the prefixes this diff would take, not the ones the parser accepts.
+    """The second refusal line names the prefixes this diff would take.
 
-    An author reads the static list, finds the prefix they already used, and learns nothing.
-    Each case below is a different answer to "so what should I call it", including the one
-    where the honest answer is that no title works and the pull request has to be split.
+    Three answers are covered: the behavior types, the non-behavior types, and the two ways a
+    diff admits no title at all.
     """
 
     _BEFORE = "def run() -> int:\n    return 1\n"
@@ -248,11 +247,7 @@ class TestTheTitlesValidForTheDiff:
         assert kinds == [kind for kind in check._VALID_TYPES if kind in check._DOCUMENTATION_TYPES]
 
     def test_a_package_touched_without_behavior_leaves_no_valid_title(self):
-        """Every touched package owes an executable change, so one docs-only package deadlocks.
-
-        Both prefixes are refused, and naming either would send the author back around the
-        loop. Only splitting the pull request resolves it.
-        """
+        """Every touched package owes an executable change, so one docs-only package deadlocks."""
         paths = ["packages/a/src/a.py", "packages/b/README.md"]
         pairs = [("packages/a/src/a.py",), ("packages/b/README.md",)]
         changed = {"packages/a/src/a.py": (self._BEFORE, self._AFTER)}
@@ -264,10 +259,7 @@ class TestTheTitlesValidForTheDiff:
         assert check.assess("chore: two packages", paths, changed, pairs)[1] == expected
 
     def test_an_executable_change_no_package_releases_names_the_path(self):
-        """A rename into a package's tests: attributed to nobody, still executable to the rule.
-
-        There is no prefix to offer, so the line names the path instead of inventing one.
-        """
+        """A rename into a package's tests: attributed to nobody, still executable to the rule."""
         problems = check.assess(
             "feat: move module",
             ["packages/b/tests/test_mod.py"],
@@ -277,6 +269,39 @@ class TestTheTitlesValidForTheDiff:
         assert problems[1] == (
             "no title is valid for this diff: the executable change is at "
             "packages/a/src/mod.py, which release-please attributes to no package"
+        )
+
+    def test_several_packages_on_each_side_agree_their_verbs(self):
+        paths = [
+            "packages/a/src/a.py",
+            "packages/c/src/c.py",
+            "packages/b/README.md",
+            "packages/d/README.md",
+        ]
+        changed = {
+            "packages/a/src/a.py": (self._BEFORE, self._AFTER),
+            "packages/c/src/c.py": (self._BEFORE, self._AFTER),
+        }
+        problems = check.assess("feat: four packages", paths, changed, [(p,) for p in paths])
+        assert problems[1] == (
+            "no title is valid for this diff: packages/a, packages/c change behavior and "
+            "packages/b, packages/d do not; split the pull request so each half has one answer"
+        )
+
+    def test_several_unreleased_paths_agree_their_verb(self):
+        problems = check.assess(
+            "feat: move two modules",
+            ["packages/b/tests/test_x.py", "packages/b/tests/test_y.py"],
+            {},
+            [
+                ("packages/a/src/x.py", "packages/b/tests/test_x.py"),
+                ("packages/a/src/y.py", "packages/b/tests/test_y.py"),
+            ],
+        )
+        assert problems[1] == (
+            "no title is valid for this diff: the executable changes are at "
+            "packages/a/src/x.py, packages/a/src/y.py, which release-please attributes to no "
+            "package"
         )
 
 
