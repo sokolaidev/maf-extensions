@@ -1038,6 +1038,15 @@ class DockerSandboxBackend:
                     key.thread_id,
                     key.agent_dir,
                 )
+            if egress_id and not await self._attached_only_to(name, _network_name(name)):
+                # Last thing before the sandbox is handed out. The reads that chose reuse or
+                # restart happen earlier, and this backend's lock orders nothing against another
+                # process, so a container answering those reads is not necessarily the one still
+                # here now.
+                raise RuntimeError(
+                    f"sandbox {name} is not on {_network_name(name)} alone, so what it can "
+                    f"reach is not what this backend built. Retry: the next acquire replaces it."
+                )
 
             self._registry[(key.scope, key.thread_id, key.agent_dir, spec.kind)] = name
             facts = await self._container_facts(name, spec)
@@ -1738,8 +1747,9 @@ class DockerSandboxBackend:
                 return
             raise RuntimeError(
                 f"network {net} already exists and {existing.reason}, so an allowlisted "
-                f"workload on it could reach the host around the proxy. Something outside this "
-                f"backend created it after the acquire checked; remove it and retry."
+                f"workload on it could reach the host around the proxy. It appeared between "
+                f"this acquire's check and its create — by whom is not something this backend "
+                f"can see, another instance of it included. Remove it and retry."
             )
         detail = result.stderr.strip()
         if any(opt in result.stderr for opt in _GATEWAY_MODE_OPTS):
@@ -1938,12 +1948,16 @@ class DockerSandboxBackend:
         container's topology, and a name says nothing about it.  Refusing here costs the
         recovery above for one acquire, which is the cheaper of the two failures.
         """
-        usable = await self._is_running(name)
-        if not usable:
-            usable = await self._exists(name) and await self._restart(name)
-        if not usable:
-            return False
-        return on_network is None or await self._attached_only_to(name, on_network)
+        if on_network is None:
+            usable = await self._is_running(name)
+            if not usable:
+                usable = await self._exists(name) and await self._restart(name)
+            return usable
+        # Never start one to find out. A stopped container under this name was put there by
+        # someone else, and restarting it runs its entrypoint before anything has established
+        # what it is attached to — a side effect no verdict here can take back. A stopped race
+        # is left to the next acquire, which discards it before it decides anything.
+        return await self._is_running(name) and await self._attached_only_to(name, on_network)
 
     async def _remove(self, target: str) -> _Removal:
         """Force-remove ``target``. Never raises; reports what it did.
