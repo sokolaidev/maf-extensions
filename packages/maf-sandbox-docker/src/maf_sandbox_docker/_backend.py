@@ -134,9 +134,9 @@ _GATEWAY_MODE_OPTS = (
 _GATEWAY_MODE_ISOLATED = "isolated"
 #: The engine that accepts the mode above; an older one rejects the value, naming the option.
 _GATEWAY_MODE_MIN_ENGINE = "28.0.0"
-#: Lists the networks a container is attached to, space-separated.  A container this backend
-#: did not create carries whatever its creator chose, so a matching *name* is never evidence
-#: of a topology.
+#: Lists the networks a container is attached to, space-separated — all of them, because one
+#: endpoint too many is the allowlist gone.  A container this backend did not create carries
+#: whatever its creator chose, so a matching *name* is never evidence of a topology.
 _ATTACHED_NETWORKS_FORMAT = "{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}"
 #: Reads every mode back off a network, space-separated, an option the network does not carry
 #: printing empty.  Built from the options themselves so a family can never be set without
@@ -293,11 +293,8 @@ def _proxy_name(container: str) -> str:
 def _reads_as_absent(stderr: str, target: str) -> bool:
     """Whether ``stderr`` is the engine saying ``target`` — a network or a container — is gone.
 
-    The phrase alone will not do, because absence is the one answer a caller may treat as safe
-    and unrelated failures borrow the words: a missing context answers ``context not found``,
-    an unknown driver ``plugin "…" not found``, and a daemon that cannot be reached can carry
-    ``no such file or directory`` from the socket underneath it.  None of them says anything
-    about this target, so requiring the name keeps them all on the unreadable side.
+    Every other failure, including one borrowing the words about something else, is left to
+    the caller as unreadable.  Why that matters is with ``_ABSENT_TARGET``.
     """
     lowered = stderr.lower()
     return target.lower() in lowered and any(phrase in lowered for phrase in _ABSENT_TARGET)
@@ -1799,12 +1796,15 @@ class DockerSandboxBackend:
             return False
         return _reads_as_absent(result.stderr, name)
 
-    async def _attached_to(self, name: str, net: str) -> bool:
-        """Whether ``name`` is on ``net``.
+    async def _attached_only_to(self, name: str, net: str) -> bool:
+        """Whether ``net`` is the only network ``name`` is on.
 
-        Unreadable counts as not attached, like every other read on this path: the answer
-        decides whether an allowlisted workload may be handed back, and a container that
-        cannot be shown to be on its own network may be on any other.
+        Membership would not do: a container holds as many endpoints as it was given, and one
+        more with a route out is the allowlist gone while the expected attachment is still
+        there to find.  This backend creates a workload on exactly one network, so anything
+        else is someone else's doing.
+
+        Unreadable counts as not attached, like every other read on this path.
         """
         result = await self._docker(
             "inspect",
@@ -1815,7 +1815,7 @@ class DockerSandboxBackend:
         )
         if result.returncode != 0:
             return False
-        return net in result.stdout.decode("utf-8", errors="replace").split()
+        return result.stdout.decode("utf-8", errors="replace").split() == [net]
 
     async def _discard_a_sandbox_on_an_unusable_network(self, name: str) -> None:
         """Remove an allowlisted sandbox whose network is not one this backend would build.
@@ -1843,7 +1843,7 @@ class DockerSandboxBackend:
             # `_ensure_network` would build a fresh one and attach nothing to it, so a reuse
             # would hand back a container sitting on whatever it is actually on.
             reason = "its network is gone, so the workload is not on the one it should be"
-        elif not await self._attached_to(name, net):
+        elif not await self._attached_only_to(name, net):
             # The network is one this backend would build; being on it is a separate fact.
             reason = "the workload is not attached to it"
         else:
@@ -1943,7 +1943,7 @@ class DockerSandboxBackend:
             usable = await self._exists(name) and await self._restart(name)
         if not usable:
             return False
-        return on_network is None or await self._attached_to(name, on_network)
+        return on_network is None or await self._attached_only_to(name, on_network)
 
     async def _remove(self, target: str) -> _Removal:
         """Force-remove ``target``. Never raises; reports what it did.

@@ -2961,6 +2961,16 @@ class TestAllowlistReuse:
         with pytest.raises(RuntimeError, match="could not create container"):
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
 
+    def test_a_name_conflict_carrying_a_second_network_is_not_adopted(self):
+        """The winner of the race may have built the container on this network *and* another;
+        having the expected endpoint says nothing about the ones beside it."""
+        backend, _ = _backend_with(
+            self._machine_losing_the_name_race([_AL_NET, "an-unrestricted-network"]),
+            _ALLOW_CONFIG,
+        )
+        with pytest.raises(RuntimeError, match="could not create container"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
     def test_a_name_conflict_is_adopted_when_the_container_is_on_the_right_network(self):
         """The recovery still works for the case it exists for — a racing acquire of this same
         backend, which builds the container on exactly this network."""
@@ -3147,6 +3157,23 @@ class TestASandboxLeftOnAnUnusableNetwork:
                 running=[_AL],
                 networks={_AL_NET: _UNADDRESSED},
                 attached={_AL: ["some-other-network"]},
+            ),
+            _ALLOW_CONFIG,
+        )
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("rm", "-f", _AL) != []
+        created = _run_named(fake, _AL)
+        assert created.args[created.args.index("--network") + 1] == _AL_NET
+
+    def test_a_workload_given_a_second_network_is_rebuilt(self):
+        """Keeping the right attachment is not the same as having only it. A `network connect`
+        adds an endpoint without taking the first away, so the expected network is still there
+        to find while the workload reaches out through the other one."""
+        backend, fake = _backend_with(
+            _machine(
+                running=[_AL],
+                networks={_AL_NET: _UNADDRESSED},
+                attached={_AL: [_AL_NET, "an-unrestricted-network"]},
             ),
             _ALLOW_CONFIG,
         )
