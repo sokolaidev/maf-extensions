@@ -3010,6 +3010,40 @@ class TestAllowlistReuse:
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert fake.matching("start", _AL) == []
 
+    def test_a_refused_stopped_conflict_is_not_left_for_the_next_acquire_to_start(self):
+        """Refusing is not enough across two acquires. A stopped conflict left under the name
+        looks like a warm sandbox to the next one, which takes the ordinary restart branch and
+        runs the entrypoint the refusal existed to avoid — so it is removed when refused.
+        """
+        base = _machine(networks={_AL_NET: _UNADDRESSED})
+        raced = False
+        theirs = False
+
+        def racing(args: tuple[str, ...]) -> _DockerResult:
+            nonlocal raced, theirs
+            if args[:4] == ("run", "-d", "--name", _AL) and not raced:
+                # The racer's container arrives exactly as ours is refused the name, once.
+                raced = theirs = True
+                return _DockerResult(1, b"", "Conflict. The name is already in use")
+            if args[:2] == ("rm", "-f") and args[-1] == _AL:
+                theirs = False
+            if theirs and args[0] == "inspect" and args[-1] == _AL:
+                if args[:3] == ("inspect", "-f", _ATTACHED_NETWORKS_FORMAT):
+                    return _DockerResult(0, (_AL_NET + " ").encode(), "")
+                # Stopped, and on the right network: the shape `_adopt` must not start and the
+                # next acquire must not find still sitting there.
+                return _DockerResult(0, b"false\n" if "Running" in args[2] else b"exited\n", "")
+            return base(args)
+
+        backend, fake = _backend_with(racing, config=_ALLOW_CONFIG)
+        with pytest.raises(RuntimeError, match="could not create container"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("rm", "-f", _AL) != []
+
+        # The second acquire: with the conflict gone the name is free, and nothing is started.
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("start", _AL) == []
+
     def test_a_name_conflict_carrying_a_second_network_is_not_adopted(self):
         """The winner of the race may have built the container on this network *and* another;
         having the expected endpoint says nothing about the ones beside it."""

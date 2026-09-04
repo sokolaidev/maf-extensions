@@ -2008,21 +2008,33 @@ class DockerSandboxBackend:
 
         ``on_network`` is the network an allowlisted workload must be attached to, and it is
         what keeps the name conflict from becoming a way in: whoever won the race chose that
-        container's topology, and a name says nothing about it.  Refusing here costs the
-        recovery above for one acquire, which is the cheaper of the two failures.
+        container's topology, and a name says nothing about it.  Such a conflict is accepted
+        only running and correctly attached, and **removed** otherwise — refusing alone would
+        leave it under a name the next acquire reads as a warm sandbox, whose restart branch
+        starts exactly the entrypoint this refuses to start.
+
+        Raises:
+            RuntimeError: when an unacceptable conflict cannot be removed, since leaving it is
+                what the removal exists to prevent and the acquire is failing regardless.
         """
         if on_network is None:
             usable = await self._is_running(name)
             if not usable:
                 usable = await self._exists(name) and await self._restart(name)
             return usable
-        # Never start one to find out. A stopped container under this name was put there by
-        # someone else, and restarting it runs its entrypoint before anything has established
-        # what it is attached to — a side effect no verdict here can take back. A stopped race
-        # is left to the next acquire, which discards it before it decides anything.
-        if not await self._is_running(name):
-            return False
-        return (await self._attachment_state(name, on_network)).correct
+        # Never start one to find out what it is: that runs its entrypoint before anything has
+        # established anything about it, which no verdict here takes back.
+        if await self._is_running(name):
+            if (await self._attachment_state(name, on_network)).correct:
+                return True
+        removal = await self._remove(name)
+        if removal.failure is not None:
+            raise RuntimeError(
+                f"container {name} took this sandbox's name, cannot be served as one, and "
+                f"could not be removed ({removal.failure}) — so it is still under that name "
+                f"for the next acquire to find. Remove it by hand."
+            )
+        return False
 
     async def _remove(self, target: str) -> _Removal:
         """Force-remove ``target``. Never raises; reports what it did.
