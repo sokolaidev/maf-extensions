@@ -3055,15 +3055,17 @@ class TestASandboxLeftOnAnUnusableNetwork:
         assert "device or resource busy" in str(raised.value)
         assert fake.matching("run", "-d", "--name", _AL) == []
 
+    #: A socket error carries the errno underneath it, so it says an absence phrase about
+    #: something that is not this container. Named rather than inlined: two adjacent literals
+    #: in a list read as a missing comma, and here that would silently drop a case.
+    _SOCKET_ERROR = (
+        "Cannot connect to the Docker daemon at unix:///var/run/docker.sock: "
+        "connect: no such file or directory"
+    )
+
     @pytest.mark.parametrize(
         "stderr",
-        [
-            "daemon not responding",
-            # A socket error carries the errno underneath it, and "no such file or directory"
-            # is the absence phrase said about something that is not this container.
-            "Cannot connect to the Docker daemon at unix:///var/run/docker.sock: "
-            "connect: no such file or directory",
-        ],
+        ["daemon not responding", _SOCKET_ERROR],
         ids=["opaque", "socket-error-borrowing-the-phrase"],
     )
     def test_a_container_read_that_fails_is_not_read_as_no_container(self, stderr: str):
