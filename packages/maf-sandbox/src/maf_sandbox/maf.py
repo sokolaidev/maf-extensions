@@ -275,6 +275,12 @@ def file_store_provenance_middleware(
     to a trusted floor while the model's content remained, so the middleware never calls
     :meth:`FileStoreProvenance.forget` — that is the host's, for when it can establish removal.
 
+    **A trusted floor is refused without this.** Building the middleware marks the record, and
+    :meth:`~maf_sandbox.FileStoreProvenance.integrity_of` refuses a ``TRUSTED`` floor on a
+    record nothing was ever built against — where no write is observed every path answers the
+    floor, model-written ones included. It proves construction rather than wiring: a host that
+    builds this and never adds it to the chain is past what a record can see.
+
     Args:
         record: Where observed writes land, and what a kind reads back.
         also_observes: Extra tool names to treat as file-store writes, for a host that wires a
@@ -282,6 +288,7 @@ def file_store_provenance_middleware(
     """
     from agent_framework import FunctionMiddleware
 
+    record.note_observer()
     observed = FILE_STORE_WRITE_TOOLS | frozenset(also_observes)
 
     class _FileStoreProvenance(FunctionMiddleware):  # type: ignore[misc]

@@ -10,7 +10,9 @@ convention a caller could break.
 * **An entry is about the path**, not a version of its bytes, and it stands until
   :meth:`FileStoreProvenance.forget`.
 * **The floor applies only to a path with no recorded entry**, so an entry always beats it and
-  a trusted floor can never lift bytes the model wrote.
+  a trusted floor can never lift bytes the model wrote — and a *trusted* floor is refused
+  outright unless a middleware was built against the record, since without one there are no
+  entries for it to lose to.
 
 ``docs/sandbox/hosts.md`` carries why the boundary is the tool call rather than the store, and
 ``docs/sandbox/research/labelling-the-file-store.md`` the measurements behind it.
@@ -95,6 +97,24 @@ class FileStoreProvenance:
         # while the middleware recording writes runs on the event loop.
         self._lock = threading.Lock()
         self._entries: dict[str, SourceIntegrity] = {}
+        self._observed = False
+
+    def note_observer(self) -> None:
+        """Record that a middleware has been built against this record.
+
+        Called by :func:`~maf_sandbox.file_store_provenance_middleware`, which is the only thing
+        that fills a record — so until it has been called, every path is unwritten because
+        nothing was ever watching, and not because nothing was written.  A ``trusted`` floor
+        cannot be honoured in that state, and :meth:`integrity_of` refuses rather than answering
+        from it.
+
+        **It proves construction, not wiring.**  A host can build the middleware and never add it
+        to the agent's chain, and nothing here can see that: a record has no view of the chain it
+        is not on.  What this closes is the mistake that is actually made — declaring a floor and
+        forgetting the middleware entirely.
+        """
+        with self._lock:
+            self._observed = True
 
     @property
     def floor(self) -> SourceIntegrity | None:
@@ -139,10 +159,29 @@ class FileStoreProvenance:
 
         An entry answers for as long as it stands; only :meth:`forget` removes one.  A path with
         no entry takes :attr:`floor`.
+
+        Raises:
+            ValueError: where the floor is :data:`~maf_sandbox.SourceIntegrity.TRUSTED` and no
+                middleware was ever built against this record — see :meth:`note_observer`.  The
+                floor is a claim about the paths *no tool call wrote*, and with nothing observing
+                the calls there is no such thing as a path a tool call wrote: every path would
+                answer trusted, model-written ones included.
         """
         with self._lock:
             entry = self._entries.get(store_key(path))
-        return self._floor if entry is None else entry
+            observed = self._observed
+        if entry is not None:
+            return entry
+        if self._floor is SourceIntegrity.TRUSTED and not observed:
+            raise ValueError(
+                "FileStoreProvenance was given floor=SourceIntegrity.TRUSTED and no "
+                "file_store_provenance_middleware was ever built against it, so nothing records "
+                "what the model writes and every path would answer trusted — model-written files "
+                "included. Wire file_store_provenance_middleware(record) into the agent's "
+                "middleware beside the information-flow middleware, or drop floor= and let an "
+                "unwritten path stay unestablished."
+            )
+        return self._floor
 
     def __len__(self) -> int:
         """How many paths carry an entry. For a host's own assertions and this suite's."""
