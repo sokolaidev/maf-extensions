@@ -1,33 +1,19 @@
 """``FileStoreProvenance``: what is known about the integrity of content in an agent file store.
 
-A kind that reads the agent's file store reads content whose provenance the framework has
-already lost.  ``AgentFileStore`` holds a ``str`` and returns a ``str``, and the information-flow
-middleware expands a variable reference into the bytes it stands for *before* the tool body
-that writes them runs — so by the time anything reaches the store, nothing anywhere says what
-it was worth (#841, measured in ``docs/sandbox/research/labelling-the-file-store.md``).
+A kind reading the agent's file store reads content the framework can no longer label, so what
+this records is the one fact still recoverable at the tool-call boundary: that an agent-driven
+call wrote a path.  Three invariants hold it together, and each is a property rather than a
+convention a caller could break.
 
-What *is* recoverable is **who wrote it**, and that is recoverable at the tool-call boundary
-rather than at the store.  A write through ``FileAccessProvider``'s tools is a tool call, and a
-tool call is the unambiguous signal that the model drove it.  So this records one fact per
-path — an agent-driven write happened here — and that fact settles the integrity question in
-the only direction that matters, because every route by which the model can put bytes into the
-store is a route through the model:
+* **Every entry is untrusted**, because :meth:`FileStoreProvenance.record` takes no integrity
+  argument.  Recording twice records the same thing, which is what makes the record monotone.
+* **An entry is about the path**, not a version of its bytes, and it stands until
+  :meth:`FileStoreProvenance.forget`.
+* **The floor applies only to a path with no recorded entry**, so an entry always beats it and
+  a trusted floor can never lift bytes the model wrote.
 
-* content behind a ``[var_id]`` reference is there because the middleware **hid** it, and it
-  hides what is untrusted;
-* content typed into ``content=`` literally was authored by the model.
-
-Neither is trusted, so an observed write records :data:`~maf_sandbox.SourceIntegrity.UNTRUSTED`
-without this module resolving anything.  That reading does not depend on the framework's
-``hide_threshold`` staying where it is: a host that moves it makes the *first* bullet less
-precise, and this still records untrusted, which is the fail-safe direction.
-
-**Everything else is the host's to declare.** A host that knows how its store is fed says so
-once with ``floor=``, and the floor applies to a path with **no recorded entry** — content
-placed before the agent started, or written past the store object by another process, is not a
-tool call and is never observed here. An entry, once written, stands until the host forgets it,
-so a later out-of-band overwrite of a path the model wrote keeps answering untrusted and a
-trusted floor can never lift bytes the model wrote.
+``docs/sandbox/hosts.md`` carries why the boundary is the tool call rather than the store, and
+``docs/sandbox/research/labelling-the-file-store.md`` the measurements behind it.
 """
 
 from __future__ import annotations

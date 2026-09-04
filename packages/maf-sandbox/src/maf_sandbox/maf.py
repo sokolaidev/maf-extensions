@@ -30,6 +30,9 @@ Seven things live here, and each of them had begun to exist twice before it did:
   :func:`hidden_content_candidates` — which of a call's arguments the host's information-flow
   middleware rewrote, so a refusal names a position rather than quoting content the framework
   hid. Here because the answer comes from that middleware.
+- :func:`file_store_provenance_middleware` — records an agent-driven file-store write into a
+  host's :class:`~maf_sandbox.FileStoreProvenance`. Here because it is a ``FunctionMiddleware``;
+  the record it fills is stdlib-only and lives beside the protocol vocabulary.
 """
 
 from __future__ import annotations
@@ -258,13 +261,10 @@ def file_store_provenance_middleware(
     model-driven however the content got there, so unlike
     :func:`~maf_sandbox.positions_holding_hidden_content` no private framework record is read.
 
-    **The entry is written in a ``finally``, and it is about the path rather than its bytes.**
-    Neither is tidiness. A body may commit to the store and then raise, and an entry written only
-    on the way out of a successful call would leave those bytes answering the host's floor. And
-    calls run concurrently: two writes to one path finish in an order nothing here controls, so an
-    entry that described a *version* of the content could be overwritten by one describing a
-    version the store no longer holds. Recording the path alone is monotone — every observed write
-    records the same thing — which is what makes the answer independent of that order.
+    **The entry is written in a ``finally``**, because a body can commit to the store and then
+    raise, and an entry is what stops those bytes answering the host's floor.  What an entry
+    then means, and why that survives concurrent writes to one path, is
+    :meth:`~maf_sandbox.FileStoreProvenance.record`'s to say.
 
     **A recorded write is not the same as a successful one, and a delete is recorded too.** The
     tools answer a refusal with a *string* rather than raising, so nothing here can tell a write
@@ -293,9 +293,7 @@ def file_store_provenance_middleware(
             try:
                 await call_next()
             finally:
-                # In a `finally`, and read afterwards, for two separate reasons. A body may
-                # commit to the store and then raise, and an entry is what keeps those bytes
-                # from answering the host's floor. And the path must be the expanded one.
+                # Read here rather than before `call_next`: the path must be the expanded one.
                 path = _store_path_named_by(context)
                 if path is None:
                     _DEFAULT_LOGGER.warning(

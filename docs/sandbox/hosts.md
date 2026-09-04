@@ -152,8 +152,10 @@ from agent_framework.security import LabelTrackingFunctionMiddleware
 from maf_sandbox import FileStoreProvenance, SourceIntegrity
 from maf_sandbox.maf import file_store_provenance_middleware
 
-# This host places its own files in the store before the agent starts, so what no tool call
-# wrote is trusted. Drop `floor=` and unwritten paths stay unestablished instead.
+# This host has established its own initial files as trusted by its own means — placing them
+# is not what makes them so, since integrity is established by derivation and never by
+# authorship. The floor is what a path with no recorded write is worth; drop `floor=` and such
+# a path stays unestablished instead.
 provenance = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
 middleware = [LabelTrackingFunctionMiddleware(), file_store_provenance_middleware(provenance)]
 
