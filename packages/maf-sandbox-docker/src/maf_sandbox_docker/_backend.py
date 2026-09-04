@@ -1731,7 +1731,14 @@ class DockerSandboxBackend:
         args.append(net)
         result = await self._docker(*args, timeout=self._config.command_timeout_seconds)
         if result.returncode == 0:
-            built = await self._bridge_state(net)
+            try:
+                built = await self._bridge_state(net)
+            except BaseException:
+                # `_bridge_state` catches `Exception`, so what arrives here is a cancellation.
+                # The network exists and nothing refers to it yet: no container carries its
+                # name, and the sweep reaches a sandbox's network through its container.
+                await self._remove_network(net)
+                raise
             if built.usable and not built.absent:
                 return
             # A create the engine accepted is not evidence of what it built: an option a daemon

@@ -53,6 +53,12 @@ _UNADDRESSED = 'bridge|true|[{"Subnet":"172.20.0.0/16"}]'
 #: The same network with its bridge addressed. Every other field matches, so the `Gateway` in
 #: the IPAM entry is the whole difference — and it is a route to the host in both directions.
 _ADDRESSED = 'bridge|true|[{"Subnet":"172.20.0.0/16","Gateway":"172.20.0.1"}]'
+#: Dual-stack, with only the second family addressed: what a daemon that took one of the two
+#: options and not the other leaves. The IPv4 entry alone reads as safe, so this is the shape
+#: that separates reading every entry from reading the first.
+_ADDRESSED_ON_THE_SECOND_FAMILY = (
+    'bridge|true|[{"Subnet":"172.20.0.0/16"},{"Subnet":"fd00::/64","Gateway":"fd00::1"}]'
+)
 
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
 _SPEC = SandboxSpec(kind="bicep", image="bicep-sandbox:local")
@@ -214,8 +220,8 @@ def _machine(
     live_running = set(running)
     live_stopped = set(stopped)
     live_networks = dict(networks or {})
-    # Who is on each network. Not read back by the backend, which no longer asks: it is here so
-    # `network rm` can refuse while an endpoint is attached, the way a real engine does.
+    # Who is on each network, so `network rm` can refuse while an endpoint is still attached,
+    # the way a real engine does.
     live_endpoints: dict[str, set[str]] = {}
     for _c in live_running | live_stopped:
         _net = _network_name(_c)
@@ -3077,6 +3083,30 @@ class TestAllowlistReuse:
         assert "It has been removed" not in str(raised.value)
         assert fake.matching("run", "-d", "--name", _AL) == []
 
+    def test_a_cancelled_readback_takes_the_network_it_just_created(self):
+        """`_bridge_state` catches `Exception`, so a cancellation passes it by.
+
+        The window is narrow and what sits in it is unreachable afterwards: the network exists,
+        no container carries its name yet, and the sweep finds a sandbox's network through its
+        container. Nothing would ever collect it.
+        """
+        base = _machine()
+        created = False
+
+        def cancelled_after_the_create(args: tuple[str, ...]) -> _DockerResult:
+            nonlocal created
+            if args[:2] == ("network", "create"):
+                created = True
+                return _DockerResult(0, args[-1].encode() + b"\n", "")
+            if args[:2] == ("network", "inspect") and args[-1] == _AL_NET and created:
+                raise asyncio.CancelledError
+            return base(args)
+
+        backend, fake = _backend_with(cancelled_after_the_create, config=_ALLOW_CONFIG)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("network", "rm", _AL_NET) != []
+
     def test_a_network_reported_taken_then_gone_fails_rather_than_adopting_nothing(self):
         """ "Already exists" and then "no such network" is not an adoption: nothing established
         what a workload there would reach. Returning would leave `_ensure_proxy` to fail on a
@@ -3186,6 +3216,21 @@ class TestASandboxLeftOnAnUnusableNetwork:
         template = read[read.index("-f") + 1]
         assert ".Options" not in template
         assert ".IPAM.Config" in template and ".Driver" in template and ".Internal" in template
+
+    def test_a_bridge_addressed_on_the_second_family_only_is_replaced(self):
+        """Two options are asked for, so both families have to be read back.
+
+        A daemon that took one and not the other leaves the bridge addressed on the half a
+        first-entry read never looks at — and it is reachable by no live run here, since CI's
+        daemon is single-stack.
+        """
+        backend, fake = _backend_with(
+            _machine(running=[_AL], networks={_AL_NET: _ADDRESSED_ON_THE_SECOND_FAMILY}),
+            _ALLOW_CONFIG,
+        )
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("rm", "-f", _AL) != []
+        assert fake.matching("network", "rm", _AL_NET) != []
 
     def test_a_network_that_is_not_a_bridge_is_replaced(self):
         """A gateway mode is a bridge option, so on any other driver it is accepted and means
