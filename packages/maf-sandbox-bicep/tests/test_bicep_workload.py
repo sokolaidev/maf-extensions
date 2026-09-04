@@ -989,6 +989,49 @@ class TestARewrittenArgumentIsNeverQuoted:
         assert "EMAIL" not in out, out
         assert "files[0]" in out, out
 
+    @staticmethod
+    def _sarif_at(*uris: str) -> str:
+        return json.dumps(
+            {
+                "runs": [
+                    {
+                        "results": [
+                            {
+                                "level": "error",
+                                "message": {"text": "expected a value"},
+                                "locations": [
+                                    {
+                                        "physicalLocation": {
+                                            "artifactLocation": {"uri": u},
+                                            "region": {"startLine": 1},
+                                        }
+                                    }
+                                ],
+                            }
+                            for u in uris
+                        ]
+                    }
+                ]
+            }
+        )
+
+    def test_the_compilers_own_spelling_is_renamed_too(self, monkeypatch):
+        """`resolve_listed_path` normalises between the listing key and the path this call
+        writes — a listed `./x.bicep` is written as `x.bicep` — and the compiler reports the
+        path it was given. Keying the map on the listing alone leaves that spelling unmatched,
+        which is the one that reaches the model."""
+        listed = f"./{self.SUBSTITUTED}.bicep"
+        asked = f"{self.SUBSTITUTED}.bicep"
+        self._rewrite(monkeypatch, asked)
+        backend = _fake_backend(
+            _KeepsWhatItWrote(default_stdout=self._sarif_at(f"file:///w/{asked}"))
+        )
+
+        out = _run(_tool(InMemoryStore({listed: "x"}), backend), [asked])
+
+        assert "EMAIL" not in out, out
+        assert "files[0]" in out, out
+
     def test_the_restore_failure_banner_does_not_quote_it(self, monkeypatch):
         """The fifth return in this function, and the one below the four that were fixed.
 
@@ -1425,6 +1468,55 @@ class TestAgainstRealBicepOutput:
         assert "main.bicep:1" in out
         assert strip_prefix not in out
         assert "file://" not in out
+
+    def _one_at(self, uri: str) -> list[dict[str, object]]:
+        return [{"level": "error", "message": "boom", "locations": [{"file": uri, "line": 1}]}]
+
+    def test_a_rename_replaces_the_whole_location_however_little_was_stripped(self):
+        """Stripping is best-effort — Bicep reports whatever root it resolved — so a location
+        this run did not strip still ends in the name, and half a path that contained the name
+        is still the name."""
+        out = format_diagnostics(
+            self._one_at("/unexpected/root/secret.bicep"),
+            "lint(x)",
+            strip_prefix="/other",
+            rename={"secret.bicep": "the value at files[0]"},
+        )
+
+        assert "secret.bicep" not in out
+        assert "unexpected/root" not in out
+        assert "the value at files[0]" in out
+
+    def test_the_longest_matching_key_wins_so_a_shared_basename_keeps_its_own_file(self):
+        """Suffix matching is what makes an unstripped location safe, and what makes it
+        ambiguous. A hidden `secret.bicep` beside a visible `dir/secret.bicep` means the short
+        key suffix-matches the long file's location, and first-match would report the *visible*
+        file's diagnostic at the hidden file's position — the wrong file, which a reader would
+        then act on.
+
+        The short key is inserted first on purpose: with first-match this passes or fails on
+        dict ordering, which is exactly why the tool-level version of this test proved nothing.
+        """
+        rename = {"secret.bicep": "the value at files[0]", "dir/secret.bicep": "dir/secret.bicep"}
+
+        out = format_diagnostics(
+            self._one_at("/w/dir/secret.bicep"), "lint(x)", strip_prefix="/w", rename=rename
+        )
+
+        assert "dir/secret.bicep" in out
+        assert "files[0]" not in out
+
+    def test_a_location_the_caller_never_wrote_is_left_alone(self):
+        """A file the caller did not write is one it cannot vouch for either way, and silently
+        renaming it would attribute a diagnostic to a file that has nothing to do with it."""
+        out = format_diagnostics(
+            self._one_at("/w/vendor/other.bicep"),
+            "lint(x)",
+            strip_prefix="/w",
+            rename={"main.bicep": "the value at files[0]"},
+        )
+
+        assert "vendor/other.bicep" in out
 
     def test_rendering_omits_a_column_bicep_does_not_provide(self):
         """Real Bicep emits charOffset, not startColumn — so print the line, not ':None'."""

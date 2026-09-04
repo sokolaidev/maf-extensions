@@ -469,7 +469,22 @@ def _bicep_validate_tool(
 
         # Built over every written file, not per phase: a diagnostic in one file can name
         # another, so the loop below has to be able to rename a location it did not write.
-        renames = {name: label for name, label, _ in written if label != name}
+        #
+        # Every file, including the ones whose name may be shown, mapped to itself. Two written
+        # files can share a basename, and `_renamed` resolves that by preferring the longest
+        # matching key — which needs the long key to be present at all.
+        #
+        # Under both spellings, because they can differ: the listing key is what the store is
+        # keyed by, while the compiler reports the path this call *wrote*, and
+        # `resolve_listed_path` normalises between them (a listed `./main.bicep` is written as
+        # `main.bicep`). Keying on the listing alone leaves the compiler's own spelling
+        # unmatched, which is the spelling that reaches the model.
+        renames: dict[str, str] = {}
+        for entry_name, entry_label, entry_path in written:
+            guest_relative = entry_path.removeprefix(call_directory).lstrip("/")
+            for key in (entry_name, guest_relative):
+                if key:
+                    renames[key] = entry_label
 
         for name, label, sandbox_path in written:
             for phase, template in (

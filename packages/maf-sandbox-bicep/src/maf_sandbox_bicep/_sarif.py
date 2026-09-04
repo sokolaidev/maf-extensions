@@ -80,7 +80,7 @@ def parse_sarif(text: str) -> list[dict[str, Any]] | None:
 
 
 def _renamed(location: str, rename: Mapping[str, str] | None) -> str:
-    """``location`` as it may be shown, given the caller's map of unshowable names.
+    """``location`` as it may be shown, given the caller's map of every file it wrote.
 
     Matches a trailing path component as well as the whole string, because stripping the
     working directory is best-effort: Bicep reports whatever root it resolved, and a location
@@ -88,13 +88,23 @@ def _renamed(location: str, rename: Mapping[str, str] | None) -> str:
     location rather than the matched part — half of a path that contained the name is still
     the name, and the surrounding directories are the sandbox's internal layout, which
     ``format_diagnostics`` does not put in front of the model either.
+
+    **The longest match wins, and that is what makes suffix matching safe.**  Two written files
+    can share a basename — a hidden ``main.bicep`` beside a visible ``dir/main.bicep`` — and the
+    short key suffix-matches the long file's location.  Picking the longest key means the
+    location is attributed to the file it actually names, so a diagnostic about the *visible*
+    file keeps its own spelling rather than being reported at the hidden one's position.  This
+    only works because the caller maps **every** file it wrote, visible ones to themselves;
+    a map of hidden files alone has no long key to win.
     """
     if not rename or not location:
         return location
+    best: tuple[int, str] | None = None
     for real, shown in rename.items():
         if location == real or location.endswith("/" + real):
-            return shown
-    return location
+            if best is None or len(real) > best[0]:
+                best = (len(real), shown)
+    return best[1] if best is not None else location
 
 
 def format_diagnostics(
@@ -112,13 +122,17 @@ def format_diagnostics(
     the model's context, and gives the *same* file a different path on every round because
     the directory is per-call.  Stripped, it reads ``main.bicep``: the name the agent used.
 
-    ``rename`` maps a stripped location to what may be shown in its place, and exists because
-    stripping the directory is not the same as making the name safe.  A name the framework
-    expanded out of hidden content reaches here having matched the caller's listing, and the
-    compiler then reports diagnostics *against* it — so a location renders the hidden value on
-    the ordinary path where the file simply has an error in it.  A caller passes the entries
-    whose spelling it may not echo; anything absent is shown as the compiler reported it,
-    because a location the caller never wrote is one the caller cannot vouch for either way.
+    ``rename`` maps a location to what may be shown in its place, and exists because stripping
+    the directory is not the same as making the name safe.  A name the framework expanded out of
+    hidden content reaches here having matched the caller's listing, and the compiler then
+    reports diagnostics *against* it — so a location renders the hidden value on the ordinary
+    path where the file simply has an error in it.
+
+    A caller passes **every file it wrote**, mapping the ones it may echo to themselves, and
+    under every spelling the compiler might use for them.  Not only the unshowable ones: see
+    :func:`_renamed` for why a map of those alone mis-attributes a diagnostic when two written
+    files share a basename.  A location matching nothing in the map is shown as the compiler
+    reported it, because a file the caller never wrote is one it cannot vouch for either way.
     """
     if not diagnostics:
         return f"{phase}: no diagnostics"
