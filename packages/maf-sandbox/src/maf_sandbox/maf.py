@@ -648,7 +648,10 @@ def _unlicensed_trusted_claim_refusal(
     asked_by: str,
     through_mapping: bool,
 ) -> ValueError:
-    """The refusal for a ``"trusted"`` claim over a spec that opens what nothing establishes.
+    """The refusal for a ``"trusted"`` claim over channels nothing establishes as trusted.
+
+    ``unestablished`` holds both kinds: a channel nothing has settled, and one a registry fold
+    settled as *untrusted*.  Neither licenses the claim, which is why they are refused together.
 
     Returned rather than raised so each caller keeps its own control flow visible, and written
     once so the keyword path and the verbatim-mapping path cannot drift into telling a host two
