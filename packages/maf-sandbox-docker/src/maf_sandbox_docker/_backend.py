@@ -1790,14 +1790,17 @@ class DockerSandboxBackend:
         answer decides whether a warm sandbox is kept, and keeping one whose bridge cannot be
         shown unaddressed would serve the workload a route the allowlist does not cover.
         """
-        result = await self._docker(
-            "network",
-            "inspect",
-            "-f",
-            _GATEWAY_MODE_FORMAT,
-            net,
-            timeout=self._config.command_timeout_seconds,
-        )
+        try:
+            result = await self._docker(
+                "network",
+                "inspect",
+                "-f",
+                _GATEWAY_MODE_FORMAT,
+                net,
+                timeout=self._config.command_timeout_seconds,
+            )
+        except Exception as exc:  # noqa: BLE001 - an unreadable read is unreadable either way
+            return _BridgeState(False, reason=f"its gateway modes could not be read: {exc}")
         if result.returncode != 0:
             stderr = result.stderr.strip()
             if _reads_as_absent(stderr, net):
@@ -1816,13 +1819,16 @@ class DockerSandboxBackend:
         to *create*, and the wrong way round for one deciding whether a rebuild can be skipped.
         Only the engine's own "no such object" counts as gone.
         """
-        result = await self._docker(
-            "inspect",
-            "-f",
-            "{{.State.Status}}",
-            name,
-            timeout=self._config.command_timeout_seconds,
-        )
+        try:
+            result = await self._docker(
+                "inspect",
+                "-f",
+                "{{.State.Status}}",
+                name,
+                timeout=self._config.command_timeout_seconds,
+            )
+        except Exception:  # noqa: BLE001 - unreadable is not proof it went
+            return False
         if result.returncode == 0:
             return False
         return _reads_as_absent(result.stderr, name)
@@ -1830,12 +1836,17 @@ class DockerSandboxBackend:
     async def _refuse_a_sandbox_that_is_not_on_what_this_backend_built(self, name: str) -> None:
         """The last word before an allowlisted sandbox is handed out: the whole topology.
 
-        Three reads, because each is satisfiable while the others are wrong.  A network swapped
+        Four reads, because each is satisfiable while the others are wrong.  A network swapped
         for an addressed one under the same name passes an attachment check that compares
         names; a container moved off an intact network passes a bridge check that only reads
-        the network; and both pass while a *third* container sits on that network holding a
-        second one, which the workload reaches directly and which routes around the proxy for
-        it.  What the workload can reach is a property of all three.
+        the network; both pass while a *third* container sits on that network holding a second
+        one, which the workload reaches directly and which routes around the proxy for it; and
+        all three pass while the proxy has lost its outbound leg, which serves an ``ALLOWLIST``
+        sandbox that reaches nothing — the degradation the axis forbids in that direction too.
+        What the workload can reach is a property of all four.
+
+        A read that raises is treated as one that answered badly: the readers catch, so an
+        unreachable daemon reaches the removal below rather than skipping past it.
 
         Raises:
             RuntimeError: when any of them is wrong.  The container goes first — ``exec``
@@ -1893,14 +1904,17 @@ class DockerSandboxBackend:
         one there is reachable by the workload directly, and if it holds a second network it
         is a route around the proxy that no allowlist describes.
         """
-        result = await self._docker(
-            "network",
-            "inspect",
-            "-f",
-            _NETWORK_ENDPOINTS_FORMAT,
-            net,
-            timeout=self._config.command_timeout_seconds,
-        )
+        try:
+            result = await self._docker(
+                "network",
+                "inspect",
+                "-f",
+                _NETWORK_ENDPOINTS_FORMAT,
+                net,
+                timeout=self._config.command_timeout_seconds,
+            )
+        except Exception:  # noqa: BLE001 - an unreadable read is unreadable either way
+            return None
         if result.returncode != 0:
             return None
         return set(result.stdout.decode("utf-8", errors="replace").split())
@@ -1918,13 +1932,16 @@ class DockerSandboxBackend:
         for different reasons, and a caller reporting one must not describe a topology nothing
         established.
         """
-        result = await self._docker(
-            "inspect",
-            "-f",
-            _ATTACHED_NETWORKS_FORMAT,
-            name,
-            timeout=self._config.command_timeout_seconds,
-        )
+        try:
+            result = await self._docker(
+                "inspect",
+                "-f",
+                _ATTACHED_NETWORKS_FORMAT,
+                name,
+                timeout=self._config.command_timeout_seconds,
+            )
+        except Exception as exc:  # noqa: BLE001 - an unreadable read is unreadable either way
+            return _Attachment(False, f"has networks that could not be read: {exc}")
         if result.returncode != 0:
             stderr = result.stderr.strip()
             if _reads_as_absent(stderr, name):
@@ -2072,9 +2089,16 @@ class DockerSandboxBackend:
             return usable
         # Never start one to find out what it is: that runs its entrypoint before anything has
         # established anything about it, which no verdict here takes back.
-        if await self._is_running(name):
-            if (await self._attachment_state(name, on_network)).correct:
-                return True
+        try:
+            servable = (
+                await self._is_running(name)
+                and (await self._attachment_state(name, on_network)).correct
+            )
+        except Exception as exc:  # noqa: BLE001 - a conflict nothing could read is still refused
+            logger.warning("docker backend: could not read the conflict on %s: %s", name, exc)
+            servable = False
+        if servable:
+            return True
         removal = await self._remove(name)
         if removal.failure is not None:
             raise RuntimeError(

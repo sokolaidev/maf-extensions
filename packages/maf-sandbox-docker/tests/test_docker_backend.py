@@ -3418,6 +3418,25 @@ class TestASandboxLeftOnAnUnusableNetwork:
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert fake.matching("rm", "-f", _AL) != []
 
+    def test_a_read_that_raises_still_reaches_the_removal(self):
+        """`_docker` propagates a timeout rather than returning one, so a raising read would
+        carry the exception past the removal the refusal had already decided on — and `exec`
+        detaches, so what is inside keeps running with a topology nothing established."""
+        base = _machine(running=[_AL], networks={_AL_NET: _UNADDRESSED})
+        reads = itertools.count()
+
+        def timing_out(args: tuple[str, ...]) -> _DockerResult:
+            if args[:3] == ("inspect", "-f", _ATTACHED_NETWORKS_FORMAT) and args[-1] == _AL:
+                if next(reads) > 0:  # right at the discard, gone by the final read
+                    raise TimeoutError("docker inspect timed out")
+            return base(args)
+
+        backend, fake = _backend_with(timing_out, config=_ALLOW_CONFIG)
+        with pytest.raises(RuntimeError, match="could not be read") as raised:
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert "timed out" in str(raised.value)
+        assert fake.matching("rm", "-f", _AL) != []
+
     def test_a_network_replaced_under_its_own_name_is_caught(self):
         """The attachment compares names, so a network swapped for an addressed one keeps
         satisfying it. Both the bridge and the attachment are read at the end for that reason:
