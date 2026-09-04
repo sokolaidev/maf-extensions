@@ -2120,22 +2120,27 @@ class DockerSandboxBackend:
             logger.warning("docker backend: could not read the conflict on %s: %s", name, exc)
             servable = False
         except BaseException:
-            # Cancellation does not pass through `except Exception`, and it would carry past
-            # the removal below — which is the whole of the protection here, since a conflict
-            # left under this name is one the next acquire restarts. Marking is synchronous, so
-            # it lands whether or not anything after this point gets to run.
+            # Cancellation does not pass through `except Exception`, and the reads above are
+            # the only place a conflict can be judged servable. Nothing has decided yet, so
+            # mark: what is under the name is a container the create lost to, and no later
+            # read can tell that from a warm sandbox.
             self._unclean.add(name)
             raise
         if servable:
             return True
+        # Judged unservable, so mark before anything that can be interrupted and clear it only
+        # on a removal the engine confirmed. Marking after the await would need every way out
+        # of it enumerated — a raise, a declined removal, a cancellation arriving mid-call —
+        # and the last of those was missed twice already.
+        self._unclean.add(name)
         removal = await self._remove(name)
         if removal.failure is not None:
-            self._unclean.add(name)
             raise RuntimeError(
                 f"container {name} took this sandbox's name, cannot be served as one, and "
                 f"could not be removed ({removal.failure}) — so it is still under that name "
                 f"for the next acquire to find. Remove it by hand."
             )
+        self._unclean.discard(name)
         return False
 
     async def _remove(self, target: str) -> _Removal:

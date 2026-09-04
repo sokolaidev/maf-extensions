@@ -3024,7 +3024,8 @@ class TestAllowlistReuse:
     def test_a_stopped_name_conflict_is_never_started_to_be_inspected(self):
         """Starting one to find out is a side effect no verdict can take back: a container
         under this name that this backend did not create runs its entrypoint the moment it is
-        restarted. A stopped race is left to the next acquire, which discards before deciding.
+        restarted. So a stopped conflict is removed rather than started, and the name it took
+        is free for the create that follows.
         """
         base = _machine(networks={_AL_NET: _UNADDRESSED})
         appeared = False
@@ -3079,6 +3080,43 @@ class TestAllowlistReuse:
         assert fake.matching("rm", "-f", _AL) != []
 
         # The second acquire: with the conflict gone the name is free, and nothing is started.
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("start", _AL) == []
+
+    def test_a_conflict_whose_removal_is_cancelled_is_still_marked(self):
+        """The mark goes on before the removal, not after it. Cancellation can arrive while
+        that await is in flight — `_remove` catches `Exception` and lets it through — so a
+        mark placed afterwards would need every way out of the await enumerated."""
+        base = _machine(networks={_AL_NET: _UNADDRESSED})
+        raced = False
+        present = False
+        cancelled = False
+
+        def racing(args: tuple[str, ...]) -> _DockerResult:
+            nonlocal raced, present, cancelled
+            if args[:4] == ("run", "-d", "--name", _AL) and not raced:
+                raced = present = True  # the racer takes the name, once
+                return _DockerResult(1, b"", "Conflict. The name is already in use")
+            if args[:2] == ("rm", "-f") and args[-1] == _AL and present:
+                if not cancelled:
+                    cancelled = True  # cancelled with the removal already in flight
+                    raise asyncio.CancelledError
+                present = False  # a later acquire's removal does land
+                return _DockerResult(0, _AL.encode() + b"\n", "")
+            if args[0] == "inspect" and args[-1] == _AL and present:
+                if args[:3] == ("inspect", "-f", _ATTACHED_NETWORKS_FORMAT):
+                    # Attached exactly as a warm sandbox would be: only the mark tells them
+                    # apart, which is the whole point of keeping one.
+                    return _DockerResult(0, (_AL_NET + " ").encode(), "")
+                return _DockerResult(0, b"false\n" if "Running" in args[2] else b"exited\n", "")
+            return base(args)
+
+        backend, fake = _backend_with(racing, config=_ALLOW_CONFIG)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        # The conflict is still there and still looks like a warm sandbox; only the mark stops
+        # the next acquire restarting it.
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert fake.matching("start", _AL) == []
 
@@ -3394,7 +3432,7 @@ class TestASandboxLeftOnAnUnusableNetwork:
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert fake.matching("rm", "-f", _AL) != []
 
-    def test_a_third_container_on_the_sandboxs_network_is_caught(self):
+    def test_a_third_container_on_the_sandbox_network_is_caught(self):
         """The workload's own attachment can be exactly right while the network it sits on
         holds a peer. Containers on one internal network reach each other, so a peer holding a
         second network is a route around the proxy that no allowlist describes — measured on

@@ -1178,7 +1178,7 @@ class TestAllowlistEgress:
         assert _names_on_the_machine(sandbox.container_name) == []
         assert not _network_present(net)
 
-    def test_a_peer_joined_to_the_sandboxs_network_refuses_the_next_acquire(self):
+    def test_a_peer_joined_to_the_sandbox_network_refuses_the_next_acquire(self):
         """A container on the sandbox's own network is reachable by the workload, and a
         dual-homed one is a route around the proxy. The offline suite pins the refusal against
         a responder; this puts a real container on a real network and re-acquires.
