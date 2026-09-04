@@ -3353,9 +3353,10 @@ class TestPerSpecSelection:
         assert served.name == fixed.backend.name
 
     def test_the_route_is_the_same_answer_asked_twice(self):
-        """A pure function of the spec, which is what keeps a conversation's key on one backend
-        across calls — `acquire` is get-or-create, and a route that moved would pay a cold start
-        every iteration and leave a billable sandbox behind on the one it walked away from."""
+        """A pure function of the spec, which is what keeps *this* spec on one backend across
+        calls — `acquire` is get-or-create, and a route that moved would pay a cold start every
+        iteration and leave a billable sandbox behind on the one it walked away from. It says
+        nothing about the key: two specs under one key may route apart, and are meant to."""
         router = SandboxRouter(
             [_declaring("weak"), _declaring("strong", Capability.FILES_OUT)],
             min_isolation=Isolation.NONE,
@@ -3476,6 +3477,44 @@ class TestPerSpecSelection:
             with pytest.raises(SandboxBackendNotPermitted):
                 SandboxRouter([_declaring("a"), _declaring("b")], selection=Selection.PER_SPEC)
         assert caplog.text == ""
+
+    @pytest.mark.parametrize("field", ["capabilities", "egress_modes", "isolation_scopes"])
+    def test_a_mis_shaped_declaration_is_refused_rather_than_routed_past(self, field):
+        """The hazard routing adds to a rule the fixed selection already held.
+
+        `_declared_set` raises `SandboxBackendNotPermitted` for a field it cannot read, and
+        `_refusal_serving` catches that whole family — so past construction an unreadable
+        declaration is indistinguishable from a backend honestly refusing one spec, and the
+        *next* backend would serve while the misconfiguration went unmentioned. Under
+        `Selection.FIXED` the same declaration surfaces at the first check, because there is
+        nowhere to route past it to.
+        """
+        broken = InProcessSandboxBackend(
+            name="broken",
+            declarations=dataclasses.replace(FAKE_BACKEND_DECLARATIONS, **{field: ["closed"]}),
+        )
+        with pytest.raises(SandboxBackendNotPermitted, match=field):
+            SandboxRouter(
+                [broken, _declaring("sound", Capability.FILES_OUT)],
+                min_isolation=Isolation.NONE,
+                selection=Selection.PER_SPEC,
+            )
+
+    def test_a_mis_shaped_limits_declaration_is_refused_at_construction(self):
+        """Its own case: `_declared_limits` raises a different member of the same family."""
+        broken = InProcessSandboxBackend(
+            name="broken",
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                limits=typing.cast("SandboxLimits", DEFAULT_TRANSFER_LIMITS),
+            ),
+        )
+        with pytest.raises(SandboxTransferLimitsNotPermitted, match="limits"):
+            SandboxRouter(
+                [broken, _declaring("sound")],
+                min_isolation=Isolation.NONE,
+                selection=Selection.PER_SPEC,
+            )
 
     def test_a_half_migrated_backend_registered_second_is_refused_at_construction(self):
         """Under the fixed selection nothing ever reads it; under routing every registered

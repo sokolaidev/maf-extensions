@@ -459,8 +459,10 @@ class Selection(StrEnum):
     #: The first registered backend that can serve *this* spec, decided per workload against
     #: the same checks :meth:`SandboxRouter.ensure_can_serve` runs.  Registration order is the
     #: preference order.  The route is a pure function of the spec and the backends'
-    #: declarations — never of load, health, latency or cost — so one conversation keeps
-    #: landing on one backend and the warm sandbox ``acquire`` reuses stays reachable.
+    #: declarations — never of load, health, latency or cost — so one spec always routes to the
+    #: same backend and the warm sandbox ``acquire`` reuses stays reachable.  Per *spec*, not
+    #: per conversation: two kinds under one key may route apart by design, which is why
+    #: :meth:`SandboxRouter.dispose` fans out across every registered backend.
     PER_SPEC = "per_spec"
 
 
@@ -635,19 +637,36 @@ class SandboxRouter:
         would still be in ``self._backends``, so the filtering would buy nothing: disposal
         sweeps that, not this.
 
-        What is checked here is what cannot wait. Declarations are read for **all** of them,
-        so a half-migrated backend fails at startup rather than the first time a spec happens
-        to route as far as it — under :data:`Selection.FIXED` only the selected backend is
-        ever read, and that asymmetry is the point rather than an oversight. And the floor is
-        judged across the whole registration: a deployment where nothing clears it can serve
-        no workload at all, which is the misconfiguration ``__init__`` exists to catch.
+        What is checked here is what cannot wait, and routing is what makes it urgent.
+
+        Declarations are read for **all** of them — the object *and* every field's shape — so a
+        half-migrated or mis-shaped backend fails at startup rather than the first time a spec
+        happens to route as far as it. Under :data:`Selection.FIXED` only the selected backend
+        is ever read, and that asymmetry is the point rather than an oversight: there, a
+        mis-shaped field surfaces at the first check because there is nowhere to route past it
+        to. Here there is. :meth:`_refusal_serving` catches :data:`ATTACH_REFUSALS`, and
+        ``_declared_set`` and ``_declared_limits`` raise members of it for a field this package
+        cannot read — so without this an unreadable declaration on the first candidate would be
+        indistinguishable from an honest refusal, and the *second* backend would quietly serve.
+        A declaration nobody can read is refused rather than routed past.
+
+        And the floor is judged across the whole registration: a deployment where nothing
+        clears it can serve no workload at all, which is the misconfiguration ``__init__``
+        exists to catch.
         """
         if not self._backends:
             return []
         floor = self._min_isolation
         rungs = [(backend, _declared_isolation(backend)) for backend in self._backends]
         for backend in self._backends:
-            _declarations(backend)
+            declared = _declarations(backend)
+            # Every field, not only the object: each of these raises a member of
+            # `ATTACH_REFUSALS` for a shape this package cannot read, and past this point such
+            # a raise is indistinguishable from a backend honestly refusing one spec.
+            _declared_set(backend, cast("object", declared.capabilities), "capabilities")
+            _declared_set(backend, cast("object", declared.egress_modes), "egress_modes")
+            _declared_isolation_scopes(backend, declared)
+            _declared_limits(backend, declared)
         below = [(backend, rung) for backend, rung in rungs if not meets_floor(rung, floor)]
         if below and len(below) != len(rungs):
             # Warned rather than raised, because this arrangement is the one PER_SPEC exists to
@@ -780,7 +799,9 @@ class SandboxRouter:
 
         A pure function of the spec, the registered backends and their declarations, and of
         nothing else — no load, health, latency or cost is consulted. Callers may rely on that:
-        asking twice cannot name two backends. :class:`Selection` carries why.
+        asking twice **with the same spec** cannot name two backends. It says nothing about two
+        different specs, which may route apart under one key and are meant to.
+        :class:`Selection` carries why.
         """
         passed_over: list[tuple[SandboxBackend, Exception]] = []
         for backend in self._candidates:
