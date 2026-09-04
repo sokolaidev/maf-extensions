@@ -29,20 +29,6 @@ The bicep_validate tool reported that the module restore failed, so the validati
 incomplete. The diagnostics it returned were BCP192 on line 25 and BCP062 on line 34.
 """
 
-ACT_SIX_BLOCK = """\
-  [measured] core supports per-spec selection: yes
-  [measured] routed files_out spec -> 'docker'
-  [measured] routed plain spec -> 'in-process'
-
-  [measured] the routed backend runs: 'routed per spec'
-  the routed sandbox is disposed, by the same scope purge act 5 measures
-"""
-
-_SKIPPED_ACT_SIX = """\
-  [measured] core supports per-spec selection: no
-  The published `maf-sandbox` this run resolved predates `Selection`.
-"""
-
 _HEALTHY = f"""\
 == 1. Which backend serves is one argument ==
 
@@ -113,7 +99,6 @@ _HEALTHY = f"""\
 
 == 6. The spec picks, when the host asks it to ==
 
-  [measured] core supports per-spec selection: yes
   [measured] routed files_out spec -> 'docker'
   [measured] routed plain spec -> 'in-process'
 
@@ -122,13 +107,6 @@ _HEALTHY = f"""\
 
   [measured] Completed 6 of 6 acts. Disposed 2 sandbox(es) across 2 backends.
 """
-
-#: The same run against a published core that predates `Selection`. Act 6 says so and prints no
-#: route, and the footer counts five — which is the one skip this check tolerates, and only
-#: because the run states the reason rather than falling silent.
-_OLDER_CORE = _HEALTHY.replace(ACT_SIX_BLOCK, _SKIPPED_ACT_SIX).replace(
-    "Completed 6 of 6", "Completed 5 of 6"
-)
 
 
 class TestHealthyRun:
@@ -381,34 +359,35 @@ class TestEmptyOutput:
 
 
 class TestTheRoutingAct:
-    """Act 6, and the one skip this file tolerates.
+    """Act 6's two routes.
 
-    Two routes are required rather than one, and the second is the interesting one. A router
+    Two are required rather than one, and the second is the interesting one. A router
     that simply preferred the stronger backend would satisfy the `files_out` route and fail the
     `plain` one — and preferring the stronger backend is exactly the behaviour that would move
     a workload already running onto a billable one.
     """
 
-    def test_an_older_core_skipping_the_act_passes(self):
-        """The straddle case: the sample resolves the published wheel, which for a while will
-        not have the feature. Saying so is what makes the absence readable."""
-        assert check.assess(_OLDER_CORE) == []
-
-    def test_a_run_that_says_nothing_about_support_is_caught(self):
-        """Without the line, five-of-six is both a healthy older core and a broken current one,
-        and nothing else in the output tells them apart."""
-        silent = _HEALTHY.replace("  [measured] core supports per-spec selection: yes\n", "")
-        reasons = check.assess(silent)
-        assert any("core supports per-spec selection" in r for r in reasons), reasons
-
-    def test_claiming_no_support_and_printing_a_route_is_refused(self):
-        """Two claims about one run that contradict each other, so neither can be read —
-        refused rather than resolved in favour of one, as a doubled restore verdict is."""
-        contradictory = _HEALTHY.replace(
-            "core supports per-spec selection: yes", "core supports per-spec selection: no"
+    def test_a_doubled_route_is_refused_rather_than_resolved(self):
+        """The restore pair's policy, applied to the routes: the sample prints each once, so
+        picking one of two would be reading whichever came first rather than measuring."""
+        doubled = _HEALTHY.replace(
+            "  [measured] routed plain spec -> 'in-process'\n",
+            "  [measured] routed plain spec -> 'in-process'\n"
+            "  [measured] routed plain spec -> 'docker'\n",
         )
-        reasons = check.assess(contradictory)
-        assert any("not a measurement of this run" in r for r in reasons), reasons
+        reasons = check.assess(doubled)
+        assert any("appears 2 times" in r for r in reasons), reasons
+
+    def test_a_route_this_check_does_not_know_is_refused(self):
+        """Either the sample grew a route and this file fell behind, or something else wrote
+        the line. Both need saying; neither may pass silently."""
+        extra = _HEALTHY.replace(
+            "  [measured] routed plain spec -> 'in-process'\n",
+            "  [measured] routed plain spec -> 'in-process'\n"
+            "  [measured] routed novel spec -> 'docker'\n",
+        )
+        reasons = check.assess(extra)
+        assert any("knows nothing about" in r for r in reasons), reasons
 
     def test_the_refused_spec_not_reaching_the_second_backend_is_caught(self):
         """`files_out` is the spec act 2 is refused for. Anything but `docker` means the router
@@ -451,8 +430,3 @@ class TestTheRoutingAct:
         )
         reasons = check.assess(borrowed)
         assert any("expected exactly 'routed per spec'" in r for r in reasons), reasons
-
-    def test_an_older_core_that_also_lost_an_act_is_still_caught(self):
-        """Five of six is only healthy when act 6 is the missing one."""
-        reasons = check.assess(_OLDER_CORE.replace("Completed 5 of 6", "Completed 4 of 6"))
-        assert any("4 of 6 acts completed" in r for r in reasons), reasons

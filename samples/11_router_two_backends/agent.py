@@ -44,6 +44,7 @@ from maf_sandbox import (
     SandboxKey,
     SandboxRouter,
     SandboxSpec,
+    Selection,
 )
 from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox.testing import InProcessSandboxBackend
@@ -54,17 +55,6 @@ from maf_sandbox_docker import (
     DockerSandboxConfig,
     proxy_build_context,
 )
-
-#: Whether the installed core can select a backend **per spec**. `Selection` shipped with #328;
-#: before it, `SandboxRouter` resolved one backend at construction and act 6 has nothing to
-#: show. The import is the marker rather than a version comparison, for the reason sample 15
-#: gives about its own: the symbol is what the code needs, where a version string is a proxy
-#: for it. This sample resolves the *published* wheel, so it straddles the release rather than
-#: waiting for it.
-try:
-    from maf_sandbox import Selection as _Selection
-except ImportError:  # the published core before #328
-    _Selection = None
 
 #: A tiny image for acts 1, 2 and 5, because nothing there compiles anything — the point is
 #: which backend runs the command, not what the command is. Act 4 runs a real compiler and
@@ -451,7 +441,7 @@ async def act_five_disposal_reaches_everyone() -> tuple[int, int]:
     return purge.disposed, len(registered)
 
 
-async def act_six_the_spec_picks() -> bool:
+async def act_six_the_spec_picks() -> None:
     """Act 2's refusal, served — the same two backends, in the same order, one keyword apart.
 
     This is the whole of what per-spec selection changes, and running it directly after act 2
@@ -464,23 +454,14 @@ async def act_six_the_spec_picks() -> bool:
     moves a workload that already runs, which is why turning it on cannot quietly relocate
     existing traffic onto a backend that charges for it.
 
-    Returns whether the act ran, so the footer counts what happened rather than what this file
-    hoped for.
     """
     print("== 6. The spec picks, when the host asks it to ==\n")
-    if _Selection is None:
-        print(f"{MEASURED}core supports per-spec selection: no")
-        print("  The published `maf-sandbox` this run resolved predates `Selection`, so there")
-        print("  is nothing here to show. Every other act is the shipped behaviour on each")
-        print("  version this sample runs against, and none of them is affected.\n")
-        return False
-    print(f"{MEASURED}core supports per-spec selection: yes")
 
     local, container = backends()
     # The same list, in the same order, as act 2 — which refused. `selection=` is the only
     # difference between the two routers, and `selected=` is absent because a pin and a route
     # are two answers to one question and the router refuses them together.
-    router = SandboxRouter([local, container], min_isolation=FLOOR, selection=_Selection.PER_SPEC)
+    router = SandboxRouter([local, container], min_isolation=FLOOR, selection=Selection.PER_SPEC)
 
     needs_files_out = SandboxSpec(
         kind=KIND, image=IMAGE, requires=DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
@@ -522,23 +503,22 @@ async def act_six_the_spec_picks() -> bool:
     print("  always routes to the same backend and its warm sandbox stays reusable. Per")
     print("  spec rather than per conversation: two kinds under one key may route apart,")
     print("  by design, which is why disposal asks every registered backend.\n")
-    return True
 
 
 async def main() -> int:
     """Six acts, and every number in the footer is read back rather than written down.
 
-    Two of the six can be absent from a healthy run, and each says so out loud: act 4 when its
-    four variables are unset, act 6 when the core this run resolved predates the feature.
+    One of the six can be absent from a healthy run and says so out loud: act 4, when any of
+    its four variables is unset.
     """
     act_one_the_switch()
     act_two_the_spec_cannot_pick()
     act_three_the_other_axis()
     restored = await act_four_the_egress_the_workload_asked_for()
     disposed, registered = await act_five_disposal_reaches_everyone()
-    routed = await act_six_the_spec_picks()
+    await act_six_the_spec_picks()
 
-    ran = 4 + (1 if restored else 0) + (1 if routed else 0)
+    ran = 5 + (1 if restored else 0)
     print(
         f"{MEASURED}Completed {ran} of 6 acts. "
         f"Disposed {disposed} sandbox(es) across {registered} backends."

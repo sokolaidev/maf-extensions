@@ -43,7 +43,7 @@ So a spec asking for `container` isolation gets `SandboxBackendNotPermitted`, an
 
 Act 6 prints two routes and the second is the one to look at. The `files_out` spec goes to `docker`, which is the feature. The plain spec both backends can serve stays on `in-process`, the first registered — because routing must never move a workload that already runs, and a router that simply preferred the stronger backend would have moved it. The live check requires both, for the reason it requires act 4's restore pair: either answer alone is consistent with a router doing something else entirely.
 
-**It skips itself against an older core**, and says so on a `[measured]` line. This sample resolves the *published* `maf-sandbox`, so for a while the wheel it installs will not have `Selection` — the act reports that rather than falling silent, and the check refuses a run that claims it cannot route and then prints a route.
+**Act 6 is not optional.** This sample's floor names `maf-sandbox>=0.32`, the release that carries `Selection`, so the act has nothing to feature-detect and the live check requires all six acts. A skipped act 6 is a failure, for the reason a skipped act 4 is: it reads exactly like a passing one.
 
 ## Why disposal reaching both matters
 
@@ -99,7 +99,7 @@ What act 4 does **not** try to show is that the proxy denies an unlisted host. T
 
 ## Run
 
-Acts 1, 2, 3, 5 and 6 need a Docker-compatible engine and nothing else. Act 4 needs two locally built images and a chat model, and skips itself with instructions when any of them is missing. Act 6 additionally needs a `maf-sandbox` new enough to carry `Selection`, and skips itself on an older one.
+Acts 1, 2, 3, 5 and 6 need a Docker-compatible engine and nothing else. Act 4 needs two locally built images and a chat model, and skips itself with instructions when any of them is missing.
 
 ```bash
 # The Bicep sandbox, built from this repository — the same guest sample 05 uses.

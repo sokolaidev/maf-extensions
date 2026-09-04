@@ -20,9 +20,7 @@ The **routed pair**, for the same reason in a different axis. Act 6 routes two s
 answers are required: the one act 2 was refused for must reach `docker`, and the one both
 backends can serve must stay on `in-process`. The first alone would be consistent with a router
 that simply preferred the stronger backend, which is the behaviour that would quietly move
-existing traffic onto a billable one. Act 6 is also the only act allowed to be missing, and only
-when the run says out loud that the core it resolved predates the feature — a claim this file
-then holds it to, by refusing a run that says it cannot route and prints a route anyway.
+existing traffic onto a billable one.
 
 Every line this file reads carries the `[measured]` tag, and act 4 puts a model's prose into the
 same stream. The sample runs that prose through `quoted()`, which prefixes `> ` to any line
@@ -59,15 +57,6 @@ _REFUSALS = ("SandboxBackendNotPermitted", "SandboxCapabilityNotSupported")
 #: What the container printed. Proof the selected backend really ran the command rather than
 #: the router merely agreeing that it could.
 _EXECUTED = "routed"
-
-#: Whether the core the sample *resolved* can select a backend per spec. Act 6 is the only act
-#: allowed to be absent from a healthy run, and this line is what makes the absence a
-#: measurement rather than a silence — the same objection act 4's assertions exist to answer,
-#: since a skipped act reads exactly like a passing one.
-_ROUTING_SUPPORT = re.compile(
-    rf"^\s*{re.escape(_TAG)}\s+core supports per-spec selection:\s+(yes|no)\s*$",
-    re.MULTILINE,
-)
 
 #: What each routed spec has to resolve to, and why each answer is the interesting one. The
 #: `files_out` spec is act 2's refusal served instead, which is the whole feature. The `plain`
@@ -177,49 +166,39 @@ def assess(output: str) -> list[str]:
             )
 
     failures.extend(_assess_restore(output))
-    routed, routing_failures = _assess_routing(output)
-    failures.extend(routing_failures)
-    failures.extend(_assess_footer(output, routed=routed))
+    failures.extend(_assess_routing(output))
+    failures.extend(_assess_footer(output))
     return failures
 
 
-def _assess_routing(output: str) -> tuple[bool, list[str]]:
-    """Act 6, and whether it was entitled to be absent.
+def _assess_routing(output: str) -> list[str]:
+    """Act 6's two routes, and that the route reached a container rather than only a report.
 
-    Returns the entitlement as well as the failures, because the footer's act count depends on
-    it: five of six is a healthy run against an older core and a broken one against a current
-    core, and nothing else in the output can tell those apart.
+    Each route is required **exactly once**, on the same policy `_assess_restore` applies to a
+    doubled verdict: the sample prints each one once, so a second came from somewhere else and
+    neither can be read. A label this file does not expect is refused for the same reason.
     """
-    support = _ROUTING_SUPPORT.search(output)
-    if support is None:
-        return False, [
-            "no 'core supports per-spec selection' line — act 6 did not say whether the core "
-            "this run resolved can route, so a missing routing act cannot be told apart from "
-            "a broken one, and a skipped act reads exactly like a passing one"
-        ]
-
-    routed = dict(_ROUTED_LINE.findall(output))
-    if support.group(1) == "no":
-        if routed:
-            # Both claims are about the same run and they contradict each other, so neither
-            # can be read. Refused rather than resolved in favour of one, on `_assess_restore`'s
-            # policy for a doubled verdict.
-            return False, [
-                "the run says the core cannot select per spec and then printed a route for "
-                f"{', '.join(sorted(routed))} — one of those is not a measurement of this run"
-            ]
-        return False, []
+    seen: dict[str, list[str]] = {}
+    for spec, backend in _ROUTED_LINE.findall(output):
+        seen.setdefault(spec, []).append(backend)
 
     failures: list[str] = []
     for spec, expected in _ROUTED.items():
-        if spec not in routed:
+        answers = seen.get(spec, [])
+        if not answers:
             failures.append(
                 f"no 'routed {spec} spec' line — act 6 reported no route for it, and both "
                 "routes are required: one is the feature and the other is what keeps it safe"
             )
-        elif routed[spec] != expected:
+        elif len(answers) > 1:
             failures.append(
-                f"the {spec} spec routed to {routed[spec]!r}, expected exactly {expected!r} — "
+                f"'routed {spec} spec' appears {len(answers)} times, saying "
+                f"{', '.join(answers)} — the sample prints it once, so something else is "
+                "writing measured routes into this stream and none of them can be trusted"
+            )
+        elif answers[0] != expected:
+            failures.append(
+                f"the {spec} spec routed to {answers[0]!r}, expected exactly {expected!r} — "
                 + (
                     "this is the spec act 2 is refused for, so anything else means the router "
                     "did not read past the backend that refuses it"
@@ -230,11 +209,19 @@ def _assess_routing(output: str) -> tuple[bool, list[str]]:
                 )
             )
 
+    unexpected = sorted(set(seen) - set(_ROUTED))
+    if unexpected:
+        failures.append(
+            f"act 6 printed a route for {', '.join(unexpected)}, which this check knows "
+            "nothing about — an unrecognised measured route is either a sample this file has "
+            "fallen behind or a line something else wrote, and neither may pass silently"
+        )
+
     executed = _measured_line(output, "the routed backend runs:")
     if executed is None:
         failures.append(
-            "no measured 'the routed backend runs:' line — the router chose a backend "
-            "showed the choice reaching a container rather than only a report about one"
+            "no measured 'the routed backend runs:' line — the router chose a backend and "
+            "nothing showed the choice reaching a container rather than only a report about it"
         )
     else:
         printed = re.search(r"the routed backend runs:\s*'([^']*)'", executed)
@@ -245,7 +232,7 @@ def _assess_routing(output: str) -> tuple[bool, list[str]]:
                 f"{_ROUTED_EXECUTED!r} — its own marker, not act 5's, so a run that re-read "
                 "the earlier act's file cannot answer for this one"
             )
-    return True, failures
+    return failures
 
 
 def _assess_restore(output: str) -> list[str]:
@@ -292,7 +279,7 @@ def _assess_restore(output: str) -> list[str]:
     return failures
 
 
-def _assess_footer(output: str, *, routed: bool) -> list[str]:
+def _assess_footer(output: str) -> list[str]:
     """The three counts, and the one that carries the sample's claim."""
     footer = _FOOTER.search(output)
     if footer is None:
@@ -302,15 +289,11 @@ def _assess_footer(output: str, *, routed: bool) -> list[str]:
         ]
     acts, disposed, registered = (int(group) for group in footer.groups())
     failures: list[str] = []
-    # Six when the resolved core can route and five when it cannot — act 6 is the one act
-    # entitled to be absent, and `_assess_routing` has already held the run to saying so.
-    expected_acts = 6 if routed else 5
-    if acts != expected_acts:
+    if acts != 6:
         failures.append(
-            f"{acts} of 6 acts completed, expected {expected_acts} — act 4 skips itself when "
-            "any of its four variables is unset, and act 6 only when the resolved core "
-            "predates per-spec selection; a skipped act is the one result that reads exactly "
-            "like a passing one"
+            f"only {acts} of 6 acts completed — act 4 skips itself when any of its four "
+            "variables is unset, and a skipped act is the one result that reads exactly like "
+            "a passing one"
         )
     if registered != 2:
         failures.append(
