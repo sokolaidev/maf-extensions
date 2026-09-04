@@ -16,10 +16,13 @@ The router exists for five things a backend cannot own:
   — :data:`~maf_sandbox.Isolation.MICROVM` unless the host says otherwise — is refused
   outright, as is a rung this package does not recognise; see
   :class:`~maf_sandbox._router.SandboxBackendNotPermitted`.  Enforced at construction and
-  pinned by tests.
+  pinned by tests.  A router selecting per spec (:class:`~maf_sandbox.Selection`) judges that
+  across the whole registration: it refuses when *nothing* clears the floor, and keeps an
+  individual backend below it, warned about and never routed to.
 - **The capability match.** A backend that cannot do what a workload's spec requires is
   refused when that workload attaches its tool — see
-  :class:`~maf_sandbox._router.SandboxCapabilityNotSupported`.
+  :class:`~maf_sandbox._router.SandboxCapabilityNotSupported`.  Selecting per spec, that same
+  match is what *chooses*, so it refuses only once every registered backend has.
 - **The transfer ceilings.** A spec declaring caps above what the backend allows in either
   direction is refused at the same moment — see
   :class:`~maf_sandbox._router.SandboxTransferLimitsNotPermitted`.

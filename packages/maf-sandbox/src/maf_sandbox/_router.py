@@ -106,12 +106,15 @@ class SandboxBackendNotPermitted(PermissionError):
     would hide a misconfiguration, and silently proceeding with the weaker one would break
     the boundary every claim about the execution surface rests on.
 
-    The **declaration** one covers a backend this package cannot read, and it is raised at two
-    times. At construction, and again per spec: a backend still carrying one of the attributes
-    :class:`~maf_sandbox.BackendDeclarations` replaced, or a ``declarations`` that is not one —
-    both are properties of the backend alone, so the earliest moment is construction. Per spec
-    only: a ``capabilities`` or ``egress_modes`` that is not a set, which is read where the
-    match consumes it.
+    The **declaration** one covers a backend this package cannot read, and *when* it is raised
+    depends on the selection. A backend still carrying one of the attributes
+    :class:`~maf_sandbox.BackendDeclarations` replaced, or a ``declarations`` that is not one,
+    is a property of the backend alone, so it is refused at construction under either. A
+    mis-shaped field — a ``capabilities`` or ``egress_modes`` that is not a set — is read where
+    the match consumes it, so under :data:`Selection.FIXED` it surfaces per spec. Under
+    :data:`Selection.PER_SPEC` it is refused at **construction** instead, and has to be:
+    routing catches this class to try the next backend, so an unreadable declaration left until
+    then would be indistinguishable from an honest refusal and quietly routed past.
     """
 
 
@@ -443,13 +446,10 @@ def _declared_limits(backend: SandboxBackend, declared: BackendDeclarations) -> 
 class Selection(StrEnum):
     """How a router decides which registered backend serves a workload.
 
-    :data:`FIXED` is the default and is what this package has always done.  Routing stays
-    opt-in for a billing reason rather than a stylistic one, and the reason is narrower than
-    it first looks: routing can only ever *serve* a spec that is refused today.  A router with
-    no ``selected`` pin routes to the first registered backend exactly as it resolves to it,
-    so nothing that runs today moves anywhere — what changes is that a refusal becomes a
-    running sandbox, and on a remote backend a running sandbox has a price.  A host takes that
-    trade deliberately.
+    :data:`FIXED` is the default.  What turning on :data:`PER_SPEC` costs, and it is the reason
+    it is opt-in: a spec that is refused today becomes a *running* sandbox, which on a remote
+    backend has a price.  ``docs/sandbox/capabilities.md`` carries the argument and the
+    migration case.
     """
 
     #: One backend, resolved at construction — the one ``selected`` names, or the first
