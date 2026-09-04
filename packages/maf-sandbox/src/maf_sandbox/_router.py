@@ -450,10 +450,6 @@ class Selection(StrEnum):
     so nothing that runs today moves anywhere — what changes is that a refusal becomes a
     running sandbox, and on a remote backend a running sandbox has a price.  A host takes that
     trade deliberately.
-
-    An enum rather than a flag because a third policy is already in view: re-routing when a
-    backend is *unreachable* rather than when it refuses is a different decision with its own
-    billing story, and it joins here instead of becoming a second boolean.
     """
 
     #: One backend, resolved at construction — the one ``selected`` names, or the first
@@ -642,14 +638,31 @@ class SandboxRouter:
         """
         if not self._backends:
             return []
+        floor = self._min_isolation
         rungs = [(backend, _declared_isolation(backend)) for backend in self._backends]
         for backend in self._backends:
             _declarations(backend)
-        if not any(meets_floor(rung, self._min_isolation) for _, rung in rungs):
+        below = [(backend, rung) for backend, rung in rungs if not meets_floor(rung, floor)]
+        if below and len(below) != len(rungs):
+            # Warned rather than raised, because this arrangement is the one PER_SPEC exists to
+            # serve and refusing it would take the feature away. Warned rather than left silent,
+            # because the alternative is the thing the floor's own refusal is written against: a
+            # host registers a backend below its floor, routing quietly passes over it in favour
+            # of one that clears it, and nothing ever says so. The per-spec refusal names it only
+            # when *nothing* can serve, which is exactly the case this one is not.
+            logger.warning(
+                "sandbox router: %s registered below this host's %r minimum-isolation floor, so "
+                "no workload is ever routed there; a stronger backend serves instead and the "
+                "registration is doing nothing. Remove it, or lower min_isolation if this host "
+                "means to accept that boundary.",
+                ", ".join(f"{backend.name!r} ({str(rung)})" for backend, rung in below),
+                str(floor),
+            )
+        if not any(meets_floor(rung, floor) for _, rung in rungs):
             named = ", ".join(f"{backend.name!r} ({str(rung)})" for backend, rung in rungs)
             raise SandboxBackendNotPermitted(
                 f"no registered sandbox backend meets this host's "
-                f"{str(self._min_isolation)!r} minimum-isolation floor (ladder, weakest "
+                f"{str(floor)!r} minimum-isolation floor (ladder, weakest "
                 f"first: {_LADDER}). Registered: {named}. This router selects per spec, so "
                 "one backend below the floor is not an error — it is simply never routed to. "
                 "None of them clearing it is different: no workload can be served at all, and "
@@ -671,12 +684,17 @@ class SandboxRouter:
 
     @property
     def enabled(self) -> bool:
-        """Whether any backend could serve something. A host attaches no tools when ``False``.
+        """Whether this router has a backend to try at all. A host attaches no tools if not.
 
-        Read off the registered candidates rather than off :attr:`backend`, which under
+        Registration rather than capability, and the gap is worth stating: a candidate is a
+        backend whose declarations could be read, where at least one of them clears this host's
+        floor.  A backend that then refuses every spec leaves this ``True`` — an empty
+        ``egress_modes`` is the plainest way, since it enforces no mode and so can serve none.
+        Whether *this* workload can be served is :meth:`ensure_can_serve`'s answer, and a much
+        stricter question.
+
+        Read off the candidates rather than off :attr:`backend`, which under
         :data:`Selection.PER_SPEC` is ``None`` while the router is perfectly able to serve.
-        Whether *this* workload can be served is :meth:`ensure_can_serve`'s answer and a
-        stricter question than this one.
         """
         return bool(self._candidates)
 

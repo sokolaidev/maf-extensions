@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import gc
+import logging
 import math
 import typing
 
@@ -3439,6 +3440,42 @@ class TestPerSpecSelection:
         with pytest.raises(SandboxCapabilityNotSupported) as refused:
             router.ensure_can_serve(_wanting_files_out())
         assert "'weak' (SandboxBackendNotPermitted)" in str(refused.value)
+
+    def test_a_backend_below_the_floor_is_named_once_at_construction(self, caplog):
+        """Routing past it is the promotion `min_isolation`'s own refusal is written against.
+
+        Nothing is unsafe — every candidate is checked against the floor, so the passed-over
+        backend can never serve — but it is then never used and never named, and a registration
+        doing nothing is the misconfiguration the floor refusal exists to surface. Said once, at
+        construction, rather than raised: a weaker backend registered beside a stronger one is
+        the arrangement this mode is for.
+        """
+        strong = _declaring("strong", isolation=Isolation.MICROVM)
+        weak = _declaring("weak")
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox._router"):
+            SandboxRouter([strong, weak], selection=Selection.PER_SPEC)
+        assert "'weak' (none)" in caplog.text
+        assert "no workload is ever routed there" in caplog.text
+
+    def test_a_registration_that_all_clears_the_floor_says_nothing(self, caplog):
+        """The warning has to stay rare enough to read, so the healthy arrangement is silent."""
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox._router"):
+            SandboxRouter(
+                [
+                    _declaring("a", isolation=Isolation.MICROVM),
+                    _declaring("b", isolation=Isolation.VM),
+                ],
+                selection=Selection.PER_SPEC,
+            )
+        assert caplog.text == ""
+
+    def test_nothing_clearing_the_floor_raises_rather_than_warns(self, caplog):
+        """The refusal outranks the warning, and a warning beside it would read as the whole
+        answer to a host reading its logs rather than its exception."""
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox._router"):
+            with pytest.raises(SandboxBackendNotPermitted):
+                SandboxRouter([_declaring("a"), _declaring("b")], selection=Selection.PER_SPEC)
+        assert caplog.text == ""
 
     def test_a_half_migrated_backend_registered_second_is_refused_at_construction(self):
         """Under the fixed selection nothing ever reads it; under routing every registered
