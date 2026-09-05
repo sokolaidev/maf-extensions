@@ -155,6 +155,12 @@ _WITHHELD_ROUTE = (
 _WITHHELD_EXITED_CLEANLY = "The program exited with status 0."
 _WITHHELD_EXITED_WITH_ERROR = "The program exited with a non-zero status."
 
+#: Added to the route sentence where the attached sink lands each call under a folder of its
+#: own, and rendered on every return path for the reason the sentence it joins is. The id is
+#: the host's own `uuid4`, taking no input from the arguments or from what the program did, so
+#: naming it carries nothing the guest or the model chose.
+_WITHHELD_OUTPUTS_FOLDER = "Anything this call saved is under `{folder}/` where its outputs land."
+
 
 class CodeactOutputs(StrEnum):
     """How a program's output files are named — the host's choice, made at construction.
@@ -275,8 +281,12 @@ def make_codeact_tools(
             guest-authored text survives into the result — but the values that replace it were
             still chosen by a program the model wrote, so this changes what the result *holds*
             and not where it came from: the tool declares ``SourceIntegrity.UNTRUSTED`` either
-            way. Requires :data:`CodeactOutputs.DECLARED`: the one mode where content can still
-            reach the model and no guest-chosen name reaches the result.
+            way. **Where the sink declares :attr:`~maf_sandbox.OutputSink.per_call` the names
+            half is a folder rather than a list**, and that one is not the program's to choose:
+            it is the host's id for this call, and it rides on the ``trusted`` route item
+            rather than beside the exit line. Requires
+            :data:`CodeactOutputs.DECLARED`: the one mode where content can still reach the
+            model and no guest-chosen name reaches the result.
 
             The exit status is rendered as one bit, zero or not, and the streams are not sized
             at all. Both are values the program chooses, so both are channels, and neither
@@ -287,9 +297,10 @@ def make_codeact_tools(
             program's, and its note about the run is surfaced whole under ``note:`` —
             withholding it would report a dropped output as a program that printed nothing.
 
-            **The result is two items, not one string.**  The call-derived half — the exit line
-            and the landed names — carries no label of its own, so it takes whatever the call's
-            label is; beside it sits the standing sentence naming the recovery route, labelled
+            **The result is two items, not one string.**  The call-derived half — the exit line and
+            the landed names, or the exit line alone where a folder replaces them — carries no
+            label of its own, so it takes whatever the call's label is; beside it sits the
+            standing sentence naming the recovery route, which carries that folder, labelled
             ``trusted``, because nothing a call produced reaches it and it is emitted on every
             return path including the refusals.  **Where the conversation is still clean** —
             hiding is a first-taint protection — a framework hiding untrusted content hides the
@@ -316,6 +327,15 @@ def make_codeact_tools(
             which a tool-fluent model reads as its return path rather than stumbling into, and a
             host that must close it should not attach this workload at all. The sink's
             ``display`` is deliberately *not* rendered here — see :func:`_format_landed`.
+
+            **A sink declaring :attr:`~maf_sandbox.OutputSink.per_call` removes the widest of
+            those.** The landed / not-written list goes, replaced by the folder they landed in,
+            which is the host's own id — so what is left is the two bits and a possible note,
+            rather than those plus one per declared output. It is that list only: a name that
+            fails validation is still named in the refusal that says why, before any program
+            runs and whatever the sink does. The bits do not become unreachable either — a
+            model that can list that folder reads the same names off the store, under the
+            host's own labels and approvals rather than out of this result.
         outbound_max_confidentiality: The host's cap for tools that carry something out, in the
             host's own vocabulary. Off by default and written only when something can actually
             leave: an artifact landing in the sink, a host tool that carries something out, or
@@ -777,6 +797,28 @@ _DESCRIPTION_DECLARED_WITHHELD = """**To produce files, name them in ``outputs``
 
 _DESCRIPTION_RETURNS_SAVED_WITHHELD = """  A run that saved files also names each one."""
 
+#: The withholding pair again, for a host whose sink lands each call under a folder of its own.
+#: Two promises above stop being true: nothing names which files landed, so nothing reports a
+#: name declared and not written either. It names the folder without promising a reader for it,
+#: for the reason `_WITHHELD_ROUTE` names its route without promising one: that is the host's
+#: wiring rather than this kind's to claim.
+_DESCRIPTION_DECLARED_WITHHELD_PER_CALL = """**To produce files, name them in ``outputs`` and
+        write them into the working directory.**  They are saved to host storage after the
+        program exits, into a folder named for this call, and the result names that folder —
+        not which files landed in it, and not what is in them, so do not claim to have read a
+        file you only produced.  If you have a tool that reads that folder, what is in it is
+        what actually landed.  A file you write without declaring is not saved at all.  **A
+        program that fails still saves what it wrote**, so writing what you need into a
+        declared output and then failing still gets it out.
+
+        Naming a file in both ``files`` and ``outputs`` is how you edit one in place.  Since a
+        program that fails still saves, one that dies part way through rewriting a file saves
+        whatever it had written by then."""
+
+#: Replaces the pair above's returns line: naming each file is what this mode stops doing.
+_DESCRIPTION_RETURNS_SAVED_PER_CALL = """  A call that saved files also names the folder they
+            are in."""
+
 
 def _tool_description(
     *,
@@ -785,6 +827,7 @@ def _tool_description(
     host_tool_names: frozenset[str] = frozenset(),
     egress_allow: Sequence[str] = (),
     withhold: bool,
+    lands_per_call: bool = False,
 ) -> str:
     """The description the model reads, for the channels this host actually wired.
 
@@ -812,7 +855,12 @@ def _tool_description(
         body.append(_DESCRIPTION_FILES)
         arguments.append(_DESCRIPTION_ARG_FILES)
     if outputs is CodeactOutputs.DECLARED:
-        body.append(_DESCRIPTION_DECLARED_WITHHELD if withhold else _DESCRIPTION_DECLARED)
+        if not withhold:
+            body.append(_DESCRIPTION_DECLARED)
+        elif lands_per_call:
+            body.append(_DESCRIPTION_DECLARED_WITHHELD_PER_CALL)
+        else:
+            body.append(_DESCRIPTION_DECLARED_WITHHELD)
         arguments.append(_DESCRIPTION_ARG_OUTPUTS)
     elif outputs is CodeactOutputs.MANIFEST:
         body.append(_DESCRIPTION_MANIFEST)
@@ -826,7 +874,12 @@ def _tool_description(
         returns = _DESCRIPTION_RETURNS_HOST_TOOL_CALLED if host_tool_names else _DESCRIPTION_RETURNS
     returns += _DESCRIPTION_RETURNS_DEGRADES
     if outputs is not CodeactOutputs.NONE:
-        returns += _DESCRIPTION_RETURNS_SAVED_WITHHELD if withhold else _DESCRIPTION_RETURNS_SAVED
+        if not withhold:
+            returns += _DESCRIPTION_RETURNS_SAVED
+        elif lands_per_call:
+            returns += _DESCRIPTION_RETURNS_SAVED_PER_CALL
+        else:
+            returns += _DESCRIPTION_RETURNS_SAVED_WITHHELD
     return (
         "\n\n        ".join(body)
         + "\n\n        Args:\n            "
@@ -863,6 +916,7 @@ def _execute_code_tool(
     Four signatures over one implementation, because MAF derives the tool's schema from the
     function's parameters: a host that wired no file store must not be shown ``files``.
     """
+    lands_per_call = session.output_sink is not None and session.output_sink.per_call
 
     async def run(
         code: str, files: list[str] | None, declared: list[str] | None
@@ -882,9 +936,13 @@ def _execute_code_tool(
             return answer
         # At the funnel rather than at each `return` inside `_execute`: the trusted label is
         # honest only where the sentence is on every path, refusals included.
+        route = _WITHHELD_ROUTE
+        if lands_per_call:
+            folder = session.guest_call_path().rsplit("/", 1)[-1]
+            route = f"{route} {_WITHHELD_OUTPUTS_FOLDER.format(folder=folder)}"
         return [
             Content.from_text(answer),
-            labelled_result_item(_WITHHELD_ROUTE, SourceIntegrity.TRUSTED),
+            labelled_result_item(route, SourceIntegrity.TRUSTED),
         ]
 
     async def with_files_and_outputs(
@@ -923,6 +981,7 @@ def _execute_code_tool(
         # sandbox actually got.
         egress_allow=session.spec.egress_allow,
         withhold=withhold,
+        lands_per_call=lands_per_call,
     )
     return body
 
@@ -1147,6 +1206,7 @@ async def _execute(
         session,
         sandbox,
         guest_prefix,
+        call_id,
         outputs,
         names,
         reserved,
@@ -1503,6 +1563,7 @@ async def _collect(
     session: SandboxToolSession,
     sandbox: Sandbox,
     guest_prefix: str,
+    call_id: str,
     outputs: CodeactOutputs,
     declared: list[str],
     reserved: Mapping[str, str],
@@ -1510,7 +1571,11 @@ async def _collect(
     withhold: bool = False,
     candidates: frozenset[str] | None = None,
 ) -> str:
-    """Land whatever this run produced, and say what happened — never raising into the model."""
+    """Land whatever this run produced, and say what happened — never raising into the model.
+
+    ``call_id`` is passed to :func:`~maf_sandbox.collect_outputs` whatever the sink does with
+    it: a host swapping in one that lands per call changes nothing here.
+    """
     sink = session.output_sink
     if sink is None:  # unreachable: `sandboxed_tool` refuses this spec without a sink
         return "Error: no output sink is configured, so nothing could be saved."
@@ -1556,7 +1621,7 @@ async def _collect(
         for name in declared
     )
     try:
-        landed = await collect_outputs(sandbox, spec, sink=sink, outputs=call_time)
+        landed = await collect_outputs(sandbox, spec, sink=sink, outputs=call_time, call_id=call_id)
     except SandboxOutputError as exc:
         logger.warning("execute_code: could not save this run's files: %s", error_detail(exc))
         if withhold:
@@ -1570,6 +1635,10 @@ async def _collect(
     except Exception as exc:  # noqa: BLE001
         logger.warning("execute_code: saving this run's files failed: %s", error_detail(exc))
         return f"Error: the program ran but its files could not be saved. {_MAY_HAVE_LANDED}"
+    if withhold and sink.per_call:
+        # Which names landed is a bit per declared name the guest's program chooses. The route
+        # sentence names the folder in its place, so nothing is said here.
+        return ""
     return _format_landed(
         landed,
         declared,

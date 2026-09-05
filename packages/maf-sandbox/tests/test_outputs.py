@@ -206,7 +206,13 @@ class TestArtifactShapes:
         assert {field.name for field in dataclasses.fields(OutputSink)} == {
             "deliver",
             "normalization",
+            "per_call",
         }
+
+    def test_an_artifact_carries_no_call_id_unless_it_was_collected_under_one(self):
+        artifact = Artifact(name="a.png", content=b"x", kind=_KIND, media_type=_PNG)
+
+        assert artifact.call_id is None
 
 
 class TestValidateArtifactName:
@@ -1393,3 +1399,74 @@ class TestMakeFileSystemSink:
 
         assert [a.name for a in landed] == ["report.md"]
         assert (tmp_path / "out" / "report.md").read_bytes() == b"# hi"
+
+
+class TestTheCallIdReachesTheSink:
+    """`collect_outputs(call_id=...)` is how a sink keeps one call's landings from answering
+    for the next call's."""
+
+    def _sandbox(self) -> InProcessSandbox:
+        sandbox = InProcessSandbox()
+        asyncio.run(
+            sandbox.write_file(f"{_WORK_DIR}/report.md", b"# hi", working_directory=_WORK_DIR)
+        )
+        return sandbox
+
+    def test_every_artifact_carries_the_id_it_was_collected_under(self):
+        recorder = _RecordingSink()
+        spec = _spec(DeclaredOutput(path="report.md"))
+
+        asyncio.run(collect_outputs(self._sandbox(), spec, sink=recorder.sink, call_id="c0ffee"))
+
+        assert [artifact.call_id for artifact in recorder.delivered] == ["c0ffee"]
+
+    def test_a_caller_that_passes_none_delivers_none(self):
+        """Every sink written before the field existed keeps seeing what it saw."""
+        recorder = _RecordingSink()
+        spec = _spec(DeclaredOutput(path="report.md"))
+
+        asyncio.run(collect_outputs(self._sandbox(), spec, sink=recorder.sink))
+
+        assert [artifact.call_id for artifact in recorder.delivered] == [None]
+
+    def test_a_sink_declares_nothing_about_its_layout_by_default(self):
+        assert OutputSink(deliver=_RecordingSink().deliver).per_call is False
+
+    def test_a_per_call_sink_with_no_id_is_refused_before_anything_is_read(self):
+        """With the declaration checks rather than in the delivery loop: reaching it per
+        artifact would refuse the second one with the first already landed."""
+        recorder = _RecordingSink()
+        sink = dataclasses.replace(recorder.sink, per_call=True)
+        sandbox = _RecordingSandbox()
+        asyncio.run(
+            sandbox.write_file(f"{_WORK_DIR}/report.md", b"# hi", working_directory=_WORK_DIR)
+        )
+        sandbox.calls.clear()
+        spec = _spec(DeclaredOutput(path="report.md"))
+
+        with pytest.raises(ValueError, match="no call_id"):
+            asyncio.run(collect_outputs(sandbox, spec, sink=sink))
+
+        assert sandbox.calls == []
+        assert recorder.delivered == []
+
+    def test_a_per_call_sink_with_an_id_lands_as_any_other_does(self):
+        recorder = _RecordingSink()
+        sink = dataclasses.replace(recorder.sink, per_call=True)
+        spec = _spec(DeclaredOutput(path="report.md"))
+
+        landed = asyncio.run(collect_outputs(self._sandbox(), spec, sink=sink, call_id="c0ffee"))
+
+        assert [item.name for item in landed] == ["report.md"]
+        assert recorder.delivered[0].call_id == "c0ffee"
+
+    def test_a_collection_that_lands_nothing_needs_no_id(self):
+        """The refusal is about delivery, and a `CONSUME` output reaches no sink."""
+        sandbox = self._sandbox()
+        recorder = _RecordingSink()
+        sink = dataclasses.replace(recorder.sink, per_call=True)
+        spec = _spec(
+            DeclaredOutput(path="report.md", disposition=OutputDisposition.CONSUME),
+        )
+
+        assert asyncio.run(collect_outputs(sandbox, spec, sink=sink)) == ()
