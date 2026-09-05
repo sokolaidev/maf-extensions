@@ -1,0 +1,62 @@
+name: Lockfile drift
+
+# Asks whether `uv.lock` still holds the newest agent-framework release the declared ranges
+# admit. The offline suite runs under `uv sync --locked`, so the locked version is the one it
+# asserts against; an adopter resolves the newest `>=1.13.0,<2` admits.
+#
+# **`.github/dependabot.yml` proposes the refresh; this reports whether one landed.** The
+# question is the lockfile's state, so a Dependabot that proposes nothing reds this exactly as
+# an unmerged proposal does — and its uv updater has an open defect on workspace repositories
+# (dependabot-core#14004), which is this repository's shape. Monthly against its weekly, so a
+# red means a month with nothing landing rather than a proposal a day old.
+#
+# **`uv` decides what the newest admitted release is**, so this re-resolves and compares two
+# lockfiles rather than re-deriving the range against the index. Nothing is committed and no
+# pull request is opened: a branch pushed by this workflow's own token has its required checks
+# held at `action_required` (docs/maintainers.md), so a person opens the refresh and the full
+# gate runs on it.
+on:
+  schedule:
+    # 04:40 UTC on the 1st: off the top of the hour, and clear of the daily conformance run and
+    # of the Dependabot window this is measuring.
+    - cron: "40 4 1 * *"
+  workflow_dispatch:
+
+# Nothing here writes to the repository: the verdict is the run's colour and its summary.
+permissions:
+  contents: read
+
+concurrency:
+  group: lockfile-drift
+  cancel-in-progress: false
+
+jobs:
+  framework:
+    name: uv.lock holds the newest agent-framework the ranges admit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install uv
+        # Pinned to the commit v5 resolves to: a moving tag is a supply-chain hole.
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      # The distributions come from the script rather than being spelled again here. Two lists
+      # drift, and the one that drifts silently is the one that upgrades nothing.
+      - name: Re-resolve the framework
+        run: |
+          set -euo pipefail
+          cp uv.lock "$RUNNER_TEMP/uv.lock.committed"
+          upgrades=()
+          while read -r distribution; do
+            upgrades+=(--upgrade-package "$distribution")
+          done < <(python3 scripts/check_locked_framework.py --packages)
+          uv lock "${upgrades[@]}"
+
+      # `pipefail` so the script's verdict, not `tee`'s, is the step's.
+      - name: Say what moved
+        run: |
+          set -euo pipefail
+          python3 scripts/check_locked_framework.py "$RUNNER_TEMP/uv.lock.committed" uv.lock \
+            | tee -a "$GITHUB_STEP_SUMMARY"

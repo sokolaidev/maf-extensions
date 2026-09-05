@@ -1,0 +1,36 @@
+# Refreshes the agent-framework version `uv.lock` holds, which is the one the offline suite runs
+# under `uv sync --locked` while an adopter resolves the newest the declared range admits.
+#
+# **Scoped by an allow list, and to the framework only.** The dev group's `ruff`, `pyright` and
+# `pytest` bands are pinned so a new lint minor cannot drift findings across unrelated pull
+# requests; refreshing those is a decision, not maintenance a bot proposes.
+#
+# **Nothing here may move a range.** The uv updater rewrites `uv.lock` and any *pinned* version
+# in a manifest, and every framework declaration here is a range, so none is in reach;
+# `versioning-strategy` stays unset because `increase` is the value that would raise a floor.
+#
+# `.github/workflows/lock-drift.yml` is what reports whether these proposals arrive.
+
+version: 2
+
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "04:00"
+      timezone: "Etc/UTC"
+    # `all` rather than the default, which is direct dependencies only. `agent-framework-core`
+    # is declared by the workspace members rather than by the root manifest this reads, so
+    # whether it counts as direct here is Dependabot's judgement and not one worth betting on.
+    allow:
+      - dependency-name: "agent-framework-core"
+        dependency-type: "all"
+      - dependency-name: "agent-framework-openai"
+        dependency-type: "all"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    # Two distributions, so two is every proposal this can have open at once.
+    open-pull-requests-limit: 2
