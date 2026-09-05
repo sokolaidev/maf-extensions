@@ -1,6 +1,6 @@
 name: Publish
 
-# Six packages share this workflow, so the run's own title has to say which one. Without a
+# Seven packages share this workflow, so the run's own title has to say which one. Without a
 # `run-name` every run is called "Publish", and a deployment-review prompt — in the mobile
 # app especially, where the reviewer sees the title and the job list and nothing else — asks
 # for approval to upload without naming what.

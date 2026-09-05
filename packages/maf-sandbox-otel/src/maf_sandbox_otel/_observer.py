@@ -5,8 +5,10 @@ questions.  A **log record** is emitted for all of them and is the one a securit
 keeps: it does not depend on anything else being instrumented, and it survives a trace sampler
 that threw the span away.  A **span** is emitted for every event that carries a duration, so a
 call's shape is visible beside the agent framework's own.  And a handful of **counters** answer
-the aggregate questions — how many tunnels, how many refusals, how many bytes out — without
-anybody reading a record at all.
+the aggregate questions — how many sandboxes were served or refused, how many host-tool calls
+and under what outcome, how many bytes a sink took — without anybody reading a record at all.
+Not *tunnels*: what a guest actually reached is not on this seam at all, and a counter named
+for it would invite reading allowed egress as observed egress.
 
 **Spans are written after the fact.**  An observer is told what happened once it has happened,
 so each span is created with an explicit start time derived from the event's own duration and
@@ -94,6 +96,7 @@ from ._attributes import (
     TOOL,
     UNCLEAN,
     Redaction,
+    instrumentation_version,
     sorted_values,
     without_none,
 )
@@ -139,13 +142,16 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
         meter_provider: MeterProvider | None = None,
         record_sensitive_data: bool = False,
     ) -> None:
+        # The version rides with the scope on all three, so an operator can tell records from
+        # two releases of this package apart — a 0.x telemetry schema will move.
+        version = instrumentation_version()
         self._tracer: Tracer = (tracer_provider or get_tracer_provider()).get_tracer(
-            INSTRUMENTATION_SCOPE
+            INSTRUMENTATION_SCOPE, version
         )
         self._logger: Logger = (logger_provider or get_logger_provider()).get_logger(
-            INSTRUMENTATION_SCOPE
+            INSTRUMENTATION_SCOPE, version
         )
-        meter = (meter_provider or get_meter_provider()).get_meter(INSTRUMENTATION_SCOPE)
+        meter = (meter_provider or get_meter_provider()).get_meter(INSTRUMENTATION_SCOPE, version)
         self._redaction = Redaction(sensitive=record_sensitive_data)
 
         self._acquires: Counter = meter.create_counter(

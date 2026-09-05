@@ -38,7 +38,7 @@ dependencies = [
     # The OpenTelemetry **API**, never the SDK: which exporter runs, and whether one runs at
     # all, belongs to the application. A host with no SDK installed gets the API's no-op
     # implementations and pays nothing.
-    "opentelemetry-api>=1.37,<2",
+    "opentelemetry-api>=1.38,<2",
 ]
 
 [project.urls]

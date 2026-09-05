@@ -2,7 +2,7 @@
 
 **OpenTelemetry records of what a sandbox did** — which conversation was served what posture, which host tools a guest called and under whose authority, what crossed the boundary and with what integrity label, and how every sandbox was disposed of.
 
-`maf-sandbox` reports these as events on an observer seam and records nothing itself. This package is one observer: it turns each event into a **log record**, a **span** and, where it is countable, a **metric**. It depends on `maf-sandbox` and the OpenTelemetry **API**, and on nothing else — no backend, no agent framework, no SDK.
+`maf-sandbox` reports these as events on an observer seam and records nothing itself. This package is one observer: it turns each event into a **log record**, each event that carries a duration into a **span**, and the countable ones into a **metric**. A store read has no duration of its own, so it lands as an event on the call's span instead — the table below says which is which. It depends on `maf-sandbox` and the OpenTelemetry **API**, and on nothing else — no backend, no agent framework, no SDK.
 
 ```bash
 pip install maf-sandbox-otel
@@ -64,7 +64,9 @@ The **call id** is the one part of a key recorded in the clear. The framework ge
 
 ## Cost
 
-An observer runs synchronously on the task serving the tool call, so this package does no I/O: it hands each record to the OpenTelemetry API and returns. Batching and export are the SDK's, on its own thread. With no SDK installed at all, the API's no-op implementations answer and the cost is a few attribute dictionaries per call.
+An observer runs synchronously on the task serving the tool call, so this package does no I/O: it hands each record to the OpenTelemetry API and returns. With no SDK installed at all, the API's no-op implementations answer and the cost is a few attribute dictionaries per call.
+
+**Whether export blocks the call is your SDK configuration, not this package.** A `BatchSpanProcessor` and a `BatchLogRecordProcessor` hand off to their own thread, which is what keeps a slow collector away from a sandbox call. The `Simple*` processors call the exporter **synchronously**, inside `span.end()` and `logger.emit()` — so configured that way, a network exporter blocks the call for as long as the export takes. Use the batch processors where call latency matters; the simple ones are for tests, which is what this package's own suite uses them for.
 
 A failure here never reaches the call — `maf-sandbox` contains whatever an observer does and logs it.
 

@@ -43,7 +43,12 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
 
-from maf_sandbox_otel import NAMESPACE, OpenTelemetrySandboxObserver, hashed_key
+from maf_sandbox_otel import (
+    NAMESPACE,
+    OpenTelemetrySandboxObserver,
+    hashed_conversation,
+    hashed_key,
+)
 
 KEY = SandboxKey(scope="tenant-a", thread_id="thread-1", agent_dir="agent", call_id="call-9")
 SPEC = SandboxSpec(
@@ -444,11 +449,43 @@ class TestTheHashIsAJoinColumn:
     def test_it_is_stable(self):
         assert hashed_key(KEY) == hashed_key(KEY)
 
-    def test_two_keys_that_render_alike_still_differ(self):
-        """The parts are joined with a separator none of them can hold."""
-        first = SandboxKey(scope="a", thread_id="b|c", agent_dir="d", call_id="")
-        second = SandboxKey(scope="a|b", thread_id="c", agent_dir="d", call_id="")
+    @pytest.mark.parametrize("boundary", ["\x1f", "|", ":"], ids=["unit-sep", "pipe", "colon"])
+    def test_two_keys_that_could_render_alike_still_differ(self, boundary):
+        """Including the encoding's own characters: nothing stops a scope holding one."""
+        first = SandboxKey(scope="a", thread_id=f"b{boundary}c", agent_dir="d", call_id="")
+        second = SandboxKey(scope=f"a{boundary}b", thread_id="c", agent_dir="d", call_id="")
         assert hashed_key(first) != hashed_key(second)
+
+    def test_a_conversation_groups_across_calls_where_the_key_does_not(self):
+        """A per-call workload puts a fresh `call_id` in every key, so the key's own hash
+        differs per call — and grouping a conversation's records is the query this exists for,
+        with the scope and thread redacted by default."""
+        first = SandboxKey(scope="t", thread_id="th", agent_dir="a", call_id="call-1")
+        second = SandboxKey(scope="t", thread_id="th", agent_dir="a", call_id="call-2")
+        assert hashed_key(first) != hashed_key(second)
+        assert hashed_conversation(first) == hashed_conversation(second)
+
+    def test_a_multi_key_call_keeps_every_part_the_single_key_case_keeps(self):
+        """The list branch is where a redaction guarantee is easiest to drop silently."""
+        other = SandboxKey(scope="t2", thread_id="th2", agent_dir="a2", call_id="call-2")
+        recorded = build(sensitive=True)
+        recorded.observer.tool_call_ended(
+            ToolCallEnded(
+                tool="execute_code",
+                kind="codeact",
+                keys=(KEY, other),
+                seconds=1.0,
+                failure=None,
+                unclean=0,
+            )
+        )
+        attributes = recorded.attributes()
+        assert attributes[f"{NAMESPACE}.sandbox.call_id"] == ("call-9", "call-2")
+        assert attributes[f"{NAMESPACE}.sandbox.scope"] == ("tenant-a", "t2")
+        assert attributes[f"{NAMESPACE}.sandbox.conversation"] == (
+            hashed_conversation(KEY),
+            hashed_conversation(other),
+        )
 
 
 class TestTheCountersAnswerTheAggregateQuestions:

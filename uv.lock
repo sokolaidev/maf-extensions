@@ -883,7 +883,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
-    { name = "opentelemetry-api", specifier = ">=1.37,<2" },
+    { name = "opentelemetry-api", specifier = ">=1.38,<2" },
 ]
 
 [[package]]

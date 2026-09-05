@@ -12,6 +12,7 @@ where there is no SDK to read with.
 
 from __future__ import annotations
 
+import pytest
 from maf_sandbox import (
     DisposalFailure,
     Egress,
@@ -114,10 +115,16 @@ class TestTheJoinColumn:
     def test_the_hash_is_stable_across_calls(self):
         assert hashed_key(KEY) == hashed_key(KEY)
 
-    def test_two_keys_that_render_alike_still_differ(self):
-        """The parts are joined with a separator none of them can hold."""
-        first = SandboxKey(scope="a", thread_id="b|c", agent_dir="d")
-        second = SandboxKey(scope="a|b", thread_id="c", agent_dir="d")
+    @pytest.mark.parametrize(
+        "boundary", ["\x1f", "|", ":", ""], ids=["unit-sep", "pipe", "colon", "empty"]
+    )
+    def test_two_keys_that_could_render_alike_still_differ(self, boundary):
+        """`SandboxKey` constrains none of its parts, so there is no character a part cannot
+        hold — including whatever this encoding happens to use. Length-prefixing is what makes
+        the digest injective, and a test using a character the code never touches proves that
+        for exactly the character nobody was at risk from."""
+        first = SandboxKey(scope="a", thread_id=f"b{boundary}c", agent_dir="d")
+        second = SandboxKey(scope=f"a{boundary}b", thread_id="c", agent_dir="d")
         assert hashed_key(first) != hashed_key(second)
 
     def test_the_namespace_every_attribute_hangs_off_is_pinned(self):

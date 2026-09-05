@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from importlib import metadata
 
 from maf_sandbox import SandboxKey
 from opentelemetry.util.types import AttributeValue
@@ -33,10 +34,25 @@ from opentelemetry.util.types import AttributeValue
 NAMESPACE = "maf_sandbox"
 
 # The instrumentation scope, which is what a backend shows as the source of a span or a log
-# record. The version is this package's, not the core's: it names what did the recording.
+# record. Its version is passed beside it (see `_observer`) and is this package's rather than
+# the core's: it names what did the recording, so records from two releases are tellable apart.
 INSTRUMENTATION_SCOPE = "maf_sandbox_otel"
 
+
+def instrumentation_version() -> str | None:
+    """This package's installed version, or ``None`` where it cannot be read.
+
+    ``None`` rather than a guess: a scope with no version is a known shape to a backend, and a
+    made-up one would be worse than an absent one for telling two releases apart.
+    """
+    try:
+        return metadata.version("maf-sandbox-otel")
+    except metadata.PackageNotFoundError:
+        return None
+
+
 KEY = f"{NAMESPACE}.sandbox.key"
+CONVERSATION = f"{NAMESPACE}.sandbox.conversation"
 SCOPE = f"{NAMESPACE}.sandbox.scope"
 THREAD_ID = f"{NAMESPACE}.sandbox.thread_id"
 AGENT_DIR = f"{NAMESPACE}.sandbox.agent_dir"
@@ -90,14 +106,31 @@ DISPOSAL_CODE = f"{NAMESPACE}.disposal.code"
 DISPOSAL_DETAIL = f"{NAMESPACE}.disposal.detail"
 
 
-def hashed_key(key: SandboxKey) -> str:
-    """A stable, non-reading-reversible name for one sandbox key.
+def _digest(*parts: str) -> str:
+    """A stable, non-reading-reversible name for an ordered tuple of strings.
 
-    The four parts are joined with a separator no part can contain, so two different keys
-    cannot render to one string and hash alike.
+    Length-prefixed rather than delimited.  ``SandboxKey`` puts no constraint on what a scope
+    or a thread id may contain, so *any* delimiter is one a part can hold — and two different
+    keys rendering to one string would merge two conversations into a single record.
     """
-    parts = "\x1f".join((key.scope, key.thread_id, key.agent_dir, key.call_id))
-    return hashlib.sha256(parts.encode("utf-8")).hexdigest()[:16]
+    joined = "".join(f"{len(part)}:{part}" for part in parts)
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]
+
+
+def hashed_key(key: SandboxKey) -> str:
+    """A stable name for one sandbox key — every part of it, the call included."""
+    return _digest(key.scope, key.thread_id, key.agent_dir, key.call_id)
+
+
+def hashed_conversation(key: SandboxKey) -> str:
+    """A stable name for the conversation a key belongs to, which the call cannot change.
+
+    Separate from :func:`hashed_key` because a per-call workload puts a fresh ``call_id`` in
+    every key, so the key's own hash differs per call and cannot group a conversation's records
+    — which is the query this package exists for, and the scope and thread that would answer it
+    directly are redacted by default.
+    """
+    return _digest(key.scope, key.thread_id)
 
 
 @dataclass(frozen=True)
@@ -113,10 +146,16 @@ class Redaction:
     sensitive: bool = False
 
     def key(self, key: SandboxKey | None) -> dict[str, AttributeValue]:
-        """The join column for one key, plus its parts where the host allowed them."""
+        """The join columns for one key, plus its parts where the host allowed them."""
         if key is None:
             return {}
-        recorded: dict[str, AttributeValue] = {KEY: hashed_key(key)}
+        recorded: dict[str, AttributeValue] = {
+            KEY: hashed_key(key),
+            # Beside the key, not instead of it: a per-call workload changes the key every
+            # call, so this is the only column a conversation's records can be grouped by
+            # once the scope and thread themselves are redacted.
+            CONVERSATION: hashed_conversation(key),
+        }
         # The call id is not held back with the rest. It is generated per call by the framework
         # rather than drawn from anyone's vocabulary, it names nobody on its own, and it is what
         # joins a record to the folder a sink landed that call's artifacts in — withholding it
@@ -130,15 +169,29 @@ class Redaction:
         return recorded
 
     def keys(self, keys: Sequence[SandboxKey]) -> dict[str, AttributeValue]:
-        """The join column for a call, which may have asked for more than one sandbox.
+        """The join columns for a call, which may have touched more than one sandbox.
 
         One key renders exactly as :meth:`key` does, so the ordinary call is queryable the same
-        way as every other event; two or more render as a list, since a call reaching two
-        sandboxes has no single key and naming one would hide the other.
+        way as every other event.  Two or more render as **aligned lists** — one entry per key,
+        in order, on every attribute a single key would have carried — because a call reaching
+        two sandboxes has no single key, and dropping the parts here would quietly suspend both
+        redaction guarantees for exactly the calls that touched the most.
         """
+        if not keys:
+            return {}
         if len(keys) == 1:
             return self.key(keys[0])
-        return {KEY: [hashed_key(key) for key in keys]} if keys else {}
+        recorded: dict[str, AttributeValue] = {
+            KEY: [hashed_key(key) for key in keys],
+            CONVERSATION: [hashed_conversation(key) for key in keys],
+        }
+        if any(key.call_id for key in keys):
+            recorded[CALL_ID] = [key.call_id for key in keys]
+        if self.sensitive:
+            recorded[SCOPE] = [key.scope for key in keys]
+            recorded[THREAD_ID] = [key.thread_id for key in keys]
+            recorded[AGENT_DIR] = [key.agent_dir for key in keys]
+        return recorded
 
     def text(self, name: str, value: str | None) -> dict[str, AttributeValue]:
         """One attribute a guest or the host's own data chose the content of."""
