@@ -329,7 +329,7 @@ def _sample():
 
     Its directory goes on `sys.path` so `from _scaffold import …` resolves the way it does under
     `uv run`, and everything loaded from there is evicted afterwards. That eviction is not
-    tidiness: thirteen samples carry a module named `_scaffold` and `sys.modules` holds one, so a
+    tidiness: every sample carries a module named `_scaffold` and `sys.modules` holds one, so a
     leftover here answers the next sample's import in `test_sample_modules_import.py`, which
     asserts the cache is clean.
 
