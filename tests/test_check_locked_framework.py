@@ -1,12 +1,8 @@
-"""What keeps `uv.lock`'s agent-framework current, and whether the two halves still agree.
+"""What keeps `uv.lock`'s agent-framework current, held to naming one set of distributions.
 
-`.github/dependabot.yml` proposes the refresh and `.github/workflows/lock-drift.yml` says
-whether one arrived. They are one mechanism only while they name the same distributions, and
-that list is complete only while it is the one the workspace declares — so all three are
-checked against each other here rather than kept in step by hand.
-
-The script itself decides two things: which versions a lockfile records, and what a maintainer
-reading a red run is told to run. Neither reaches the network.
+`FRAMEWORK`, Dependabot's `allow` list and the requirements the workspace declares have to be
+the same three lists, or the bot proposes what the drift run does not measure. Nothing here
+reaches the network.
 """
 
 from __future__ import annotations
@@ -63,6 +59,33 @@ source = {{ registry = "https://pypi.org/simple" }}
 _LOCKED = _LOCK.format(core="1.13.0", openai="1.13.0")
 _ADMITTED = _LOCK.format(core="1.17.0", openai="1.14.2")
 
+#: A universal lock forks, and one distribution then holds a `[[package]]` record per branch.
+#: The stale record comes **first** deliberately: a reader that keeps the last one it sees
+#: reports the current version for the whole distribution and misses the branch that is behind.
+_FORKED = """\
+version = 1
+
+[[package]]
+name = "agent-framework-core"
+version = "{first}"
+source = {{ registry = "https://pypi.org/simple" }}
+resolution-markers = ["python_full_version < '3.13'"]
+
+[[package]]
+name = "agent-framework-core"
+version = "{second}"
+source = {{ registry = "https://pypi.org/simple" }}
+resolution-markers = ["python_full_version >= '3.13'"]
+
+[[package]]
+name = "agent-framework-openai"
+version = "1.14.2"
+source = {{ registry = "https://pypi.org/simple" }}
+"""
+
+_FORKED_ONE_BRANCH_BEHIND = _FORKED.format(first="1.13.0", second="1.17.0")
+_FORKED_BOTH_CURRENT = _FORKED.format(first="1.17.0", second="1.17.0")
+
 _REQUIREMENT_NAME = re.compile(r"^[A-Za-z0-9._-]+")
 
 
@@ -112,8 +135,8 @@ class TestTheListIsTheOneTheWorkspaceDeclares:
 class TestReadingALockfile:
     def test_only_the_framework_entries_are_read(self):
         assert check.locked_versions(_LOCKED) == {
-            "agent-framework-core": "1.13.0",
-            "agent-framework-openai": "1.13.0",
+            "agent-framework-core": ("1.13.0",),
+            "agent-framework-openai": ("1.13.0",),
         }
 
     def test_a_lock_already_current_has_no_drift(self):
@@ -121,13 +144,15 @@ class TestReadingALockfile:
 
     def test_each_distribution_that_moved_is_named_with_both_versions(self):
         assert check.drift(_LOCKED, _ADMITTED) == [
-            ("agent-framework-core", "1.13.0", "1.17.0"),
-            ("agent-framework-openai", "1.13.0", "1.14.2"),
+            ("agent-framework-core", ("1.13.0",), ("1.17.0",)),
+            ("agent-framework-openai", ("1.13.0",), ("1.14.2",)),
         ]
 
     def test_a_distribution_that_did_not_move_is_left_out(self):
         half = _LOCK.format(core="1.17.0", openai="1.13.0")
-        assert check.drift(half, _ADMITTED) == [("agent-framework-openai", "1.13.0", "1.14.2")]
+        assert check.drift(half, _ADMITTED) == [
+            ("agent-framework-openai", ("1.13.0",), ("1.14.2",))
+        ]
 
     def test_an_entry_the_committed_lock_never_had_is_reported_as_absent(self):
         # `was` is not a version here, so it must not be rendered as one: a maintainer reads
@@ -135,7 +160,33 @@ class TestReadingALockfile:
         without = "\n".join(
             line for line in _LOCKED.splitlines() if "agent-framework-openai" not in line
         )
-        assert ("agent-framework-openai", check.ABSENT, "1.14.2") in check.drift(without, _ADMITTED)
+        assert ("agent-framework-openai", (check.ABSENT,), ("1.14.2",)) in check.drift(
+            without, _ADMITTED
+        )
+
+
+class TestALockThatForked:
+    """A universal lock can record one distribution more than once, under different markers."""
+
+    def test_every_record_is_read_rather_than_the_last_one(self):
+        assert check.locked_versions(_FORKED_ONE_BRANCH_BEHIND)["agent-framework-core"] == (
+            "1.13.0",
+            "1.17.0",
+        )
+
+    def test_a_branch_left_behind_is_drift_even_when_the_other_is_current(self):
+        # The regression this pins: reading one version per distribution keeps whichever record
+        # came last, which here is the current one, and the stale branch is never reported.
+        assert check.drift(_FORKED_ONE_BRANCH_BEHIND, _FORKED_BOTH_CURRENT) == [
+            ("agent-framework-core", ("1.13.0", "1.17.0"), ("1.17.0", "1.17.0"))
+        ]
+
+    def test_a_fork_that_did_not_move_is_not_drift(self):
+        assert check.drift(_FORKED_BOTH_CURRENT, _FORKED_BOTH_CURRENT) == []
+
+    def test_the_table_names_every_version_on_each_side(self):
+        rendered = check.report(check.drift(_FORKED_ONE_BRANCH_BEHIND, _FORKED_BOTH_CURRENT))
+        assert "| `agent-framework-core` | 1.13.0, 1.17.0 | 1.17.0, 1.17.0 |" in rendered
 
 
 class TestWhatARedRunSays:
@@ -237,7 +288,7 @@ class TestTheDriftRunAsksTheScript:
         assert [name for name in check.FRAMEWORK if name in text] == []
 
     def test_it_runs_on_a_schedule_and_on_demand(self):
-        # A check nobody triggers is documentation — #450's lesson, restated one workflow over.
+        # A schedule alone leaves no way to ask the question after fixing what it reported.
         workflow = yaml.safe_load(_DRIFT_WORKFLOW.read_text("utf-8"))
         # `on` is YAML 1.1's boolean, so safe_load gives the key back as `True`.
         assert "schedule" in workflow[True]

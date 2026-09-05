@@ -3,23 +3,13 @@
     python scripts/check_locked_framework.py --packages
     python scripts/check_locked_framework.py <committed lock> <re-resolved lock>
 
-`--packages` prints the distributions this repository has to keep current, one per line, so
-`.github/workflows/lock-drift.yml` builds its `uv lock --upgrade-package` arguments from the
-same list this reports against. Given two lockfiles it prints a run summary and exits 1 if the
-re-resolve moved any of them.
+`--packages` is where `.github/workflows/lock-drift.yml` gets its `uv lock --upgrade-package`
+arguments, so the list lives in one place. Given two lockfiles it prints a run summary and
+exits 1 if the re-resolve moved any of them.
 
-**`uv` decides what the newest admitted release is, not this.** The workflow re-resolves and
-this compares the two lockfiles; deriving the range against the index here would be a second
-resolver, free to disagree with the real one over a yanked release, a `requires-python` bump
-or a marker. A check that disagrees with the resolver is worse than no check.
-
-The exposure it measures is the gap between two versions: the offline suite runs under
-`uv sync --locked`, so every behavioural assertion it makes about the framework is made
-against the locked version, while a host installing these wheels resolves the newest the
-declared range admits (#809).
-
-Nothing here reaches the network, which is what `tests/test_check_locked_framework.py` holds
-it to.
+**`uv` decides what the newest admitted release is, not this**, which is why the comparison is
+between two lockfiles rather than against the index: a second resolver here would be free to
+disagree with the real one. Nothing reaches the network.
 """
 
 from __future__ import annotations
@@ -39,31 +29,41 @@ FRAMEWORK = ("agent-framework-core", "agent-framework-openai")
 ABSENT = "absent"
 
 
-def locked_versions(text: str) -> dict[str, str]:
-    """The version a `uv.lock` document records for each distribution in `FRAMEWORK`."""
+def locked_versions(text: str) -> dict[str, tuple[str, ...]]:
+    """Every version a `uv.lock` document records for each distribution in `FRAMEWORK`.
+
+    A tuple rather than one version, because a universal lock forks: one distribution can hold
+    several `[[package]]` records whose `resolution-markers` select different versions across
+    the `>=3.12,<3.15` this workspace supports. Keeping only the last would report no drift for
+    a fork where one branch moved and the other did not. Sorted, so the comparison is over the
+    versions a lock records rather than over the order it wrote them in.
+    """
     document = tomllib.loads(text)
-    return {
-        entry["name"]: entry["version"]
-        for entry in document.get("package", [])
-        if entry.get("name") in FRAMEWORK
-    }
+    recorded: dict[str, list[str]] = {}
+    for entry in document.get("package", []):
+        if entry.get("name") in FRAMEWORK:
+            recorded.setdefault(entry["name"], []).append(entry["version"])
+    return {name: tuple(sorted(versions)) for name, versions in recorded.items()}
 
 
-def drift(committed: str, resolved: str) -> list[tuple[str, str, str]]:
+def drift(committed: str, resolved: str) -> list[tuple[str, tuple[str, ...], tuple[str, ...]]]:
     """Each framework distribution the re-resolve moved, as (name, locked, admitted)."""
     was, now = locked_versions(committed), locked_versions(resolved)
+    absent = (ABSENT,)
     return [
-        (name, was.get(name, ABSENT), now[name])
+        (name, was.get(name, absent), now[name])
         for name in sorted(now)
-        if was.get(name, ABSENT) != now[name]
+        if was.get(name, absent) != now[name]
     ]
 
 
-def report(moved: list[tuple[str, str, str]]) -> str:
+def report(moved: list[tuple[str, tuple[str, ...], tuple[str, ...]]]) -> str:
     """The run summary, whichever way it went."""
     if not moved:
         return "`uv.lock` holds the newest agent-framework release the declared ranges admit."
-    rows = "\n".join(f"| `{name}` | {was} | {now} |" for name, was, now in moved)
+    rows = "\n".join(
+        f"| `{name}` | {', '.join(was)} | {', '.join(now)} |" for name, was, now in moved
+    )
     upgrades = " ".join(f"--upgrade-package {name}" for name, _, _ in moved)
     return (
         "**`uv.lock` is behind what a host installing these wheels resolves.** The offline "
@@ -81,9 +81,9 @@ def report(moved: list[tuple[str, str, str]]) -> str:
     )
 
 
-def annotation(moved: list[tuple[str, str, str]]) -> str:
+def annotation(moved: list[tuple[str, tuple[str, ...], tuple[str, ...]]]) -> str:
     """One line for the checks page, naming the drift rather than only its existence."""
-    listed = ", ".join(f"{name} {was} -> {now}" for name, was, now in moved)
+    listed = "; ".join(f"{name} {'/'.join(was)} -> {'/'.join(now)}" for name, was, now in moved)
     return (
         f"::error::uv.lock is behind the newest agent-framework the declared ranges admit: "
         f"{listed}. The offline suite tests the locked version; a host installing these wheels "
