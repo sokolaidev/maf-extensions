@@ -25,6 +25,7 @@ from maf_sandbox import (
     DeclaredOutput,
     DisposalFailure,
     Egress,
+    FileStoreProvenance,
     HostToolCalled,
     HostToolRegistry,
     HostToolRun,
@@ -836,6 +837,31 @@ class TestStoreReadsAreRecorded:
             False,
         )
 
+    def test_a_read_refused_by_the_provenance_check_is_still_recorded(self):
+        """The record's own refusal fires before the store is ever asked, and it is a supported
+        configuration — a `trusted` floor no middleware observes — so it is a reachable way out
+        of a read that would otherwise leave nothing behind."""
+        recorder = _Recorder()
+        session = SandboxToolSession(
+            _router(observer=recorder),
+            _context(),
+            "agent-1",
+            _SPEC,
+            name="widget_run",
+            logger=_LOG,
+            file_store_provenance=FileStoreProvenance(floor=SourceIntegrity.TRUSTED),
+        )
+
+        with pytest.raises(ValueError, match="file_store_provenance_middleware"):
+            asyncio.run(
+                session.read_file(
+                    InMemoryStore({"a.txt": "1"}), ListedFile("a.txt", SourceIntegrity.TRUSTED)
+                )
+            )
+
+        event = recorder.one(StoreFileRead)
+        assert (event.name, event.refused, event.characters) == ("a.txt", True, 0)
+
     def test_a_read_a_cancel_took_is_still_recorded(self):
         """A cancel leaves the site the same way a raise does — no text crossed — and it is not
         an `Exception`, so it needs its own catch or the read goes unrecorded."""
@@ -949,6 +975,45 @@ class TestTheCallIsRecorded:
         assert asyncio.run(_fn(_tool(router, build))()) == "done"
 
         assert recorder.one(ToolCallEnded).keys == (_KEY, other)
+
+    def test_a_synchronous_body_is_recorded_too(self):
+        """`sandboxed_tool` supports a body that awaits nothing, through its own wrapper. One
+        event per call has to hold there as well, or a whole class of tool is invisible."""
+        recorder = _Recorder()
+        router = _router(observer=recorder)
+
+        def build(session: SandboxToolSession):
+            def widget_run() -> str:
+                """Do a thing without awaiting."""
+                return "done"
+
+            return widget_run
+
+        assert _fn(_tool(router, build))() == "done"
+
+        event = recorder.one(ToolCallEnded)
+        # Empty because `acquire` is a coroutine: a body that awaits nothing holds no sandbox.
+        assert (event.tool, event.kind, event.keys) == ("widget_run", "test", ())
+        assert (event.failure, event.unclean) == (None, 0)
+
+    def test_a_body_that_returned_is_not_recorded_as_failing_its_label_check(self):
+        """The wrapper's own refusal is not the body's failure, and `failure` names the body."""
+        recorder = _Recorder()
+        router = _router(observer=recorder)
+
+        def build(session: SandboxToolSession):
+            async def widget_run() -> list:
+                """Return an empty list, which `sandboxed_tool` refuses after the body returns."""
+                return []
+
+            return widget_run
+
+        with pytest.raises(ValueError):
+            asyncio.run(_fn(_tool(router, build))())
+
+        # The body returned. What raised was this package's own check on what it returned, and
+        # attributing that to the body would send an operator to the wrong place.
+        assert recorder.one(ToolCallEnded).failure is None
 
     def test_a_call_that_acquired_nothing_records_no_keys(self):
         recorder = _Recorder()
