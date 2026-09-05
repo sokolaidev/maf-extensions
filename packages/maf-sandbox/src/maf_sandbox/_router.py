@@ -14,13 +14,23 @@ import dataclasses
 import inspect
 import logging
 import math
+import time
 import weakref
 from collections.abc import AsyncGenerator, Iterable, Sequence
 from contextlib import asynccontextmanager
 from enum import StrEnum
 from typing import cast
 
+from ._containment import CONTAINED, escapes_containment
 from ._host_tools_over_exec import fold_host_tool_call_transfer_limits
+from ._observer import (
+    DisposalReport,
+    SandboxAcquired,
+    SandboxDisposed,
+    SandboxObserver,
+    record,
+    refuse_an_unusable_observer,
+)
 from ._protocol import (
     DEFAULT_BACKEND_DECLARATIONS,
     ISOLATION_RANK,
@@ -235,6 +245,16 @@ ATTACH_REFUSALS: tuple[type[Exception], ...] = (
 )
 
 
+def _with_snapshotted_labels(spec: SandboxSpec) -> SandboxSpec:
+    """``spec`` with its own copy of ``labels``, so a delivered record cannot move afterwards.
+
+    ``labels`` is the only mutable field, so copying it is the whole duty — and it is copied
+    even when empty, because an empty dict is still the *caller's* dict and an observer writing
+    into one reaches the spec the caller holds.
+    """
+    return dataclasses.replace(spec, labels=dict(spec.labels))
+
+
 def _coded(backend_name: str, reported: object) -> DisposalFailure:
     """One backend's answer as a :class:`~maf_sandbox.DisposalFailure`, named by the backend.
 
@@ -419,6 +439,68 @@ def _declared_isolation_scopes(
     return scopes or frozenset({IsolationScope.CONVERSATION})
 
 
+@dataclasses.dataclass
+class _Serving:
+    """Which backend an in-flight acquire chose, for the record that covers every way out."""
+
+    backend: SandboxBackend | None = None
+
+
+def _recorded_name(backend: SandboxBackend) -> str:
+    """``backend.name`` for a record, never raising.
+
+    ``name`` is a property on somebody else's class, and an event's fields are evaluated in the
+    *caller's* frame — before :func:`record` is entered — so a property that raises here escapes
+    the containment the observer's own failures get, and fails an operation that had succeeded.
+    """
+    try:
+        return backend.name
+    except CONTAINED as raised:  # noqa: BLE001 - `_containment` carries the rule
+        if escapes_containment(raised):
+            raise
+        return type(backend).__name__
+
+
+def _reported(failure: DisposalFailure | None) -> DisposalReport:
+    """What a backend's answer to ``dispose`` says about whether the sandbox is gone.
+
+    ``None`` is ``"gone"`` and not "verified gone": :meth:`SandboxBackend.dispose` documents
+    that a backend with no way to check answers ``None`` too, and chooses that conflation
+    deliberately.  The record therefore says what was reported, and leaves a reader to know
+    what a given backend can actually see.
+
+    ``"unknown"`` comes off the code rather than from the caller, because every route into it
+    already sets one: a ``dispose`` that raised and an interrupted one are both folded into
+    :data:`~maf_sandbox.DisposalCode` ``"unknown"`` before they reach a record.  Reading it
+    here keeps a synthesised failure from being reported as a backend saying the sandbox is
+    still there.
+    """
+    if failure is None:
+        return "gone"
+    return "unknown" if failure.code == "unknown" else "may_remain"
+
+
+def _recorded_declarations(
+    backend: SandboxBackend | None,
+) -> tuple[Isolation | None, BackendDeclarations | None]:
+    """What ``backend`` declares, read for a record and never raising.
+
+    Both reads refuse a backend whose declarations cannot be read, and by here one already
+    passed them — but an acquire must not start failing over the record of it, so a second
+    answer replaces neither the sandbox nor the refusal the caller is owed.
+    """
+    if backend is None:
+        return (None, None)
+    try:
+        return (_declared_isolation(backend), _declarations(backend))
+    except CONTAINED as raised:  # noqa: BLE001 - `_containment` carries the rule
+        # Both are property reads, so a backend author's code runs here and an acquire must not
+        # start failing over the record of it.
+        if escapes_containment(raised):
+            raise
+        return (None, None)
+
+
 def _declared_limits(backend: SandboxBackend, declared: BackendDeclarations) -> SandboxLimits:
     """The ceilings a backend claims, refusing a declaration that is not the right shape.
 
@@ -506,6 +588,12 @@ class SandboxRouter:
             (:class:`~maf_sandbox.ReclaimConfig` with ``timeout=30.0``,
             ``failed_reclaim_policy=FailedReclaimPolicy.DISPOSE``, and no callback). A kind
             cannot set the policy: it is the host's call to loosen, never a workload's.
+        observer: Where this router's sandbox lifecycle is recorded — every acquire, served or
+            refused, and every backend's answer to every disposal. Also what
+            :func:`~maf_sandbox.maf.sandboxed_tool` reads, so a call's own events reach the same
+            place without a second wiring. Default ``None`` records nothing and costs nothing:
+            no event is built for a router with no observer. What a guest may call back into is
+            :class:`~maf_sandbox.HostToolRegistry`'s to record, and a host may wire either alone.
 
     Raises:
         SandboxBackendNotPermitted: at construction, when the selected backend declares a
@@ -529,6 +617,10 @@ class SandboxRouter:
             ``reclaim.timeout`` is not a finite positive number; or when ``selected`` names a
             backend *and* ``selection`` routes per spec, which are two different answers to
             the one question this router exists to answer.
+        TypeError: at construction, when ``observer`` is not a
+            :class:`~maf_sandbox.SandboxObserver` or overrides an event with a coroutine
+            function. Neither has a call-time symptom worth waiting for: a plain object answers
+            no event, and a coroutine one is never awaited.
     """
 
     def __init__(
@@ -542,8 +634,12 @@ class SandboxRouter:
         denied_capabilities: Iterable[Capability] = (),
         denied_identities: Iterable[Identity] = (),
         reclaim: ReclaimConfig = DEFAULT_RECLAIM_CONFIG,
+        observer: SandboxObserver | None = None,
     ) -> None:
         self._backends = list(backends)
+        self._observer = (
+            None if observer is None else refuse_an_unusable_observer(observer, argument="observer")
+        )
         if not math.isfinite(reclaim.timeout) or reclaim.timeout <= 0:
             raise ValueError(
                 f"reclaim.timeout must be a finite positive number of seconds, not "
@@ -718,6 +814,15 @@ class SandboxRouter:
     def reclaim(self) -> ReclaimConfig:
         """Host-wide policy and handlers for tool call reclaim."""
         return self._reclaim
+
+    @property
+    def observer(self) -> SandboxObserver | None:
+        """Where this router records, or ``None`` when the host registered nowhere.
+
+        Read by :func:`~maf_sandbox.maf.sandboxed_tool` so a call's own events go where the
+        lifecycle's do, and readable by a host that wants to confirm it is recording nothing.
+        """
+        return self._observer
 
     def _effective_floor(self, spec: SandboxSpec) -> Isolation:
         """The stricter of the host's floor and the spec's — a spec may raise, never lower."""
@@ -1026,6 +1131,60 @@ class SandboxRouter:
             return None
         return self._route(spec)[0]
 
+    def _record_disposal(
+        self,
+        key: SandboxKey,
+        backend: SandboxBackend,
+        failure: DisposalFailure | None,
+        started: float,
+    ) -> None:
+        """Record one backend's answer to one disposal, wherever the disposal was asked from.
+
+        Three places ask, and only one of them is the sweep: an acquire refused mid-create and
+        an acquire refused over a sandbox nothing can reclaim each delete on the one backend
+        that served them, directly.  A record that covered the sweep alone would show the two
+        deletes that answer a refusal as never having happened.
+        """
+        if self._observer is None:
+            return
+        record(
+            self._observer,
+            SandboxDisposed(
+                key=key,
+                backend=_recorded_name(backend),
+                outcome=_reported(failure),
+                failure=failure,
+                seconds=time.monotonic() - started,
+            ),
+            logger,
+        )
+
+    def _record_an_interrupted_disposal(
+        self, key: SandboxKey, backend: SandboxBackend, started: float, by: BaseException
+    ) -> None:
+        """Record a disposal interrupted mid-flight, with ``by`` named in the detail.
+
+        The backend was asked and never answered, so whether the delete landed is unknowable
+        rather than merely unclassified.  ``by`` is named because this is reached from a
+        ``BaseException`` catch, which sees more than a cancel.
+
+        The no-observer check is repeated here rather than left to ``_record_disposal``, because
+        everything below it is record-only work: building the failure reads ``backend.name``,
+        and that property can raise — replacing the interruption this was called to report with
+        one of its own, for a host that registered no observer at all.
+        """
+        if self._observer is None:
+            return
+        self._record_disposal(
+            key,
+            backend,
+            DisposalFailure(
+                "unknown",
+                f"{_recorded_name(backend)}: the disposal was interrupted by {type(by).__name__}",
+            ),
+            started,
+        )
+
     def _disposal_lock(self, key: SandboxKey) -> asyncio.Lock:
         """The disposal lock for one key on the running loop (see ``__init__``)."""
         per_loop = self._disposal_locks.setdefault(
@@ -1050,11 +1209,21 @@ class SandboxRouter:
         clear the ledger entry this refusal quotes, and under
         :data:`Selection.PER_SPEC` sweep backends that never saw this key.
         """
+        started = time.monotonic()
         async with self._disposal_lock(key):
             try:
                 undisposed = await backend.dispose(key)
             except Exception as failed:  # noqa: BLE001 — the refusal must reach the caller
                 undisposed = str(failed)
+            except BaseException as interrupted:
+                self._record_an_interrupted_disposal(key, backend, started, interrupted)
+                raise
+        self._record_disposal(
+            key,
+            backend,
+            None if undisposed is None else _coded(_recorded_name(backend), undisposed),
+            started,
+        )
         reported = self._unclean.get(key)
         if undisposed is None:
             outcome = "The sandbox just created has been disposed"
@@ -1114,6 +1283,43 @@ class SandboxRouter:
                 reaches the caller: a backend that cannot reclaim can never clean it, and a
                 refused acquire must not leave a billable sandbox running.
         """
+        if self._observer is None:
+            return await self._acquire(key, spec, _Serving())
+        serving = _Serving()
+        started = time.monotonic()
+        refusal: str | None = None
+        try:
+            return await self._acquire(key, spec, serving)
+        except BaseException as exc:
+            refusal = type(exc).__name__
+            raise
+        finally:
+            isolation, declarations = _recorded_declarations(serving.backend)
+            record(
+                self._observer,
+                SandboxAcquired(
+                    key=key,
+                    # A snapshot, because `SandboxSpec` is frozen only shallowly: `labels` is a
+                    # plain dict the caller keeps a reference to. Handing the live one over
+                    # would let a later write change a record already delivered, and let an
+                    # observer write back into the caller's spec through the event.
+                    spec=_with_snapshotted_labels(spec),
+                    isolation_scope=self.effective_isolation_scope(spec),
+                    backend=(None if serving.backend is None else _recorded_name(serving.backend)),
+                    isolation=isolation,
+                    declarations=declarations,
+                    seconds=time.monotonic() - started,
+                    refusal=refusal,
+                ),
+                logger,
+            )
+
+    async def _acquire(self, key: SandboxKey, spec: SandboxSpec, serving: _Serving) -> Sandbox:
+        """The whole of :meth:`acquire`, split so one record covers every way out of it.
+
+        ``serving`` is filled in as soon as a backend is chosen, so a refusal raised *after* the
+        create still names the backend that served it — which the return value cannot.
+        """
         if not self._candidates:
             raise NoSandboxBackend("no sandbox backend is configured")
         if key in self._unclean:
@@ -1129,7 +1335,7 @@ class SandboxRouter:
                 "served unclean.",
                 code=reported.code if reported is not None else None,
             )
-        served = self._refuse_unless_backend_can_serve(spec)
+        served = serving.backend = self._refuse_unless_backend_can_serve(spec)
         scope = self.effective_isolation_scope(spec)
         if scope is IsolationScope.CALL and not key.call_id:
             raise ValueError(
@@ -1162,10 +1368,20 @@ class SandboxRouter:
             # `docs/sandbox/tool-call.md` § Cleanup. Disposed on this backend alone: its other
             # sandboxes for the key are equally unreclaimable, and no other backend's are
             # touched. Its own failure is logged, never allowed to replace the refusal.
+            started = time.monotonic()
             try:
                 reported = await served.dispose(key)
             except Exception as undisposed:  # noqa: BLE001 — the refusal must reach the caller
                 reported = str(undisposed)
+            except BaseException as interrupted:
+                self._record_an_interrupted_disposal(key, served, started, interrupted)
+                raise
+            self._record_disposal(
+                key,
+                served,
+                None if reported is None else _coded(_recorded_name(served), reported),
+                started,
+            )
             if reported is not None:
                 logger.warning(
                     "sandbox router: backend %s failed to dispose after a reclaim refusal: %s",
@@ -1207,17 +1423,29 @@ class SandboxRouter:
         """
         reasons: list[DisposalFailure] = []
         for backend in self._backends if backends is None else backends:
+            started = time.monotonic()
+            # This backend's own answer, kept apart from `reasons` — which accumulates across
+            # the sweep, so its tail is not what this one said.
+            answered: DisposalFailure | None = None
             try:
                 undisposed = await backend.dispose(key)
             except Exception as exc:  # noqa: BLE001 - disposal must not fail a caller
                 # Nothing a backend says while breaking never-raises can be classified.
-                reasons.append(DisposalFailure("unknown", f"{backend.name} raised: {exc}"))
+                answered = DisposalFailure("unknown", f"{backend.name} raised: {exc}")
+                reasons.append(answered)
                 logger.warning(
                     "sandbox router: backend %s failed to dispose: %s", backend.name, exc
                 )
+            except BaseException as interrupted:
+                # The bound expiring mid-sweep is the case this catch exists for: it cancels
+                # the backend that was mid-dispose, and that backend is the one the record is
+                # about. The `reasons` fold below never runs, so this is its only event.
+                self._record_an_interrupted_disposal(key, backend, started, interrupted)
+                raise
             else:
                 if undisposed is not None:
-                    reasons.append(_coded(backend.name, undisposed))
+                    answered = _coded(backend.name, undisposed)
+                    reasons.append(answered)
                     logger.warning(
                         "sandbox router: backend %s did not dispose %s/%s/%s: %s",
                         backend.name,
@@ -1226,6 +1454,7 @@ class SandboxRouter:
                         key.agent_dir,
                         undisposed,
                     )
+            self._record_disposal(key, backend, answered, started)
             if refuse and reasons:
                 # As each backend answers, not after the last: the bound can expire mid-loop
                 # and a reason still in this list would die with the cancelled coroutine,
