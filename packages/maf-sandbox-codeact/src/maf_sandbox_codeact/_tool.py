@@ -535,15 +535,9 @@ def make_codeact_tools(
 def _standing_guidance(*, withhold: bool, lands_per_call: bool) -> tuple[str, ...]:
     """The sentences this tool commits to at attach, for the result wrapper to hold it to.
 
-    Empty unless the host withholds: the shown path answers with one string, and no sentence
-    it renders is true on every return path.  Withheld, exactly one closes every path — the
-    route, and the folder beside it where the sink lands each call under one of its own.
-
-    The folder half keeps core's ``{call_id}`` spelling because core is what renders it, from
-    the call the wrapper is running inside rather than from anything this body interpolated.
-    This is the *only* composition of that sentence: the body renders what this returns instead
-    of building its own, so the committed text and the emitted text are one string by
-    construction rather than two that a test has to keep level.
+    Empty unless the host withholds; withheld, one sentence closes every return path.  It keeps
+    core's ``{call_id}`` spelling because core renders it, from the call rather than from
+    anything a body interpolated.
     """
     if not withhold:
         return ()

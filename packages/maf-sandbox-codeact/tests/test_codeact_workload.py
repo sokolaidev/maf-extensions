@@ -4365,10 +4365,9 @@ class TestTheGuidanceThisKindCommitsTo:
         assert "{call_id}" in committed[0]
 
     def test_the_committed_sentence_renders_to_exactly_what_the_body_emits(self):
-        """The join this kind owes core. Core renders the committed sentence with the call's own
-        id and compares; the body composes the same two constants itself. A brace reaching
-        `_WITHHELD_ROUTE`, or either half being reworded alone, breaks the match — and this is
-        what catches it, since the refusal would otherwise arrive at the first live call."""
+        """The join this kind owes core: what the body emits is the committed sentence with
+        this call's id in it. Both render one template, so what this catches is a body that
+        stops rendering it — the refusal would otherwise arrive at the first live call."""
         sandbox = _ProducingSandbox()
         sink = _PerCallSink()
         tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink, withhold_guest_output=True)
