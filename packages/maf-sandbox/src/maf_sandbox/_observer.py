@@ -329,6 +329,17 @@ EVENT_METHODS: tuple[str, ...] = (
 )
 
 
+def _awaits(handler: object) -> bool:
+    """Whether calling ``handler`` gives something to await.
+
+    An instance with an async ``__call__`` is as awaitable as a coroutine function, and only its
+    ``__call__`` is the coroutine function :mod:`inspect` can see.
+    """
+    return inspect.iscoroutinefunction(handler) or inspect.iscoroutinefunction(
+        getattr(handler, "__call__", None)
+    )
+
+
 def refuse_an_unusable_observer(observer: object, *, argument: str) -> SandboxObserver:
     """Return ``observer`` if it can be recorded to, and raise otherwise.
 
@@ -347,9 +358,7 @@ def refuse_an_unusable_observer(observer: object, *, argument: str) -> SandboxOb
             "which is what lets a later release add one without breaking an observer written "
             "today."
         )
-    asynchronous = [
-        name for name in EVENT_METHODS if inspect.iscoroutinefunction(getattr(observer, name, None))
-    ]
+    asynchronous = [name for name in EVENT_METHODS if _awaits(getattr(observer, name, None))]
     if asynchronous:
         raise TypeError(
             f"{argument} overrides {', '.join(asynchronous)} with a coroutine function. An "
