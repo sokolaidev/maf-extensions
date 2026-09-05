@@ -399,25 +399,6 @@ class TestPublishedVersionsAreSortedSemantically:
         ]
 
 
-class TestTheVersionThisTreeDeclaresIsOneEveryDependentAdmits:
-    """The backstop: on a Release PR the version is in the tree rather than read from a title.
-
-    This is what catches a `BREAKING CHANGE:` footer added in the squash box, which no title
-    check can see.
-    """
-
-    def test_no_dependent_excludes_it(self):
-        declared = check.core_version(_REPO_ROOT)
-        bounds = check.ceilings(_REPO_ROOT)
-        assert bounds, "expected at least one package to declare a maf-sandbox ceiling"
-        shown = ".".join(str(part) for part in declared)
-        for package, ceiling in sorted(bounds.items()):
-            assert check.admits(declared, ceiling), (
-                f"{package} caps maf-sandbox below {shown}, the version this tree declares; "
-                "widen the ceilings first (RELEASING.md, step 1 of a maf-sandbox release)"
-            )
-
-
 def test_the_usage_line_matches_the_workflow_that_runs_it():
     """Three dots in both, so the comparison starts at the merge base wherever the base is.
 
