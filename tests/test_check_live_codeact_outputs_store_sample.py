@@ -16,6 +16,7 @@ tag the sample takes away from anything the model said.
 
 from __future__ import annotations
 
+import importlib.metadata
 import importlib.util
 import json
 import sys
@@ -25,6 +26,10 @@ from types import SimpleNamespace
 import pytest
 
 _ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_ROOT / "scripts"))  # the shared PEP 723 reader lives beside the checks
+
+import sample_blocks  # noqa: E402
+
 _SCRIPT = _ROOT / "scripts" / "check_live_codeact_outputs_store_sample.py"
 _spec = importlib.util.spec_from_file_location("check_live_codeact_outputs_store_sample", _SCRIPT)
 assert _spec and _spec.loader
@@ -293,34 +298,59 @@ class TestTheCli:
         assert "per-call folder" in err
 
 
+_SAMPLE_DIR = _ROOT / "samples" / "16_docker_codeact_outputs_store"
+
+
+def _absent() -> list[str]:
+    """Which of the sample's declared distributions this workspace does not install.
+
+    `tests/test_sample_modules_import.py`'s contract, for the reason its docstring gives: the
+    decision to look away is made *before* importing and never from the exception an import
+    raised. `from maf_sandbox import Removed` and a missing `agent-framework-openai` are both
+    `ImportError`, and only the second is a reason to skip — catching the class turns a removed
+    core symbol into a green run with these cases silently gone.
+    """
+    block = sample_blocks.declared(_SAMPLE_DIR / "agent.py")
+    assert block is not None, "sample 16's agent.py has no PEP 723 block"
+    missing: list[str] = []
+    for dep in block.get("dependencies", []):
+        name = sample_blocks.distribution(dep)
+        if name is None:
+            continue
+        try:
+            importlib.metadata.distribution(name)
+        except importlib.metadata.PackageNotFoundError:
+            missing.append(name)
+    return missing
+
+
 def _sample():
     """The sample module, for the one helper the checker's contract rests on.
 
-    Skipped rather than failed where the sample's own dependencies are absent, the way
-    `tests/test_sample_modules_import.py` decides it: this is a PEP 723 script, and the
-    workspace need not have `agent-framework-openai` installed to run the rest of this file.
-
     Its directory goes on `sys.path` so `from _scaffold import …` resolves the way it does under
     `uv run`, and everything loaded from there is evicted afterwards. That eviction is not
-    tidiness: thirteen samples carry a module named `_scaffold` and `sys.modules` holds one, so
-    a leftover here answers the next sample's import in
-    `test_sample_modules_import.py`, which asserts the cache is clean.
+    tidiness: thirteen samples carry a module named `_scaffold` and `sys.modules` holds one, so a
+    leftover here answers the next sample's import in `test_sample_modules_import.py`, which
+    asserts the cache is clean.
+
+    Nothing here catches what the import raises. A workspace missing the sample's declared
+    distributions is `_absent`'s answer, decided first; anything else the import raises is the
+    regression these cases exist to find.
     """
-    directory = _ROOT / "samples" / "16_docker_codeact_outputs_store"
-    spec = importlib.util.spec_from_file_location("_sample_16_agent", directory / "agent.py")
+    if missing := _absent():
+        pytest.skip(f"sample 16 declares distributions this workspace lacks: {missing}")
+    spec = importlib.util.spec_from_file_location("_sample_16_agent", _SAMPLE_DIR / "agent.py")
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     before = list(sys.path)
-    sys.path.insert(0, str(directory))
+    sys.path.insert(0, str(_SAMPLE_DIR))
     try:
         spec.loader.exec_module(module)
-    except ImportError as exc:  # pragma: no cover - depends on the workspace, not the code
-        pytest.skip(f"sample 16's dependencies are not installed: {exc}")
     finally:
         sys.path[:] = before
         for name, loaded in list(sys.modules.items()):
             origin = getattr(loaded, "__file__", None)
-            if origin and Path(origin).parent == directory:
+            if origin and Path(origin).parent == _SAMPLE_DIR:
                 del sys.modules[name]
     return module
 
