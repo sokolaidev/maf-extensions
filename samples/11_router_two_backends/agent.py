@@ -19,7 +19,7 @@ for why the pairing is Docker beside the in-process backend.
 #     "azure-identity",
 #     "maf-sandbox-bicep",
 #     "maf-sandbox-docker>=0.4",
-#     "maf-sandbox>=0.33",
+#     "maf-sandbox>=0.32",
 # ]
 # ///
 

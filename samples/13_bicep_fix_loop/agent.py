@@ -30,7 +30,7 @@ default. See this directory's README.
 #     "azure-identity",
 #     "maf-sandbox-bicep",
 #     "maf-sandbox-docker",
-#     "maf-sandbox>=0.33",
+#     "maf-sandbox>=0.32",
 # ]
 # ///
 
