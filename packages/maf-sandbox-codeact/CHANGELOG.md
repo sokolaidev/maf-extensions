@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.12.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.11.0...maf-sandbox-codeact-v0.12.0) (2026-09-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* both kinds declare untrusted rather than leaving it to a tier neither controls ([#887](https://github.com/sokolaidev/maf-extensions/issues/887))
+
+### Features
+
+* **codeact:** a withheld result names the folder its outputs landed in, not which names landed ([#901](https://github.com/sokolaidev/maf-extensions/issues/901)) ([f00ab8a](https://github.com/sokolaidev/maf-extensions/commit/f00ab8adefd7d4826cb52de0f96bce6a8783809b))
+
+
+### Fixes
+
+* both kinds declare untrusted rather than leaving it to a tier neither controls ([#887](https://github.com/sokolaidev/maf-extensions/issues/887)) ([3167e8f](https://github.com/sokolaidev/maf-extensions/commit/3167e8f40f2134fc70825f11fa1b9fb4dc89c989))
+* **codeact:** a withheld result says only whether the program exited cleanly, never the code or the stream sizes ([#899](https://github.com/sokolaidev/maf-extensions/issues/899)) ([25ffd97](https://github.com/sokolaidev/maf-extensions/commit/25ffd9723620914bfb6cbf56b7b324a230706a59))
+
 ## [0.11.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.10.0...maf-sandbox-codeact-v0.11.0) (2026-09-04)
 
 
