@@ -4813,12 +4813,26 @@ class TestMakeFileStoreSink:
         sink = make_file_store_sink(store)
         asyncio.run(sink.deliver(self._artifact("s.md", b"first")))
 
-        with pytest.raises(SandboxLandingExists) as caught:
+        with pytest.raises(SandboxLandingExists, match="s.md") as caught:
             asyncio.run(sink.deliver(self._artifact("s.md", b"second")))
 
         assert isinstance(caught.value, SandboxOutputError)
         assert isinstance(caught.value.__cause__, FileExistsError), "the store's own is kept"
         assert asyncio.run(store.read("c0ffee/s.md")) == "first"
+
+    def test_a_store_refusing_in_its_own_vocabulary_is_left_alone(self):
+        """Only `FileExistsError` is translated, which is what the two stores
+        `agent_framework` ships raise. Anything else is a store this sink cannot speak for,
+        and swallowing it into a landing refusal would name the wrong cause."""
+
+        class _UnwillingStore:
+            async def write(self, path: str, content: str, *, overwrite: bool = True) -> None:
+                raise PermissionError("this store is read-only")
+
+        sink = make_file_store_sink(_UnwillingStore())
+
+        with pytest.raises(PermissionError, match="read-only"):
+            asyncio.run(sink.deliver(self._artifact("s.md")))
 
     def test_a_landing_is_recorded_so_a_trusted_floor_never_answers_for_it(self):
         """The record is what keeps guest-produced bytes from reading as host-placed ones when

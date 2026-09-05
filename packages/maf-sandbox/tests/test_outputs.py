@@ -28,6 +28,7 @@ from maf_sandbox import (
     SandboxEntry,
     SandboxLandingExists,
     SandboxLandingNotConfined,
+    SandboxLandingNotText,
     SandboxOutputError,
     SandboxOutputMissing,
     SandboxOutputNotConfined,
@@ -1266,13 +1267,30 @@ class TestRefusalsShareOneBase:
             SandboxOutputSinkRequired,
             SandboxArtifactNameInvalid,
             SandboxArtifactNameCollision,
+            SandboxLandingExists,
             SandboxLandingNotConfined,
+            SandboxLandingNotText,
         ],
     )
     def test_every_refusal_is_a_sandbox_output_error(self, error: type[Exception]):
         """So a kind that only needs to tell the model "the artifacts did not come back" can
         catch one thing."""
         assert issubclass(error, SandboxOutputError)
+
+
+def _link_file(link, target) -> bool:
+    """Plant a file link, or answer False so the caller skips rather than passing vacuously.
+
+    No junction fallback, unlike `_link_dir`: a junction is a directory link, and what this
+    plants has to be the entry standing at the artifact's own name.
+    """
+    import os
+
+    try:
+        os.symlink(target, link)
+        return True
+    except (OSError, NotImplementedError):
+        return False
 
 
 def _link_dir(link, target) -> bool:
@@ -1300,10 +1318,12 @@ def _link_dir(link, target) -> bool:
 
 
 class TestMakeFileSystemSink:
-    """The packaged landing sink: what it writes, and the three landings it refuses.
+    """The packaged landing sink: what it writes, and the landings it refuses.
 
-    Only the collision within one collection is reachable through `collect_outputs`, so the
-    other two are driven through `deliver` directly.
+    Both refusals are reachable through `collect_outputs` — the occupancy one on any second
+    collection into the same root — and each has an end-to-end test below saying what the
+    collection is left holding. The rest drive `deliver` directly, because a single artifact
+    is what a refusal is about.
     """
 
     def _artifact(self, name: str, content: bytes = b"payload") -> Artifact:
@@ -1413,20 +1433,88 @@ class TestMakeFileSystemSink:
         for leaked in (str(root), str(root.resolve()), str(tmp_path)):
             assert leaked not in message, f"the refusal named a host path: {leaked}"
 
-    def test_a_directory_in_the_way_refuses_in_this_family_rather_than_as_an_oserror(
-        self, tmp_path
-    ):
-        """A kind catches `SandboxOutputError` to say the artifacts did not come back, and an
-        `IsADirectoryError` from `write_bytes` would walk straight past that."""
+    def test_an_occupant_that_is_not_a_file_refuses_in_this_family_all_the_same(self, tmp_path):
+        """A directory reaches the same refusal as a file, on either platform.
+
+        Exclusive creation alone would not give that: it reports an occupied directory as
+        `EEXIST` on POSIX and as `EACCES` on Windows, and only one of those is in the family
+        a kind can name.
+        """
         root = tmp_path / "out"
         (root / "a.txt").mkdir(parents=True)
         sink = make_file_system_sink(root)
 
-        with pytest.raises(SandboxOutputError):
+        with pytest.raises(SandboxLandingExists):
             asyncio.run(sink.deliver(self._artifact("a.txt")))
 
+    def test_a_component_of_the_name_that_is_already_a_file_refuses_in_this_family(self, tmp_path):
+        """`exists()` answers False for a path *below* a file, so the refusal is the failed
+        create rather than the look — which is why both are here."""
+        root = tmp_path / "out"
+        root.mkdir()
+        (root / "report").write_bytes(b"not a directory")
+        sink = make_file_system_sink(root)
+
+        with pytest.raises(SandboxLandingExists):
+            asyncio.run(sink.deliver(self._artifact("report/summary.md")))
+
+    def test_a_link_standing_at_the_name_is_refused_even_where_it_points_at_nothing(self, tmp_path):
+        """The occupant `exists()` cannot see: it answers about the target, and a dangling
+        link has none, so the name is taken while the path it resolves to is free."""
+        root = tmp_path / "out"
+        root.mkdir()
+        if not _link_file(root / "a.txt", root / "gone.txt"):
+            pytest.skip("this platform will not let the test plant a file link")
+
+        with pytest.raises(SandboxLandingExists):
+            asyncio.run(make_file_system_sink(root).deliver(self._artifact("a.txt")))
+
+        assert not (root / "gone.txt").exists(), "it landed through the link before refusing"
+
+    def test_an_existing_empty_file_is_as_occupied_as_any_other(self, tmp_path):
+        """Occupied is about the entry, not about what is in it — an earlier call that landed
+        nothing still landed."""
+        root = tmp_path / "out"
+        root.mkdir()
+        (root / "a.txt").write_bytes(b"")
+
+        with pytest.raises(SandboxLandingExists):
+            asyncio.run(make_file_system_sink(root).deliver(self._artifact("a.txt")))
+
+    def test_the_landing_still_refuses_when_the_look_before_it_says_the_path_is_free(
+        self, tmp_path, monkeypatch
+    ):
+        """The window a look leaves open, forced: something takes the destination between the
+        check and the write. Exclusive creation is what closes it, and this is the only way to
+        exercise that half without a second process."""
+        root = tmp_path / "out"
+        root.mkdir()
+        (root / "a.txt").write_bytes(b"taken between the two")
+        monkeypatch.setattr(type(root), "exists", lambda _self, **_kwargs: False)
+
+        with pytest.raises(SandboxLandingExists):
+            asyncio.run(make_file_system_sink(root).deliver(self._artifact("a.txt")))
+
+        assert (root / "a.txt").read_bytes() == b"taken between the two"
+
+    def test_a_name_leaving_the_root_is_refused_as_unconfined_even_when_its_target_exists(
+        self, tmp_path
+    ):
+        """Which of the two refusals answers first is the whole of what this pins. Reversed,
+        a caller reaching `deliver` without `validate_artifact_name` would learn whether a
+        host path outside the root exists, and be told the wrong thing about why."""
+        root = tmp_path / "out"
+        root.mkdir()
+        (tmp_path / "escaped.txt").write_bytes(b"already here")
+
+        with pytest.raises(SandboxLandingNotConfined):
+            asyncio.run(make_file_system_sink(root).deliver(self._artifact("../escaped.txt")))
+
+        assert (tmp_path / "escaped.txt").read_bytes() == b"already here"
+
     def test_a_host_that_means_to_land_over_one_asks_for_it(self, tmp_path):
-        """Sample 07's case: one stable name per workload, re-rendered in place."""
+        """The shape a workload landing one stable name has: its own previous call is what is
+        in the way, which is `samples/07_docker_diagram` and why #926 exists."""
         sink = make_file_system_sink(tmp_path / "out", existing="replace")
         asyncio.run(sink.deliver(self._artifact("a.txt", b"first")))
         asyncio.run(sink.deliver(self._artifact("a.txt", b"second")))
@@ -1441,6 +1529,51 @@ class TestMakeFileSystemSink:
 
         with pytest.raises(SandboxLandingExists):
             asyncio.run(sink.deliver(self._artifact("a.txt", b"second")))
+
+    def test_a_second_collection_into_one_root_refuses_and_keeps_what_it_already_landed(
+        self, tmp_path
+    ):
+        """What a host is left holding, which `deliver` on its own cannot show.
+
+        `collect_outputs` settles every question it owns before it delivers anything, so a
+        sink that refuses mid-set is the one path to a partial landing — and this refusal
+        makes that path ordinary. The bytes already there are kept, the names after it never
+        land, and nothing hands the caller the list of which did.
+        """
+        sandbox = InProcessSandbox()
+        for name in ("first.md", "second.md", "third.md"):
+            asyncio.run(
+                sandbox.write_file(f"{_WORK_DIR}/{name}", b"new", working_directory=_WORK_DIR)
+            )
+        spec = _spec(
+            DeclaredOutput(path="first.md", media_type="text/markdown"),
+            DeclaredOutput(path="second.md", media_type="text/markdown"),
+            DeclaredOutput(path="third.md", media_type="text/markdown"),
+        )
+        root = tmp_path / "out"
+        root.mkdir()
+        (root / "second.md").write_bytes(b"an earlier call landed this")
+
+        with pytest.raises(SandboxLandingExists):
+            asyncio.run(collect_outputs(sandbox, spec, sink=make_file_system_sink(root)))
+
+        assert (root / "first.md").read_bytes() == b"new", "the name before it landed"
+        assert (root / "second.md").read_bytes() == b"an earlier call landed this"
+        assert not (root / "third.md").exists(), "the name after it never reached the sink"
+
+    def test_a_replacing_sink_cannot_land_over_a_directory_and_says_so_as_an_oserror(
+        self, tmp_path
+    ):
+        """The one occupant `existing="replace"` does not cover, stated in `Raises:` and
+        pinned here so it stays a documented limit rather than a surprise."""
+        root = tmp_path / "out"
+        (root / "a.txt").mkdir(parents=True)
+        sink = make_file_system_sink(root, existing="replace")
+
+        with pytest.raises(OSError) as caught:
+            asyncio.run(sink.deliver(self._artifact("a.txt")))
+
+        assert not isinstance(caught.value, SandboxOutputError)
 
     def test_it_lands_a_whole_collection_through_collect_outputs(self, tmp_path):
         """End to end, because `deliver` alone does not prove the sink is shaped like one."""

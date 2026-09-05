@@ -2358,8 +2358,8 @@ def make_file_store_sink(
         ValueError: when an artifact reaches ``deliver`` with no ``call_id``.
         SandboxLandingNotText: when an artifact's bytes are not valid UTF-8.
         SandboxLandingExists: when the store already holds the destination and says so with
-            ``FileExistsError``, which both shipped stores do.  A store refusing in some other
-            vocabulary propagates its own exception.
+            ``FileExistsError``, which both of ``agent_framework``'s own stores do.  A store
+            refusing in some other vocabulary propagates its own exception.
     """
 
     async def deliver(artifact: Artifact) -> LandedArtifact:
