@@ -29,6 +29,15 @@ A sibling comes from this checkout in both halves. Two suites import one, and a 
 sibling would drag its own bound on the core into the resolution — which is a constraint about
 that sibling's release, not about the core under test.
 
+The core is forced with `--overrides` in both halves, never resolved, and that is the same
+sentence one step further: a branch sibling carries a bound too. Every wheel in the environment
+declares a `maf-sandbox` range, and a range says which cores that package is *published*
+against rather than whether its tests pass beside this one. Resolved instead, an in-tree
+ceiling still a cycle behind refuses to build the environment at all, and this reports that in
+the shape of a failing suite — over a version RELEASING.md permits a core to be released at,
+and for a breaking release intends it to be. `tests.yml`, `check_suite_installs_together.py`
+and `check_dependent_works_with_published_cores.py` force it for the same reason.
+
 An index still unreachable after `pypi_index`'s retries is fatal rather than skipped, the same
 stance as the admit and import checks.
 """
@@ -117,8 +126,13 @@ def recover_tests(tag: str, distribution: str, into: Path) -> Path | None:
     return tests if tests.is_dir() else None
 
 
-def run_suite(requirements: list[str], tests: Path) -> tuple[bool, str]:
-    """Install ``requirements`` into a throwaway environment and run ``tests`` there."""
+def run_suite(requirements: list[str], core: Path, tests: Path) -> tuple[bool, str]:
+    """Install ``requirements`` beside ``core`` in a throwaway environment and run ``tests``.
+
+    ``core`` is both an operand and an override, because an override rewrites a requirement and
+    never adds one: the wheel has to be asked for as well as forced. Naming it here rather than
+    in each caller's list is what keeps the two from drifting apart.
+    """
     with tempfile.TemporaryDirectory() as directory:
         environment = Path(directory) / "venv"
         created = subprocess.run(
@@ -127,8 +141,21 @@ def run_suite(requirements: list[str], tests: Path) -> tuple[bool, str]:
         if created.returncode != 0:
             return False, created.stderr.strip().splitlines()[-1] if created.stderr else "no venv"
         python = _python_in(environment)
+        override = Path(directory) / "override.txt"
+        override.write_text(f"{_CORE} @ {core.as_uri()}\n", encoding="utf-8")
         installed = subprocess.run(
-            ["uv", "pip", "install", "--python", str(python), *requirements, *_TEST_REQUIREMENTS],
+            [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                str(python),
+                "--overrides",
+                str(override),
+                *requirements,
+                str(core),
+                *_TEST_REQUIREMENTS,
+            ],
             capture_output=True,
             text=True,
             check=False,
@@ -153,7 +180,7 @@ def assess_branch(core_wheel: Path, wheels: dict[str, Path]) -> list[Result]:
     for distribution, wheel in wheels.items():
         siblings = [str(other) for name, other in wheels.items() if name != distribution]
         passed, summary = run_suite(
-            [str(wheel), *siblings, str(core_wheel)], _ROOT / "packages" / distribution / "tests"
+            [str(wheel), *siblings], core_wheel, _ROOT / "packages" / distribution / "tests"
         )
         results.append(Result("branch", distribution, "this checkout", passed, summary))
     return results
@@ -182,7 +209,7 @@ def assess_published(
             continue
         siblings = [str(other) for name, other in wheels.items() if name != distribution]
         passed, summary = run_suite(
-            [f"{distribution}=={released_version}", *siblings, str(core_wheel)], tests
+            [f"{distribution}=={released_version}", *siblings], core_wheel, tests
         )
         results.append(Result("published", distribution, released_version, passed, summary))
     return results
