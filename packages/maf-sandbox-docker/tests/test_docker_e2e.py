@@ -32,6 +32,7 @@ import socket
 import subprocess
 import threading
 import uuid
+from typing import Any
 
 import pytest
 from maf_sandbox import (
@@ -1064,6 +1065,57 @@ class TestCollectOutputsAgainstARealEngine:
             assert [r.name for r in results] == ["result.txt"]
             assert landed[0].content == b"rendered\n"
             assert landed[0].media_type == "text/plain"
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+    def test_a_calls_outputs_land_in_a_folder_the_model_reads_back(self):
+        """The read-back composition against a real engine: a container writes a declared
+        output, `make_file_store_sink` lands it under the host-minted call id, and the two
+        read-back tools are what open it — the path a model takes, over a shipped store.
+
+        The last assertion is the one the tools' own descriptions rest on: a listing names
+        children, so the folder has to be joined back on before the bytes come out.
+        """
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+        router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
+
+        from agent_framework import InMemoryAgentFileStore
+        from maf_sandbox import DeclaredOutput
+        from maf_sandbox.maf import make_file_store_sink, sandbox_outputs_read_tools
+
+        store = InMemoryAgentFileStore()
+        listing, read = sandbox_outputs_read_tools(store)
+
+        def body(tool: Any) -> Any:
+            return getattr(tool, "func", tool)
+
+        spec = _spec(
+            requires=frozenset({Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT}),
+            declared_outputs=(DeclaredOutput(path="result.txt", media_type="text/plain"),),
+            files_out=TransferLimits(
+                max_bytes_per_file=1 << 20, max_total_bytes=1 << 20, max_files=4
+            ),
+        )
+
+        async def scenario() -> None:
+            sandbox = await router.acquire(_key(scope), spec)
+            await sandbox.write_file("/maf-sandbox/work/.keep", "", working_directory=_WORK)
+            await sandbox.exec(
+                ["sh", "-c", "echo rendered > result.txt"], working_directory=_WORK, timeout=60
+            )
+            landed = await collect_outputs(
+                sandbox, spec, sink=make_file_store_sink(store), call_id="c0ffee"
+            )
+
+            assert [item.name for item in landed] == ["result.txt"]
+            assert await body(listing)("") == [{"name": "c0ffee", "type": "directory"}]
+            assert await body(listing)("c0ffee") == [{"name": "result.txt", "type": "file"}]
+            assert await body(read)("c0ffee/result.txt") == "rendered\n"
+            assert (await body(read)("result.txt")).startswith("Error: there is no file at")
 
         try:
             asyncio.run(scenario())
