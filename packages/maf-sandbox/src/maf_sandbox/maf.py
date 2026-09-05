@@ -2141,9 +2141,12 @@ def make_file_store_sink(
       ``overwrite=False``, so a repeated landing raises ``FileExistsError`` out of the store
       rather than making one call's answer read as another's.
     - **``provenance`` is recorded before the bytes are written**, so there is no moment at which
-      the file exists and the host's floor still answers for it.  A record is monotone and only
-      ever lowers a label, so an entry left behind by a write that then failed is safe; the
-      reverse ordering is not.
+      the file exists and the host's floor still answers for it.
+      :meth:`~maf_sandbox.FileStoreProvenance.record` takes no integrity argument, so recording
+      only ever lowers and an entry left behind by a write that then failed is safe; the reverse
+      ordering is not.  The record as a whole is not monotone —
+      :meth:`~maf_sandbox.FileStoreProvenance.forget` returns a path to the floor — and nothing
+      here calls it.
     - **Text only.**  ``AgentFileStore.write`` takes a ``str``, so an artifact whose bytes are not
       UTF-8 is refused with :class:`~maf_sandbox.SandboxLandingNotText` rather than mangled.
 
