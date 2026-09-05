@@ -246,10 +246,10 @@ ATTACH_REFUSALS: tuple[type[Exception], ...] = (
 def _with_snapshotted_labels(spec: SandboxSpec) -> SandboxSpec:
     """``spec`` with its own copy of ``labels``, so a delivered record cannot move afterwards.
 
-    ``labels`` is the only mutable field, so copying it is the whole duty.
+    ``labels`` is the only mutable field, so copying it is the whole duty — and it is copied
+    even when empty, because an empty dict is still the *caller's* dict and an observer writing
+    into one reaches the spec the caller holds.
     """
-    if not spec.labels:
-        return spec
     return dataclasses.replace(spec, labels=dict(spec.labels))
 
 

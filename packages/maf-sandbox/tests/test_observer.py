@@ -374,15 +374,18 @@ class TestAcquireIsRecorded:
 
         assert recorder.one(SandboxAcquired).spec.labels == {"run": "first"}
 
-    def test_an_observer_cannot_write_into_the_callers_spec_through_the_event(self):
+    @pytest.mark.parametrize("labels", [{"run": "first"}, {}], ids=["with labels", "empty"])
+    def test_an_observer_cannot_write_into_the_callers_spec_through_the_event(self, labels):
+        """Empty included: an empty dict is still the caller's, so a fast path that skipped the
+        copy for it would leave the write-back half of this open on the common case."""
         recorder = _Recorder()
-        spec = SandboxSpec(kind="test", labels={"run": "first"})
+        spec = SandboxSpec(kind="test", labels=dict(labels))
         router = _router(observer=recorder)
 
         asyncio.run(router.acquire(_KEY, spec))
         recorder.one(SandboxAcquired).spec.labels["injected"] = "by the observer"
 
-        assert spec.labels == {"run": "first"}
+        assert spec.labels == labels
 
     def test_a_served_acquire_carries_the_posture_it_was_served_under(self):
         recorder = _Recorder()
