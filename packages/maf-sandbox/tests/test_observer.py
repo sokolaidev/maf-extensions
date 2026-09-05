@@ -272,6 +272,22 @@ class TestRegistration:
             register(observer=_Duck())
 
     @pytest.mark.parametrize("register", [_router, HostToolRegistry])
+    def test_an_async_callable_override_is_refused_too(self, register):
+        """`inspect.iscoroutinefunction` is false for an instance whose `__call__` is async, so
+        a check reading the attribute alone admits an observer whose every event is discarded
+        as an unawaited coroutine. `maf._awaits` and the host-tool bracket already read both."""
+
+        class _AsyncCallable:
+            async def __call__(self, event: HostToolCalled) -> None:
+                pass
+
+        class _Wired(SandboxObserver):
+            host_tool_called = _AsyncCallable()  # pyright: ignore[reportAssignmentType]
+
+        with pytest.raises(TypeError, match="host_tool_called"):
+            register(observer=_Wired())
+
+    @pytest.mark.parametrize("register", [_router, HostToolRegistry])
     def test_a_coroutine_override_is_refused_at_registration(self, register):
         """Nothing awaits an observer, so an `async def` one would lose every event it saw."""
 
@@ -958,6 +974,30 @@ class TestStoreReadsAreRecorded:
 
         event = recorder.one(StoreFileRead)
         assert (event.name, event.refused, event.characters) == ("a.txt", True, 0)
+
+    def test_a_context_getter_that_cancels_does_not_fail_the_read(self):
+        """The key is read for the record's sake alone, from the host's own context getters. A
+        read that would otherwise have completed must not start failing because an observer is
+        registered and one of those getters raised something outside `Exception`."""
+
+        def cancels() -> str:
+            raise asyncio.CancelledError
+
+        session = SandboxToolSession(
+            _router(observer=_Recorder()),
+            CallerContext(
+                current_scope=cancels,
+                current_thread_id=lambda: "thread-1",
+                list_files=InMemoryStore.list,
+            ),
+            "agent-1",
+            _SPEC,
+            name="widget_run",
+            logger=_LOG,
+        )
+
+        answer = asyncio.run(session.read_file(InMemoryStore({"a.txt": "hi"}), ListedFile("a.txt")))
+        assert getattr(answer, "text", None) == "hi"
 
     def test_a_read_a_cancel_took_is_still_recorded(self):
         """A cancel leaves the site the same way a raise does — no text crossed — and it is not

@@ -35,18 +35,10 @@ def error_detail(exc: BaseException) -> str:
     meant the app's identity had no role on the sandbox group.  This is log-only; the model
     still sees the sanitized message.
 
-    **It contains exactly what its callers contain, and no more.**  Every caller is already
-    handling a failure, and several are handling one they have promised to contain — an
-    observer's, a disposal's — so a diagnostic that raised would replace the failure it was
-    describing with itself, at the one moment nobody is in a position to absorb it.  Rendering
-    an exception runs *its* code: ``__str__`` and a property like ``status_code`` are the
-    exception author's, not this package's, so what comes out of them is not this package's to
-    predict either.
-
-    The caught set is the containment sites' own — an ``Exception``, a ``CancelledError``, a
-    ``GeneratorExit``.  Deliberately not ``BaseException``: a diagnostic that swallowed more
-    than the handler calling it would turn a failure the caller meant to propagate into a log
-    line, which is the same defect in the other direction.
+    **Contains exactly what its callers contain, and no more.**  Rendering an exception runs
+    that exception's own ``__str__`` and properties, so this can fail while describing a failure
+    a caller has promised to absorb.  The caught set is therefore the containment sites' own —
+    not ``BaseException``, which would swallow what the caller meant to propagate.
     """
     try:
         return _rendered(exc)

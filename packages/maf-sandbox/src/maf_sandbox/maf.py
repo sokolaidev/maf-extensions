@@ -1392,7 +1392,10 @@ class SandboxToolSession:
         """
         try:
             key = self.key()
-        except Exception:  # noqa: BLE001 - a record is not worth a read
+        except (Exception, asyncio.CancelledError, GeneratorExit):  # noqa: BLE001 - see below
+            # The containment sites' own set: `key()` runs the host's context getters, so what
+            # comes out of them is the host's, and a record is not worth turning a completed
+            # read into a failure the read would not otherwise have had.
             return None
         return key if isinstance(key, SandboxKey) else None
 

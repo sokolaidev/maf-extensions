@@ -244,12 +244,9 @@ ATTACH_REFUSALS: tuple[type[Exception], ...] = (
 
 
 def _with_snapshotted_labels(spec: SandboxSpec) -> SandboxSpec:
-    """``spec`` with its own copy of ``labels``, for a record that must not move afterwards.
+    """``spec`` with its own copy of ``labels``, so a delivered record cannot move afterwards.
 
-    Every other field is immutable, so this is the whole of what a record has to defend against:
-    a frozen dataclass holding a plain dict is frozen about the binding and not about the dict.
-    Returned unchanged when there are no labels, since the empty case is the common one and a
-    copy of nothing is a copy nobody needs.
+    ``labels`` is the only mutable field, so copying it is the whole duty.
     """
     if not spec.labels:
         return spec
@@ -1125,18 +1122,11 @@ class SandboxRouter:
     def _record_an_interrupted_disposal(
         self, key: SandboxKey, backend: SandboxBackend, started: float, by: BaseException
     ) -> None:
-        """Record a disposal something took away mid-flight, so one-event-per-backend survives.
+        """Record a disposal interrupted mid-flight, with ``by`` named in the detail.
 
-        A cancel is not an ``Exception``, so every site that asks a backend to dispose has to
-        catch outside that hierarchy or lose the event — and a disposal taken by a timeout is
-        the one an operator most wants to see.  Catching that widely also catches an interpreter
-        shutting down, so ``by`` is **named in the detail** rather than assumed: a record saying
-        a disposal was cancelled when the process was exiting is a wrong answer to the question
-        an audit asks it.
-
-        Whether the delete landed is genuinely unknowable either way — the backend was asked and
-        never answered — which is what ``"unknown"`` means in this vocabulary rather than a
-        stand-in for a code nobody looked up.
+        The backend was asked and never answered, so whether the delete landed is unknowable
+        rather than merely unclassified.  ``by`` is named because this is reached from a
+        ``BaseException`` catch, which sees more than a cancel.
         """
         self._record_disposal(
             key,
