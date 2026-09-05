@@ -23,8 +23,10 @@ read and accepted, which is the whole thing this asks for.
 See `docs/release-compatibility.md`.
 
 One shape it cannot see: `BREAKING CHANGE:` goes in the squash-commit box at merge time, so a
-title with no `!` can still cut a minor. `tests/test_check_release_order.py` catches that on
-the Release PR, where the version has stopped being a prediction.
+title with no `!` can still cut a minor. Nothing else sees it either. A Release PR carries its
+version in the tree rather than in its title, and no check reads it there. What follows is the
+ordinary consequence of a core released outside the ceilings: every dependent on the index goes
+on resolving the older core until it republishes.
 """
 
 from __future__ import annotations
