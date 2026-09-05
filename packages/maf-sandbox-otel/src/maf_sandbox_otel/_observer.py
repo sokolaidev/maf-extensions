@@ -12,9 +12,14 @@ for it would invite reading allowed egress as observed egress.
 
 **Spans are written after the fact.**  An observer is told what happened once it has happened,
 so each span is created with an explicit start time derived from the event's own duration and
-ended immediately.  Its parent is whatever span is current, which — because an observer runs
-synchronously on the task serving the tool call — is the framework's ``execute_tool`` span.
-That is what puts these records inside the call that caused them.
+ended immediately.  Its parent is whatever span is current where the event is delivered, and an
+observer is called synchronously inside the call it records rather than on a thread of this
+package's own — so for a tool body that awaits, that is the framework's ``execute_tool`` span,
+which is what puts these records inside the call that caused them.  A body that awaits nothing
+is served on a worker thread and its ``ToolCallEnded`` is delivered there, so whether that one
+record nests or stands at the root follows the framework's context propagation rather than
+anything decided here.  Nothing is buffered to make it nest, because the buffer would be the
+per-call state the next paragraph refuses.
 
 **And the events of one call are siblings rather than children of** ``sandbox.call``.  Every
 event arrives after the work it describes, and the call's own event arrives last of all, so

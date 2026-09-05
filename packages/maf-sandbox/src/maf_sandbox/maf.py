@@ -50,6 +50,7 @@ import json
 import logging
 import math
 import posixpath
+import string
 import threading
 import time
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
@@ -1876,6 +1877,170 @@ async def _reclaim_the_call(
             raise
 
 
+#: The one substitution a committed sentence may carry, and the reason there is exactly one.
+#: A sentence that qualifies under rule 5 has to be independent of every source the framework
+#: has not established, which a *constant* trivially is — but a host-minted call id is too, and
+#: a kind that names this call's landing folder needs it in the sentence. Everything else a body
+#: could interpolate is either derived from the call or is guest text, so the vocabulary is
+#: closed at one and the wrapper does the rendering rather than trusting the body's.
+CALL_ID_PLACEHOLDER = "call_id"
+
+
+#: Stands in for a call id while a committed sentence is checked at attach, where no call
+#: exists. Its shape is the real thing's — `uuid4().hex` — so a sentence whose format spec only
+#: fails on some values fails here too.
+_SENTINEL_CALL_ID = "0" * 32
+
+
+def _guidance_placeholders(sentence: str) -> set[str]:
+    """The *top-level* replacement fields in one committed sentence, by name.
+
+    ``string.Formatter().parse`` rather than a regex, so an escaped brace reads as the literal
+    :meth:`str.format` will read it.  It reports only the outermost field of each replacement,
+    which is why :func:`_renders` is what decides a sentence is usable.
+    """
+    return {field for _, field, _, _ in string.Formatter().parse(sentence) if field is not None}
+
+
+def _renders(sentence: str) -> str | None:
+    """The reason ``sentence`` cannot be rendered, or ``None`` where it can.
+
+    The field-name check above sees the top level only, so ``{call_id:{exit_code}}`` passes it
+    with one field named ``call_id`` and then raises at every call.  A conversion or a format
+    spec that ``format`` rejects survives it the same way.  Rendering once, here, is what turns
+    all of those into an attach-time refusal instead of a per-call one.
+    """
+    try:
+        sentence.format(**{CALL_ID_PLACEHOLDER: _SENTINEL_CALL_ID})
+    except (KeyError, IndexError, ValueError, AttributeError, TypeError) as exc:
+        return f"{type(exc).__name__}: {exc}"
+    return None
+
+
+def _committed_guidance(guidance: Iterable[str], *, tool: str, awaits: bool) -> tuple[str, ...]:
+    """Validate the sentences a tool commits to at attach, and answer with them.
+
+    Raises:
+        ValueError: for an empty sentence, a placeholder other than ``{call_id}``, a malformed
+            replacement field, or a ``{call_id}`` sentence on a body that cannot have a call.
+    """
+    committed: list[str] = []
+    for index, sentence in enumerate(guidance):
+        if not sentence.strip():
+            raise ValueError(
+                f"{tool}: standing_guidance[{index}] is empty. A committed sentence is what a "
+                "labelled item is held to, and an empty one holds it to nothing."
+            )
+        try:
+            fields = _guidance_placeholders(sentence)
+        except ValueError as exc:
+            raise ValueError(
+                f"{tool}: standing_guidance[{index}] is not a valid format string ({exc}). "
+                "Double a literal brace to keep it."
+            ) from exc
+        unknown = sorted(fields - {CALL_ID_PLACEHOLDER})
+        if unknown:
+            raise ValueError(
+                f"{tool}: standing_guidance[{index}] interpolates {unknown}, and the only "
+                f"substitution a committed sentence may carry is {{{CALL_ID_PLACEHOLDER}}}. "
+                "Anything else is either derived from the call or is the guest's, and a "
+                "sentence carrying one of those is not standing guidance."
+            )
+        if fields and not awaits:
+            raise ValueError(
+                f"{tool}: standing_guidance[{index}] interpolates "
+                f"{{{CALL_ID_PLACEHOLDER}}} and this tool's body awaits nothing, so it runs "
+                "outside a call and there is no id to render. Commit the sentence without it."
+            )
+        # After the field check, so a sentence naming something else is refused for that rather
+        # than for the `KeyError` it would also raise here.
+        broken = _renders(sentence)
+        if broken is not None:
+            raise ValueError(
+                f"{tool}: standing_guidance[{index}] cannot be rendered ({broken}). A nested "
+                "format spec, a conversion or a specifier is legal to parse and fails at every "
+                "call, so it is refused here instead."
+            )
+        if not sentence.format(**{CALL_ID_PLACEHOLDER: _SENTINEL_CALL_ID}).strip():
+            raise ValueError(
+                f"{tool}: standing_guidance[{index}] renders to nothing. A precision on the "
+                "substitution — `{call_id:.0}` — is written text and renders empty, which "
+                "holds a labelled item to as little as an empty sentence does."
+            )
+        committed.append(sentence)
+    return tuple(committed)
+
+
+def _needs_call_id(committed: tuple[str, ...]) -> bool:
+    """Whether any committed sentence asks for this call's id.
+
+    Only that allocates one; the sentences are formatted either way, so a doubled brace is
+    undoubled whether or not anything in the set interpolates.
+    """
+    return any(CALL_ID_PLACEHOLDER in _guidance_placeholders(s) for s in committed)
+
+
+def _refuse_a_result_that_departs_from_its_guidance(
+    result: object, *, tool: str, committed: tuple[str, ...], call_id: str | None
+) -> None:
+    """Hold a result's labelled items to the sentences ``committed`` at attach, in order.
+
+    Rule 5 in ``docs/sandbox/kinds/README.md`` is what this executes, and owns the reasoning.
+
+    **The refusal must never quote the item.**  A raise here skips the label-tracking
+    middleware's own labelling step, so MAF answers with an *unlabelled* error result — and the
+    mistake being caught is a kind labelling guest text as trusted.  Name positions and counts.
+    """
+    if not committed:
+        return
+    if isinstance(result, str):
+        raise ValueError(
+            f"{tool}: this tool commits to standing guidance and its body answered with a "
+            "string, so the committed sentences reached no item. A string on one return path "
+            "beside a split result on another is itself a bit about which path ran. Answer "
+            "with the items on every path, refusals included."
+        )
+    if not isinstance(result, list):
+        return
+    # Formatted whether or not anything interpolates: `str.format` is what undoubles `{{`, and
+    # the attach-time refusal tells a caller to double a literal brace.
+    substitution = {CALL_ID_PLACEHOLDER: call_id} if call_id is not None else {}
+    rendered = [sentence.format(**substitution) for sentence in committed]
+    items = cast("list[Any]", result)
+    labelled_at: list[int] = []
+    labelled: list[str] = []
+    for position, item in enumerate(items):
+        properties = cast("dict[str, Any]", getattr(item, "additional_properties", None) or {})
+        if "security_label" not in properties:
+            continue
+        text = getattr(item, "text", None)
+        if not isinstance(text, str):
+            raise ValueError(
+                f"{tool}: item {position} of this result carries a label and no text, so there "
+                "is nothing to hold to what this tool committed to."
+            )
+        labelled_at.append(position)
+        labelled.append(text)
+    # The guidance is the *suffix*, and that is the third thing the body could otherwise vary.
+    # Comparing the labelled texts alone leaves their placement among the unlabelled items
+    # free — `[guidance, derived]` and `[derived, guidance]` reduce to the same sequence — and
+    # the framework preserves list order, so a reader sees which one ran even where the derived
+    # half is hidden. Last is the canonical place because it is where the one shipped kind puts
+    # it: a result reads as its answer, then the standing sentence about it.
+    expected_at = list(range(len(items) - len(committed), len(items)))
+    if labelled != rendered or labelled_at != expected_at:
+        # The text is never repeated here: this refusal returns to the model through a path
+        # that labels nothing.
+        raise ValueError(
+            f"{tool}: this result carries {len(labelled)} labelled item(s) and this tool "
+            f"committed to {len(rendered)}. They must be the last {len(rendered)} item(s), in "
+            "the committed order, each carrying the sentence committed at its position. A "
+            "sentence not committed, one missing, one repeated, two out of order, or guidance "
+            "placed anywhere but last is a bit about which path ran, which is what a standing "
+            "sentence may not be."
+        )
+
+
 def _refuse_a_result_that_carries_no_call_label(result: object, *, tool: str) -> None:
     """Refuse a list of items in which nothing is left to carry the call's own label.
 
@@ -1922,6 +2087,7 @@ def sandboxed_tool(
     output_sink: OutputSink | None = None,
     also_carries_out: bool = False,
     nothing_survives_from: Iterable[SourceChannel] = (),
+    standing_guidance: Iterable[str] = (),
     on_reclaim_failure: Callable[[ReclaimFailure], Awaitable[None]] | None = None,
     reclaim_timeout: float | None = None,
     file_store_provenance: FileStoreProvenance | None = None,
@@ -2033,6 +2199,16 @@ def sandboxed_tool(
             cleared by a keyword. The channels this workload opens and derives nothing from —
             read that function before reaching for it, since declaring ``"untrusted"`` costs
             the model's sight of the result and nothing else.
+        standing_guidance: The sentences this tool's result may carry a ``trusted`` label on,
+            committed here so rule 5's test is checked rather than left to the body. Every
+            labelled item's text must be the committed sentence **at its position** — same
+            order, same count — and a bare ``str`` answer is refused once anything is committed,
+            since a string on one return path beside a split result on another is itself a bit
+            about which path ran. A sentence may interpolate ``{call_id}`` and nothing else,
+            rendered from the call rather than by the body, and one that does is refused on a
+            body that awaits nothing, which runs inside no call. Each is rendered once here, so
+            a sentence that cannot format is refused at attach rather than at every call. Empty
+            leaves the check off entirely.
         on_reclaim_failure: Called with a :class:`~maf_sandbox.ReclaimFailure` when the call
             left its sandbox unclean — its guest path could not be removed, or a program it
             stopped may have left something running — **after** the framework has acted on it.
@@ -2156,6 +2332,9 @@ def sandboxed_tool(
         additional_properties=properties,
     )
     body = build(session)
+    # Validated here rather than at first use: a sentence that cannot render is a wiring
+    # mistake in a kind, and finding it at attach costs a reviewer nothing.
+    committed = _committed_guidance(standing_guidance, tool=name, awaits=_awaits(body))
     if not _awaits(body):
         # `acquire` is a coroutine, so a body that awaits nothing can hold no sandbox and owns
         # nothing to reclaim, and this wrapper reads the result's shape and does nothing else.
@@ -2172,6 +2351,9 @@ def sandboxed_tool(
                     raised_by_body = raised
                     raise
                 _refuse_a_result_that_carries_no_call_label(result, tool=name)
+                _refuse_a_result_that_departs_from_its_guidance(
+                    result, tool=name, committed=committed, call_id=None
+                )
                 return result
             finally:
                 if router.observer is not None:
@@ -2230,6 +2412,14 @@ def sandboxed_tool(
                 raised_by_body = raised
                 raise
             _refuse_a_result_that_carries_no_call_label(result, tool=name)
+            # The id is read rather than allocated where nothing committed needs it, so a
+            # tool with no `{call_id}` sentence keeps the lazy allocation it had.
+            _refuse_a_result_that_departs_from_its_guidance(
+                result,
+                tool=name,
+                committed=committed,
+                call_id=_call_name(call) if _needs_call_id(committed) else None,
+            )
             return result
         finally:
             _CALL.reset(token)

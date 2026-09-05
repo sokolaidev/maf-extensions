@@ -13,10 +13,11 @@ the host's own process, so what reaches a wire, and whether a guest-chosen artif
 it, is the recorder's decision; this seam's duty is to hand over what happened without deciding
 that for it.
 
-**An observer is synchronous, and it cannot fail a call.**  It runs on the task serving the tool
-call, so a blocking one blocks the call it is recording.  Every delivery goes through
-:func:`record`, which contains whatever the observer does with it: the failure is logged and the
-call runs on.
+**An observer is synchronous, thread-safe, and it cannot fail a call.**  It runs wherever the
+call it records is served — an event-loop task, or the worker thread a synchronous tool body
+runs on — so a blocking one blocks that call, and one shared by two calls is entered from two
+threads at once.  Every delivery goes through :func:`record`, which contains whatever the
+observer does with it: the failure is logged and the call runs on.
 
 There are two registration points, because there are two host-policy objects:
 :class:`~maf_sandbox.SandboxRouter` owns the sandbox lifecycle, and
@@ -243,7 +244,12 @@ class StoreFileRead(SandboxEvent):
 
 @dataclass(frozen=True)
 class LandedOutput:
-    """One artifact a collection delivered to the host's sink."""
+    """One artifact a collection delivered to the host's sink.
+
+    ``name`` is the one the sink reported landing under, which is what
+    :func:`~maf_sandbox.collect_outputs` returns and which a content-addressed sink need not
+    spell as the declaration did.  ``size_bytes`` is what was read out of the sandbox.
+    """
 
     name: str
     size_bytes: int
@@ -285,7 +291,8 @@ class ToolCallEnded(SandboxEvent):
     """One sandboxed tool call, from the body's first line to the end of its reclaim.
 
     ``seconds`` covers the body *and* the removal the caller waits for, which is what the call
-    actually cost.
+    actually cost.  For a body that awaits nothing, this record is delivered on the worker
+    thread the framework ran the body on.
 
     **What this joins to, and what it does not.**  ``keys`` associates the call with the
     sandboxes and the conversation it touched — not with *this call in particular*.  At the
@@ -329,11 +336,13 @@ class SandboxObserver:
     would hand a structural implementer exactly that, so this is a class a host inherits from,
     and both registration points refuse anything that is not one.
 
-    **Synchronous, and fast.**  Each method runs on the task serving the tool call, so an
-    observer that blocks blocks the call, and an ``async def`` override is refused where the
-    observer is registered rather than left as a coroutine nothing awaits.  Put the event on a
-    queue, or hand it to an exporter that batches on a thread of its own; do not do the I/O
-    here.
+    **Synchronous, thread-safe, and fast.**  Each method runs wherever the call it records is
+    served: on the event-loop task for a tool body that awaits, and on the worker thread the
+    framework gives a body that does not — so one observer is entered from two threads at
+    once, and blocking in it blocks the call.  Hand the event to something built for that, a
+    ``queue.Queue`` or an exporter that batches on a thread of its own; an ``asyncio.Queue``
+    is not, and does not wake its reader from another thread.  An ``async def`` override is
+    refused where the observer is registered rather than left as a coroutine nothing awaits.
 
     Failing is allowed and costs nothing but a warning — see :func:`record`.  An observer is
     never given the chance to change what a call returns.
@@ -403,9 +412,9 @@ def refuse_an_unusable_observer(observer: object, *, argument: str) -> SandboxOb
     if asynchronous:
         raise TypeError(
             f"{argument} overrides {', '.join(asynchronous)} with a coroutine function. An "
-            "observer runs on the task serving the tool call and nothing awaits it, so the "
-            "coroutine would be collected unawaited and the event lost. Put the event on a "
-            "queue, or hand it to an exporter that batches on a thread of its own."
+            "observer is called synchronously where the call is served and nothing awaits it, "
+            "so the coroutine would be collected unawaited and the event lost. Put the event on "
+            "a thread-safe queue, or hand it to an exporter that batches on a thread of its own."
         )
     return observer
 
@@ -413,8 +422,8 @@ def refuse_an_unusable_observer(observer: object, *, argument: str) -> SandboxOb
 def record(observer: SandboxObserver | None, event: SandboxEvent, logger: logging.Logger) -> None:
     """Hand ``event`` to ``observer``, containing whatever it does with it.
 
-    An observer is the host's code on the call's own task, so none of its failures may reach the
-    call: each is logged and the caller runs on.  ``SystemExit`` and ``KeyboardInterrupt`` are
+    An observer is the host's code inside the call, so none of its failures may reach it: each
+    is logged and the caller runs on.  ``SystemExit`` and ``KeyboardInterrupt`` are
     the host's control flow rather than an observer failure, so they escape — including when
     one arrives as a leaf of a group, which is why the group is unwrapped rather than trusted
     for being one.
