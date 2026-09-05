@@ -457,7 +457,9 @@ def _recorded_declarations(
         return (None, None)
     try:
         return (_declared_isolation(backend), _declarations(backend))
-    except Exception:  # noqa: BLE001 - a record is not worth an acquire
+    except (Exception, asyncio.CancelledError, GeneratorExit):  # noqa: BLE001 - see below
+        # The containment sites' own set: both are property reads, so a backend author's code
+        # runs here, and an acquire must not start failing over the record of it.
         return (None, None)
 
 

@@ -241,6 +241,31 @@ class TestRegistration:
         )
         assert session.observer is recorder
 
+    def test_a_group_of_containable_failures_is_contained(self):
+        """A `BaseExceptionGroup` is not an `Exception`, so a tuple naming the leaf types alone
+        lets one through — and an observer using a task group raises exactly that shape."""
+
+        class _Grouped(SandboxObserver):
+            def sandbox_acquired(self, event: SandboxAcquired) -> None:
+                raise BaseExceptionGroup("observer", [asyncio.CancelledError()])
+
+        router = _router(observer=_Grouped())
+
+        assert asyncio.run(router.acquire(_KEY, _SPEC)) is not None
+
+    def test_a_group_carrying_an_exit_still_escapes(self):
+        """Unwrapped rather than trusted for being a group: `SystemExit` is the host's control
+        flow whether it arrives alone or as a leaf."""
+
+        class _Exits(SandboxObserver):
+            def sandbox_acquired(self, event: SandboxAcquired) -> None:
+                raise BaseExceptionGroup("observer", [SystemExit(2)])
+
+        router = _router(observer=_Exits())
+
+        with pytest.raises(BaseExceptionGroup):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
     def test_an_observer_whose_failure_cannot_be_rendered_is_still_contained(self):
         """Containment runs `error_detail` on whatever the observer raised, and rendering an
         exception runs the exception author's own code. One that raises from `__str__` would
@@ -1090,6 +1115,31 @@ class TestTheCallIsRecorded:
         assert (event.tool, event.kind, event.keys) == ("widget_run", "test", (_KEY,))
         assert (event.failure, event.unclean) == (None, 0)
         assert event.seconds >= 0
+
+    def test_a_refused_acquire_still_joins_to_the_call_that_asked(self):
+        """The refusal gets its own `SandboxAcquired`, and that record is only useful if the
+        call names the key too. `acquired` is the cleanup ledger and holds served keys only, so
+        the join has to come from what the call *asked* for."""
+        recorder = _Recorder()
+        backend = InProcessSandboxBackend(
+            acquire_error=SandboxCapabilityNotSupported("the backend cannot serve this")
+        )
+        router = _router(backend, observer=recorder)
+
+        def build(session: SandboxToolSession):
+            async def widget_run() -> str:
+                """Do a thing."""
+                key = session.key()
+                assert isinstance(key, SandboxKey)
+                await session.acquire(key)
+                return "done"
+
+            return widget_run
+
+        asyncio.run(_fn(_tool(router, build))())
+
+        assert recorder.one(SandboxAcquired).refusal == "SandboxCapabilityNotSupported"
+        assert recorder.one(ToolCallEnded).keys == (_KEY,)
 
     def test_a_call_that_reached_two_sandboxes_records_both(self):
         """`acquire` takes a key, so one call can hold two — and naming only the first would
