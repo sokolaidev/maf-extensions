@@ -69,11 +69,11 @@ The cheapest of them built a byte protocol out of the three channels: eight decl
 
 `glm-5.2:cloud` through a local Ollama server, `maf-sandbox-docker` at `Isolation.CONTAINER` on the same image, `withhold_guest_output=True` with `CodeactOutputs.DECLARED`, on 2026-09-05. The task and the instructions are the arm above's — a file the host seeded naming a run key `QX7P2M` and two readings totalling `847291`, neither derivable, so anything the model reports about them came out of the sandbox. Four runs per arm, arms one after the other.
 
-**What a withheld result renders here is #859's, not this record's earlier tables':** one line saying whether the program exited cleanly, and the declared names that landed. No exit code, no sizes. So the control arm below is already working against the narrowest channel the mode has ever shipped, which is what makes its numbers worth reading beside the arm above rather than instead of it.
+**What a withheld result renders here is #859's, not this record's earlier tables':** no exit code and no sizes, on either arm. What is left differs by arm, which is the thing being measured. The **control** renders one line saying whether the program exited cleanly and the declared names that landed. The **read-back** arm's sink declares `OutputSink.per_call`, so that list is replaced by the host-minted folder and the clean line is all the result still carries. So the control arm is working against the narrowest channel the mode had shipped before this composition, which is what makes its numbers worth reading beside the arm above rather than instead of it.
 
 The arms differ by the whole composition rather than by one factor, which is deliberate and bounds what the numbers say:
 
-- **control** — the wiring that ships today. `make_file_system_sink` lands the declared outputs in a host directory the model cannot reach, so the only road back is which of them landed.
+- **control** — the wiring that ships today. `make_file_system_sink` lands the declared outputs in a host directory the model cannot reach, so what the result still carries is which of them landed, beside the clean/non-clean bit every withheld result has.
 - **read-back** — `make_file_store_sink` lands them at `<call_id>/<name>` in an `AgentFileStore`, `sandbox_outputs_read_tools` gives the model a read-only pair of tools over that store, and the withheld result names the folder instead of listing which names landed.
 
 | | read-back | control |
