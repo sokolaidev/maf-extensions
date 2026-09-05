@@ -159,7 +159,7 @@ _WITHHELD_EXITED_WITH_ERROR = "The program exited with a non-zero status."
 #: own, and rendered on every return path for the reason the sentence it joins is. The id is
 #: the host's own `uuid4`, taking no input from the arguments or from what the program did, so
 #: naming it carries nothing the guest or the model chose.
-_WITHHELD_OUTPUTS_FOLDER = "Anything this call saved is under `{folder}/` where its outputs land."
+_WITHHELD_OUTPUTS_FOLDER = "Anything this call saved is under `{call_id}/` where its outputs land."
 
 
 class CodeactOutputs(StrEnum):
@@ -520,10 +520,35 @@ def make_codeact_tools(
         # kind's to answer for. It does not reach the withheld route's per-item `trusted`,
         # which is tier 1 and read first — `information-flow.md` carries both.
         source_integrity=SourceIntegrity.UNTRUSTED,
+        # Committed where a reviewer sees it, so the per-item `trusted` this kind writes on
+        # the withheld route stops being a claim only its body executes.
+        standing_guidance=standing_guidance(
+            withhold=withhold_guest_output,
+            lands_per_call=output_sink is not None and output_sink.per_call,
+        ),
         outbound_max_confidentiality=outbound_max_confidentiality,
         output_sink=output_sink,
         logger=logger,
     )
+
+
+def standing_guidance(*, withhold: bool, lands_per_call: bool) -> tuple[str, ...]:
+    """The sentences this tool commits to at attach, for the result wrapper to hold it to.
+
+    Empty unless the host withholds: the shown path answers with one string, and no sentence
+    it renders is true on every return path.  Withheld, exactly one closes every path — the
+    route, and the folder beside it where the sink lands each call under one of its own.
+
+    The folder half keeps core's ``{call_id}`` spelling because core is what renders it, from
+    the call the wrapper is running inside rather than from anything this body interpolated.
+    Composed here rather than in the body so the committed sentence and the rendered one cannot
+    drift: ``_execute_code_tool`` builds the same string from the same two constants.
+    """
+    if not withhold:
+        return ()
+    if lands_per_call:
+        return (f"{_WITHHELD_ROUTE} {_WITHHELD_OUTPUTS_FOLDER}",)
+    return (_WITHHELD_ROUTE,)
 
 
 def _effective_egress(extra: Sequence[str]) -> tuple[str, ...]:
@@ -939,7 +964,7 @@ def _execute_code_tool(
         route = _WITHHELD_ROUTE
         if lands_per_call:
             folder = session.guest_call_path().rsplit("/", 1)[-1]
-            route = f"{route} {_WITHHELD_OUTPUTS_FOLDER.format(folder=folder)}"
+            route = f"{route} {_WITHHELD_OUTPUTS_FOLDER.format(call_id=folder)}"
         return [
             Content.from_text(answer),
             labelled_result_item(route, SourceIntegrity.TRUSTED),
