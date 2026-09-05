@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.13.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.12.0...maf-sandbox-codeact-v0.13.0) (2026-09-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* **codeact:** the withheld route sentence is committed at attach, not just written at the call ([#920](https://github.com/sokolaidev/maf-extensions/issues/920))
+
+### Features
+
+* **codeact:** the withheld route sentence is committed at attach, not just written at the call ([#920](https://github.com/sokolaidev/maf-extensions/issues/920)) ([a2d14cd](https://github.com/sokolaidev/maf-extensions/commit/a2d14cd92312554691be91c83786dadbbbd5d04a))
+
 ## [0.12.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.11.0...maf-sandbox-codeact-v0.12.0) (2026-09-05)
 
 
