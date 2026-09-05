@@ -465,6 +465,27 @@ class TestDependentsPinMafSandboxInAShapeTheRangeScriptCanRead:
             )
 
 
+class TestTheBuildLoopsDiscoverEveryPackage:
+    """Both wheel-building loops enumerate `packages/*/` rather than naming distributions.
+
+    A hand-written set goes stale on the commit that adds a package, and it goes stale
+    *silently*: the loop still succeeds, so the only symptom is that the new package's suite
+    never runs against a candidate core and its wheel is absent from the co-installed set the
+    sibling gate checks. Nothing else in this repository would notice.
+    """
+
+    @pytest.mark.parametrize("step", ["Build the sibling wheels", "Build the dependents' wheels"])
+    def test_it_names_no_distribution(self, step: str):
+        block = run_block(PUBLISH_WORKFLOW, step)
+        named = sorted(
+            path.rsplit("/", 1)[-1]
+            for path in PACKAGE_PATHS
+            if path.rsplit("/", 1)[-1] != "maf-sandbox" and path.rsplit("/", 1)[-1] in block
+        )
+        assert not named, f"{step!r} hand-lists {named}: discover from packages/*/ instead"
+        assert "packages/*/" in block, f"{step!r} does not enumerate packages/*/"
+
+
 class TestRoutineAutomationDoesNotClaimToCloseAnIssue:
     """A pull request the release workflow opens every cycle cannot close a specific issue.
 

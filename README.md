@@ -18,11 +18,15 @@ Sandboxed code execution for MAF agents, and the first extension suite this repo
 | [`maf-sandbox-codeact`](packages/maf-sandbox-codeact/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-codeact)](https://pypi.org/project/maf-sandbox-codeact/) | The CodeAct *kind*: `execute_code` — the model writes a short Python program, it runs in a closed sandbox, and what it printed comes back | `maf-sandbox`, `agent-framework-core` |
 | [`maf-sandbox-docker`](packages/maf-sandbox-docker/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-docker)](https://pypi.org/project/maf-sandbox-docker/) | Plain Docker containers as a backend: container isolation, Closed or Allowlisted egress, and reading declared outputs back out — for a sandbox on any machine with a Docker-compatible engine, and on CI | `maf-sandbox` |
 | [`maf-sandbox-wslc`](packages/maf-sandbox-wslc/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-wslc)](https://pypi.org/project/maf-sandbox-wslc/) | `wslc` (the container CLI that ships with WSL) as a backend: container isolation, Closed egress, for validating on the developer's own machine | `maf-sandbox` |
-| [`maf-sandbox-otel`](packages/maf-sandbox-otel/) | not yet released | An *observer* rather than a kind or a backend: it registers on the router and the host-tool registry and turns what a sandbox did — the posture it was served under, host-tool calls, file crossings, disposals — into OpenTelemetry log records, spans and metrics, under the application's providers or a security pipeline's own | `maf-sandbox`, `opentelemetry-api` |
+| [`maf-sandbox-otel`](packages/maf-sandbox-otel/) | not yet released | An *observer* rather than a kind or a backend: it registers on the router and the host-tool registry and turns what a sandbox did — the posture it was served under, host-tool calls, file crossings, per-key disposals — into OpenTelemetry log records, spans and metrics, under the application's providers or a security pipeline's own | `maf-sandbox`, `opentelemetry-api` |
 
 ```
 app  ->  maf_sandbox (router)  ->  a backend (maf_sandbox_acas, testing, ...)  ->  the sandbox
               ^ a kind (maf_sandbox_bicep) calls the router; kinds and backends never import each other
+              |
+              +--> events --> an observer (maf_sandbox_otel) --> OpenTelemetry
+                   an observer serves no sandbox and implements no tool: it is registered on
+                   the router and the host-tool registry, and only reads what already happened
 ```
 
 ## Samples

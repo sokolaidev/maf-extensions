@@ -32,14 +32,29 @@ from maf_sandbox import (
     TransferLimits,
 )
 
-from maf_sandbox_otel import NAMESPACE, OpenTelemetrySandboxObserver, hashed_key
+# `EVENT_METHODS` is core's authoritative list of observer handlers and is not re-exported
+# from `maf_sandbox` yet. Read from the private module rather than kept as a second copy
+# here, because a copy that drifts is exactly the failure this test exists to catch.
+from maf_sandbox._observer import EVENT_METHODS
+
+from maf_sandbox_otel import (
+    NAMESPACE,
+    OpenTelemetrySandboxObserver,
+    hashed_conversation,
+    hashed_key,
+)
 
 KEY = SandboxKey(scope="tenant-a", thread_id="thread-1", agent_dir="agent")
 LIMITS = TransferLimits(max_bytes_per_file=8, max_total_bytes=32, max_files=64)
 
 
 def every_event() -> list[object]:
-    """One of each, so a new event type that nobody records here is a failing import."""
+    """One of each, constructed with the fields core declares.
+
+    This list catches a *changed* event — a renamed or retyped field fails to construct. It
+    cannot catch an **added** one, because nothing here would mention it:
+    `TestTheObserverCoversEveryEvent` is what does that.
+    """
     return [
         SandboxAcquired(
             key=KEY,
@@ -105,6 +120,25 @@ class TestItRecordsWithoutAnSdk:
         for event in every_event():
             event.deliver_to(observer)  # pyright: ignore[reportAttributeAccessIssue]
 
+    def test_it_overrides_every_handler_core_declares(self):
+        """`SandboxObserver` is a base class with no-op methods rather than a Protocol, so core
+        can add an event without breaking an existing observer. That is the right trade for a
+        host's own observer and the wrong one here: this package would inherit the no-op and
+        silently drop the new event, with nothing failing — not the import, not the type check,
+        not `every_event`, which cannot mention what it does not know about.
+
+        Read off `EVENT_METHODS`, which is core's own list and what
+        `refuse_an_unusable_observer` validates against, rather than a second copy that could
+        disagree with it.
+        """
+        missing = [
+            method
+            for method in EVENT_METHODS
+            if getattr(type(OpenTelemetrySandboxObserver()), method)
+            is getattr(SandboxObserver, method)
+        ]
+        assert not missing, f"core declares handlers this observer leaves as no-ops: {missing}"
+
     def test_the_sensitive_switch_changes_nothing_about_that(self):
         observer = OpenTelemetrySandboxObserver(record_sensitive_data=True)
         for event in every_event():
@@ -120,12 +154,20 @@ class TestTheJoinColumn:
     )
     def test_two_keys_that_could_render_alike_still_differ(self, boundary):
         """`SandboxKey` constrains none of its parts, so there is no character a part cannot
-        hold — including whatever this encoding happens to use. Length-prefixing is what makes
-        the digest injective, and a test using a character the code never touches proves that
-        for exactly the character nobody was at risk from."""
+        hold — including whichever one an encoding reserves. Delimiter-like content in either
+        field must therefore never merge two distinct keys into one name."""
         first = SandboxKey(scope="a", thread_id=f"b{boundary}c", agent_dir="d")
         second = SandboxKey(scope=f"a{boundary}b", thread_id="c", agent_dir="d")
         assert hashed_key(first) != hashed_key(second)
+
+    def test_the_whole_digest_is_the_name(self):
+        """A truncation is a collision budget spent against a key count this package does not
+        choose. At 64 bits and a billion keys the birthday probability is a few percent, and a
+        collision here does not blur a statistic — it merges two conversations' records under
+        one join key, which is the reading the package exists to prevent. SHA-256 is 64 hex
+        characters, and an OpenTelemetry string attribute has no length limit to trade off."""
+        assert len(hashed_key(KEY)) == 64
+        assert len(hashed_conversation(KEY)) == 64
 
     def test_the_namespace_every_attribute_hangs_off_is_pinned(self):
         """A rename here silently orphans every dashboard and alert built on it."""

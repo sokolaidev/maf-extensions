@@ -1,6 +1,6 @@
 # maf-sandbox-otel
 
-**OpenTelemetry records of what a sandbox did** — which conversation was served what posture, which host tools a guest called and under whose authority, what crossed the boundary and with what integrity label, and how every sandbox was disposed of.
+**OpenTelemetry records of what a sandbox did** — which conversation was served what posture, which host tools a guest called and under whose authority, what crossed the boundary and with what integrity label, and how each sandbox disposed **by key** was disposed of. A conversation's sandboxes can also go away in a *scope purge*, which core emits no event for and which is therefore not audited here — see [the limits](#three-limits-worth-knowing-before-you-rely-on-it) below.
 
 `maf-sandbox` reports these as events on an observer seam and records nothing itself. This package is one observer: it turns each event into a **log record**, each event that carries a duration into a **span**, and the countable ones into a **metric**. A store read has no duration of its own, so it lands as an event on the call's span instead — the table below says which is which. It depends on `maf-sandbox` and the OpenTelemetry **API**, and on nothing else — no backend, no agent framework, no SDK.
 
@@ -56,9 +56,11 @@ A `SandboxKey` is the column every other record joins on, so it cannot simply be
 
 The **call id** is the one part of a key recorded in the clear. The framework generates it per call, it is drawn from nobody's vocabulary, and it is what names the folder a `per_call` sink lands that call's artifacts in — so hashing it would cost the correlation a landing record exists for and protect nothing.
 
-## Two limits worth knowing before you rely on it
+## Three limits worth knowing before you rely on it
 
 **The egress posture recorded is the one that was *served*, not the traffic that was *reached*.** `sandbox.acquire` carries the mode and the allowlist the sandbox ran under. It does not carry which hosts the guest actually opened a tunnel to: the docker and wslc proxies print their `ALLOW`/`DENY` lines inside their own container, which the backend reads once at acquire and never again, and ACAS enforces egress in the service where the guest is the only party that sees the refusal. Reaching those lines is a change in each backend rather than here, and until one lands, "which conversations were *allowed* to reach host X" is answerable and "which ones *did*" is not.
+
+**A scope purge is not recorded, so one of the two ways a sandbox goes away is invisible.** `SandboxDisposed` is emitted per key. `dispose_scope` — what a thread deletion runs, and what `router.scope(...)` runs when its block ends — asks every backend and emits nothing, so a conversation's sandboxes can be removed with no record here. The gap is core's rather than this package's, and it is not an oversight that a recorder could paper over: a backend answers a purge with a *count* rather than the keys it removed, so there is no key to put in an event. Until core grows an event keyed on `(scope, thread_id)` ([#917](https://github.com/sokolaidev/maf-extensions/issues/917)), "was every sandbox for this conversation cleaned up" is not answerable from these records.
 
 **The events of one call are siblings, not children of `sandbox.call`.** Every event arrives after the work it describes, and the call's own event arrives last, so there is no moment at which this package could open a parent for the others to nest under. They are all parented to the agent framework's `execute_tool` span instead, each with a true duration, and `sandbox.call` carries the total the caller waited for. Buffering them into a real tree would need per-call state that a cancellation could leak.
 

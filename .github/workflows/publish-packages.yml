@@ -341,9 +341,11 @@ jobs:
           PACKAGE: ${{ needs.build.outputs.package }}
         run: |
           set -euo pipefail
-          for sibling in maf-sandbox-acas maf-sandbox-bicep maf-sandbox-codeact \
-                         maf-sandbox-docker maf-sandbox-wslc; do
-            if [ "$sibling" != "$PACKAGE" ]; then
+          # Discovered rather than listed: a hand-written set goes stale on the commit that
+          # adds a package, and it goes stale silently — the loop still succeeds.
+          for path in packages/*/; do
+            sibling=$(basename "$path")
+            if [ "$sibling" != "maf-sandbox" ] && [ "$sibling" != "$PACKAGE" ]; then
               uv build --package "$sibling" --out-dir dist/
             fi
           done
@@ -414,9 +416,13 @@ jobs:
         if: ${{ needs.build.outputs.package == 'maf-sandbox' }}
         run: |
           set -euo pipefail
-          for dependent in maf-sandbox-acas maf-sandbox-bicep maf-sandbox-codeact \
-                           maf-sandbox-docker maf-sandbox-wslc; do
-            uv build --package "$dependent" --out-dir dist/
+          # Discovered rather than listed, so the suite this gate runs against a candidate core
+          # is every dependent there is, including one added since it was last edited.
+          for path in packages/*/; do
+            dependent=$(basename "$path")
+            if [ "$dependent" != "maf-sandbox" ]; then
+              uv build --package "$dependent" --out-dir dist/
+            fi
           done
 
       - name: Run every dependent's suite against this core

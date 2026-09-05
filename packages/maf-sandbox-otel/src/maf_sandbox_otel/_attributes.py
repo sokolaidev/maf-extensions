@@ -112,9 +112,16 @@ def _digest(*parts: str) -> str:
     Length-prefixed rather than delimited.  ``SandboxKey`` puts no constraint on what a scope
     or a thread id may contain, so *any* delimiter is one a part can hold — and two different
     keys rendering to one string would merge two conversations into a single record.
+
+    The **whole** digest, because a truncation is a collision budget and this package cannot
+    know the number it would be spent against: the deployment picks the key count, not us.
+    These names are join keys an audit groups a conversation's records by, so a collision does
+    not blur a statistic — it splices two conversations into one trail, which is the reading
+    this package exists to make impossible.  An OpenTelemetry string attribute has no length
+    limit to trade against, so there is nothing on the other side of that budget.
     """
     joined = "".join(f"{len(part)}:{part}" for part in parts)
-    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
 
 def hashed_key(key: SandboxKey) -> str:
