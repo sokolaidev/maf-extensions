@@ -578,7 +578,9 @@ class TestHostToolCallsAreRecorded:
             await entered.wait()
             await run.call("quick", {"url": "u"})
             released.set()
-            await overlapping
+            # Asserted rather than discarded: if the held call did not deliver, the sizes below
+            # would be comparing against a refusal's zero and would pass for the wrong reason.
+            assert (await overlapping).value_json is not None
 
         asyncio.run(both())
 
