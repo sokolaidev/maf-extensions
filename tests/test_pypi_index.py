@@ -7,6 +7,9 @@ and a 4xx retried three times is three times the wait for the same refusal.
 
 Nothing here reaches the network or sleeps: ``urlopen`` is mocked and ``sleep`` is injected, so
 the pauses are asserted as values rather than waited for.
+
+The version helpers the same checks share are pinned here too, sorting being the one that goes
+wrong quietly: a lexical order puts 0.9.0 above 0.10.0 and every caller reads the wrong newest.
 """
 
 from __future__ import annotations
@@ -197,3 +200,29 @@ class TestRunCheck:
 
         with pytest.raises(SystemExit):
             index.run_check(main, ["check"])
+
+
+class TestPublishedVersionsAreSortedSemantically:
+    """Newest-first, by numeric value, never lexically."""
+
+    def test_0_10_0_sorts_after_0_9_0(self, monkeypatch: pytest.MonkeyPatch):
+        _install(monkeypatch, _Index({"versions": ["0.6.0", "0.10.0", "0.9.0"]}))
+        assert index.fetch_published_versions("maf-sandbox-bicep") == ["0.10.0", "0.9.0", "0.6.0"]
+
+    def test_an_unsorted_multi_part_order_is_preserved_by_value(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        _install(monkeypatch, _Index({"versions": ["1.2.4", "1.2.10", "1.3.0", "1.2.3"]}))
+        assert index.fetch_published_versions("maf-sandbox-bicep") == [
+            "1.3.0",
+            "1.2.10",
+            "1.2.4",
+            "1.2.3",
+        ]
+
+    def test_a_distribution_that_was_never_released_answers_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """None, not an empty list: a caller has to tell "no versions" from "no package"."""
+        _install(monkeypatch, _Index(_http_error(404)))
+        assert index.fetch_published_versions("maf-sandbox-nothing") is None

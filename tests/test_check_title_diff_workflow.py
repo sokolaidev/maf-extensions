@@ -34,17 +34,12 @@ def test_pr_title_workflow_passes_every_fact_the_release_exemption_needs():
     assert "PR_AUTHOR: ${{ github.event.pull_request.user.login }}" in TEXT
 
 
-def test_both_checks_read_the_pull_requests_own_head():
+def test_the_check_reads_the_pull_requests_own_head():
     """The merge commit carries the base branch's new commits, and `base.sha` does not move.
 
     Diffing one against the other credits this pull request with everything merged into `main`
-    since it opened, which fails a correct title for somebody else's change. Both jobs check
+    since it opened, which fails a correct title for somebody else's change. The job checks
     out the head, where the merge base is the branch point however far `main` has run on.
     """
-    assert TEXT.count("ref: ${{ github.event.pull_request.head.sha }}") == 2
-    assert TEXT.count("actions/checkout@") == 2
-
-
-def test_the_release_order_diff_starts_at_the_branch_point():
-    """Three dots, so a stale `base.sha` resolves to the merge base rather than to itself."""
-    assert 'git diff --name-only "$BASE_SHA...HEAD"' in TEXT
+    assert TEXT.count("ref: ${{ github.event.pull_request.head.sha }}") == 1
+    assert TEXT.count("actions/checkout@") == 1

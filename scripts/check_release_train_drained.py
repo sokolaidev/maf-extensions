@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 from check_published_dependents_admit import dependent_distributions
-from check_release_order import fetch_simple, newest_upload, version
+from pypi_index import fetch_simple, newest_upload, version
 
 _CORE = "maf-sandbox"
 

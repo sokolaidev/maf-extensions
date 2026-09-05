@@ -6,12 +6,11 @@ Resolves each dependent's newest version from PyPI's simple index, reads its `re
 from the per-version document, and reports every ceiling that excludes the version about to
 be released.
 
-**It used to refuse that, and no longer does** — the same inversion #633 made to
-`check_release_order.py`, which is this check at pull-request time rather than at publish.
-Refusing here is what ordered every core release behind its dependents': a core the ceilings
-exclude could not go out until all five had shipped again, whether or not anything was
-actually broken. A dependent whose ceiling excludes the candidate *cannot reach it*, which for
-a breaking release is the point rather than the problem.
+**It used to refuse that, and no longer does** (#633). Refusing here is what ordered every core
+release behind its dependents': a core the ceilings exclude could not go out until all five had
+shipped again, whether or not anything was actually broken. A dependent whose ceiling excludes
+the candidate *cannot reach it*, which for a breaking release is the point rather than the
+problem.
 
 What refuses on evidence is `check_core_against_dependents.py`, which runs every admitting
 published dependent's own suite against the candidate. A ceiling that excludes it takes that
@@ -20,7 +19,10 @@ question is answered by running something rather than by reading a bound.
 
 The consequence is still worth printing, because it is not obvious: nothing published resolves
 the new core until each dependent widens and republishes, so the live samples exercise the core
-below it and the dispatch reports a skip. See `docs/release-compatibility.md`.
+below it and the dispatch reports a skip. This is the only place it is said now — the
+pull-request twin that guessed the version from a title has been removed, and a title is a
+guess: several land in one minor, and `Release-As:` and `BREAKING CHANGE:` are typed into the
+squash box after the last check has run. See `docs/release-compatibility.md`.
 
 A dependent that is not on PyPI yet is skipped — a first release has nothing to contradict.
 An index that stays unreachable through `pypi_index`'s retries is fatal rather than skipped:
@@ -39,8 +41,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from check_release_order import admits, fetch_published_versions, version
-from pypi_index import read_json, run_check
+from pypi_index import admits, fetch_published_versions, read_json, run_check, version
 
 _CORE = "maf-sandbox"
 #: A distribution name and its optional extras, at the head of a requirement.

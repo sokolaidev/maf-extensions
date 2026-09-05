@@ -32,8 +32,7 @@ from pathlib import Path
 
 from check_dependent_works_with_published_cores import sibling_wheels, throwaway_interpreter
 from check_published_dependents_work import fetch_requires_dist_for_version
-from check_release_order import fetch_published_versions, version
-from pypi_index import run_check
+from pypi_index import fetch_published_versions, run_check, version
 from sample_blocks import declared, distribution, sample_directories
 
 _CORE = "maf-sandbox"

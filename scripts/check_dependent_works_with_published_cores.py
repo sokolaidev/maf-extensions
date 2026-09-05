@@ -47,8 +47,7 @@ import zipfile
 from pathlib import Path
 
 from check_published_dependents_work import fetch_requires_dist_for_version
-from check_release_order import admits, fetch_published_versions, version
-from pypi_index import run_check
+from pypi_index import admits, fetch_published_versions, run_check, version
 
 _CORE = "maf-sandbox"
 _ROOT = Path(__file__).resolve().parent.parent
