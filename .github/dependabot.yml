@@ -1,0 +1,46 @@
+# What keeps `uv.lock` on the agent-framework release a host installing these wheels resolves.
+#
+# The offline suite runs under `uv sync --locked`, so the lock decides which framework version
+# every behavioural assertion in it is made against, while the declared `>=1.13.0,<2` decides
+# what an adopter gets. Nothing held those two together and they had drifted four minors before
+# #809 — the clean-environment smoke step does install each wheel unpinned and so does exercise
+# the newest, but it exercises imports and one usage path, not behaviour.
+#
+# **Scoped to the framework, and to nothing else.** The dev group's `ruff`, `pyright` and
+# `pytest` bands are pinned on purpose — an unpinned lint minor drifts findings across
+# unrelated pull requests — so refreshing them is a decision somebody makes, not maintenance a
+# bot proposes. An allow list rather than a longer interval is what keeps this quiet.
+#
+# **The range is not moving, and nothing here moves it.** Dependabot's uv updater rewrites
+# `uv.lock` and the *pinned* versions in `pyproject.toml` (dependabot-core#12788); every
+# framework declaration here is a range, so there is nothing of that kind for it to touch.
+# `versioning-strategy` is left unset for the same reason: `increase` is the value that would
+# raise a floor, and `>=1.13.0` is a promise to adopters that costs a release across the whole
+# suite to move (#628).
+#
+# `chore` because a pull request title here is the changelog entry and a lockfile refresh
+# releases nothing. `.github/workflows/lock-drift.yml` is the monthly check that these
+# proposals are actually arriving; a configuration file is not evidence that a bot ran.
+version: 2
+
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "04:00"
+      timezone: "Etc/UTC"
+    # `all` rather than the default, which is direct dependencies only. `agent-framework-core`
+    # is declared by the workspace members rather than by the root manifest this reads, so
+    # whether it counts as direct here is Dependabot's judgement and not one worth betting on.
+    allow:
+      - dependency-name: "agent-framework-core"
+        dependency-type: "all"
+      - dependency-name: "agent-framework-openai"
+        dependency-type: "all"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    # Two distributions, so two is every proposal this can have open at once.
+    open-pull-requests-limit: 2
