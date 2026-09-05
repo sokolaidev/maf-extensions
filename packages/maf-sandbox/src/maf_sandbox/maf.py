@@ -65,6 +65,7 @@ from ._outputs import (
     Artifact,
     LandedArtifact,
     OutputSink,
+    SandboxLandingExists,
     SandboxLandingNotText,
     landing_outputs,
     missing_sink_refusal,
@@ -2330,7 +2331,9 @@ def make_file_store_sink(
     Four things a caller has to know:
 
     - **A destination that already exists is refused, never replaced**, so one call's answer
-      cannot come to read as another's.
+      cannot come to read as another's.  Unconditionally, unlike
+      :func:`~maf_sandbox.make_file_system_sink`: the folder is a call id, so a collision here
+      is not a shared root but the same call landing one name twice.
     - **``provenance`` is recorded before the bytes are written**, so no moment exists at which
       the file is there and the host's floor still answers for it.  Recording only ever lowers,
       so an entry left behind by a write that then failed is safe.
@@ -2354,6 +2357,9 @@ def make_file_store_sink(
     Raises:
         ValueError: when an artifact reaches ``deliver`` with no ``call_id``.
         SandboxLandingNotText: when an artifact's bytes are not valid UTF-8.
+        SandboxLandingExists: when the store already holds the destination and says so with
+            ``FileExistsError``, which both shipped stores do.  A store refusing in some other
+            vocabulary propagates its own exception.
     """
 
     async def deliver(artifact: Artifact) -> LandedArtifact:
@@ -2372,7 +2378,13 @@ def make_file_store_sink(
         destination = f"{artifact.call_id}/{artifact.name}"
         if provenance is not None:
             provenance.record(destination)
-        await store.write(destination, content, overwrite=False)
+        try:
+            await store.write(destination, content, overwrite=False)
+        except FileExistsError as exc:
+            raise SandboxLandingExists(
+                f"artifact {artifact.name!r} is already in the store under this call's "
+                "folder, and this sink refuses to replace one."
+            ) from exc
         return LandedArtifact(
             name=artifact.name,
             display=display(artifact, destination),

@@ -27,6 +27,7 @@ from collections.abc import Awaitable, Callable, Generator
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import Literal
 
 from ._protocol import (
     DeclaredOutput,
@@ -46,6 +47,7 @@ __all__ = [
     "OutputSink",
     "SandboxArtifactNameCollision",
     "SandboxArtifactNameInvalid",
+    "SandboxLandingExists",
     "SandboxLandingNotConfined",
     "SandboxLandingNotText",
     "SandboxOutputError",
@@ -140,6 +142,19 @@ class SandboxOutputUnreachable(SandboxOutputError):
 
 class SandboxTransferCapExceeded(SandboxOutputError):
     """A collection asks to move more than the workload's own ``files_out`` caps allow."""
+
+
+class SandboxLandingExists(SandboxOutputError):
+    """A sink refused a destination that already held a file.
+
+    :func:`collect_outputs` refuses two colliding names *within* one collection and can see no
+    further, so whatever an earlier call — or an earlier conversation sharing the root — landed
+    at the same destination is invisible to it.  Replacing is therefore the host's decision to
+    make explicitly rather than the sink's to make silently.
+
+    It is a signal rather than a control: what it closes is a silent write across calls, and a
+    destination two conversations can both reach is closed by giving each its own root.
+    """
 
 
 class SandboxLandingNotConfined(SandboxOutputError):
@@ -260,7 +275,10 @@ def _landed_display(artifact: Artifact, _destination: Path) -> str:
 
 
 def make_file_system_sink(
-    root: Path, *, display: Callable[[Artifact, Path], str] = _landed_display
+    root: Path,
+    *,
+    display: Callable[[Artifact, Path], str] = _landed_display,
+    existing: Literal["refuse", "replace"] = "refuse",
 ) -> OutputSink:
     """An :class:`OutputSink` that writes each artifact under ``root``, refusing any that would
     land outside it.
@@ -276,12 +294,21 @@ def make_file_system_sink(
     wants no-follow primitives underneath.  What this closes is the standing case — something
     already in the way when the run started.
 
+    ``existing`` decides what a destination that is already there means.  The default refuses
+    it, because the collision check in :func:`collect_outputs` is per collection and a name is
+    not fresh just because this call is — a root served to more than one conversation is a
+    channel between them, and a silent ``write_bytes`` is what makes it a quiet one.
+    ``"replace"`` is the host saying it means to land over what is there, which a root holding
+    one stable name per workload does.
+
     ``display`` is the one line the model is allowed to see, and a kind that introduces its
     artifacts in its own words supplies its own; ``handle`` is always the host path, which
     nothing renders into the transcript.
 
     Raises:
         SandboxLandingNotConfined: when a destination resolves outside ``root``.
+        SandboxLandingExists: when something is already at the destination and ``existing``
+            is not ``"replace"``.
     """
     confined_root = root.resolve()
 
@@ -298,6 +325,14 @@ def make_file_system_sink(
                 f"artifact {artifact.name!r} resolves outside the directory it lands in. "
                 "Something on that path leaves it — a link, most likely — and writing "
                 "would follow it."
+            )
+        # Compared against the opt-out rather than against the default, so a value that is
+        # neither refuses instead of landing over host state.
+        if existing != "replace" and destination.exists():
+            raise SandboxLandingExists(
+                f"artifact {artifact.name!r} would land over a file already at that name, "
+                "and this sink refuses to replace one. Pass existing='replace' where the "
+                "host means to, or land this conversation somewhere of its own."
             )
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(artifact.content)

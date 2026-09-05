@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+from typing import Any, cast
 
 import pytest
 
@@ -25,6 +26,7 @@ from maf_sandbox import (
     SandboxArtifactNameCollision,
     SandboxArtifactNameInvalid,
     SandboxEntry,
+    SandboxLandingExists,
     SandboxLandingNotConfined,
     SandboxOutputError,
     SandboxOutputMissing,
@@ -1298,10 +1300,10 @@ def _link_dir(link, target) -> bool:
 
 
 class TestMakeFileSystemSink:
-    """The packaged landing sink: what it writes, and the two escapes it refuses.
+    """The packaged landing sink: what it writes, and the three landings it refuses.
 
-    Only one of the two is reachable through `collect_outputs`, so the other is driven
-    through `deliver` directly.
+    Only the collision within one collection is reachable through `collect_outputs`, so the
+    other two are driven through `deliver` directly.
     """
 
     def _artifact(self, name: str, content: bytes = b"payload") -> Artifact:
@@ -1384,6 +1386,61 @@ class TestMakeFileSystemSink:
             asyncio.run(sink.deliver(self._artifact("sub/a.txt")))
 
         assert not (outside / "a.txt").exists(), "it wrote through the link before refusing"
+
+    def test_a_destination_already_there_is_refused(self, tmp_path):
+        """The name check in `collect_outputs` is per collection, so a second call landing one
+        the first already landed is a write across calls nothing upstream can see."""
+        sink = make_file_system_sink(tmp_path / "out")
+        asyncio.run(sink.deliver(self._artifact("a.txt", b"first")))
+
+        with pytest.raises(SandboxLandingExists):
+            asyncio.run(sink.deliver(self._artifact("a.txt", b"second")))
+
+        assert (tmp_path / "out" / "a.txt").read_bytes() == b"first", "it wrote, then refused"
+
+    def test_the_refusal_of_an_existing_destination_names_no_host_path(self, tmp_path):
+        """The rule the confinement refusal above is held to, for the same reason: this family
+        is the one a kind may show the model verbatim."""
+        root = tmp_path / "out"
+        sink = make_file_system_sink(root)
+        asyncio.run(sink.deliver(self._artifact("a.txt")))
+
+        with pytest.raises(SandboxLandingExists) as caught:
+            asyncio.run(sink.deliver(self._artifact("a.txt")))
+
+        message = str(caught.value)
+        assert "a.txt" in message, "the guest's own name is what a caller can act on"
+        for leaked in (str(root), str(root.resolve()), str(tmp_path)):
+            assert leaked not in message, f"the refusal named a host path: {leaked}"
+
+    def test_a_directory_in_the_way_refuses_in_this_family_rather_than_as_an_oserror(
+        self, tmp_path
+    ):
+        """A kind catches `SandboxOutputError` to say the artifacts did not come back, and an
+        `IsADirectoryError` from `write_bytes` would walk straight past that."""
+        root = tmp_path / "out"
+        (root / "a.txt").mkdir(parents=True)
+        sink = make_file_system_sink(root)
+
+        with pytest.raises(SandboxOutputError):
+            asyncio.run(sink.deliver(self._artifact("a.txt")))
+
+    def test_a_host_that_means_to_land_over_one_asks_for_it(self, tmp_path):
+        """Sample 07's case: one stable name per workload, re-rendered in place."""
+        sink = make_file_system_sink(tmp_path / "out", existing="replace")
+        asyncio.run(sink.deliver(self._artifact("a.txt", b"first")))
+        asyncio.run(sink.deliver(self._artifact("a.txt", b"second")))
+
+        assert (tmp_path / "out" / "a.txt").read_bytes() == b"second"
+
+    def test_a_value_that_is_neither_refuses_rather_than_replaces(self, tmp_path):
+        """The fail-safe direction. Only a host outside pyright can reach this, and the one
+        that does should not have host state landed over by a misspelling."""
+        sink = make_file_system_sink(tmp_path / "out", existing=cast(Any, "Replace"))
+        asyncio.run(sink.deliver(self._artifact("a.txt", b"first")))
+
+        with pytest.raises(SandboxLandingExists):
+            asyncio.run(sink.deliver(self._artifact("a.txt", b"second")))
 
     def test_it_lands_a_whole_collection_through_collect_outputs(self, tmp_path):
         """End to end, because `deliver` alone does not prove the sink is shaped like one."""

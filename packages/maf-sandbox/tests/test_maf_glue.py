@@ -46,7 +46,9 @@ from maf_sandbox import (
     SandboxCapabilityNotSupported,
     SandboxEgressNotEnforced,
     SandboxKey,
+    SandboxLandingExists,
     SandboxLandingNotText,
+    SandboxOutputError,
     SandboxOutputSinkRequired,
     SandboxRouter,
     SandboxSpec,
@@ -4804,13 +4806,18 @@ class TestMakeFileStoreSink:
         assert asyncio.run(store.read("two/s.md")) == "second"
 
     def test_a_second_landing_of_one_name_in_one_folder_is_refused(self):
+        """In this package's own family rather than the store's: a kind catches
+        `SandboxOutputError` to say the artifacts did not come back, and a bare
+        `FileExistsError` walks straight past that."""
         store = self._store()
         sink = make_file_store_sink(store)
         asyncio.run(sink.deliver(self._artifact("s.md", b"first")))
 
-        with pytest.raises(FileExistsError):
+        with pytest.raises(SandboxLandingExists) as caught:
             asyncio.run(sink.deliver(self._artifact("s.md", b"second")))
 
+        assert isinstance(caught.value, SandboxOutputError)
+        assert isinstance(caught.value.__cause__, FileExistsError), "the store's own is kept"
         assert asyncio.run(store.read("c0ffee/s.md")) == "first"
 
     def test_a_landing_is_recorded_so_a_trusted_floor_never_answers_for_it(self):
