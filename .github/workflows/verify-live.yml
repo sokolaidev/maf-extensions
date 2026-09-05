@@ -1607,6 +1607,100 @@ jobs:
         run: |
           set -euo pipefail
           python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample15-docker-out.txt "$PACKAGE" "$VERSION"
+  sample-16:
+    name: samples/16_docker_codeact_outputs_store against a live container
+    # The one sample where the model cannot read what its program printed. `withhold_guest_output`
+    # is on, so `execute_code` answers with an exit code, two byte counts and a standing sentence
+    # naming this call's landing folder — and the answer in the reply can only have come from the
+    # file the model then read back out of the outputs store. Sample 08 gates the same two
+    # channels with stdout still coming back; this one gates the composition that replaces it.
+    # Same runner economics as samples 06 and 08: a Docker container costs nothing and the model
+    # is reached with a federated credential. Runs for the same three packages, since it is the
+    # same router, backend and kind.
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-codeact", "maf-sandbox-docker"]'), inputs.package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: live-verify
+    permissions:
+      # Mints the OIDC token azure/login exchanges. No secret is involved.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Only when `HARNESS` points at it — see the `env` block at the top for why the checks
+      # come from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      - name: Run sample 16 and assert the answer came back out of the outputs store
+        env:
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          # No `rm -rf` of a landing directory, unlike sample 08: this sample lands into an
+          # in-memory store that lives and dies with the process, so there is nothing an
+          # earlier run could have left for this one to pass on.
+          uv run --no-project samples/16_docker_codeact_outputs_store/agent.py | tee /tmp/sample16-out.txt
+          # The grand total in the reply is the load-bearing half, and it means more here than
+          # in sample 08: the guest's output is withheld, so it has no road back except the
+          # file the model read out of the store. stdlib-only, so the runner's own python3 runs it.
+          python3 "$HARNESS"/scripts/check_live_codeact_outputs_store_sample.py /tmp/sample16-out.txt
+
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample16-out.txt "$PACKAGE" "$VERSION"
   acas-e2e:
     name: maf-sandbox-acas conformance against a live sandbox group
     # **The one job here that is not a sample**, and the one that does not install published

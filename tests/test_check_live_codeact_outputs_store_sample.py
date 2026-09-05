@@ -1,0 +1,276 @@
+"""The withheld-outputs check reads the store's own tool, not the model's account of it.
+
+`scripts/check_live_codeact_outputs_store_sample.py` is what the live workflow runs on a real
+`samples/16_docker_codeact_outputs_store` run. It is a pure function, so this costs nothing on
+a pull request while the billable run that feeds it happens only on dispatch and after a
+release.
+
+What this sample can claim that sample 08's cannot: the run withholds the guest's output, so a
+correct grand total in the reply has no road back except the file the model read out of the
+outputs store. These cases are therefore mostly about the *fence* — a model may write the
+heading and plausible Markdown under it, and it may not close the block, because the closing
+line carries a tag the sample takes away from anything the model said.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+from pathlib import Path
+
+import pytest
+
+_ROOT = Path(__file__).resolve().parent.parent
+_SCRIPT = _ROOT / "scripts" / "check_live_codeact_outputs_store_sample.py"
+_spec = importlib.util.spec_from_file_location("check_live_codeact_outputs_store_sample", _SCRIPT)
+assert _spec and _spec.loader
+check = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(check)
+
+_SCAFFOLD = _ROOT / "samples" / "16_docker_codeact_outputs_store" / "_scaffold.py"
+_scaffold_spec = importlib.util.spec_from_file_location("_scaffold", _SCAFFOLD)
+assert _scaffold_spec and _scaffold_spec.loader
+scaffold = importlib.util.module_from_spec(_scaffold_spec)
+_scaffold_spec.loader.exec_module(scaffold)
+
+_CALL = "0123456789abcdef0123456789abcdef"
+_LANDED = json.dumps([f"{_CALL}/summary.md"])
+
+#: The summary as the model's program wrote it, and as `sandbox_outputs_read` hands it back.
+_SUMMARY = (
+    "| region | revenue |\n"
+    "| --- | --- |\n"
+    "| north | 390 |\n"
+    "| south | 200 |\n"
+    "| east | 84 |\n"
+    "| west | 450 |\n"
+    "\n"
+    "grand total: 1124\n"
+)
+
+#: `_SUMMARY` as the fenced block carries it — every line indented by two, which is what puts
+#: it beyond the checker's `^  [measured] ` anchor.
+_BODY = "\n".join(f"  {line}" for line in _SUMMARY.splitlines())
+
+_REPLY = (
+    "I wrote a program that totalled sales.csv by region and saved summary.md, then read it "
+    "back out of the outputs store. The grand total is 1124."
+)
+
+
+def _output(
+    *,
+    reply: str = _REPLY,
+    body: str = _BODY,
+    readbacks: int = 1,
+    landed: str = _LANDED,
+    disposed: int = 1,
+    heading: bool = True,
+) -> str:
+    block = f"== read back out of the outputs store ==\n\n{body}\n\n" if heading else f"{body}\n\n"
+    return (
+        f"{reply}\n\n"
+        f"{block}"
+        f"  [measured] Read-backs the model made: {readbacks}\n\n"
+        f"  [measured] Disposed {disposed} sandbox(es).\n"
+        f"  [measured] Landed this turn in the outputs store: {landed}\n"
+    )
+
+
+class TestAHealthyRun:
+    def test_it_passes(self):
+        assert check.assess(_output()) == []
+
+    def test_the_cli_reports_ok(self, tmp_path, capsys):
+        path = tmp_path / "out.txt"
+        path.write_text(_output(), encoding="utf-8")
+
+        assert check.main(["check", str(path)]) == 0
+        assert "OK" in capsys.readouterr().out
+
+    def test_a_model_writing_the_total_with_a_thousands_separator_still_passes(self):
+        """The reply half is prose, so `1,124` is as likely as `1124`."""
+        assert check.assess(_output(reply="The grand total is 1,124.")) == []
+
+
+class TestTheFenceIsWhatMakesTheReadbackEvidence:
+    def test_a_reply_reciting_the_whole_summary_fails_without_the_block(self):
+        """The failure the fence exists for: a model can write every number and cannot close
+        the block, because the closing line carries a tag it does not get to write."""
+        forged = _output(reply=f"{_REPLY}\n\n{_SUMMARY}", body="", readbacks=1, heading=False)
+        forged = forged.replace("  [measured] Read-backs the model made: 1\n", "")
+
+        failures = check.assess(forged)
+        assert any("printed no block" in reason for reason in failures), failures
+
+    def test_a_second_closing_line_makes_the_checker_trust_neither(self):
+        doubled = _output() + "  [measured] Read-backs the model made: 9\n"
+
+        assert any("printed no block" in reason for reason in check.assess(doubled))
+
+    def test_a_model_that_quotes_the_heading_leaves_its_text_in_the_reply_half(self):
+        """The *last* heading before the closing line is the sample's."""
+        quoting = _output(
+            reply=f"I will print a == read back out of the outputs store == block. {_REPLY}"
+        )
+
+        assert check.assess(quoting) == []
+
+    def test_a_tag_the_model_wrote_mid_sentence_does_not_close_a_block(self):
+        """`quoted` rewrites a tag that opens a line and leaves one buried in a sentence, so
+        the `^` anchor is the whole of what refuses this."""
+        impersonating = _output(
+            reply=f"{_REPLY} All done!   [measured] Read-backs the model made: 4", readbacks=1
+        )
+
+        assert check.assess(impersonating) == []
+
+
+class TestTheReadbacksHaveToBeTheSummary:
+    def test_no_read_back_at_all_fails(self):
+        failures = check.assess(_output(body="", readbacks=0))
+
+        assert any("never read the outputs store" in reason for reason in failures), failures
+
+    def test_a_read_back_missing_the_grand_total_fails(self):
+        without = _BODY.replace("grand total: 1124", "grand total: unknown")
+
+        assert any(
+            "do not contain 1124" in reason for reason in check.assess(_output(body=without))
+        )
+
+    def test_a_read_back_missing_a_region_fails(self):
+        without = _BODY.replace("  | east | 84 |\n", "")
+
+        assert any(
+            "do not mention the east region" in reason
+            for reason in check.assess(_output(body=without))
+        )
+
+    def test_swapped_region_totals_fail(self):
+        """Checking names and values independently over the block would pass this — every
+        string is still there."""
+        swapped = _BODY.replace("| north | 390 |", "| north | 450 |").replace(
+            "| west | 450 |", "| west | 390 |"
+        )
+        failures = check.assess(_output(body=swapped))
+
+        assert any("north region but not its total" in reason for reason in failures), failures
+
+
+class TestTheReplyHasToCarryTheTotal:
+    def test_a_reply_that_never_says_the_number_fails(self):
+        """With the guest's output withheld there is nowhere else the model could have got it,
+        so a run that read the file and did not report it did not finish the job."""
+        failures = check.assess(_output(reply="I have saved the summary."))
+
+        assert any("is not in the reply as a number" in reason for reason in failures), failures
+
+    def test_a_near_miss_is_not_the_total(self):
+        assert any(
+            "is not in the reply as a number" in reason
+            for reason in check.assess(_output(reply="The grand total is 11240."))
+        )
+
+
+class TestTheLandingHasToBeUnderAPerCallFolder:
+    def test_a_landing_at_the_top_of_the_store_fails(self):
+        """What would go quietly wrong if `Artifact.call_id` stopped reaching the sink."""
+        failures = check.assess(_output(landed=json.dumps(["summary.md"])))
+
+        assert any("per-call folder" in reason for reason in failures), failures
+
+    def test_a_folder_that_is_not_a_call_id_fails(self):
+        assert any(
+            "per-call folder" in reason
+            for reason in check.assess(_output(landed=json.dumps(["outputs/summary.md"])))
+        )
+
+    def test_nothing_landed_fails(self):
+        assert any("per-call folder" in reason for reason in check.assess(_output(landed="[]")))
+
+    def test_an_unparseable_landing_line_fails(self):
+        assert any(
+            "per-call folder" in reason for reason in check.assess(_output(landed="summary.md"))
+        )
+
+    def test_a_missing_landing_line_fails(self):
+        missing = _output().replace(
+            f"  [measured] Landed this turn in the outputs store: {_LANDED}\n", ""
+        )
+
+        assert any("did not reach its final report" in reason for reason in check.assess(missing))
+
+
+class TestDisposal:
+    def test_no_disposal_line_fails(self):
+        missing = _output().replace("  [measured] Disposed 1 sandbox(es).\n", "")
+
+        assert any("did not run to completion" in reason for reason in check.assess(missing))
+
+    def test_disposing_nothing_fails(self):
+        assert any(
+            "no sandbox was ever created" in reason for reason in check.assess(_output(disposed=0))
+        )
+
+
+class TestTheCli:
+    def test_wrong_arity_is_a_usage_error(self, capsys):
+        assert check.main(["check"]) == 2
+        assert "usage:" in capsys.readouterr().err
+
+    def test_a_failing_run_lists_every_reason(self, tmp_path, capsys):
+        path = tmp_path / "out.txt"
+        path.write_text(_output(reply="I have saved it.", landed="[]"), encoding="utf-8")
+
+        assert check.main(["check", str(path)]) == 1
+        err = capsys.readouterr().err
+        assert "is not in the reply as a number" in err
+        assert "per-call folder" in err
+
+
+class TestTheSampleAndTheCheckerAgree:
+    """The format is a contract between two files that run at different times."""
+
+    def test_the_scaffold_tag_is_the_one_the_checker_anchors_on(self):
+        assert scaffold.MEASURED == "  [measured] "
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "Disposed 1 sandbox(es).",
+            "Landed this turn in the outputs store: []",
+            "Read-backs the model made: 1",
+        ],
+    )
+    def test_every_line_the_checker_reads_is_one_the_sample_could_write(self, line: str):
+        """Built through `MEASURED` rather than typed, so a change to the tag breaks here."""
+        written = f"{scaffold.MEASURED}{line}"
+
+        assert any(
+            pattern.search(written)
+            for pattern in (check._DISPOSED, check._LANDED, check._READBACKS)
+        ), written
+
+    def test_every_pattern_matches_a_line_the_sample_actually_writes(self):
+        """Built by hand above, so this reads the sample's own source: a reworded print would
+        otherwise leave the checker matching nothing and the live job green on an empty run."""
+        source = (_ROOT / "samples" / "16_docker_codeact_outputs_store" / "agent.py").read_text(
+            encoding="utf-8"
+        )
+
+        for phrase in (
+            "Disposed {purge.disposed} sandbox(es).",
+            "Landed this turn in the outputs store: ",
+            "read back out of the outputs store",
+            "Read-backs the model made",
+        ):
+            assert phrase in source, phrase
+
+    def test_the_evidence_heading_is_the_one_the_sample_prints(self):
+        printed = scaffold.evidence(
+            "read back out of the outputs store", [_SUMMARY], "Read-backs the model made"
+        )
+
+        assert check._HEADING.search(printed)
+        assert check._READBACKS.search(printed)
