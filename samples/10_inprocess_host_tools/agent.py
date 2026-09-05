@@ -11,7 +11,7 @@ README.
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "maf-sandbox>=0.33",
+#     "maf-sandbox>=0.32",
 # ]
 # ///
 
