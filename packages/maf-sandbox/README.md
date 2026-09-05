@@ -181,7 +181,7 @@ What may carry `TRUSTED` is narrow — text whose value **and whose presence** a
 
 ## Recording what the sandbox did
 
-This package logs, at `warning`, and a log line is neither structured nor keyed. A deployment asked *which conversation reached that host, which host tools ran under whose authority, what crossed the boundary and with what label* answers from records, so `SandboxObserver` is the seam that hands them over: six frozen events, in this package's own vocabulary, joined by the `SandboxKey` that addresses a sandbox. `SandboxAcquired` and `SandboxDisposed` always carry one; the other four type it `SandboxKey | None`, since each has a case with no sandbox behind it.
+This package logs, at `warning`, and a log line is neither structured nor keyed. A deployment asked *which conversation reached that host, which host tools ran under whose authority, what crossed the boundary and with what label* answers from records, so `SandboxObserver` is the seam that hands them over: six frozen events, in this package's own vocabulary, joined by the `SandboxKey` that addresses a sandbox. `SandboxAcquired` and `SandboxDisposed` always carry one; `HostToolCalled`, `StoreFileRead` and `OutputsCollected` type it `SandboxKey | None`, since each has a case with no sandbox behind it; and `ToolCallEnded` carries `keys`, a tuple of every sandbox the call reached, because one call may hold two.
 
 ```python
 from maf_sandbox import HostToolCalled, SandboxAcquired, SandboxObserver, SandboxRouter

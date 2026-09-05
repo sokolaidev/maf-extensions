@@ -50,7 +50,6 @@ import json
 import logging
 import math
 import posixpath
-import sys
 import threading
 import time
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
@@ -1323,7 +1322,14 @@ class SandboxToolSession:
         """
         from agent_framework import Content
 
-        before = self._recorded_state(listed.name)
+        try:
+            # Inside the boundary, not before it: this raises for a `trusted` floor no
+            # middleware observes, which is a supported configuration and so a reachable way out
+            # of a read that would otherwise leave no record at all.
+            before = self._recorded_state(listed.name)
+        except BaseException:
+            self._record_read(listed.name, None, 0, refused=True)
+            raise
         try:
             text = await store.read(listed.name)
         except Exception as exc:  # noqa: BLE001
@@ -2115,9 +2121,36 @@ def sandboxed_tool(
         # any synchronous tool.
         @functools.wraps(body)
         def checked(*args: Any, **kwargs: Any) -> Any:
-            result = body(*args, **kwargs)
-            _refuse_a_result_that_carries_no_call_label(result, tool=name)
-            return result
+            started = time.monotonic()
+            raised_by_body: BaseException | None = None
+            try:
+                try:
+                    result = body(*args, **kwargs)
+                except BaseException as raised:
+                    raised_by_body = raised
+                    raise
+                _refuse_a_result_that_carries_no_call_label(result, tool=name)
+                return result
+            finally:
+                if router.observer is not None:
+                    record(
+                        router.observer,
+                        ToolCallEnded(
+                            tool=name,
+                            kind=spec.kind,
+                            # Always empty, and not for want of looking: `acquire` is a
+                            # coroutine, so a body that awaits nothing holds no sandbox — which
+                            # is the same reason there is nothing to reclaim and nothing to be
+                            # unclean about.
+                            keys=(),
+                            seconds=time.monotonic() - started,
+                            failure=None
+                            if raised_by_body is None
+                            else type(raised_by_body).__name__,
+                            unclean=0,
+                        ),
+                        records,
+                    )
 
         return [decorate(checked)]
     if not [part for part in posixpath.normpath(spec.work_dir).split("/") if part]:
@@ -2144,8 +2177,16 @@ def sandboxed_tool(
         # What a transport notes about the sandbox during the body — a stop that did not
         # reach everything — read back once the body has returned.
         unclean, notes = open_unclean_notes()
+        # What the *body* raised, kept apart from what this wrapper's own label check raises: a
+        # body that returned and then failed that check did not fail, and a record saying it did
+        # would send an operator looking at the workload instead of at the tool's declaration.
+        raised_by_body: BaseException | None = None
         try:
-            result = await body(*args, **kwargs)
+            try:
+                result = await body(*args, **kwargs)
+            except BaseException as raised:
+                raised_by_body = raised
+                raise
             _refuse_a_result_that_carries_no_call_label(result, tool=name)
             return result
         finally:
@@ -2154,9 +2195,10 @@ def sandboxed_tool(
             # Closed before the removal, not after: a task the body left running would otherwise
             # be handed this path while it is being deleted.
             call.closed = True
-            # Read once, here: past the removal `sys.exception()` can be the removal's own
-            # cancel, and what the record owes is what the *body* did.
-            failed = sys.exception()
+            # The body's own escape, captured where it happened rather than read from
+            # `sys.exception()` here: this frame also sees what the label check raised, and past
+            # the removal it would see the removal's own cancel.
+            failed = raised_by_body
             bound = effective_timeout
             if isinstance(failed, (asyncio.CancelledError, GeneratorExit)):
                 bound = min(effective_timeout, _CANCELLED_CALL_GRACE)
