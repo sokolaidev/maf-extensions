@@ -132,6 +132,11 @@ def run_suite(requirements: list[str], core: Path, tests: Path) -> tuple[bool, s
     ``core`` is both an operand and an override, because an override rewrites a requirement and
     never adds one: the wheel has to be asked for as well as forced. Naming it here rather than
     in each caller's list is what keeps the two from drifting apart.
+
+    It is resolved first. An override names the wheel as a ``file://`` URI and `Path.as_uri`
+    refuses a relative one, while the operand beside it resolves against the process's
+    directory instead — so the two name the same file only once the path is absolute. The
+    workflow passes ``dist/maf_sandbox-<version>-py3-none-any.whl``.
     """
     with tempfile.TemporaryDirectory() as directory:
         environment = Path(directory) / "venv"
@@ -141,8 +146,9 @@ def run_suite(requirements: list[str], core: Path, tests: Path) -> tuple[bool, s
         if created.returncode != 0:
             return False, created.stderr.strip().splitlines()[-1] if created.stderr else "no venv"
         python = _python_in(environment)
+        wheel = core.resolve()
         override = Path(directory) / "override.txt"
-        override.write_text(f"{_CORE} @ {core.as_uri()}\n", encoding="utf-8")
+        override.write_text(f"{_CORE} @ {wheel.as_uri()}\n", encoding="utf-8")
         installed = subprocess.run(
             [
                 "uv",
@@ -153,7 +159,7 @@ def run_suite(requirements: list[str], core: Path, tests: Path) -> tuple[bool, s
                 "--overrides",
                 str(override),
                 *requirements,
-                str(core),
+                str(wheel),
                 *_TEST_REQUIREMENTS,
             ],
             capture_output=True,
