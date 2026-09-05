@@ -7,7 +7,8 @@ and get them::
                   ^ maf_sandbox_codeact calls the router
 
 `withhold_guest_output=True` keeps everything the program printed out of the result,
-so `stdout` is a byte count and nothing else.  What replaces it is a **second store**:
+which since #899 leaves one line saying whether it exited cleanly — no exit code and
+no size for either stream.  What replaces the text is a **second store**:
 `make_file_store_sink` lands each call's declared outputs under a folder named for that
 call, `sandbox_outputs_read_tools` gives the model a read-only pair of tools over that
 store, and the withheld result names the folder.  The model writes a file, is told
@@ -47,7 +48,6 @@ from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
 from maf_sandbox import Artifact, FileStoreProvenance, Isolation, LandedArtifact, SandboxRouter
 from maf_sandbox.maf import (
-    file_store_provenance_middleware,
     list_all_files,
     make_caller_context,
     make_file_store_sink,
@@ -66,7 +66,9 @@ CODEACT_IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 #: Ships beside this file and is seeded into the *working* store under the same name.
 STORE_FILE = "sales.csv"
 
-#: What the model is told to write, and the only name it should declare.
+#: What the model is told to write, and the only name it should declare. Interpolated
+#: into the task rather than restated there, so the name the checker asserts and the
+#: name the model is given cannot drift apart.
 SUMMARY_FILE = "summary.md"
 
 #: The tool names the read-back pair carries here. The default prefix, spelled out because the
@@ -74,9 +76,9 @@ SUMMARY_FILE = "summary.md"
 OUTPUTS_TOOL_PREFIX = "sandbox_outputs"
 
 TASK = (
-    "The file sales.csv is in your file store. Using a Python program, compute each "
+    f"The file {STORE_FILE} is in your file store. Using a Python program, compute each "
     "row's revenue as units * unit_price, total it by region, and also compute the "
-    "grand total across all regions. Write both into summary.md — a Markdown table "
+    f"grand total across all regions. Write both into {SUMMARY_FILE} — a Markdown table "
     "with the region in the first column and its revenue in the second, and a final "
     "line reading 'grand total: N'. Then tell me the grand total."
 )
@@ -127,6 +129,12 @@ async def run() -> int:
     # between the two would answer about a file it never saw. This one is the outputs store's,
     # and every landing is entered into it before the bytes are written, so nothing a guest
     # produced can ever read back as host-placed.
+    #
+    # No `file_store_provenance_middleware` beside it, and that is the point rather than an
+    # omission: it records by *tool name* and carries no store identity, so here it would
+    # observe nothing, and the moment a host wired `file_access_write` over the working
+    # store it would file those writes into this record. What keeps this store read-only is
+    # that no write tool is attached to it.
     landed_provenance = FileStoreProvenance()
 
     context = make_caller_context(list_all_files, lambda: SCOPE, lambda: THREAD_ID)
@@ -172,9 +180,6 @@ async def run() -> int:
                 f"the {OUTPUTS_TOOL_PREFIX}_read tool."
             ),
             tools=tools,
-            # Records the model's own file-store writes. Nothing here wires a write tool, so it
-            # observes nothing today — it is what keeps that true rather than incidental.
-            middleware=[file_store_provenance_middleware(landed_provenance)],
         )
         response = await agent.run(TASK)
         print(quoted(response.text))

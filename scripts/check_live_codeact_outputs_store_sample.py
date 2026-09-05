@@ -10,7 +10,8 @@ holds. What stands in for the file on disk is the model's own read-back, fenced.
 
 **The grand total in the reply is the load-bearing check, and it is stronger here than in
 sample 08.** The sample runs with `withhold_guest_output=True`, so nothing the program printed
-comes back — the tool's result is an exit code, two byte counts and a standing sentence. A
+comes back — since #899 the tool's result is one line saying whether the program exited
+cleanly, and the standing sentence naming this call's folder. A
 correct total in the reply therefore cannot have come from `stdout`. The only road left is the
 one this sample exists to draw: the program wrote a file, `make_file_store_sink` landed it under
 this call's folder, and the model read it back with a host tool.

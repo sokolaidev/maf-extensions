@@ -1610,8 +1610,9 @@ jobs:
   sample-16:
     name: samples/16_docker_codeact_outputs_store against a live container
     # The one sample where the model cannot read what its program printed. `withhold_guest_output`
-    # is on, so `execute_code` answers with an exit code, two byte counts and a standing sentence
-    # naming this call's landing folder — and the answer in the reply can only have come from the
+    # is on, so `execute_code` answers with one line saying whether the program exited cleanly
+    # and a standing sentence naming this call's landing folder — and the answer in the reply
+    # can only have come from the
     # file the model then read back out of the outputs store. Sample 08 gates the same two
     # channels with stdout still coming back; this one gates the composition that replaces it.
     # Same runner economics as samples 06 and 08: a Docker container costs nothing and the model

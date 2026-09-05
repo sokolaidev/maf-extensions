@@ -11,7 +11,7 @@ app  ->  maf_sandbox (router)  ->  maf_sandbox_docker  ->  the container
 
 Three arguments and one extra pair of tools:
 
-- **`withhold_guest_output=True`** keeps everything the program wrote to `stdout` and `stderr` out of the result. What comes back is the exit code, a byte count per stream, and one standing sentence. No guest-authored text reaches the transcript.
+- **`withhold_guest_output=True`** keeps everything the program wrote to `stdout` and `stderr` out of the result. What comes back is one line saying whether it exited cleanly — since #899 there is no exit code and no size for either stream — and one standing sentence. No guest-authored text reaches the transcript.
 - **`output_sink=make_file_store_sink(outputs, provenance=…)`** lands each call's declared outputs at `<call_id>/<name>` in an `AgentFileStore` rather than in a host directory. The folder is the host-minted call id, so one call's `summary.md` can never answer for the next call's — and a destination that already exists is refused rather than overwritten.
 - **`sandbox_outputs_read_tools(outputs)`** gives the model `sandbox_outputs_ls` and `sandbox_outputs_read` over that store, and nothing else.
 

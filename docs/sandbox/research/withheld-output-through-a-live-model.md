@@ -103,7 +103,7 @@ The control arm reproduces the encoding behaviour on a second model and a narrow
 
 ## What is measured, what is inferred, and what was not tested
 
-**Measured live:** every row of all three tables, the model's own account of its encoding scheme in each arm, the refusals that the output cap produced, and that a withheld result renders two sizes and an exit code on this wiring.
+**Measured live**, for the three tables above — the third arm has a section of its own, and this one does not speak for it: every row of them, the model's own account of its encoding scheme in each arm, the refusals that the output cap produced, and that a withheld result rendered two sizes and an exit code on the wiring those arms ran against.
 
 **Not established:** any rate. Four runs per arm, one model, one task, and arms run in sequence rather than interleaved, so a drift in a cloud model over the half hour between them is uncontrolled. The difference in first-call route is a difference of one run against three on samples of four.
 
@@ -113,4 +113,4 @@ The control arm reproduces the encoding behaviour on a second model and a narrow
 
 ## What shipped after this record
 
-[#859](https://github.com/sokolaidev/maf-extensions/issues/859) closed with [#899](https://github.com/sokolaidev/maf-extensions/pull/899): what a withheld result says about the run itself is now one line, whether the program exited with status 0 — no code, and no size for either stream. The rest of the result is unchanged: the landed and not-written names stay, bounded by `files_out.max_files`, and on the host-tool transport a producer's note is still appended whole. Every table above measured the rendering before that change, and the narrowed one has not been measured: this record is of what the model did with roughly seventy bits a call, not with ten. Moving the landed names out of the result altogether is [#897](https://github.com/sokolaidev/maf-extensions/issues/897).
+[#859](https://github.com/sokolaidev/maf-extensions/issues/859) closed with [#899](https://github.com/sokolaidev/maf-extensions/pull/899): what a withheld result says about the run itself is now one line, whether the program exited with status 0 — no code, and no size for either stream. The rest of the result is unchanged: the landed and not-written names stay, bounded by `files_out.max_files`, and on the host-tool transport a producer's note is still appended whole. The first three tables measured the rendering before that change — what the model did with roughly seventy bits a call rather than with ten — and the third arm measures the narrowed one, which is why it carries its own control rather than reading against them. Moving the landed names out of the result altogether is [#897](https://github.com/sokolaidev/maf-extensions/issues/897) (closed) by [#902](https://github.com/sokolaidev/maf-extensions/pull/902) (merged).
