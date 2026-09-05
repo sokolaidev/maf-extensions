@@ -358,6 +358,13 @@ class TestEveryEventReachesTheLogPipeline:
         assert span.start_time == span.end_time
         assert recorded.log_bodies() == ["sandbox.files_in"]
 
+    def test_a_refused_store_read_is_an_error_span_too(self):
+        """A refusal produces an error span here just as it does for every other event."""
+        recorded = build()
+        recorded.observer.store_file_read(a_store_read(outcome="refused"))
+        span = recorded.only_span()
+        assert span.status.status_code is StatusCode.ERROR
+
     def test_a_store_read_goes_to_this_packages_provider_not_the_ambient_span(self):
         """The record a host routed away must not also land on the application's trace.
 
@@ -624,6 +631,113 @@ class TestTheCountersAnswerTheAggregateQuestions:
             )
         )
         assert recorded.counter(f"{NAMESPACE}.call.duration") == 2.0
+
+
+class _BrokenTracer:
+    """A tracer whose every span-open raises, standing in for a synchronous exporter that is."""
+
+    def start_span(self, *args: object, **kwargs: object) -> None:
+        raise RuntimeError("exporter is down")
+
+
+class _BrokenTracerProvider:
+    def get_tracer(self, *args: object, **kwargs: object) -> _BrokenTracer:
+        return _BrokenTracer()
+
+
+class _BrokenLogger:
+    def emit(self, *args: object, **kwargs: object) -> None:
+        raise RuntimeError("log pipeline is down")
+
+
+class _BrokenLoggerProvider:
+    def get_logger(self, *args: object, **kwargs: object) -> _BrokenLogger:
+        return _BrokenLogger()
+
+
+class _BrokenCounter:
+    def add(self, *args: object, **kwargs: object) -> None:
+        raise RuntimeError("meter is down")
+
+
+class _BrokenMeter:
+    def create_counter(self, *args: object, **kwargs: object) -> _BrokenCounter:
+        return _BrokenCounter()
+
+    def create_histogram(self, *args: object, **kwargs: object) -> _BrokenCounter:
+        return _BrokenCounter()
+
+
+class _BrokenMeterProvider:
+    def get_meter(self, *args: object, **kwargs: object) -> _BrokenMeter:
+        return _BrokenMeter()
+
+
+class TestASignalsFailureDoesNotCostASibling:
+    def test_a_broken_tracer_still_lets_the_log_and_the_counter_through(self):
+        """Tracing is one of three independent providers; its failure must not skip the rest."""
+        logs = InMemoryLogRecordExporter()
+        logger_provider = LoggerProvider()
+        logger_provider.add_log_record_processor(SimpleLogRecordProcessor(logs))
+        metrics = InMemoryMetricReader()
+        recorded = Recorded(
+            observer=OpenTelemetrySandboxObserver(
+                tracer_provider=_BrokenTracerProvider(),  # pyright: ignore[reportArgumentType]
+                logger_provider=logger_provider,
+                meter_provider=MeterProvider(metric_readers=[metrics]),
+            ),
+            spans=InMemorySpanExporter(),
+            logs=logs,
+            metrics=metrics,
+            tracer_provider=TracerProvider(),
+        )
+        recorded.observer.sandbox_acquired(an_acquire())
+        assert recorded.log_bodies() == ["sandbox.acquire"]
+        assert recorded.counter(f"{NAMESPACE}.sandbox.acquires") == 1
+
+    def test_a_broken_logger_still_lets_the_span_and_the_counter_through(self):
+        """The log pipeline is one of three independent providers; its failure must not skip the rest."""
+        spans = InMemorySpanExporter()
+        tracer_provider = TracerProvider()
+        tracer_provider.add_span_processor(SimpleSpanProcessor(spans))
+        metrics = InMemoryMetricReader()
+        recorded = Recorded(
+            observer=OpenTelemetrySandboxObserver(
+                tracer_provider=tracer_provider,
+                logger_provider=_BrokenLoggerProvider(),  # pyright: ignore[reportArgumentType]
+                meter_provider=MeterProvider(metric_readers=[metrics]),
+            ),
+            spans=spans,
+            logs=InMemoryLogRecordExporter(),
+            metrics=metrics,
+            tracer_provider=tracer_provider,
+        )
+        recorded.observer.sandbox_acquired(an_acquire())
+        assert recorded.only_span().name == "sandbox.acquire"
+        assert recorded.counter(f"{NAMESPACE}.sandbox.acquires") == 1
+
+    def test_a_broken_meter_still_lets_the_span_and_the_log_through(self):
+        """The meter is one of three independent providers; its failure must not skip the rest."""
+        spans = InMemorySpanExporter()
+        tracer_provider = TracerProvider()
+        tracer_provider.add_span_processor(SimpleSpanProcessor(spans))
+        logs = InMemoryLogRecordExporter()
+        logger_provider = LoggerProvider()
+        logger_provider.add_log_record_processor(SimpleLogRecordProcessor(logs))
+        recorded = Recorded(
+            observer=OpenTelemetrySandboxObserver(
+                tracer_provider=tracer_provider,
+                logger_provider=logger_provider,
+                meter_provider=_BrokenMeterProvider(),  # pyright: ignore[reportArgumentType]
+            ),
+            spans=spans,
+            logs=logs,
+            metrics=InMemoryMetricReader(),
+            tracer_provider=tracer_provider,
+        )
+        recorded.observer.sandbox_acquired(an_acquire())
+        assert recorded.only_span().name == "sandbox.acquire"
+        assert recorded.log_bodies() == ["sandbox.acquire"]
 
 
 class TestADisposalRecordsItsOutcome:

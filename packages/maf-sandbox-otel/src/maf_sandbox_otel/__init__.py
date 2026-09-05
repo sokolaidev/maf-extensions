@@ -4,7 +4,7 @@ A host registers :class:`OpenTelemetrySandboxObserver` on its
 :class:`~maf_sandbox.SandboxRouter` and its :class:`~maf_sandbox.HostToolRegistry`, and every
 event the sandbox suite reports becomes a **log record**; every event that carries a duration
 also becomes a **span**, and the countable ones a **metric**.  A store read has no duration of
-its own, so it lands as an event on the call's own span rather than as a span.  Nothing else
+its own, so it becomes a zero-duration point span instead of an interval one.  Nothing else
 changes: the observer seam is a no-op until something is registered on it, and this package is
 the only thing in the suite that depends on OpenTelemetry.
 

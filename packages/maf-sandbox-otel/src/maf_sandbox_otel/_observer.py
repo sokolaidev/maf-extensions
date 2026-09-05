@@ -30,8 +30,9 @@ caller actually waited for.
 
 from __future__ import annotations
 
+import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 from maf_sandbox import (
     HostToolCalled,
@@ -111,6 +112,7 @@ FILES_OUT = "sandbox.files_out"
 CALL = "sandbox.call"
 
 _NANOSECONDS = 1_000_000_000
+_logger = logging.getLogger(__name__)
 
 
 class OpenTelemetrySandboxObserver(SandboxObserver):
@@ -213,14 +215,16 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             recorded[BACKEND_EGRESS_MODES] = sorted_values(event.declarations.egress_modes)
 
         self._emit(ACQUIRE, recorded, event.seconds, event.refusal)
-        self._acquires.add(
-            1,
-            {
-                KIND: spec.kind,
-                BACKEND: event.backend or "",
-                EGRESS_MODE: str(spec.egress),
-                REFUSAL: event.refusal or "",
-            },
+        self._isolate(
+            lambda: self._acquires.add(
+                1,
+                {
+                    KIND: spec.kind,
+                    BACKEND: event.backend or "",
+                    EGRESS_MODE: str(spec.egress),
+                    REFUSAL: event.refusal or "",
+                },
+            )
         )
 
     def sandbox_disposed(self, event: SandboxDisposed) -> None:
@@ -237,13 +241,15 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             **self._redaction.text(DISPOSAL_DETAIL, None if failure is None else failure.detail),
         }
         self._emit(DISPOSE, recorded, event.seconds, None if failure is None else str(failure.code))
-        self._disposals.add(
-            1,
-            {
-                BACKEND: event.backend,
-                DISPOSAL_OUTCOME: event.outcome,
-                DISPOSAL_CODE: "" if failure is None else str(failure.code),
-            },
+        self._isolate(
+            lambda: self._disposals.add(
+                1,
+                {
+                    BACKEND: event.backend,
+                    DISPOSAL_OUTCOME: event.outcome,
+                    DISPOSAL_CODE: "" if failure is None else str(failure.code),
+                },
+            )
         )
 
     def host_tool_called(self, event: HostToolCalled) -> None:
@@ -281,9 +287,9 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             HOST_TOOL_IDENTITY: "" if event.identity is None else str(event.identity),
             HOST_TOOL_SINK: "" if event.sink is None else str(event.sink),
         }
-        self._host_tool_calls.add(1, measured)
+        self._isolate(lambda: self._host_tool_calls.add(1, measured))
         if event.response_bytes:
-            self._host_tool_bytes.add(event.response_bytes, measured)
+            self._isolate(lambda: self._host_tool_bytes.add(event.response_bytes, measured))
 
     def store_file_read(self, event: StoreFileRead) -> None:
         """Record one file a call read out of the host's store, and what it was worth."""
@@ -298,15 +304,20 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             **self._redaction.text(STORE_FILE, event.name),
         }
         # The one event with no duration of its own, so its span is a single instant.
-        self._log(FILES_IN, recorded, failed=event.outcome == "refused")
-        self._point_span(FILES_IN, recorded)
-        self._store_reads.add(
-            1,
-            {
-                TOOL: event.tool,
-                STORE_INTEGRITY: "" if event.integrity is None else str(event.integrity),
-                STORE_OUTCOME: event.outcome,
-            },
+        refused = event.outcome == "refused"
+        self._isolate(lambda: self._log(FILES_IN, recorded, failed=refused))
+        self._isolate(
+            lambda: self._point_span(FILES_IN, recorded, failure=event.outcome if refused else None)
+        )
+        self._isolate(
+            lambda: self._store_reads.add(
+                1,
+                {
+                    TOOL: event.tool,
+                    STORE_INTEGRITY: "" if event.integrity is None else str(event.integrity),
+                    STORE_OUTCOME: event.outcome,
+                },
+            )
         )
 
     def outputs_collected(self, event: OutputsCollected) -> None:
@@ -332,8 +343,8 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
         self._emit(FILES_OUT, recorded, event.seconds, event.refusal)
         measured: dict[str, AttributeValue] = {KIND: event.kind}
         if event.landed:
-            self._landed_files.add(len(event.landed), measured)
-            self._landed_bytes.add(landed_bytes, measured)
+            self._isolate(lambda: self._landed_files.add(len(event.landed), measured))
+            self._isolate(lambda: self._landed_bytes.add(landed_bytes, measured))
 
     def tool_call_ended(self, event: ToolCallEnded) -> None:
         """Record one sandboxed tool call, body and reclaim together."""
@@ -348,9 +359,11 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             **without_none({FAILURE: event.failure}),
         }
         self._emit(CALL, recorded, event.seconds, event.failure)
-        self._call_duration.record(
-            event.seconds,
-            {TOOL: event.tool, KIND: event.kind, FAILURE: event.failure or ""},
+        self._isolate(
+            lambda: self._call_duration.record(
+                event.seconds,
+                {TOOL: event.tool, KIND: event.kind, FAILURE: event.failure or ""},
+            )
         )
 
     def _emit(
@@ -365,8 +378,22 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
         # survives trace sampling, and "how long did the disposal take" is a question it has to
         # be able to answer on its own.
         recorded = {**attributes, DURATION: seconds}
-        self._span(name, recorded, seconds, failure)
-        self._log(name, recorded, failed=failure is not None)
+        self._isolate(lambda: self._span(name, recorded, seconds, failure))
+        self._isolate(lambda: self._log(name, recorded, failed=failure is not None))
+
+    def _isolate(self, write: Callable[[], None]) -> None:
+        """Attempt one signal's write on its own, so its failure does not cost a sibling's.
+
+        An event's span, log record and counters go through providers a host is free to route
+        apart — a security pipeline's logger, the application's own tracer — and that
+        independence is defeated if a failure in one costs the others their write.
+        ``SystemExit`` and ``KeyboardInterrupt`` are the host's own control flow rather than a
+        provider's failure, and are not caught here.
+        """
+        try:
+            write()
+        except Exception:  # noqa: BLE001 - a sibling signal must still be attempted
+            _logger.warning("maf_sandbox_otel: a telemetry write failed", exc_info=True)
 
     def _span(
         self,
@@ -393,7 +420,13 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             severity_text="WARN" if failed else "INFO",
         )
 
-    def _point_span(self, name: str, attributes: Mapping[str, AttributeValue]) -> None:
+    def _point_span(
+        self,
+        name: str,
+        attributes: Mapping[str, AttributeValue],
+        *,
+        failure: str | None = None,
+    ) -> None:
         """A span for an event with no duration of its own: it starts and ends at one instant.
 
         Through this package's own tracer, like every other signal.  Hanging it off whatever
@@ -403,4 +436,7 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
         trace instead, which is the opposite of what routing them away asked for.
         """
         at = time.time_ns()
-        self._tracer.start_span(name, start_time=at, attributes=dict(attributes)).end(end_time=at)
+        span = self._tracer.start_span(name, start_time=at, attributes=dict(attributes))
+        if failure is not None:
+            span.set_status(Status(StatusCode.ERROR, failure))
+        span.end(end_time=at)
