@@ -125,10 +125,10 @@ def test_no_sample_is_skipped_in_a_synced_workspace():
 
 
 def test_a_samples_helper_modules_do_not_outlive_its_import():
-    """Thirteen samples carry a module named `_scaffold`, and `sys.modules` holds one.
+    """Every sample carries a module named `_scaffold`, and `sys.modules` holds one.
 
     Cache it and the first sample imported answers every later `from _scaffold import …`, so
-    twelve are checked against a copy that is not theirs. Asserted on the cache rather than on a
+    every other sample is checked against a copy that is not its own. Asserted on the cache rather than on a
     drift, because `test_sample_scaffold.py` forbids the drift — which is what would keep this
     hole invisible.
     """
