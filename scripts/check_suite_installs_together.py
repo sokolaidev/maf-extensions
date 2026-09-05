@@ -55,8 +55,7 @@ from check_published_dependents_admit import (
     dependent_distributions,
     fetch_requires_dist,
 )
-from check_release_order import admits, fetch_published_versions, version
-from pypi_index import run_check
+from pypi_index import admits, fetch_published_versions, run_check, version
 
 #: uv paints its diagnostics, and the colour survives a pipe into a log or a job summary.
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")

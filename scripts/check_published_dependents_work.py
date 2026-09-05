@@ -50,8 +50,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from check_published_dependents_admit import ceiling_of, dependent_distributions
-from check_release_order import admits, fetch_published_versions, version
-from pypi_index import read_json, run_check
+from pypi_index import admits, fetch_published_versions, read_json, run_check, version
 
 
 def import_module(distribution: str) -> str:

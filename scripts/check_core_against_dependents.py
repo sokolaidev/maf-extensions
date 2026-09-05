@@ -44,8 +44,7 @@ from pathlib import Path
 
 from check_published_dependents_admit import dependent_distributions
 from check_published_dependents_work import at_risk, fetch_version_requirements
-from check_release_order import version
-from pypi_index import run_check
+from pypi_index import run_check, version
 
 _CORE = "maf-sandbox"
 _ROOT = Path(__file__).resolve().parent.parent
