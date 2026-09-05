@@ -8,6 +8,7 @@ the ones a guest chose stay off it until a host says otherwise.
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from dataclasses import dataclass
 
@@ -90,6 +91,16 @@ class Recorded:
     def log_bodies(self) -> list[object]:
         return [record.log_record.body for record in self.logs.get_finished_logs()]
 
+    def log_attributes(self, name: str) -> dict[str, object]:
+        """The attributes of the one log record for `name`, which nothing else here reads.
+
+        `attributes()` above reads the *span*, so a value that crosses on the log alone — or
+        fails to — is invisible to every assertion written against it.
+        """
+        records = [r for r in self.logs.get_finished_logs() if r.log_record.event_name == name]
+        assert len(records) == 1, f"expected one {name} log record, got {len(records)}"
+        return dict(records[0].log_record.attributes or {})
+
     def counter(self, name: str) -> float:
         total = 0.0
         data = self.metrics.get_metrics_data()
@@ -139,6 +150,19 @@ def an_acquire(*, refusal: str | None = None) -> SandboxAcquired:
         seconds=0.25,
         refusal=refusal,
     )
+
+
+def a_store_read(**overrides: object) -> StoreFileRead:
+    fields: dict[str, object] = {
+        "key": KEY,
+        "tool": "execute_code",
+        "name": "report.csv",
+        "integrity": SourceIntegrity.UNTRUSTED,
+        "characters": 10,
+        "outcome": "read",
+    }
+    fields.update(overrides)
+    return StoreFileRead(**fields)  # pyright: ignore[reportArgumentType]
 
 
 def a_host_tool_call(**overrides: object) -> HostToolCalled:
@@ -266,6 +290,18 @@ class TestTheSpanIsWrittenAfterTheFactAndStillNests:
 
 
 class TestEveryEventReachesTheLogPipeline:
+    def test_a_duration_bearing_record_carries_its_duration_on_the_log_too(self):
+        """The log pipeline is the one that outlives sampling, so it cannot need the span.
+
+        A span keeps its duration in `start_time`/`end_time` whatever the attributes say, so
+        dropping `duration` from the log alone stays invisible to every span assertion
+        — and takes "how long did the disposal take" with it once the trace is sampled away.
+        """
+        recorded = build()
+        recorded.observer.sandbox_acquired(an_acquire())
+        assert recorded.log_attributes("sandbox.acquire")[f"{NAMESPACE}.duration"] == 0.25
+        assert recorded.attributes()[f"{NAMESPACE}.duration"] == 0.25
+
     def test_each_event_emits_exactly_one_log_record(self):
         recorded = build()
         observer = recorded.observer
@@ -313,41 +349,57 @@ class TestEveryEventReachesTheLogPipeline:
             "sandbox.call",
         ]
 
-    def test_a_store_read_draws_no_span_of_its_own(self):
-        """It has no duration, so it is a fact on the call's span rather than a span."""
+    def test_a_store_read_is_a_span_of_no_duration(self):
+        """It has no duration of its own, so its span is one instant rather than an interval."""
         recorded = build()
-        recorded.observer.store_file_read(
-            StoreFileRead(
-                key=KEY,
-                tool="execute_code",
-                name="report.csv",
-                integrity=None,
-                characters=10,
-                outcome="read",
-            )
-        )
-        assert recorded.span_names() == []
+        recorded.observer.store_file_read(a_store_read())
+        span = recorded.only_span()
+        assert span.name == "sandbox.files_in"
+        assert span.start_time == span.end_time
         assert recorded.log_bodies() == ["sandbox.files_in"]
 
-    def test_a_store_read_lands_on_the_call_span_when_one_is_recording(self):
-        recorded = build()
-        tracer = recorded.tracer_provider.get_tracer("test")
-        with tracer.start_as_current_span("execute_tool execute_code"):
-            recorded.observer.store_file_read(
-                StoreFileRead(
-                    key=KEY,
-                    tool="execute_code",
-                    name="report.csv",
-                    integrity=SourceIntegrity.UNTRUSTED,
-                    characters=10,
-                    outcome="read",
-                )
-            )
-        parent = recorded.only_span()
-        assert [event.name for event in parent.events] == ["sandbox.files_in"]
+    def test_a_store_read_goes_to_this_packages_provider_not_the_ambient_span(self):
+        """The record a host routed away must not also land on the application's trace.
+
+        This is the event with no duration, and hanging it off `get_current_span()` would put
+        it outside the provider the constructor was given — losing it for a host that routed
+        these records to a security pipeline, and, under `record_sensitive_data`, writing the
+        store file name onto the application's span instead. Both providers are read here, so
+        the assertion fails whichever way the record goes astray.
+        """
+        recorded = build(sensitive=True)
+        application = InMemorySpanExporter()
+        application_provider = TracerProvider()
+        application_provider.add_span_processor(SimpleSpanProcessor(application))
+
+        with application_provider.get_tracer("app").start_as_current_span("execute_tool"):
+            recorded.observer.store_file_read(a_store_read())
+
+        ambient = next(s for s in application.get_finished_spans() if s.name == "execute_tool")
+        assert [event.name for event in ambient.events] == []
+        assert "report.csv" not in str(dict(ambient.attributes or {}))
+        assert recorded.span_names() == ["sandbox.files_in"]
+        assert recorded.attributes()[f"{NAMESPACE}.store.file"] == "report.csv"
 
 
 class TestContentStaysOffTheWireUntilAHostAsks:
+    def test_the_store_file_name_is_redacted_on_the_log_as_well_as_the_span(self):
+        """Both signals, because a pipeline may keep only one of them.
+
+        The rest of this class reads span attributes. A log record carries the same dictionary
+        and reaches a security pipeline when a sampler has thrown the span away, so a redaction
+        that held on one and not the other would leak with the whole suite green.
+        """
+        default = build()
+        default.observer.store_file_read(a_store_read())
+        assert f"{NAMESPACE}.store.file" not in default.attributes()
+        assert f"{NAMESPACE}.store.file" not in default.log_attributes("sandbox.files_in")
+
+        asked = build(sensitive=True)
+        asked.observer.store_file_read(a_store_read())
+        assert asked.attributes()[f"{NAMESPACE}.store.file"] == "report.csv"
+        assert asked.log_attributes("sandbox.files_in")[f"{NAMESPACE}.store.file"] == "report.csv"
+
     def test_a_model_chosen_artifact_name_is_omitted_by_default(self):
         recorded = build()
         recorded.observer.outputs_collected(
@@ -489,6 +541,22 @@ class TestTheCasesARecorderGetsWrong:
 class TestTheHashIsAJoinColumn:
     def test_it_is_stable(self):
         assert hashed_key(KEY) == hashed_key(KEY)
+
+    def test_a_lone_surrogate_in_a_key_still_hashes(self):
+        """A key part is an unvalidated host string, and `json` yields this for `"\\ud800"`.
+
+        Plain UTF-8 refuses to encode one. Core contains an observer's failure, so raising here
+        would drop the whole record while the call reported success — a telemetry package
+        failing in the one direction nobody would notice. Two different surrogates still have to
+        give two different names, or the fix would trade a loud failure for a silent join.
+        """
+        lone = json.loads('"\\ud800"')
+        assert lone == "\ud800"
+        first = SandboxKey(scope="tenant-a", thread_id=lone, agent_dir="agent")
+        second = SandboxKey(scope="tenant-a", thread_id="\udfff", agent_dir="agent")
+        assert len(hashed_key(first)) == 64
+        assert hashed_key(first) != hashed_key(second)
+        assert hashed_conversation(first) != hashed_conversation(second)
 
     @pytest.mark.parametrize("boundary", ["\x1f", "|", ":"], ids=["unit-sep", "pipe", "colon"])
     def test_two_keys_that_could_render_alike_still_differ(self, boundary):

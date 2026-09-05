@@ -5,8 +5,8 @@ suite's records out of a pipeline carrying everyone else's, and nothing here col
 GenAI conventions the agent framework already emits around the same call.
 
 The redaction rule is one sentence: **shape and policy always, content only when asked.** What
-a run's posture was — the egress mode, the isolation rung, the integrity label, the counts and
-the sizes — is what a security question is actually asked in, and none of it is chosen by a
+a sandbox's posture was — the egress mode, the isolation rung, the integrity label, the counts
+and the sizes — is what a security question is actually asked in, and none of it is chosen by a
 guest.  Names and sentences are the other half: an artifact name is written by the model
 (a channel this suite measures rather than closes), a host-tool refusal quotes a bounded copy
 of what the guest asked for, and a store file name is the host's own vocabulary about its own
@@ -119,9 +119,15 @@ def _digest(*parts: str) -> str:
     not blur a statistic — it splices two conversations into one trail, which is the reading
     this package exists to make impossible.  An OpenTelemetry string attribute has no length
     limit to trade against, so there is nothing on the other side of that budget.
+
+    ``surrogatepass`` because a key part is an unvalidated host string, and a lone surrogate is
+    what ``json`` gives for a literal ``"\\ud800"``.  Plain UTF-8 raises on one, and this
+    package's failures are contained by core — so the record would be dropped with a warning
+    while the call succeeded, which is the one outcome a telemetry package must not have.  The
+    encoding stays injective, so the collision argument above is unchanged.
     """
     joined = "".join(f"{len(part)}:{part}" for part in parts)
-    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+    return hashlib.sha256(joined.encode("utf-8", errors="surrogatepass")).hexdigest()
 
 
 def hashed_key(key: SandboxKey) -> str:

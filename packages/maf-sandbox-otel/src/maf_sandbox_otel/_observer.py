@@ -3,36 +3,29 @@
 Three signals come out of every event, because three different readers ask three different
 questions.  A **log record** is emitted for all of them and is the one a security pipeline
 keeps: it does not depend on anything else being instrumented, and it survives a trace sampler
-that threw the span away.  A **span** is emitted for every event that carries a duration, so a
-call's shape is visible beside the agent framework's own.  And a handful of **counters** answer
-the aggregate questions — how many sandboxes were served or refused, how many host-tool calls
-and under what outcome, how many bytes a sink took — without anybody reading a record at all.
+that threw the span away.  A **span** is emitted for every event, carrying a duration where the
+event has one, so a call's shape is visible beside the agent framework's own.  All three go
+through the providers the constructor was given, so a host that routed these records somewhere
+of its own gets all of them and the application's trace gets none.  And a handful of
+**counters** answer the aggregate questions — how many sandboxes were served or refused, how
+many host-tool calls and under what outcome, how many bytes a sink took — without anybody
+reading a record at all.
 Not *tunnels*: what a guest actually reached is not on this seam at all, and a counter named
 for it would invite reading allowed egress as observed egress.
 
 **Spans are written after the fact.**  An observer is told what happened once it has happened,
-so each span is created with an explicit start time derived from the event's own duration and
-ended immediately.  Its parent is whatever span is current where the event is delivered, which
-is the framework's ``execute_tool`` span: an observer is called synchronously inside the call it
-records, never on a thread of this package's own.  That is what puts these records inside the
-call that caused them.
-
-**Including from the worker thread**, which is the one case where the parent could have been
-lost.  A tool body that awaits nothing is served off the event loop and its ``ToolCallEnded``
-arrives there, but the framework dispatches it with :func:`asyncio.to_thread` from inside the
-``execute_tool`` span, and that copies the :class:`~contextvars.Context` the current span lives
-in.  So the span crosses with the body.  Do not read the framework's *middleware* accessor the
-same way: that one is a thread-local and does not cross, which is why
-:mod:`maf_sandbox.maf` fails closed rather than trusting it from a synchronous body.  Two
-mechanisms, opposite answers, and only one of them is this package's.
+so each span is created with an explicit start time and ended immediately.  Its parent is
+whatever span is current where the event is delivered — the framework's ``execute_tool`` span,
+including for the one record that arrives on a worker thread, which the suite pins rather than
+assumes.  That is what puts these records inside the call that caused them.
 
 **And the events of one call are siblings rather than children of** ``sandbox.call``.  Every
 event arrives after the work it describes, and the call's own event arrives last of all, so
 there is no moment at which this package could open a parent for the others to nest under.
 Buffering them until the call ended would create one — at the price of per-call state that a
-cancellation or a lost final event would leak.  A flat set of spans under ``execute_tool``,
-each with a true duration, answers the same questions and cannot leak; the ``sandbox.call``
-span carries the total the caller actually waited for.
+cancellation or a lost final event would leak.  A flat set of spans under ``execute_tool``
+answers the same questions and cannot leak; the ``sandbox.call`` span carries the total the
+caller actually waited for.
 """
 
 from __future__ import annotations
@@ -56,7 +49,6 @@ from opentelemetry.trace import (
     StatusCode,
     Tracer,
     TracerProvider,
-    get_current_span,
     get_tracer_provider,
 )
 from opentelemetry.util.types import AttributeValue
@@ -305,10 +297,9 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             ),
             **self._redaction.text(STORE_FILE, event.name),
         }
-        # The one event with no duration of its own, so there is no span to draw: it is a fact
-        # about the call that is already being recorded, and it goes on that span as an event.
+        # The one event with no duration of its own, so its span is a single instant.
         self._log(FILES_IN, recorded, failed=event.outcome == "refused")
-        self._add_span_event(FILES_IN, recorded)
+        self._point_span(FILES_IN, recorded)
         self._store_reads.add(
             1,
             {
@@ -370,8 +361,12 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
         failure: str | None,
     ) -> None:
         """One span and one log record for an event that took time."""
-        self._span(name, attributes, seconds, failure)
-        self._log(name, attributes, failed=failure is not None)
+        # The duration goes on both, not just the span. A log-only pipeline is the one that
+        # survives trace sampling, and "how long did the disposal take" is a question it has to
+        # be able to answer on its own.
+        recorded = {**attributes, DURATION: seconds}
+        self._span(name, recorded, seconds, failure)
+        self._log(name, recorded, failed=failure is not None)
 
     def _span(
         self,
@@ -384,8 +379,7 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
         # A negative duration would put the start after the end; a backend reads that as a
         # broken span rather than a fast one.
         start = end - max(int(seconds * _NANOSECONDS), 0)
-        recorded = {**attributes, DURATION: seconds}
-        span = self._tracer.start_span(name, start_time=start, attributes=recorded)
+        span = self._tracer.start_span(name, start_time=start, attributes=dict(attributes))
         if failure is not None:
             span.set_status(Status(StatusCode.ERROR, failure))
         span.end(end_time=end)
@@ -399,7 +393,14 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             severity_text="WARN" if failed else "INFO",
         )
 
-    @staticmethod
-    def _add_span_event(name: str, attributes: Mapping[str, AttributeValue]) -> None:
-        """Put a point-in-time fact on the call's own span, where there is one recording."""
-        get_current_span().add_event(name, attributes=dict(attributes))
+    def _point_span(self, name: str, attributes: Mapping[str, AttributeValue]) -> None:
+        """A span for an event with no duration of its own: it starts and ends at one instant.
+
+        Through this package's own tracer, like every other signal.  Hanging it off whatever
+        span happened to be current would put it outside the provider a host chose for these
+        records — so a host that routed them to a security pipeline would lose this one, and
+        under ``record_sensitive_data`` the store file name would land on the application's
+        trace instead, which is the opposite of what routing them away asked for.
+        """
+        at = time.time_ns()
+        self._tracer.start_span(name, start_time=at, attributes=dict(attributes)).end(end_time=at)
