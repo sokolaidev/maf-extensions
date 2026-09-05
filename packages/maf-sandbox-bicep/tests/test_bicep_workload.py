@@ -1258,10 +1258,17 @@ class TestTheResultSplits:
     def _label(self, item: Any) -> Any:
         return (item.additional_properties or {}).get("security_label")
 
-    def _answer(self, files: list[str] | None = None, **kw: Any) -> Any:
-        store = kw.pop("store", None) or InMemoryStore({"main.bicep": "x"})
-        backend = kw.pop("backend", None) or _fake_backend()
-        return _items(_tool(store, backend, **kw), ["main.bicep"] if files is None else files)
+    def _answer(
+        self,
+        files: list[str] | None = None,
+        *,
+        store: InMemoryStore | None = None,
+        backend: InProcessSandboxBackend | None = None,
+        **kw: Any,
+    ) -> Any:
+        """One call's items, defaulting to the shortest call that reaches the compiler."""
+        tool = _tool(store or InMemoryStore({"main.bicep": "x"}), backend or _fake_backend(), **kw)
+        return _items(tool, ["main.bicep"] if files is None else files)
 
     def test_an_answer_is_the_report_and_the_standing_sentence(self):
         answer = self._answer()
