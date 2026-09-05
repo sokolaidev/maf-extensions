@@ -5216,13 +5216,13 @@ class TestGuidanceIsCommittedWhereAReviewerCanSeeIt:
 
     def test_a_tool_that_commits_nothing_is_unchanged(self):
         """The whole rule is inert until a kind opts in, so no shipped tool changes shape."""
-        tool = self._attach([labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED), _text("x")])
+        tool = self._attach([_text("x"), labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED)])
 
         assert "x" in _texts(asyncio.run(tool.invoke(arguments={"target": "t"})))
 
     def test_a_labelled_item_matching_the_commitment_passes(self):
         tool = self._attach(
-            [labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED), _text("EXIT=1")],
+            [_text("EXIT=1"), labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED)],
             standing_guidance=(_GUIDANCE,),
         )
 
@@ -5230,18 +5230,18 @@ class TestGuidanceIsCommittedWhereAReviewerCanSeeIt:
 
     def test_a_labelled_item_the_tool_never_committed_to_is_refused(self):
         tool = self._attach(
-            [labelled_result_item("SECRET=hunter2", SourceIntegrity.TRUSTED), _text("EXIT=1")],
+            [_text("EXIT=1"), labelled_result_item("SECRET=hunter2", SourceIntegrity.TRUSTED)],
             standing_guidance=(_GUIDANCE,),
         )
 
-        with pytest.raises(ValueError, match="committed sentence at its position"):
+        with pytest.raises(ValueError, match="must be the last"):
             asyncio.run(tool.invoke(arguments={"target": "t"}))
 
     def test_the_refusal_does_not_repeat_the_text_it_refused(self):
         """The refusal reaches the model through a path that labels nothing, so a refusal
         quoting the item would carry the very text it refused back out unlabelled."""
         tool = self._attach(
-            [labelled_result_item("SECRET=hunter2", SourceIntegrity.TRUSTED), _text("EXIT=1")],
+            [_text("EXIT=1"), labelled_result_item("SECRET=hunter2", SourceIntegrity.TRUSTED)],
             standing_guidance=(_GUIDANCE,),
         )
 
@@ -5256,7 +5256,7 @@ class TestGuidanceIsCommittedWhereAReviewerCanSeeIt:
         that do not is a bit about which path ran."""
         tool = self._attach([_text("EXIT=1")], standing_guidance=(_GUIDANCE,))
 
-        with pytest.raises(ValueError, match="committed sentence at its position"):
+        with pytest.raises(ValueError, match="must be the last"):
             asyncio.run(tool.invoke(arguments={"target": "t"}))
 
     def test_a_string_answer_is_refused_once_anything_is_committed(self):
@@ -5293,7 +5293,7 @@ class TestTheOneSubstitutionACommittedSentenceMayCarry:
                 folder = session.guest_call_path().rsplit("/", 1)[-1]
                 seen.append(folder)
                 sentence = _FOLDER_GUIDANCE.format(call_id=folder)
-                return [labelled_result_item(sentence, SourceIntegrity.TRUSTED), _text("EXIT=1")]
+                return [_text("EXIT=1"), labelled_result_item(sentence, SourceIntegrity.TRUSTED)]
 
             return widget_run
 
@@ -5310,15 +5310,15 @@ class TestTheOneSubstitutionACommittedSentenceMayCarry:
         stale = "0" * 32
         tool = self._attach(
             [
+                _text("EXIT=1"),
                 labelled_result_item(
                     _FOLDER_GUIDANCE.format(call_id=stale), SourceIntegrity.TRUSTED
                 ),
-                _text("EXIT=1"),
             ],
             standing_guidance=(_FOLDER_GUIDANCE,),
         )
 
-        with pytest.raises(ValueError, match="committed sentence at its position"):
+        with pytest.raises(ValueError, match="must be the last"):
             asyncio.run(tool.invoke(arguments={"target": "t"}))
 
     def test_a_placeholder_that_is_not_the_call_id_is_refused_at_attach(self):
@@ -5345,7 +5345,7 @@ class TestTheOneSubstitutionACommittedSentenceMayCarry:
 
     def test_a_constant_sentence_is_still_fine_on_a_synchronous_body(self):
         tools = _attach_with(
-            _sync_items(labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED), _text("x")),
+            _sync_items(_text("x"), labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED)),
             _router(InProcessSandboxBackend()),
             standing_guidance=(_GUIDANCE,),
         )
@@ -5365,39 +5365,62 @@ class TestTheCommittedSentencesAreASequence:
         alone accepts each, and the number of trusted items is what varies."""
         tool = self._attach(
             [
-                labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED),
-                labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED),
                 _text("EXIT=1"),
+                labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED),
+                labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED),
             ],
             standing_guidance=(_GUIDANCE,),
         )
 
-        with pytest.raises(ValueError, match="committed sentence at its position"):
+        with pytest.raises(ValueError, match="must be the last"):
             asyncio.run(tool.invoke(arguments={"target": "t"}))
 
     def test_two_committed_sentences_out_of_order_are_refused(self):
         second = "Declare every file your program writes."
         tool = self._attach(
             [
+                _text("EXIT=1"),
                 labelled_result_item(second, SourceIntegrity.TRUSTED),
                 labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED),
-                _text("EXIT=1"),
             ],
             standing_guidance=(_GUIDANCE, second),
         )
 
-        with pytest.raises(ValueError, match="committed sentence at its position"):
+        with pytest.raises(ValueError, match="must be the last"):
             asyncio.run(tool.invoke(arguments={"target": "t"}))
 
     def test_two_committed_sentences_in_order_pass(self):
         second = "Declare every file your program writes."
         tool = self._attach(
             [
+                _text("EXIT=1"),
                 labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED),
                 labelled_result_item(second, SourceIntegrity.TRUSTED),
-                _text("EXIT=1"),
             ],
             standing_guidance=(_GUIDANCE, second),
+        )
+
+        assert "EXIT=1" in _texts(asyncio.run(tool.invoke(arguments={"target": "t"})))
+
+    def test_guidance_placed_before_the_derived_half_is_refused(self):
+        """The placement channel. Comparing the labelled texts alone leaves where they sit among
+        the unlabelled items free, and the framework preserves list order — so a body answering
+        `[guidance, derived]` on one path and `[derived, guidance]` on another shows which ran
+        even where the derived half is hidden."""
+        tool = self._attach(
+            [labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED), _text("EXIT=1")],
+            standing_guidance=(_GUIDANCE,),
+        )
+
+        with pytest.raises(ValueError, match="must be the last"):
+            asyncio.run(tool.invoke(arguments={"target": "t"}))
+
+    def test_guidance_last_is_the_canonical_placement(self):
+        """Last because that is where the one shipped kind puts it: a result reads as its answer,
+        then the standing sentence about it."""
+        tool = self._attach(
+            [_text("EXIT=1"), labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED)],
+            standing_guidance=(_GUIDANCE,),
         )
 
         assert "EXIT=1" in _texts(asyncio.run(tool.invoke(arguments={"target": "t"})))
@@ -5412,7 +5435,7 @@ class TestTheCommittedSentencesAreASequence:
             media_type="image/png",
             additional_properties={"security_label": label.to_dict()},
         )
-        tool = self._attach([blank, _text("EXIT=1")], standing_guidance=(_GUIDANCE,))
+        tool = self._attach([_text("EXIT=1"), blank], standing_guidance=(_GUIDANCE,))
 
         with pytest.raises(ValueError, match="carries a label and no text"):
             asyncio.run(tool.invoke(arguments={"target": "t"}))
@@ -5439,6 +5462,12 @@ class TestASentenceIsRenderedOnceAtAttach:
         with pytest.raises(ValueError, match="cannot be rendered"):
             self._attach(standing_guidance=(sentence,))
 
+    def test_a_sentence_that_renders_empty_is_refused_at_attach(self):
+        """`{call_id:.0}` is written text and a precision of zero renders it away, which holds a
+        labelled item to exactly as much as the empty sentence the check above refuses."""
+        with pytest.raises(ValueError, match="renders to nothing"):
+            self._attach(standing_guidance=("{call_id:.0}",))
+
     def test_an_unknown_field_is_refused_for_being_unknown_rather_than_unrenderable(self):
         """Ordering: the field check runs first, so a sentence naming something else is refused
         for that rather than for the `KeyError` it would also raise."""
@@ -5456,11 +5485,11 @@ class TestADoubledBraceIsUndoubled:
         tool = _attach_with(
             _answering(
                 [
+                    _text("EXIT=1"),
                     labelled_result_item(
                         "Write your answer into {output} rather than printing it.",
                         SourceIntegrity.TRUSTED,
                     ),
-                    _text("EXIT=1"),
                 ]
             ),
             _router(InProcessSandboxBackend()),

@@ -1859,6 +1859,12 @@ def _committed_guidance(guidance: Iterable[str], *, tool: str, awaits: bool) -> 
                 "format spec, a conversion or a specifier is legal to parse and fails at every "
                 "call, so it is refused here instead."
             )
+        if not sentence.format(**{CALL_ID_PLACEHOLDER: _SENTINEL_CALL_ID}).strip():
+            raise ValueError(
+                f"{tool}: standing_guidance[{index}] renders to nothing. A precision on the "
+                "substitution — `{call_id:.0}` — is written text and renders empty, which "
+                "holds a labelled item to as little as an empty sentence does."
+            )
         committed.append(sentence)
     return tuple(committed)
 
@@ -1898,8 +1904,10 @@ def _refuse_a_result_that_departs_from_its_guidance(
     # the attach-time refusal tells a caller to double a literal brace.
     substitution = {CALL_ID_PLACEHOLDER: call_id} if call_id is not None else {}
     rendered = [sentence.format(**substitution) for sentence in committed]
+    items = cast("list[Any]", result)
+    labelled_at: list[int] = []
     labelled: list[str] = []
-    for position, item in enumerate(cast("list[Any]", result)):
+    for position, item in enumerate(items):
         properties = cast("dict[str, Any]", getattr(item, "additional_properties", None) or {})
         if "security_label" not in properties:
             continue
@@ -1909,18 +1917,25 @@ def _refuse_a_result_that_departs_from_its_guidance(
                 f"{tool}: item {position} of this result carries a label and no text, so there "
                 "is nothing to hold to what this tool committed to."
             )
+        labelled_at.append(position)
         labelled.append(text)
-    if labelled != rendered:
-        # A *sequence*, not a set: a set accepts one committed sentence emitted twice, and
-        # accepts two of them in either order, so the count and the order would each be a bit
-        # the body could vary. The text is not repeated here — this refusal returns to the
-        # model through a path that labels nothing.
+    # The guidance is the *suffix*, and that is the third thing the body could otherwise vary.
+    # Comparing the labelled texts alone leaves their placement among the unlabelled items
+    # free — `[guidance, derived]` and `[derived, guidance]` reduce to the same sequence — and
+    # the framework preserves list order, so a reader sees which one ran even where the derived
+    # half is hidden. Last is the canonical place because it is where the one shipped kind puts
+    # it: a result reads as its answer, then the standing sentence about it.
+    expected_at = list(range(len(items) - len(committed), len(items)))
+    if labelled != rendered or labelled_at != expected_at:
+        # The text is never repeated here: this refusal returns to the model through a path
+        # that labels nothing.
         raise ValueError(
             f"{tool}: this result carries {len(labelled)} labelled item(s) and this tool "
-            f"committed to {len(rendered)}, in a fixed order. A labelled item's text must be "
-            "the committed sentence at its position: anything else — a sentence not committed, "
-            "one missing, one repeated, or two out of order — is a bit about which path ran, "
-            "which is what a standing sentence may not be."
+            f"committed to {len(rendered)}. They must be the last {len(rendered)} item(s), in "
+            "the committed order, each carrying the sentence committed at its position. A "
+            "sentence not committed, one missing, one repeated, two out of order, or guidance "
+            "placed anywhere but last is a bit about which path ran, which is what a standing "
+            "sentence may not be."
         )
 
 
