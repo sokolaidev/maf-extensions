@@ -197,6 +197,22 @@ A gate that cannot reach PyPI fails rather than passes, in both directions and o
 
 The reasoning behind the whole arrangement, and what it still does not cover, is in [`release-compatibility.md`](release-compatibility.md).
 
+## What a red lockfile-drift run means
+
+`uv.lock` decides which `agent-framework-core` the offline suite runs against, because every CI job syncs with `uv sync --locked`; the `>=1.13.0,<2` the packages declare decides which one an adopter gets. Those are different versions the moment upstream ships a minor, and the behavioural suite is on the older one — the clean-environment smoke step does install each wheel unpinned, but it exercises imports and one usage path rather than behaviour. Nothing refreshed the lock between 1.13.0 and 1.17.0 (#809).
+
+[`dependabot.yml`](../.github/dependabot.yml) refreshes it now: weekly, scoped by an allow list to the two `agent-framework` distributions and nothing else, so the `ruff` and `pyright` bands the dev group pins on purpose stay where they are. It rewrites the lockfile only. The declared range is a promise to adopters, and raising a floor costs a release across the whole suite — the ceiling tax [`release-compatibility.md`](release-compatibility.md) carries.
+
+[`lock-drift.yml`](../.github/workflows/lock-drift.yml) re-resolves those distributions once a month and reds if the lock is behind. **It measures the lockfile, not the bot**, which is the point: Dependabot's uv updater has an open defect on workspace repositories ([dependabot-core#14004](https://github.com/dependabot/dependabot-core/issues/14004)) and this is one, so a Dependabot that silently proposes nothing reds this run exactly as an unmerged proposal does. Monthly against its weekly, so a red means a month passed with nothing landing rather than that a proposal is a day old.
+
+Clearing it is one command — the run summary prints it with the distributions that actually moved:
+
+```bash
+uv lock --upgrade-package agent-framework-core --upgrade-package agent-framework-openai
+```
+
+Open that as a `chore:` pull request. It touches no package, so it releases nothing, and what it needs is the ordinary gate: the offline suite has never run against the version it lands.
+
 ## Adding a package to this repository
 
 1. Create `packages/<name>/` with its own `pyproject.toml`, `README.md`, `CHANGELOG.md`, `LICENSE`, and a `py.typed` beside the module.
