@@ -23,6 +23,7 @@ on:
       - "maf-sandbox-bicep-v*"
       - "maf-sandbox-codeact-v*"
       - "maf-sandbox-docker-v*"
+      - "maf-sandbox-otel-v*"
       - "maf-sandbox-wslc-v*"
   # Rehearsal path: publish any package to TestPyPI without cutting a real tag.
   workflow_dispatch:
@@ -37,6 +38,7 @@ on:
           - maf-sandbox-bicep
           - maf-sandbox-codeact
           - maf-sandbox-docker
+          - maf-sandbox-otel
           - maf-sandbox-wslc
       target:
         description: "Registry"
