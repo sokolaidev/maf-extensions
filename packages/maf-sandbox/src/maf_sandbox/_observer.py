@@ -373,15 +373,18 @@ def record(observer: SandboxObserver | None, event: SandboxEvent, logger: loggin
     """Hand ``event`` to ``observer``, containing whatever it does with it.
 
     An observer is the host's code on the call's own task, so none of its failures may reach the
-    call: each is logged and the caller runs on.  The catch is narrow on purpose — ``SystemExit``
-    and ``KeyboardInterrupt`` are the host's control flow rather than an observer failure, so
-    they escape.
+    call: each is logged and the caller runs on.  ``SystemExit`` and ``KeyboardInterrupt`` are
+    the host's control flow rather than an observer failure, so they escape — including when
+    one arrives as a leaf of a group, which is why the group is unwrapped rather than trusted
+    for being one.
     """
     if observer is None:
         return
     try:
         event.deliver_to(observer)
-    except (Exception, asyncio.CancelledError, GeneratorExit) as exc:  # noqa: BLE001 - a call is not the observer's to fail
+    except (Exception, asyncio.CancelledError, GeneratorExit, BaseExceptionGroup) as exc:  # noqa: BLE001 - a call is not the observer's to fail
+        if isinstance(exc, BaseExceptionGroup) and exc.subgroup((SystemExit, KeyboardInterrupt)):
+            raise
         logger.warning(
             "sandbox observer: %s was not recorded: %s", type(event).__name__, error_detail(exc)
         )
