@@ -241,6 +241,25 @@ class TestRegistration:
         )
         assert session.observer is recorder
 
+    def test_an_observer_whose_failure_cannot_be_rendered_is_still_contained(self):
+        """Containment runs `error_detail` on whatever the observer raised, and rendering an
+        exception runs the exception author's own code. One that raises from `__str__` would
+        otherwise escape the handler that exists to stop it and replace the call's outcome."""
+
+        class _Unprintable(Exception):
+            def __str__(self) -> str:
+                raise RuntimeError("this exception cannot render itself")
+
+        class _Raises(SandboxObserver):
+            def sandbox_acquired(self, event: SandboxAcquired) -> None:
+                raise _Unprintable
+
+        router = _router(observer=_Raises())
+
+        # The acquire answers normally: nothing the observer did reached the caller.
+        sandbox = asyncio.run(router.acquire(_KEY, _SPEC))
+        assert sandbox is not None
+
     @pytest.mark.parametrize("register", [_router, HostToolRegistry])
     def test_something_that_is_not_an_observer_is_refused_at_registration(self, register):
         class _Duck:
@@ -858,6 +877,37 @@ class TestStoreReadsAreRecorded:
                     InMemoryStore({"a.txt": "1"}), ListedFile("a.txt", SourceIntegrity.TRUSTED)
                 )
             )
+
+        event = recorder.one(StoreFileRead)
+        assert (event.name, event.refused, event.characters) == ("a.txt", True, 0)
+
+    def test_a_read_whose_second_provenance_reading_raises_is_still_recorded(self):
+        """The fold reads the record a second time, and a path forgotten while the read was in
+        flight can make that one raise where the first did not — after the store has answered,
+        and so outside the handler that covers the store."""
+        recorder = _Recorder()
+        record = FileStoreProvenance()
+        session = SandboxToolSession(
+            _router(observer=recorder),
+            _context(),
+            "agent-1",
+            _SPEC,
+            name="widget_run",
+            logger=_LOG,
+            file_store_provenance=record,
+        )
+        readings = iter([(None, 0)])
+
+        def state_of(name: str) -> tuple[SourceIntegrity | None, int]:
+            try:
+                return next(readings)
+            except StopIteration:
+                raise ValueError("file_store_provenance_middleware") from None
+
+        record.state_of = state_of  # pyright: ignore[reportAttributeAccessIssue]
+
+        with pytest.raises(ValueError):
+            asyncio.run(session.read_file(InMemoryStore({"a.txt": "hi"}), ListedFile("a.txt")))
 
         event = recorder.one(StoreFileRead)
         assert (event.name, event.refused, event.characters) == ("a.txt", True, 0)

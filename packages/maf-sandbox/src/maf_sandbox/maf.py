@@ -1348,7 +1348,14 @@ class SandboxToolSession:
         if text is None:
             self._record_read(listed.name, None, 0, refused=False)
             return None
-        integrity = self._folded_integrity(listed, before)
+        try:
+            # Inside the boundary for the same reason the first reading is: this is the record's
+            # *second* `state_of`, and a path forgotten while the read was in flight can make it
+            # raise where the first one did not.
+            integrity = self._folded_integrity(listed, before)
+        except BaseException:
+            self._record_read(listed.name, None, 0, refused=True)
+            raise
         self._record_read(listed.name, integrity, len(text), refused=False)
         properties: dict[str, Any] = {}
         if integrity is not None:

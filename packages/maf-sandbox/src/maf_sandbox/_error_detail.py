@@ -32,7 +32,22 @@ def error_detail(exc: BaseException) -> str:
     it took a hand-written probe against the live service to discover that one such failure
     meant the app's identity had no role on the sandbox group.  This is log-only; the model
     still sees the sanitized message.
+
+    **It never raises.**  Every caller is already handling a failure, and several are handling
+    one they have promised to contain — an observer's, a disposal's — so a diagnostic that
+    raised would replace the failure it was describing with itself, at the one moment nobody
+    is in a position to absorb it.  Rendering an exception runs *its* code: ``__str__`` and a
+    property like ``status_code`` are the exception author's, not this package's.
     """
+    try:
+        return _rendered(exc)
+    except Exception:  # noqa: BLE001 - diagnostics must not raise; see the docstring
+        # The class name is the one thing that cannot fail to render.
+        return type(exc).__name__
+
+
+def _rendered(exc: BaseException) -> str:
+    """The detail itself — see :func:`error_detail`, which is where the never-raises duty is."""
     parts = [f"{type(exc).__name__}: {exc}"]
     status = getattr(exc, "status_code", None)
     if status is not None:
