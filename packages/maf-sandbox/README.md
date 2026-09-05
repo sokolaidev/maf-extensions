@@ -179,6 +179,38 @@ return [
 
 What may carry `TRUSTED` is narrow — text whose value **and whose presence** are independent of everything the call touched, which in practice means standing guidance emitted on every return path. A count, an exit status, a size, or a line emitted only on failure all fail that test however they are split out. [`docs/sandbox/information-flow.md`](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/information-flow.md) carries the rule and the measurements behind it.
 
+## Recording what the sandbox did
+
+This package logs, at `warning`, and a log line is neither structured nor keyed. A deployment asked *which conversation reached that host, which host tools ran under whose authority, what crossed the boundary and with what label* answers from records, so `SandboxObserver` is the seam that hands them over: six frozen events, in this package's own vocabulary, each carrying the `SandboxKey` that joins it to the rest.
+
+```python
+from maf_sandbox import HostToolCalled, SandboxAcquired, SandboxObserver, SandboxRouter
+from maf_sandbox.testing import InProcessSandboxBackend
+
+
+class Records(SandboxObserver):
+    """Override what you want; every event the base class answers with nothing."""
+
+    def sandbox_acquired(self, event: SandboxAcquired) -> None:
+        emit(thread=event.key.thread_id, egress=str(event.spec.egress), refused=event.refusal)
+
+    def host_tool_called(self, event: HostToolCalled) -> None:
+        emit(tool=event.tool, sink=event.sink, how=event.outcome, bytes=event.response_bytes)
+
+
+def emit(**attributes: object) -> None:
+    """Wherever this host's records go — a queue, an exporter, a SIEM."""
+
+
+router = SandboxRouter([InProcessSandboxBackend()], observer=Records())
+```
+
+`SandboxAcquired` and `SandboxDisposed` come from the router; `HostToolCalled` from `HostToolRegistry(observer=…)`, which is where every other host-tool policy lives; `StoreFileRead` from `SandboxToolSession.read_file` and `ToolCallEnded` from the wrapper `sandboxed_tool` builds, both reading the router's; and `OutputsCollected` from `collect_outputs(..., observer=session.observer, key=key)`, which is a function rather than a policy object and so takes both as arguments.
+
+Three things to know before writing one. **Every way out is recorded** — a refused acquire, an exhausted host-tool cap, a collection refused part-way, a call taken by a cancel — and a refusal is recorded as the exception's *class name*, never its message, which can carry a backend's endpoint. **An observer cannot fail a call**: its exceptions are contained and logged, and its return value is never read. **It can, however, slow one down** — it runs on the task serving the call, so hand the event to a queue or a batching exporter and do no I/O in it. A host that registers nothing builds no event at all.
+
+[`docs/sandbox/observability.md`](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/observability.md) carries what each event holds, what a recorder should treat as guest-chosen, and what the seam does not yet see — the egress proxy's own `ALLOW`/`DENY` lines among them.
+
 ## Upgrading to 0.27
 
 **These landed in the tree tagged `maf-sandbox-v0.26.0`, which never reached PyPI.** That tag and its GitHub Release are immutable and will stay visible; there is no 0.26.0 to install, and the same tree ships as 0.27.0. The changelog's 0.26.0 section says why.
