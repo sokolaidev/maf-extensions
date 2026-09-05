@@ -1,0 +1,254 @@
+"""One turn of an agent that cannot read its program's output, and reads its file instead.
+
+Sample 08 with the guest's text withheld and the outputs landed where the model can go
+and get them::
+
+    app  ->  maf_sandbox (router)  ->  maf_sandbox_docker  ->  the container
+                  ^ maf_sandbox_codeact calls the router
+
+`withhold_guest_output=True` keeps everything the program printed out of the result.
+What comes back is one line saying whether it exited cleanly: no exit code, and no size
+for either stream.  What replaces the text is a **second store**:
+`make_file_store_sink` lands each call's declared outputs under a folder named for that
+call, `sandbox_outputs_read_tools` gives the model a read-only pair of tools over that
+store, and the withheld result names the folder.  The model writes a file, is told
+where it went, and goes and reads it.
+
+The reply and the read-back together are evidence of the whole path.  Nothing the program
+printed comes back, so the total did not come from `stdout`; what says it came out of a file
+is a read whose *call* asked for a path the sink landed.  The total on its own would not say it,
+because whether the program exited cleanly is a bit the program chooses and repeated calls
+make that a channel.
+
+This directory's README is the walkthrough — above all why there are two stores and why
+the read-back tools are not a second `FileAccessProvider`.  Read it first.
+"""
+
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "agent-framework-openai",
+#     "azure-core[aio]",
+#     "azure-identity",
+#     "maf-sandbox-codeact",
+#     "maf-sandbox-docker",
+#     "maf-sandbox>=0.33",
+# ]
+# ///
+
+from __future__ import annotations
+
+import asyncio
+import json
+import sys
+from dataclasses import replace
+from pathlib import Path
+
+from _scaffold import MEASURED, evidence, installed_versions, quoted, require_env_vars
+from agent_framework import Agent, InMemoryAgentFileStore
+from agent_framework.openai import OpenAIChatClient
+from azure.identity.aio import DefaultAzureCredential
+from maf_sandbox import Artifact, FileStoreProvenance, Isolation, LandedArtifact, SandboxRouter
+from maf_sandbox.maf import (
+    list_all_files,
+    make_caller_context,
+    make_file_store_sink,
+    sandbox_outputs_read_tools,
+)
+from maf_sandbox_codeact import CodeactOutputs, make_codeact_tools
+from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
+
+SCOPE = "samples"
+THREAD_ID = "16-docker-codeact-outputs-store"
+AGENT_DIR = "data-analyst"
+
+#: A standard MCR devcontainer image at Python 3.13 — sample 06's, so nothing is built here.
+CODEACT_IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
+
+#: Ships beside this file and is seeded into the *working* store under the same name.
+STORE_FILE = "sales.csv"
+
+#: What the model is told to write, and the only name it should declare. Interpolated
+#: into the task rather than restated there, so the name the checker asserts and the
+#: name the model is given cannot drift apart.
+SUMMARY_FILE = "summary.md"
+
+#: The tool names the read-back pair carries here. The default prefix, spelled out because the
+#: README argues about it and a reader should be able to grep for what the model actually saw.
+OUTPUTS_TOOL_PREFIX = "sandbox_outputs"
+
+TASK = (
+    f"The file {STORE_FILE} is in your file store. Using a Python program, compute each "
+    "row's revenue as units * unit_price, total it by region, and also compute the "
+    f"grand total across all regions. Write both into {SUMMARY_FILE} — a Markdown table "
+    "with the region in the first column and its revenue in the second, and a final "
+    "line reading 'grand total: N'. Then tell me the grand total."
+)
+
+MODEL_VARS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_MODEL")
+
+
+def landed_reads(reply: object, tool: str, landed: list[str]) -> list[tuple[str, str]]:
+    """Each `tool` call that asked for one of `landed`, paired with the result it returned.
+
+    Matched by `call_id`, so a result is tied to the name *its own call* asked for.  Results on
+    their own cannot carry that: this tool's refusals render the name they were given, so a read
+    of a path that does not exist comes back carrying whatever that name was built out of — and
+    a program is free to land a file whose bytes are exactly such a refusal.  The argument is
+    the half the model cannot forge, because `landed` is the host's own list of destinations and
+    each folder in it is a `uuid4`.
+    """
+    asked: dict[str, str] = {}
+    for message in getattr(reply, "messages", []):
+        for content in message.contents:
+            if getattr(content, "type", None) != "function_call":
+                continue
+            if getattr(content, "name", None) != tool:
+                continue
+            arguments = getattr(content, "arguments", None)
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except ValueError:
+                    continue
+            name = arguments.get("name") if isinstance(arguments, dict) else None
+            if isinstance(name, str) and name in landed:
+                asked[content.call_id] = name
+    return [
+        (asked[content.call_id], str(getattr(content, "result", "")))
+        for message in getattr(reply, "messages", [])
+        for content in message.contents
+        if getattr(content, "type", None) == "function_result"
+        and getattr(content, "call_id", None) in asked
+    ]
+
+
+def make_recording_sink(store: object, record: FileStoreProvenance, landed: list[str]):
+    """`make_file_store_sink`, with this turn's destinations recorded as they land.
+
+    The folder, the refusal of an existing destination and the provenance entry are the
+    library's.  What is left here is the application's: `landed` is *this turn's* record, and
+    listing the store afterwards cannot stand in for it, because the store also holds whatever
+    an earlier turn put there.
+    """
+    landing = make_file_store_sink(store, provenance=record)
+
+    async def deliver(artifact: Artifact) -> LandedArtifact:
+        delivered = await landing.deliver(artifact)
+        landed.append(delivered.handle or delivered.name)
+        return delivered
+
+    # `replace` rather than a fresh `OutputSink`: `per_call` is the sink's claim about its
+    # layout and the kind reads it, so a wrapper that rebuilt the object by hand would take the
+    # folder back out of the result the first time a field was forgotten.
+    return replace(landing, deliver=deliver)
+
+
+async def run() -> int:
+    """Wire the two stores, run one turn, and take the container down again."""
+    env = require_env_vars(MODEL_VARS)
+    if env is None:
+        return 2
+
+    backend = DockerSandboxBackend(DockerSandboxConfig())
+    router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
+
+    # The **working** store: what the program is given. Nothing model-facing is wired over it,
+    # so the only road into the sandbox is `execute_code`'s own `files` parameter.
+    working = InMemoryAgentFileStore()
+    seed = (Path(__file__).parent / STORE_FILE).read_text(encoding="utf-8")
+    await working.write(STORE_FILE, seed)
+
+    # The **outputs** store: what the program produced. The model reads it and cannot write it.
+    outputs = InMemoryAgentFileStore()
+
+    # One record per store is the rule — a path is the whole key, so a single record shared
+    # between the two would answer about a file it never saw. This one is the outputs store's,
+    # and the sink enters every landing before the bytes are written, so a record started later
+    # would already have missed them. **Nothing here reads it**: `sandbox_outputs_read_tools`
+    # takes no record and labels nothing, so the read-back resolves through the host's
+    # `default_integrity`, which the README says and this record does not change. It is the
+    # wiring a host adding a provenance-aware reader needs, not a guarantee made here.
+    #
+    # No `file_store_provenance_middleware` beside it, and that is the point rather than an
+    # omission: it records by *tool name* and carries no store identity, so here it would
+    # observe nothing, and the moment a host wired `file_access_write` over the working
+    # store it would file those writes into this record. What keeps this store read-only is
+    # that no write tool is attached to it.
+    landed_provenance = FileStoreProvenance()
+
+    context = make_caller_context(list_all_files, lambda: SCOPE, lambda: THREAD_ID)
+
+    landed: list[str] = []
+    tools = list(
+        make_codeact_tools(
+            router,
+            AGENT_DIR,
+            context,
+            file_store=working,
+            output_sink=make_recording_sink(outputs, landed_provenance, landed),
+            outputs=CodeactOutputs.DECLARED,
+            # The whole point: nothing the program prints comes back, so the answer in the
+            # reply cannot have come from `stdout`.
+            withhold_guest_output=True,
+            image=CODEACT_IMAGE,
+        )
+    )
+    if not tools:
+        print("No sandbox backend: execute_code was not attached.", file=sys.stderr)
+        return 2
+
+    # The other half. Read-only by construction — there is no write here to disable — and named
+    # apart from the framework's `file_access_*` tools, which is not a style choice: see README.
+    tools += sandbox_outputs_read_tools(outputs, name_prefix=OUTPUTS_TOOL_PREFIX)
+
+    credential = DefaultAzureCredential()
+    try:
+        agent = Agent(
+            client=OpenAIChatClient(
+                model=env["AZURE_OPENAI_CHAT_MODEL"],
+                azure_endpoint=env["AZURE_OPENAI_ENDPOINT"],
+                credential=credential,
+            ),
+            name=AGENT_DIR,
+            instructions=(
+                "You answer questions about data by writing and running Python with the "
+                "execute_code tool, never by working the arithmetic out yourself. Pass "
+                "every file your program opens in the tool's files parameter, and declare "
+                "every file it writes in the outputs parameter. The program's printed output "
+                "does not come back to you: to see what it produced, read the file back with "
+                f"the {OUTPUTS_TOOL_PREFIX}_read tool."
+            ),
+            tools=tools,
+        )
+        response = await agent.run(TASK)
+        print(quoted(response.text))
+        # Only the reads whose *call* asked for a landed path are fenced, so what is inside is
+        # bytes the sink wrote and nothing else — a refusal never enters. A fenced block cannot
+        # say on its own which call a result came from, which is why the call selects it.
+        print()
+        reads = landed_reads(response, f"{OUTPUTS_TOOL_PREFIX}_read", landed)
+        print(
+            evidence(
+                "read back out of the outputs store",
+                [result for _, result in reads],
+                "Landed files read back",
+            )
+        )
+        print(f"{MEASURED}Read out of the outputs store: {json.dumps([n for n, _ in reads])}")
+    finally:
+        purge = await router.dispose_scope(SCOPE, THREAD_ID)
+        print(f"\n{MEASURED}Disposed {purge.disposed} sandbox(es).")
+        if purge.undisposed is not None:
+            print(f"{MEASURED}Not fully disposed: {purge.undisposed}")
+        await credential.close()
+
+    # JSON for the reason sample 08 gives: an artifact name may legally contain a comma.
+    print(f"{MEASURED}Landed this turn in the outputs store: {json.dumps(landed)}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    print(installed_versions())
+    raise SystemExit(asyncio.run(run()))
