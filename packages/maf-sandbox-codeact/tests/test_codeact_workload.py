@@ -87,7 +87,7 @@ from maf_sandbox_codeact._tool import (
     _WORK_DIR,
     _format_landed,
     _format_withheld,
-    standing_guidance,
+    _standing_guidance,
 )
 
 #: What a backend must declare before this kind may collect anything.
@@ -4351,14 +4351,14 @@ class TestTheGuidanceThisKindCommitsTo:
     def test_a_shown_tool_commits_nothing(self):
         """The shown path answers with one string, and no sentence it renders is true on every
         return path — so committing one would be a claim this kind cannot keep."""
-        assert standing_guidance(withhold=False, lands_per_call=False) == ()
-        assert standing_guidance(withhold=False, lands_per_call=True) == ()
+        assert _standing_guidance(withhold=False, lands_per_call=False) == ()
+        assert _standing_guidance(withhold=False, lands_per_call=True) == ()
 
     def test_a_withholding_tool_commits_its_route(self):
-        assert standing_guidance(withhold=True, lands_per_call=False) == (_WITHHELD_ROUTE,)
+        assert _standing_guidance(withhold=True, lands_per_call=False) == (_WITHHELD_ROUTE,)
 
     def test_a_per_call_sink_adds_the_folder_to_the_committed_sentence(self):
-        committed = standing_guidance(withhold=True, lands_per_call=True)
+        committed = _standing_guidance(withhold=True, lands_per_call=True)
 
         assert len(committed) == 1
         assert committed[0].startswith(_WITHHELD_ROUTE)
@@ -4376,7 +4376,7 @@ class TestTheGuidanceThisKindCommitsTo:
 
         emitted = _route(tool, "print('hi')", outputs=["a.csv"])
         folder = _run_dirs(sandbox)[0].rsplit("/", 1)[-1]
-        committed = standing_guidance(withhold=True, lands_per_call=True)
+        committed = _standing_guidance(withhold=True, lands_per_call=True)
 
         assert emitted == committed[0].format(call_id=folder)
 
@@ -4400,7 +4400,7 @@ class TestTheGuidanceThisKindCommitsTo:
         )
 
         emitted = _route(tool, "print('hi')", outputs=["../escape.csv"])
-        committed = standing_guidance(withhold=True, lands_per_call=True)
+        committed = _standing_guidance(withhold=True, lands_per_call=True)
         folder = re.search(r"`([0-9a-f]{32})/`", emitted)
 
         assert folder is not None, emitted
