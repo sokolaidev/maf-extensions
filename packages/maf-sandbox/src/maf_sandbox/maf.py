@@ -12,7 +12,7 @@ It is **not** re-exported from the package's ``__init__``, on purpose: ``import 
 has to stay cheap and MAF-free for a backend, a workload's own test suite, or anything else
 that only speaks the protocol.  Reach it by name — ``from maf_sandbox.maf import ...``.
 
-Eight things live here, and each of them had begun to exist twice before it did:
+Nine things live here, and each of them had begun to exist twice before it did:
 
 - :func:`make_caller_context` — how a host says who is calling and which files they own.
 - :func:`sandboxed_tool` — the shape every sandbox workload's tool has: attach nothing when
@@ -36,6 +36,9 @@ Eight things live here, and each of them had begun to exist twice before it did:
 - :func:`make_file_store_sink` — an output sink landing each call's artifacts in a folder of an
   ``AgentFileStore``, so the model reads them back through the host's own file tools instead of
   through the workload's result. Here because the destination is the framework's store.
+- :func:`sandbox_outputs_read_tools` — the two read-only tools that expose such a store to the
+  model. Here because ``FileAccessProvider`` cannot: it names its tools from fixed constants, so
+  a second one of those is a name collision rather than a second store.
 """
 
 from __future__ import annotations
@@ -2190,6 +2193,121 @@ def make_file_store_sink(
         )
 
     return OutputSink(deliver, per_call=True)
+
+
+#: What the two read-back tools are called by default, and the reason they are named at all.
+#: ``FileAccessProvider`` names its own from class constants read inside its tool decorators, so
+#: two of those contribute two ``file_access_read`` tools rather than two stores — and the model
+#: is then handed a name it cannot use to say which one it means. A prefix, because a host with
+#: two output stores hits the same wall one layer up.
+DEFAULT_OUTPUTS_TOOL_PREFIX = "sandbox_outputs"
+
+
+#: The two descriptions the model reads, at module level for the reason a kind's are: MAF passes
+#: ``__doc__`` through verbatim, indentation and all, and a docstring written on a nested
+#: function arrives re-indented by however deep it was nested.
+_OUTPUTS_LS_DESCRIPTION = """List what is in a folder of the store a sandboxed tool's declared
+        outputs land in.
+
+        Each call's outputs go into a folder of their own, named for that call, and the tool
+        result names the folder.  Omit ``folder`` to list the folders themselves.
+
+        Args:
+            folder: The folder to list, or empty for the top level.
+
+        Returns:
+            One entry per child, each with a ``name`` and a ``type`` of file or directory.
+        """
+
+_OUTPUTS_READ_DESCRIPTION = """Read one file out of the store a sandboxed tool's declared
+        outputs land in.
+
+        Args:
+            name: The path as it was listed, folder included — ``<call>/report.md``.
+
+        Returns:
+            The file's text, or a message saying why it could not be read.
+        """
+
+
+def sandbox_outputs_read_tools(
+    store: Any,
+    *,
+    name_prefix: str = DEFAULT_OUTPUTS_TOOL_PREFIX,
+    approval_mode: Literal["always_require", "never_require"] = "never_require",
+) -> list[Any]:
+    """List and read, over one store and nothing else — how a model reads back what a sandbox
+    produced.
+
+    The other half of :func:`make_file_store_sink`.  That lands each call's artifacts under a
+    folder of its own; these are what let the model open the folder, so a workload's result can
+    name *where* its outputs went rather than reciting which of them landed.
+
+    **Read-only by construction rather than by a flag.**  There is no write, no delete and no
+    replace here to disable, which is the property the whole composition rests on: the bytes in
+    this store were produced by model-authored code, and a model that could write here could
+    plant an input for a later call of a different tool.
+
+    **These tools carry no label.**  Their results resolve through the host's own
+    ``default_integrity`` and its information-flow middleware, exactly as the framework's file
+    tools do — which is the point, and the trade worth reading twice: a host that withholds a
+    workload's guest output and then wires this has not kept that output away from the model, it
+    has moved it onto a path the host classifies and can gate.  Wire ``approval_mode`` and the
+    store's scope accordingly.
+
+    ``store`` is scoped by the host, and per conversation if the working store is: nothing here
+    knows about threads, so one store shared across conversations is one conversation reading
+    another's outputs.
+
+    Args:
+        store: The ``agent_framework`` ``AgentFileStore`` the sink lands in.
+        name_prefix: What the two tools are called — ``<prefix>_ls`` and ``<prefix>_read``.
+        approval_mode: MAF's per-tool approval setting, the host's to choose.
+
+    Returns:
+        The two tools, to pass to an agent beside the workload's own.
+    """
+    from agent_framework import tool
+
+    async def outputs_ls(folder: str = "") -> list[dict[str, str]] | str:
+        try:
+            listed = await store.list_children(folder)
+        except Exception as exc:  # noqa: BLE001
+            _DEFAULT_LOGGER.warning(
+                "%s_ls: could not list a folder: %s", name_prefix, error_detail(exc)
+            )
+            return f"Error: {_echoed(folder, 'folder')} could not be listed."
+        return [{"name": entry.name, "type": entry.type} for entry in listed]
+
+    async def outputs_read(name: str) -> str:
+        try:
+            content = await store.read(name)
+        except Exception as exc:  # noqa: BLE001
+            _DEFAULT_LOGGER.warning(
+                "%s_read: could not read a file: %s", name_prefix, error_detail(exc)
+            )
+            return f"Error: {_echoed(name, 'name')} could not be read."
+        if content is None:
+            return f"Error: there is no file at {_echoed(name, 'name')}."
+        return content
+
+    outputs_ls.__doc__ = _OUTPUTS_LS_DESCRIPTION
+    outputs_read.__doc__ = _OUTPUTS_READ_DESCRIPTION
+    return [
+        tool(name=f"{name_prefix}_ls", approval_mode=approval_mode)(outputs_ls),
+        tool(name=f"{name_prefix}_read", approval_mode=approval_mode)(outputs_read),
+    ]
+
+
+def _echoed(value: str, argument: str) -> str:
+    """One argument of a read-back tool, rendered the way every refusal here renders one.
+
+    The framework expands a variable reference into a string argument before the body runs, so
+    a refusal quoting its own argument can put back content the middleware had hidden — the
+    same failure a kind's refusals are held to, on a tool the host owns rather than a kind.
+    """
+    rewritten = positions_holding_hidden_content([value], argument=argument)
+    return echoed_name(value, at=argument, hidden=0 in rewritten)
 
 
 async def list_all_files(

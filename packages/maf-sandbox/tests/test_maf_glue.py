@@ -77,6 +77,7 @@ from maf_sandbox.maf import (
     make_caller_context,
     make_file_store_sink,
     positions_holding_hidden_content,
+    sandbox_outputs_read_tools,
     sandbox_tool_declarations,
     sandboxed_tool,
 )
@@ -4915,3 +4916,109 @@ class TestMakeFileStoreSink:
 
         assert [item.name for item in landed] == ["report.md"]
         assert asyncio.run(store.read("c0ffee/report.md")) == "# hi"
+
+
+class TestSandboxOutputsReadTools:
+    """The half of the composition `FileAccessProvider` cannot supply, because it names its
+    tools from fixed constants and a second one of those is a collision rather than a store."""
+
+    def _store(self) -> Any:
+        from agent_framework import InMemoryAgentFileStore
+
+        return InMemoryAgentFileStore()
+
+    def _landed(self) -> Any:
+        """A store with one call's output already in it, put there by the packaged sink."""
+        store = self._store()
+        artifact = Artifact(
+            name="report.md",
+            content=b"# total\n42",
+            kind="codeact",
+            media_type=None,
+            call_id="c0ffee",
+        )
+        asyncio.run(make_file_store_sink(store).deliver(artifact))
+        return store
+
+    def _body(self, tool: Any) -> Any:
+        return getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
+
+    def test_it_answers_with_a_list_and_a_read_and_nothing_else(self):
+        """Read-only by construction rather than by a flag: there is no write to disable."""
+        tools = sandbox_outputs_read_tools(self._store())
+
+        assert [tool.name for tool in tools] == ["sandbox_outputs_ls", "sandbox_outputs_read"]
+
+    def test_its_names_are_not_the_frameworks_own(self):
+        """The whole reason it exists: two `FileAccessProvider`s put two `file_access_read`
+        tools in one run, and the model cannot say which store it means."""
+        names = {tool.name for tool in sandbox_outputs_read_tools(self._store())}
+
+        assert not any(name.startswith("file_access") for name in names)
+
+    def test_a_host_with_two_output_stores_can_keep_them_apart(self):
+        first = {tool.name for tool in sandbox_outputs_read_tools(self._store())}
+        second = {
+            tool.name
+            for tool in sandbox_outputs_read_tools(self._store(), name_prefix="review_outputs")
+        }
+
+        assert first.isdisjoint(second)
+
+    def test_listing_the_top_level_answers_with_the_call_folders(self):
+        listing, _ = sandbox_outputs_read_tools(self._landed())
+
+        assert asyncio.run(self._body(listing)()) == [{"name": "c0ffee", "type": "directory"}]
+
+    def test_listing_a_call_folder_answers_with_what_it_landed(self):
+        listing, _ = sandbox_outputs_read_tools(self._landed())
+
+        assert asyncio.run(self._body(listing)("c0ffee")) == [{"name": "report.md", "type": "file"}]
+
+    def test_a_landed_file_reads_back_whole(self):
+        """The round trip the composition is for: the sink put it there, these read it back."""
+        _, read = sandbox_outputs_read_tools(self._landed())
+
+        assert asyncio.run(self._body(read)("c0ffee/report.md")) == "# total\n42"
+
+    def test_a_file_that_is_not_there_answers_with_a_sentence(self):
+        """A call that landed nothing is the ordinary case, not an error to raise into a turn."""
+        _, read = sandbox_outputs_read_tools(self._landed())
+
+        answer = asyncio.run(self._body(read)("c0ffee/absent.md"))
+        assert answer.startswith("Error: there is no file at")
+        assert "absent.md" in answer
+
+    def test_a_store_failure_is_logged_and_answered_rather_than_raised(self, caplog):
+        class _BrokenStore:
+            async def list_children(self, directory: str = "") -> list[Any]:
+                raise RuntimeError("the store is down")
+
+            async def read(self, path: str) -> str | None:
+                raise RuntimeError("the store is down")
+
+        listing, read = sandbox_outputs_read_tools(_BrokenStore())
+        with caplog.at_level(logging.WARNING):
+            listed = asyncio.run(self._body(listing)("c0ffee"))
+            got = asyncio.run(self._body(read)("c0ffee/report.md"))
+
+        assert listed.startswith("Error:") and "could not be listed" in listed
+        assert got.startswith("Error:") and "could not be read" in got
+        assert "the store is down" in caplog.text
+        assert "the store is down" not in listed + got
+
+    def test_a_refusal_reports_a_position_rather_than_repeating_a_long_value(self):
+        """The bound on shape `echoed_name` falls back to where no middleware answers. A name
+        the framework expanded into this argument is the value a refusal must not put back."""
+        _, read = sandbox_outputs_read_tools(self._landed())
+
+        answer = asyncio.run(self._body(read)("x" * 300))
+
+        assert "xxx" not in answer, answer
+        assert "name" in answer
+
+    def test_the_descriptions_tell_the_model_the_outputs_are_per_call(self):
+        listing, read = sandbox_outputs_read_tools(self._store())
+
+        assert "folder of their own" in (self._body(listing).__doc__ or "")
+        assert "declared\n        outputs land in" in (self._body(read).__doc__ or "")
