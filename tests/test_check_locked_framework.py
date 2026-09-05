@@ -95,16 +95,18 @@ def _run(*arguments: str) -> subprocess.CompletedProcess[str]:
 
 
 class TestTheListIsTheOneTheWorkspaceDeclares:
-    """A package adding a framework sibling must not leave it unwatched."""
+    """The two directions fail differently, so each is asserted on its own."""
 
-    def test_every_declared_framework_distribution_is_covered(self):
-        assert set(check.FRAMEWORK) == _declared_framework()
+    def test_every_declared_framework_distribution_is_watched(self):
+        # A package adding a framework sibling would otherwise leave it on whatever the lock
+        # happened to resolve, which is the gap this whole mechanism exists to close.
+        assert _declared_framework() - set(check.FRAMEWORK) == set()
 
     def test_nothing_is_watched_that_nobody_declares(self):
-        # The other direction, and the one that rots quietly: a distribution dropped from every
-        # pyproject stays in the list, and `uv lock --upgrade-package` refuses a name it cannot
-        # resolve rather than reporting no drift.
-        assert set(check.FRAMEWORK) <= _declared_framework()
+        # The quieter direction: a distribution dropped from every pyproject stays in the list,
+        # and `uv lock --upgrade-package` refuses a name it cannot resolve — so the drift run
+        # reds on its own arguments rather than on the lockfile.
+        assert set(check.FRAMEWORK) - _declared_framework() == set()
 
 
 class TestReadingALockfile:
@@ -203,13 +205,17 @@ class TestDependabotProposesWhatTheDriftRunMeasures:
         assert self._update()["directory"] == "/"
 
     def test_it_may_propose_exactly_the_distributions_the_check_measures(self):
+        # An allow list at all is what keeps the `ruff` and `pyright` bands the dev group pins
+        # on purpose out of the bot's reach; this one being *these* names is what makes the
+        # monthly drift run a measurement of the bot's work rather than of something else.
         allowed = {entry["dependency-name"] for entry in self._update()["allow"]}
         assert allowed == set(check.FRAMEWORK)
 
-    def test_the_allow_list_is_present_at_all(self):
-        # Without one Dependabot proposes every locked distribution, including the `ruff` and
-        # `pyright` bands the dev group pins on purpose.
-        assert self._update().get("allow")
+    def test_a_transitive_reading_of_the_framework_is_still_in_scope(self):
+        # The default is direct dependencies only, and `agent-framework-core` is declared by
+        # the workspace members rather than by the root manifest Dependabot reads here.
+        types = {entry.get("dependency-type") for entry in self._update()["allow"]}
+        assert types == {"all"}
 
     def test_its_titles_pass_the_pull_request_title_check(self):
         # Dependabot writes `<prefix>(deps): bump …`, and an unset prefix writes `Bump …`,

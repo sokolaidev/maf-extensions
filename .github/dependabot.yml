@@ -31,9 +31,14 @@ updates:
       day: "monday"
       time: "04:00"
       timezone: "Etc/UTC"
+    # `all` rather than the default, which is direct dependencies only. `agent-framework-core`
+    # is declared by the workspace members rather than by the root manifest this reads, so
+    # whether it counts as direct here is Dependabot's judgement and not one worth betting on.
     allow:
       - dependency-name: "agent-framework-core"
+        dependency-type: "all"
       - dependency-name: "agent-framework-openai"
+        dependency-type: "all"
     commit-message:
       prefix: "chore"
       include: "scope"
