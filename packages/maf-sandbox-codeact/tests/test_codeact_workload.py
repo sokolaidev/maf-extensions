@@ -17,6 +17,7 @@ import dataclasses
 import inspect
 import json
 import logging
+import re
 import unicodedata
 import warnings
 from collections.abc import Callable, Mapping, Sequence
@@ -86,6 +87,7 @@ from maf_sandbox_codeact._tool import (
     _WORK_DIR,
     _format_landed,
     _format_withheld,
+    standing_guidance,
 )
 
 #: What a backend must declare before this kind may collect anything.
@@ -4339,4 +4341,67 @@ class TestOutputsLandInAFolderOfTheirOwn:
     def test_the_folder_sentence_carries_exactly_one_placeholder(self):
         """Interpolated rather than assembled at the call site, so the constant is what a host
         reads — and a second placeholder would repeat the id inside one sentence."""
-        assert _WITHHELD_OUTPUTS_FOLDER.count("{folder}") == 1
+        assert _WITHHELD_OUTPUTS_FOLDER.count("{call_id}") == 1
+
+
+class TestTheGuidanceThisKindCommitsTo:
+    """Rule 5's test is executed by core once a tool commits its sentences at attach. What this
+    kind owes is that the set it commits is exactly what its body emits, on every path."""
+
+    def test_a_shown_tool_commits_nothing(self):
+        """The shown path answers with one string, and no sentence it renders is true on every
+        return path — so committing one would be a claim this kind cannot keep."""
+        assert standing_guidance(withhold=False, lands_per_call=False) == ()
+        assert standing_guidance(withhold=False, lands_per_call=True) == ()
+
+    def test_a_withholding_tool_commits_its_route(self):
+        assert standing_guidance(withhold=True, lands_per_call=False) == (_WITHHELD_ROUTE,)
+
+    def test_a_per_call_sink_adds_the_folder_to_the_committed_sentence(self):
+        committed = standing_guidance(withhold=True, lands_per_call=True)
+
+        assert len(committed) == 1
+        assert committed[0].startswith(_WITHHELD_ROUTE)
+        assert "{call_id}" in committed[0]
+
+    def test_the_committed_sentence_renders_to_exactly_what_the_body_emits(self):
+        """The join this kind owes core. Core renders the committed sentence with the call's own
+        id and compares; the body composes the same two constants itself. A brace reaching
+        `_WITHHELD_ROUTE`, or either half being reworded alone, breaks the match — and this is
+        what catches it, since the refusal would otherwise arrive at the first live call."""
+        sandbox = _ProducingSandbox()
+        sink = _PerCallSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink, withhold_guest_output=True)
+        sandbox.produces = {"a.csv": b"1"}
+
+        emitted = _route(tool, "print('hi')", outputs=["a.csv"])
+        folder = _run_dirs(sandbox)[0].rsplit("/", 1)[-1]
+        committed = standing_guidance(withhold=True, lands_per_call=True)
+
+        assert emitted == committed[0].format(call_id=folder)
+
+    def test_a_withholding_run_is_not_refused_by_the_wrapper(self):
+        """End to end rather than by construction: core raises on a labelled item it was not
+        committed to, and that raise would surface as a failed tool call rather than a result."""
+        sandbox = _ProducingSandbox()
+        tool = _pulling_tool(
+            sandbox, CodeactOutputs.DECLARED, _RecordingSink(), withhold_guest_output=True
+        )
+        sandbox.produces = {"a.csv": b"1"}
+
+        assert _route(tool, "print('hi')", outputs=["a.csv"]) == _WITHHELD_ROUTE
+
+    def test_a_refusal_carries_the_committed_sentence_too(self):
+        """The presence half. Core refuses a result missing a committed sentence, so a path that
+        dropped it would fail here rather than leak a bit about which path ran."""
+        sandbox = _ProducingSandbox()
+        tool = _pulling_tool(
+            sandbox, CodeactOutputs.DECLARED, _PerCallSink(), withhold_guest_output=True
+        )
+
+        emitted = _route(tool, "print('hi')", outputs=["../escape.csv"])
+        committed = standing_guidance(withhold=True, lands_per_call=True)
+        folder = re.search(r"`([0-9a-f]{32})/`", emitted)
+
+        assert folder is not None, emitted
+        assert emitted == committed[0].format(call_id=folder.group(1))
