@@ -2,6 +2,19 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.33.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.32.0...maf-sandbox-v0.33.0) (2026-09-05)
+
+
+### Features
+
+* a call's outputs can land in a folder of their own in an agent file store ([#900](https://github.com/sokolaidev/maf-extensions/issues/900)) ([6779cf0](https://github.com/sokolaidev/maf-extensions/commit/6779cf0dfad0eb3742058185d2661c96f8782134))
+* the file-store record is folded again when the bytes are read ([#895](https://github.com/sokolaidev/maf-extensions/issues/895)) ([dcfd110](https://github.com/sokolaidev/maf-extensions/commit/dcfd110b308dfa1596d4bbe6d4162d663e062c9b))
+
+
+### Fixes
+
+* the integrity guidance stops recommending the delegation it warns about ([#893](https://github.com/sokolaidev/maf-extensions/issues/893)) ([9d0b5d5](https://github.com/sokolaidev/maf-extensions/commit/9d0b5d59f32409938303c6849421f61d38b6d634))
+
 ## [0.32.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.30.0...maf-sandbox-v0.32.0) (2026-09-04)
 
 
