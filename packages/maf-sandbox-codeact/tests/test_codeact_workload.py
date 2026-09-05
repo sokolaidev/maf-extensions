@@ -4237,9 +4237,9 @@ class TestOutputsLandInAFolderOfTheirOwn:
         assert self._folder(route) == _run_dirs(sandbox)[0].rsplit("/", 1)[-1]
 
     def test_it_names_the_folder_on_a_path_that_never_reached_the_collection(self):
-        """The sentence is labelled trusted, so it has to be on every return path — and the
-        one that matters is a refusal, where a model still has to know where to look for what
-        an earlier call left."""
+        """The sentence is labelled trusted, so it has to be on every return path — including a
+        refusal, which names this call's own folder whether or not anything ever landed in
+        it."""
         sandbox = _ProducingSandbox()
         tool = _pulling_tool(
             sandbox, CodeactOutputs.DECLARED, _PerCallSink(), withhold_guest_output=True
@@ -4251,8 +4251,8 @@ class TestOutputsLandInAFolderOfTheirOwn:
         assert len(self._folder(route)) == 32, route
 
     def test_a_withheld_result_says_nothing_about_which_names_landed(self):
-        """The presence bits are the channel a model was measured encoding through, and the
-        folder answers the same question without one."""
+        """Which of the declared names landed is a bit per name the guest's program chooses;
+        the folder answers the same question with the host's own id instead."""
         sandbox = _ProducingSandbox()
         tool = _pulling_tool(
             sandbox, CodeactOutputs.DECLARED, _PerCallSink(), withhold_guest_output=True
@@ -4307,7 +4307,7 @@ class TestOutputsLandInAFolderOfTheirOwn:
         description = _callable(tool).__doc__ or ""
 
         assert "into a folder named for this call" in description
-        assert "List the folder to see what a run actually wrote." in description
+        assert "If you have a tool that reads that folder" in description
         assert "the result confirms each name that landed" not in description
         assert "A run that saved files also names each one." not in description
 
@@ -4323,7 +4323,7 @@ class TestOutputsLandInAFolderOfTheirOwn:
         assert "the result confirms each name that landed" in description
         assert "into a folder named for this call" not in description
 
-    def test_the_folder_sentence_is_written_once(self):
-        """It is interpolated into the route rather than assembled at the call site, so the
-        constant is what a host reads and what this suite asserts."""
-        assert "{folder}" in _WITHHELD_OUTPUTS_FOLDER
+    def test_the_folder_sentence_carries_exactly_one_placeholder(self):
+        """Interpolated rather than assembled at the call site, so the constant is what a host
+        reads — and a second placeholder would repeat the id inside one sentence."""
+        assert _WITHHELD_OUTPUTS_FOLDER.count("{folder}") == 1

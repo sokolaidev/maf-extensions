@@ -157,8 +157,8 @@ _WITHHELD_EXITED_WITH_ERROR = "The program exited with a non-zero status."
 
 #: Added to the route sentence where the attached sink lands each call under a folder of its
 #: own, and rendered on every return path for the reason the sentence it joins is. The id is
-#: the host's, allocated for this call before anything the model sent was read, so naming it
-#: carries nothing the guest or the model chose.
+#: the host's own `uuid4`, taking no input from the arguments or from what the program did, so
+#: naming it carries nothing the guest or the model chose.
 _WITHHELD_OUTPUTS_FOLDER = "Anything this call saved is under `{folder}/` where its outputs land."
 
 
@@ -277,12 +277,14 @@ def make_codeact_tools(
             :data:`CodeactOutputs.NONE`, and refused at attach without one.
         outputs: How a program's output files are named. See :class:`CodeactOutputs`.
         withhold_guest_output: Keep what the program printed out of the tool result, and answer
-            with whether it exited cleanly and the model's own declared names instead. No
-            guest-authored text survives into the result — but the values that replace it were
-            still chosen by a program the model wrote, so this changes what the result *holds*
-            and not where it came from: the tool declares ``SourceIntegrity.UNTRUSTED`` either
-            way. Requires :data:`CodeactOutputs.DECLARED`: the one mode where content can still
-            reach the model and no guest-chosen name reaches the result.
+            with whether it exited cleanly and the model's own declared names instead — or
+            with the folder they landed in, where the sink declares
+            :attr:`~maf_sandbox.OutputSink.per_call`. No guest-authored text survives into the
+            result — but the values that replace it were still chosen by a program the model
+            wrote, so this changes what the result *holds* and not where it came from: the tool
+            declares ``SourceIntegrity.UNTRUSTED`` either way. Requires
+            :data:`CodeactOutputs.DECLARED`: the one mode where content can still reach the
+            model and no guest-chosen name reaches the result.
 
             The exit status is rendered as one bit, zero or not, and the streams are not sized
             at all. Both are values the program chooses, so both are channels, and neither
@@ -322,6 +324,12 @@ def make_codeact_tools(
             which a tool-fluent model reads as its return path rather than stumbling into, and a
             host that must close it should not attach this workload at all. The sink's
             ``display`` is deliberately *not* rendered here — see :func:`_format_landed`.
+
+            **A sink declaring :attr:`~maf_sandbox.OutputSink.per_call` stops this tool
+            emitting that last one.** No declared name reaches the result — it names the folder
+            they landed in, which is the host's own id. They do not become unreachable: a model
+            that can list that folder reads the same names off the store, under the host's own
+            labels and approvals rather than out of this result.
         outbound_max_confidentiality: The host's cap for tools that carry something out, in the
             host's own vocabulary. Off by default and written only when something can actually
             leave: an artifact landing in the sink, a host tool that carries something out, or
@@ -785,23 +793,24 @@ _DESCRIPTION_RETURNS_SAVED_WITHHELD = """  A run that saved files also names eac
 
 #: The withholding pair again, for a host whose sink lands each call under a folder of its own.
 #: Two promises above stop being true: nothing names which files landed, so nothing reports a
-#: name declared and not written either — the folder is the answer to both, and reading it is
-#: the model's own move rather than something this result performs for it.
+#: name declared and not written either. It names the folder without promising a reader for it,
+#: for the reason `_WITHHELD_ROUTE` names its route without promising one: that is the host's
+#: wiring rather than this kind's to claim.
 _DESCRIPTION_DECLARED_WITHHELD_PER_CALL = """**To produce files, name them in ``outputs`` and
         write them into the working directory.**  They are saved to host storage after the
         program exits, into a folder named for this call, and the result names that folder —
         not which files landed in it, and not what is in them, so do not claim to have read a
-        file you only produced.  List the folder to see what a run actually wrote.  A file you
-        write without declaring is not saved at all.  **A program that fails still saves what
-        it wrote**, so writing what you need into a declared output and then failing still gets
-        it out.
+        file you only produced.  If you have a tool that reads that folder, what is in it is
+        what actually landed.  A file you write without declaring is not saved at all.  **A
+        program that fails still saves what it wrote**, so writing what you need into a
+        declared output and then failing still gets it out.
 
         Naming a file in both ``files`` and ``outputs`` is how you edit one in place.  Since a
-        failed run still saves, a program that dies part way through rewriting one saves
+        program that fails still saves, one that dies part way through rewriting a file saves
         whatever it had written by then."""
 
 #: Replaces the pair above's returns line: naming each file is what this mode stops doing.
-_DESCRIPTION_RETURNS_SAVED_PER_CALL = """  A run that saved files also names the folder they
+_DESCRIPTION_RETURNS_SAVED_PER_CALL = """  A call that saved files also names the folder they
             are in."""
 
 
@@ -1626,10 +1635,8 @@ async def _collect(
         logger.warning("execute_code: saving this run's files failed: %s", error_detail(exc))
         return f"Error: the program ran but its files could not be saved. {_MAY_HAVE_LANDED}"
     if withhold and sink.per_call:
-        # The folder replaces the list rather than joining it. Which names landed is a value
-        # per declared name that the guest's program decides, and it is the channel a model
-        # was measured encoding through; the folder is the host's own id and says nothing
-        # about the run. The route sentence carries it, so nothing is said here.
+        # Which names landed is a bit per declared name the guest's program chooses. The route
+        # sentence names the folder in its place, so nothing is said here.
         return ""
     return _format_landed(
         landed,
