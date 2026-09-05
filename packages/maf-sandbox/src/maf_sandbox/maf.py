@@ -1333,6 +1333,12 @@ class SandboxToolSession:
             self._record_read(listed.name, None, 0, refused=True)
             shown = named if named is not None else echoed_name(listed.name, at=at, hidden=hidden)
             return f"Error: {shown} could not be read from the file store"
+        except BaseException:
+            # A cancel leaves this site the same way a raise does — no text crossed — and the
+            # record owes every way out, not only the ones that return. It is not an
+            # `Exception`, so it needs its own catch or the read goes unrecorded.
+            self._record_read(listed.name, None, 0, refused=True)
+            raise
         if text is None:
             self._record_read(listed.name, None, 0, refused=False)
             return None
@@ -2172,9 +2178,10 @@ def sandboxed_tool(
                         ToolCallEnded(
                             tool=name,
                             kind=spec.kind,
-                            # The key the call reached, which is the one every other event of
-                            # this call carries. A call that acquired nothing has none.
-                            key=next(iter(call.acquired), None),
+                            # Every key the call reached, not the first: `acquired` is a mapping
+                            # because one call may serve two sandboxes, and each one's acquire
+                            # and disposal records join through the key named here.
+                            keys=tuple(call.acquired),
                             seconds=time.monotonic() - started,
                             failure=None if failed is None else type(failed).__name__,
                             unclean=len(unclean),

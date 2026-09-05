@@ -205,7 +205,7 @@ def _every_event() -> list[SandboxEvent]:
             seconds=0.0,
         ),
         ToolCallEnded(
-            tool="widget_run", kind="test", key=_KEY, seconds=0.0, failure=None, unclean=0
+            tool="widget_run", kind="test", keys=(_KEY,), seconds=0.0, failure=None, unclean=0
         ),
     ]
 
@@ -243,7 +243,8 @@ class TestRegistration:
     @pytest.mark.parametrize("register", [_router, HostToolRegistry])
     def test_something_that_is_not_an_observer_is_refused_at_registration(self, register):
         class _Duck:
-            def sandbox_acquired(self, event): ...
+            def sandbox_acquired(self, event):
+                pass
 
         with pytest.raises(TypeError, match="must be a SandboxObserver"):
             register(observer=_Duck())
@@ -253,7 +254,8 @@ class TestRegistration:
         """Nothing awaits an observer, so an `async def` one would lose every event it saw."""
 
         class _Async(SandboxObserver):
-            async def host_tool_called(self, event: HostToolCalled) -> None: ...
+            async def host_tool_called(self, event: HostToolCalled) -> None:
+                pass
 
         with pytest.raises(TypeError, match="host_tool_called"):
             register(observer=_Async())
@@ -408,6 +410,27 @@ class TestDisposalIsRecorded:
         assert [event.backend for event in events] == ["first", "second"]
         assert all(event.landed and event.failure is None for event in events)
 
+    def test_a_disposal_a_cancel_took_is_still_recorded(self):
+        """`CancelledError` is not an `Exception`, so an `except Exception` around the dispose
+        drops exactly the record a timed-out disposal would have left — the one an operator
+        most wants. The cancel still reaches the caller."""
+        recorder = _Recorder()
+
+        class _Cancels(InProcessSandboxBackend):
+            async def dispose(self, key: SandboxKey) -> str | None:
+                raise asyncio.CancelledError
+
+        router = _router(_Cancels(name="cancels"), observer=recorder)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(router.dispose(_KEY))
+
+        event = recorder.one(SandboxDisposed)
+        assert (event.backend, event.landed) == ("cancels", False)
+        assert event.failure is not None
+        assert event.failure.code == "unknown"
+        assert "cancelled" in event.failure.detail
+
     def test_a_backend_that_refuses_is_recorded_with_its_code(self):
         recorder = _Recorder()
         failure = DisposalFailure("refused", "the service said no")
@@ -524,6 +547,44 @@ class TestHostToolCallsAreRecorded:
         assert recorder.one(HostToolCalled).response_bytes == (
             len(result.value_json.encode("utf-8")) + 7
         )
+
+    def test_two_overlapping_calls_each_report_only_their_own_bytes(self, recwarn):
+        """Calls of one run may overlap, and the run's byte ledger is cumulative across them.
+
+        Differencing that ledger across a call gives the one finishing second the other's bytes
+        as well, so the size a query reads is the size of somebody else's response.
+        """
+        released = asyncio.Event()
+        entered = asyncio.Event()
+
+        async def slow(url: str) -> str:
+            """Deliver only after a second call has already delivered."""
+            entered.set()
+            await released.wait()
+            return "s" * 40
+
+        def quick(url: str) -> str:
+            """Deliver immediately, in the middle of `slow`."""
+            return "q" * 5
+
+        recorder = _Recorder()
+        registry = HostToolRegistry(observer=recorder)
+        registry.register(slow, name="slow")
+        registry.register(quick, name="quick")
+
+        async def both() -> None:
+            run = _run(registry)
+            overlapping = asyncio.create_task(run.call("slow", {"url": "u"}))
+            await entered.wait()
+            await run.call("quick", {"url": "u"})
+            released.set()
+            await overlapping
+
+        asyncio.run(both())
+
+        sizes = {event.tool: event.response_bytes for event in recorder.only(HostToolCalled)}
+        assert sizes["quick"] == len(json.dumps("q" * 5).encode("utf-8"))
+        assert sizes["slow"] == len(json.dumps("s" * 40).encode("utf-8"))
 
     def test_an_unstamped_tool_is_recorded_as_declaring_nothing(self, recwarn):
         recorder = _Recorder()
@@ -773,6 +834,23 @@ class TestStoreReadsAreRecorded:
             False,
         )
 
+    def test_a_read_a_cancel_took_is_still_recorded(self):
+        """A cancel leaves the site the same way a raise does — no text crossed — and it is not
+        an `Exception`, so it needs its own catch or the read goes unrecorded."""
+
+        class _Cancels(InMemoryStore):
+            async def read(self, name: str) -> str | None:
+                raise asyncio.CancelledError
+
+        recorder = _Recorder()
+        session = _session(recorder)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(session.read_file(_Cancels({"a.txt": "x"}), ListedFile("a.txt")))
+
+        event = recorder.one(StoreFileRead)
+        assert (event.refused, event.characters, event.integrity) == (True, 0, None)
+
     def test_a_read_that_failed_is_recorded_as_refused(self):
         class _Broken(InMemoryStore):
             async def read(self, name: str) -> str | None:
@@ -844,11 +922,33 @@ class TestTheCallIsRecorded:
         assert asyncio.run(_fn(_tool(router, build))()) == "done"
 
         event = recorder.one(ToolCallEnded)
-        assert (event.tool, event.kind, event.key) == ("widget_run", "test", _KEY)
+        assert (event.tool, event.kind, event.keys) == ("widget_run", "test", (_KEY,))
         assert (event.failure, event.unclean) == (None, 0)
         assert event.seconds >= 0
 
-    def test_a_call_that_acquired_nothing_records_no_key(self):
+    def test_a_call_that_reached_two_sandboxes_records_both(self):
+        """`acquire` takes a key, so one call can hold two — and naming only the first would
+        leave the second's acquire and disposal records with nothing to join to."""
+        recorder = _Recorder()
+        router = _router(observer=recorder)
+        other = SandboxKey(scope=_KEY.scope, thread_id=_KEY.thread_id, agent_dir="agent-2")
+
+        def build(session: SandboxToolSession):
+            async def widget_run() -> str:
+                """Do a thing."""
+                mine = session.key()
+                assert isinstance(mine, SandboxKey)
+                for key in (mine, other):
+                    await session.acquire(key)
+                return "done"
+
+            return widget_run
+
+        assert asyncio.run(_fn(_tool(router, build))()) == "done"
+
+        assert recorder.one(ToolCallEnded).keys == (_KEY, other)
+
+    def test_a_call_that_acquired_nothing_records_no_keys(self):
         recorder = _Recorder()
         router = _router(observer=recorder)
 
@@ -861,7 +961,7 @@ class TestTheCallIsRecorded:
 
         asyncio.run(_fn(_tool(router, build))())
 
-        assert recorder.one(ToolCallEnded).key is None
+        assert recorder.one(ToolCallEnded).keys == ()
 
     def test_a_body_that_raised_records_the_class_it_raised(self):
         recorder = _Recorder()
