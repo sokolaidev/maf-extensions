@@ -1109,21 +1109,28 @@ class SandboxRouter:
             logger,
         )
 
-    def _record_a_cancelled_disposal(
-        self, key: SandboxKey, backend: SandboxBackend, started: float
+    def _record_an_interrupted_disposal(
+        self, key: SandboxKey, backend: SandboxBackend, started: float, by: BaseException
     ) -> None:
-        """Record a disposal a cancel took away, so one-event-per-backend survives it.
+        """Record a disposal something took away mid-flight, so one-event-per-backend survives.
 
         A cancel is not an ``Exception``, so every site that asks a backend to dispose has to
-        catch it separately or lose the event — and a disposal taken by a timeout is the one an
-        operator most wants to see.  Whether the delete landed is genuinely unknowable here: the
-        backend was asked and never answered, which is what ``"unknown"`` means in this
-        vocabulary rather than a stand-in for a code nobody looked up.
+        catch outside that hierarchy or lose the event — and a disposal taken by a timeout is
+        the one an operator most wants to see.  Catching that widely also catches an interpreter
+        shutting down, so ``by`` is **named in the detail** rather than assumed: a record saying
+        a disposal was cancelled when the process was exiting is a wrong answer to the question
+        an audit asks it.
+
+        Whether the delete landed is genuinely unknowable either way — the backend was asked and
+        never answered — which is what ``"unknown"`` means in this vocabulary rather than a
+        stand-in for a code nobody looked up.
         """
         self._record_disposal(
             key,
             backend,
-            DisposalFailure("unknown", f"{backend.name}: the disposal was cancelled"),
+            DisposalFailure(
+                "unknown", f"{backend.name}: the disposal was interrupted by {type(by).__name__}"
+            ),
             started,
         )
 
@@ -1157,8 +1164,8 @@ class SandboxRouter:
                 undisposed = await backend.dispose(key)
             except Exception as failed:  # noqa: BLE001 — the refusal must reach the caller
                 undisposed = str(failed)
-            except BaseException:
-                self._record_a_cancelled_disposal(key, backend, started)
+            except BaseException as interrupted:
+                self._record_an_interrupted_disposal(key, backend, started, interrupted)
                 raise
         self._record_disposal(
             key, backend, None if undisposed is None else _coded(backend.name, undisposed), started
@@ -1308,8 +1315,8 @@ class SandboxRouter:
                 reported = await served.dispose(key)
             except Exception as undisposed:  # noqa: BLE001 — the refusal must reach the caller
                 reported = str(undisposed)
-            except BaseException:
-                self._record_a_cancelled_disposal(key, served, started)
+            except BaseException as interrupted:
+                self._record_an_interrupted_disposal(key, served, started, interrupted)
                 raise
             self._record_disposal(
                 key, served, None if reported is None else _coded(served.name, reported), started
@@ -1368,11 +1375,11 @@ class SandboxRouter:
                 logger.warning(
                     "sandbox router: backend %s failed to dispose: %s", backend.name, exc
                 )
-            except BaseException:
+            except BaseException as interrupted:
                 # The bound expiring mid-sweep is the case this catch exists for: it cancels
                 # the backend that was mid-dispose, and that backend is the one the record is
                 # about. The `reasons` fold below never runs, so this is its only event.
-                self._record_a_cancelled_disposal(key, backend, started)
+                self._record_an_interrupted_disposal(key, backend, started, interrupted)
                 raise
             else:
                 if undisposed is not None:

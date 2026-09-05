@@ -248,7 +248,9 @@ class TestRegistration:
 
         class _Unprintable(Exception):
             def __str__(self) -> str:
-                raise RuntimeError("this exception cannot render itself")
+                # Not an `Exception`: containment that enumerated only that hierarchy would let
+                # this walk out of the handler built to stop it.
+                raise asyncio.CancelledError
 
         class _Raises(SandboxObserver):
             def sandbox_acquired(self, event: SandboxAcquired) -> None:
@@ -449,7 +451,28 @@ class TestDisposalIsRecorded:
         assert (event.backend, event.landed) == ("cancels", False)
         assert event.failure is not None
         assert event.failure.code == "unknown"
-        assert "cancelled" in event.failure.detail
+        # The interruption is named rather than assumed to be a cancel: a disposal taken by an
+        # interpreter shutting down is a different fact, and an audit reads this string.
+        assert "interrupted by CancelledError" in event.failure.detail
+
+    def test_a_disposal_an_exit_took_names_the_exit_rather_than_a_cancel(self):
+        """The catch is wide enough to see an interpreter shutting down, so what took the
+        disposal is named. Recording `SystemExit` as a cancel is a wrong answer to the question
+        an audit asks the detail string."""
+        recorder = _Recorder()
+
+        class _Exits(InProcessSandboxBackend):
+            async def dispose(self, key: SandboxKey) -> str | None:
+                raise GeneratorExit
+
+        router = _router(_Exits(name="exits"), observer=recorder)
+
+        with pytest.raises(GeneratorExit):
+            asyncio.run(router.dispose(_KEY))
+
+        event = recorder.one(SandboxDisposed)
+        assert event.failure is not None
+        assert "interrupted by GeneratorExit" in event.failure.detail
 
     def test_a_backend_that_refuses_is_recorded_with_its_code(self):
         recorder = _Recorder()
