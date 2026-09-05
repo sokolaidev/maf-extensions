@@ -209,6 +209,20 @@ class TestWhichCoreTheEnvironmentGets:
         recorder = _install_command(monkeypatch, ["maf-sandbox-bicep==0.13.0"], core)
         assert str(core) in recorder.install
 
+    def test_a_relative_core_wheel_still_names_an_absolute_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """`publish-packages.yml` passes `dist/maf_sandbox-<version>-py3-none-any.whl`.
+
+        `Path.as_uri` refuses a relative path outright, so the override could not be written
+        at all and the gate died before a single suite ran.
+        """
+        core = _wheel(tmp_path, "maf_sandbox-0.33.0-py3-none-any.whl")
+        monkeypatch.chdir(tmp_path)
+        recorder = _install_command(monkeypatch, ["maf-sandbox-bicep==0.13.0"], Path(core.name))
+        assert recorder.overrides == f"maf-sandbox @ {core.resolve().as_uri()}\n"
+        assert str(core.resolve()) in recorder.install
+
     def test_the_dependent_and_its_siblings_are_still_installed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
