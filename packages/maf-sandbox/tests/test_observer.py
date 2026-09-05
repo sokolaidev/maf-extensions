@@ -319,6 +319,30 @@ class TestRecordContainsWhateverAnObserverDoes:
 
 
 class TestAcquireIsRecorded:
+    def test_the_recorded_labels_do_not_move_after_the_event_is_delivered(self):
+        """`SandboxSpec` is frozen about its bindings, not about the dict `labels` is. A record
+        that shared it would change after delivery — and let an observer write into the
+        caller's spec through the event it was handed."""
+        recorder = _Recorder()
+        spec = SandboxSpec(kind="test", labels={"run": "first"})
+        router = _router(observer=recorder)
+
+        asyncio.run(router.acquire(_KEY, spec))
+        spec.labels["run"] = "second"
+        spec.labels["added"] = "later"
+
+        assert recorder.one(SandboxAcquired).spec.labels == {"run": "first"}
+
+    def test_an_observer_cannot_write_into_the_callers_spec_through_the_event(self):
+        recorder = _Recorder()
+        spec = SandboxSpec(kind="test", labels={"run": "first"})
+        router = _router(observer=recorder)
+
+        asyncio.run(router.acquire(_KEY, spec))
+        recorder.one(SandboxAcquired).spec.labels["injected"] = "by the observer"
+
+        assert spec.labels == {"run": "first"}
+
     def test_a_served_acquire_carries_the_posture_it_was_served_under(self):
         recorder = _Recorder()
         backend = InProcessSandboxBackend()

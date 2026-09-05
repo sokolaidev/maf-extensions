@@ -243,6 +243,19 @@ ATTACH_REFUSALS: tuple[type[Exception], ...] = (
 )
 
 
+def _with_snapshotted_labels(spec: SandboxSpec) -> SandboxSpec:
+    """``spec`` with its own copy of ``labels``, for a record that must not move afterwards.
+
+    Every other field is immutable, so this is the whole of what a record has to defend against:
+    a frozen dataclass holding a plain dict is frozen about the binding and not about the dict.
+    Returned unchanged when there are no labels, since the empty case is the common one and a
+    copy of nothing is a copy nobody needs.
+    """
+    if not spec.labels:
+        return spec
+    return dataclasses.replace(spec, labels=dict(spec.labels))
+
+
 def _coded(backend_name: str, reported: object) -> DisposalFailure:
     """One backend's answer as a :class:`~maf_sandbox.DisposalFailure`, named by the backend.
 
@@ -1245,7 +1258,11 @@ class SandboxRouter:
                 self._observer,
                 SandboxAcquired(
                     key=key,
-                    spec=spec,
+                    # A snapshot, because `SandboxSpec` is frozen only shallowly: `labels` is a
+                    # plain dict the caller keeps a reference to. Handing the live one over
+                    # would let a later write change a record already delivered, and let an
+                    # observer write back into the caller's spec through the event.
+                    spec=_with_snapshotted_labels(spec),
                     isolation_scope=self.effective_isolation_scope(spec),
                     backend=None if serving.backend is None else serving.backend.name,
                     isolation=isolation,
