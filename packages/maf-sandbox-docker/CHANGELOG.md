@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.15.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.14.1...maf-sandbox-docker-v0.15.0) (2026-09-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* require maf-sandbox 0.33.0 in the dependents and 0.33 in the samples, and do not admit 0.34 ([#909](https://github.com/sokolaidev/maf-extensions/issues/909))
+* **docker:** an allowlisted guest can no longer reach host services around the proxy ([#871](https://github.com/sokolaidev/maf-extensions/issues/871))
+
+### Features
+
+* require maf-sandbox 0.33.0 in the dependents and 0.33 in the samples, and do not admit 0.34 ([#909](https://github.com/sokolaidev/maf-extensions/issues/909)) ([51fb831](https://github.com/sokolaidev/maf-extensions/commit/51fb831f7560f08571c8279e6259badc3cfe0675))
+
+
+### Fixes
+
+* **docker:** an allowlisted guest can no longer reach host services around the proxy ([#871](https://github.com/sokolaidev/maf-extensions/issues/871)) ([db615a4](https://github.com/sokolaidev/maf-extensions/commit/db615a4f4c4a04d9916f99d377f239f980a4894f))
+
 ## [0.14.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.14.0...maf-sandbox-docker-v0.14.1) (2026-09-04)
 
 
