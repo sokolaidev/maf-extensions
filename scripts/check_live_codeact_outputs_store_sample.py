@@ -10,9 +10,9 @@ holds. What stands in for the file on disk is the model's own read-back, fenced.
 
 **The grand total in the reply is the load-bearing check, and it is stronger here than in
 sample 08.** The sample runs with `withhold_guest_output=True`, so nothing the program printed
-comes back — since #899 the tool's result is one line saying whether the program exited
-cleanly, and the standing sentence naming this call's folder. A
-correct total in the reply therefore cannot have come from `stdout`. The only road left is the
+comes back: the tool's result is one line saying whether the program exited cleanly, and the
+standing sentence naming this call's folder. A correct total in the reply therefore cannot
+have come from `stdout`. The only road left is the
 one this sample exists to draw: the program wrote a file, `make_file_store_sink` landed it under
 this call's folder, and the model read it back with a host tool.
 
@@ -21,9 +21,9 @@ The fenced block is what makes that more than an inference. `evidence` in the sa
 anything the model said before either is printed — so a model can write the heading and write
 plausible Markdown under it, and cannot close the block. What is inside came from the tool.
 
-Three further things are read, all of them the host's own tagged lines: that a sandbox was
-disposed, that the summary reached the sink this turn, and that it landed under a per-call
-folder rather than at the top of the store. The last is what would go quietly wrong if
+Three further things are read, all of them the host's own tagged lines: that the scope purge
+disposed a sandbox and could account for every one, that the summary reached the sink this
+turn, and that it landed under a per-call folder rather than at the top of the store. The last is what would go quietly wrong if
 `Artifact.call_id` ever stopped reaching the sink: every call would overwrite the last, which
 the sink's own refusal turns into a failed landing rather than a silent one — but only the
 folder shape says the id was ever there.
@@ -57,6 +57,7 @@ _M = r"^  (?-i:\[measured\]) "
 _F = re.MULTILINE | re.IGNORECASE
 
 _DISPOSED = re.compile(_M + r"Disposed\s+(\d+)\s+sandbox", _F)
+_NOT_DISPOSED = re.compile(_M + r"Not fully disposed:\s*(.+)$", _F)
 _LANDED = re.compile(_M + r"Landed this turn in the outputs store[^:\n]*:[ \t]*(.+)$", _F)
 
 _HEADING = re.compile(r"==\s*read back out of the outputs store\s*==", re.IGNORECASE)
@@ -194,12 +195,31 @@ def _assess_landing(output: str) -> list[str]:
 
 
 def _assess_disposal(output: str) -> list[str]:
+    """Every reason the scope purge is not proof that this conversation left nothing behind.
+
+    A purge that reported a failure makes a nought *inconclusive* rather than excusing it: the
+    sample cannot then say whether no sandbox was made or one was made and could not be removed.
+    """
     disposed = _DISPOSED.search(output)
     if disposed is None:
         return ["no measured 'Disposed N sandbox(es)' line — the sample did not run to completion"]
-    if int(disposed.group(1)) < 1:
-        return ["'Disposed 0 sandbox(es)' — no sandbox was ever created, so nothing ran in one"]
-    return []
+    undisposed = _NOT_DISPOSED.search(output)
+    failures: list[str] = []
+    if int(disposed.group(1)) < 1 and undisposed is None:
+        failures.append(
+            "'Disposed 0 sandbox(es)' — no sandbox was ever created, so nothing ran in one"
+        )
+    elif int(disposed.group(1)) < 1:
+        failures.append(
+            "'Disposed 0 sandbox(es)' beside a purge that failed — this cannot say whether "
+            "nothing ran or a sandbox was made and could not be removed"
+        )
+    if undisposed is not None:
+        failures.append(
+            f"the scope purge could not account for every sandbox "
+            f"({undisposed.group(1).strip()}) — data from this conversation may remain"
+        )
+    return failures
 
 
 def assess(output: str) -> list[str]:

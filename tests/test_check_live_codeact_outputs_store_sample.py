@@ -65,6 +65,7 @@ def _output(
     readbacks: int = 1,
     landed: str = _LANDED,
     disposed: int = 1,
+    undisposed: str | None = None,
     heading: bool = True,
 ) -> str:
     block = f"== read back out of the outputs store ==\n\n{body}\n\n" if heading else f"{body}\n\n"
@@ -73,7 +74,8 @@ def _output(
         f"{block}"
         f"  [measured] Read-backs the model made: {readbacks}\n\n"
         f"  [measured] Disposed {disposed} sandbox(es).\n"
-        f"  [measured] Landed this turn in the outputs store: {landed}\n"
+        + (f"  [measured] Not fully disposed: {undisposed}\n" if undisposed else "")
+        + f"  [measured] Landed this turn in the outputs store: {landed}\n"
     )
 
 
@@ -213,6 +215,21 @@ class TestDisposal:
             "no sandbox was ever created" in reason for reason in check.assess(_output(disposed=0))
         )
 
+    def test_a_purge_that_could_not_account_for_everything_fails(self):
+        """The line the sample prints only when the purge failed, on an otherwise healthy run."""
+        reported = _output(undisposed="sandbox 'abc' refused removal")
+
+        assert any(
+            "could not account for every sandbox" in reason for reason in check.assess(reported)
+        )
+
+    def test_disposing_nothing_beside_a_failed_purge_is_inconclusive(self):
+        """Both are failures; only this one sends the reader to the right place."""
+        reasons = check.assess(_output(disposed=0, undisposed="sandbox 'abc' refused removal"))
+
+        assert any("could not be removed" in reason for reason in reasons)
+        assert not any("no sandbox was ever created" in reason for reason in reasons)
+
 
 class TestTheCli:
     def test_wrong_arity_is_a_usage_error(self, capsys):
@@ -239,6 +256,7 @@ class TestTheSampleAndTheCheckerAgree:
         "line",
         [
             "Disposed 1 sandbox(es).",
+            "Not fully disposed: sandbox 'abc' refused removal",
             "Landed this turn in the outputs store: []",
             "Read-backs the model made: 1",
         ],
@@ -249,7 +267,12 @@ class TestTheSampleAndTheCheckerAgree:
 
         assert any(
             pattern.search(written)
-            for pattern in (check._DISPOSED, check._LANDED, check._READBACKS)
+            for pattern in (
+                check._DISPOSED,
+                check._NOT_DISPOSED,
+                check._LANDED,
+                check._READBACKS,
+            )
         ), written
 
     def test_every_pattern_matches_a_line_the_sample_actually_writes(self):
@@ -261,6 +284,7 @@ class TestTheSampleAndTheCheckerAgree:
 
         for phrase in (
             "Disposed {purge.disposed} sandbox(es).",
+            "Not fully disposed: {purge.undisposed}",
             "Landed this turn in the outputs store: ",
             "read back out of the outputs store",
             "Read-backs the model made",

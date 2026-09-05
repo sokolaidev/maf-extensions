@@ -6,9 +6,9 @@ and get them::
     app  ->  maf_sandbox (router)  ->  maf_sandbox_docker  ->  the container
                   ^ maf_sandbox_codeact calls the router
 
-`withhold_guest_output=True` keeps everything the program printed out of the result,
-which since #899 leaves one line saying whether it exited cleanly — no exit code and
-no size for either stream.  What replaces the text is a **second store**:
+`withhold_guest_output=True` keeps everything the program printed out of the result.
+What comes back is one line saying whether it exited cleanly: no exit code, and no size
+for either stream.  What replaces the text is a **second store**:
 `make_file_store_sink` lands each call's declared outputs under a folder named for that
 call, `sandbox_outputs_read_tools` gives the model a read-only pair of tools over that
 store, and the withheld result names the folder.  The model writes a file, is told
@@ -173,7 +173,7 @@ async def run() -> int:
             name=AGENT_DIR,
             instructions=(
                 "You answer questions about data by writing and running Python with the "
-                "execute_code tool, never by reading numbers out of a file yourself. Pass "
+                "execute_code tool, never by working the arithmetic out yourself. Pass "
                 "every file your program opens in the tool's files parameter, and declare "
                 "every file it writes in the outputs parameter. The program's printed output "
                 "does not come back to you: to see what it produced, read the file back with "
