@@ -12,11 +12,11 @@
 # bot proposes. An allow list rather than a longer interval is what keeps this quiet.
 #
 # **The range is not moving, and nothing here moves it.** Dependabot's uv updater rewrites
-# `uv.lock` and leaves `pyproject.toml` alone (dependabot-core#12788), which is exactly the
-# behaviour wanted: `>=1.13.0` is a promise to adopters, and raising a floor costs a release
-# across the whole suite (#628). `versioning-strategy` is deliberately unset — the default is
-# already this, and naming a value would bet on an option whose uv support landed later than
-# uv support itself.
+# `uv.lock` and the *pinned* versions in `pyproject.toml` (dependabot-core#12788); every
+# framework declaration here is a range, so there is nothing of that kind for it to touch.
+# `versioning-strategy` is left unset for the same reason: `increase` is the value that would
+# raise a floor, and `>=1.13.0` is a promise to adopters that costs a release across the whole
+# suite to move (#628).
 #
 # `chore` because a pull request title here is the changelog entry and a lockfile refresh
 # releases nothing. `.github/workflows/lock-drift.yml` is the monthly check that these
