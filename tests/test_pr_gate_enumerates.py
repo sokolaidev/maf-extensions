@@ -67,6 +67,7 @@ class TestTheGateEnumerates:
             "maf-sandbox-bicep",
             "maf-sandbox-codeact",
             "maf-sandbox-docker",
+            "maf-sandbox-otel",
             "maf-sandbox-wslc",
         ], found
 

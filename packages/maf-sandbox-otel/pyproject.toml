@@ -1,0 +1,83 @@
+[project]
+name = "maf-sandbox-otel"
+version = "0.0.0"
+description = "OpenTelemetry records of what a maf-sandbox sandbox did — egress posture, host-tool calls, files in and out, integrity labels and disposal — as spans, log records and metrics."
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+authors = [{ name = "SOKOLAI BV", email = "info@sokolai.com" }]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = [
+    "opentelemetry",
+    "observability",
+    "audit",
+    "sandbox",
+    "agent-framework",
+    "microsoft-agent-framework",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Typing :: Typed",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: System :: Monitoring",
+]
+dependencies = [
+    # The observer seam this package implements, and its whole vocabulary. Upper-bounded too:
+    # maf-sandbox has not yet reached a stable API, so every release before 1.0.0 may include
+    # breaking changes (see its CHANGELOG). Moving either end of this range has an order to it
+    # — see RELEASING.md. The floor tracks the release where the observer seam this package
+    # subclasses actually arrives; admit anything older and a published wheel resolves a
+    # maf-sandbox base with no SandboxObserver in it, which fails at import. The number itself
+    # is below, and `scripts/set_dependents_range.py` moves it — so this says which release the
+    # floor is for, never which release that is.
+    "maf-sandbox>=0.34.0,<0.35",
+    # The OpenTelemetry **API**, never the SDK: which exporter runs, and whether one runs at
+    # all, belongs to the application. A host with no SDK installed gets the API's no-op
+    # implementations and pays nothing.
+    "opentelemetry-api>=1.37,<2",
+]
+
+[project.urls]
+Homepage = "https://www.sokol.ai"
+Source = "https://github.com/sokolaidev/maf-extensions"
+Issues = "https://github.com/sokolaidev/maf-extensions/issues"
+
+[tool.uv.sources]
+maf-sandbox = { workspace = true }
+
+[tool.uv.build-backend]
+module-name = "maf_sandbox_otel"
+module-root = "src"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "D100", "D101", "D103", "D104", "E501", "W505", "TD", "FIX", "ERA001"]
+
+[tool.ruff.lint.per-file-ignores]
+# ruff resolves [tool.ruff] per file by the NEAREST ancestor pyproject.toml that has one, so
+# this package carries its own copy rather than inheriting one from the workspace root.
+# The length rules join the docstring pair: test fixtures are lenient, not API surface.
+"tests/**" = ["D101", "D103", "E501", "W505"]
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 100
+
+# Self-contained type checking, scoped to this package — strict. `tests/` stays out (fakes,
+# not signal for a strict checker).
+[tool.pyright]
+include = ["src"]
+typeCheckingMode = "strict"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["uv_build>=0.11.24,<0.12.0"]
+build-backend = "uv_build"
