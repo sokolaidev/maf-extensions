@@ -116,6 +116,7 @@ ISOLATION_SCOPE_KEY = "sandbox_isolation_scope"
 _DEFAULT_LOGGER = logging.getLogger(__name__)
 
 __all__ = [
+    "DEFAULT_OUTPUTS_TOOL_PREFIX",
     "ISOLATION_SCOPE_KEY",
     "SOURCE_INTEGRITY_PROPERTY",
     "file_store_provenance_middleware",
@@ -125,6 +126,8 @@ __all__ = [
     "list_all_files",
     "list_no_files",
     "make_caller_context",
+    "make_file_store_sink",
+    "sandbox_outputs_read_tools",
     "sandbox_tool_declarations",
     "argument_provenance_middleware",
     "hidden_content_candidates",
@@ -450,8 +453,13 @@ def _spellings_before_rewriting(context: Any, argument: str) -> list[str] | None
     """``argument``'s values as the caller spelled them, before the framework rewrote any.
 
     ``None`` where the record is absent — no information-flow middleware ran, so nothing was
-    rewritten — and equally where it holds no list for ``argument``, which means a caller named
-    a parameter this call does not have and must not be read as "nothing was rewritten".
+    rewritten — and equally where it holds neither a string nor a list for ``argument``, which
+    means a caller named a parameter this call does not have and must not be read as "nothing
+    was rewritten".
+
+    **A ``str`` is one spelling, not a sequence of characters.**  A tool whose parameter is a
+    single path has one value to check, and reading its argument as "no list under this name"
+    would fail it closed on every call — hiding a path the caller spelled itself.
 
     A call's arguments are a mapping *or* a model, and the framework keeps whichever it was
     given, so a model is dumped before it is read.  Duck-typed rather than imported: this
@@ -464,6 +472,8 @@ def _spellings_before_rewriting(context: Any, argument: str) -> list[str] | None
     if not isinstance(original, Mapping):
         return None
     spellings: Any = cast("Mapping[str, Any]", original).get(argument)
+    if isinstance(spellings, str):
+        return [spellings]
     if not isinstance(spellings, (list, tuple)):
         return None
     return [
@@ -2121,43 +2131,27 @@ def make_file_store_sink(
     ``store``, for a model that reads them back with its own file tools.
 
     Point it at a store the model can **read and not write**, and never at the one the agent's
-    ``file_access_write`` writes to.  A sink landing where that tool writes has handed
-    model-authored code an unapproved write, and one that lets a later call overwrite an earlier
-    landing has given it a way to influence the next call's input.
+    ``file_access_write`` writes to: a sink landing where that tool writes has handed
+    model-authored code an unapproved write.  :func:`sandbox_outputs_read_tools` is what reads
+    it back.  The folder is the *host-minted* call id, passed through
+    :func:`~maf_sandbox.collect_outputs`'s ``call_id`` — required rather than optional, because
+    the sink declares :attr:`~maf_sandbox.OutputSink.per_call`.
 
-    **A second ``FileAccessProvider`` is not how you expose it.**  That class names its tools
-    from fixed constants, so two of them put two ``file_access_read`` tools in one run — the
-    host's own read-only provider, with names of its own, is what reads this store back.
-    ``docs/sandbox/hosts.md`` carries the measurement and the shape.
+    Four things a caller has to know:
 
-    The folder is the *host-minted* call id, so nothing the guest chose decides where its own
-    output goes.  Pass it through :func:`~maf_sandbox.collect_outputs`'s ``call_id`` — the sink
-    declares :attr:`~maf_sandbox.OutputSink.per_call`, which makes that argument required rather
-    than optional.
+    - **A destination that already exists is refused, never replaced**, so one call's answer
+      cannot come to read as another's.
+    - **``provenance`` is recorded before the bytes are written**, so no moment exists at which
+      the file is there and the host's floor still answers for it.  Recording only ever lowers,
+      so an entry left behind by a write that then failed is safe.
+    - **Text only.**  ``AgentFileStore.write`` takes a ``str``, so an artifact whose bytes are
+      not UTF-8 is refused with :class:`~maf_sandbox.SandboxLandingNotText` rather than mangled.
+    - **No confinement check of its own**, unlike :func:`~maf_sandbox.make_file_system_sink`:
+      ``AgentFileStore`` requires its implementations to reject a path that escapes the root.
 
-    Three things a caller has to know:
-
-    - **A destination that already exists is refused, never replaced.**  ``write`` is called with
-      ``overwrite=False``, so a repeated landing raises ``FileExistsError`` out of the store
-      rather than making one call's answer read as another's.
-    - **``provenance`` is recorded before the bytes are written**, so there is no moment at which
-      the file exists and the host's floor still answers for it.
-      :meth:`~maf_sandbox.FileStoreProvenance.record` takes no integrity argument, so recording
-      only ever lowers and an entry left behind by a write that then failed is safe; the reverse
-      ordering is not.  The record as a whole is not monotone —
-      :meth:`~maf_sandbox.FileStoreProvenance.forget` returns a path to the floor — and nothing
-      here calls it.
-    - **Text only.**  ``AgentFileStore.write`` takes a ``str``, so an artifact whose bytes are not
-      UTF-8 is refused with :class:`~maf_sandbox.SandboxLandingNotText` rather than mangled.
-
-    Unlike :func:`~maf_sandbox.make_file_system_sink` this makes no confinement check of its own:
-    ``AgentFileStore`` requires its implementations to reject a path that escapes the root, where
-    a filesystem root has to be defended against a symlink already sitting in it.
-
-    Nothing here creates the folder, and both shipped stores make that invisible — each answers
-    ``list_children`` for a directory that does not exist with an empty list, so a call that
-    landed nothing reads back the same as one whose folder is empty.  A store that raises there
-    instead needs a host wrapper.
+    Nothing here creates the folder.  Both shipped stores list one that does not exist as empty;
+    a store that raises there instead needs a host wrapper.  ``docs/sandbox/hosts.md`` carries
+    the wiring, the measurements behind it and the trade.
 
     Args:
         store: The ``agent_framework`` ``AgentFileStore`` to land in.
@@ -2275,26 +2269,31 @@ def sandbox_outputs_read_tools(
     """
     from agent_framework import tool
 
+    # Both bodies render their argument before touching the store, not in the branch that
+    # needs it: the framework's accessor is not scoped to the call, so a verdict asked for
+    # after the store has suspended can come back empty and quote content the middleware hid.
     async def outputs_ls(folder: str = "") -> list[dict[str, str]] | str:
+        named = _echoed(folder, "folder")
         try:
             listed = await store.list_children(folder)
         except Exception as exc:  # noqa: BLE001
             _DEFAULT_LOGGER.warning(
                 "%s_ls: could not list a folder: %s", name_prefix, error_detail(exc)
             )
-            return f"Error: {_echoed(folder, 'folder')} could not be listed."
+            return f"Error: {named} could not be listed."
         return [{"name": entry.name, "type": entry.type} for entry in listed]
 
     async def outputs_read(name: str) -> str:
+        named = _echoed(name, "name")
         try:
             content = await store.read(name)
         except Exception as exc:  # noqa: BLE001
             _DEFAULT_LOGGER.warning(
                 "%s_read: could not read a file: %s", name_prefix, error_detail(exc)
             )
-            return f"Error: {_echoed(name, 'name')} could not be read."
+            return f"Error: {named} could not be read."
         if content is None:
-            return f"Error: there is no file at {_echoed(name, 'name')}."
+            return f"Error: there is no file at {named}."
         return content
 
     outputs_ls.__doc__ = _OUTPUTS_LS_DESCRIPTION
