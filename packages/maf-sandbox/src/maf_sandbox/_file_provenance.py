@@ -6,7 +6,9 @@ call wrote a path.  Three invariants hold it together, and each is a property ra
 convention a caller could break.
 
 * **Every entry is untrusted**, because :meth:`FileStoreProvenance.record` takes no integrity
-  argument.  Recording twice records the same thing, which is what makes the record monotone.
+  argument.  Recording twice records the same thing, so recording only ever lowers — and
+  :meth:`FileStoreProvenance.forget` is the one thing that does not, which is why a reader takes
+  :meth:`FileStoreProvenance.state_of` either side of its read rather than a value after it.
 * **An entry is about the path**, not a version of its bytes, and it stands until
   :meth:`FileStoreProvenance.forget`.
 * **The floor applies only to a path with no recorded entry**, so an entry always beats it and
@@ -90,12 +92,20 @@ class FileStoreProvenance:
             ``None``, the default, means *unestablished*: this host has not said, and a caller
             must treat the answer as it treats any source the framework has not established.
 
-    **A ``TRUSTED`` floor is a claim about concurrency as well as about content.**  A caller folds
-    this record at *listing* time and reads the bytes afterwards, and the write that lands in
-    between is recorded only once the writing tool call returns — so a path answering ``trusted``
-    can hold model-written bytes by the time anything reads it.  Wire this floor only where the
-    store is not written under a read.  ``None`` and ``UNTRUSTED`` floors have nowhere weaker to
-    fall and are unaffected.
+    **A reader wants what this record said *throughout* its read, and two readings cannot give
+    it that.**  :meth:`record` only adds, but :meth:`forget` removes, so the value can move away
+    and back inside one read and leave both readings identical.  Take :meth:`state_of`, which
+    samples the value and the count under one lock: equal counts either side mean nothing
+    happened in between and the reading describes the whole interval, and a changed count means
+    the reader must not claim anything.  The two accessors called in turn would answer about two
+    instants instead, and a write between them is the one arrangement the count cannot catch.
+    :meth:`~maf_sandbox.maf.SandboxToolSession.read_file` does exactly that, given the record.
+
+    **One residue is not closable from here.**  A write is recorded once the writing tool call
+    *returns*, so bytes already written by a call still in flight are not yet in the record.  A
+    ``TRUSTED`` floor is therefore still a claim about that residue, though no longer about the
+    whole span between a listing and a read.  ``None`` and ``UNTRUSTED`` floors have nowhere
+    weaker to fall and are unaffected.
     """
 
     def __init__(self, *, floor: SourceIntegrity | None = None) -> None:
@@ -104,6 +114,12 @@ class FileStoreProvenance:
         # while the middleware recording writes runs on the event loop.
         self._lock = threading.Lock()
         self._entries: dict[str, SourceIntegrity] = {}
+        #: How many times anything in this record has changed.  Only ever counts up, which is
+        #: what lets a reader tell "unchanged" from "changed back" — see :meth:`state_of`.  One
+        #: counter rather than one per path: a per-path count cannot be dropped when a path is
+        #: forgotten without losing the very history it exists to carry, so it would grow with
+        #: every temporary file a long-lived host ever writes.
+        self._epoch = 0
         self._observed = False
 
     def _note_observer(self) -> None:
@@ -127,11 +143,11 @@ class FileStoreProvenance:
         ``path`` is keyed through :func:`store_key`, here and in :meth:`integrity_of` alike, so a
         record filed under one spelling is found under every spelling of the same file.
 
-        **There is no integrity argument, and that is what makes the record monotone.**  Every
-        entry it can hold is untrusted, so recording twice is recording the same thing and no
-        caller — not this package's middleware, not a host's own — can raise a path that was
-        written by the model back to trusted.  A record whose entries could be raised would give
-        the concurrency and floor guarantees below nothing to stand on.
+        **There is no integrity argument, so recording only ever lowers.**  Every entry it can
+        hold is untrusted, so recording twice is recording the same thing and no caller — not
+        this package's middleware, not a host's own — can *record* a path back up to trusted.
+        Dropping one does raise it, which is :meth:`forget`'s whole purpose and the reason a
+        reader brackets its read rather than trusting a single later look.
 
         **An entry is about the path, not about a version of its content.**  It records that the
         model has written here, which stays true of every later version: nothing the model writes
@@ -140,7 +156,10 @@ class FileStoreProvenance:
         floor, and a trusted floor would then answer for a file the model demonstrably wrote.
         """
         with self._lock:
-            self._entries[store_key(path)] = SourceIntegrity.UNTRUSTED
+            key = store_key(path)
+            if key not in self._entries:
+                self._entries[key] = SourceIntegrity.UNTRUSTED
+                self._epoch += 1
 
     def forget(self, path: str) -> None:
         """Drop any entry for ``path``, returning it to :attr:`floor`.
@@ -150,9 +169,47 @@ class FileStoreProvenance:
         an observer cannot tell a delete that removed the file from one that did not, and
         forgetting on the strength of a call having been made would return a path to a trusted
         floor while the model's bytes were still in it.
+
+        **This is the one method that can raise what a path is worth**, which is why a reader
+        consults this record either side of its read rather than after it — see
+        :meth:`~maf_sandbox.maf.SandboxToolSession.read_file`.  A call to this racing a read is
+        then harmless rather than something a host has to serialise against.
         """
         with self._lock:
-            self._entries.pop(store_key(path), None)
+            if self._entries.pop(store_key(path), None) is not None:
+                self._epoch += 1
+
+    def _sample(self, path: str) -> tuple[SourceIntegrity | None, bool, int]:
+        """This path's entry, whether anything observes writes, and its count — under one lock.
+
+        One acquisition rather than three, because a reader needs the entry and the count to
+        describe the *same* instant: taken separately, a write landing between them yields the
+        integrity from before it and the count from after, which reads as a still interval and
+        labels the bytes with the value the write replaced.
+        """
+        with self._lock:
+            return self._entries.get(store_key(path)), self._observed, self._epoch
+
+    def state_of(self, path: str) -> tuple[SourceIntegrity | None, int]:
+        """What ``path`` is worth, and how many times this record has changed, sampled together.
+
+        The pair :meth:`~maf_sandbox.maf.SandboxToolSession.read_file` takes either side of a
+        read: an unchanged count means nothing moved in between, so the value describes the whole
+        interval rather than one instant of it.  Both come from one lock, because two calls would
+        answer about two instants and a write between them is the one arrangement a count cannot
+        rescue.
+
+        **The count is the record's, not the path's.**  A mutation anywhere ends every interval
+        in flight, so a busy store costs concurrent reads their label rather than their
+        correctness — and the alternative is a per-path count that can never be discarded,
+        because discarding it is what lets a path look untouched after being written and
+        forgotten.
+
+        Raises:
+            ValueError: as :meth:`integrity_of` does, and for the same reason.
+        """
+        entry, observed, generation = self._sample(path)
+        return self._answer(entry, observed), generation
 
     def integrity_of(self, path: str) -> SourceIntegrity | None:
         """What ``path`` is worth, or ``None`` where nothing here establishes it.
@@ -167,9 +224,16 @@ class FileStoreProvenance:
                 the calls there is no such thing as a path a tool call wrote: every path would
                 answer trusted, model-written ones included.
         """
-        with self._lock:
-            entry = self._entries.get(store_key(path))
-            observed = self._observed
+        entry, observed, _ = self._sample(path)
+        return self._answer(entry, observed)
+
+    def _answer(self, entry: SourceIntegrity | None, observed: bool) -> SourceIntegrity | None:
+        """What a snapshot of this record means, without taking another one.
+
+        Separate from :meth:`_sample` so :meth:`state_of` can reach the same verdict from the
+        snapshot it already holds.  Looking again to resolve the floor would put a second
+        instant into a pair whose whole purpose is to describe one.
+        """
         if entry is not None:
             return entry
         if self._floor is SourceIntegrity.TRUSTED and not observed:

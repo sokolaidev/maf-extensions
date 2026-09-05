@@ -17,6 +17,7 @@ import logging
 import math
 import re
 import threading
+from collections.abc import Callable
 from typing import Any, cast
 
 import pytest
@@ -196,6 +197,7 @@ def _session(
     spec=_SPEC,
     name="workload_tool",
     logger=None,
+    file_store_provenance=None,
 ):
     return SandboxToolSession(
         _router(backend if backend is not None else InProcessSandboxBackend()),
@@ -204,6 +206,7 @@ def _session(
         spec,
         name=name,
         logger=logger if logger is not None else logging.getLogger("test_workload"),
+        file_store_provenance=file_store_provenance,
     )
 
 
@@ -3128,18 +3131,33 @@ class TestListAllFiles:
 
 
 class _ReadStore:
-    """A store whose `read` can be made to miss, to answer nothing, or to fail."""
+    """A store whose `read` can be made to miss, to answer nothing, or to fail.
 
-    def __init__(self, files: dict[str, str | None], *, fails: Exception | None = None):
+    ``during_read`` runs inside `read`, just before it answers, which is the only way to put
+    something between the moment the bytes are captured and the moment the caller sees them.
+    A test that arranges the same thing beforehand pins nothing about *when* a caller looks.
+    """
+
+    def __init__(
+        self,
+        files: dict[str, str | None],
+        *,
+        fails: Exception | None = None,
+        during_read: Callable[[], None] | None = None,
+    ):
         self.files = files
         self._fails = fails
+        self._during_read = during_read
         self.asked: list[str] = []
 
     async def read(self, path: str) -> str | None:
         self.asked.append(path)
         if self._fails is not None:
             raise self._fails
-        return self.files.get(path)
+        text = self.files.get(path)
+        if self._during_read is not None:
+            self._during_read()
+        return text
 
 
 class TestSessionReadFile:
@@ -3253,6 +3271,232 @@ class TestSessionReadFile:
         assert isinstance(answer, str)
         assert "secret.bicep" not in answer
         assert "files[0]" in answer
+
+
+class TestTheRecordSamplesValueAndCountTogether:
+    """`state_of` answers about one instant, which is what makes the count usable at all."""
+
+    def _record(self):
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)
+        return record
+
+    def test_it_looks_at_the_record_once(self):
+        """The pair describes one instant only if it is read in one look.
+
+        Two looks answer about two, and a mutation between them pairs a value with another
+        instant's count.
+        """
+        looks: list[str] = []
+
+        class _Counting(FileStoreProvenance):
+            def _sample(self, path: str):  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+                looks.append(path)
+                return super()._sample(path)  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+        record = _Counting(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)
+        record.record("a.txt")
+        looks.clear()
+
+        record.state_of("a.txt")
+
+        assert looks == ["a.txt"], (
+            f"state_of took {len(looks)} snapshots, so its pair spans that many instants"
+        )
+
+    def test_it_looks_once_for_a_path_with_no_entry_either(self):
+        """Resolving the floor reads more of the record than an entry does, and still once."""
+        looks: list[str] = []
+
+        class _Counting(FileStoreProvenance):
+            def _sample(self, path: str):  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+                looks.append(path)
+                return super()._sample(path)  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+        record = _Counting(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)
+
+        assert record.state_of("a.txt") == (SourceIntegrity.TRUSTED, 0)
+        assert looks == ["a.txt"]
+
+    def test_every_change_moves_the_count_and_nothing_else_does(self):
+        """What the interval check needs: a count that moves when the value does, and only then.
+
+        Not parity — recording an already-recorded path leaves it recorded, and a count that
+        moved for it would end intervals nothing changed under.
+        """
+        record = self._record()
+        assert record.state_of("a.txt") == (SourceIntegrity.TRUSTED, 0)
+
+        record.record("a.txt")
+        assert record.state_of("a.txt") == (SourceIntegrity.UNTRUSTED, 1)
+
+        record.record("a.txt")
+        assert record.state_of("a.txt") == (SourceIntegrity.UNTRUSTED, 1), "already recorded"
+
+        record.forget("a.txt")
+        assert record.state_of("a.txt") == (SourceIntegrity.TRUSTED, 2)
+
+    def test_a_change_to_one_path_ends_an_interval_on_another(self):
+        """The count is the record's, so an unrelated write costs a concurrent read its label.
+
+        Conservative on purpose: the alternative is a per-path count, which cannot be discarded
+        when the path is forgotten without losing the history that makes the check work.
+        """
+        record = self._record()
+
+        _, before = record.state_of("a.txt")
+        record.record("elsewhere.txt")
+        _, after = record.state_of("a.txt")
+
+        assert after != before
+
+    def test_forgetting_what_was_never_recorded_moves_nothing(self):
+        """A forget that removed no entry changed nothing, so it ends no interval."""
+        record = self._record()
+        record.forget("a.txt")
+
+        assert record.state_of("a.txt") == (SourceIntegrity.TRUSTED, 0)
+
+
+class TestReadFileRefoldsAgainstTheRecord:
+    """The content's label is the weakest of the listing's and the record's — and only where the
+    record held still for the whole read, which its mutation count is what establishes."""
+
+    def _session_with(self, record):
+        return _session(file_store_provenance=record)
+
+    def _trusted_floor(self):
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)
+        return record
+
+    def test_a_write_while_the_read_is_in_flight_leaves_the_bytes_unlabelled(self):
+        """A record that moved during the read describes neither end of it, so nothing is
+        claimed about the bytes it was holding."""
+        record = self._trusted_floor()
+        listed = ListedFile("a.txt", record.integrity_of("a.txt"))
+        assert listed.integrity is SourceIntegrity.TRUSTED, "the listing saw the floor"
+
+        store = _ReadStore({"a.txt": "1"}, during_read=lambda: record.record("a.txt"))
+        item = asyncio.run(self._session_with(record).read_file(store, listed))
+
+        assert not isinstance(item, str) and item is not None
+        assert SOURCE_INTEGRITY_PROPERTY not in item.additional_properties
+
+    def test_a_forget_while_the_read_is_in_flight_cannot_raise_the_label(self):
+        """`forget` returns a path to the floor, so a later look alone can read higher than
+        what stood when the bytes were captured. The count refuses instead."""
+        record = self._trusted_floor()
+        listed = ListedFile("a.txt", record.integrity_of("a.txt"))
+        assert listed.integrity is SourceIntegrity.TRUSTED
+        record.record("a.txt")
+
+        store = _ReadStore({"a.txt": "1"}, during_read=lambda: record.forget("a.txt"))
+        item = asyncio.run(self._session_with(record).read_file(store, listed))
+
+        assert not isinstance(item, str) and item is not None
+        assert SOURCE_INTEGRITY_PROPERTY not in item.additional_properties
+
+    def test_a_record_then_forget_inside_one_read_is_not_read_as_no_change(self):
+        """Both looks answer `trusted` while the bytes were captured under an entry, so equal
+        values do not mean a still interval. The count does, because it never returns."""
+        record = self._trusted_floor()
+        listed = ListedFile("a.txt", record.integrity_of("a.txt"))
+        assert listed.integrity is SourceIntegrity.TRUSTED
+
+        def write_then_delete() -> None:
+            record.record("a.txt")
+            record.forget("a.txt")
+
+        store = _ReadStore({"a.txt": "1"}, during_read=write_then_delete)
+        item = asyncio.run(self._session_with(record).read_file(store, listed))
+
+        assert record.integrity_of("a.txt") is SourceIntegrity.TRUSTED, "both looks agree"
+        assert not isinstance(item, str) and item is not None
+        assert SOURCE_INTEGRITY_PROPERTY not in item.additional_properties
+
+    def test_a_read_nothing_touched_keeps_the_record_s_answer(self):
+        """The count is not a blanket downgrade: a still record still answers."""
+        record = self._trusted_floor()
+        record.record("a.txt")
+
+        item = asyncio.run(
+            self._session_with(record).read_file(
+                _ReadStore({"a.txt": "1"}), ListedFile("a.txt", SourceIntegrity.UNTRUSTED)
+            )
+        )
+
+        assert not isinstance(item, str) and item is not None
+        assert item.additional_properties[SOURCE_INTEGRITY_PROPERTY] == "untrusted"
+
+    def test_an_unwritten_path_keeps_the_floor(self):
+        """The fold only ever lowers, so a file nothing touched reads as the host said."""
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)
+
+        item = asyncio.run(
+            self._session_with(record).read_file(
+                _ReadStore({"a.txt": "1"}), ListedFile("a.txt", SourceIntegrity.TRUSTED)
+            )
+        )
+
+        assert not isinstance(item, str) and item is not None
+        assert item.additional_properties[SOURCE_INTEGRITY_PROPERTY] == "trusted"
+
+    def test_an_unestablished_record_beats_an_established_listing(self):
+        """`None` wins the fold: *unestablished* is the honest answer wherever either side
+        established nothing."""
+        record = FileStoreProvenance()  # floor None: nothing established
+        file_store_provenance_middleware(record)
+
+        item = asyncio.run(
+            self._session_with(record).read_file(
+                _ReadStore({"a.txt": "1"}), ListedFile("a.txt", SourceIntegrity.TRUSTED)
+            )
+        )
+
+        assert not isinstance(item, str) and item is not None
+        assert SOURCE_INTEGRITY_PROPERTY not in item.additional_properties
+
+    def test_the_listing_stands_where_the_session_has_no_record(self):
+        """No record is not a downgrade: the listing's label is used as it is."""
+        item = asyncio.run(
+            _session().read_file(
+                _ReadStore({"a.txt": "1"}), ListedFile("a.txt", SourceIntegrity.TRUSTED)
+            )
+        )
+
+        assert not isinstance(item, str) and item is not None
+        assert item.additional_properties[SOURCE_INTEGRITY_PROPERTY] == "trusted"
+
+    def test_the_read_is_still_answered_when_the_record_lowers_it(self):
+        """Lowering a label is not a refusal: the bytes are what the kind asked for."""
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)
+        record.record("a.txt")
+
+        item = asyncio.run(
+            self._session_with(record).read_file(
+                _ReadStore({"a.txt": "param x string"}),
+                ListedFile("a.txt", SourceIntegrity.TRUSTED),
+            )
+        )
+
+        assert not isinstance(item, str) and item is not None
+        assert item.text == "param x string"
+
+    def test_a_trusted_floor_with_no_observer_is_refused_here_too(self):
+        """A record wired here but not into the listing meets `integrity_of`'s refusal here."""
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)  # no middleware built
+
+        with pytest.raises(ValueError, match="file_store_provenance_middleware"):
+            asyncio.run(
+                self._session_with(record).read_file(
+                    _ReadStore({"a.txt": "1"}), ListedFile("a.txt", SourceIntegrity.TRUSTED)
+                )
+            )
 
 
 class TestListAllFilesFoldsAHostsRecord:
