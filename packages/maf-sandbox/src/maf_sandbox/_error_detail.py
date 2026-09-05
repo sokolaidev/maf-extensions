@@ -33,15 +33,24 @@ def error_detail(exc: BaseException) -> str:
     meant the app's identity had no role on the sandbox group.  This is log-only; the model
     still sees the sanitized message.
 
-    **It never raises.**  Every caller is already handling a failure, and several are handling
-    one they have promised to contain — an observer's, a disposal's — so a diagnostic that
-    raised would replace the failure it was describing with itself, at the one moment nobody
-    is in a position to absorb it.  Rendering an exception runs *its* code: ``__str__`` and a
-    property like ``status_code`` are the exception author's, not this package's.
+    **It raises only what a process may not swallow.**  Every caller is already handling a
+    failure, and several are handling one they have promised to contain — an observer's, a
+    disposal's — so a diagnostic that raised would replace the failure it was describing with
+    itself, at the one moment nobody is in a position to absorb it.  Rendering an exception runs
+    *its* code: ``__str__`` and a property like ``status_code`` are the exception author's, not
+    this package's, so anything at all can come out of them.  ``SystemExit`` and
+    ``KeyboardInterrupt`` still escape, matching what the containment sites themselves let
+    through; everything else, ``CancelledError`` and ``GeneratorExit`` included, is contained.
     """
     try:
         return _rendered(exc)
-    except Exception:  # noqa: BLE001 - diagnostics must not raise; see the docstring
+    except (SystemExit, KeyboardInterrupt):
+        # The host's own control flow, and the two things a diagnostic may never swallow. Every
+        # other escape is contained below, including the ones that are not `Exception`: a
+        # `__str__` that raises `CancelledError` would otherwise walk straight out of the
+        # handler that called this to contain something.
+        raise
+    except BaseException:  # noqa: BLE001 - diagnostics must not raise; see the docstring
         # The class name is the one thing that cannot fail to render.
         return type(exc).__name__
 
