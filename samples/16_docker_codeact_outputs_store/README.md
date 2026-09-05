@@ -21,7 +21,7 @@ The withheld result then names the folder instead of listing which declared name
 
 **The grand total in the reply is proof of the whole path.** Nothing the program printed comes back. So a correct total in the model's answer cannot have come from `stdout` — it came out of a file the program wrote, that the sink landed, that the model read back through a host tool. That is a stronger claim than sample 08's, where a right answer only proves the program ran.
 
-**The result names a folder, not a list of names.** Sample 08's withheld cousin would say `Saved: summary.md`. This one says where the folder is and stops. That is not tidiness: whether each declared name landed is a bit the *program* chooses, and a model that wants to smuggle a value out of a withheld result encodes into exactly those bits. The folder is a host id allocated before anything the model sent was read, so it carries none.
+**The result names a folder, not a list of names.** Sample 08's withheld cousin would say `Saved: summary.md`. This one says where the folder is and stops. That is not tidiness: whether each declared name landed is a bit the *program* chooses, and a model that wants to smuggle a value out of a withheld result encodes into exactly those bits. The folder is a host-minted `uuid4` that takes no input from the arguments or from what the program did, so it carries none.
 
 **The `[measured]` block is the host's, and the fenced read-backs are the tool's.** The model answers into the same stream as the sample, so the sample takes the tag away from anything the model said before printing its own lines. The read-backs are fenced because a model can *claim* it read the file; it cannot put the file's own text inside a block the tool's results closed.
 
