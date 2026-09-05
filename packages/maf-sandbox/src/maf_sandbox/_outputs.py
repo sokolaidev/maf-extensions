@@ -21,22 +21,34 @@ module decides only *what* reaches it and *when*.  Two of those decisions are lo
 from __future__ import annotations
 
 import contextlib
+import logging
 import posixpath
+import time
 import unicodedata
 from collections.abc import Awaitable, Callable, Generator
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from ._observer import (
+    LandedOutput,
+    OutputsCollected,
+    SandboxObserver,
+    record,
+    refuse_an_unusable_observer,
+)
 from ._protocol import (
     DeclaredOutput,
     EntryKind,
     OutputDisposition,
     Sandbox,
+    SandboxKey,
     SandboxSpec,
     TransferLimits,
 )
 from ._refusals import echoed_name
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "MAX_ARTIFACT_NAME_BYTES",
@@ -678,6 +690,8 @@ async def collect_outputs(
     sink: OutputSink | None = None,
     outputs: tuple[DeclaredOutput, ...] = (),
     call_id: str | None = None,
+    observer: SandboxObserver | None = None,
+    key: SandboxKey | None = None,
 ) -> tuple[LandedArtifact, ...]:
     """Pull the declared outputs and land the ones that land, in declaration order.
 
@@ -710,9 +724,23 @@ async def collect_outputs(
         call_id: This call's own id, stamped onto every :class:`Artifact` so a sink can keep
             one call's landings apart from the next's. A kind reads it off the id its
             per-call guest directory is named by. Required — before the sandbox is touched —
-            by a sink declaring :attr:`OutputSink.per_call`, and ignored by every other.
+            by a sink declaring :attr:`OutputSink.per_call`, and ignored by every other. Also
+            carried onto the record below, so a query can reach the folder the artifacts
+            landed in.
+        observer: Where this collection is recorded — one
+            :class:`~maf_sandbox.OutputsCollected`, whether it landed everything or
+            was refused part-way. This is a function rather than a host-policy object, so it
+            takes the observer as an argument instead of registering one: a kind passes the
+            router's (``session.observer``). Default ``None`` records nothing and builds no
+            event; anything else is checked the way the two registration points check
+            theirs, before the sandbox is touched.
+        key: The sandbox the outputs came out of, carried onto that record. What joins the
+            artifacts to the conversation that produced them; without one the record says which
+            kind collected and nothing about whose.
 
     Raises:
+        TypeError: when ``observer`` is not a :class:`~maf_sandbox.SandboxObserver`, or
+            overrides an event method with a coroutine function.
         ValueError: when ``outputs`` is passed and the spec does not admit call-time names, and
             when a ``per_call`` sink is given nothing to name a folder with.
         SandboxOutputSinkRequired: when an output lands and no sink was supplied.
@@ -726,6 +754,48 @@ async def collect_outputs(
         SandboxArtifactNameInvalid: when a declared name breaks the narrow invariant.
         SandboxArtifactNameCollision: when two landing names are one file at the destination —
             identical, or differing only by case or by Unicode form.
+    """
+    if observer is None:
+        return await _collect(sandbox, spec, sink, outputs, call_id, None)
+    refuse_an_unusable_observer(observer, argument="observer")
+    delivered: list[LandedOutput] = []
+    started = time.monotonic()
+    refusal: str | None = None
+    try:
+        return await _collect(sandbox, spec, sink, outputs, call_id, delivered)
+    except BaseException as exc:
+        refusal = type(exc).__name__
+        raise
+    finally:
+        record(
+            observer,
+            OutputsCollected(
+                key=key,
+                kind=spec.kind,
+                declared=len(spec.declared_outputs) + len(outputs),
+                limits=spec.files_out,
+                landed=tuple(delivered),
+                seconds=time.monotonic() - started,
+                refusal=refusal,
+                call_id=call_id,
+            ),
+            logger,
+        )
+
+
+async def _collect(
+    sandbox: Sandbox,
+    spec: SandboxSpec,
+    sink: OutputSink | None,
+    outputs: tuple[DeclaredOutput, ...],
+    call_id: str | None,
+    delivered: list[LandedOutput] | None,
+) -> tuple[LandedArtifact, ...]:
+    """The whole of :func:`collect_outputs`, split so one record covers every way out of it.
+
+    ``delivered`` grows as each artifact is accepted, so a refusal part-way still reports what
+    a sink already took, which the return value cannot.  ``None`` where nobody is recording, so
+    that a host with no observer builds no part of an event rather than one row per artifact.
     """
     if outputs and not spec.outputs_named_at_call_time:
         raise ValueError(
@@ -757,5 +827,14 @@ async def collect_outputs(
 
     landed: list[LandedArtifact] = []
     for artifact in await _read_all(sandbox, spec, to_read, sink, call_id):
-        landed.append(await sink.deliver(artifact))
+        accepted = await sink.deliver(artifact)
+        landed.append(accepted)
+        if delivered is not None:
+            delivered.append(
+                LandedOutput(
+                    name=accepted.name,
+                    size_bytes=len(artifact.content),
+                    media_type=artifact.media_type,
+                )
+            )
     return tuple(landed)
