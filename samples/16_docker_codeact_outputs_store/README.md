@@ -19,7 +19,7 @@ The withheld result then names the folder instead of listing which declared name
 
 ## What to watch
 
-**The grand total in the reply is proof of the whole path.** Nothing the program printed comes back. So a correct total in the model's answer cannot have come from `stdout` — it came out of a file the program wrote, that the sink landed, that the model read back through a host tool. That is a stronger claim than sample 08's, where a right answer only proves the program ran.
+**The grand total in the reply, beside a read that returned the landed file, is proof of the whole path.** Nothing the program printed comes back, so the total did not come from `stdout`. What says it came out of the file is the pair: the check requires a read whose result *was* the bytes the sink landed under this call's folder, and the total in the answer. The total alone would not say it — whether the program exited cleanly is a bit the *program* chooses, and repeated calls make that a channel, which is why withholding is a narrower road rather than no road ([`../../docs/sandbox/kinds/codeact.md`](../../docs/sandbox/kinds/codeact.md)). It is still a stronger claim than sample 08's, where a right answer only proves the program ran.
 
 **The result names a folder, not a list of names.** Sample 08's withheld cousin would say `Saved: summary.md`. This one says where the folder is and stops. That is not tidiness: whether each declared name landed is a bit the *program* chooses, and a model that wants to smuggle a value out of a withheld result encodes into exactly those bits. The folder is a host-minted `uuid4` that takes no input from the arguments or from what the program did, so it carries none.
 

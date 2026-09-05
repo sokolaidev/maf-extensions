@@ -1611,9 +1611,11 @@ jobs:
     name: samples/16_docker_codeact_outputs_store against a live container
     # The one sample where the model cannot read what its program printed. `withhold_guest_output`
     # is on, so `execute_code` answers with one line saying whether the program exited cleanly
-    # and a standing sentence naming this call's landing folder — and the answer in the reply
-    # can only have come from the
-    # file the model then read back out of the outputs store. Sample 08 gates the same two
+    # and a standing sentence naming this call's landing folder. What the check gates is a
+    # pair: a read whose result was the bytes landed under this call's folder, and the total in
+    # the reply. Not the total alone — whether the program exited cleanly is a bit the program
+    # chooses, so repeated calls stay a road back that withholding does not close.
+    # Sample 08 gates the same two
     # channels with stdout still coming back; this one gates the composition that replaces it.
     # Same runner economics as samples 06 and 08: a Docker container costs nothing and the model
     # is reached with a federated credential. Runs for the same three packages, since it is the
@@ -1689,9 +1691,10 @@ jobs:
           # in-memory store that lives and dies with the process, so there is nothing an
           # earlier run could have left for this one to pass on.
           uv run --no-project samples/16_docker_codeact_outputs_store/agent.py | tee /tmp/sample16-out.txt
-          # The grand total in the reply is the load-bearing half, and it means more here than
-          # in sample 08: the guest's output is withheld, so it has no road back except the
-          # file the model read out of the store. stdlib-only, so the runner's own python3 runs it.
+          # Two halves, and neither carries it alone: a read whose result was the bytes landed
+          # under this call's folder, and the grand total in the reply. The exit bit a withheld
+          # result still carries is a road the total on its own cannot rule out.
+          # stdlib-only, so the runner's own python3 runs it.
           python3 "$HARNESS"/scripts/check_live_codeact_outputs_store_sample.py /tmp/sample16-out.txt
 
       - name: Assert the published version the sample resolved

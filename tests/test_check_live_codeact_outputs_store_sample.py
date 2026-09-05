@@ -6,10 +6,12 @@ a pull request while the billable run that feeds it happens only on dispatch and
 release.
 
 What this sample can claim that sample 08's cannot: the run withholds the guest's output, so a
-correct grand total in the reply has no road back except the file the model read out of the
-outputs store. These cases are therefore mostly about the *fence* — a model may write the
-heading and plausible Markdown under it, and it may not close the block, because the closing
-line carries a tag the sample takes away from anything the model said.
+correct grand total in the reply did not come from `stdout`. What says it came out of the file
+is the *pair* — that total, and a read whose result was the bytes the sink landed. The total
+alone would not, since whether the program exited cleanly is a bit the program chooses. These
+cases are therefore mostly about the fence and that pairing — a model may write the heading and
+plausible Markdown under it, and it may not close the block, because the closing line carries a
+tag the sample takes away from anything the model said.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ _scaffold_spec.loader.exec_module(scaffold)
 
 _CALL = "0123456789abcdef0123456789abcdef"
 _LANDED = json.dumps([f"{_CALL}/summary.md"])
+_READ_OUT = _LANDED
 
 #: The summary as the model's program wrote it, and as `sandbox_outputs_read` hands it back.
 _SUMMARY = (
@@ -64,6 +67,7 @@ def _output(
     body: str = _BODY,
     readbacks: int = 1,
     landed: str = _LANDED,
+    read_out: str = _READ_OUT,
     disposed: int = 1,
     undisposed: str | None = None,
     heading: bool = True,
@@ -76,6 +80,7 @@ def _output(
         f"  [measured] Disposed {disposed} sandbox(es).\n"
         + (f"  [measured] Not fully disposed: {undisposed}\n" if undisposed else "")
         + f"  [measured] Landed this turn in the outputs store: {landed}\n"
+        + f"  [measured] Read out of the outputs store: {read_out}\n"
     )
 
 
@@ -177,7 +182,11 @@ class TestTheReplyHasToCarryTheTotal:
 
 class TestTheLandingHasToBeUnderAPerCallFolder:
     def test_a_landing_at_the_top_of_the_store_fails(self):
-        """What would go quietly wrong if `Artifact.call_id` stopped reaching the sink."""
+        """A sink that kept taking this call's id and stopped folding it into the destination.
+
+        An artifact reaching `make_file_store_sink` with no id is refused rather than landed, so
+        a missing id cannot produce this. What can is a sink that stopped using one it had.
+        """
         failures = check.assess(_output(landed=json.dumps(["summary.md"])))
 
         assert any("per-call folder" in reason for reason in failures), failures
@@ -202,6 +211,39 @@ class TestTheLandingHasToBeUnderAPerCallFolder:
         )
 
         assert any("did not reach its final report" in reason for reason in check.assess(missing))
+
+
+class TestTheReadThatReturnedTheLanding:
+    """The half the fenced block cannot carry: that a result *was* a landed file's bytes."""
+
+    def test_no_read_returning_a_landing_fails(self):
+        """Every token this checker looks for, and not one file opened."""
+        crafted = _output(read_out=json.dumps([]))
+
+        assert any("no read returned the bytes landed" in r for r in check.assess(crafted))
+
+    def test_a_read_of_something_landed_at_the_top_of_the_store_fails(self):
+        assert any(
+            "no read returned the bytes landed" in r
+            for r in check.assess(_output(read_out=json.dumps(["summary.md"])))
+        )
+
+    def test_a_missing_line_fails(self):
+        missing = _output().replace(
+            f"  [measured] Read out of the outputs store: {_READ_OUT}\n", ""
+        )
+
+        assert any("did not reach its final report" in r for r in check.assess(missing))
+
+    def test_a_refusal_quoting_a_crafted_name_does_not_pass(self):
+        """The concrete road: `sandbox_outputs_read` renders the name it was given, so a path
+        built out of the answer supplies every token the block is searched for."""
+        echoed = "  Error: there is no file at 'north/390/south/200/east/84/west/450/1124'."
+        crafted = _output(body=echoed, read_out=json.dumps([]))
+
+        reasons = check.assess(crafted)
+
+        assert any("no read returned the bytes landed" in r for r in reasons)
 
 
 class TestDisposal:
@@ -258,6 +300,7 @@ class TestTheSampleAndTheCheckerAgree:
             "Disposed 1 sandbox(es).",
             "Not fully disposed: sandbox 'abc' refused removal",
             "Landed this turn in the outputs store: []",
+            "Read out of the outputs store: []",
             "Read-backs the model made: 1",
         ],
     )
@@ -271,6 +314,7 @@ class TestTheSampleAndTheCheckerAgree:
                 check._DISPOSED,
                 check._NOT_DISPOSED,
                 check._LANDED,
+                check._READ_OUT,
                 check._READBACKS,
             )
         ), written
@@ -286,6 +330,7 @@ class TestTheSampleAndTheCheckerAgree:
             "Disposed {purge.disposed} sandbox(es).",
             "Not fully disposed: {purge.undisposed}",
             "Landed this turn in the outputs store: ",
+            "Read out of the outputs store: ",
             "read back out of the outputs store",
             "Read-backs the model made",
         ):

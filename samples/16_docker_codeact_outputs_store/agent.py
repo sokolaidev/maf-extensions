@@ -14,9 +14,11 @@ call, `sandbox_outputs_read_tools` gives the model a read-only pair of tools ove
 store, and the withheld result names the folder.  The model writes a file, is told
 where it went, and goes and reads it.
 
-The answer in the reply is therefore evidence of the whole path.  Nothing the program
-printed comes back, so a grand total in the reply came out of a file the program wrote,
-landed in the sink, and read back through a host tool.
+The reply and the read-back together are evidence of the whole path.  Nothing the program
+printed comes back, so the total did not come from `stdout`; what says it came out of a file
+is a read whose result was the bytes the sink landed.  The total on its own would not say it,
+because whether the program exited cleanly is a bit the program chooses and repeated calls
+make that a channel.
 
 This directory's README is the walkthrough — above all why there are two stores and why
 the read-back tools are not a second `FileAccessProvider`.  Read it first.
@@ -184,15 +186,27 @@ async def run() -> int:
         response = await agent.run(TASK)
         print(quoted(response.text))
         # The read-backs themselves, fenced. A model can claim it read the file; it cannot put
-        # the file's own text here without the tool having returned it.
+        # text here the tool did not return. Which of it came out of a file is the line below.
         print()
+        returned = tool_results(response, f"{OUTPUTS_TOOL_PREFIX}_read")
         print(
             evidence(
                 "read back out of the outputs store",
-                tool_results(response, f"{OUTPUTS_TOOL_PREFIX}_read"),
+                returned,
                 "Read-backs the model made",
             )
         )
+
+        # Which landed file a read actually returned. A refusal renders the *name* it was
+        # given, and the name is the model's to choose, so a block of results alone cannot
+        # say whether a value came out of a file or out of the name of one that does not
+        # exist. Only a read of a landed path returns the bytes the sink put there.
+        opened = [
+            path
+            for path in landed
+            if (held := await outputs.read(path)) is not None and held in returned
+        ]
+        print(f"{MEASURED}Read out of the outputs store: {json.dumps(opened)}")
     finally:
         purge = await router.dispose_scope(SCOPE, THREAD_ID)
         print(f"\n{MEASURED}Disposed {purge.disposed} sandbox(es).")

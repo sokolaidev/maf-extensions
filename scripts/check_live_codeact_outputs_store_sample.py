@@ -8,25 +8,32 @@ holds. What stands in for the file on disk is the model's own read-back, fenced.
     python samples/16_docker_codeact_outputs_store/agent.py | tee out.txt
     python scripts/check_live_codeact_outputs_store_sample.py out.txt
 
-**The grand total in the reply is the load-bearing check, and it is stronger here than in
-sample 08.** The sample runs with `withhold_guest_output=True`, so nothing the program printed
-comes back: the tool's result is one line saying whether the program exited cleanly, and the
-standing sentence naming this call's folder. A correct total in the reply therefore cannot
-have come from `stdout`. The only road left is the
-one this sample exists to draw: the program wrote a file, `make_file_store_sink` landed it under
-this call's folder, and the model read it back with a host tool.
+**The grand total in the reply is one half of the load-bearing check, and the read that
+returned the landed file is the other.** The sample runs with `withhold_guest_output=True`, so
+nothing the program printed comes back: the tool's result is one line saying whether the
+program exited cleanly, and the standing sentence naming this call's folder. So the total did
+not come from `stdout` — but it is the pair that says it came out of the file, because that
+exit line is a bit the *program* chooses, and repeated calls make it a road back of its own
+(`docs/sandbox/kinds/codeact.md`). What the two together draw is the path this sample exists
+for: the program wrote a file, `make_file_store_sink` landed it under this call's folder, and
+the model read it back with a host tool.
 
 The fenced block is what makes that more than an inference. `evidence` in the sample's
 `_scaffold.py` closes it with a `[measured]` line, and `quoted` takes that tag away from
 anything the model said before either is printed — so a model can write the heading and write
 plausible Markdown under it, and cannot close the block. What is inside came from the tool.
 
-Three further things are read, all of them the host's own tagged lines: that the scope purge
+Four further things are read, all of them the host's own tagged lines: that the scope purge
 disposed a sandbox and could account for every one, that the summary reached the sink this
-turn, and that it landed under a per-call folder rather than at the top of the store. The last is what would go quietly wrong if
-`Artifact.call_id` ever stopped reaching the sink: every call would overwrite the last, which
-the sink's own refusal turns into a failed landing rather than a silent one — but only the
-folder shape says the id was ever there.
+turn, that it landed under a per-call folder rather than at the top of the store, and that a
+read returned the bytes landed there — which the block above cannot say on its own, since the
+read tool's refusals render the name they were given and the name is the model's to choose.
+
+The folder shape is the one of those four that catches a *sink* regression rather than a run
+that went wrong. An artifact reaching `make_file_store_sink` with no `call_id` is refused, so a
+missing id cannot land at the top of the store; what would land there is a sink that kept
+taking the id and stopped folding it into the destination, and then every call overwrites the
+last.
 
 Exits non-zero listing every reason it failed.
 """
@@ -59,6 +66,7 @@ _F = re.MULTILINE | re.IGNORECASE
 _DISPOSED = re.compile(_M + r"Disposed\s+(\d+)\s+sandbox", _F)
 _NOT_DISPOSED = re.compile(_M + r"Not fully disposed:\s*(.+)$", _F)
 _LANDED = re.compile(_M + r"Landed this turn in the outputs store[^:\n]*:[ \t]*(.+)$", _F)
+_READ_OUT = re.compile(_M + r"Read out of the outputs store:[ \t]*(.+)$", _F)
 
 _HEADING = re.compile(r"==\s*read back out of the outputs store\s*==", re.IGNORECASE)
 _READBACKS = re.compile(_M + r"Read-backs the model made:\s*(\d+)", _F)
@@ -143,8 +151,8 @@ def _assess_readbacks(block: str, readbacks: int) -> list[str]:
     failures: list[str] = []
     if readbacks < 1:
         failures.append(
-            "the model never read the outputs store — with the guest's output withheld there "
-            "is no other road to the summary, so the run answered from something it made up"
+            "the model never read the outputs store — there is then no read to pair with the "
+            "total in the reply, which the exit bit alone could have carried"
         )
         return failures
 
@@ -170,8 +178,8 @@ def _assess_reply(reply: str) -> list[str]:
     """The half that proves the value reached the *model*, not merely the log."""
     if not _number(_GRAND_TOTAL).search(reply):
         return [
-            f"{_GRAND_TOTAL} is not in the reply as a number — the program's output is withheld, "
-            "so a total that never reaches the model has nowhere else to have come from"
+            f"{_GRAND_TOTAL} is not in the reply as a number — the read-back may have happened, "
+            "but a total the model never states is a round trip that did not finish"
         ]
     return []
 
@@ -190,6 +198,30 @@ def _assess_landing(output: str) -> list[str]:
             f"the host recorded landing {landed.group(1).strip()!r}, and none of those is a "
             f"per-call folder holding {_SUMMARY_NAME!r} — either the declared output never "
             "reached the sink, or it landed without this call's id"
+        ]
+    return []
+
+
+def _assess_read_of_the_landing(output: str) -> list[str]:
+    """That a read *returned* a landed file, rather than text quoting a name.
+
+    The read tool's refusals render the name they were given, and the name is the model's to
+    choose — so a read of a path that does not exist puts every token the block below is
+    searched for into the block, with no file opened. The sample writes this line only where a
+    result equalled what the store holds at a path the sink landed, which a refusal cannot be.
+    """
+    read = _READ_OUT.search(output)
+    if read is None:
+        return [
+            "no measured 'Read out of the outputs store' line — the sample did not reach its "
+            "final report, so nothing says a read returned what was landed"
+        ]
+    paths = _landed_paths(read.group(1))
+    if not any(_LANDED_PATH.match(path) for path in paths):
+        return [
+            f"no read returned the bytes landed at a per-call {_SUMMARY_NAME!r} — the "
+            "read-backs can then be a refusal quoting a name the model chose, which carries "
+            "whatever tokens that name was built out of"
         ]
     return []
 
@@ -233,6 +265,7 @@ def assess(output: str) -> list[str]:
                 "to rule out"
             ]
             + _assess_landing(output)
+            + _assess_read_of_the_landing(output)
             + _assess_disposal(output)
         )
 
@@ -240,6 +273,7 @@ def assess(output: str) -> list[str]:
     failures = _assess_readbacks(block, readbacks)
     failures.extend(_assess_reply(reply))
     failures.extend(_assess_landing(output))
+    failures.extend(_assess_read_of_the_landing(output))
     failures.extend(_assess_disposal(output))
     return failures
 
