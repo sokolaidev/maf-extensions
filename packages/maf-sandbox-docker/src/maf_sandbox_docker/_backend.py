@@ -149,6 +149,13 @@ _NETWORK_EFFECT_FORMAT = "{{.Driver}}|{{.Internal}}|{{json .IPAM.Config}}"
 #: found`, an unknown driver `plugin "…" not found`, an unreachable daemon can carry `no such
 #: file or directory` from its socket.  Docker's real answers name the target they mean.
 _ABSENT_TARGET = ("not found", _NO_SUCH)
+#: The same rule for a *path*: `docker cp` answers one the container does not have with
+#: `Could not find the file <path> in container <name>` (Engine 29.7.2), setting the path off
+#: with spaces — while a container that is gone answers `No such container: <name>`, which
+#: names no path at all.  So the path is matched **whole**, between whitespace, rather than as
+#: a substring: every path is a substring of its own descendants, and that message about a
+#: child would otherwise read as absence for each of its parents in turn.
+_ABSENT_PATH = ("could not find", _NO_SUCH)
 
 _PROXY_PORT = 3128
 _ALLOW_ENV = "MAF_SANDBOX_ALLOW"
@@ -299,6 +306,20 @@ def _reads_as_absent(stderr: str, target: str) -> bool:
     """
     lowered = stderr.lower()
     return target.lower() in lowered and any(phrase in lowered for phrase in _ABSENT_TARGET)
+
+
+def _reads_as_an_absent_path(stderr: str, guest: str) -> bool:
+    """Whether ``stderr`` is the engine saying ``guest`` itself is not in the container.
+
+    Absence is the one verdict a caller may act on: it ends the filesystem path check, since
+    there is nothing below a component that is not there.  So the engine has to have said it
+    about this path — ``guest`` whole, between whitespace, the way the message names it.
+    Anything else stays a failure.  Why, and which failures borrow the words, is with
+    ``_ABSENT_PATH``.
+    """
+    lowered = stderr.lower()
+    named = re.search(rf"(?:^|\s){re.escape(guest.lower())}(?=\s|$)", lowered)
+    return named is not None and any(phrase in lowered for phrase in _ABSENT_PATH)
 
 
 def _single_rooted(guest_path: str) -> str:
@@ -731,13 +752,14 @@ class _DockerSandbox:
 
         Split out because the filesystem path check stats the working directory's own
         ancestors, which by definition sit outside it — confining here would refuse the
-        very check being made.
+        very check being made.  ``None`` means the engine said this path is not there, and
+        nothing else does: that answer ends the check, so a failure it cannot read raises.
         """
         result = await self._run(
             "cp", f"{self._name}:{guest}", "-", timeout=self._command_timeout, read_limit=_TAR_BLOCK
         )
         if result.returncode != 0 and not result.stdout:
-            if _NO_SUCH in result.stderr.lower() or "could not find" in result.stderr.lower():
+            if _reads_as_an_absent_path(result.stderr, guest):
                 return None
             raise RuntimeError(f"docker could not stat {rel}: {result.stderr.strip()}")
         if len(result.stdout) < _TAR_BLOCK:
@@ -774,7 +796,7 @@ class _DockerSandbox:
             read_limit=_TAR_BLOCK + max_bytes,
         )
         if result.returncode != 0 and not result.stdout:
-            if _NO_SUCH in result.stderr.lower() or "could not find" in result.stderr.lower():
+            if _reads_as_an_absent_path(result.stderr, guest):
                 raise FileNotFoundError(f"no such file: {path!r}")
             raise RuntimeError(f"docker could not read {path}: {result.stderr.strip()}")
         if len(result.stdout) < _TAR_BLOCK:
