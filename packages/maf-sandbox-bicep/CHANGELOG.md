@@ -2,6 +2,23 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.13.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.12.0...maf-sandbox-bicep-v0.13.0) (2026-09-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* require maf-sandbox 0.33.0 in the dependents and 0.33 in the samples, and do not admit 0.34 ([#909](https://github.com/sokolaidev/maf-extensions/issues/909))
+* both kinds declare untrusted rather than leaving it to a tier neither controls ([#887](https://github.com/sokolaidev/maf-extensions/issues/887))
+
+### Features
+
+* require maf-sandbox 0.33.0 in the dependents and 0.33 in the samples, and do not admit 0.34 ([#909](https://github.com/sokolaidev/maf-extensions/issues/909)) ([51fb831](https://github.com/sokolaidev/maf-extensions/commit/51fb831f7560f08571c8279e6259badc3cfe0675))
+
+
+### Fixes
+
+* both kinds declare untrusted rather than leaving it to a tier neither controls ([#887](https://github.com/sokolaidev/maf-extensions/issues/887)) ([3167e8f](https://github.com/sokolaidev/maf-extensions/commit/3167e8f40f2134fc70825f11fa1b9fb4dc89c989))
+
 ## [0.12.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.11.0...maf-sandbox-bicep-v0.12.0) (2026-09-04)
 
 
