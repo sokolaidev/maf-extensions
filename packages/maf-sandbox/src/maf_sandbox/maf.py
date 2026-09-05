@@ -50,8 +50,8 @@ import json
 import logging
 import math
 import posixpath
-import sys
 import threading
+import time
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -60,6 +60,7 @@ from uuid import uuid4
 
 from ._error_detail import error_detail
 from ._file_provenance import FILE_STORE_WRITE_TOOLS, PATH_ARGUMENT, FileStoreProvenance
+from ._observer import SandboxObserver, StoreFileRead, ToolCallEnded, record
 from ._outputs import (
     Artifact,
     LandedArtifact,
@@ -187,6 +188,12 @@ class _SandboxToolCall:
     acquired: dict[SandboxKey, list[Sandbox]] = field(
         default_factory=dict[SandboxKey, list[Sandbox]]
     )
+    #: Every key this call *asked* for, in order, whether or not the acquire was served. Kept
+    #: apart from `acquired`, which is the cleanup ledger and may only name a key something has
+    #: to delete — a refused acquire has nothing to reclaim, and registering one there would
+    #: have the removal sweep a sandbox this call never got. This is what a record joins on, so
+    #: a refused `SandboxAcquired` still belongs to the call that caused it.
+    attempted: list[SandboxKey] = field(default_factory=list[SandboxKey])
     closed: bool = False
 
 
@@ -1152,6 +1159,16 @@ class SandboxToolSession:
         """
         return self._output_sink
 
+    @property
+    def observer(self) -> SandboxObserver | None:
+        """Where the host records what this workload does, or ``None`` for nowhere.
+
+        The router's own, read here so a kind passing it on —
+        ``collect_outputs(..., observer=session.observer, key=key)`` — sends a collection's
+        record where the sandbox lifecycle's already goes, without a second thing to wire.
+        """
+        return self._router.observer
+
     def key(self) -> SandboxKey | str:
         """The sandbox key for this call, or the message to return when no thread is bound.
 
@@ -1311,23 +1328,82 @@ class SandboxToolSession:
         """
         from agent_framework import Content
 
-        before = self._recorded_state(listed.name)
+        try:
+            # Inside the boundary, not before it: this raises for a `trusted` floor no
+            # middleware observes, which is a supported configuration and so a reachable way out
+            # of a read that would otherwise leave no record at all.
+            before = self._recorded_state(listed.name)
+        except BaseException:
+            self._record_read(listed.name, None, 0, refused=True)
+            raise
         try:
             text = await store.read(listed.name)
         except Exception as exc:  # noqa: BLE001
             self._logger.warning(
                 f"{self._log_prefix}: could not read a listed file: %s", error_detail(exc)
             )
+            self._record_read(listed.name, None, 0, refused=True)
             shown = named if named is not None else echoed_name(listed.name, at=at, hidden=hidden)
             return f"Error: {shown} could not be read from the file store"
+        except BaseException:
+            # A cancel leaves this site the same way a raise does — no text crossed — and the
+            # record owes every way out, not only the ones that return. It is not an
+            # `Exception`, so it needs its own catch or the read goes unrecorded.
+            self._record_read(listed.name, None, 0, refused=True)
+            raise
         if text is None:
+            self._record_read(listed.name, None, 0, refused=False)
             return None
-        integrity = self._folded_integrity(listed, before)
+        try:
+            # Inside the boundary for the same reason the first reading is: this is the record's
+            # *second* `state_of`, and a path forgotten while the read was in flight can make it
+            # raise where the first one did not.
+            integrity = self._folded_integrity(listed, before)
+        except BaseException:
+            self._record_read(listed.name, None, 0, refused=True)
+            raise
+        self._record_read(listed.name, integrity, len(text), refused=False)
         properties: dict[str, Any] = {}
         if integrity is not None:
             # Not `security_label` — see `SOURCE_INTEGRITY_PROPERTY` for why.
             properties[SOURCE_INTEGRITY_PROPERTY] = str(integrity)
         return Content.from_text(text, additional_properties=properties)
+
+    def _record_read(
+        self, name: str, integrity: SourceIntegrity | None, characters: int, *, refused: bool
+    ) -> None:
+        """Record one store read, its label folded, for a host that watches what a call reads."""
+        observer = self.observer
+        if observer is None:
+            return
+        record(
+            observer,
+            StoreFileRead(
+                key=self._recorded_key(),
+                tool=self._name,
+                name=name,
+                integrity=integrity,
+                characters=characters,
+                refused=refused,
+            ),
+            self._logger,
+        )
+
+    def _recorded_key(self) -> SandboxKey | None:
+        """This call's key for a record, or ``None`` where it cannot be read.
+
+        Never raises.  :meth:`key` reads the host's request context and refuses a call with no
+        conversation bound, and a workload running one sandbox per call refuses one asked
+        outside a call at all — none of which is worth failing a read over.
+        """
+        try:
+            key = self.key()
+        except (Exception, asyncio.CancelledError, GeneratorExit):  # noqa: BLE001 - see below
+            # The containment sites' own set: `key()` runs the host's context getters, so what
+            # comes out of them is the host's, and a record is not worth turning a completed
+            # read into a failure the read would not otherwise have had.
+            return None
+        return key if isinstance(key, SandboxKey) else None
 
     def _recorded_state(self, name: str) -> tuple[SourceIntegrity | None, int]:
         """What the host's record says about ``name``, and how many times it has moved.
@@ -1415,6 +1491,9 @@ class SandboxToolSession:
                 "delete, and reaching it from here is exactly the sharing the scope refuses. "
                 "Take the key from session.key(), which names the call it is called in."
             )
+        if call is not None and not call.closed and key not in call.attempted:
+            # Before the acquire, so a refusal is still recorded as this call's ask.
+            call.attempted.append(key)
         per_call = self._router.effective_isolation_scope(self._spec) is IsolationScope.CALL
         if key.call_id and call is not None and per_call:
             # Recorded before the create rather than after it: a cancellation landing inside the
@@ -2061,9 +2140,36 @@ def sandboxed_tool(
         # any synchronous tool.
         @functools.wraps(body)
         def checked(*args: Any, **kwargs: Any) -> Any:
-            result = body(*args, **kwargs)
-            _refuse_a_result_that_carries_no_call_label(result, tool=name)
-            return result
+            started = time.monotonic()
+            raised_by_body: BaseException | None = None
+            try:
+                try:
+                    result = body(*args, **kwargs)
+                except BaseException as raised:
+                    raised_by_body = raised
+                    raise
+                _refuse_a_result_that_carries_no_call_label(result, tool=name)
+                return result
+            finally:
+                if router.observer is not None:
+                    record(
+                        router.observer,
+                        ToolCallEnded(
+                            tool=name,
+                            kind=spec.kind,
+                            # Always empty, and not for want of looking: `acquire` is a
+                            # coroutine, so a body that awaits nothing holds no sandbox — which
+                            # is the same reason there is nothing to reclaim and nothing to be
+                            # unclean about.
+                            keys=(),
+                            seconds=time.monotonic() - started,
+                            failure=None
+                            if raised_by_body is None
+                            else type(raised_by_body).__name__,
+                            unclean=0,
+                        ),
+                        records,
+                    )
 
         return [decorate(checked)]
     if not [part for part in posixpath.normpath(spec.work_dir).split("/") if part]:
@@ -2086,11 +2192,20 @@ def sandboxed_tool(
     async def reclaiming(*args: Any, **kwargs: Any) -> Any:
         call = _SandboxToolCall(owner=session)
         token = _CALL.set(call)
+        started = time.monotonic()
         # What a transport notes about the sandbox during the body — a stop that did not
         # reach everything — read back once the body has returned.
         unclean, notes = open_unclean_notes()
+        # What the *body* raised, kept apart from what this wrapper's own label check raises: a
+        # body that returned and then failed that check did not fail, and a record saying it did
+        # would send an operator looking at the workload instead of at the tool's declaration.
+        raised_by_body: BaseException | None = None
         try:
-            result = await body(*args, **kwargs)
+            try:
+                result = await body(*args, **kwargs)
+            except BaseException as raised:
+                raised_by_body = raised
+                raise
             _refuse_a_result_that_carries_no_call_label(result, tool=name)
             return result
         finally:
@@ -2099,19 +2214,42 @@ def sandboxed_tool(
             # Closed before the removal, not after: a task the body left running would otherwise
             # be handed this path while it is being deleted.
             call.closed = True
+            # The body's own escape, captured where it happened rather than read from
+            # `sys.exception()` here: this frame also sees what the label check raised, and past
+            # the removal it would see the removal's own cancel.
+            failed = raised_by_body
             bound = effective_timeout
-            if isinstance(sys.exception(), (asyncio.CancelledError, GeneratorExit)):
+            if isinstance(failed, (asyncio.CancelledError, GeneratorExit)):
                 bound = min(effective_timeout, _CANCELLED_CALL_GRACE)
-            await _reclaim_the_call(
-                call,
-                router=router,
-                spec=spec,
-                tool=name,
-                logger=records,
-                on_failure=effective_on_failure,
-                timeout=bound,
-                unclean=unclean,
-            )
+            try:
+                await _reclaim_the_call(
+                    call,
+                    router=router,
+                    spec=spec,
+                    tool=name,
+                    logger=records,
+                    on_failure=effective_on_failure,
+                    timeout=bound,
+                    unclean=unclean,
+                )
+            finally:
+                if router.observer is not None:
+                    record(
+                        router.observer,
+                        ToolCallEnded(
+                            tool=name,
+                            kind=spec.kind,
+                            # Every key the call *asked* for, served or refused, so a refused
+                            # acquire's own record still joins to the call it belongs to.
+                            # `acquired` would name only the served ones, and only from the
+                            # point the cleanup ledger starts tracking them.
+                            keys=tuple(call.attempted),
+                            seconds=time.monotonic() - started,
+                            failure=None if failed is None else type(failed).__name__,
+                            unclean=len(unclean),
+                        ),
+                        records,
+                    )
 
     return [decorate(reclaiming)]
 

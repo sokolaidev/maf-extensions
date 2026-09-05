@@ -33,6 +33,7 @@ import contextlib
 import inspect
 import json
 import logging
+import time
 import uuid
 import warnings
 from collections.abc import Awaitable, Callable, Generator, Mapping
@@ -40,11 +41,19 @@ from dataclasses import dataclass
 from typing import Any, TypeVar, cast
 
 from ._error_detail import error_detail
+from ._observer import (
+    HostToolCalled,
+    HostToolOutcome,
+    SandboxObserver,
+    record,
+    refuse_an_unusable_observer,
+)
 from ._protocol import (
     DEFAULT_TRANSFER_LIMITS,
     INTEGRITY_RANK,
     HostToolAggregate,
     Identity,
+    SandboxKey,
     SourceIntegrity,
     TransferLimits,
 )
@@ -350,6 +359,13 @@ class HostToolRegistry:
             Its ``__exit__`` return value is ignored, so no observer can swallow a call's
             outcome. The name is as given: a string for every call that resolves, and
             only the refusal that rejects it sees a non-string.
+        observer: Where each call is *recorded* — one
+            :class:`~maf_sandbox.HostToolCalled` per call, carrying the declaration it
+            ran under, how it ended and what it delivered. The other half of the pair above,
+            and not a replacement for it: ``host_tool_calls_observer`` brackets a call so a host
+            can attribute work done *during* it, while this answers what the call was. Default
+            ``None`` records nothing and builds no event. The sandbox lifecycle is
+            :class:`~maf_sandbox.SandboxRouter`'s to record, and a host may wire either alone.
     """
 
     def __init__(
@@ -363,6 +379,7 @@ class HostToolRegistry:
             Callable[[HostToolRun, object], contextlib.AbstractContextManager[object]] | None
         ) = None,
         mint_user_identity: Callable[[str], Awaitable[str]] | None = None,
+        observer: SandboxObserver | None = None,
     ) -> None:
         _refuse_non_integer("max_host_tool_calls_per_run", max_host_tool_calls_per_run)
         if max_host_tool_calls_per_run < 1:
@@ -434,6 +451,9 @@ class HostToolRegistry:
                     f"mint_user_identity must be callable, not {type(mint_user_identity).__name__}"
                 )
         self._require_declared = require_declared
+        self._observer = (
+            None if observer is None else refuse_an_unusable_observer(observer, argument="observer")
+        )
         self._mint_user_identity = mint_user_identity
         self._allowed_identities = frozenset(allowed_identities)
         self._max_host_tool_calls_per_run = max_host_tool_calls_per_run
@@ -489,6 +509,11 @@ class HostToolRegistry:
         """The host's observer, or ``None`` when the host registered none — the off-by-default
         half of the contract, where a host can confirm it is watching nothing."""
         return self._host_tool_calls_observer
+
+    @property
+    def observer(self) -> SandboxObserver | None:
+        """Where this registry records its calls, or ``None`` when the host registered nowhere."""
+        return self._observer
 
     def __len__(self) -> int:
         return len(self._tools)
@@ -772,6 +797,28 @@ def _observe(
             )
 
 
+@dataclass
+class _Called:
+    """What a host-tool call turned out to be, for the record that covers every way out of it.
+
+    Filled in at the one place the name resolves, so a call that then refuses, raises or is
+    cancelled is still recorded as a call of *that* tool rather than of nothing.  ``declared``
+    is read on its own: an unstamped tool has no declaration at all rather than a weak one, and
+    three ``None`` legs would be indistinguishable from a stamp answering ``None`` to each.
+    """
+
+    tool: str | None = None
+    declared: bool = False
+    source: SourceIntegrity | None = None
+    sink: str | None = None
+    identity: Identity | None = None
+    #: What *this* call put on the wire, framing included, and zero unless it delivered.
+    #: Read from here rather than differenced against the run's ledger: calls of one run may
+    #: overlap, so two that start at the same total would each report the other's bytes as
+    #: their own, and the one finishing second would report both.
+    delivered_bytes: int = 0
+
+
 class HostToolRun:
     """One ``execute_code`` run's host-tool-call context: the cap, the ledger, and the one door.
 
@@ -791,6 +838,11 @@ class HostToolRun:
             has an identity to key on rather than the object's own, which is neither loggable nor
             stable across processes. Pass one to tie a run to a meaning of the caller's own (a
             turn id, the guest's run directory); it must be a non-empty string if given.
+        key: The sandbox this run's program is executing in, carried onto every
+            :class:`~maf_sandbox.HostToolCalled` the registry's ``observer`` records.
+            It is what joins a host-tool call to the conversation that made it: without one a
+            record says which run called and nothing about whose. A transport holding the key
+            passes it; ``None`` leaves the record keyed on ``run_id`` alone.
     """
 
     def __init__(
@@ -799,6 +851,7 @@ class HostToolRun:
         *,
         logger: logging.Logger | None = None,
         run_id: str | None = None,
+        key: SandboxKey | None = None,
     ) -> None:
         # `cast` to `object` before the check, as the observer argument is: the annotation says
         # `str | None`, but guest-adjacent code and wrong arguments hand over anything, and an
@@ -810,6 +863,7 @@ class HostToolRun:
         self._registry = registry
         self._logger = logger if logger is not None else _DEFAULT_LOGGER
         self._run_id = run_id if run_id is not None else uuid.uuid4().hex
+        self._key = key
         self._calls = 0
         self._delivered = 0
         self._delivered_bytes = 0
@@ -934,6 +988,11 @@ class HostToolRun:
         return self._run_id
 
     @property
+    def key(self) -> SandboxKey | None:
+        """The sandbox this run's program is executing in, or ``None`` where none was given."""
+        return self._key
+
+    @property
     def registry(self) -> HostToolRegistry:
         """The registry this run resolves through, whose ceilings a transport also answers to.
 
@@ -987,12 +1046,59 @@ class HostToolRun:
             # A negative overhead would widen every ceiling below it by that much.
             raise ValueError(f"framing_bytes must not be negative, got {framing_bytes}")
         # The framing checks above raise before the observation begins: a transport's
-        # programming error is not a host-tool call, so the observer sees no enter for it.
-        with _observe(self._registry.host_tool_calls_observer, self, name, self._logger):
-            return await self._run_host_tool_call(name, arguments, framing_bytes=framing_bytes)
+        # programming error is not a host-tool call, so the observer sees no enter for it —
+        # and no record either, for the same reason.
+        if self._registry.observer is None:
+            with _observe(self._registry.host_tool_calls_observer, self, name, self._logger):
+                return await self._run_host_tool_call(name, arguments, framing_bytes=framing_bytes)
+        called = _Called()
+        started = time.monotonic()
+        outcome: HostToolOutcome = "failed"
+        refusal: str | None = None
+        try:
+            with _observe(self._registry.host_tool_calls_observer, self, name, self._logger):
+                result = await self._run_host_tool_call(
+                    name, arguments, framing_bytes=framing_bytes, called=called
+                )
+        except asyncio.CancelledError:
+            # Told apart from any other escape, because only this one may have left an outward
+            # effect behind: a `_deliver` cancelled inside the tool's body has already run it.
+            outcome = "cancelled"
+            raise
+        except BaseException:
+            outcome = "failed"
+            raise
+        else:
+            outcome = "delivered" if result.ok else "refused"
+            refusal = result.refusal
+            return result
+        finally:
+            record(
+                self._registry.observer,
+                HostToolCalled(
+                    run_id=self._run_id,
+                    key=self._key,
+                    tool=called.tool,
+                    declared=called.declared,
+                    source=called.source,
+                    sink=called.sink,
+                    identity=called.identity,
+                    outcome=outcome,
+                    refusal=refusal,
+                    response_bytes=called.delivered_bytes,
+                    calls=self._calls,
+                    seconds=time.monotonic() - started,
+                ),
+                self._logger,
+            )
 
     async def _run_host_tool_call(
-        self, name: str, arguments: Mapping[str, Any] | None = None, *, framing_bytes: int = 0
+        self,
+        name: str,
+        arguments: Mapping[str, Any] | None = None,
+        *,
+        framing_bytes: int = 0,
+        called: _Called | None = None,
     ) -> HostToolCallResult:
         """The guest-answerable half of :meth:`call`, split so an observer can wrap it
         whole — from the first count, refusals included, to the slot's return — without
@@ -1002,6 +1108,9 @@ class HostToolRun:
             name: The tool to call, as given; a string on every call that resolves.
             arguments: Its keyword arguments, as the guest's JSON parsed.
             framing_bytes: What the transport wraps around ``value_json`` before it crosses.
+            called: Filled in as soon as the name resolves and its declaration is read, so a
+                record can say what was called however the call then ends. ``None`` where the
+                registry records nowhere and there is nothing to fill in.
         """
         self._calls += 1
         cap = self._registry.max_host_tool_calls_per_run
@@ -1026,6 +1135,13 @@ class HostToolRun:
             # host registered, so every later sentence quoting it is bounded by configuration.
             return _refused(f"Error: {_bounded(name)!r} is not a registered host tool")
         declaration = self._registry.declaration_for(name)
+        if called is not None:
+            called.tool = name
+            called.declared = declaration is not None
+            if declaration is not None:
+                called.source = declaration.source
+                called.sink = declaration.sink
+                called.identity = declaration.identity
         if declaration is None and self._registry.require_declared:
             # Belt-and-braces behind the registration gate. Unreachable while the registry is
             # the only way in, and kept because the cost of being wrong about that is a tool
@@ -1104,7 +1220,7 @@ class HostToolRun:
         self._delivered += 1
         delivered = False
         try:
-            outcome = await self._deliver(name, func, provided, limits, framing_bytes)
+            outcome = await self._deliver(name, func, provided, limits, framing_bytes, called)
             delivered = outcome.ok
             return outcome
         finally:
@@ -1122,6 +1238,7 @@ class HostToolRun:
         provided: dict[str, Any],
         limits: TransferLimits,
         framing_bytes: int,
+        called: _Called | None = None,
     ) -> HostToolCallResult:
         """Validate, call, serialize and cap, with a response slot already reserved.
 
@@ -1217,4 +1334,6 @@ class HostToolRun:
                 f"this run's total response cap ({limits.max_total_bytes} bytes)"
             )
         self._delivered_bytes += crossing
+        if called is not None:
+            called.delivered_bytes = crossing
         return HostToolCallResult(value_json=encoded)

@@ -20,6 +20,8 @@ must stay sanitized regardless of what this function returns.
 
 from __future__ import annotations
 
+import asyncio
+
 __all__ = ["error_detail"]
 
 
@@ -32,7 +34,21 @@ def error_detail(exc: BaseException) -> str:
     it took a hand-written probe against the live service to discover that one such failure
     meant the app's identity had no role on the sandbox group.  This is log-only; the model
     still sees the sanitized message.
+
+    **Contains exactly what its callers contain, and no more.**  Rendering an exception runs
+    that exception's own ``__str__`` and properties, so this can fail while describing a failure
+    a caller has promised to absorb.  The caught set is therefore the containment sites' own —
+    not ``BaseException``, which would swallow what the caller meant to propagate.
     """
+    try:
+        return _rendered(exc)
+    except (Exception, asyncio.CancelledError, GeneratorExit):  # noqa: BLE001 - see the docstring
+        # The class name is the one thing that cannot fail to render.
+        return type(exc).__name__
+
+
+def _rendered(exc: BaseException) -> str:
+    """The detail itself — see :func:`error_detail`, which is where the never-raises duty is."""
     parts = [f"{type(exc).__name__}: {exc}"]
     status = getattr(exc, "status_code", None)
     if status is not None:
