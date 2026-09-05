@@ -54,6 +54,7 @@ from ._protocol import (
 
 __all__ = [
     "EVENT_METHODS",
+    "DisposalReport",
     "HostToolCalled",
     "HostToolOutcome",
     "LandedOutput",
@@ -95,8 +96,14 @@ class SandboxAcquired(SandboxEvent):
 
     ``refusal`` is the class name of what was raised and nothing else of it — a refusal's
     message is what carries a backend's endpoint or an SDK's response body, and this record is
-    handed over whole.  ``backend``, ``isolation`` and ``declarations`` are ``None`` for a
-    refusal that landed before a backend was chosen.
+    handed over whole.  All three of ``backend``, ``isolation`` and ``declarations`` are ``None``
+    for a refusal that landed before a backend was chosen.
+
+    ``isolation`` and ``declarations`` are **also** ``None``, with ``backend`` set, where a
+    backend was chosen and its declarations could not be read back for the record: those are
+    property calls into somebody else's class, and an acquire must not start failing over the
+    record of it.  So ``backend is None`` is the test for "routing never selected one", and a
+    ``None`` beside a named backend is a degraded read of a sandbox that was served.
     """
 
     key: SandboxKey
@@ -112,18 +119,33 @@ class SandboxAcquired(SandboxEvent):
         observer.sandbox_acquired(self)
 
 
+#: How a disposal ended, as far as anyone can tell.  ``"gone"`` is a backend reporting no
+#: failure — which the protocol reads as disposed, and which a backend with no way to check
+#: also answers.  ``"may_remain"`` is a backend naming a failure.  ``"unknown"`` is a disposal
+#: that never answered, where the delete may equally have landed.
+DisposalReport = Literal["gone", "may_remain", "unknown"]
+
+
 @dataclass(frozen=True)
 class SandboxDisposed(SandboxEvent):
-    """One backend's answer to one disposal — the outcome, whether or not it failed.
+    """One backend's answer to one disposal — what it said, and how sure that makes anyone.
 
     One per backend asked, because a disposal fans out across every registered backend and each
     answers for itself.  ``failure`` carries the code a caller branches on beside the backend's
     own sentence, which is for a log rather than for parsing.
+
+    ``outcome`` is three values rather than a flag because **a cleanup audit must not be told
+    more than the protocol knows.**  :meth:`~maf_sandbox.SandboxBackend.dispose` answers
+    ``None`` both for a delete it verified and for one it has no way to check — a conflation it
+    documents and chooses — so ``"gone"`` is what the backend *reported*, not proof.
+    ``"may_remain"`` is a backend naming a failure, and ``"unknown"`` is a disposal that never
+    answered at all, where the delete may equally have completed.  A boolean here read the
+    second and third as settled facts in opposite directions.
     """
 
     key: SandboxKey
     backend: str
-    landed: bool
+    outcome: DisposalReport
     failure: DisposalFailure | None
     seconds: float
 

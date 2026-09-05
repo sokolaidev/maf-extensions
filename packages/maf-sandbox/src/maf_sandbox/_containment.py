@@ -2,8 +2,8 @@
 
 Several places here run code they did not write — a host's observer, a host's context getter, a
 backend's declaration property — while already handling something, and each has promised that
-what comes back cannot reach the caller.  The rule they share is small and has been got wrong
-four separate times: an ``except Exception`` looks exhaustive and misses a cancel; naming the
+what comes back cannot reach the caller.  The rule they share is small, and there are three
+ways to get it wrong: an ``except Exception`` looks exhaustive and misses a cancel; naming the
 leaf types misses a group carrying them; catching ``BaseException`` swallows what the caller
 meant to propagate.
 

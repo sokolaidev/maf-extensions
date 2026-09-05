@@ -56,11 +56,11 @@ registry = HostToolRegistry(observer=records)
 | Event | Emitted at | What it answers |
 |---|---|---|
 | `SandboxAcquired` | `SandboxRouter.acquire`, served or refused | Which key ran under which spec, on which backend, at which isolation rung and scope — or the class name of the refusal that stopped it |
-| `SandboxDisposed` | Every disposal, once per backend asked | Whether the delete landed, and the `DisposalCode` and detail when it did not |
+| `SandboxDisposed` | Every disposal, once per backend asked | What became of the delete — `gone`, `may_remain` or `unknown` — and the `DisposalCode` and detail behind it. Three values rather than a flag because `dispose` returns `None` both for a verified delete and for one a backend cannot check, and an interrupted disposal never answered at all |
 | `HostToolCalled` | `HostToolRun.call` | Which tool a guest program called, under which declaration, how it ended, and how many bytes came back |
 | `StoreFileRead` | `SandboxToolSession.read_file` | Which file a call read out of the host's store, the integrity label the read folded, and whether text actually crossed — `read`, `absent` or `refused`, since an empty file and a missing one are otherwise the same record |
 | `OutputsCollected` | `collect_outputs` | What a spec declared, what a sink took, under which `TransferLimits`, and — for a `per_call` sink — the folder they landed in |
-| `ToolCallEnded` | `sandboxed_tool`'s wrapper | One sandboxed tool call: every key it asked for, served or refused, what it cost, what the **body** raised, and what it left unclean |
+| `ToolCallEnded` | `sandboxed_tool`'s wrapper | One sandboxed tool call: every key it touched, served or refused, what it cost, what the **body** raised, and what it left unclean |
 
 Every event is a frozen dataclass in this package's own vocabulary — a `SandboxKey`, a `SandboxSpec`, a `SourceIntegrity`. Nothing here imports a telemetry library; core's protocol modules are standard library only, and a package that turns these into spans, log records and counters sits above this seam rather than inside it.
 

@@ -24,6 +24,7 @@ from typing import cast
 from ._containment import CONTAINED, escapes_containment
 from ._host_tools_over_exec import fold_host_tool_call_transfer_limits
 from ._observer import (
+    DisposalReport,
     SandboxAcquired,
     SandboxDisposed,
     SandboxObserver,
@@ -458,6 +459,25 @@ def _recorded_name(backend: SandboxBackend) -> str:
         if escapes_containment(raised):
             raise
         return type(backend).__name__
+
+
+def _reported(failure: DisposalFailure | None) -> DisposalReport:
+    """What a backend's answer to ``dispose`` says about whether the sandbox is gone.
+
+    ``None`` is ``"gone"`` and not "verified gone": :meth:`SandboxBackend.dispose` documents
+    that a backend with no way to check answers ``None`` too, and chooses that conflation
+    deliberately.  The record therefore says what was reported, and leaves a reader to know
+    what a given backend can actually see.
+
+    ``"unknown"`` comes off the code rather than from the caller, because every route into it
+    already sets one: a ``dispose`` that raised and an interrupted one are both folded into
+    :data:`~maf_sandbox.DisposalCode` ``"unknown"`` before they reach a record.  Reading it
+    here keeps a synthesised failure from being reported as a backend saying the sandbox is
+    still there.
+    """
+    if failure is None:
+        return "gone"
+    return "unknown" if failure.code == "unknown" else "may_remain"
 
 
 def _recorded_declarations(
@@ -1132,7 +1152,7 @@ class SandboxRouter:
             SandboxDisposed(
                 key=key,
                 backend=_recorded_name(backend),
-                landed=failure is None,
+                outcome=_reported(failure),
                 failure=failure,
                 seconds=time.monotonic() - started,
             ),
@@ -1147,7 +1167,14 @@ class SandboxRouter:
         The backend was asked and never answered, so whether the delete landed is unknowable
         rather than merely unclassified.  ``by`` is named because this is reached from a
         ``BaseException`` catch, which sees more than a cancel.
+
+        The no-observer check is repeated here rather than left to ``_record_disposal``, because
+        everything below it is record-only work: building the failure reads ``backend.name``,
+        and that property can raise — replacing the interruption this was called to report with
+        one of its own, for a host that registered no observer at all.
         """
+        if self._observer is None:
+            return
         self._record_disposal(
             key,
             backend,
