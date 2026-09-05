@@ -297,9 +297,10 @@ def make_codeact_tools(
             program's, and its note about the run is surfaced whole under ``note:`` —
             withholding it would report a dropped output as a program that printed nothing.
 
-            **The result is two items, not one string.**  The call-derived half — the exit line
-            and the landed names — carries no label of its own, so it takes whatever the call's
-            label is; beside it sits the standing sentence naming the recovery route, labelled
+            **The result is two items, not one string.**  The call-derived half — the exit line and
+            the landed names, or the exit line alone where a folder replaces them — carries no
+            label of its own, so it takes whatever the call's label is; beside it sits the
+            standing sentence naming the recovery route, which carries that folder, labelled
             ``trusted``, because nothing a call produced reaches it and it is emitted on every
             return path including the refusals.  **Where the conversation is still clean** —
             hiding is a first-taint protection — a framework hiding untrusted content hides the
@@ -934,10 +935,7 @@ def _execute_code_tool(
         if not withhold:
             return answer
         # At the funnel rather than at each `return` inside `_execute`: the trusted label is
-        # honest only where the sentence is on every path, refusals included. The folder
-        # sentence is here for that reason and no other — it is the half of the result a
-        # hiding host still lets the model read, so a folder named only where a run reached
-        # the collection would be named where the model cannot see it.
+        # honest only where the sentence is on every path, refusals included.
         route = _WITHHELD_ROUTE
         if lands_per_call:
             folder = session.guest_call_path().rsplit("/", 1)[-1]
