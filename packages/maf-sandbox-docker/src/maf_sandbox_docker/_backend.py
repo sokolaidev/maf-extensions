@@ -154,7 +154,8 @@ _ABSENT_TARGET = ("not found", _NO_SUCH)
 #: with spaces — while a container that is gone answers `No such container: <name>`, which
 #: names no path at all.  So the path is matched **whole**, between whitespace, rather than as
 #: a substring: every path is a substring of its own descendants, and that message about a
-#: child would otherwise read as absence for each of its parents in turn.
+#: child would otherwise read as absence for each of its parents in turn.  Both phrases are
+#: kept, since it is the path's own name that does the work and the wider one costs nothing.
 _ABSENT_PATH = ("could not find", _NO_SUCH)
 
 _PROXY_PORT = 3128
