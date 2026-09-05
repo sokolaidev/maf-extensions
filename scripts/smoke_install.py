@@ -31,6 +31,7 @@ _PACKAGES = {
     "maf-sandbox-bicep": "maf_sandbox_bicep",
     "maf-sandbox-codeact": "maf_sandbox_codeact",
     "maf-sandbox-docker": "maf_sandbox_docker",
+    "maf-sandbox-otel": "maf_sandbox_otel",
     "maf-sandbox-wslc": "maf_sandbox_wslc",
 }
 
@@ -373,6 +374,42 @@ def _smoke_maf_sandbox_codeact() -> str:
     )
 
 
+def _smoke_maf_sandbox_otel() -> str:
+    from maf_sandbox import (
+        Egress,
+        IsolationScope,
+        SandboxAcquired,
+        SandboxKey,
+        SandboxObserver,
+        SandboxSpec,
+    )
+    from maf_sandbox_otel import NAMESPACE, OpenTelemetrySandboxObserver, hashed_key
+
+    if not issubclass(OpenTelemetrySandboxObserver, SandboxObserver):
+        raise SystemExit(
+            "FAIL: the recorder is not a SandboxObserver, so nothing would register it"
+        )
+
+    # No SDK is installed here, which is the case a host without telemetry configured is in: the
+    # API's no-op providers answer, and recording must still cost nothing and raise nothing.
+    observer = OpenTelemetrySandboxObserver()
+    key = SandboxKey(scope="s", thread_id="t", agent_dir="a")
+    observer.sandbox_acquired(
+        SandboxAcquired(
+            key=key,
+            spec=SandboxSpec(kind="smoke", egress=Egress.CLOSED),
+            isolation_scope=IsolationScope.CONVERSATION,
+            backend="none",
+            isolation=None,
+            declarations=None,
+            seconds=0.0,
+        )
+    )
+    if hashed_key(key) != hashed_key(key) or NAMESPACE != "maf_sandbox":
+        raise SystemExit(f"FAIL: the join column is unstable or renamed ({NAMESPACE})")
+    return "the recorder registers as an observer and records against no-op providers"
+
+
 def _smoke_maf_sandbox_wslc() -> str:
     from maf_sandbox import Egress, Isolation
     from maf_sandbox_wslc import (
@@ -447,6 +484,7 @@ _SMOKES = {
     "maf-sandbox-bicep": _smoke_maf_sandbox_bicep,
     "maf-sandbox-codeact": _smoke_maf_sandbox_codeact,
     "maf-sandbox-docker": _smoke_maf_sandbox_docker,
+    "maf-sandbox-otel": _smoke_maf_sandbox_otel,
     "maf-sandbox-wslc": _smoke_maf_sandbox_wslc,
 }
 

@@ -299,12 +299,13 @@ CANDIDATE_BACKEND_PACKAGES = [
 ]
 
 #: The non-core packages that are deliberately not backends — kinds, which build a tool on top
-#: of whatever backend the router picked. Written down rather than inferred, because both
-#: predicates above are heuristics a package can defeat: one by not naming the type it
-#: implements structurally, the other by an aliased annotation or an inherited ``dispose``. A
-#: package matching neither and absent from this set fails ``test_every_package_is_classified``
-#: rather than quietly receiving no checks — which is the detector gating itself (#450).
-NOT_BACKENDS = frozenset({"maf-sandbox-bicep", "maf-sandbox-codeact"})
+#: of whatever backend the router picked, and the observer, which serves no sandbox at all and
+#: only records what one did. Written down rather than inferred, because both predicates above
+#: are heuristics a package can defeat: one by not naming the type it implements structurally,
+#: the other by an aliased annotation or an inherited ``dispose``. A package matching neither
+#: and absent from this set fails ``test_every_package_is_classified`` rather than quietly
+#: receiving no checks — which is the detector gating itself (#450).
+NOT_BACKENDS = frozenset({"maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-otel"})
 
 
 def test_every_package_is_classified():
