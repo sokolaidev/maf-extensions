@@ -5234,14 +5234,12 @@ class TestGuidanceIsCommittedWhereAReviewerCanSeeIt:
             standing_guidance=(_GUIDANCE,),
         )
 
-        with pytest.raises(ValueError, match="not one this tool committed to"):
+        with pytest.raises(ValueError, match="committed sentence at its position"):
             asyncio.run(tool.invoke(arguments={"target": "t"}))
 
     def test_the_refusal_does_not_repeat_the_text_it_refused(self):
-        """A raise here skips `LabelTrackingFunctionMiddleware`'s `_label_result` — its `try`
-        runs `call_next` and that call with no `except` between them — so MAF answers with an
-        *unlabelled* error result. The mistake being caught is a kind labelling guest text as
-        trusted, and quoting it would carry that text out on the one path that labels nothing."""
+        """The refusal reaches the model through a path that labels nothing, so a refusal
+        quoting the item would carry the very text it refused back out unlabelled."""
         tool = self._attach(
             [labelled_result_item("SECRET=hunter2", SourceIntegrity.TRUSTED), _text("EXIT=1")],
             standing_guidance=(_GUIDANCE,),
@@ -5251,14 +5249,14 @@ class TestGuidanceIsCommittedWhereAReviewerCanSeeIt:
             asyncio.run(tool.invoke(arguments={"target": "t"}))
 
         assert "hunter2" not in str(raised.value)
-        assert "item 0" in str(raised.value), "the position is what stands in for the text"
+        assert "labelled item(s)" in str(raised.value), "counts stand in for the text"
 
     def test_a_committed_sentence_missing_from_this_result_is_refused(self):
         """The presence half: a sentence emitted on the paths that suit and dropped on the ones
         that do not is a bit about which path ran."""
         tool = self._attach([_text("EXIT=1")], standing_guidance=(_GUIDANCE,))
 
-        with pytest.raises(ValueError, match="committed to"):
+        with pytest.raises(ValueError, match="committed sentence at its position"):
             asyncio.run(tool.invoke(arguments={"target": "t"}))
 
     def test_a_string_answer_is_refused_once_anything_is_committed(self):
@@ -5320,7 +5318,7 @@ class TestTheOneSubstitutionACommittedSentenceMayCarry:
             standing_guidance=(_FOLDER_GUIDANCE,),
         )
 
-        with pytest.raises(ValueError, match="not one this tool committed to"):
+        with pytest.raises(ValueError, match="committed sentence at its position"):
             asyncio.run(tool.invoke(arguments={"target": "t"}))
 
     def test_a_placeholder_that_is_not_the_call_id_is_refused_at_attach(self):
@@ -5353,3 +5351,120 @@ class TestTheOneSubstitutionACommittedSentenceMayCarry:
         )
 
         assert len(tools) == 1
+
+
+class TestTheCommittedSentencesAreASequence:
+    """A set would accept the same sentence twice, and two of them in either order. Each of
+    those is a count or an order the body can vary, which is the bit rule 5 forbids."""
+
+    def _attach(self, answer, **kw):
+        return _attach_with(_answering(answer), _router(InProcessSandboxBackend()), **kw)[0]
+
+    def test_one_committed_sentence_emitted_twice_is_refused(self):
+        """The duplication channel: both shapes carry every committed sentence, so membership
+        alone accepts each, and the number of trusted items is what varies."""
+        tool = self._attach(
+            [
+                labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED),
+                labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED),
+                _text("EXIT=1"),
+            ],
+            standing_guidance=(_GUIDANCE,),
+        )
+
+        with pytest.raises(ValueError, match="committed sentence at its position"):
+            asyncio.run(tool.invoke(arguments={"target": "t"}))
+
+    def test_two_committed_sentences_out_of_order_are_refused(self):
+        second = "Declare every file your program writes."
+        tool = self._attach(
+            [
+                labelled_result_item(second, SourceIntegrity.TRUSTED),
+                labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED),
+                _text("EXIT=1"),
+            ],
+            standing_guidance=(_GUIDANCE, second),
+        )
+
+        with pytest.raises(ValueError, match="committed sentence at its position"):
+            asyncio.run(tool.invoke(arguments={"target": "t"}))
+
+    def test_two_committed_sentences_in_order_pass(self):
+        second = "Declare every file your program writes."
+        tool = self._attach(
+            [
+                labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED),
+                labelled_result_item(second, SourceIntegrity.TRUSTED),
+                _text("EXIT=1"),
+            ],
+            standing_guidance=(_GUIDANCE, second),
+        )
+
+        assert "EXIT=1" in _texts(asyncio.run(tool.invoke(arguments={"target": "t"})))
+
+    def test_a_labelled_item_carrying_no_text_is_refused(self):
+        from agent_framework import Content
+        from agent_framework.security import ContentLabel, IntegrityLabel
+
+        label = ContentLabel(integrity=IntegrityLabel("trusted"))
+        blank = Content.from_uri(
+            uri="https://example.invalid/x",
+            media_type="image/png",
+            additional_properties={"security_label": label.to_dict()},
+        )
+        tool = self._attach([blank, _text("EXIT=1")], standing_guidance=(_GUIDANCE,))
+
+        with pytest.raises(ValueError, match="carries a label and no text"):
+            asyncio.run(tool.invoke(arguments={"target": "t"}))
+
+
+class TestASentenceIsRenderedOnceAtAttach:
+    """`Formatter.parse` reports the outermost field of each replacement only, so a nested spec,
+    a conversion or a specifier `format` rejects is legal to parse and fails at every call.
+    Rendering once at attach is what turns each into a refusal a kind author sees immediately."""
+
+    def _attach(self, **kw):
+        return _attach_with(_answering([_text("x")]), _router(InProcessSandboxBackend()), **kw)[0]
+
+    @pytest.mark.parametrize(
+        "sentence",
+        [
+            "Saved under {call_id:{exit_code}}/.",
+            "Saved under {call_id!z}/.",
+            "Saved under {call_id:!!}/.",
+        ],
+        ids=["nested-spec", "bad-conversion", "bad-specifier"],
+    )
+    def test_a_sentence_that_cannot_render_is_refused_at_attach(self, sentence: str):
+        with pytest.raises(ValueError, match="cannot be rendered"):
+            self._attach(standing_guidance=(sentence,))
+
+    def test_an_unknown_field_is_refused_for_being_unknown_rather_than_unrenderable(self):
+        """Ordering: the field check runs first, so a sentence naming something else is refused
+        for that rather than for the `KeyError` it would also raise."""
+        with pytest.raises(ValueError, match="only substitution"):
+            self._attach(standing_guidance=("Saved under {exit_code}/.",))
+
+
+class TestADoubledBraceIsUndoubled:
+    """The attach-time refusal tells a caller to double a literal brace, so a committed sentence
+    is formatted whether or not anything in the set interpolates — otherwise that instruction
+    produces a commitment nothing can match."""
+
+    def test_a_doubled_brace_matches_the_single_brace_a_body_emits(self):
+        committed = "Write your answer into {{output}} rather than printing it."
+        tool = _attach_with(
+            _answering(
+                [
+                    labelled_result_item(
+                        "Write your answer into {output} rather than printing it.",
+                        SourceIntegrity.TRUSTED,
+                    ),
+                    _text("EXIT=1"),
+                ]
+            ),
+            _router(InProcessSandboxBackend()),
+            standing_guidance=(committed,),
+        )[0]
+
+        assert "EXIT=1" in _texts(asyncio.run(tool.invoke(arguments={"target": "t"})))

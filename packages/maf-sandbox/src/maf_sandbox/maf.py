@@ -1784,14 +1784,35 @@ async def _reclaim_the_call(
 CALL_ID_PLACEHOLDER = "call_id"
 
 
-def _guidance_placeholders(sentence: str) -> set[str]:
-    """The replacement fields in one committed sentence, by name.
+#: Stands in for a call id while a committed sentence is checked at attach, where no call
+#: exists. Its shape is the real thing's — `uuid4().hex` — so a sentence whose format spec only
+#: fails on some values fails here too.
+_SENTINEL_CALL_ID = "0" * 32
 
-    ``string.Formatter().parse`` rather than a regex, so an escaped brace reads as a literal
-    the way :meth:`str.format` will read it, and a malformed one raises here — at attach —
-    instead of at the first call that tries to render it.
+
+def _guidance_placeholders(sentence: str) -> set[str]:
+    """The *top-level* replacement fields in one committed sentence, by name.
+
+    ``string.Formatter().parse`` rather than a regex, so an escaped brace reads as the literal
+    :meth:`str.format` will read it.  It reports only the outermost field of each replacement,
+    which is why :func:`_renders` is what decides a sentence is usable.
     """
     return {field for _, field, _, _ in string.Formatter().parse(sentence) if field is not None}
+
+
+def _renders(sentence: str) -> str | None:
+    """The reason ``sentence`` cannot be rendered, or ``None`` where it can.
+
+    The field-name check above sees the top level only, so ``{call_id:{exit_code}}`` passes it
+    with one field named ``call_id`` and then raises at every call.  A conversion or a format
+    spec that ``format`` rejects survives it the same way.  Rendering once, here, is what turns
+    all of those into an attach-time refusal instead of a per-call one.
+    """
+    try:
+        sentence.format(**{CALL_ID_PLACEHOLDER: _SENTINEL_CALL_ID})
+    except (KeyError, IndexError, ValueError, AttributeError, TypeError) as exc:
+        return f"{type(exc).__name__}: {exc}"
+    return None
 
 
 def _committed_guidance(guidance: Iterable[str], *, tool: str, awaits: bool) -> tuple[str, ...]:
@@ -1829,44 +1850,38 @@ def _committed_guidance(guidance: Iterable[str], *, tool: str, awaits: bool) -> 
                 f"{{{CALL_ID_PLACEHOLDER}}} and this tool's body awaits nothing, so it runs "
                 "outside a call and there is no id to render. Commit the sentence without it."
             )
+        # After the field check, so a sentence naming something else is refused for that rather
+        # than for the `KeyError` it would also raise here.
+        broken = _renders(sentence)
+        if broken is not None:
+            raise ValueError(
+                f"{tool}: standing_guidance[{index}] cannot be rendered ({broken}). A nested "
+                "format spec, a conversion or a specifier is legal to parse and fails at every "
+                "call, so it is refused here instead."
+            )
         committed.append(sentence)
     return tuple(committed)
 
 
 def _needs_call_id(committed: tuple[str, ...]) -> bool:
-    """Whether any committed sentence asks for this call's id."""
+    """Whether any committed sentence asks for this call's id.
+
+    Only that allocates one; the sentences are formatted either way, so a doubled brace is
+    undoubled whether or not anything in the set interpolates.
+    """
     return any(CALL_ID_PLACEHOLDER in _guidance_placeholders(s) for s in committed)
 
 
 def _refuse_a_result_that_departs_from_its_guidance(
     result: object, *, tool: str, committed: tuple[str, ...], call_id: str | None
 ) -> None:
-    """Hold a result's labelled items to the sentences the tool committed to at attach.
+    """Hold a result's labelled items to the sentences ``committed`` at attach, in order.
 
-    Rule 5 in ``docs/sandbox/kinds/README.md`` says an item may be trusted only where its value
-    **and its presence** are independent of every source the framework has not established, and
-    that what qualifies is standing guidance emitted on *every* return path.  Neither half of
-    that is checkable inside a body — :func:`labelled_result_item` sees one string, at one call,
-    with nothing to compare it against.  Committing the sentences where the tool is attached is
-    what gives this something to check them with.
+    Rule 5 in ``docs/sandbox/kinds/README.md`` is what this executes, and owns the reasoning.
 
-    Three rules, and each answers one half of the test:
-
-    - **A bare ``str`` is refused once anything is committed.**  A string on the refusal path
-      beside a list on the success path is the presence leak rule 5 names, spelled as a result
-      shape rather than as an item.
-    - **Every labelled item's text is one of the committed sentences.**  This is the value half.
-    - **Every committed sentence is present.**  The presence half: a sentence emitted on the
-      paths that suit and dropped on the ones that do not is a bit about which path ran.
-
-    **The refusal never quotes the item.**  A raise here propagates through
-    ``LabelTrackingFunctionMiddleware.process``, whose ``try`` runs ``call_next`` and
-    ``_label_result`` with no ``except`` between them — measured on ``agent_framework.security``
-    — so labelling is skipped and MAF answers with an *unlabelled* error result.  That result
-    carries the exception text only where the host set ``include_detailed_errors``, but the
-    mistake being caught here is a kind labelling guest text as trusted, and a refusal that
-    quoted it would hand that text back out on the one path that labels nothing.  Positions
-    only.
+    **The refusal must never quote the item.**  A raise here skips the label-tracking
+    middleware's own labelling step, so MAF answers with an *unlabelled* error result — and the
+    mistake being caught is a kind labelling guest text as trusted.  Name positions and counts.
     """
     if not committed:
         return
@@ -1879,33 +1894,33 @@ def _refuse_a_result_that_departs_from_its_guidance(
         )
     if not isinstance(result, list):
         return
-    rendered = {
-        sentence.format(**{CALL_ID_PLACEHOLDER: call_id}) if call_id is not None else sentence
-        for sentence in committed
-    }
-    seen: set[str] = set()
+    # Formatted whether or not anything interpolates: `str.format` is what undoubles `{{`, and
+    # the attach-time refusal tells a caller to double a literal brace.
+    substitution = {CALL_ID_PLACEHOLDER: call_id} if call_id is not None else {}
+    rendered = [sentence.format(**substitution) for sentence in committed]
+    labelled: list[str] = []
     for position, item in enumerate(cast("list[Any]", result)):
         properties = cast("dict[str, Any]", getattr(item, "additional_properties", None) or {})
         if "security_label" not in properties:
             continue
         text = getattr(item, "text", None)
-        if text not in rendered:
+        if not isinstance(text, str):
             raise ValueError(
-                f"{tool}: item {position} of this result carries a label and its text is not "
-                "one this tool committed to at attach. A per-item `trusted` claim is honest "
-                "only for guidance whose value and presence owe nothing to the call, which is "
-                "what committing it where a reviewer can see it is for. The text is not "
-                "repeated here: this refusal returns to the model through a path that labels "
-                "nothing."
+                f"{tool}: item {position} of this result carries a label and no text, so there "
+                "is nothing to hold to what this tool committed to."
             )
-        seen.add(text)
-    missing = len(rendered - seen)
-    if missing:
+        labelled.append(text)
+    if labelled != rendered:
+        # A *sequence*, not a set: a set accepts one committed sentence emitted twice, and
+        # accepts two of them in either order, so the count and the order would each be a bit
+        # the body could vary. The text is not repeated here — this refusal returns to the
+        # model through a path that labels nothing.
         raise ValueError(
-            f"{tool}: this result carries {len(seen)} of the {len(rendered)} sentences this "
-            f"tool committed to, so {missing} of them was emitted on other return paths and "
-            "not on this one. Guidance a caller sees only sometimes is a bit about which path "
-            "ran, which is the thing a standing sentence may not be."
+            f"{tool}: this result carries {len(labelled)} labelled item(s) and this tool "
+            f"committed to {len(rendered)}, in a fixed order. A labelled item's text must be "
+            "the committed sentence at its position: anything else — a sentence not committed, "
+            "one missing, one repeated, or two out of order — is a bit about which path ran, "
+            "which is what a standing sentence may not be."
         )
 
 
@@ -2067,6 +2082,16 @@ def sandboxed_tool(
             cleared by a keyword. The channels this workload opens and derives nothing from —
             read that function before reaching for it, since declaring ``"untrusted"`` costs
             the model's sight of the result and nothing else.
+        standing_guidance: The sentences this tool's result may carry a ``trusted`` label on,
+            committed here so rule 5's test is checked rather than left to the body. Every
+            labelled item's text must be the committed sentence **at its position** — same
+            order, same count — and a bare ``str`` answer is refused once anything is committed,
+            since a string on one return path beside a split result on another is itself a bit
+            about which path ran. A sentence may interpolate ``{call_id}`` and nothing else,
+            rendered from the call rather than by the body, and one that does is refused on a
+            body that awaits nothing, which runs inside no call. Each is rendered once here, so
+            a sentence that cannot format is refused at attach rather than at every call. Empty
+            leaves the check off entirely.
         on_reclaim_failure: Called with a :class:`~maf_sandbox.ReclaimFailure` when the call
             left its sandbox unclean — its guest path could not be removed, or a program it
             stopped may have left something running — **after** the framework has acted on it.
