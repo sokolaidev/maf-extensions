@@ -1337,6 +1337,17 @@ class TestTheResultSplits:
                 "confidentiality": "public",
             }, path
 
+    def test_the_sentence_is_committed_and_not_merely_written(self, monkeypatch):
+        """`make_bicep_tools` passes it to `standing_guidance`, so core holds every result to
+        it — a body that emitted anything else would be refused rather than believed."""
+        # Attached first, so the commitment is the real sentence and only what the body appends
+        # moves — which is the divergence the wrapper exists to catch.
+        tool = _tool(InMemoryStore({"main.bicep": "x"}), _fake_backend())
+        monkeypatch.setattr(_tool_module, "_UNREAD_IS_NOT_A_PASS", "Something else entirely.")
+
+        with pytest.raises(ValueError, match="committed"):
+            _items(tool, ["main.bicep"])
+
 
 class TestWhatAFidesHostSeesOfASplitResult:
     """Driven against the real middleware, because the value of the split is entirely its."""

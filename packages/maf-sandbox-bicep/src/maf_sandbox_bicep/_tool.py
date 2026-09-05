@@ -176,7 +176,8 @@ _ACCEPTED_SUFFIXES = (".bicep", _PARAM_SUFFIX)
 #: diagnostics leaves the model a variable reference that reads exactly like a clean run, so the
 #: sentence says what the rest of the result is and what an unread one is worth. The label holds
 #: only while nothing a call produced reaches the sentence and it stays on every return path,
-#: refusals included, which is why one funnel appends it rather than each `return`.
+#: refusals included, which is why one funnel appends it rather than each `return` — and why it
+#: is committed to `standing_guidance`, where core holds every result to it.
 _UNREAD_IS_NOT_A_PASS = (
     "The rest of this result is the compiler's own text, or the reason there is none. A result "
     "you cannot read is not a clean validation — report the files you named as unvalidated "
@@ -277,6 +278,9 @@ def make_bicep_tools(
         # because a declaration replaces the other two tiers, and neither is this kind's to
         # answer for — `information-flow.md` carries why.
         source_integrity=SourceIntegrity.UNTRUSTED,
+        # Committed where a reviewer sees it, so the per-item `trusted` the body writes stops
+        # being a claim only that body executes.
+        standing_guidance=(_UNREAD_IS_NOT_A_PASS,),
         # No confidentiality key on purpose — a host's confidentiality tiers are the host's
         # classification, and declaring one here can activate a policy leg a given host keeps
         # dormant. `TestFidesDeclarations` pins the resulting dict.
