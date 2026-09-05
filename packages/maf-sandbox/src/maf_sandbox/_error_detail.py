@@ -42,7 +42,16 @@ def error_detail(exc: BaseException) -> str:
     """
     try:
         return _rendered(exc)
-    except (Exception, asyncio.CancelledError, GeneratorExit):  # noqa: BLE001 - see the docstring
+    except (
+        Exception,
+        asyncio.CancelledError,
+        GeneratorExit,
+        BaseExceptionGroup,
+    ) as raised:  # noqa: BLE001 - see the docstring
+        if isinstance(raised, BaseExceptionGroup) and raised.subgroup(
+            (SystemExit, KeyboardInterrupt)
+        ):
+            raise
         # The class name is the one thing that cannot fail to render.
         return type(exc).__name__
 

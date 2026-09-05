@@ -195,7 +195,7 @@ def _every_event() -> list[SandboxEvent]:
             name="a.txt",
             integrity=None,
             characters=1,
-            refused=False,
+            outcome="read",
         ),
         OutputsCollected(
             key=_KEY,
@@ -941,11 +941,26 @@ class TestStoreReadsAreRecorded:
 
         event = recorder.one(StoreFileRead)
         assert (event.key, event.tool, event.name) == (_KEY, "widget_run", "a.txt")
-        assert (event.integrity, event.characters, event.refused) == (
+        assert (event.integrity, event.characters, event.outcome) == (
             SourceIntegrity.TRUSTED,
             5,
-            False,
+            "read",
         )
+
+    def test_an_empty_file_that_was_read_is_not_a_file_that_was_absent(self):
+        """Both give zero characters and no label, so a flag could not tell them apart — and
+        whether anything crossed the boundary is the question this event exists to answer."""
+        recorder = _Recorder()
+        session = _session(recorder)
+
+        asyncio.run(session.read_file(InMemoryStore({"empty.txt": ""}), ListedFile("empty.txt")))
+        read = recorder.one(StoreFileRead)
+        assert (read.outcome, read.characters, read.integrity) == ("read", 0, None)
+
+        missing = _Recorder()
+        asyncio.run(_session(missing).read_file(InMemoryStore({}), ListedFile("gone.txt")))
+        absent = missing.one(StoreFileRead)
+        assert (absent.outcome, absent.characters, absent.integrity) == ("absent", 0, None)
 
     def test_a_read_refused_by_the_provenance_check_is_still_recorded(self):
         """The record's own refusal fires before the store is ever asked, and it is a supported
@@ -970,7 +985,7 @@ class TestStoreReadsAreRecorded:
             )
 
         event = recorder.one(StoreFileRead)
-        assert (event.name, event.refused, event.characters) == ("a.txt", True, 0)
+        assert (event.name, event.outcome, event.characters) == ("a.txt", "refused", 0)
 
     def test_a_read_whose_second_provenance_reading_raises_is_still_recorded(self):
         """The fold reads the record a second time, and a path forgotten while the read was in
@@ -1001,7 +1016,7 @@ class TestStoreReadsAreRecorded:
             asyncio.run(session.read_file(InMemoryStore({"a.txt": "hi"}), ListedFile("a.txt")))
 
         event = recorder.one(StoreFileRead)
-        assert (event.name, event.refused, event.characters) == ("a.txt", True, 0)
+        assert (event.name, event.outcome, event.characters) == ("a.txt", "refused", 0)
 
     def test_a_context_getter_that_cancels_does_not_fail_the_read(self):
         """The key is read for the record's sake alone, from the host's own context getters. A
@@ -1042,7 +1057,7 @@ class TestStoreReadsAreRecorded:
             asyncio.run(session.read_file(_Cancels({"a.txt": "x"}), ListedFile("a.txt")))
 
         event = recorder.one(StoreFileRead)
-        assert (event.refused, event.characters, event.integrity) == (True, 0, None)
+        assert (event.outcome, event.characters, event.integrity) == ("refused", 0, None)
 
     def test_a_read_that_failed_is_recorded_as_refused(self):
         class _Broken(InMemoryStore):
@@ -1056,7 +1071,7 @@ class TestStoreReadsAreRecorded:
 
         assert isinstance(answer, str) and answer.startswith("Error:")
         event = recorder.one(StoreFileRead)
-        assert (event.refused, event.characters, event.integrity) == (True, 0, None)
+        assert (event.outcome, event.characters, event.integrity) == ("refused", 0, None)
 
     def test_a_file_that_has_gone_is_recorded_and_is_not_a_refusal(self):
         recorder = _Recorder()
@@ -1065,7 +1080,7 @@ class TestStoreReadsAreRecorded:
         assert asyncio.run(session.read_file(InMemoryStore({}), ListedFile("a.txt"))) is None
 
         event = recorder.one(StoreFileRead)
-        assert (event.refused, event.characters) == (False, 0)
+        assert (event.outcome, event.characters) == ("absent", 0)
 
     def test_a_read_with_no_conversation_bound_records_no_key(self):
         recorder = _Recorder()

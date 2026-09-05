@@ -63,6 +63,7 @@ __all__ = [
     "SandboxEvent",
     "SandboxObserver",
     "StoreFileRead",
+    "StoreReadOutcome",
     "ToolCallEnded",
     "record",
     "refuse_an_unusable_observer",
@@ -179,6 +180,12 @@ class HostToolCalled(SandboxEvent):
         observer.host_tool_called(self)
 
 
+#: What became of one store read.  ``"read"`` is text crossing, empty text included;
+#: ``"absent"`` is the store answering that there is no such file; ``"refused"`` is no answer
+#: at all — it raised, or a cancel took the read away.
+StoreReadOutcome = Literal["read", "absent", "refused"]
+
+
 @dataclass(frozen=True)
 class StoreFileRead(SandboxEvent):
     """One file a call read out of the host's store, and what the read said it was worth.
@@ -192,10 +199,13 @@ class StoreFileRead(SandboxEvent):
     with ``str`` and nothing here encodes it to find out.  It is zero for a read that was
     refused, and for one whose file had gone.
 
-    ``refused`` says **no text crossed**, rather than naming who stopped it: the store raised,
-    or a cancel took the read away. Both leave the call without content, which is the fact a
-    record is being kept of; a file that simply was not there is ``refused=False`` with zero
-    characters, because the store answered.
+    ``outcome`` is what became of the read, and it is three values rather than a flag because
+    the three are genuinely different facts: ``"read"`` means text crossed — possibly empty
+    text, which is why a length cannot stand in for this — ``"absent"`` means the store
+    answered that there is no such file, and ``"refused"`` means it did not answer at all,
+    because it raised or a cancel took the read away. A record that could not tell an empty
+    file from a missing one could not answer whether anything crossed the boundary, which is
+    the question it exists for.
     """
 
     key: SandboxKey | None
@@ -203,7 +213,7 @@ class StoreFileRead(SandboxEvent):
     name: str
     integrity: SourceIntegrity | None
     characters: int
-    refused: bool
+    outcome: StoreReadOutcome
 
     def deliver_to(self, observer: SandboxObserver) -> None:
         observer.store_file_read(self)
@@ -255,11 +265,12 @@ class ToolCallEnded(SandboxEvent):
     The record every other event of that call joins to: ``seconds`` covers the body *and* the
     removal the caller waits for, which is what the call actually cost.
 
-    ``keys`` is **every** sandbox the call acquired, in the order it acquired them, and empty
-    for a call that acquired none — a body refused before it reached a backend, or one that
-    never asked.  A tuple rather than one key because a call may reach more than one sandbox
-    (:attr:`CallRecord.acquired` is a mapping for that reason), and naming only the first would
-    leave the others' acquire and disposal records with nothing to join to.
+    ``keys`` is every key the call **asked** for, in order, and empty for one that asked for
+    none.  Asked rather than got: a refused acquire is named here too, so that its own
+    :class:`SandboxAcquired` — which carries the refusal — has a call to join to.  A recorder
+    wanting only what was served reads the acquire records rather than filtering this.  A tuple
+    because one call may acquire more than one sandbox, and naming only the first would leave
+    the rest with nothing to join to.
 
     ``failure`` is the class name of what the **body** raised, or ``None`` where it returned. It
     is read before the reclaim runs, so a reclaim that raises on its way out does not overwrite

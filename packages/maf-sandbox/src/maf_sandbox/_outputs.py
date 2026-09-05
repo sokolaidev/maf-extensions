@@ -784,8 +784,7 @@ async def _collect(
     """The whole of :func:`collect_outputs`, split so one record covers every way out of it.
 
     ``delivered`` grows as each artifact is accepted, so a refusal part-way still reports what
-    a sink already took — which the return value cannot, and which is the half that matters:
-    a ``deliver`` is a push nothing takes back.
+    a sink already took, which the return value cannot.
     """
     if outputs and not spec.outputs_named_at_call_time:
         raise ValueError(

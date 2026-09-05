@@ -106,6 +106,7 @@ from ._observer import (
     SandboxEvent,
     SandboxObserver,
     StoreFileRead,
+    StoreReadOutcome,
     ToolCallEnded,
 )
 from ._outputs import (
@@ -208,6 +209,7 @@ __all__ = [
     "SandboxEvent",
     "SandboxObserver",
     "StoreFileRead",
+    "StoreReadOutcome",
     "ToolCallEnded",
     "CALLS_DIRECTORY",
     "DEFAULT_BACKEND_DECLARATIONS",

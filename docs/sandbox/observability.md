@@ -58,9 +58,9 @@ registry = HostToolRegistry(observer=records)
 | `SandboxAcquired` | `SandboxRouter.acquire`, served or refused | Which key ran under which spec, on which backend, at which isolation rung and scope — or the class name of the refusal that stopped it |
 | `SandboxDisposed` | Every disposal, once per backend asked | Whether the delete landed, and the `DisposalCode` and detail when it did not |
 | `HostToolCalled` | `HostToolRun.call` | Which tool a guest program called, under which declaration, how it ended, and how many bytes came back |
-| `StoreFileRead` | `SandboxToolSession.read_file` | Which file a call read out of the host's store, and the integrity label the read folded |
+| `StoreFileRead` | `SandboxToolSession.read_file` | Which file a call read out of the host's store, the integrity label the read folded, and whether text actually crossed — `read`, `absent` or `refused`, since an empty file and a missing one are otherwise the same record |
 | `OutputsCollected` | `collect_outputs` | What a spec declared, what a sink took, under which `TransferLimits`, and — for a `per_call` sink — the folder they landed in |
-| `ToolCallEnded` | `sandboxed_tool`'s wrapper | One sandboxed tool call: every key it reached, what it cost, what the **body** raised, and what it left unclean |
+| `ToolCallEnded` | `sandboxed_tool`'s wrapper | One sandboxed tool call: every key it asked for, served or refused, what it cost, what the **body** raised, and what it left unclean |
 
 Every event is a frozen dataclass in this package's own vocabulary — a `SandboxKey`, a `SandboxSpec`, a `SourceIntegrity`. Nothing here imports a telemetry library; core's protocol modules are standard library only, and a package that turns these into spans, log records and counters sits above this seam rather than inside it.
 
@@ -70,7 +70,7 @@ Every event is a frozen dataclass in this package's own vocabulary — a `Sandbo
 
 - `SandboxAcquired` and `SandboxDisposed` are *addressed* by a key, so `key: SandboxKey` and it is always there.
 - `HostToolCalled`, `StoreFileRead` and `OutputsCollected` type it `SandboxKey | None`, and each is `None` for its own reason: a `HostToolRun` the transport built without one, a store read whose key could not be *derived* — no conversation bound to the request context, or a call-scoped workload asked outside a call — and a collection a kind did not pass one for. Note the middle case is about the context, not about acquisition: a session that never acquired still keys its reads from the scope and thread it was built with.
-- `ToolCallEnded` carries `keys: tuple[SandboxKey, ...]` — **every** sandbox the call reached, since one call may hold two, and an empty tuple rather than `None` for a call that acquired none.
+- `ToolCallEnded` carries `keys: tuple[SandboxKey, ...]` — every key the call **asked** for, in order, since one call may acquire two, and an empty tuple rather than `None` for a call that asked for none. Asked rather than got: a refused acquire is recorded here too, so that its own `SandboxAcquired` has a call to join to. A recorder wanting only the sandboxes that were served reads the acquire records, where the refusal is stated.
 
 So a host joining records treats the middle three as joinable when the key is present, and joins the last through its tuple rather than looking for a `key` field it does not have. `collect_outputs` has no key of its own, so a kind that wants its collections joined passes one; the `call_id` it already stamps on each artifact is recorded beside it, which is what reaches the folder a `per_call` sink landed them in. `HostToolRun(key=…)` is the same for a transport: without it a host-tool record says which run called and nothing about whose conversation.
 

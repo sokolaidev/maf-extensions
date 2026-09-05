@@ -60,7 +60,13 @@ from uuid import uuid4
 
 from ._error_detail import error_detail
 from ._file_provenance import FILE_STORE_WRITE_TOOLS, PATH_ARGUMENT, FileStoreProvenance
-from ._observer import SandboxObserver, StoreFileRead, ToolCallEnded, record
+from ._observer import (
+    SandboxObserver,
+    StoreFileRead,
+    StoreReadOutcome,
+    ToolCallEnded,
+    record,
+)
 from ._outputs import (
     Artifact,
     LandedArtifact,
@@ -1334,7 +1340,7 @@ class SandboxToolSession:
             # of a read that would otherwise leave no record at all.
             before = self._recorded_state(listed.name)
         except BaseException:
-            self._record_read(listed.name, None, 0, refused=True)
+            self._record_read(listed.name, None, 0, outcome="refused")
             raise
         try:
             text = await store.read(listed.name)
@@ -1342,17 +1348,17 @@ class SandboxToolSession:
             self._logger.warning(
                 f"{self._log_prefix}: could not read a listed file: %s", error_detail(exc)
             )
-            self._record_read(listed.name, None, 0, refused=True)
+            self._record_read(listed.name, None, 0, outcome="refused")
             shown = named if named is not None else echoed_name(listed.name, at=at, hidden=hidden)
             return f"Error: {shown} could not be read from the file store"
         except BaseException:
             # A cancel leaves this site the same way a raise does — no text crossed — and the
             # record owes every way out, not only the ones that return. It is not an
             # `Exception`, so it needs its own catch or the read goes unrecorded.
-            self._record_read(listed.name, None, 0, refused=True)
+            self._record_read(listed.name, None, 0, outcome="refused")
             raise
         if text is None:
-            self._record_read(listed.name, None, 0, refused=False)
+            self._record_read(listed.name, None, 0, outcome="absent")
             return None
         try:
             # Inside the boundary for the same reason the first reading is: this is the record's
@@ -1360,9 +1366,9 @@ class SandboxToolSession:
             # raise where the first one did not.
             integrity = self._folded_integrity(listed, before)
         except BaseException:
-            self._record_read(listed.name, None, 0, refused=True)
+            self._record_read(listed.name, None, 0, outcome="refused")
             raise
-        self._record_read(listed.name, integrity, len(text), refused=False)
+        self._record_read(listed.name, integrity, len(text), outcome="read")
         properties: dict[str, Any] = {}
         if integrity is not None:
             # Not `security_label` — see `SOURCE_INTEGRITY_PROPERTY` for why.
@@ -1370,7 +1376,12 @@ class SandboxToolSession:
         return Content.from_text(text, additional_properties=properties)
 
     def _record_read(
-        self, name: str, integrity: SourceIntegrity | None, characters: int, *, refused: bool
+        self,
+        name: str,
+        integrity: SourceIntegrity | None,
+        characters: int,
+        *,
+        outcome: StoreReadOutcome,
     ) -> None:
         """Record one store read, its label folded, for a host that watches what a call reads."""
         observer = self.observer
@@ -1384,7 +1395,7 @@ class SandboxToolSession:
                 name=name,
                 integrity=integrity,
                 characters=characters,
-                refused=refused,
+                outcome=outcome,
             ),
             self._logger,
         )
