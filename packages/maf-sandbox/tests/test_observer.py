@@ -1220,6 +1220,26 @@ class TestTheCallIsRecorded:
         # attributing that to the body would send an operator to the wrong place.
         assert recorder.one(ToolCallEnded).failure is None
 
+    def test_a_call_that_only_read_the_store_still_names_the_key_it_read_under(self):
+        """`execute_code` reads its listed files before it acquires and returns early when a
+        read is refused, so this is a normal failure path rather than an edge. Without the key
+        the read's own record has no call to join to."""
+        recorder = _Recorder()
+        router = _router(observer=recorder)
+
+        def build(session: SandboxToolSession):
+            async def widget_run() -> str:
+                """Read a file and return without ever acquiring."""
+                await session.read_file(InMemoryStore({"a.txt": "hi"}), ListedFile("a.txt"))
+                return "read only"
+
+            return widget_run
+
+        assert asyncio.run(_fn(_tool(router, build))()) == "read only"
+
+        assert recorder.one(StoreFileRead).key == _KEY
+        assert recorder.one(ToolCallEnded).keys == (_KEY,)
+
     def test_a_call_that_acquired_nothing_records_no_keys(self):
         recorder = _Recorder()
         router = _router(observer=recorder)

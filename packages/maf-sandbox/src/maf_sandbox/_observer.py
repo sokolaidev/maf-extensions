@@ -33,12 +33,12 @@ what a guest then reached.
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import logging
 from dataclasses import dataclass
 from typing import Literal
 
+from ._containment import CONTAINED, escapes_containment
 from ._error_detail import error_detail
 from ._protocol import (
     BackendDeclarations,
@@ -265,12 +265,12 @@ class ToolCallEnded(SandboxEvent):
     The record every other event of that call joins to: ``seconds`` covers the body *and* the
     removal the caller waits for, which is what the call actually cost.
 
-    ``keys`` is every key the call **asked** for, in order, and empty for one that asked for
-    none.  Asked rather than got: a refused acquire is named here too, so that its own
-    :class:`SandboxAcquired` — which carries the refusal — has a call to join to.  A recorder
-    wanting only what was served reads the acquire records rather than filtering this.  A tuple
-    because one call may acquire more than one sandbox, and naming only the first would leave
-    the rest with nothing to join to.
+    ``keys`` is every key the call **touched**, in order, and empty for one that touched none.
+    Touched rather than acquired: a refused acquire is named here, so its own
+    :class:`SandboxAcquired` has a call to join to, and so is a key the call only read the
+    store under — a kind may read and return before it ever acquires, which is a normal failure
+    path rather than an edge.  A recorder wanting only what was served reads the acquire records
+    rather than filtering this.  A tuple because one call may reach more than one sandbox.
 
     ``failure`` is the class name of what the **body** raised, or ``None`` where it returned. It
     is read before the reclaim runs, so a reclaim that raises on its way out does not overwrite
@@ -393,8 +393,8 @@ def record(observer: SandboxObserver | None, event: SandboxEvent, logger: loggin
         return
     try:
         event.deliver_to(observer)
-    except (Exception, asyncio.CancelledError, GeneratorExit, BaseExceptionGroup) as exc:  # noqa: BLE001 - a call is not the observer's to fail
-        if isinstance(exc, BaseExceptionGroup) and exc.subgroup((SystemExit, KeyboardInterrupt)):
+    except CONTAINED as exc:  # noqa: BLE001 - a call is not the observer's to fail
+        if escapes_containment(exc):
             raise
         logger.warning(
             "sandbox observer: %s was not recorded: %s", type(event).__name__, error_detail(exc)

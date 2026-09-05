@@ -40,6 +40,7 @@ from collections.abc import Awaitable, Callable, Generator, Mapping
 from dataclasses import dataclass
 from typing import Any, TypeVar, cast
 
+from ._containment import CONTAINED, escapes_containment
 from ._error_detail import error_detail
 from ._observer import (
     HostToolCalled,
@@ -754,7 +755,9 @@ def _observe(
     # Contain the observer's own failures: its Exceptions, a CancelledError from a host's
     # shutdown bug, a GeneratorExit from its own generator. SystemExit and
     # KeyboardInterrupt are the host's control flow, so they deliberately escape.
-    except (Exception, asyncio.CancelledError, GeneratorExit) as exc:  # noqa: BLE001 - a call is not the observer's to fail
+    except CONTAINED as exc:  # noqa: BLE001 - `_containment` carries the rule
+        if escapes_containment(exc):
+            raise
         logger.warning(
             "host tools: the host-tool-call observer failed to observe %r: %s",
             name,
@@ -764,7 +767,9 @@ def _observe(
         return
     try:
         context.__enter__()
-    except (Exception, asyncio.CancelledError, GeneratorExit) as exc:  # noqa: BLE001 - never entered, so never exited, and the call runs on
+    except CONTAINED as exc:  # noqa: BLE001 - never entered, so never exited, and the call runs on
+        if escapes_containment(exc):
+            raise
         logger.warning(
             "host tools: the host-tool-call observer failed to observe %r: %s",
             name,
@@ -779,7 +784,9 @@ def _observe(
         # raising may not mask it, and its return value may not swallow it.
         try:
             context.__exit__(type(exc), exc, exc.__traceback__)
-        except (Exception, asyncio.CancelledError, GeneratorExit) as exit_exc:  # noqa: BLE001 - the observer's failure is its own warning
+        except CONTAINED as exit_exc:  # noqa: BLE001 - the observer's failure is its own warning
+            if escapes_containment(exit_exc):
+                raise
             logger.warning(
                 "host tools: the host-tool-call observer failed to exit for %r: %s",
                 name,
@@ -789,7 +796,9 @@ def _observe(
     else:
         try:
             context.__exit__(None, None, None)
-        except (Exception, asyncio.CancelledError, GeneratorExit) as exit_exc:  # noqa: BLE001 - a success must not become a failure over the exit
+        except CONTAINED as exit_exc:  # noqa: BLE001 - a success must not become a failure over the exit
+            if escapes_containment(exit_exc):
+                raise
             logger.warning(
                 "host tools: the host-tool-call observer failed to exit for %r: %s",
                 name,

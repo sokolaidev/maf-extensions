@@ -20,7 +20,7 @@ must stay sanitized regardless of what this function returns.
 
 from __future__ import annotations
 
-import asyncio
+from ._containment import CONTAINED, escapes_containment
 
 __all__ = ["error_detail"]
 
@@ -42,15 +42,8 @@ def error_detail(exc: BaseException) -> str:
     """
     try:
         return _rendered(exc)
-    except (
-        Exception,
-        asyncio.CancelledError,
-        GeneratorExit,
-        BaseExceptionGroup,
-    ) as raised:  # noqa: BLE001 - see the docstring
-        if isinstance(raised, BaseExceptionGroup) and raised.subgroup(
-            (SystemExit, KeyboardInterrupt)
-        ):
+    except CONTAINED as raised:  # noqa: BLE001 - see the docstring
+        if escapes_containment(raised):
             raise
         # The class name is the one thing that cannot fail to render.
         return type(exc).__name__

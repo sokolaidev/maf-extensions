@@ -21,6 +21,7 @@ from contextlib import asynccontextmanager
 from enum import StrEnum
 from typing import cast
 
+from ._containment import CONTAINED, escapes_containment
 from ._host_tools_over_exec import fold_host_tool_call_transfer_limits
 from ._observer import (
     SandboxAcquired,
@@ -457,9 +458,11 @@ def _recorded_declarations(
         return (None, None)
     try:
         return (_declared_isolation(backend), _declarations(backend))
-    except (Exception, asyncio.CancelledError, GeneratorExit):  # noqa: BLE001 - see below
-        # The containment sites' own set: both are property reads, so a backend author's code
-        # runs here, and an acquire must not start failing over the record of it.
+    except CONTAINED as raised:  # noqa: BLE001 - `_containment` carries the rule
+        # Both are property reads, so a backend author's code runs here and an acquire must not
+        # start failing over the record of it.
+        if escapes_containment(raised):
+            raise
         return (None, None)
 
 

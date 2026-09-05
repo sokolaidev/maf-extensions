@@ -58,6 +58,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
+from ._containment import CONTAINED, escapes_containment
 from ._error_detail import error_detail
 from ._file_provenance import FILE_STORE_WRITE_TOOLS, PATH_ARGUMENT, FileStoreProvenance
 from ._observer import (
@@ -194,11 +195,12 @@ class _SandboxToolCall:
     acquired: dict[SandboxKey, list[Sandbox]] = field(
         default_factory=dict[SandboxKey, list[Sandbox]]
     )
-    #: Every key this call *asked* for, in order, whether or not the acquire was served. Kept
-    #: apart from `acquired`, which is the cleanup ledger and may only name a key something has
-    #: to delete — a refused acquire has nothing to reclaim, and registering one there would
-    #: have the removal sweep a sandbox this call never got. This is what a record joins on, so
-    #: a refused `SandboxAcquired` still belongs to the call that caused it.
+    #: Every key this call *touched*, in order — asked to acquire, served or refused, and read
+    #: the host's store under. Kept apart from `acquired`, which is the cleanup ledger and may
+    #: only name a key something has to delete: a refused acquire has nothing to reclaim, and
+    #: registering one there would have the removal sweep a sandbox this call never got. This is
+    #: what a record joins on, so a refused acquire — and a call that read the store and
+    #: returned before acquiring anything — still names the key its other events carry.
     attempted: list[SandboxKey] = field(default_factory=list[SandboxKey])
     closed: bool = False
 
@@ -1387,10 +1389,18 @@ class SandboxToolSession:
         observer = self.observer
         if observer is None:
             return
+        key = self._recorded_key()
+        # A read is the call touching this key, and a kind may read the store and return before
+        # it ever acquires — `execute_code` does exactly that when a listed file is refused. So
+        # the key is registered here too, or that call's `ToolCallEnded` names nothing and the
+        # read it just recorded has no call to join to.
+        call = _this_call(self)
+        if key is not None and call is not None and not call.closed and key not in call.attempted:
+            call.attempted.append(key)
         record(
             observer,
             StoreFileRead(
-                key=self._recorded_key(),
+                key=key,
                 tool=self._name,
                 name=name,
                 integrity=integrity,
@@ -1409,10 +1419,12 @@ class SandboxToolSession:
         """
         try:
             key = self.key()
-        except (Exception, asyncio.CancelledError, GeneratorExit):  # noqa: BLE001 - see below
-            # The containment sites' own set: `key()` runs the host's context getters, so what
-            # comes out of them is the host's, and a record is not worth turning a completed
-            # read into a failure the read would not otherwise have had.
+        except CONTAINED as raised:  # noqa: BLE001 - `_containment` carries the rule
+            # `key()` runs the host's context getters, so what comes out of them is the host's,
+            # and a record is not worth turning a completed read into a failure it would not
+            # otherwise have had.
+            if escapes_containment(raised):
+                raise
             return None
         return key if isinstance(key, SandboxKey) else None
 
