@@ -2219,14 +2219,17 @@ _OUTPUTS_LS_DESCRIPTION = """List what is in a folder of the store a sandboxed t
             folder: The folder to list, or empty for the top level.
 
         Returns:
-            One entry per child, each with a ``name`` and a ``type`` of file or directory.
+            One entry per child, each with a ``name`` — the child's own name, not a path — and a
+            ``type`` of file or directory.
         """
 
 _OUTPUTS_READ_DESCRIPTION = """Read one file out of the store a sandboxed tool's declared
         outputs land in.
 
         Args:
-            name: The path as it was listed, folder included — ``<call>/report.md``.
+            name: The folder you listed, joined to the name the listing gave it, with a ``/``
+                between them — ``<call>/report.md``.  A listing names children only, so a name
+                on its own does not locate the file.
 
         Returns:
             The file's text, or a message saying why it could not be read.

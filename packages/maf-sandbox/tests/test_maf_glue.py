@@ -4981,6 +4981,18 @@ class TestSandboxOutputsReadTools:
 
         assert asyncio.run(self._body(read)("c0ffee/report.md")) == "# total\n42"
 
+    def test_a_listed_name_is_a_child_name_and_the_read_wants_the_folder_back_on(self):
+        """The two descriptions have to agree about what a listed ``name`` is, because the model
+        has only them to go on: a listing names children, so the folder it was listed under is
+        the model's to join back."""
+        listing, read = sandbox_outputs_read_tools(self._landed())
+
+        listed = asyncio.run(self._body(listing)("c0ffee"))[0]["name"]
+
+        assert listed == "report.md"
+        assert asyncio.run(self._body(read)(listed)).startswith("Error: there is no file at")
+        assert asyncio.run(self._body(read)(f"c0ffee/{listed}")) == "# total\n42"
+
     def test_a_file_that_is_not_there_answers_with_a_sentence(self):
         """A call that landed nothing is the ordinary case, not an error to raise into a turn."""
         _, read = sandbox_outputs_read_tools(self._landed())
