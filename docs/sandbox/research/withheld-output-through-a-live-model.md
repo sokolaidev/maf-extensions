@@ -99,7 +99,7 @@ The control arm reproduces the encoding behaviour on a second model and a narrow
 
 **Not separated:** the arms differ by the whole composition, so nothing here says how much of the gain is the read-back tools and how much is the folder sentence. They were built to be used together and were measured that way.
 
-**Not tested:** whether a model that has the read-back tools still encodes when a landing is refused, and whether one with both roads open prefers the cheap one over a longer task. The first is not idle — a refused landing is what a host meets the second time a call declares a name it already used.
+**Not tested:** whether a model that has the read-back tools still encodes when a landing is refused, and whether one with both roads open prefers the cheap one over a longer task. The first would need a refusal *forced* rather than waited for: this sink writes to `<call_id>/<name>` with `overwrite=False`, and the folder is a fresh `uuid4` per call, so a repeated call declaring a name it already used lands beside the old one instead of colliding. What refuses here is a collision inside a single call, an artifact that is not UTF-8, or the `files_out.max_files` cap — and the cap is the one that bit in the arm above and in no run of this one.
 
 ## What is measured, what is inferred, and what was not tested
 
