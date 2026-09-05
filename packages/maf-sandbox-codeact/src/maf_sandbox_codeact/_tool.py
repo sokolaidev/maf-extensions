@@ -325,11 +325,12 @@ def make_codeact_tools(
             host that must close it should not attach this workload at all. The sink's
             ``display`` is deliberately *not* rendered here — see :func:`_format_landed`.
 
-            **A sink declaring :attr:`~maf_sandbox.OutputSink.per_call` stops this tool
-            emitting that last one.** No declared name reaches the result — it names the folder
-            they landed in, which is the host's own id. They do not become unreachable: a model
-            that can list that folder reads the same names off the store, under the host's own
-            labels and approvals rather than out of this result.
+            **A sink declaring :attr:`~maf_sandbox.OutputSink.per_call` removes the widest of
+            those.** No declared name reaches the result — it names the folder they landed in,
+            which is the host's own id — so what is left is the two bits and a possible note,
+            rather than those plus one per declared output. The bits do not become unreachable:
+            a model that can list that folder reads the same names off the store, under the
+            host's own labels and approvals rather than out of this result.
         outbound_max_confidentiality: The host's cap for tools that carry something out, in the
             host's own vocabulary. Off by default and written only when something can actually
             leave: an artifact landing in the sink, a host tool that carries something out, or
