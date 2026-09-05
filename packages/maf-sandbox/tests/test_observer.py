@@ -15,6 +15,7 @@ import dataclasses
 import inspect
 import json
 import logging
+import threading
 
 import pytest
 
@@ -41,6 +42,7 @@ from maf_sandbox import (
     SandboxAcquired,
     SandboxCapabilityNotSupported,
     SandboxDisposed,
+    SandboxEntry,
     SandboxEvent,
     SandboxKey,
     SandboxObserver,
@@ -854,6 +856,23 @@ def _outputs_spec(*outputs: DeclaredOutput, files_out: TransferLimits | None = N
     )
 
 
+class _NotAnObserver:
+    def outputs_collected(self, event: OutputsCollected) -> None:
+        pass
+
+
+class _AwaitsItsOutputs(SandboxObserver):
+    async def outputs_collected(self, event: OutputsCollected) -> None:
+        pass
+
+
+class _Untouchable(InProcessSandbox):
+    """A sandbox nothing may reach: the refusal under test is settled before it is asked."""
+
+    async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
+        raise AssertionError("the sandbox was touched before the observer was checked")
+
+
 class TestOutputsAreRecorded:
     def test_what_landed_is_recorded_with_its_size_and_media_type(self):
         recorder = _Recorder()
@@ -956,6 +975,55 @@ class TestOutputsAreRecorded:
 
         event = recorder.one(OutputsCollected)
         assert (event.refusal, event.landed) == ("SandboxTransferCapExceeded", ())
+
+    def test_the_recorded_name_is_the_one_the_sink_reported(self):
+        """A sink may land under a name of its own — content-addressed, say — and the record
+        has to agree with what `collect_outputs` returned rather than with the declaration."""
+        recorder = _Recorder()
+        sandbox = InProcessSandbox(seed_files={"/w/a.png": "12345"})
+
+        async def deliver(artifact: Artifact) -> LandedArtifact:
+            return LandedArtifact(name=f"{len(artifact.content)}.blob", display="[landed]")
+
+        landed = asyncio.run(
+            collect_outputs(
+                sandbox,
+                _outputs_spec(DeclaredOutput(path="a.png")),
+                sink=OutputSink(deliver=deliver),
+                observer=recorder,
+                key=_KEY,
+            )
+        )
+
+        event = recorder.one(OutputsCollected)
+        assert [output.name for output in event.landed] == [artifact.name for artifact in landed]
+        assert event.landed == (LandedOutput(name="5.blob", size_bytes=5, media_type=None),)
+
+    @pytest.mark.parametrize(
+        ("observer", "refused_as"),
+        [
+            pytest.param(_NotAnObserver(), "must be a SandboxObserver", id="not an observer"),
+            pytest.param(_AwaitsItsOutputs(), "outputs_collected", id="coroutine override"),
+        ],
+    )
+    def test_an_unusable_observer_is_refused_before_the_sandbox_is_touched(
+        self, observer, refused_as
+    ):
+        """This is the one entry that takes an observer per call rather than at registration,
+        so the registration points' check runs here — and before the stat, because a
+        configuration mistake is no reason to read anything."""
+        sandbox = _Untouchable(seed_files={"/w/a.png": "1"})
+
+        with pytest.raises(TypeError, match=refused_as):
+            asyncio.run(
+                collect_outputs(
+                    sandbox,
+                    _outputs_spec(DeclaredOutput(path="a.png")),
+                    sink=_Sink().sink,
+                    observer=observer,
+                    key=_KEY,
+                )
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1243,6 +1311,38 @@ class TestTheCallIsRecorded:
         # Empty because `acquire` is a coroutine: a body that awaits nothing holds no sandbox.
         assert (event.tool, event.kind, event.keys) == ("widget_run", "test", ())
         assert (event.failure, event.unclean) == (None, 0)
+
+    def test_a_synchronous_bodys_record_arrives_on_the_thread_that_ran_it(self):
+        """The framework runs a body that awaits nothing on a worker thread, and the record is
+        delivered there rather than marshalled back to the loop — which is why an observer is
+        documented as thread-safe."""
+
+        class _NotesTheThread(SandboxObserver):
+            def __init__(self) -> None:
+                self.delivered_on: threading.Thread | None = None
+
+            def tool_call_ended(self, event: ToolCallEnded) -> None:
+                self.delivered_on = threading.current_thread()
+
+        recorder = _NotesTheThread()
+
+        def build(session: SandboxToolSession):
+            def widget_run() -> str:
+                """Do a thing without awaiting."""
+                return "done"
+
+            return widget_run
+
+        checked = _fn(_tool(_router(observer=recorder), build))
+
+        async def as_the_framework_runs_it() -> tuple[threading.Thread, str]:
+            return threading.current_thread(), await asyncio.to_thread(checked)
+
+        loop_thread, result = asyncio.run(as_the_framework_runs_it())
+
+        assert result == "done"
+        assert recorder.delivered_on is not None
+        assert recorder.delivered_on is not loop_thread
 
     def test_a_body_that_returned_is_not_recorded_as_failing_its_label_check(self):
         """The wrapper's own refusal is not the body's failure, and `failure` names the body."""

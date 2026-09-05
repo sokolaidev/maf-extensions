@@ -30,7 +30,13 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from ._observer import LandedOutput, OutputsCollected, SandboxObserver, record
+from ._observer import (
+    LandedOutput,
+    OutputsCollected,
+    SandboxObserver,
+    record,
+    refuse_an_unusable_observer,
+)
 from ._protocol import (
     DeclaredOutput,
     EntryKind,
@@ -726,12 +732,15 @@ async def collect_outputs(
             was refused part-way. This is a function rather than a host-policy object, so it
             takes the observer as an argument instead of registering one: a kind passes the
             router's (``session.observer``). Default ``None`` records nothing and builds no
-            event.
+            event; anything else is checked the way the two registration points check
+            theirs, before the sandbox is touched.
         key: The sandbox the outputs came out of, carried onto that record. What joins the
             artifacts to the conversation that produced them; without one the record says which
             kind collected and nothing about whose.
 
     Raises:
+        TypeError: when ``observer`` is not a :class:`~maf_sandbox.SandboxObserver`, or
+            overrides an event method with a coroutine function.
         ValueError: when ``outputs`` is passed and the spec does not admit call-time names, and
             when a ``per_call`` sink is given nothing to name a folder with.
         SandboxOutputSinkRequired: when an output lands and no sink was supplied.
@@ -748,6 +757,7 @@ async def collect_outputs(
     """
     if observer is None:
         return await _collect(sandbox, spec, sink, outputs, call_id, None)
+    refuse_an_unusable_observer(observer, argument="observer")
     delivered: list[LandedOutput] = []
     started = time.monotonic()
     refusal: str | None = None
@@ -817,11 +827,12 @@ async def _collect(
 
     landed: list[LandedArtifact] = []
     for artifact in await _read_all(sandbox, spec, to_read, sink, call_id):
-        landed.append(await sink.deliver(artifact))
+        accepted = await sink.deliver(artifact)
+        landed.append(accepted)
         if delivered is not None:
             delivered.append(
                 LandedOutput(
-                    name=artifact.name,
+                    name=accepted.name,
                     size_bytes=len(artifact.content),
                     media_type=artifact.media_type,
                 )

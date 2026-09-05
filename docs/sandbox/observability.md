@@ -78,9 +78,9 @@ So a host joining records treats the middle three as joinable when the key is pr
 
 ## An observer cannot fail a call, and cannot slow one down safely
 
-An observer runs on the task serving the tool call. Its failure is contained — logged as a warning, and the call runs on — with the same narrow catch the host-tools bracket already uses: an `Exception`, a `CancelledError`, a `GeneratorExit` from an observer's own generator are contained, while `SystemExit` and `KeyboardInterrupt` are the host's control flow and escape. An observer's return value is never read, so none of them can change what a call answers.
+An observer runs wherever the call it records is served — on the event-loop task for a tool body that awaits, and for a body that does not, on the worker thread the framework runs it on. Its failure is contained — logged as a warning, and the call runs on — with the same narrow catch the host-tools bracket already uses: an `Exception`, a `CancelledError`, a `GeneratorExit` from an observer's own generator are contained, while `SystemExit` and `KeyboardInterrupt` are the host's control flow and escape. An observer's return value is never read, so none of them can change what a call answers.
 
-What is *not* contained is time. Blocking in an observer blocks the call, so an observer's job is to hand the event on — to a queue, or to an exporter batching on a thread of its own — and never to do the I/O itself.
+What is *not* contained is time. Blocking in an observer blocks the call, so an observer's job is to hand the event on — to a queue, or to an exporter batching on a thread of its own — and never to do the I/O itself. **The handoff has to be thread-safe.** Two calls in flight reach one observer at once, and a synchronous tool body's `ToolCallEnded` arrives from a worker thread rather than from the loop, so it wants a `queue.Queue` or `loop.call_soon_threadsafe`; an `asyncio.Queue` is neither safe to fill from another thread nor woken by it.
 
 **A host that registers nothing pays nothing.** No observer means no event is built: each site checks first and takes the uninstrumented path, which is what the tests pin rather than what the code merely implies.
 
