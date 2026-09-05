@@ -7,6 +7,8 @@ the ones a guest chose stay off it until a host says otherwise.
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from dataclasses import dataclass
 
 import pytest
@@ -205,6 +207,45 @@ class TestTheSpanIsWrittenAfterTheFactAndStillNests:
         emitted = next(
             s for s in recorded.spans.get_finished_spans() if s.name == "sandbox.acquire"
         )
+        assert emitted.parent is not None and emitted.parent.span_id == expected
+
+    def test_a_record_from_a_worker_thread_still_nests_under_the_calls_span(self):
+        """A tool body that awaits nothing is served on a worker thread, and its record is
+        delivered there — so this is the one event whose parent could have been lost.
+
+        The framework's dispatch is reproduced rather than described: `AIFunction._invoke_function`
+        runs `asyncio.to_thread(self.__call__, ...)` inside the `execute_tool` span, and
+        `to_thread` copies the context, which is what carries the current span across. The
+        assertion that the body really ran off the loop thread is what stops this passing
+        vacuously if that dispatch ever becomes an inline call.
+        """
+        recorded = build()
+        tracer = recorded.tracer_provider.get_tracer("test")
+        ran_on: dict[str, threading.Thread] = {}
+
+        def a_body_that_awaits_nothing() -> None:
+            ran_on["body"] = threading.current_thread()
+            recorded.observer.tool_call_ended(
+                ToolCallEnded(
+                    tool="widget_run",
+                    kind="test",
+                    keys=(),
+                    seconds=0.1,
+                    failure=None,
+                    unclean=0,
+                )
+            )
+
+        async def as_the_framework_runs_it() -> int:
+            ran_on["loop"] = threading.current_thread()
+            with tracer.start_as_current_span("execute_tool widget_run") as parent:
+                await asyncio.to_thread(a_body_that_awaits_nothing)
+                return parent.get_span_context().span_id
+
+        expected = asyncio.run(as_the_framework_runs_it())
+
+        assert ran_on["body"] is not ran_on["loop"]
+        emitted = next(s for s in recorded.spans.get_finished_spans() if s.name == "sandbox.call")
         assert emitted.parent is not None and emitted.parent.span_id == expected
 
     def test_a_zero_duration_event_does_not_invert_the_span(self):

@@ -12,14 +12,19 @@ for it would invite reading allowed egress as observed egress.
 
 **Spans are written after the fact.**  An observer is told what happened once it has happened,
 so each span is created with an explicit start time derived from the event's own duration and
-ended immediately.  Its parent is whatever span is current where the event is delivered, and an
-observer is called synchronously inside the call it records rather than on a thread of this
-package's own — so for a tool body that awaits, that is the framework's ``execute_tool`` span,
-which is what puts these records inside the call that caused them.  A body that awaits nothing
-is served on a worker thread and its ``ToolCallEnded`` is delivered there, so whether that one
-record nests or stands at the root follows the framework's context propagation rather than
-anything decided here.  Nothing is buffered to make it nest, because the buffer would be the
-per-call state the next paragraph refuses.
+ended immediately.  Its parent is whatever span is current where the event is delivered, which
+is the framework's ``execute_tool`` span: an observer is called synchronously inside the call it
+records, never on a thread of this package's own.  That is what puts these records inside the
+call that caused them.
+
+**Including from the worker thread**, which is the one case where the parent could have been
+lost.  A tool body that awaits nothing is served off the event loop and its ``ToolCallEnded``
+arrives there, but the framework dispatches it with :func:`asyncio.to_thread` from inside the
+``execute_tool`` span, and that copies the :class:`~contextvars.Context` the current span lives
+in.  So the span crosses with the body.  Do not read the framework's *middleware* accessor the
+same way: that one is a thread-local and does not cross, which is why
+:mod:`maf_sandbox.maf` fails closed rather than trusting it from a synchronous body.  Two
+mechanisms, opposite answers, and only one of them is this package's.
 
 **And the events of one call are siblings rather than children of** ``sandbox.call``.  Every
 event arrives after the work it describes, and the call's own event arrives last of all, so
