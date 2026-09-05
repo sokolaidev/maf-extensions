@@ -262,8 +262,16 @@ class OutputsCollected(SandboxEvent):
 class ToolCallEnded(SandboxEvent):
     """One sandboxed tool call, from the body's first line to the end of its reclaim.
 
-    The record every other event of that call joins to: ``seconds`` covers the body *and* the
-    removal the caller waits for, which is what the call actually cost.
+    ``seconds`` covers the body *and* the removal the caller waits for, which is what the call
+    actually cost.
+
+    **What this joins to, and what it does not.**  ``keys`` associates the call with the
+    sandboxes and the conversation it touched — not with *this call in particular*.  At the
+    default :data:`~maf_sandbox.IsolationScope.CONVERSATION` a key carries no ``call_id``, so
+    two calls running at once in one conversation carry the same one and their records
+    interleave with nothing to tell them apart.  A recorder that needs per-call correlation has
+    the framework's own span context, or waits for
+    `#922 <https://github.com/sokolaidev/maf-extensions/issues/922>`_.
 
     ``keys`` is every key the call **touched**, in order, and empty for one that touched none.
     Touched rather than acquired: a refused acquire is named here, so its own

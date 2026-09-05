@@ -747,7 +747,7 @@ async def collect_outputs(
             identical, or differing only by case or by Unicode form.
     """
     if observer is None:
-        return await _collect(sandbox, spec, sink, outputs, call_id, [])
+        return await _collect(sandbox, spec, sink, outputs, call_id, None)
     delivered: list[LandedOutput] = []
     started = time.monotonic()
     refusal: str | None = None
@@ -779,12 +779,13 @@ async def _collect(
     sink: OutputSink | None,
     outputs: tuple[DeclaredOutput, ...],
     call_id: str | None,
-    delivered: list[LandedOutput],
+    delivered: list[LandedOutput] | None,
 ) -> tuple[LandedArtifact, ...]:
     """The whole of :func:`collect_outputs`, split so one record covers every way out of it.
 
     ``delivered`` grows as each artifact is accepted, so a refusal part-way still reports what
-    a sink already took, which the return value cannot.
+    a sink already took, which the return value cannot.  ``None`` where nobody is recording, so
+    that a host with no observer builds no part of an event rather than one row per artifact.
     """
     if outputs and not spec.outputs_named_at_call_time:
         raise ValueError(
@@ -817,11 +818,12 @@ async def _collect(
     landed: list[LandedArtifact] = []
     for artifact in await _read_all(sandbox, spec, to_read, sink, call_id):
         landed.append(await sink.deliver(artifact))
-        delivered.append(
-            LandedOutput(
-                name=artifact.name,
-                size_bytes=len(artifact.content),
-                media_type=artifact.media_type,
+        if delivered is not None:
+            delivered.append(
+                LandedOutput(
+                    name=artifact.name,
+                    size_bytes=len(artifact.content),
+                    media_type=artifact.media_type,
+                )
             )
-        )
     return tuple(landed)

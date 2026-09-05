@@ -387,6 +387,23 @@ class TestAcquireIsRecorded:
 
         assert spec.labels == labels
 
+    def test_a_backend_whose_name_raises_does_not_lose_the_sandbox(self):
+        """An event's fields are evaluated in the *caller's* frame, before `record` is entered,
+        so a `name` property that raises escapes the containment an observer's own failure gets
+        — and discards a sandbox the acquire had already created."""
+
+        class _Unnameable(InProcessSandboxBackend):
+            @property
+            def name(self) -> str:
+                raise RuntimeError("this backend cannot say what it is called")
+
+        recorder = _Recorder()
+        router = _router(_Unnameable(), observer=recorder)
+
+        assert asyncio.run(router.acquire(_KEY, _SPEC)) is not None
+        # Recorded as something rather than not at all: the class name is what cannot fail.
+        assert recorder.one(SandboxAcquired).backend == "_Unnameable"
+
     def test_a_served_acquire_carries_the_posture_it_was_served_under(self):
         recorder = _Recorder()
         backend = InProcessSandboxBackend()
@@ -1372,6 +1389,9 @@ class TestARouterWithNoObserverPaysNothing:
             raise AssertionError("an event was built for a collection recording nowhere")
 
         monkeypatch.setattr(outputs_module, "OutputsCollected", _refuse)
+        # The event's *payload* too, not just its envelope: a `LandedOutput` per landed
+        # artifact is the part a collection would otherwise build and throw away.
+        monkeypatch.setattr(outputs_module, "LandedOutput", _refuse)
         sandbox = InProcessSandbox(seed_files={"/w/a.png": "1"})
 
         landed = asyncio.run(
