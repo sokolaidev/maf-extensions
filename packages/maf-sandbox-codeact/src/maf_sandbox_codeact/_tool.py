@@ -277,12 +277,14 @@ def make_codeact_tools(
             :data:`CodeactOutputs.NONE`, and refused at attach without one.
         outputs: How a program's output files are named. See :class:`CodeactOutputs`.
         withhold_guest_output: Keep what the program printed out of the tool result, and answer
-            with whether it exited cleanly and the model's own declared names instead — or
-            with the folder they landed in, where the sink declares
-            :attr:`~maf_sandbox.OutputSink.per_call`. No guest-authored text survives into the
-            result — but the values that replace it were still chosen by a program the model
-            wrote, so this changes what the result *holds* and not where it came from: the tool
-            declares ``SourceIntegrity.UNTRUSTED`` either way. Requires
+            with whether it exited cleanly and the model's own declared names instead. No
+            guest-authored text survives into the result — but the values that replace it were
+            still chosen by a program the model wrote, so this changes what the result *holds*
+            and not where it came from: the tool declares ``SourceIntegrity.UNTRUSTED`` either
+            way. **Where the sink declares :attr:`~maf_sandbox.OutputSink.per_call` the names
+            half is a folder rather than a list**, and that one is not the program's to choose:
+            it is the host's id for this call, and it rides on the ``trusted`` route item
+            rather than beside the exit line. Requires
             :data:`CodeactOutputs.DECLARED`: the one mode where content can still reach the
             model and no guest-chosen name reaches the result.
 
@@ -326,10 +328,12 @@ def make_codeact_tools(
             ``display`` is deliberately *not* rendered here — see :func:`_format_landed`.
 
             **A sink declaring :attr:`~maf_sandbox.OutputSink.per_call` removes the widest of
-            those.** No declared name reaches the result — it names the folder they landed in,
+            those.** The landed / not-written list goes, replaced by the folder they landed in,
             which is the host's own id — so what is left is the two bits and a possible note,
-            rather than those plus one per declared output. The bits do not become unreachable:
-            a model that can list that folder reads the same names off the store, under the
+            rather than those plus one per declared output. It is that list only: a name that
+            fails validation is still named in the refusal that says why, before any program
+            runs and whatever the sink does. The bits do not become unreachable either — a
+            model that can list that folder reads the same names off the store, under the
             host's own labels and approvals rather than out of this result.
         outbound_max_confidentiality: The host's cap for tools that carry something out, in the
             host's own vocabulary. Off by default and written only when something can actually
@@ -911,8 +915,6 @@ def _execute_code_tool(
     Four signatures over one implementation, because MAF derives the tool's schema from the
     function's parameters: a host that wired no file store must not be shown ``files``.
     """
-    # Read once, where the sink is: what the model is told about its outputs follows the
-    # host's landing layout, and asking per call would let the two drift within one tool.
     lands_per_call = session.output_sink is not None and session.output_sink.per_call
 
     async def run(

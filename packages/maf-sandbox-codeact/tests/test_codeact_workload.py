@@ -4198,13 +4198,13 @@ class TestOutputsLandInAFolderOfTheirOwn:
     told where to look instead of which names landed."""
 
     def _folder(self, route: str) -> str:
-        """The id the route sentence names, so a test can compare it with the run's own."""
+        """The id the route sentence names, so a test can compare it with the call's own."""
         assert "` where its outputs land." in route, route
         return route.rsplit("under `", 1)[-1].split("/`", 1)[0]
 
-    def test_the_call_id_the_run_used_is_what_reaches_the_sink(self):
-        """One id for the guest directory and the landing folder: two would say the run and its
-        outputs belonged to different calls."""
+    def test_the_call_id_the_program_ran_under_is_what_reaches_the_sink(self):
+        """One id for the guest directory and the landing folder: two would say the program and
+        its outputs belonged to different calls."""
         sandbox = _ProducingSandbox()
         sink = _PerCallSink()
         tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink)
@@ -4249,6 +4249,19 @@ class TestOutputsLandInAFolderOfTheirOwn:
 
         assert route.startswith(_WITHHELD_ROUTE)
         assert len(self._folder(route)) == 32, route
+
+    def test_a_refused_name_is_still_named_in_the_refusal(self):
+        """The landed / not-written list is what this mode drops, and only that. A name that
+        never reached a program is named by the refusal saying why, which is `echoed_name`'s
+        call to make and no business of the sink's layout."""
+        tool = _pulling_tool(
+            _ProducingSandbox(),
+            CodeactOutputs.DECLARED,
+            _PerCallSink(),
+            withhold_guest_output=True,
+        )
+
+        assert "escape.csv" in _run(tool, "print('hi')", outputs=["../escape.csv"])
 
     def test_a_withheld_result_says_nothing_about_which_names_landed(self):
         """Which of the declared names landed is a bit per name the guest's program chooses;
