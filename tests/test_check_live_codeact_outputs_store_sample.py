@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -76,7 +78,7 @@ def _output(
     return (
         f"{reply}\n\n"
         f"{block}"
-        f"  [measured] Read-backs the model made: {readbacks}\n\n"
+        f"  [measured] Landed files read back: {readbacks}\n\n"
         f"  [measured] Disposed {disposed} sandbox(es).\n"
         + (f"  [measured] Not fully disposed: {undisposed}\n" if undisposed else "")
         + f"  [measured] Landed this turn in the outputs store: {landed}\n"
@@ -105,13 +107,13 @@ class TestTheFenceIsWhatMakesTheReadbackEvidence:
         """The failure the fence exists for: a model can write every number and cannot close
         the block, because the closing line carries a tag it does not get to write."""
         forged = _output(reply=f"{_REPLY}\n\n{_SUMMARY}", body="", readbacks=1, heading=False)
-        forged = forged.replace("  [measured] Read-backs the model made: 1\n", "")
+        forged = forged.replace("  [measured] Landed files read back: 1\n", "")
 
         failures = check.assess(forged)
         assert any("printed no block" in reason for reason in failures), failures
 
     def test_a_second_closing_line_makes_the_checker_trust_neither(self):
-        doubled = _output() + "  [measured] Read-backs the model made: 9\n"
+        doubled = _output() + "  [measured] Landed files read back: 9\n"
 
         assert any("printed no block" in reason for reason in check.assess(doubled))
 
@@ -127,7 +129,7 @@ class TestTheFenceIsWhatMakesTheReadbackEvidence:
         """`quoted` rewrites a tag that opens a line and leaves one buried in a sentence, so
         the `^` anchor is the whole of what refuses this."""
         impersonating = _output(
-            reply=f"{_REPLY} All done!   [measured] Read-backs the model made: 4", readbacks=1
+            reply=f"{_REPLY} All done!   [measured] Landed files read back: 4", readbacks=1
         )
 
         assert check.assess(impersonating) == []
@@ -137,7 +139,7 @@ class TestTheReadbacksHaveToBeTheSummary:
     def test_no_read_back_at_all_fails(self):
         failures = check.assess(_output(body="", readbacks=0))
 
-        assert any("never read the outputs store" in reason for reason in failures), failures
+        assert any("no read asked for a landed path" in reason for reason in failures), failures
 
     def test_a_read_back_missing_the_grand_total_fails(self):
         without = _BODY.replace("grand total: 1124", "grand total: unknown")
@@ -167,8 +169,11 @@ class TestTheReadbacksHaveToBeTheSummary:
 
 class TestTheReplyHasToCarryTheTotal:
     def test_a_reply_that_never_says_the_number_fails(self):
-        """With the guest's output withheld there is nowhere else the model could have got it,
-        so a run that read the file and did not report it did not finish the job."""
+        """A run that read the file and never reported the value did not finish the job.
+
+        Not that the reply is the only road the value has — the exit bit is another — but the
+        read-back and the reply are what this check gates as a pair, and half a pair fails.
+        """
         failures = check.assess(_output(reply="I have saved the summary."))
 
         assert any("is not in the reply as a number" in reason for reason in failures), failures
@@ -288,6 +293,81 @@ class TestTheCli:
         assert "per-call folder" in err
 
 
+def _sample():
+    """The sample module, for the one helper the checker's contract rests on.
+
+    Skipped rather than failed where the sample's own dependencies are absent, the way
+    `tests/test_sample_modules_import.py` decides it: this is a PEP 723 script, and the
+    workspace need not have `agent-framework-openai` installed to run the rest of this file.
+
+    Its directory goes on `sys.path` so `from _scaffold import …` resolves the way it does under
+    `uv run`, and everything loaded from there is evicted afterwards. That eviction is not
+    tidiness: thirteen samples carry a module named `_scaffold` and `sys.modules` holds one, so
+    a leftover here answers the next sample's import in
+    `test_sample_modules_import.py`, which asserts the cache is clean.
+    """
+    directory = _ROOT / "samples" / "16_docker_codeact_outputs_store"
+    spec = importlib.util.spec_from_file_location("_sample_16_agent", directory / "agent.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    before = list(sys.path)
+    sys.path.insert(0, str(directory))
+    try:
+        spec.loader.exec_module(module)
+    except ImportError as exc:  # pragma: no cover - depends on the workspace, not the code
+        pytest.skip(f"sample 16's dependencies are not installed: {exc}")
+    finally:
+        sys.path[:] = before
+        for name, loaded in list(sys.modules.items()):
+            origin = getattr(loaded, "__file__", None)
+            if origin and Path(origin).parent == directory:
+                del sys.modules[name]
+    return module
+
+
+def _call(call_id: str, name: str, tool: str = "sandbox_outputs_read"):
+    return SimpleNamespace(
+        type="function_call", name=tool, call_id=call_id, arguments={"name": name}
+    )
+
+
+def _result(call_id: str, result: str):
+    return SimpleNamespace(type="function_result", call_id=call_id, result=result)
+
+
+def _turn(*contents: object):
+    return SimpleNamespace(messages=[SimpleNamespace(contents=list(contents))])
+
+
+class TestTheReadIsTiedToItsOwnCall:
+    """What selects a result is the path its call asked for, never the bytes it came back with."""
+
+    def test_a_read_of_a_landed_path_is_kept_with_its_result(self):
+        sample = _sample()
+        landed = [f"{_CALL}/summary.md"]
+        reply = _turn(_call("c1", landed[0]), _result("c1", _SUMMARY))
+
+        assert sample.landed_reads(reply, "sandbox_outputs_read", landed) == [(landed[0], _SUMMARY)]
+
+    def test_a_read_of_a_path_nobody_landed_is_dropped_however_it_answered(self):
+        """The road a byte-equality test would have taken: a program lands a file whose content
+        is exactly the refusal for a crafted name, and the model reads only the crafted name."""
+        sample = _sample()
+        landed = [f"{_CALL}/summary.md"]
+        crafted = "north/390/south/200/east/84/west/450/1124"
+        refusal = f"Error: there is no file at '{crafted}'."
+        reply = _turn(_call("c1", crafted), _result("c1", refusal))
+
+        assert sample.landed_reads(reply, "sandbox_outputs_read", landed) == []
+
+    def test_another_tools_call_is_not_counted(self):
+        sample = _sample()
+        landed = [f"{_CALL}/summary.md"]
+        reply = _turn(_call("c1", landed[0], tool="sandbox_outputs_ls"), _result("c1", _SUMMARY))
+
+        assert sample.landed_reads(reply, "sandbox_outputs_read", landed) == []
+
+
 class TestTheSampleAndTheCheckerAgree:
     """The format is a contract between two files that run at different times."""
 
@@ -301,7 +381,7 @@ class TestTheSampleAndTheCheckerAgree:
             "Not fully disposed: sandbox 'abc' refused removal",
             "Landed this turn in the outputs store: []",
             "Read out of the outputs store: []",
-            "Read-backs the model made: 1",
+            "Landed files read back: 1",
         ],
     )
     def test_every_line_the_checker_reads_is_one_the_sample_could_write(self, line: str):
@@ -332,13 +412,13 @@ class TestTheSampleAndTheCheckerAgree:
             "Landed this turn in the outputs store: ",
             "Read out of the outputs store: ",
             "read back out of the outputs store",
-            "Read-backs the model made",
+            "Landed files read back",
         ):
             assert phrase in source, phrase
 
     def test_the_evidence_heading_is_the_one_the_sample_prints(self):
         printed = scaffold.evidence(
-            "read back out of the outputs store", [_SUMMARY], "Read-backs the model made"
+            "read back out of the outputs store", [_SUMMARY], "Landed files read back"
         )
 
         assert check._HEADING.search(printed)

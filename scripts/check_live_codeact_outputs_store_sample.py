@@ -26,8 +26,13 @@ plausible Markdown under it, and cannot close the block. What is inside came fro
 Four further things are read, all of them the host's own tagged lines: that the scope purge
 disposed a sandbox and could account for every one, that the summary reached the sink this
 turn, that it landed under a per-call folder rather than at the top of the store, and that a
-read returned the bytes landed there — which the block above cannot say on its own, since the
-read tool's refusals render the name they were given and the name is the model's to choose.
+read returned one — which the block above cannot say on its own, since the read tool's
+refusals render the name they were given and the name is the model's to choose.
+
+Once the sample fences only the reads whose *call* asked for a landed path, everything in that
+block is bytes the sink wrote.  What it still cannot separate is one landed file from another:
+two calls each landing half a summary, both read, satisfy this between them.  That is a real
+round trip rather than a forgery, so it is stated rather than refused.
 
 The folder shape is the one of those four that catches a *sink* regression rather than a run
 that went wrong. An artifact reaching `make_file_store_sink` with no `call_id` is refused, so a
@@ -69,7 +74,7 @@ _LANDED = re.compile(_M + r"Landed this turn in the outputs store[^:\n]*:[ \t]*(
 _READ_OUT = re.compile(_M + r"Read out of the outputs store:[ \t]*(.+)$", _F)
 
 _HEADING = re.compile(r"==\s*read back out of the outputs store\s*==", re.IGNORECASE)
-_READBACKS = re.compile(_M + r"Read-backs the model made:\s*(\d+)", _F)
+_READBACKS = re.compile(_M + r"Landed files read back:\s*(\d+)", _F)
 
 #: What a model may put between thousands, and the signs it may render — the reply half of this
 #: output is model-authored prose, where `\u2212390` is as likely as `-390`.
@@ -151,8 +156,8 @@ def _assess_readbacks(block: str, readbacks: int) -> list[str]:
     failures: list[str] = []
     if readbacks < 1:
         failures.append(
-            "the model never read the outputs store — there is then no read to pair with the "
-            "total in the reply, which the exit bit alone could have carried"
+            "no read asked for a landed path — there is then no read to pair with the total "
+            "in the reply, which the exit bit alone could have carried"
         )
         return failures
 

@@ -16,7 +16,7 @@ where it went, and goes and reads it.
 
 The reply and the read-back together are evidence of the whole path.  Nothing the program
 printed comes back, so the total did not come from `stdout`; what says it came out of a file
-is a read whose result was the bytes the sink landed.  The total on its own would not say it,
+is a read whose *call* asked for a path the sink landed.  The total on its own would not say it,
 because whether the program exited cleanly is a bit the program chooses and repeated calls
 make that a channel.
 
@@ -44,7 +44,7 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
-from _scaffold import MEASURED, evidence, installed_versions, quoted, require_env_vars, tool_results
+from _scaffold import MEASURED, evidence, installed_versions, quoted, require_env_vars
 from agent_framework import Agent, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
@@ -86,6 +86,41 @@ TASK = (
 )
 
 MODEL_VARS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_MODEL")
+
+
+def landed_reads(reply: object, tool: str, landed: list[str]) -> list[tuple[str, str]]:
+    """Each `tool` call that asked for one of `landed`, paired with the result it returned.
+
+    Matched by `call_id`, so a result is tied to the name *its own call* asked for.  Results on
+    their own cannot carry that: this tool's refusals render the name they were given, so a read
+    of a path that does not exist comes back carrying whatever that name was built out of — and
+    a program is free to land a file whose bytes are exactly such a refusal.  The argument is
+    the half the model cannot forge, because `landed` is the host's own list of destinations and
+    each folder in it is a `uuid4`.
+    """
+    asked: dict[str, str] = {}
+    for message in getattr(reply, "messages", []):
+        for content in message.contents:
+            if getattr(content, "type", None) != "function_call":
+                continue
+            if getattr(content, "name", None) != tool:
+                continue
+            arguments = getattr(content, "arguments", None)
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except ValueError:
+                    continue
+            name = arguments.get("name") if isinstance(arguments, dict) else None
+            if isinstance(name, str) and name in landed:
+                asked[content.call_id] = name
+    return [
+        (asked[content.call_id], str(getattr(content, "result", "")))
+        for message in getattr(reply, "messages", [])
+        for content in message.contents
+        if getattr(content, "type", None) == "function_result"
+        and getattr(content, "call_id", None) in asked
+    ]
 
 
 def make_recording_sink(store: object, record: FileStoreProvenance, landed: list[str]):
@@ -188,28 +223,19 @@ async def run() -> int:
         )
         response = await agent.run(TASK)
         print(quoted(response.text))
-        # The read-backs themselves, fenced. A model can claim it read the file; it cannot put
-        # text here the tool did not return. Which of it came out of a file is the line below.
+        # Only the reads whose *call* asked for a landed path are fenced, so what is inside is
+        # bytes the sink wrote and nothing else — a refusal never enters. A fenced block cannot
+        # say on its own which call a result came from, which is why the call selects it.
         print()
-        returned = tool_results(response, f"{OUTPUTS_TOOL_PREFIX}_read")
+        reads = landed_reads(response, f"{OUTPUTS_TOOL_PREFIX}_read", landed)
         print(
             evidence(
                 "read back out of the outputs store",
-                returned,
-                "Read-backs the model made",
+                [result for _, result in reads],
+                "Landed files read back",
             )
         )
-
-        # Which landed file a read actually returned. A refusal renders the *name* it was
-        # given, and the name is the model's to choose, so a block of results alone cannot
-        # say whether a value came out of a file or out of the name of one that does not
-        # exist. Only a read of a landed path returns the bytes the sink put there.
-        opened = [
-            path
-            for path in landed
-            if (held := await outputs.read(path)) is not None and held in returned
-        ]
-        print(f"{MEASURED}Read out of the outputs store: {json.dumps(opened)}")
+        print(f"{MEASURED}Read out of the outputs store: {json.dumps([n for n, _ in reads])}")
     finally:
         purge = await router.dispose_scope(SCOPE, THREAD_ID)
         print(f"\n{MEASURED}Disposed {purge.disposed} sandbox(es).")
