@@ -184,7 +184,14 @@ What may carry `TRUSTED` is narrow — text whose value **and whose presence** a
 This package logs, at `warning`, and a log line is neither structured nor keyed. A deployment asked *which conversation reached that host, which host tools ran under whose authority, what crossed the boundary and with what label* answers from records, so `SandboxObserver` is the seam that hands them over: six frozen events, in this package's own vocabulary, joined by the `SandboxKey` that addresses a sandbox. `SandboxAcquired` and `SandboxDisposed` always carry one; `HostToolCalled`, `StoreFileRead` and `OutputsCollected` type it `SandboxKey | None`, since each has a case with no sandbox behind it; and `ToolCallEnded` carries `keys`, a tuple of every sandbox the call reached, because one call may hold two.
 
 ```python
-from maf_sandbox import HostToolCalled, SandboxAcquired, SandboxObserver, SandboxRouter
+from maf_sandbox import (
+    HostToolCalled,
+    HostToolRegistry,
+    Isolation,
+    SandboxAcquired,
+    SandboxObserver,
+    SandboxRouter,
+)
 from maf_sandbox.testing import InProcessSandboxBackend
 
 
@@ -202,7 +209,12 @@ def emit(**attributes: object) -> None:
     """Wherever this host's records go — a queue, an exporter, a SIEM."""
 
 
-router = SandboxRouter([InProcessSandboxBackend()], observer=Records())
+records = Records()
+# Both registration points, since `host_tool_called` above comes from the registry and never
+# from the router. The floor is lowered only for the in-process fake, which declares
+# `Isolation.NONE`; a real backend leaves the default `microvm` floor where it is.
+router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE, observer=records)
+registry = HostToolRegistry(observer=records)
 ```
 
 `SandboxAcquired` and `SandboxDisposed` come from the router; `HostToolCalled` from `HostToolRegistry(observer=…)`, which is where every other host-tool policy lives; `StoreFileRead` from `SandboxToolSession.read_file` and `ToolCallEnded` from the wrapper `sandboxed_tool` builds, both reading the router's; and `OutputsCollected` from `collect_outputs(..., observer=session.observer, key=key)`, which is a function rather than a policy object and so takes both as arguments.

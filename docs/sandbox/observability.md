@@ -15,7 +15,14 @@ MAF's own OpenTelemetry sees the whole thing as one `execute_tool` span plus a d
 A host subclasses `SandboxObserver` and registers it. Every method does nothing by default, so a host overrides only what it wants:
 
 ```python
-from maf_sandbox import HostToolCalled, SandboxAcquired, SandboxObserver, SandboxRouter
+from maf_sandbox import (
+    HostToolCalled,
+    HostToolRegistry,
+    Isolation,
+    SandboxAcquired,
+    SandboxObserver,
+    SandboxRouter,
+)
 from maf_sandbox.testing import InProcessSandboxBackend
 
 
@@ -31,7 +38,13 @@ def emit(name: str, **attributes: object) -> None:
     """Wherever this host's records go — a queue, an exporter, a SIEM."""
 
 
-router = SandboxRouter([InProcessSandboxBackend()], observer=Records())
+records = Records()
+# One recorder, both registration points: the router would record no host-tool call, and the
+# registry no acquire. `min_isolation` is lowered only because the in-process fake declares
+# `Isolation.NONE`, which the default `microvm` floor refuses at construction — a deployment
+# wiring a real backend leaves the floor alone.
+router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE, observer=records)
+registry = HostToolRegistry(observer=records)
 ```
 
 **It is a class to inherit from rather than a `Protocol`.** This seam gains events as the suite learns to see more, and a structural implementer would stop satisfying a protocol the moment one arrived. Inheriting means a new event is a new no-op a host already has. Both registration points refuse anything that is not a `SandboxObserver`, and refuse an `async def` override — nothing awaits an observer, so a coroutine one would lose every event it saw.
