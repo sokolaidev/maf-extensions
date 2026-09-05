@@ -129,8 +129,11 @@ async def run() -> int:
 
     # One record per store is the rule — a path is the whole key, so a single record shared
     # between the two would answer about a file it never saw. This one is the outputs store's,
-    # and every landing is entered into it before the bytes are written, so nothing a guest
-    # produced can ever read back as host-placed.
+    # and the sink enters every landing before the bytes are written, so a record started later
+    # would already have missed them. **Nothing here reads it**: `sandbox_outputs_read_tools`
+    # takes no record and labels nothing, so the read-back resolves through the host's
+    # `default_integrity`, which the README says and this record does not change. It is the
+    # wiring a host adding a provenance-aware reader needs, not a guarantee made here.
     #
     # No `file_store_provenance_middleware` beside it, and that is the point rather than an
     # omission: it records by *tool name* and carries no store identity, so here it would
