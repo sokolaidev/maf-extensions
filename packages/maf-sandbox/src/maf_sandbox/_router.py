@@ -24,6 +24,7 @@ from typing import cast
 from ._containment import CONTAINED, escapes_containment
 from ._host_tools_over_exec import fold_host_tool_call_transfer_limits
 from ._observer import (
+    DisposalReport,
     SandboxAcquired,
     SandboxDisposed,
     SandboxObserver,
@@ -443,6 +444,40 @@ class _Serving:
     """Which backend an in-flight acquire chose, for the record that covers every way out."""
 
     backend: SandboxBackend | None = None
+
+
+def _recorded_name(backend: SandboxBackend) -> str:
+    """``backend.name`` for a record, never raising.
+
+    ``name`` is a property on somebody else's class, and an event's fields are evaluated in the
+    *caller's* frame — before :func:`record` is entered — so a property that raises here escapes
+    the containment the observer's own failures get, and fails an operation that had succeeded.
+    """
+    try:
+        return backend.name
+    except CONTAINED as raised:  # noqa: BLE001 - `_containment` carries the rule
+        if escapes_containment(raised):
+            raise
+        return type(backend).__name__
+
+
+def _reported(failure: DisposalFailure | None) -> DisposalReport:
+    """What a backend's answer to ``dispose`` says about whether the sandbox is gone.
+
+    ``None`` is ``"gone"`` and not "verified gone": :meth:`SandboxBackend.dispose` documents
+    that a backend with no way to check answers ``None`` too, and chooses that conflation
+    deliberately.  The record therefore says what was reported, and leaves a reader to know
+    what a given backend can actually see.
+
+    ``"unknown"`` comes off the code rather than from the caller, because every route into it
+    already sets one: a ``dispose`` that raised and an interrupted one are both folded into
+    :data:`~maf_sandbox.DisposalCode` ``"unknown"`` before they reach a record.  Reading it
+    here keeps a synthesised failure from being reported as a backend saying the sandbox is
+    still there.
+    """
+    if failure is None:
+        return "gone"
+    return "unknown" if failure.code == "unknown" else "may_remain"
 
 
 def _recorded_declarations(
@@ -1116,8 +1151,8 @@ class SandboxRouter:
             self._observer,
             SandboxDisposed(
                 key=key,
-                backend=backend.name,
-                landed=failure is None,
+                backend=_recorded_name(backend),
+                outcome=_reported(failure),
                 failure=failure,
                 seconds=time.monotonic() - started,
             ),
@@ -1132,12 +1167,20 @@ class SandboxRouter:
         The backend was asked and never answered, so whether the delete landed is unknowable
         rather than merely unclassified.  ``by`` is named because this is reached from a
         ``BaseException`` catch, which sees more than a cancel.
+
+        The no-observer check is repeated here rather than left to ``_record_disposal``, because
+        everything below it is record-only work: building the failure reads ``backend.name``,
+        and that property can raise — replacing the interruption this was called to report with
+        one of its own, for a host that registered no observer at all.
         """
+        if self._observer is None:
+            return
         self._record_disposal(
             key,
             backend,
             DisposalFailure(
-                "unknown", f"{backend.name}: the disposal was interrupted by {type(by).__name__}"
+                "unknown",
+                f"{_recorded_name(backend)}: the disposal was interrupted by {type(by).__name__}",
             ),
             started,
         )
@@ -1176,7 +1219,10 @@ class SandboxRouter:
                 self._record_an_interrupted_disposal(key, backend, started, interrupted)
                 raise
         self._record_disposal(
-            key, backend, None if undisposed is None else _coded(backend.name, undisposed), started
+            key,
+            backend,
+            None if undisposed is None else _coded(_recorded_name(backend), undisposed),
+            started,
         )
         reported = self._unclean.get(key)
         if undisposed is None:
@@ -1259,7 +1305,7 @@ class SandboxRouter:
                     # observer write back into the caller's spec through the event.
                     spec=_with_snapshotted_labels(spec),
                     isolation_scope=self.effective_isolation_scope(spec),
-                    backend=None if serving.backend is None else serving.backend.name,
+                    backend=(None if serving.backend is None else _recorded_name(serving.backend)),
                     isolation=isolation,
                     declarations=declarations,
                     seconds=time.monotonic() - started,
@@ -1331,7 +1377,10 @@ class SandboxRouter:
                 self._record_an_interrupted_disposal(key, served, started, interrupted)
                 raise
             self._record_disposal(
-                key, served, None if reported is None else _coded(served.name, reported), started
+                key,
+                served,
+                None if reported is None else _coded(_recorded_name(served), reported),
+                started,
             )
             if reported is not None:
                 logger.warning(

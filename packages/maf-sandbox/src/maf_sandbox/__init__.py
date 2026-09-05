@@ -97,6 +97,7 @@ from ._host_tools_over_exec import (
     reclaim_run,
 )
 from ._observer import (
+    DisposalReport,
     HostToolCalled,
     HostToolOutcome,
     LandedOutput,
@@ -233,6 +234,7 @@ __all__ = [
     "DeclaredOutput",
     "DisposalCode",
     "DisposalFailure",
+    "DisposalReport",
     "HostToolCallResult",
     "Egress",
     "EntryKind",

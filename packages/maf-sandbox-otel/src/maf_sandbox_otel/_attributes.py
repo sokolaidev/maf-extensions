@@ -101,7 +101,7 @@ OUTPUTS_MAX_FILES = f"{NAMESPACE}.outputs.limit.max_files"
 OUTPUTS_MAX_BYTES_PER_FILE = f"{NAMESPACE}.outputs.limit.max_bytes_per_file"
 OUTPUTS_MAX_TOTAL_BYTES = f"{NAMESPACE}.outputs.limit.max_total_bytes"
 
-DISPOSAL_LANDED = f"{NAMESPACE}.disposal.landed"
+DISPOSAL_OUTCOME = f"{NAMESPACE}.disposal.outcome"
 DISPOSAL_CODE = f"{NAMESPACE}.disposal.code"
 DISPOSAL_DETAIL = f"{NAMESPACE}.disposal.detail"
 

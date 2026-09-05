@@ -59,7 +59,7 @@ from ._attributes import (
     CAPABILITIES,
     DISPOSAL_CODE,
     DISPOSAL_DETAIL,
-    DISPOSAL_LANDED,
+    DISPOSAL_OUTCOME,
     DURATION,
     EGRESS_ALLOW,
     EGRESS_ALLOW_COUNT,
@@ -227,7 +227,7 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
         recorded: dict[str, AttributeValue] = {
             **self._redaction.key(event.key),
             BACKEND: event.backend,
-            DISPOSAL_LANDED: event.landed,
+            DISPOSAL_OUTCOME: event.outcome,
             **without_none({DISPOSAL_CODE: None if failure is None else str(failure.code)}),
             # The backend's own sentence, which is a log line rather than something to parse. It
             # names infrastructure — an endpoint, a container id — so it crosses with the rest of
@@ -239,7 +239,7 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             1,
             {
                 BACKEND: event.backend,
-                DISPOSAL_LANDED: event.landed,
+                DISPOSAL_OUTCOME: event.outcome,
                 DISPOSAL_CODE: "" if failure is None else str(failure.code),
             },
         )

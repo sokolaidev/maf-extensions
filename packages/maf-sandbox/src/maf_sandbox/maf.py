@@ -201,7 +201,7 @@ class _SandboxToolCall:
     #: registering one there would have the removal sweep a sandbox this call never got. This is
     #: what a record joins on, so a refused acquire — and a call that read the store and
     #: returned before acquiring anything — still names the key its other events carry.
-    attempted: list[SandboxKey] = field(default_factory=list[SandboxKey])
+    touched: list[SandboxKey] = field(default_factory=list[SandboxKey])
     closed: bool = False
 
 
@@ -1395,8 +1395,8 @@ class SandboxToolSession:
         # the key is registered here too, or that call's `ToolCallEnded` names nothing and the
         # read it just recorded has no call to join to.
         call = _this_call(self)
-        if key is not None and call is not None and not call.closed and key not in call.attempted:
-            call.attempted.append(key)
+        if key is not None and call is not None and not call.closed and key not in call.touched:
+            call.touched.append(key)
         record(
             observer,
             StoreFileRead(
@@ -1514,9 +1514,9 @@ class SandboxToolSession:
                 "delete, and reaching it from here is exactly the sharing the scope refuses. "
                 "Take the key from session.key(), which names the call it is called in."
             )
-        if call is not None and not call.closed and key not in call.attempted:
+        if call is not None and not call.closed and key not in call.touched:
             # Before the acquire, so a refusal is still recorded as this call's ask.
-            call.attempted.append(key)
+            call.touched.append(key)
         per_call = self._router.effective_isolation_scope(self._spec) is IsolationScope.CALL
         if key.call_id and call is not None and per_call:
             # Recorded before the create rather than after it: a cancellation landing inside the
@@ -2262,11 +2262,10 @@ def sandboxed_tool(
                         ToolCallEnded(
                             tool=name,
                             kind=spec.kind,
-                            # Every key the call *asked* for, served or refused, so a refused
-                            # acquire's own record still joins to the call it belongs to.
-                            # `acquired` would name only the served ones, and only from the
-                            # point the cleanup ledger starts tracking them.
-                            keys=tuple(call.attempted),
+                            # Every key the call touched — acquired, refused, or only read the
+                            # store under — so each of its other events has a call to join to.
+                            # `acquired` would name the served ones alone.
+                            keys=tuple(call.touched),
                             seconds=time.monotonic() - started,
                             failure=None if failed is None else type(failed).__name__,
                             unclean=len(unclean),

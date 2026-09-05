@@ -174,7 +174,7 @@ def _every_event() -> list[SandboxEvent]:
             declarations=FAKE_BACKEND_DECLARATIONS,
             seconds=0.0,
         ),
-        SandboxDisposed(key=_KEY, backend="in-process", landed=True, failure=None, seconds=0.0),
+        SandboxDisposed(key=_KEY, backend="in-process", outcome="gone", failure=None, seconds=0.0),
         HostToolCalled(
             run_id="run-1",
             key=_KEY,
@@ -387,6 +387,23 @@ class TestAcquireIsRecorded:
 
         assert spec.labels == labels
 
+    def test_a_backend_whose_name_raises_does_not_lose_the_sandbox(self):
+        """An event's fields are evaluated in the *caller's* frame, before `record` is entered,
+        so a `name` property that raises escapes the containment an observer's own failure gets
+        — and discards a sandbox the acquire had already created."""
+
+        class _Unnameable(InProcessSandboxBackend):
+            @property
+            def name(self) -> str:
+                raise RuntimeError("this backend cannot say what it is called")
+
+        recorder = _Recorder()
+        router = _router(_Unnameable(), observer=recorder)
+
+        assert asyncio.run(router.acquire(_KEY, _SPEC)) is not None
+        # Recorded as something rather than not at all: the class name is what cannot fail.
+        assert recorder.one(SandboxAcquired).backend == "_Unnameable"
+
     def test_a_served_acquire_carries_the_posture_it_was_served_under(self):
         recorder = _Recorder()
         backend = InProcessSandboxBackend()
@@ -498,7 +515,7 @@ class TestDisposalIsRecorded:
 
         events = recorder.only(SandboxDisposed)
         assert [event.backend for event in events] == ["first", "second"]
-        assert all(event.landed and event.failure is None for event in events)
+        assert all(event.outcome == "gone" and event.failure is None for event in events)
 
     def test_a_disposal_a_cancel_took_is_still_recorded(self):
         """`CancelledError` is not an `Exception`, so an `except Exception` around the dispose
@@ -516,7 +533,7 @@ class TestDisposalIsRecorded:
             asyncio.run(router.dispose(_KEY))
 
         event = recorder.one(SandboxDisposed)
-        assert (event.backend, event.landed) == ("cancels", False)
+        assert (event.backend, event.outcome) == ("cancels", "unknown")
         assert event.failure is not None
         assert event.failure.code == "unknown"
         # The interruption is named rather than assumed to be a cancel: a disposal taken by an
@@ -542,6 +559,30 @@ class TestDisposalIsRecorded:
         assert event.failure is not None
         assert "interrupted by GeneratorExit" in event.failure.detail
 
+    def test_an_interrupted_disposal_does_no_record_work_with_no_observer(self):
+        """Record-only work must not run for a host that registered nothing to record to.
+
+        The payload is built in the caller's frame, so without the check it runs before
+        `_record_disposal` can take its own fast path — and building it reads `backend.name`,
+        which is somebody else's property. One raising `SystemExit` is outside the containment
+        tuple deliberately, so it would leave here in place of the interruption this was called
+        to report, on a router that is not observing at all.
+        """
+
+        class _CancelsAndCannotBeNamed(InProcessSandboxBackend):
+            @property
+            def name(self) -> str:
+                raise SystemExit("the process is going down")
+
+            async def dispose(self, key: SandboxKey) -> str | None:
+                raise asyncio.CancelledError
+
+        router = _router(_CancelsAndCannotBeNamed(), observer=None)
+
+        # The interruption the caller is owed, not the one the record went looking for.
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(router.dispose(_KEY))
+
     def test_a_backend_that_refuses_is_recorded_with_its_code(self):
         recorder = _Recorder()
         failure = DisposalFailure("refused", "the service said no")
@@ -550,7 +591,7 @@ class TestDisposalIsRecorded:
         asyncio.run(router.dispose(_KEY))
 
         event = recorder.one(SandboxDisposed)
-        assert event.landed is False
+        assert event.outcome == "may_remain"
         # Named by the backend that answered, the way the ledger's own entry is.
         assert event.failure == DisposalFailure("refused", "in-process: the service said no")
 
@@ -571,8 +612,8 @@ class TestDisposalIsRecorded:
         asyncio.run(router.dispose(_KEY))
 
         first, second = recorder.only(SandboxDisposed)
-        assert (first.backend, first.landed) == ("first", False)
-        assert (second.backend, second.landed, second.failure) == ("second", True, None)
+        assert (first.backend, first.outcome) == ("first", "may_remain")
+        assert (second.backend, second.outcome, second.failure) == ("second", "gone", None)
 
     def test_a_backend_that_raises_is_recorded_as_unknown(self):
         recorder = _Recorder()
@@ -583,7 +624,9 @@ class TestDisposalIsRecorded:
         asyncio.run(router.dispose(_KEY))
 
         event = recorder.one(SandboxDisposed)
-        assert event.landed is False
+        # A `dispose` that raised is not a backend reporting the sandbox still there: nobody
+        # got an answer, so the record says so rather than picking a side.
+        assert event.outcome == "unknown"
         assert event.failure is not None and event.failure.code == "unknown"
 
     def test_the_delete_that_answers_a_refused_acquire_is_recorded(self):
@@ -1329,7 +1372,7 @@ class TestTheCallIsRecorded:
 
         asyncio.run(_fn(_tool(router, build))())
 
-        assert recorder.one(SandboxDisposed).landed is True
+        assert recorder.one(SandboxDisposed).outcome == "gone"
         assert recorder.one(ToolCallEnded).unclean == 1
 
 
@@ -1372,6 +1415,9 @@ class TestARouterWithNoObserverPaysNothing:
             raise AssertionError("an event was built for a collection recording nowhere")
 
         monkeypatch.setattr(outputs_module, "OutputsCollected", _refuse)
+        # The event's *payload* too, not just its envelope: a `LandedOutput` per landed
+        # artifact is the part a collection would otherwise build and throw away.
+        monkeypatch.setattr(outputs_module, "LandedOutput", _refuse)
         sandbox = InProcessSandbox(seed_files={"/w/a.png": "1"})
 
         landed = asyncio.run(

@@ -251,7 +251,7 @@ class TestEveryEventReachesTheLogPipeline:
             )
         )
         observer.sandbox_disposed(
-            SandboxDisposed(key=KEY, backend="docker", landed=True, failure=None, seconds=0.1)
+            SandboxDisposed(key=KEY, backend="docker", outcome="gone", failure=None, seconds=0.1)
         )
         observer.tool_call_ended(
             ToolCallEnded(
@@ -524,7 +524,7 @@ class TestADisposalRecordsItsOutcome:
             SandboxDisposed(
                 key=KEY,
                 backend="acas",
-                landed=False,
+                outcome="may_remain",
                 failure=DisposalFailure(code="timeout", detail="the control plane did not answer"),
                 seconds=30.0,
             )
@@ -533,14 +533,14 @@ class TestADisposalRecordsItsOutcome:
         assert span.status.status_code is StatusCode.ERROR
         attributes = dict(span.attributes or {})
         assert attributes[f"{NAMESPACE}.disposal.code"] == "timeout"
-        assert attributes[f"{NAMESPACE}.disposal.landed"] is False
+        assert attributes[f"{NAMESPACE}.disposal.outcome"] == "may_remain"
 
     def test_a_disposal_fans_out_and_each_backend_is_its_own_record(self):
         """One `dispose(key)` reaches every registered backend, and each answers for itself."""
         recorded = build()
         for backend in ("docker", "acas", "wslc"):
             recorded.observer.sandbox_disposed(
-                SandboxDisposed(key=KEY, backend=backend, landed=True, failure=None, seconds=0.1)
+                SandboxDisposed(key=KEY, backend=backend, outcome="gone", failure=None, seconds=0.1)
             )
         assert recorded.span_names() == ["sandbox.dispose"] * 3
         assert recorded.counter(f"{NAMESPACE}.sandbox.disposals") == 3
@@ -549,12 +549,16 @@ class TestADisposalRecordsItsOutcome:
         failure = DisposalFailure(code="unreachable", detail="https://an-endpoint.example refused")
         default = build()
         default.observer.sandbox_disposed(
-            SandboxDisposed(key=KEY, backend="acas", landed=False, failure=failure, seconds=1.0)
+            SandboxDisposed(
+                key=KEY, backend="acas", outcome="may_remain", failure=failure, seconds=1.0
+            )
         )
         assert f"{NAMESPACE}.disposal.detail" not in default.attributes()
 
         asked = build(sensitive=True)
         asked.observer.sandbox_disposed(
-            SandboxDisposed(key=KEY, backend="acas", landed=False, failure=failure, seconds=1.0)
+            SandboxDisposed(
+                key=KEY, backend="acas", outcome="may_remain", failure=failure, seconds=1.0
+            )
         )
         assert "an-endpoint.example" in str(asked.attributes()[f"{NAMESPACE}.disposal.detail"])

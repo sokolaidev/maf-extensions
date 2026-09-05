@@ -68,7 +68,7 @@ def every_event() -> list[object]:
         SandboxDisposed(
             key=KEY,
             backend="docker",
-            landed=False,
+            outcome="may_remain",
             failure=DisposalFailure(code="timeout", detail="no answer"),
             seconds=0.2,
         ),
