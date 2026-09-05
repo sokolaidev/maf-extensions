@@ -21,6 +21,7 @@ import json
 import logging
 from collections.abc import Mapping
 from types import MappingProxyType
+from typing import Any
 
 import pytest
 from maf_sandbox import CallerContext, Egress, SandboxRouter
@@ -36,7 +37,7 @@ from maf_sandbox_bicep import (
     parse_sarif,
     safe_listed_path,
 )
-from maf_sandbox_bicep._tool import _BUILD_CMD, _LINT_CMD
+from maf_sandbox_bicep._tool import _BUILD_CMD, _LINT_CMD, _UNREAD_IS_NOT_A_PASS
 
 # ---------------------------------------------------------------------------
 # Fakes: a backend that records what the workload asked it to do
@@ -183,8 +184,14 @@ def _callable(tool):
     return getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
 
 
-def _run(tool, files: list[str]) -> str:
+def _items(tool, files: list[str]):
+    """Whatever the body answered with, unflattened — for the tests about the split itself."""
     return asyncio.run(_callable(tool)(files=files))
+
+
+def _run(tool, files: list[str]) -> str:
+    """The call-derived half of the answer, which is everything but the standing sentence."""
+    return str(_items(tool, files)[0].text)
 
 
 # ---------------------------------------------------------------------------
@@ -577,13 +584,13 @@ class TestConcurrentRounds:
     sources between its write and its compile.
     """
 
-    def _both(self, tool, first: list[str], second: list[str]):
+    def _both(self, tool, first: list[str], second: list[str]) -> list[str]:
         fn = _callable(tool)
 
         async def run():
             return await asyncio.gather(fn(files=first), fn(files=second))
 
-        return asyncio.run(run())
+        return [str(answer[0].text) for answer in asyncio.run(run())]
 
     def test_each_call_compiles_only_its_own_files(self):
         store = InMemoryStore({"a.bicep": "x", "b.bicep": "y"})
@@ -1234,6 +1241,159 @@ class TestFidesDeclarations:
         properties = self._properties()
         assert "confidentiality" not in properties
         assert "max_allowed_confidentiality" not in properties
+
+
+# ---------------------------------------------------------------------------
+# The result splits: a standing sentence is trusted, the call-derived half carries no label
+# ---------------------------------------------------------------------------
+
+
+class TestTheResultSplits:
+    """The tool answers with items, so a host that hides can reach one and not the other.
+
+    The `trusted` label is honest only while the sentence says nothing about the call and
+    reaches every return path, so most of what is pinned here is the second half.
+    """
+
+    def _label(self, item: Any) -> Any:
+        return (item.additional_properties or {}).get("security_label")
+
+    def _answer(self, files: list[str] | None = None, **kw: Any) -> Any:
+        store = kw.pop("store", None) or InMemoryStore({"main.bicep": "x"})
+        backend = kw.pop("backend", None) or _fake_backend()
+        return _items(_tool(store, backend, **kw), ["main.bicep"] if files is None else files)
+
+    def test_an_answer_is_the_report_and_the_standing_sentence(self):
+        answer = self._answer()
+
+        assert len(answer) == 2
+        assert "build(main.bicep)" in str(answer[0].text)
+        assert str(answer[1].text) == _UNREAD_IS_NOT_A_PASS
+
+    def test_the_standing_sentence_is_labelled_trusted(self):
+        assert self._label(self._answer()[-1]) == {
+            "integrity": "trusted",
+            "confidentiality": "public",
+        }
+
+    def test_the_call_derived_half_carries_no_label_of_its_own(self):
+        """A label on it would replace the call's own, confidentiality included, and those
+        values are the host's rather than this package's."""
+        assert self._label(self._answer()[0]) is None
+
+    def test_the_sentence_says_nothing_a_call_could_vary(self):
+        """Same sentence whatever ran: it is what the label rests on."""
+        clean = self._answer()
+        refused = self._answer(store=InMemoryStore({"main.tf": "x"}), files=["main.tf"])
+
+        assert str(clean[0].text) != str(refused[0].text)
+        assert str(clean[-1].text) == str(refused[-1].text)
+
+    def test_every_return_path_carries_it(self):
+        """The label is honest only where the sentence is on all of them, refusals included.
+
+        One entry per `return` the body has — the three the session refuses, the three the
+        arguments do, an empty call, and the joined phase reports.
+        """
+
+        async def unlistable(_store: object) -> list[Any]:
+            raise RuntimeError("the store is unreachable")
+
+        unlistable_backend = _fake_backend()
+        listing_fails = make_bicep_tools(
+            SandboxRouter([unlistable_backend], min_isolation=unlistable_backend.isolation),
+            InMemoryStore({"main.bicep": "x"}),
+            "devops-engineer",
+            CallerContext(
+                current_scope=lambda: "scope-a",
+                current_thread_id=lambda: "thread-1",
+                list_files=unlistable,
+            ),
+            image="acr.io/bicep:1",
+        )[0]
+
+        answers = {
+            "no thread is bound": self._answer(thread_id=None),
+            "the extension is refused": self._answer(
+                store=InMemoryStore({"main.tf": "x"}), files=["main.tf"]
+            ),
+            "the listing cannot be read": _items(listing_fails, ["main.bicep"]),
+            "the name is unsafe": self._answer(
+                store=InMemoryStore({"a;$(id).bicep": "x"}), files=["a;$(id).bicep"]
+            ),
+            "the name is not listed": self._answer(files=["other.bicep"]),
+            "the sandbox is unavailable": self._answer(
+                backend=_fake_backend(acquire_error=RuntimeError("no capacity"))
+            ),
+            "nothing was named": self._answer(files=[]),
+            "the compiler ran": self._answer(),
+        }
+
+        for path, answer in answers.items():
+            assert str(answer[-1].text) == _UNREAD_IS_NOT_A_PASS, path
+            assert self._label(answer[0]) is None, path
+            assert self._label(answer[-1]) == {
+                "integrity": "trusted",
+                "confidentiality": "public",
+            }, path
+
+
+class TestWhatAFidesHostSeesOfASplitResult:
+    """Driven against the real middleware, because the value of the split is entirely its."""
+
+    def _processed(self, tool: Any, files: list[str]) -> Any:
+        from agent_framework import FunctionInvocationContext
+        from agent_framework.security import LabelTrackingFunctionMiddleware
+
+        middleware = LabelTrackingFunctionMiddleware()
+        arguments = {"files": files}
+        context = FunctionInvocationContext(function=tool, arguments=arguments)
+
+        async def call_next() -> None:
+            context.result = await tool.invoke(arguments=arguments)
+
+        asyncio.run(middleware.process(context, call_next))
+        seen = [
+            "hidden" if (item.additional_properties or {}).get("_variable_reference") else item.text
+            for item in context.result
+        ]
+        return seen, context.metadata["result_label"], middleware.get_context_label()
+
+    def _tool_answering_one_string(self, text: str) -> Any:
+        """What this kind was before the split: the same declaration over a single string."""
+        from agent_framework import tool as as_tool
+
+        async def bicep_validate(files: list[str]) -> str:
+            return text
+
+        return as_tool(
+            name=BICEP_VALIDATE_TOOL_NAME,
+            additional_properties={"source_integrity": "untrusted"},
+        )(bicep_validate)
+
+    def test_the_sentence_stays_readable_while_the_diagnostics_are_hidden(self):
+        tool = _tool(InMemoryStore({"main.bicep": "x"}), _fake_backend())
+
+        seen, _, _ = self._processed(tool, ["main.bicep"])
+
+        assert seen == ["hidden", _UNREAD_IS_NOT_A_PASS]
+
+    def test_one_string_would_have_hidden_the_sentence_with_it(self):
+        """The counterfactual: the same host, the same declaration, one item."""
+        seen, _, _ = self._processed(
+            self._tool_answering_one_string("build(main.bicep): 0 diagnostics"), ["main.bicep"]
+        )
+
+        assert seen == ["hidden"]
+
+    def test_the_conversation_stays_trusted(self):
+        """Only visible items taint, and the visible one is a constant this package ships."""
+        tool = _tool(InMemoryStore({"main.bicep": "x"}), _fake_backend())
+
+        _, result, conversation = self._processed(tool, ["main.bicep"])
+
+        assert str(result.integrity) == "untrusted"
+        assert str(conversation.integrity) == "trusted"
 
 
 # ---------------------------------------------------------------------------

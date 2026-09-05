@@ -41,6 +41,12 @@ What is Bicep-specific — the command templates, the accepted extensions, the S
 
 Its companion artefacts live outside this package, because a container image and a registry are not Python: a pinned Bicep image on Azure Linux, and the registry and pull identity that serve it. The hard-won behaviours of the pinned CLI — SARIF on stderr for `build` but stdout for `lint`, `build-params` for `.bicepparam`, config discovery only by walking up from the source file — are documented where they bite, in [`_tool.py`](https://github.com/sokolaidev/maf-extensions/blob/main/packages/maf-sandbox-bicep/src/maf_sandbox_bicep/_tool.py).
 
+## Upgrading to 0.14
+
+**`bicep_validate` answers with a list of content items rather than one string.** The first item is what it always returned — the diagnostics, or the sentence saying why there are none. The second is a standing sentence about the tool, labelled `trusted`, so a host whose information-flow middleware hides an untrusted result hides the diagnostics and leaves that sentence readable. A host reading the tool's result itself — off `FunctionResultContent.result`, or from `invoke(..., skip_parsing=True)` — gets a list where it got a `str`, and `str()` of a list renders item reprs rather than their text. Join the items' `.text` instead. Nothing changes for a host that only lets the model read the result.
+
+Why the sentence exists: an untrusted result the framework hides is replaced by a variable reference, which reads exactly like a compile that found nothing. The sentence says that a result the model cannot read is not a clean validation, and it is on every return path — refusals included — because that is what licenses labelling it `trusted` at all.
+
 ## Upgrading to 0.9
 
 `0.9.0` requires `maf-sandbox` 0.19, which made the egress mode a thing a workload declares rather than a thing a backend is merely checked against.

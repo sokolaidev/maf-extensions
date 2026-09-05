@@ -55,7 +55,14 @@ def test_every_copy_is_byte_identical():
 #: Everything a sample must take from the scaffold rather than write again. `require_env_vars`
 #: was written out eight times before ([#209](https://github.com/sokolaidev/maf-extensions/issues/209));
 #: `quoted` and the tag were written out once more in sample 13 before #314 moved them here.
-_HELPERS = ("require_env_vars", "quoted", "tool_results", "evidence", "conversation_id")
+_HELPERS = (
+    "require_env_vars",
+    "quoted",
+    "tool_results",
+    "result_text",
+    "evidence",
+    "conversation_id",
+)
 
 
 def _parsed(sample: Path) -> ast.Module:
@@ -303,6 +310,33 @@ class TestToolResultsReadsWhatTheModelDidNotWrite:
     def test_a_result_that_is_not_a_string_is_rendered_as_one(self):
         reply = _turn(_call("execute_code", "a"), _result("a", 42))
         assert scaffold.tool_results(reply, "execute_code") == ["42"]
+
+    def test_a_result_split_into_items_reads_as_the_text_of_each(self):
+        """A tool that labels part of its result answers with items, and `str` of that list
+        renders reprs — which no check looking for the tool's own words can recognise."""
+        reply = _turn(
+            _call("bicep_validate", "a"),
+            _result("a", [SimpleNamespace(text="build(main.bicep): no diagnostics")]),
+        )
+        assert scaffold.tool_results(reply, "bicep_validate") == [
+            "build(main.bicep): no diagnostics"
+        ]
+
+
+class TestResultTextReadsEitherShape:
+    def test_a_string_is_itself(self):
+        assert scaffold.result_text("build(main.bicep): no diagnostics") == (
+            "build(main.bicep): no diagnostics"
+        )
+
+    def test_items_are_joined_in_order(self):
+        items = [SimpleNamespace(text="the diagnostics"), SimpleNamespace(text="the sentence")]
+        assert scaffold.result_text(items) == "the diagnostics\nthe sentence"
+
+    def test_an_item_carrying_no_text_contributes_none(self):
+        """A hidden item is a reference rather than words, and rendering `None` as the string
+        "None" would put a word in the evidence that no tool wrote."""
+        assert scaffold.result_text([SimpleNamespace(text=None)]) == ""
 
 
 class TestEvidenceFencesTheToolSOwnOutput:

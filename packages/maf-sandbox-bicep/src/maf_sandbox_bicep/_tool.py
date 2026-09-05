@@ -19,6 +19,7 @@ from collections.abc import Mapping
 from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
+from agent_framework import Content
 from maf_sandbox import (
     CallerContext,
     Egress,
@@ -31,6 +32,7 @@ from maf_sandbox import (
 )
 from maf_sandbox.maf import (
     SandboxToolSession,
+    labelled_result_item,
     positions_holding_hidden_content,
     sandboxed_tool,
 )
@@ -170,6 +172,17 @@ _LINT_CMD = "bicep lint {path} --diagnostics-format sarif || true"
 _PARAM_SUFFIX = ".bicepparam"
 _ACCEPTED_SUFFIXES = (".bicep", _PARAM_SUFFIX)
 
+#: Closes every result, as an item of its own labelled trusted. A host that hides the
+#: diagnostics leaves the model a variable reference that reads exactly like a clean run, so the
+#: sentence says what the rest of the result is and what an unread one is worth. The label holds
+#: only while nothing a call produced reaches the sentence and it stays on every return path,
+#: refusals included, which is why one funnel appends it rather than each `return`.
+_UNREAD_IS_NOT_A_PASS = (
+    "The rest of this result is the compiler's own text, or the reason there is none. A result "
+    "you cannot read is not a clean validation — report the files you named as unvalidated "
+    "rather than as passing."
+)
+
 
 def _build_command_for(name: str) -> str:
     """The build-phase command that matches the file kind."""
@@ -275,50 +288,17 @@ def _bicep_validate_tool(
     session: SandboxToolSession,
     store: AgentFileStore,
     timeout: int,
-) -> Callable[..., Awaitable[str]]:
+) -> Callable[..., Awaitable[list[Content]]]:
     """Build the ``bicep_validate`` body for one attached tool.
 
     Defined at module level rather than nested inside :func:`make_bicep_tools`, and that is
-    not a style choice: the function below's **docstring is the tool's description** — MAF
+    not a style choice: ``bicep_validate``'s **docstring is the tool's description** — MAF
     passes ``__doc__`` through verbatim, indentation and all — so nesting this one level
     deeper would re-indent every line of what the model reads at call time.
     """
 
-    async def bicep_validate(
-        files: list[str],
-    ) -> str:
-        """Run ``bicep build`` and ``bicep lint`` on Bicep files inside a sandboxed VM.
-
-        Validates that the named files pass the Bicep compiler and linter under the repo
-        ``bicepconfig.json`` (T2 — compiler truth rather than LLM self-check).  Call this
-        after writing the files with ``file_access_write`` and before reporting them.
-
-        **Pass every file of the set in ONE call, including modules in subfolders.**  The
-        sandbox starts empty and receives only the files you list, so a ``module`` or a
-        parameter file's ``using`` that points at a file you left out is reported as a
-        missing file — a diagnostic about your call, not about your IaC.  For a typical
-        template set that means all of them together::
-
-            ["infra/main.bicep",
-             "infra/main.bicepparam",
-             "infra/modules/storage.bicep",
-             "infra/modules/network.bicep"]
-
-        Validating one file at a time is the common mistake here and produces
-        ``BCP091 … could not find a part of the path`` for files that exist perfectly well
-        in the file store.
-
-        Args:
-            files: Store-relative paths to validate — the whole set that compiles
-                together, not just the entry point.  Only ``.bicep`` and ``.bicepparam``
-                extensions are accepted.
-
-        Returns:
-            A structured diagnostics report (build + lint output parsed from SARIF).
-            Zero diagnostics means the files are T2-clean.  If the sandbox is unavailable
-            the tool returns an error message so the run degrades to T0 rather than
-            blocking.
-        """
+    async def report(files: list[str]) -> str:
+        """The call-derived half of the answer: the diagnostics, or why there are none."""
         # Scope and thread come from the host's request context — never from model input:
         # a model-supplied scope would let one conversation address another's sandbox.
         # `session.key()` is where that rule lives; it answers with the message to return
@@ -517,6 +497,48 @@ def _bicep_validate_tool(
                 )
 
         return "\n".join(results) if results else "No files validated."
+
+    async def bicep_validate(
+        files: list[str],
+    ) -> list[Content]:
+        """Run ``bicep build`` and ``bicep lint`` on Bicep files inside a sandboxed VM.
+
+        Validates that the named files pass the Bicep compiler and linter under the repo
+        ``bicepconfig.json`` (T2 — compiler truth rather than LLM self-check).  Call this
+        after writing the files with ``file_access_write`` and before reporting them.
+
+        **Pass every file of the set in ONE call, including modules in subfolders.**  The
+        sandbox starts empty and receives only the files you list, so a ``module`` or a
+        parameter file's ``using`` that points at a file you left out is reported as a
+        missing file — a diagnostic about your call, not about your IaC.  For a typical
+        template set that means all of them together::
+
+            ["infra/main.bicep",
+             "infra/main.bicepparam",
+             "infra/modules/storage.bicep",
+             "infra/modules/network.bicep"]
+
+        Validating one file at a time is the common mistake here and produces
+        ``BCP091 … could not find a part of the path`` for files that exist perfectly well
+        in the file store.
+
+        Args:
+            files: Store-relative paths to validate — the whole set that compiles
+                together, not just the entry point.  Only ``.bicep`` and ``.bicepparam``
+                extensions are accepted.
+
+        Returns:
+            A structured diagnostics report (build + lint output parsed from SARIF).
+            Zero diagnostics means the files are T2-clean.  If the sandbox is unavailable
+            the tool returns an error message so the run degrades to T0 rather than
+            blocking.
+        """
+        # At the funnel rather than at each `return` in `report`: the sentence's label is
+        # honest only where it is on every path, refusals included.
+        return [
+            Content.from_text(await report(files)),
+            labelled_result_item(_UNREAD_IS_NOT_A_PASS, SourceIntegrity.TRUSTED),
+        ]
 
     return bicep_validate
 

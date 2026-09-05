@@ -43,7 +43,14 @@ import subprocess
 import sys
 from typing import TYPE_CHECKING
 
-from _scaffold import MEASURED, installed_versions, quoted, require_env_vars, tool_results
+from _scaffold import (
+    MEASURED,
+    installed_versions,
+    quoted,
+    require_env_vars,
+    result_text,
+    tool_results,
+)
 from agent_framework import Agent, FileAccessProvider, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatCompletionClient
 from maf_sandbox import Egress, Isolation, SandboxRouter
@@ -217,12 +224,12 @@ def validations(reply: object, name: str) -> int:
     The container count cannot answer this: a turn that never validates leaves the previous
     turn's container standing, so the count still reads 1 while no second `acquire` happened.
 
-    Counting *requests* would not answer it either. `bicep_validate` returns an error string
-    without touching the sandbox when no conversation is bound, when a name has the wrong
-    suffix, and when a name is not in its file listing — so a turn whose only validator call
-    was rejected would score 1 having acquired nothing. A result whose *lines* start with both
-    compiler phases is one that reached the sandbox — anchored, because a rejection echoes the
-    caller's own filename back, and a name carrying those markers would otherwise count.
+    Counting *requests* would not answer it either. `bicep_validate` refuses without touching the
+    sandbox when no conversation is bound, when a name has the wrong suffix, and when a name is not
+    in its file listing — so a turn whose only validator call was rejected would score 1 having
+    acquired nothing. A result whose *lines* start with both compiler phases is one that reached the
+    sandbox — anchored, because a rejection echoes the caller's own filename back, and a name
+    carrying those markers would otherwise count.
     """
     return sum(1 for result in tool_results(reply, name) if _PHASES.search(result))
 
@@ -381,7 +388,7 @@ async def run() -> int:
         #
         # It costs one more `acquire`, on the same key, which is why the count is printed again.
         authored = await read_or_empty(store, BICEP_FILE)
-        baseline = str(
+        baseline = result_text(
             await bicep_validate.invoke(arguments={"files": [BICEP_FILE]}, skip_parsing=True)
         )
         as_authored = faults_left(baseline)
@@ -417,7 +424,7 @@ async def run() -> int:
         # is why the container count is printed again: turn 2 finding the sandbox warm was not
         # a one-off.
         print("== What the compiler says about the file the model left ==\n")
-        verdict = str(
+        verdict = result_text(
             await bicep_validate.invoke(arguments={"files": [BICEP_FILE]}, skip_parsing=True)
         )
         print(quoted("\n".join(f"  {line}" for line in verdict.splitlines())))
