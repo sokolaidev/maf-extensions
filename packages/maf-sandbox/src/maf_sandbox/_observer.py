@@ -191,6 +191,11 @@ class StoreFileRead(SandboxEvent):
     ``characters`` is the length of the text that came back, not a byte count: the store answers
     with ``str`` and nothing here encodes it to find out.  It is zero for a read that was
     refused, and for one whose file had gone.
+
+    ``refused`` says **no text crossed**, rather than naming who stopped it: the store raised,
+    or a cancel took the read away. Both leave the call without content, which is the fact a
+    record is being kept of; a file that simply was not there is ``refused=False`` with zero
+    characters, because the store answered.
     """
 
     key: SandboxKey | None
@@ -248,19 +253,24 @@ class ToolCallEnded(SandboxEvent):
     """One sandboxed tool call, from the body's first line to the end of its reclaim.
 
     The record every other event of that call joins to: ``seconds`` covers the body *and* the
-    removal the caller waits for, which is what the call actually cost.  ``key`` is the sandbox
-    the call acquired, and ``None`` for one that acquired none — a body refused before it
-    reached a backend, or one that never asked.
+    removal the caller waits for, which is what the call actually cost.
 
-    ``failure`` is the class name of what the body raised, or ``None`` where it returned.
-    ``unclean`` counts what a transport noted about the sandbox during the call — a stop that
-    did not reach everything a program started.  What the framework then *did* about it arrives
-    separately, as :class:`SandboxDisposed`, because every disposal goes through the router.
+    ``keys`` is **every** sandbox the call acquired, in the order it acquired them, and empty
+    for a call that acquired none — a body refused before it reached a backend, or one that
+    never asked.  A tuple rather than one key because a call may reach more than one sandbox
+    (:attr:`CallRecord.acquired` is a mapping for that reason), and naming only the first would
+    leave the others' acquire and disposal records with nothing to join to.
+
+    ``failure`` is the class name of what the **body** raised, or ``None`` where it returned. It
+    is read before the reclaim runs, so a reclaim that raises on its way out does not overwrite
+    what the body did; the reclaim's own trouble arrives as ``unclean`` and, where a disposal
+    was asked for, as :class:`SandboxDisposed`.  ``unclean`` counts what a transport noted about
+    the sandbox during the call — a stop that did not reach everything a program started.
     """
 
     tool: str
     kind: str
-    key: SandboxKey | None
+    keys: tuple[SandboxKey, ...]
     seconds: float
     failure: str | None
     unclean: int

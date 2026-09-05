@@ -812,6 +812,11 @@ class _Called:
     source: SourceIntegrity | None = None
     sink: str | None = None
     identity: Identity | None = None
+    #: What *this* call put on the wire, framing included, and zero unless it delivered.
+    #: Read from here rather than differenced against the run's ledger: calls of one run may
+    #: overlap, so two that start at the same total would each report the other's bytes as
+    #: their own, and the one finishing second would report both.
+    delivered_bytes: int = 0
 
 
 class HostToolRun:
@@ -1048,7 +1053,6 @@ class HostToolRun:
                 return await self._run_host_tool_call(name, arguments, framing_bytes=framing_bytes)
         called = _Called()
         started = time.monotonic()
-        delivered_before = self._delivered_bytes
         outcome: HostToolOutcome = "failed"
         refusal: str | None = None
         try:
@@ -1081,7 +1085,7 @@ class HostToolRun:
                     identity=called.identity,
                     outcome=outcome,
                     refusal=refusal,
-                    response_bytes=self._delivered_bytes - delivered_before,
+                    response_bytes=called.delivered_bytes,
                     calls=self._calls,
                     seconds=time.monotonic() - started,
                 ),
@@ -1216,7 +1220,7 @@ class HostToolRun:
         self._delivered += 1
         delivered = False
         try:
-            outcome = await self._deliver(name, func, provided, limits, framing_bytes)
+            outcome = await self._deliver(name, func, provided, limits, framing_bytes, called)
             delivered = outcome.ok
             return outcome
         finally:
@@ -1234,6 +1238,7 @@ class HostToolRun:
         provided: dict[str, Any],
         limits: TransferLimits,
         framing_bytes: int,
+        called: _Called | None = None,
     ) -> HostToolCallResult:
         """Validate, call, serialize and cap, with a response slot already reserved.
 
@@ -1329,4 +1334,6 @@ class HostToolRun:
                 f"this run's total response cap ({limits.max_total_bytes} bytes)"
             )
         self._delivered_bytes += crossing
+        if called is not None:
+            called.delivered_bytes = crossing
         return HostToolCallResult(value_json=encoded)
