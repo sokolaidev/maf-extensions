@@ -2792,6 +2792,19 @@ class TestWhatAnEmptyOutputMeans:
         assert result.stdout == ""
         assert "larger than the host will read" in result.stderr
 
+    def test_the_note_names_no_size_so_its_presence_is_the_whole_signal(self):
+        """A withholding caller renders this note whole, so a number in it would hand back a
+        size the guest chose by how much it printed.
+
+        The note is a threshold crossing either way, which is one bit; naming the count or the
+        cap would make it a measurement of the output instead.
+        """
+        limits = TransferLimits(max_bytes_per_file=64, max_total_bytes=32, max_files=4)
+        guest = _ScriptedGuest([], output="x" * 200)
+        result = _run(guest, HostToolRun(_registry(response_limits=limits)))
+
+        assert not any(character.isdigit() for character in result.stderr), result.stderr
+
     def test_a_timed_out_run_says_why_it_is_quoting_nothing(self):
         """ "Output so far:" followed by nothing reads as a program that printed nothing.
 
