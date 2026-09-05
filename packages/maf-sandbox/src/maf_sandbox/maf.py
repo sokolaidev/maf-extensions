@@ -67,6 +67,7 @@ from ._protocol import (
     SandboxSpec,
     SourceChannel,
     SourceIntegrity,
+    weakest_integrity,
 )
 from ._purger import SandboxPurger
 from ._reclaim import (
@@ -1096,6 +1097,7 @@ class SandboxToolSession:
         name: str,
         logger: logging.Logger,
         output_sink: OutputSink | None = None,
+        file_store_provenance: FileStoreProvenance | None = None,
     ) -> None:
         self._router = router
         self._context = context
@@ -1104,6 +1106,7 @@ class SandboxToolSession:
         self._name = name
         self._logger = logger
         self._output_sink = output_sink
+        self._file_store_provenance = file_store_provenance
         self._log_prefix = _prefixed(name)
 
     @property
@@ -1255,13 +1258,19 @@ class SandboxToolSession:
         the word ``None`` into a sandbox is not an answer.  A failure to read answers with the
         sentence a caller returns, for the reason the listing does.
 
-        **The label is the listing's, so it is as old as the listing.**  Nothing here re-reads the
-        host's record after the bytes arrive, and MAF runs tool calls concurrently, so a file the
-        host's floor called ``trusted`` at listing time can be rewritten by the agent's own
-        ``file_access_write`` before this read returns and the model's bytes arrive under the old
-        label.  Only a ``trusted`` floor is exposed — an unestablished or untrusted entry has
-        nowhere weaker to go — so a host wiring ``floor=SourceIntegrity.TRUSTED`` is claiming the
-        store is not written under a read, not merely that its unrecorded paths are trustworthy.
+        **The label is checked across the read, not taken from the listing.**  A listing's
+        label is as old as the listing, and MAF runs tool calls concurrently, so the record is
+        sampled either side of ``store.read`` through
+        :meth:`FileStoreProvenance.state_of`, which answers both under one lock.  An unchanged
+        count means the record held
+        still for the whole read and its answer is folded with the listing's; a changed one
+        means nothing can be said about these bytes, and they carry no label at all.
+
+        Without a record on the session the listing's label stands, and a host wiring
+        ``floor=SourceIntegrity.TRUSTED`` is then claiming the store is not written under a read
+        rather than merely that its unrecorded paths are trustworthy.  A ``trusted`` floor still
+        answers for bytes written by a call that has not returned, which is the one thing the
+        record cannot see.
 
         ``at`` is where the caller got the name — ``"files[1]"`` — and ``hidden`` says the
         framework rewrote that argument, which is what makes the refusal render the position
@@ -1278,6 +1287,7 @@ class SandboxToolSession:
         """
         from agent_framework import Content
 
+        before = self._recorded_state(listed.name)
         try:
             text = await store.read(listed.name)
         except Exception as exc:  # noqa: BLE001
@@ -1288,11 +1298,47 @@ class SandboxToolSession:
             return f"Error: {shown} could not be read from the file store"
         if text is None:
             return None
+        integrity = self._folded_integrity(listed, before)
         properties: dict[str, Any] = {}
-        if listed.integrity is not None:
+        if integrity is not None:
             # Not `security_label` — see `SOURCE_INTEGRITY_PROPERTY` for why.
-            properties[SOURCE_INTEGRITY_PROPERTY] = str(listed.integrity)
+            properties[SOURCE_INTEGRITY_PROPERTY] = str(integrity)
         return Content.from_text(text, additional_properties=properties)
+
+    def _recorded_state(self, name: str) -> tuple[SourceIntegrity | None, int]:
+        """What the host's record says about ``name``, and how many times it has moved.
+
+        Raises:
+            ValueError: what :meth:`FileStoreProvenance.integrity_of` raises for a ``trusted``
+                floor no middleware observes.  A host that folded the same record into its
+                listing meets this at listing time instead; one that wired the record here and
+                not there meets it here, which is the first moment it can be told.
+        """
+        record = self._file_store_provenance
+        return (None, 0) if record is None else record.state_of(name)
+
+    def _folded_integrity(
+        self, listed: ListedFile, before: tuple[SourceIntegrity | None, int]
+    ) -> SourceIntegrity | None:
+        """The listing's label folded with what the record said across the read.
+
+        **A reading either side is not enough, and the count is what closes it.**  A path can be
+        recorded and then forgotten while one read is in flight, which leaves both readings
+        equal and neither of them true of the moment the bytes were captured — the model's write
+        happened between them.  The count :meth:`FileStoreProvenance.state_of` answers with only
+        goes up, so an unchanged one is the thing two equal readings are not: proof that nothing
+        happened.
+
+        Where it did change, this answers ``None``.  *Unestablished* is what a reader that
+        cannot say honestly says, and it is what :func:`weakest_integrity` already treats as
+        beating every level.
+        """
+        if self._file_store_provenance is None:
+            return listed.integrity
+        integrity, generation = before
+        if generation != self._recorded_state(listed.name)[1]:
+            return None
+        return weakest_integrity((listed, ListedFile(listed.name, integrity)))
 
     async def acquire(self, key: SandboxKey) -> Sandbox | str:
         """A running sandbox for ``key``, or the message to return when there is none.
@@ -1752,6 +1798,7 @@ def sandboxed_tool(
     nothing_survives_from: Iterable[SourceChannel] = (),
     on_reclaim_failure: Callable[[ReclaimFailure], Awaitable[None]] | None = None,
     reclaim_timeout: float | None = None,
+    file_store_provenance: FileStoreProvenance | None = None,
     logger: logging.Logger | None = None,
 ) -> list[Any]:
     """Return the one-tool list for a sandbox workload, or ``[]`` when no sandbox is available.
@@ -1847,6 +1894,10 @@ def sandboxed_tool(
         output_sink: Where this workload's landing artifacts go, threaded into the derivation
             above, carried on the session, and passed on to
             :func:`~maf_sandbox.collect_outputs` by the workload itself.
+        file_store_provenance: The host's :class:`~maf_sandbox.FileStoreProvenance`, so
+            :meth:`SandboxToolSession.read_file` folds it around the read rather than trusting a
+            label as old as the listing. Pass the **same** record the listing callable folds.
+            Left unset, the listing's label stands.
         also_carries_out: Passed to :func:`sandbox_tool_declarations`; ignored when
             ``declarations`` is given. For a workload carrying something out through a channel
             the spec cannot show — a wired host-tool registry, say — so the confidentiality
@@ -1953,6 +2004,7 @@ def sandboxed_tool(
         name=name,
         logger=records,
         output_sink=output_sink,
+        file_store_provenance=file_store_provenance,
     )
     properties = (
         dict(declarations)
