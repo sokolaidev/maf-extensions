@@ -47,6 +47,7 @@ __all__ = [
     "SandboxArtifactNameCollision",
     "SandboxArtifactNameInvalid",
     "SandboxLandingNotConfined",
+    "SandboxLandingNotText",
     "SandboxOutputError",
     "SandboxOutputMissing",
     "SandboxOutputNotConfined",
@@ -151,6 +152,16 @@ class SandboxLandingNotConfined(SandboxOutputError):
     """
 
 
+class SandboxLandingNotText(SandboxOutputError):
+    """A sink that holds text was handed an artifact whose bytes are not valid UTF-8.
+
+    Raised rather than lossily decoded: a destination keyed by text — an
+    ``agent_framework`` ``AgentFileStore``, say — has nowhere to put the bytes that did not
+    decode, and landing a mangled copy under the declared name would report success for a
+    file the model then reads back wrong.
+    """
+
+
 class SandboxOutputSinkRequired(SandboxOutputError):
     """A spec declares an output that lands, and no sink was supplied to land it in."""
 
@@ -177,12 +188,19 @@ class Artifact:
     has no use for.  ``kind`` is the spec's, so a host can route by workload without being told
     twice.  ``media_type`` is whatever the kind declared, never sniffed: sniffing would let
     guest-produced content decide how the host handles it.
+
+    ``call_id`` is the host-minted id of the call that produced this artifact, for a sink that
+    keeps each call's landings apart — :func:`~maf_sandbox.maf.make_file_store_sink` lands under
+    it.  It is beside :attr:`name` rather than inside it because ``name`` is the *declared*
+    spelling and every sink that ignores this field must keep receiving it unchanged.  ``None``
+    where the caller passed none, which is every sink built before this field existed.
     """
 
     name: str
     content: bytes
     kind: str
     media_type: str | None
+    call_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -220,6 +238,11 @@ class OutputSink:
     flag on :class:`LandedArtifact` would be a check every consumer has to remember to make,
     and one will not.
 
+    ``per_call`` is the sink's claim that it lands each call's artifacts under a folder named
+    by :attr:`Artifact.call_id`, so a kind may say *where* a call's files went without reading
+    :attr:`LandedArtifact.display` — a string the sink composed from the guest's own bytes.  A
+    sink that ignores ``call_id`` leaves this false and no kind says anything about a folder.
+
     There is deliberately **no confidentiality cap here**.  That value is an opaque
     host-vocabulary string with no ordering, so nothing in a library can rank two of them:
     there is one value from one source — the host's outbound cap, supplied once where the
@@ -228,6 +251,7 @@ class OutputSink:
 
     deliver: Callable[[Artifact], Awaitable[LandedArtifact]]
     normalization: NameNormalization = NameNormalization.NFC
+    per_call: bool = False
 
 
 def _landed_display(artifact: Artifact, _destination: Path) -> str:
@@ -615,6 +639,7 @@ async def _read_all(
     spec: SandboxSpec,
     outputs: tuple[tuple[DeclaredOutput, int], ...],
     sink: OutputSink,
+    call_id: str | None,
 ) -> tuple[Artifact, ...]:
     """Read every landing output into memory, re-applying the caps to the bytes that arrived.
 
@@ -640,6 +665,7 @@ async def _read_all(
                 content=content,
                 kind=spec.kind,
                 media_type=declared.media_type,
+                call_id=call_id,
             )
         )
     return tuple(artifacts)
@@ -651,6 +677,7 @@ async def collect_outputs(
     *,
     sink: OutputSink | None = None,
     outputs: tuple[DeclaredOutput, ...] = (),
+    call_id: str | None = None,
 ) -> tuple[LandedArtifact, ...]:
     """Pull the declared outputs and land the ones that land, in declaration order.
 
@@ -680,9 +707,14 @@ async def collect_outputs(
             a workload whose artifact names are not knowable when its tool is built; it is
             refused unless the spec set ``outputs_named_at_call_time``, so a kind cannot
             quietly collect paths its attach-time declarations never admitted to.
+        call_id: This call's own id, stamped onto every :class:`Artifact` so a sink can keep
+            one call's landings apart from the next's. A kind reads it off the id its
+            per-call guest directory is named by. Required — before the sandbox is touched —
+            by a sink declaring :attr:`OutputSink.per_call`, and ignored by every other.
 
     Raises:
-        ValueError: when ``outputs`` is passed and the spec does not admit call-time names.
+        ValueError: when ``outputs`` is passed and the spec does not admit call-time names, and
+            when a ``per_call`` sink is given nothing to name a folder with.
         SandboxOutputSinkRequired: when an output lands and no sink was supplied.
         SandboxOutputMissing: when a ``required`` output is not there, naming it.
         SandboxOutputNotConfined: when a declared path resolves outside ``spec.work_dir``.
@@ -707,6 +739,15 @@ async def collect_outputs(
     landing = _landing(declared_outputs)
     if landing and sink is None:
         raise missing_sink_refusal(spec, landing, asked_by=collect_outputs.__name__)
+    if landing and sink is not None and sink.per_call and call_id is None:
+        # With the sink's other refusals, before anything is read: a sink that lands per call
+        # refuses each artifact for want of an id, and reaching that inside the delivery loop
+        # would leave the earlier artifacts landed.
+        raise ValueError(
+            f"the {spec.kind!r} workload passed no call_id to {collect_outputs.__name__} and "
+            "its sink lands each call's artifacts under one. Pass the id this call's own "
+            "directory is named by, or supply a sink that does not set per_call."
+        )
     _check_declared_names(declared_outputs, sink)
 
     to_read = await _stat_and_cap(sandbox, spec, declared_outputs)
@@ -715,6 +756,6 @@ async def collect_outputs(
     assert sink is not None  # non-empty only if something lands, which was refused above
 
     landed: list[LandedArtifact] = []
-    for artifact in await _read_all(sandbox, spec, to_read, sink):
+    for artifact in await _read_all(sandbox, spec, to_read, sink, call_id):
         landed.append(await sink.deliver(artifact))
     return tuple(landed)
