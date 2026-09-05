@@ -34,7 +34,7 @@ dependencies = [
     # maf-sandbox base with no SandboxObserver in it, which fails at import. The number itself
     # is below, and `scripts/set_dependents_range.py` moves it — so this says which release the
     # floor is for, never which release that is.
-    "maf-sandbox>=0.34.0,<0.35",
+    "maf-sandbox>=0.34.0,<0.36",
     # The OpenTelemetry **API**, never the SDK: which exporter runs, and whether one runs at
     # all, belongs to the application. A host with no SDK installed gets the API's no-op
     # implementations and pays nothing.

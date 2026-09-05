@@ -29,7 +29,7 @@ before running this.
 #     "agent-framework-openai",
 #     "maf-sandbox-codeact",
 #     "maf-sandbox-wslc",
-#     "maf-sandbox>=0.33",
+#     "maf-sandbox>=0.34",
 # ]
 # ///
 
