@@ -50,6 +50,7 @@ import json
 import logging
 import math
 import posixpath
+import string
 import sys
 import threading
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
@@ -1774,6 +1775,140 @@ async def _reclaim_the_call(
             raise
 
 
+#: The one substitution a committed sentence may carry, and the reason there is exactly one.
+#: A sentence that qualifies under rule 5 has to be independent of every source the framework
+#: has not established, which a *constant* trivially is — but a host-minted call id is too, and
+#: a kind that names this call's landing folder needs it in the sentence. Everything else a body
+#: could interpolate is either derived from the call or is guest text, so the vocabulary is
+#: closed at one and the wrapper does the rendering rather than trusting the body's.
+CALL_ID_PLACEHOLDER = "call_id"
+
+
+def _guidance_placeholders(sentence: str) -> set[str]:
+    """The replacement fields in one committed sentence, by name.
+
+    ``string.Formatter().parse`` rather than a regex, so an escaped brace reads as a literal
+    the way :meth:`str.format` will read it, and a malformed one raises here — at attach —
+    instead of at the first call that tries to render it.
+    """
+    return {field for _, field, _, _ in string.Formatter().parse(sentence) if field is not None}
+
+
+def _committed_guidance(guidance: Iterable[str], *, tool: str, awaits: bool) -> tuple[str, ...]:
+    """Validate the sentences a tool commits to at attach, and answer with them.
+
+    Raises:
+        ValueError: for an empty sentence, a placeholder other than ``{call_id}``, a malformed
+            replacement field, or a ``{call_id}`` sentence on a body that cannot have a call.
+    """
+    committed: list[str] = []
+    for index, sentence in enumerate(guidance):
+        if not sentence.strip():
+            raise ValueError(
+                f"{tool}: standing_guidance[{index}] is empty. A committed sentence is what a "
+                "labelled item is held to, and an empty one holds it to nothing."
+            )
+        try:
+            fields = _guidance_placeholders(sentence)
+        except ValueError as exc:
+            raise ValueError(
+                f"{tool}: standing_guidance[{index}] is not a valid format string ({exc}). "
+                "Double a literal brace to keep it."
+            ) from exc
+        unknown = sorted(fields - {CALL_ID_PLACEHOLDER})
+        if unknown:
+            raise ValueError(
+                f"{tool}: standing_guidance[{index}] interpolates {unknown}, and the only "
+                f"substitution a committed sentence may carry is {{{CALL_ID_PLACEHOLDER}}}. "
+                "Anything else is either derived from the call or is the guest's, and a "
+                "sentence carrying one of those is not standing guidance."
+            )
+        if fields and not awaits:
+            raise ValueError(
+                f"{tool}: standing_guidance[{index}] interpolates "
+                f"{{{CALL_ID_PLACEHOLDER}}} and this tool's body awaits nothing, so it runs "
+                "outside a call and there is no id to render. Commit the sentence without it."
+            )
+        committed.append(sentence)
+    return tuple(committed)
+
+
+def _needs_call_id(committed: tuple[str, ...]) -> bool:
+    """Whether any committed sentence asks for this call's id."""
+    return any(CALL_ID_PLACEHOLDER in _guidance_placeholders(s) for s in committed)
+
+
+def _refuse_a_result_that_departs_from_its_guidance(
+    result: object, *, tool: str, committed: tuple[str, ...], call_id: str | None
+) -> None:
+    """Hold a result's labelled items to the sentences the tool committed to at attach.
+
+    Rule 5 in ``docs/sandbox/kinds/README.md`` says an item may be trusted only where its value
+    **and its presence** are independent of every source the framework has not established, and
+    that what qualifies is standing guidance emitted on *every* return path.  Neither half of
+    that is checkable inside a body — :func:`labelled_result_item` sees one string, at one call,
+    with nothing to compare it against.  Committing the sentences where the tool is attached is
+    what gives this something to check them with.
+
+    Three rules, and each answers one half of the test:
+
+    - **A bare ``str`` is refused once anything is committed.**  A string on the refusal path
+      beside a list on the success path is the presence leak rule 5 names, spelled as a result
+      shape rather than as an item.
+    - **Every labelled item's text is one of the committed sentences.**  This is the value half.
+    - **Every committed sentence is present.**  The presence half: a sentence emitted on the
+      paths that suit and dropped on the ones that do not is a bit about which path ran.
+
+    **The refusal never quotes the item.**  A raise here propagates through
+    ``LabelTrackingFunctionMiddleware.process``, whose ``try`` runs ``call_next`` and
+    ``_label_result`` with no ``except`` between them — measured on ``agent_framework.security``
+    — so labelling is skipped and MAF answers with an *unlabelled* error result.  That result
+    carries the exception text only where the host set ``include_detailed_errors``, but the
+    mistake being caught here is a kind labelling guest text as trusted, and a refusal that
+    quoted it would hand that text back out on the one path that labels nothing.  Positions
+    only.
+    """
+    if not committed:
+        return
+    if isinstance(result, str):
+        raise ValueError(
+            f"{tool}: this tool commits to standing guidance and its body answered with a "
+            "string, so the committed sentences reached no item. A string on one return path "
+            "beside a split result on another is itself a bit about which path ran. Answer "
+            "with the items on every path, refusals included."
+        )
+    if not isinstance(result, list):
+        return
+    rendered = {
+        sentence.format(**{CALL_ID_PLACEHOLDER: call_id}) if call_id is not None else sentence
+        for sentence in committed
+    }
+    seen: set[str] = set()
+    for position, item in enumerate(cast("list[Any]", result)):
+        properties = cast("dict[str, Any]", getattr(item, "additional_properties", None) or {})
+        if "security_label" not in properties:
+            continue
+        text = getattr(item, "text", None)
+        if text not in rendered:
+            raise ValueError(
+                f"{tool}: item {position} of this result carries a label and its text is not "
+                "one this tool committed to at attach. A per-item `trusted` claim is honest "
+                "only for guidance whose value and presence owe nothing to the call, which is "
+                "what committing it where a reviewer can see it is for. The text is not "
+                "repeated here: this refusal returns to the model through a path that labels "
+                "nothing."
+            )
+        seen.add(text)
+    missing = len(rendered - seen)
+    if missing:
+        raise ValueError(
+            f"{tool}: this result carries {len(seen)} of the {len(rendered)} sentences this "
+            f"tool committed to, so {missing} of them was emitted on other return paths and "
+            "not on this one. Guidance a caller sees only sometimes is a bit about which path "
+            "ran, which is the thing a standing sentence may not be."
+        )
+
+
 def _refuse_a_result_that_carries_no_call_label(result: object, *, tool: str) -> None:
     """Refuse a list of items in which nothing is left to carry the call's own label.
 
@@ -1820,6 +1955,7 @@ def sandboxed_tool(
     output_sink: OutputSink | None = None,
     also_carries_out: bool = False,
     nothing_survives_from: Iterable[SourceChannel] = (),
+    standing_guidance: Iterable[str] = (),
     on_reclaim_failure: Callable[[ReclaimFailure], Awaitable[None]] | None = None,
     reclaim_timeout: float | None = None,
     file_store_provenance: FileStoreProvenance | None = None,
@@ -2054,6 +2190,9 @@ def sandboxed_tool(
         additional_properties=properties,
     )
     body = build(session)
+    # Validated here rather than at first use: a sentence that cannot render is a wiring
+    # mistake in a kind, and finding it at attach costs a reviewer nothing.
+    committed = _committed_guidance(standing_guidance, tool=name, awaits=_awaits(body))
     if not _awaits(body):
         # `acquire` is a coroutine, so a body that awaits nothing can hold no sandbox and owns
         # nothing to reclaim, and this wrapper reads the result's shape and does nothing else.
@@ -2063,6 +2202,9 @@ def sandboxed_tool(
         def checked(*args: Any, **kwargs: Any) -> Any:
             result = body(*args, **kwargs)
             _refuse_a_result_that_carries_no_call_label(result, tool=name)
+            _refuse_a_result_that_departs_from_its_guidance(
+                result, tool=name, committed=committed, call_id=None
+            )
             return result
 
         return [decorate(checked)]
@@ -2092,6 +2234,14 @@ def sandboxed_tool(
         try:
             result = await body(*args, **kwargs)
             _refuse_a_result_that_carries_no_call_label(result, tool=name)
+            # The id is read rather than allocated where nothing committed needs it, so a
+            # tool with no `{call_id}` sentence keeps the lazy allocation it had.
+            _refuse_a_result_that_departs_from_its_guidance(
+                result,
+                tool=name,
+                committed=committed,
+                call_id=_call_name(call) if _needs_call_id(committed) else None,
+            )
             return result
         finally:
             _CALL.reset(token)

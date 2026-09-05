@@ -5181,3 +5181,175 @@ class TestSandboxOutputsReadTools:
         assert "make_file_store_sink" in maf.__all__
         assert "sandbox_outputs_read_tools" in maf.__all__
         assert "DEFAULT_OUTPUTS_TOOL_PREFIX" in maf.__all__
+
+
+_FOLDER_GUIDANCE = "Anything this call saved is under `{call_id}/` where its outputs land."
+
+
+def _texts(result) -> list[str]:
+    """The text of whatever a tool answered with, list or string alike."""
+    if isinstance(result, str):
+        return [result]
+    return [str(getattr(item, "text", item)) for item in result]
+
+
+def _answering(answer):
+    """A build callback whose body answers with `answer`, whatever shape that is."""
+
+    def build(_session: SandboxToolSession):
+        async def widget_run(target: str) -> Any:
+            """Do a thing to ``target`` inside a sandbox."""
+            return answer() if callable(answer) else answer
+
+        return widget_run
+
+    return build
+
+
+class TestGuidanceIsCommittedWhereAReviewerCanSeeIt:
+    """Rule 5's test is about a sentence's value *and* its presence, and a body can execute
+    neither: `labelled_result_item` sees one string at one call with nothing to compare it to.
+    Committing the sentences at attach is what gives the wrapper something to check."""
+
+    def _attach(self, answer, **kw):
+        return _attach_with(_answering(answer), _router(InProcessSandboxBackend()), **kw)[0]
+
+    def test_a_tool_that_commits_nothing_is_unchanged(self):
+        """The whole rule is inert until a kind opts in, so no shipped tool changes shape."""
+        tool = self._attach([labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED), _text("x")])
+
+        assert "x" in _texts(asyncio.run(tool.invoke(arguments={"target": "t"})))
+
+    def test_a_labelled_item_matching_the_commitment_passes(self):
+        tool = self._attach(
+            [labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED), _text("EXIT=1")],
+            standing_guidance=(_GUIDANCE,),
+        )
+
+        assert "EXIT=1" in _texts(asyncio.run(tool.invoke(arguments={"target": "t"})))
+
+    def test_a_labelled_item_the_tool_never_committed_to_is_refused(self):
+        tool = self._attach(
+            [labelled_result_item("SECRET=hunter2", SourceIntegrity.TRUSTED), _text("EXIT=1")],
+            standing_guidance=(_GUIDANCE,),
+        )
+
+        with pytest.raises(ValueError, match="not one this tool committed to"):
+            asyncio.run(tool.invoke(arguments={"target": "t"}))
+
+    def test_the_refusal_does_not_repeat_the_text_it_refused(self):
+        """A raise here skips `LabelTrackingFunctionMiddleware`'s `_label_result` — its `try`
+        runs `call_next` and that call with no `except` between them — so MAF answers with an
+        *unlabelled* error result. The mistake being caught is a kind labelling guest text as
+        trusted, and quoting it would carry that text out on the one path that labels nothing."""
+        tool = self._attach(
+            [labelled_result_item("SECRET=hunter2", SourceIntegrity.TRUSTED), _text("EXIT=1")],
+            standing_guidance=(_GUIDANCE,),
+        )
+
+        with pytest.raises(ValueError) as raised:
+            asyncio.run(tool.invoke(arguments={"target": "t"}))
+
+        assert "hunter2" not in str(raised.value)
+        assert "item 0" in str(raised.value), "the position is what stands in for the text"
+
+    def test_a_committed_sentence_missing_from_this_result_is_refused(self):
+        """The presence half: a sentence emitted on the paths that suit and dropped on the ones
+        that do not is a bit about which path ran."""
+        tool = self._attach([_text("EXIT=1")], standing_guidance=(_GUIDANCE,))
+
+        with pytest.raises(ValueError, match="committed to"):
+            asyncio.run(tool.invoke(arguments={"target": "t"}))
+
+    def test_a_string_answer_is_refused_once_anything_is_committed(self):
+        """A `str` on the refusal path beside a split result on the success path is the presence
+        leak spelled as a result shape rather than as an item."""
+        tool = self._attach("Error: the sandbox was unavailable.", standing_guidance=(_GUIDANCE,))
+
+        with pytest.raises(ValueError, match="answered with a string"):
+            asyncio.run(tool.invoke(arguments={"target": "t"}))
+
+    def test_a_string_answer_is_fine_for_a_tool_that_commits_nothing(self):
+        tool = self._attach("Error: the sandbox was unavailable.")
+
+        assert _texts(asyncio.run(tool.invoke(arguments={"target": "t"}))) == [
+            "Error: the sandbox was unavailable."
+        ]
+
+
+class TestTheOneSubstitutionACommittedSentenceMayCarry:
+    """A sentence naming this call's landing folder qualifies under rule 5 — a host-minted
+    `uuid4` owes nothing to the call's arguments or to what the program did — but it is not a
+    constant, so string equality alone cannot express it. The wrapper renders `{call_id}` from
+    the call it is running inside, which keeps the vocabulary closed at one host-minted value."""
+
+    def _attach(self, answer, **kw):
+        return _attach_with(_answering(answer), _router(InProcessSandboxBackend()), **kw)[0]
+
+    def test_a_sentence_naming_this_calls_id_is_accepted(self):
+        seen: list[str] = []
+
+        def build(session: SandboxToolSession):
+            async def widget_run(target: str) -> Any:
+                """Do a thing to ``target`` inside a sandbox."""
+                folder = session.guest_call_path().rsplit("/", 1)[-1]
+                seen.append(folder)
+                sentence = _FOLDER_GUIDANCE.format(call_id=folder)
+                return [labelled_result_item(sentence, SourceIntegrity.TRUSTED), _text("EXIT=1")]
+
+            return widget_run
+
+        tool = _attach_with(
+            build, _router(InProcessSandboxBackend()), standing_guidance=(_FOLDER_GUIDANCE,)
+        )[0]
+
+        assert "EXIT=1" in _texts(asyncio.run(tool.invoke(arguments={"target": "t"})))
+        assert len(seen) == 1 and len(seen[0]) == 32
+
+    def test_a_sentence_naming_another_calls_id_is_refused(self):
+        """What the rendering buys: the id has to be *this* call's, so a body cannot hold one
+        from an earlier call and keep emitting it."""
+        stale = "0" * 32
+        tool = self._attach(
+            [
+                labelled_result_item(
+                    _FOLDER_GUIDANCE.format(call_id=stale), SourceIntegrity.TRUSTED
+                ),
+                _text("EXIT=1"),
+            ],
+            standing_guidance=(_FOLDER_GUIDANCE,),
+        )
+
+        with pytest.raises(ValueError, match="not one this tool committed to"):
+            asyncio.run(tool.invoke(arguments={"target": "t"}))
+
+    def test_a_placeholder_that_is_not_the_call_id_is_refused_at_attach(self):
+        with pytest.raises(ValueError, match="only substitution"):
+            self._attach([_text("x")], standing_guidance=("Saved under {exit_code}/.",))
+
+    def test_a_malformed_format_string_is_refused_at_attach(self):
+        with pytest.raises(ValueError, match="not a valid format string"):
+            self._attach([_text("x")], standing_guidance=("Saved under {call_id/.",))
+
+    def test_an_empty_sentence_is_refused_at_attach(self):
+        with pytest.raises(ValueError, match="is empty"):
+            self._attach([_text("x")], standing_guidance=("   ",))
+
+    def test_a_call_id_sentence_on_a_body_that_awaits_nothing_is_refused_at_attach(self):
+        """A synchronous body holds no sandbox and runs inside no call, so there is no id to
+        render — and a sentence that could never match is worse than no check."""
+        with pytest.raises(ValueError, match="awaits nothing"):
+            _attach_with(
+                _sync_items(_text("x")),
+                _router(InProcessSandboxBackend()),
+                standing_guidance=(_FOLDER_GUIDANCE,),
+            )
+
+    def test_a_constant_sentence_is_still_fine_on_a_synchronous_body(self):
+        tools = _attach_with(
+            _sync_items(labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED), _text("x")),
+            _router(InProcessSandboxBackend()),
+            standing_guidance=(_GUIDANCE,),
+        )
+
+        assert len(tools) == 1
