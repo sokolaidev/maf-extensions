@@ -99,7 +99,7 @@ A sibling operational package for that transport-and-container content is deferr
 Two things that look shared are deliberately not hoisted:
 
 - **A caller context built from constants.** `CallerContext.current_scope` and `.current_thread_id` are callables read at call time; a convenience that took plain values instead would hand a host the exact confused-deputy bug the keying rule above exists to prevent, so no such helper exists.
-- **`require_env_vars` as a published helper.** It is duplicated once per sample, in each `_scaffold.py` (for example `samples/01_acas_bicep/_scaffold.py:37`), but it is sample scaffolding — an app's own startup-validation policy, not a library obligation. Two consumers is the gate for library code, and fifteen copies of a sample's front matter is not the same claim.
+- **`require_env_vars` as a published helper.** It is duplicated once per sample, in each `_scaffold.py` (for example `samples/01_acas_bicep/_scaffold.py:37`), but it is sample scaffolding — an app's own startup-validation policy, not a library obligation. Two consumers is the gate for library code, and a copy in every sample's scaffolding is not the same claim.
 
 ## Vocabulary discipline — no magic strings, no magic numbers
 
