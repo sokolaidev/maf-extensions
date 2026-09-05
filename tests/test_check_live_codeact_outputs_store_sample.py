@@ -380,8 +380,11 @@ class TestTheReadIsTiedToItsOwnCall:
         assert sample.landed_reads(reply, "sandbox_outputs_read", landed) == [(landed[0], _SUMMARY)]
 
     def test_a_read_of_a_path_nobody_landed_is_dropped_however_it_answered(self):
-        """The road a byte-equality test would have taken: a program lands a file whose content
-        is exactly the refusal for a crafted name, and the model reads only the crafted name."""
+        """A result is no evidence of the path it came back on.
+
+        This tool's refusals render the name they were given, so a program is free to land a
+        file whose bytes are exactly the refusal for a name nobody landed.
+        """
         sample = _sample()
         landed = [f"{_CALL}/summary.md"]
         crafted = "north/390/south/200/east/84/west/450/1124"

@@ -15,8 +15,11 @@ name: Verify (live)
 # prints a fenced block of what the tool returned, closed by a line tagged `[measured]`, and its
 # check reads that. A sample that judges a landed file prints no block — it reads the file, and
 # off the tag it reads what the host counted: what the router disposed, and for 08 and 14 what
-# the sink took. Several checks additionally require the answer to appear in the reply, which is
-# a claim about the round trip reaching the model and is never the condition carrying a verdict.
+# the sink took. 16 is the exception on both counts, and has to be: it lands into an in-memory
+# store no checker can open, so the model's own fenced read-back is the file, and the tagged
+# lines say which landed path a read asked for. Several checks additionally require the answer
+# to appear in the reply. Prose is never *sufficient* — for 16 it is one half of a pair whose
+# other half is a read of a landed path, so a reply on its own passes nothing.
 # The alternative was wrong in both directions: a model that never called the tool could satisfy
 # a check made over prose, and three healthy releases went red over a run writing `**error**`
 # where the pattern wanted `[error]` (#314).
