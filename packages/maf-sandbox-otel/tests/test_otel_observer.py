@@ -1069,6 +1069,21 @@ class TestEgressDecisions:
         recorded.observer.sandbox_acquired(an_acquire())
         assert recorded.attributes()[f"{NAMESPACE}.backend.observes_egress"] is False
 
+    def test_the_span_does_not_nest_under_the_call_that_collected_it(self):
+        """`call=None` keeps the record from naming a call whose traffic it does not describe,
+        and the trace has to say the same: a drain's window spans whatever ran between two
+        removals, so nesting it under the collecting `execute_tool` span would reintroduce the
+        attribution the field refuses."""
+        recorded = build()
+        tracer = recorded.tracer_provider.get_tracer("test")
+        with tracer.start_as_current_span("execute_tool") as parent:
+            recorded.observer.egress_observed(a_drain())
+        drained = next(
+            span for span in recorded.spans.get_finished_spans() if span.name == "sandbox.egress"
+        )
+        assert drained.parent is None
+        assert parent.get_span_context().span_id != 0
+
     def test_the_counts_reach_the_log_as_well_as_the_span(self):
         """A log-only pipeline is the one that survives a trace sampler, and it is the one a
         security record is kept in."""

@@ -47,6 +47,7 @@ from maf_sandbox import (
     ToolCallEnded,
 )
 from opentelemetry._logs import Logger, LoggerProvider, SeverityNumber, get_logger_provider
+from opentelemetry.context import Context
 from opentelemetry.metrics import Counter, Histogram, MeterProvider, get_meter_provider
 from opentelemetry.trace import (
     Status,
@@ -377,8 +378,15 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
         # above just held back.
         # `is not None`, matching the attribute above: an empty reason is still a window
         # nobody accounted for, and truthiness would call that span healthy.
+        # Detached: this window spans whatever calls ran between two removals, so nesting it
+        # under the one that collected it would say through the trace what `call=None` refuses
+        # to say in the record.
         self._emit(
-            EGRESS, recorded, event.seconds, _UNREADABLE if event.unreadable is not None else None
+            EGRESS,
+            recorded,
+            event.seconds,
+            _UNREADABLE if event.unreadable is not None else None,
+            detached=True,
         )
         for one in decisions:
             self._isolate(
@@ -507,14 +515,22 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
         attributes: Mapping[str, AttributeValue],
         seconds: float,
         failure: str | None,
+        *,
+        detached: bool = False,
     ) -> None:
-        """One span and one log record for an event that took time."""
+        """One span and one log record for an event that took time.
+
+        ``detached`` is for an event whose window is not the call delivering it: it is emitted
+        outside the current trace context rather than under it.
+        """
         # The duration goes on both, not just the span. A log-only pipeline is the one that
         # survives trace sampling, and "how long did the disposal take" is a question it has to
         # be able to answer on its own.
         recorded = {**attributes, DURATION: seconds}
-        self._isolate(lambda: self._span(name, recorded, seconds, failure))
-        self._isolate(lambda: self._log(name, recorded, failed=failure is not None))
+        self._isolate(lambda: self._span(name, recorded, seconds, failure, detached=detached))
+        self._isolate(
+            lambda: self._log(name, recorded, failed=failure is not None, detached=detached)
+        )
 
     def _isolate(self, write: Callable[[], None]) -> None:
         """Attempt one signal's write on its own, so its failure does not cost a sibling's.
@@ -536,23 +552,41 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
         attributes: Mapping[str, AttributeValue],
         seconds: float,
         failure: str | None,
+        *,
+        detached: bool = False,
     ) -> None:
         end = time.time_ns()
         # A negative duration would put the start after the end; a backend reads that as a
         # broken span rather than a fast one.
         start = end - max(int(seconds * _NANOSECONDS), 0)
-        span = self._tracer.start_span(name, start_time=start, attributes=dict(attributes))
+        # `detached` is a root span: an event whose window is not the current call must not
+        # nest under it, or the trace says through its shape what the record refused to say in
+        # its `call` field.
+        span = self._tracer.start_span(
+            name,
+            start_time=start,
+            attributes=dict(attributes),
+            context=Context() if detached else None,
+        )
         if failure is not None:
             span.set_status(Status(StatusCode.ERROR, failure))
         span.end(end_time=end)
 
-    def _log(self, name: str, attributes: Mapping[str, AttributeValue], *, failed: bool) -> None:
+    def _log(
+        self,
+        name: str,
+        attributes: Mapping[str, AttributeValue],
+        *,
+        failed: bool,
+        detached: bool = False,
+    ) -> None:
         self._logger.emit(
             body=name,
             event_name=name,
             attributes=dict(attributes),
             severity_number=SeverityNumber.WARN if failed else SeverityNumber.INFO,
             severity_text="WARN" if failed else "INFO",
+            context=Context() if detached else None,
         )
 
     def _point_span(

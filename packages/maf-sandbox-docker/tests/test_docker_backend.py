@@ -3978,11 +3978,8 @@ class TestTheProxysOwnDecisionsReachARecord:
         assert [e.unreadable for e in seen] == []
 
     def test_a_proxy_removal_that_failed_keeps_its_attribution(self):
-        """It is still running and still deciding, so a retry has to be able to key its drain.
-
-        A guard rather than a regression: keying on `removed` already held this case, and the
-        move to `failure is None` had to keep holding it.
-        """
+        """It is still running and still deciding, so a retry has to be able to key its
+        drain."""
         backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
 
@@ -3998,9 +3995,8 @@ class TestTheProxysOwnDecisionsReachARecord:
         assert _AL in backend._acquired
 
     def test_a_proxy_already_gone_drops_its_attribution(self):
-        """`_remove` answers `removed=False, failure=None` for one that was never there — which
-        is the same thing to a later drain as having removed it, and keying on `removed` alone
-        left the entry behind for a proxy something else had deleted."""
+        """`_remove` answers `removed=False, failure=None` for one that was never there, which
+        is the same thing to a later drain as having removed it: neither retains attribution."""
         backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         warm = _machine(running=[_AL], networks={_AL_NET: _UNADDRESSED})
@@ -4013,18 +4009,6 @@ class TestTheProxysOwnDecisionsReachARecord:
         fake._responder = proxy_deleted_behind_us
         asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
         assert _AL not in backend._acquired
-
-    def test_a_teardown_does_not_forget_another_conversations_sandbox(self):
-        """A name is derived from its key, so a purge and a live acquire can be about two
-        containers under one string; dropping the newer one's entry costs it its drain."""
-        backend, _fake = _backend_with(
-            _machine(running=[_AL, _AL_PROXY], networks={_AL_NET: _UNADDRESSED}),
-            config=_ALLOW_CONFIG,
-        )
-        # The sweep reaches the name; the entry under it belongs to a live acquire elsewhere.
-        backend._acquired[_AL] = ("scope-a", "another-thread", "devops-engineer")
-        asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
-        assert backend._acquired[_AL] == ("scope-a", "another-thread", "devops-engineer")
 
     def test_the_last_window_is_drained_at_disposal(self):
         seen: list[EgressObserved] = []

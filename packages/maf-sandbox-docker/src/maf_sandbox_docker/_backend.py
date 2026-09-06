@@ -1041,14 +1041,15 @@ class DockerSandboxBackend:
         """Drop ``workload``'s proxy attribution, unless a live sandbox has taken the name back.
 
         Called wherever a proxy is confirmed gone, so that ``_acquired`` means what a drain
-        reads it as: this process believes a proxy exists here.  ``thread_id`` guards a
-        generation race — a name is derived from its key, so a teardown and a concurrent acquire
-        can be about two containers under one string, and dropping the newer one's entry would
-        cost it its drain attribution silently.
+        reads it as: this process believes a proxy exists here.
+
+        **It does not survive a teardown overlapping a reacquire.**  A name is derived from its
+        key, thread id included, so nothing in the entry distinguishes one generation of that
+        name from the next: a removal resuming after a reacquire has stored its attribution
+        deletes the newer entry, and that proxy's later purge cannot key its drain.  Closing
+        that needs a generation token the remover captures, which is #972.
         """
-        held = self._acquired.get(workload)
-        if held is not None and held[1] == thread_id:
-            del self._acquired[workload]
+        self._acquired.pop(workload, None)
 
     async def _drain_the_proxy(self, name: str, key: SandboxKey) -> None:
         """Report what this sandbox's proxy decided, before the container holding it goes.
