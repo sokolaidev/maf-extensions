@@ -166,7 +166,8 @@ _PROBE_WHEN_REQUIRED = (
     _NEEDS_A_WRITING_GUEST | _UNSAFE_WHERE_THE_GUEST_IS_NOT_ROOT | {Capability.EXEC}
 )
 
-#: How the guest's uid is read, once per sandbox this backend creates.
+#: How the guest's uid is read: on an acquire that requires the probe and has no verdict
+#: recorded for the sandbox in hand.
 _GUEST_UID_COMMAND = "id -u"
 
 #: Where that runs. Never `spec.work_dir`, which nothing has created yet at acquire: an exec
@@ -858,7 +859,7 @@ class AcasSandboxBackend:
                     key.agent_dir,
                 )
                 return reused
-            self._registry.pop(registry_key, None)
+            self._forget_sandbox(registry_key)
 
         # The hint answers here and nowhere earlier, because here is where a create is about to
         # be paid for: the second workload to meet a refused image is refused without one. A
@@ -914,7 +915,7 @@ class AcasSandboxBackend:
                 spec, created, freshly_created=True
             )
         except SandboxCapabilityNotSupported:
-            self._registry.pop(registry_key, None)
+            self._forget_sandbox(registry_key)
             await self._release_the_refused(gc, key, sc.sandbox_id)
             raise
         return created
@@ -1048,10 +1049,11 @@ class AcasSandboxBackend:
                 f"{', '.join(sorted(refused))} to the {spec.kind!r} workload from {image}: "
                 f"{whose_guest}, and it refuses {'; and '.join(reasons)}. Refused here "
                 f"rather than inside the tool call. {remedy}, or narrow what it requires. "
-                "Repointing the same reference is not enough on its own: this refusal is "
+                "Repointing the same reference does not lift this by itself: the refusal is "
                 "answered from a remembered verdict and stops the create that would re-read "
-                "it, so a corrected image needs a reference this backend has not seen yet, or "
-                "a restart of this process."
+                "it. Something else has to read the reference again — an acquire this gate "
+                "does not refuse, which still creates a sandbox and probes it, a reference "
+                "this backend has not seen yet, or a restart of this process."
             )
         if uid is None:
             # Served, and silently: the warning below describes a wall this image may not have,
@@ -1077,16 +1079,21 @@ class AcasSandboxBackend:
         Only ever called where the guest **answered**, so a transient failure records neither
         and is asked again — per sandbox as well as per image, since one dropped call must not
         cost a sandbox its capability for as long as it lives.
-
-        The per-sandbox map is pruned here rather than at each registry removal: a sandbox id
-        leaves the registry in four places across ``acquire`` and two purges, and a verdict
-        outliving its sandbox is a leak rather than a hazard, so one sweep per answer is the
-        cheaper place to pay for it.
         """
-        live = set(self._registry.values()) | {sandbox_id}
-        self._sandbox_uids = {sid: u for sid, u in self._sandbox_uids.items() if sid in live}
         self._sandbox_uids[sandbox_id] = uid
         self._guest_uids[identity] = uid
+
+    def _forget_sandbox(self, registry_key: tuple[str, str, str, str]) -> str | None:
+        """Drop a registry entry and the uid verdict recorded against the sandbox it named.
+
+        Every path that takes a sandbox out of the registry goes through here, so the verdict
+        map is bounded by the sandboxes this backend is holding rather than by every sandbox it
+        has ever created.  Returns the id that left, which the purges collect.
+        """
+        sandbox_id = self._registry.pop(registry_key, None)
+        if sandbox_id is not None:
+            self._sandbox_uids.pop(sandbox_id, None)
+        return sandbox_id
 
     async def _probe_guest_uid(self, sandbox: _AcasSandbox, spec: SandboxSpec) -> int | None:
         """The uid ``exec`` runs as, ``None`` when the guest cannot say. Answered by the guest.
@@ -1163,7 +1170,7 @@ class AcasSandboxBackend:
         wanted = list(
             dict.fromkeys(
                 [
-                    *(sid for sid in (self._registry.pop(k, None) for k in mine) if sid),
+                    *(sid for sid in (self._forget_sandbox(k) for k in mine) if sid),
                     *sorted(self._undeleted.get(prefix, ())),
                 ]
             )
@@ -1239,7 +1246,7 @@ class AcasSandboxBackend:
             if k[0] == scope and k[1] == thread_id
         ]
         for k, _ in known:
-            self._registry.pop(k, None)
+            self._forget_sandbox(k)
 
         try:
             gc = self._group_client()

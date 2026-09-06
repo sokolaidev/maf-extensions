@@ -1203,6 +1203,25 @@ class TestAnImageWhoseGuestIsNotRoot:
             "the hint lost the answer a working probe measured"
         )
 
+    def test_a_disposed_sandbox_takes_its_verdict_with_it(self):
+        """The verdict map is bounded by what this backend holds, not by what it ever created.
+
+        Both answer kinds, because they are recorded on different lines: a uid and a
+        definitive non-uid reply. A deployment on an image with no `id` would otherwise keep
+        one entry per sandbox for the life of the process.
+        """
+        for answer in (_guest_reporting(0), _GuestAnswer(stdout="", stderr="no id", exit_code=127)):
+            client = _GuestGroupClient(answer)
+            backend = _backend_with(client)
+            key = self._key("scope-a")
+
+            asyncio.run(backend.acquire(key, _spec_requiring(Capability.EXEC)))
+            assert backend._sandbox_uids, f"{answer} recorded no verdict, so this proves nothing"
+
+            asyncio.run(backend.dispose(key))
+
+            assert backend._sandbox_uids == {}, f"a verdict outlived its sandbox for {answer}"
+
     def test_a_warm_root_sandbox_is_not_refused_by_another_sandbox_s_hint(self):
         """The hint must not answer for a sandbox that has a verdict of its own.
 
@@ -1228,9 +1247,13 @@ class TestAnImageWhoseGuestIsNotRoot:
 
         assert warm.sandbox_id == "sbx-1"
 
-    def test_the_refusal_says_a_repointed_reference_is_not_enough_on_its_own(self):
+    def test_the_refusal_says_what_it_takes_to_get_the_reference_re_read(self):
         """Both remedies are unreachable while the hint that refuses also stops the create
-        that would re-read it, and an operator following one would repeat the refusal."""
+        that would re-read it, and an operator following one would repeat the refusal.
+
+        Stated as ways to force a re-read rather than as the only ones: an acquire this gate
+        does not refuse still creates a sandbox and probes it, which corrects the hint too.
+        """
         from maf_sandbox import SandboxCapabilityNotSupported
 
         client = _GuestGroupClient(_guest_reporting(10001))
@@ -1244,12 +1267,13 @@ class TestAnImageWhoseGuestIsNotRoot:
             )
 
         message = str(refusal.value)
-        assert "Repointing the same reference is not enough" in message, message
+        assert "Repointing the same reference does not lift this by itself" in message, message
+        assert "an acquire this gate does not refuse" in message, message
         assert "restart of this process" in message, message
 
     def test_a_cold_acquire_cannot_demote_a_uid_another_cold_acquire_measured(self):
         """The race on the path a create actually takes, which the two direct-call race tests
-        above do not reach.
+        below do not reach.
 
         Two cold acquires for one image overlap. One measures a real uid; the other answers no
         uid and finishes second. Demoting the hint to `None` would refuse before a create for
