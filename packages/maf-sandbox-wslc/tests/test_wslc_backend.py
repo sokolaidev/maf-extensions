@@ -2038,10 +2038,9 @@ class TestTheProxysOwnDecisionsReachARecord:
         assert len(seen) == 2  # the name the registry kept, and the one it forgot
 
     def test_the_bound_flag_says_may_have_been_cut_rather_than_was(self):
-        """Characterisation, green before and after: a window of the bound plus the proxy's own
-        readiness line keeps every decision and still reports `truncated`. The read is bounded in
-        lines, so a full answer cannot say whether the line beyond it was a decision — and "there
-        may be more" is the direction a record is allowed to be wrong in."""
+        """The read is bounded in lines, so a full page back cannot say whether the line past
+        the bound was a decision or the readiness marker. The flag therefore means *may be
+        short*, and a window that kept every decision can still set it."""
         text = "listening on 3128; allowing: nothing\n" + "".join(
             f"ALLOW h{n}.example:443\n" for n in range(_PROXY_LOG_TAIL)
         )
@@ -2077,6 +2076,31 @@ class TestTheProxysOwnDecisionsReachARecord:
         ]
         assert stops and reads
         assert min(stops) < min(reads)
+
+    def test_a_proxy_that_would_not_stop_is_reported_as_an_open_window(self):
+        """A stop that was refused leaves the proxy answering CONNECTs between the read and the
+        removal, so the record must not come back looking clean."""
+        seen: list[EgressObserved] = []
+        overrides = {
+            ("container", "stop"): _WslcResult(1, b"", b"WSLC_E_BUSY"),
+            ("container", "logs", "--tail"): _WslcResult(0, b"ALLOW pypi.org:443", b""),
+        }
+        backend, _fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert [d.host for e in seen for d in e.decisions] == ["pypi.org"]
+        assert "could not be stopped" in str(seen[0].unreadable)
+
+    def test_a_proxy_that_is_simply_absent_is_not_an_open_window(self):
+        seen: list[EgressObserved] = []
+        overrides = {
+            ("container", "stop"): _WslcResult(1, b"", b"no such container"),
+            ("container", "logs", "--tail"): _WslcResult(0, b"ALLOW pypi.org:443", b""),
+        }
+        backend, _fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert seen[0].unreadable is None
 
     def test_the_last_window_is_drained_at_disposal(self):
         seen: list[EgressObserved] = []

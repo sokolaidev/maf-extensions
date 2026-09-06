@@ -777,8 +777,11 @@ class SandboxRouter:
                         _recorded_name(backend),
                     )
                 if reports:
-                    backend.observe_egress(report)
+                    # Enrolled before the call, not after: a hook that stores the reporter and
+                    # then raises has already mutated the backend, and one added on the way out
+                    # would be the one the rollback misses.
                     installed.append(backend)
+                    backend.observe_egress(report)
         except BaseException:
             for taken in installed:
                 # Best effort, and contained: this is already unwinding, and a backend that

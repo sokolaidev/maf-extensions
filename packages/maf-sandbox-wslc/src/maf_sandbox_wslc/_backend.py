@@ -675,6 +675,25 @@ class WslcSandboxBackend:
             )
         self._egress_report = report
 
+    async def _quiesce(self, target: str) -> str | None:
+        """Stop ``target`` so its record is closed, and say why if it would not.
+
+        A proxy that is still running answers a ``CONNECT`` between the read below and the
+        removal after it, and that decision reaches nobody.  A proxy that is simply not there
+        is the ordinary case and not a failure.  Never raises: the read is worth attempting
+        either way, and what this returns rides on the event as the reason the window may be
+        short.
+        """
+        try:
+            result = await self._wslc(
+                "container", "stop", target, timeout=self._config.command_timeout_seconds
+            )
+        except Exception as refused:  # noqa: BLE001 - the drain is worth attempting anyway
+            return f"the proxy could not be stopped: {error_detail(refused)}"
+        if result.returncode == 0 or _NO_SUCH in result.stderr_text.lower():
+            return None
+        return f"the proxy could not be stopped: {result.stderr_text.strip() or result.returncode}"
+
     async def _drain_the_proxy(self, name: str, key: SandboxKey) -> None:
         """Report what this sandbox's proxy decided, before the container holding it goes.
 
@@ -696,11 +715,9 @@ class WslcSandboxBackend:
         # Stopped before it is read, not merely before it is removed. Every caller here is
         # about to take the proxy away, and a guest sharing this conversation can open a
         # CONNECT between the read and the removal — a decision that would then exist nowhere.
-        # Contained, because a proxy that will not stop is still worth reading.
-        with contextlib.suppress(Exception):
-            await self._wslc(
-                "container", "stop", proxy, timeout=self._config.command_timeout_seconds
-            )
+        # A stop that was refused leaves that window open, so it is reported rather than
+        # swallowed: the read still happens, and the record says it may be short.
+        unquiesced = await self._quiesce(proxy)
         unreadable: str | None = None
         decisions: tuple[EgressDecision, ...] = ()
         truncated = False
@@ -725,6 +742,7 @@ class WslcSandboxBackend:
                 # one whose acquire never got that far — and reports nothing at all. Anything
                 # else is a window this backend cannot account for, and says so.
                 unreadable = result.stderr_text.strip() or f"wslc logs exited {result.returncode}"
+        unreadable = " / ".join(part for part in (unquiesced, unreadable) if part) or None
         if not decisions and unreadable is None:
             return
         report(
