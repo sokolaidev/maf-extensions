@@ -150,7 +150,7 @@ Two behaviours are worth knowing before the first call, because both are deliber
 
 ## The guarantees, in detail
 
-**Truth in place of plausibility.** The agent stops reporting that a template looks valid and starts reporting what the compiler said. Everything else here is what it costs to get that safely.
+**Truth in place of plausibility** is what an agent gains here, and it is a *kind*'s doing rather than the seam's: `bicep_validate` reports what the compiler said instead of what a template looks like, and any tool that ran the real thing would. What the protocol guarantees is the rest — the conditions under which running it is safe, each one refused rather than degraded where it does not hold.
 
 **Isolation declared rather than hoped for.** A host sets a minimum isolation floor on an ordered ladder — `none`, `runtime`, `os_process`, `container`, `hardened_container`, `microvm`, `vm` — and a backend below it is refused *at construction*, not at the first tool call, so a misconfigured deployment cannot start with the feature apparently enabled and quietly unsafe. A router selecting per spec judges that across the whole registration instead — it refuses when nothing clears the floor, and warns about any individual backend below it, which it keeps and never routes to. The default is `microvm`, the production posture; a workload's spec may raise the floor and can never lower it.
 
@@ -161,6 +161,8 @@ Two behaviours are worth knowing before the first call, because both are deliber
 **Egress closed unless opened.** A spec names the hosts its work may reach, and a backend that cannot confine egress to that list is refused. A spec silent about egress gets the closed configuration, never the open one.
 
 **Failures that do not leak.** When a sandbox is unavailable the model receives a fixed sentence saying the run degraded, and nothing else. The provider's own message — endpoint, subscription, tenant — goes to the log instead, because a tool result is persisted into the transcript.
+
+**Claims about the result, refused where nothing licenses them.** A sandbox makes the work safe to *run*; the label on the result is what decides whether it is safe to *say*. MAF's information-flow module (FIDES) reads a kind's declaration before every call, which makes that declaration a claim — in the same class as a backend's isolation claim — rather than something this suite verifies. Two claims it can check, and refuses: an explicit `trusted` result over a channel nothing establishes as trusted, and a `trusted` file-store floor on a record no middleware was ever built to fill. Declaring nothing is never refused — it is a delegation to the framework's own label join rather than a fail-safe ([`information-flow.md`](information-flow.md)).
 
 ## Where to read next
 
