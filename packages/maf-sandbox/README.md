@@ -39,7 +39,7 @@ This package draws no isolation boundary itself — it is protocol and policy ov
 | `SandboxSpec` | what a sandbox of a given *kind* needs: image, egress allowlist, work dir, `requires` capabilities, and an optional `min_isolation` that may raise the host's floor, and an `isolation_scope` that may raise how little of the conversation one sandbox serves |
 | `Sandbox` | `write_file`, `exec` and `run_code`, the pull surface `stat_file` / `read_file` / `list_dir`, `remove`, and `reclaim` — what a workload gets, gated by what the backend declares, except `reclaim`, which is gated by nothing |
 | `SandboxBackend` | `acquire` / `dispose` / `dispose_scope`, plus the `isolation` it declares and the `BackendDeclarations` it hands the router |
-| `BackendDeclarations` | the five optional declarations in one object — `capabilities`, `limits`, `egress_modes`, `os_families`, `isolation_scopes` — each field's default being its own silence rule |
+| `BackendDeclarations` | the six optional declarations in one object — `capabilities`, `limits`, `egress_modes`, `os_families`, `isolation_scopes`, `observes_egress` — each field's default being its own silence rule |
 | `SandboxRouter` | enforces all six checks — the minimum-isolation floor, the capability match, the guest's shape, the transfer ceilings, the egress rule and the isolation scope — against the one backend it picked, or, selecting per spec, against each registered backend until one passes |
 | `SandboxPurger` | duck-typed `purge_scoped_thread(scope, thread_id)` for a host's delete path |
 
@@ -219,7 +219,7 @@ router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE
 registry = HostToolRegistry(observer=records)
 ```
 
-`SandboxAcquired`, `SandboxDisposed` and `ScopeDisposed` come from the router; `HostToolCalled` from `HostToolRegistry(observer=…)`, which is where every other host-tool policy lives; `StoreFileRead` from `SandboxToolSession.read_file` and `ToolCallEnded` from the wrapper `sandboxed_tool` builds, both reading the router's; and `OutputsCollected` from `collect_outputs(..., observer=session.observer, key=key)`, which is a function rather than a policy object and so takes both as arguments.
+`SandboxAcquired`, `SandboxDisposed` and `ScopeDisposed` come from the router, and so does `EgressObserved` — reported by a backend that can read its own egress enforcement, through a reporter the router hands it; `HostToolCalled` from `HostToolRegistry(observer=…)`, which is where every other host-tool policy lives; `StoreFileRead` from `SandboxToolSession.read_file` and `ToolCallEnded` from the wrapper `sandboxed_tool` builds, both reading the router's; and `OutputsCollected` from `collect_outputs(..., observer=session.observer, key=key)`, which is a function rather than a policy object and so takes both as arguments.
 
 Three things to know before writing one. **Every way out is recorded** — a refused acquire, an exhausted host-tool cap, a collection refused part-way, a call taken by a cancel — and an acquire's, a collection's or a call's failure is recorded as the exception's *class name*, never its message, which can carry a backend's endpoint. `HostToolCalled.refusal` is the exception: it holds the sanitized sentence the guest was answered with, so treat that one as guest-influenced rather than host-only. **An observer cannot fail a call**: its exceptions are contained and logged, and its return value is never read. **It can, however, slow one down, and it is entered from more than one thread** — it runs wherever the call is served, which for a synchronous tool body is a worker thread, so hand the event to a thread-safe queue or a batching exporter and do no I/O in it. A host that registers nothing builds no event at all.
 
@@ -235,7 +235,7 @@ agent = Agent(..., middleware=[effective_state_middleware()])
 
 It records the served answer and not the ask, so a refused call writes nothing — it already has an exception, a log line and a `SandboxAcquired` carrying the refusal. And it carries posture, never payload: no model-chosen text, and neither the spec's `labels` nor the `SandboxKey`, since this record is persisted beside a transcript a deployment may classify differently. The call id is the one identifier on it, because a session already knows which conversation it is and cannot say which call.
 
-[`docs/sandbox/observability.md`](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/observability.md) carries what each event holds, what a recorder should treat as guest-chosen, and what the seam does not yet see — the egress proxy's own `ALLOW`/`DENY` lines among them.
+[`docs/sandbox/observability.md`](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/observability.md) carries what each event holds, what a recorder should treat as guest-chosen, and what the seam does not yet see. Egress is no longer on that list for the backends that enforce it themselves: `docker` and `wslc` report their proxy's `ALLOW`/`DENY` decisions, and a backend enforcing in a service it does not run says so through `observes_egress` rather than by being silent.
 
 ## Upgrading to 0.27
 
