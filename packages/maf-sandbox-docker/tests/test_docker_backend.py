@@ -3852,6 +3852,69 @@ class TestTheProxysOwnDecisionsReachARecord:
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert seen and seen[0].truncated is True
 
+    def test_a_capped_read_is_partial_output_rather_than_a_failed_one(self):
+        """The bounded reader *kills* the child to enforce the cap, so a capped log comes back
+        with a non-zero code — which the fake does not reproduce. Classifying that as unreadable
+        threw away every decision in exactly the windows the cap exists for."""
+        seen: list[EgressObserved] = []
+        page = b"ALLOW h.example:443\n" * (_PROXY_LOG_BYTES // 20)
+        overrides = {("logs", "--tail"): _DockerResult(137, page, "killed after the read limit")}
+        backend, _fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert seen and seen[0].decisions
+        assert seen[0].truncated is True
+        assert seen[0].unreadable is None
+
+    def test_a_capped_read_discards_the_line_the_cap_cut_in_half(self):
+        seen: list[EgressObserved] = []
+        page = b"ALLOW h.example:443\n" * (_PROXY_LOG_BYTES // 20) + b"ALLOW half.exam"
+        overrides = {("logs", "--tail"): _DockerResult(137, page, "")}
+        backend, _fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert seen[0].decisions  # not vacuous: the whole lines survived
+        assert all(d.host == "h.example" for d in seen[0].decisions)
+
+    def test_a_proxy_this_process_made_and_then_lost_is_an_open_window(self):
+        """`observes_egress` licenses a reader to treat silence as "nothing was attempted", so a
+        proxy that existed and vanished cannot be silent."""
+        seen: list[EgressObserved] = []
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        # The proxy goes between the acquire and the teardown, which is what a host reboot or
+        # somebody else's `docker rm` looks like from here.
+        absent = _DockerResult(1, b"", f"Error: No such container: {_AL_PROXY}")
+        fake._responder = _machine(running=[_AL], overrides={("logs", "--tail"): absent})
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.dispose(_KEY))
+        assert [e.unreadable for e in seen] == [
+            "the proxy is gone, so whatever it decided went with it"
+        ]
+
+    def test_a_closed_sandbox_is_never_reported_as_a_lost_proxy(self):
+        """It never had one. Only an allowlisted acquire is tracked, so a closed teardown stays
+        silent rather than inventing a window."""
+        seen: list[EgressObserved] = []
+        backend, _fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.dispose(_KEY))
+        assert seen == []
+
+    def test_attribution_survives_a_removal_that_did_not_land(self):
+        """A proxy a removal could not take is still running and still deciding, so a retry has
+        to be able to key its drain."""
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert _AL in backend._acquired
+        # Only now, so the acquire itself is not the thing that fails.
+        fake._responder = _machine(
+            running=[_AL], overrides={("rm",): _DockerResult(1, b"", "device or resource busy")}
+        )
+        asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+        assert _AL in backend._acquired
+
     def test_the_last_window_is_drained_at_disposal(self):
         seen: list[EgressObserved] = []
         backend, _fake = _backend_with(

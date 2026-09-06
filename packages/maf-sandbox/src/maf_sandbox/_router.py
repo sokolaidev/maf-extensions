@@ -762,6 +762,9 @@ class SandboxRouter:
         place would charge this router's acquires to the other one's observer.  **All or none,
         and back as it was** — ``observe_egress`` is a backend's code and may raise, so each one
         that took a reporter is handed its previous one back before the failure propagates.
+        That restore is exact only because the hook is required to be atomic; a backend that
+        stores a reporter and *then* raises never handed over what it replaced, and nothing
+        here can recover it.
         """
         installed: list[tuple[ObservesEgress, EgressReporter | None]] = []
         report = self._report_egress if self._observer is not None else None

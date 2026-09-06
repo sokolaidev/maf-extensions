@@ -333,13 +333,12 @@ class EgressObserved(SandboxEvent):
     truncated: bool
     unreadable: str | None
     seconds: float
-    #: Always ``None``, and it is a field rather than an omission so that a recorder reading
-    #: ``call`` across the events does not have to special-case this one.  A drain covers a
-    #: *window* rather than a call: the decisions in it were written by an enforcer that has
-    #: been running since the last drain, so they span whatever calls happened in between.
-    #: :func:`recorded_call` would name the call that happened to collect them, which is the
-    #: one thing this record must not say — it would put one call's traffic under another's.
-    call: str | None = None
+    #: Always ``None``, and typed so that saying otherwise does not compile: a drain covers a
+    #: *window* rather than a call, and the decisions in it span whatever calls happened
+    #: between two removals.  :func:`recorded_call` would name the call that happened to
+    #: collect them, which is the one thing this record must not say.  It stays a field so a
+    #: recorder reading ``call`` across the events has no case to special-case.
+    call: Literal[None] = None
 
     def deliver_to(self, observer: SandboxObserver) -> None:
         observer.egress_observed(self)
@@ -694,5 +693,10 @@ class ObservesEgress(Protocol):
 
         Returning the old one is what lets a router that fails to construct put a backend back
         as it found it, rather than switching off reporting a *different* router is still using.
+
+        **It must be atomic.**  Either it takes the reporter and returns the previous one, or
+        it raises having changed nothing.  A hook that stores the new one and then raises
+        cannot be rolled back — the caller never received what it replaced — and the router's
+        restore would put back the wrong thing.
         """
         ...
