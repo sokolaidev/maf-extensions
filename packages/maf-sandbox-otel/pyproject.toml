@@ -1,6 +1,6 @@
 [project]
 name = "maf-sandbox-otel"
-version = "0.1.0"
+version = "0.1.1"
 description = "OpenTelemetry records of what a maf-sandbox sandbox did — egress posture, host-tool calls, files in and out, integrity labels and disposal — as spans, log records and metrics."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
