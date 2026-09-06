@@ -19,7 +19,8 @@ says which sandbox and which conversation, and at the default
 flight on one thread carry the same key.  ``call`` is the other column — the id of the tool call
 a record came from, so those two calls' records separate.  :class:`ToolCallEnded` always names
 one, since it is where a call's other events join; the rest name none for what happened outside
-a call at all, which a disposal genuinely can.
+a call — before one, which a disposal genuinely can, and after one, which a task the body left
+running does.
 
 **An observer is synchronous, thread-safe, and it cannot fail a call.**  It runs wherever the
 call it records is served — an event-loop task, or the worker thread a synchronous tool body
@@ -82,6 +83,22 @@ __all__ = [
 ]
 
 
+@dataclass
+class RecordedCall:
+    """One tool call, as the sites that build events see it: an id, and whether it is still open.
+
+    **Mutable, and that is the whole of it.**  A task starts from a copy of its parent's context,
+    so a child the body left running keeps whatever :data:`RECORDED_CALL` held when it started —
+    and resetting a bare id in the wrapper would not reach that copy.  A store read or an acquire
+    from such a task would go on naming a call whose :class:`ToolCallEnded` has already been
+    delivered, and whose ``keys`` can no longer account for what it touched.  ``closed`` is the
+    one piece of this the copies share, which is why it is what a reader tests.
+    """
+
+    id: str
+    closed: bool = False
+
+
 #: The tool call whose records are being written here, or ``None`` outside one.
 #:
 #: Set by :func:`~maf_sandbox.maf.sandboxed_tool` around the body *and* its reclaim, and read by
@@ -91,10 +108,26 @@ __all__ = [
 #: must not start to.  It already imports this module to record at all, so reading one more
 #: thing from the seam that owns the events adds no coupling that was not there.
 #:
-#: A task starts from a copy of its parent's context, so a body's child tasks read it and cannot
-#: reach a sibling call's.  One left running past the call keeps the copy, which is why a run
-#: reads it once at construction rather than per event.
-RECORDED_CALL: ContextVar[str | None] = ContextVar("maf_sandbox_recorded_call", default=None)
+#: Read it through :func:`recorded_call`, never off the variable: a live record and a closed
+#: one are both a :class:`RecordedCall`, and only the function tells them apart.
+RECORDED_CALL: ContextVar[RecordedCall | None] = ContextVar(
+    "maf_sandbox_recorded_call", default=None
+)
+
+
+def call_id_of(recorded: RecordedCall | None) -> str | None:
+    """``recorded``'s id while its call is open, and ``None`` before one starts or once it ends.
+
+    Held apart from :func:`recorded_call` for the one caller that cannot read the context where
+    it records: a :class:`~maf_sandbox.HostToolRun` is built inside its call and used from the
+    transport's own tasks, so it keeps the record and asks this.
+    """
+    return None if recorded is None or recorded.closed else recorded.id
+
+
+def recorded_call() -> str | None:
+    """The tool call whose records are being written here, or ``None`` outside one."""
+    return call_id_of(RECORDED_CALL.get())
 
 
 @dataclass(frozen=True)
@@ -261,10 +294,10 @@ class HostToolCalled(SandboxEvent):
     without differencing.  ``response_bytes`` is what this call delivered, framing included, and
     zero for everything else.
 
-    ``call`` is read once, where the :class:`~maf_sandbox.HostToolRun` was built, and is the
-    same on every record of that run — a guest's callback is served on a task of the
-    transport's own, whose context is a copy rather than the body's.  A run a transport builds
-    outside a tool call carries ``None``.
+    The call is found where the :class:`~maf_sandbox.HostToolRun` was built rather than per
+    record, because a guest's callback is served on a task of the transport's own, whose context
+    is a copy rather than the body's.  ``call`` is ``None`` for a run built outside a tool call,
+    and for one still answering after its call has ended.
     """
 
     run_id: str

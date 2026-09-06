@@ -32,11 +32,11 @@ from pathlib import Path
 from typing import Literal
 
 from ._observer import (
-    RECORDED_CALL,
     LandedOutput,
     OutputsCollected,
     SandboxObserver,
     record,
+    recorded_call,
     refuse_an_unusable_observer,
 )
 from ._protocol import (
@@ -834,7 +834,7 @@ async def collect_outputs(
                 seconds=time.monotonic() - started,
                 refusal=refusal,
                 call_id=call_id,
-                call=RECORDED_CALL.get(),
+                call=recorded_call(),
             ),
             logger,
         )

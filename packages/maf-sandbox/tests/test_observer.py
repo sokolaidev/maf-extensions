@@ -1814,6 +1814,44 @@ class TestEveryRecordSaysWhichCallItCameFrom:
 
         assert seen == [f"{_SPEC.work_dir}/{recorder.one(ToolCallEnded).call}"]
 
+    def test_a_task_that_outlives_the_call_stops_naming_it(self):
+        """A child task starts from a *copy* of the context, so the call's record is the only
+        part of it the two share. Without that, a read from a task the body left running would
+        name a call whose `ToolCallEnded` has already been delivered — and whose `keys` cannot
+        account for it, since the append is what `closed` stops."""
+        recorder = _Recorder()
+        router = _router(observer=recorder)
+        gate: list[asyncio.Event] = []
+        outliving: list[asyncio.Task[None]] = []
+
+        def build(session: SandboxToolSession):
+            async def widget_run() -> str:
+                """Leave a task running past the return."""
+
+                async def reads_afterwards() -> None:
+                    await gate[0].wait()
+                    await session.read_file(InMemoryStore({"a.txt": "hi"}), ListedFile("a.txt"))
+
+                outliving.append(asyncio.ensure_future(reads_afterwards()))
+                return "done"
+
+            return widget_run
+
+        async def then_release_it() -> None:
+            gate.append(asyncio.Event())
+            assert await _fn(_tool(router, build))() == "done"
+            gate[0].set()
+            await outliving[0]
+
+        asyncio.run(then_release_it())
+
+        ended = recorder.one(ToolCallEnded)
+        read = recorder.one(StoreFileRead)
+        assert ended.call
+        assert read.call is None
+        # It arrived after the call was closed out, which is the whole of the hazard.
+        assert recorder.events.index(ended) < recorder.events.index(read)
+
     def test_a_synchronous_body_names_a_call_too(self):
         """It holds no sandbox and owns no reclaim, so there is no call record to take an id
         from — and this is the one wrapper where a missing id would go unnoticed."""

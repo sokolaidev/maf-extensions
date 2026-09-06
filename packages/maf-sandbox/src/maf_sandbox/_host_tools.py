@@ -47,6 +47,7 @@ from ._observer import (
     HostToolCalled,
     HostToolOutcome,
     SandboxObserver,
+    call_id_of,
     record,
     refuse_an_unusable_observer,
 )
@@ -838,9 +839,10 @@ class HostToolRun:
     ``logger`` instead, exactly the split :mod:`maf_sandbox.maf`'s failure ladder draws.
 
     **Build it inside the tool call whose program it supervises.**  The tool call being recorded
-    is read here, once, and carried onto every :class:`~maf_sandbox.HostToolCalled` — a run
-    built elsewhere and used later records no call, and a record keyed on ``run_id`` alone
-    cannot be joined to the rest of what that call did.
+    is found here, once, and carried onto every :class:`~maf_sandbox.HostToolCalled` — a run
+    built elsewhere records no call, and one keyed on ``run_id`` alone cannot be joined to the
+    rest of what that call did.  A run still answering after its call has ended records none
+    either, which is the same rule everything else on the seam follows.
 
     Args:
         registry: Where names resolve and whose policy (cap, gate, ceilings) applies.
@@ -879,10 +881,7 @@ class HostToolRun:
         self._logger = logger if logger is not None else _DEFAULT_LOGGER
         self._run_id = run_id if run_id is not None else uuid.uuid4().hex
         self._key = key
-        # Here rather than per call: a guest's callback is served on a task of the transport's
-        # own, whose context is a copy taken when the transport started listening rather than
-        # the body's live one. A run is built inside the call it belongs to, and this is.
-        self._call = RECORDED_CALL.get()
+        self._recorded = RECORDED_CALL.get()
         self._calls = 0
         self._delivered = 0
         self._delivered_bytes = 0
@@ -1107,7 +1106,7 @@ class HostToolRun:
                     response_bytes=called.delivered_bytes,
                     calls=self._calls,
                     seconds=time.monotonic() - started,
-                    call=self._call,
+                    call=call_id_of(self._recorded),
                 ),
                 self._logger,
             )
