@@ -105,9 +105,7 @@ What that looks like in one turn — note that exactly two things cross the proc
 
 Exactly one module imports `agent_framework`, and it is deliberately not re-exported from the package: `import maf_sandbox` stays cheap and framework-free for a backend author or a workload's own test suite, while a host reaches the conveniences by name. Both halves are pinned by tests.
 
-A host wires three things.
-
-**The tools.** A kind's factory returns a plain list of MAF tools, which go onto the agent like any others — the whole wiring, and one turn served through it:
+A host wires three things: the tools, the request context they read, and disposal. All three, and one turn served through them:
 
 ```python
 router = SandboxRouter([AcasSandboxBackend(config)])
@@ -136,6 +134,8 @@ logger.info("reclaimed %d, still there: %s", disposal.disposed, disposal.undispo
 # On the host's own conversation-delete path, for the turns that were never scoped.
 await SandboxPurger(router).purge_scoped_thread(scope, thread_id)
 ```
+
+**The tools.** A kind's factory returns a plain list of MAF tools, which go onto the agent like any others.
 
 **The request context.** `make_caller_context` takes three *callables*, read per call rather than captured as values. Two of them say who is calling — the scope and the conversation — and those, with `agent_dir`, are what a sandbox is keyed by. There is no default and no fallback here: a call with no conversation bound is refused rather than served from a shared key, and nothing in this stack takes a scope, a thread id or a file path from the model. Captured at construction time instead, a host that builds one agent and serves many conversations with it would let one conversation address another's sandbox ([`architecture.md`](architecture.md) § Keying).
 
