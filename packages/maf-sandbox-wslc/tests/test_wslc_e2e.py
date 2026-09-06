@@ -17,7 +17,7 @@ import subprocess
 import uuid
 
 import pytest
-from maf_sandbox import Egress, SandboxKey, SandboxSpec
+from maf_sandbox import Egress, Isolation, OsFamily, SandboxKey, SandboxRouter, SandboxSpec
 from maf_sandbox.conformance import (
     PosixGuestSubject,
     assert_egress_conformance,
@@ -130,6 +130,36 @@ class TestALiveContainer:
         try:
             name = asyncio.run(scenario())
             assert _names_on_the_machine(name) == []
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+
+class TestTheDeclaredGuestFamilyAgainstARealContainer:
+    """The constant `os_families` states, backed by a container rather than matched on paper.
+
+    The offline suite pins the declaration and the router's refusal; what needs a live `wslc`
+    is that the guest on the other end really does take POSIX argv and a `/`-rooted path.
+    """
+
+    def test_a_workload_requiring_posix_is_served_and_runs(self):
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = WslcSandboxBackend(WslcSandboxConfig())
+        router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
+        spec = SandboxSpec(kind="e2e", image=_IMAGE, requires_os_family=OsFamily.POSIX)
+
+        async def scenario() -> None:
+            router.ensure_can_serve(spec)
+            sandbox = await router.acquire(_key(scope), spec)
+            # At `/` rather than `_WORK`: what this asserts is the guest's grammar and argv,
+            # which every Linux image answers for, not a directory some of them carry.
+            ran = await sandbox.exec(
+                ["sh", "-c", "printf posix"], working_directory="/", timeout=60
+            )
+            assert ran.exit_code == 0, ran.stderr
+            assert ran.stdout == "posix"
+
+        try:
+            asyncio.run(scenario())
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
