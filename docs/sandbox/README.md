@@ -107,7 +107,7 @@ Exactly one module imports `agent_framework`, and it is deliberately not re-expo
 
 A host wires three things.
 
-**The tools.** A kind's factory returns a plain list of MAF tools, which go onto the agent like any others:
+**The tools.** A kind's factory returns a plain list of MAF tools, which go onto the agent like any others — the whole wiring, and one turn served through it:
 
 ```python
 router = SandboxRouter([AcasSandboxBackend(config)])
@@ -126,13 +126,22 @@ agent = Agent(
     # `trusted` floor would be refused for the reason `FileStoreProvenance` gives.
     middleware=[file_store_provenance_middleware(record)],
 )
+
+# Serving one turn. Without this block the sandbox outlives the turn and nothing here
+# reclaims it — only the backend's own lifecycle policy eventually does.
+async with router.scope(scope, thread_id) as disposal:
+    response = await agent.run(prompt)
+logger.info("reclaimed %d, still there: %s", disposal.disposed, disposal.undisposed)
+
+# On the host's own conversation-delete path, for the turns that were never scoped.
+await SandboxPurger(router).purge_scoped_thread(scope, thread_id)
 ```
 
-**The request context.** `make_caller_context` takes *callables*, read per call, rather than values. A sandbox is keyed by `(scope, thread_id, agent_dir)` — and by `call_id` as well for a workload that runs one sandbox per call, and a host that builds one agent and serves many conversations with it would — if the scope and thread were captured at construction time — let one conversation address another conversation's sandbox. Nothing in this stack accepts a scope, a thread id or a file path from the model: the file store listing is the boundary that decides what a name is allowed to resolve to.
+**The request context.** `make_caller_context` takes three *callables*, read per call rather than captured as values. Two of them say who is calling — the scope and the conversation — and those, with `agent_dir`, are what a sandbox is keyed by. There is no default and no fallback here: a call with no conversation bound is refused rather than served from a shared key, and nothing in this stack takes a scope, a thread id or a file path from the model. Captured at construction time instead, a host that builds one agent and serves many conversations with it would let one conversation address another's sandbox ([`architecture.md`](architecture.md) § Keying).
 
-`list_all_files` above is `maf_sandbox.maf`'s — it walks the store's `list_children` one level at a time and answers `ListedFile` entries: a store-relative path, and what the host knows about the bytes at it. `provenance=` is what supplies the second half, and leaving it off is not neutral — every entry then reads `None`, *unestablished*, and a kind reading that store can never label anything from it. Pair the record with `file_store_provenance_middleware(record)` on the agent, which is what makes it observe the model's own writes; [`hosts.md`](hosts.md) carries the wiring and the one window it leaves open. It sits beside `make_caller_context` rather than in core because it reads `FileStoreEntry.type`, which is the framework's. A workload with no file channel at all passes `list_no_files`, which is a stated decision rather than an empty lambda the next reader has to interpret. Either way a failure to enumerate **propagates**: answering an empty list would read as "the store has no files" and refuse every name for the wrong reason.
+The third enumerates the caller's files, and that listing decides which names a workload may pass into a sandbox. `list_all_files(store, provenance=record)` is the usual answer; a workload with no file channel passes `list_no_files`, by name rather than as an empty lambda. `provenance=` is optional and leaving it off is not neutral — every entry then lists as *unestablished*, and a kind reading that store can never label anything from it. The record observes nothing unless `file_store_provenance_middleware(record)` is on the agent, which is what the comment in the snippet is about. [`hosts.md`](hosts.md) carries both wirings and the window each leaves open.
 
-**Disposal.** `SandboxPurger` participates in thread deletion, so deleting a conversation takes its sandboxes with it, and `dispose_scope` deletes by service-side label — which reclaims sandboxes the calling replica never created. A host that serves one conversation at a time can let `router.scope(scope, thread_id)` make that call for it: an async context manager that disposes however its block ends, and afterwards reports the count and — when the delete did not land — the reason, because zero reclaimed reads the same whether there was nothing to reclaim or nothing worked. One disposal is the framework's own: a sandbox it could not clean after a call — a removal that failed, or a stop that did not reach the program's whole process group — is disposed before the next call can reuse it, and the host loosens that on the router, never a kind ([`tool-call.md`](tool-call.md) § Cleanup).
+**Disposal.** Acquiring a sandbox is get-or-create and the default spec shares one across a conversation, so it outlives the turn that made it — which is what makes a fix-and-retry loop warm — and **nothing in the library then reclaims it**. (A workload that asks for one sandbox per call is the exception: the framework destroys that one when the call returns.) What is left is the backend's own platform policy, and it differs: on ACAS's default lifecycle a sandbox idles a minute, suspends resumable for ten more and is then deleted, while a local Docker container just stays. The snippet's last two blocks are how a host takes that decision back instead. `router.scope(scope, thread_id)` disposes however its block ends, exception included, and afterwards reports the count and — when a delete did not land — the reason, because zero reclaimed reads the same whether there was nothing to reclaim or nothing worked. `SandboxPurger` on the conversation-delete path is the backstop for the turns no scope block wrapped: it deletes by service-side label, so it reclaims sandboxes the calling replica never created, and it cannot fail the delete it is attached to. One disposal is not the host's at all: a sandbox the framework could not clean after a call — a removal that failed, or a stop that did not reach the program's whole process group — is disposed before the next call can reuse it, and the host loosens that on the router, never a kind ([`tool-call.md`](tool-call.md) § Cleanup). [`samples/12_purge_lifecycle`](../../samples/12_purge_lifecycle/) counts all three moments against `docker ps`.
 
 Two behaviours are worth knowing before the first call, because both are deliberate and neither is what a host would arrive at by accident:
 
