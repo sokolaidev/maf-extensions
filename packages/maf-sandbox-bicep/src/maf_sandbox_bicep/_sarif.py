@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 __all__ = ["RESTORE_FAILURE_RULES", "count_restore_failures", "format_diagnostics", "parse_sarif"]
 
@@ -43,23 +43,57 @@ def parse_sarif(text: str) -> list[dict[str, Any]] | None:
     except (json.JSONDecodeError, ValueError):
         return None
 
+    try:
+        return _diagnostics(data)
+    except TypeError:
+        # Valid JSON does not establish the SARIF shape.
+        return None
+
+
+def _object(value: object) -> Mapping[str, Any]:
+    """``value`` where SARIF says an object."""
+    if not isinstance(value, Mapping):
+        raise TypeError(f"expected an object, got {type(value).__name__}")
+    return cast("Mapping[str, Any]", value)
+
+
+def _array(value: object) -> list[Any]:
+    """``value`` where SARIF says an array.
+
+    Checked rather than iterated, because the wrong container is silent: ``{"runs": {}}``
+    iterates as empty and would render as "no diagnostics" — a broken sandbox read as a
+    clean build, which is the one answer this parser may never give by accident.
+    """
+    if not isinstance(value, list):
+        raise TypeError(f"expected an array, got {type(value).__name__}")
+    return cast("list[Any]", value)
+
+
+def _diagnostics(data: Any) -> list[dict[str, Any]]:
+    """The SARIF walk itself, over a blob that has parsed but is not yet known to be SARIF."""
     diagnostics: list[dict[str, Any]] = []
-    for run in data.get("runs", []):
+    for entry in _array(_object(data).get("runs", [])):
+        run = _object(entry)
+        driver = _object(_object(run.get("tool", {})).get("driver", {}))
         rules: dict[str, Any] = {}
-        for rule in run.get("tool", {}).get("driver", {}).get("rules", []):
+        for rule_entry in _array(driver.get("rules", [])):
+            rule = _object(rule_entry)
             rules[rule.get("id", "")] = rule
 
-        for result in run.get("results", []):
+        for result_entry in _array(run.get("results", [])):
+            result = _object(result_entry)
             rule_id = result.get("ruleId", "")
             rule = rules.get(rule_id, {})
-            message = result.get("message", {}).get("text", "")
+            message = _object(result.get("message", {})).get("text", "")
             level = result.get("level", "warning")
             locs: list[dict[str, Any]] = []
-            for loc in result.get("locations", []):
-                region = loc.get("physicalLocation", {}).get("region", {})
-                artifact = (
-                    loc.get("physicalLocation", {}).get("artifactLocation", {}).get("uri", "")
-                )
+            for loc_entry in _array(result.get("locations", [])):
+                physical = _object(_object(loc_entry).get("physicalLocation", {}))
+                region = _object(physical.get("region", {}))
+                artifact = _object(physical.get("artifactLocation", {})).get("uri", "")
+                if not isinstance(artifact, str):
+                    # `format_diagnostics` calls `removeprefix` on it.
+                    raise TypeError(f"expected a uri string, got {type(artifact).__name__}")
                 locs.append(
                     {
                         "file": artifact,
