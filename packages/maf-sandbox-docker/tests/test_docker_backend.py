@@ -3853,9 +3853,9 @@ class TestTheProxysOwnDecisionsReachARecord:
         assert seen and seen[0].truncated is True
 
     def test_a_capped_read_is_partial_output_rather_than_a_failed_one(self):
-        """The bounded reader *kills* the child to enforce the cap, so a capped log comes back
-        with a non-zero code — which the fake does not reproduce. Classifying that as unreadable
-        threw away every decision in exactly the windows the cap exists for."""
+        """A capped read is partial output: the bounded reader kills the child to enforce the
+        cap, so the exit code says nothing about the bytes already in hand and the decisions
+        in them still count."""
         seen: list[EgressObserved] = []
         page = b"ALLOW h.example:443\n" * (_PROXY_LOG_BYTES // 20)
         overrides = {("logs", "--tail"): _DockerResult(137, page, "killed after the read limit")}
@@ -3930,6 +3930,29 @@ class TestTheProxysOwnDecisionsReachARecord:
         fake._responder = stubborn_proxy
         asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
         assert _AL in backend._acquired
+
+    def test_a_second_observed_router_taking_this_backend_over_is_named(self, caplog):
+        """The records move to whichever router was built last, including for sandboxes the
+        first one served, and a backend cannot tell that from a host rebuilding its router — so
+        it says so rather than refusing."""
+        backend, _fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        backend.observe_egress(lambda _event: None)
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox_docker._backend"):
+            backend.observe_egress(lambda _event: None)
+        assert "moved to a different router" in caplog.text
+
+    def test_taking_the_same_reporter_again_is_not_a_move(self, caplog):
+        """A router hands its reporter over once; re-registering the identical callback is not
+        the ambiguity the warning is about."""
+        backend, _fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+
+        def report(_event: EgressObserved) -> None:
+            return None
+
+        backend.observe_egress(report)
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox_docker._backend"):
+            backend.observe_egress(report)
+        assert "moved to a different router" not in caplog.text
 
     def test_the_last_window_is_drained_at_disposal(self):
         seen: list[EgressObserved] = []

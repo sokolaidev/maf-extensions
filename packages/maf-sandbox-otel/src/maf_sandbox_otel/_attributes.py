@@ -67,8 +67,10 @@ CAPABILITIES = f"{NAMESPACE}.sandbox.capabilities"
 BACKEND_CAPABILITIES = f"{NAMESPACE}.backend.capabilities"
 BACKEND_EGRESS_MODES = f"{NAMESPACE}.backend.egress_modes"
 #: Whether the serving backend can report what its egress enforcement decided.  It rides on
-#: every acquire so that a key with no `sandbox.egress` record can be read correctly: `false`
-#: means nothing was watched, and only `true` makes silence mean nothing was reached.
+#: every acquire because `false` is the certain reading: nothing was watched, so no
+#: absence means anything.  `true` is narrower than it looks and says what
+#: `BackendDeclarations.observes_egress` says — the backend reports the windows it can
+#: *attribute* — so a consumer cannot take silence for proof on its own.
 BACKEND_OBSERVES_EGRESS = f"{NAMESPACE}.backend.observes_egress"
 
 EGRESS_MODE = f"{NAMESPACE}.egress.mode"

@@ -993,10 +993,8 @@ class DockerSandboxBackend:
         return self._declarations
 
     def observe_egress(self, report: EgressReporter | None) -> EgressReporter | None:
-        """Take the callback this backend reports its proxy's decisions through, or ``None``.
-
-        Returns the reporter it replaced, which is what a router that fails to construct puts
-        back — see :class:`~maf_sandbox.ObservesEgress`.
+        """Take the callback this backend reports its proxy's decisions through, and return
+        the one it replaced — see :class:`~maf_sandbox.ObservesEgress` for the contract.
 
         The router calls this at the end of its construction, with its reporter when it has an
         observer and with ``None`` when it does not — so the drains below stay switched off for
@@ -2157,6 +2155,9 @@ class DockerSandboxBackend:
         removal = await self._remove(name)
         await self._drain_the_proxy(name, key)
         await self._remove(_proxy_name(name))
+        # With the proxy, so the rebuild that follows does not find an absent proxy
+        # under a name still tracked and report a window that was just drained.
+        self._acquired.pop(name, None)
         await self._remove_network(net)
         if removal.failure is not None:
             raise RuntimeError(

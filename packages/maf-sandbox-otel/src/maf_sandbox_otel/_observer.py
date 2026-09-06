@@ -375,7 +375,11 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
         # reason a disposal's is its `DisposalCode`: a span status is not an attribute and no
         # redaction reaches it, so putting the sentence there would cross whatever the gate
         # above just held back.
-        self._emit(EGRESS, recorded, event.seconds, _UNREADABLE if event.unreadable else None)
+        # `is not None`, matching the attribute above: an empty reason is still a window
+        # nobody accounted for, and truthiness would call that span healthy.
+        self._emit(
+            EGRESS, recorded, event.seconds, _UNREADABLE if event.unreadable is not None else None
+        )
         for one in decisions:
             self._isolate(
                 lambda decision=one.decision: self._egress.add(

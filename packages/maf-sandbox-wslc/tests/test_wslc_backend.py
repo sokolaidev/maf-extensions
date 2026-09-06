@@ -2133,8 +2133,10 @@ class TestTheProxysOwnDecisionsReachARecord:
         assert seen and seen[0].truncated is True
 
     def test_a_capped_read_is_partial_output_rather_than_a_failed_one(self):
-        """The bounded reader kills the command at the cap — `test_a_bounded_read_caps_stdout_
-        and_reaps_the_process` pins the non-zero code — and the fake does not reproduce it."""
+        """A capped read is partial output: the bounded reader kills the command to enforce
+        the cap, so its exit code says nothing about the bytes already read.
+        `test_a_bounded_read_caps_stdout_and_reaps_the_process` pins that code.
+        """
         seen: list[EgressObserved] = []
         page = b"ALLOW h.example:443\n" * (_PROXY_LOG_BYTES // 20)
         overrides = {("container", "logs", "--tail"): _WslcResult(137, page, b"killed at limit")}
@@ -2168,9 +2170,9 @@ class TestTheProxysOwnDecisionsReachARecord:
         assert seen == []
 
     def test_the_engines_own_absence_code_reads_as_absent(self):
-        """`container remove` answers `WSLC_E_CONTAINER_NOT_FOUND`; `no such` is the wording
-        `container cp` borrows from docker. Matching only the second made a missing proxy report
-        that it could not be stopped, on every first observed acquire."""
+        """Absence has two spellings on this CLI and a caller has to accept both:
+        `container remove` answers `WSLC_E_CONTAINER_NOT_FOUND`, and `no such` is the
+        wording `container cp` borrows from docker."""
         seen: list[EgressObserved] = []
         absent = _WslcResult(1, b"", _NOT_FOUND.encode())
         overrides = {("container", "stop"): absent, ("container", "logs", "--tail"): absent}
@@ -2178,6 +2180,29 @@ class TestTheProxysOwnDecisionsReachARecord:
         backend.observe_egress(seen.append)
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert seen == []
+
+    def test_a_second_observed_router_taking_this_backend_over_is_named(self, caplog):
+        """The records move to whichever router was built last, including for sandboxes the
+        first one served, and a backend cannot tell that from a host rebuilding its router — so
+        it says so rather than refusing."""
+        backend, _fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        backend.observe_egress(lambda _event: None)
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox_wslc._backend"):
+            backend.observe_egress(lambda _event: None)
+        assert "moved to a different router" in caplog.text
+
+    def test_taking_the_same_reporter_again_is_not_a_move(self, caplog):
+        """A router hands its reporter over once; re-registering the identical callback is not
+        the ambiguity the warning is about."""
+        backend, _fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+
+        def report(_event: EgressObserved) -> None:
+            return None
+
+        backend.observe_egress(report)
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox_wslc._backend"):
+            backend.observe_egress(report)
+        assert "moved to a different router" not in caplog.text
 
     def test_the_last_window_is_drained_at_disposal(self):
         seen: list[EgressObserved] = []

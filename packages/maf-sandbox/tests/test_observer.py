@@ -990,16 +990,22 @@ class TestABackendReportsWhatItsEgressEnforcementDecided:
         _router(backend)
         assert backend.report is None
 
-    def test_moving_a_backend_to_a_second_observed_router_is_named(self, caplog):
-        """One backend holds one reporter, so the second router's observer silently collects
-        the first one's sandboxes too. Warned rather than refused: refusing would break the
-        ordinary case this cannot tell apart, a host that discarded a router and built another
-        over the same backend."""
+    def test_a_second_observed_router_takes_a_backend_over(self):
+        """One backend holds one reporter, so the second router's observer collects the first
+        one's sandboxes too. It is a supported shape of mistake rather than a refusal, because a
+        backend cannot tell it from a host that discarded a router and built another over the
+        same instance — which is why the shipped backends warn. That warning belongs to them and
+        is asserted in their suites; this double does not implement it, so nothing here claims
+        it does."""
+        first, second = _Recorder(), _Recorder()
         backend = _Reporting()
-        _router(backend, observer=_Recorder())
-        with caplog.at_level(logging.WARNING, logger="test_observer"):
-            _router(backend, observer=_Recorder())
+        keeper = _router(backend, observer=first)
+        taker = _router(backend, observer=second)
         assert backend.report is not None
+        assert keeper.observer is first and taker.observer is second
+
+        backend.report(_drain())
+        assert second.only(EgressObserved) and first.only(EgressObserved) == []
 
     def test_a_failed_construction_puts_a_shared_backend_back_as_it_found_it(self):
         """`None` would be worse than doing nothing: it silences a *different* router that is
@@ -1023,9 +1029,9 @@ class TestABackendReportsWhatItsEgressEnforcementDecided:
         assert first.observer is not None
 
     def test_a_restore_that_raises_neither_replaces_the_failure_nor_stops_the_rest(self):
-        """The rollback is entered for a `BaseException`, so containing only `Exception` let a
-        cancel inside a restore replace the construction failure and skip every backend after
-        it — in reverse order, that is the ones installed first."""
+        """Every backend is restored and the construction failure is what propagates, whatever
+        a restore hook raises — the block is entered for a `BaseException`, so it has to
+        contain one."""
         first, second = _Reporting(), _Reporting()
         held = _Recorder()
         keeper = _router(first, observer=held)

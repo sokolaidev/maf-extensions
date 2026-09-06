@@ -671,10 +671,8 @@ class WslcSandboxBackend:
         return self._declarations
 
     def observe_egress(self, report: EgressReporter | None) -> EgressReporter | None:
-        """Take the callback this backend reports its proxy's decisions through, or ``None``.
-
-        Returns the reporter it replaced, which is what a router that fails to construct puts
-        back — see :class:`~maf_sandbox.ObservesEgress`.
+        """Take the callback this backend reports its proxy's decisions through, and return
+        the one it replaced — see :class:`~maf_sandbox.ObservesEgress` for the contract.
 
         The router calls this at the end of its construction, with its reporter when it has an
         observer and with ``None`` when it does not — so the drains below stay switched off for
