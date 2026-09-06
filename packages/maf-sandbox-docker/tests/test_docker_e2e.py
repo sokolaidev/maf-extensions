@@ -803,6 +803,41 @@ class TestFilesOutAgainstARealEngine:
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
+    def test_absence_is_the_engine_naming_the_path_and_a_gone_container_is_not(self):
+        """Which failures a real daemon answers with, and which of them mean "not there".
+
+        The offline suite pins the classification against messages this repository wrote
+        down; what only a live engine can say is that they are still the messages. A
+        container removed from under the sandbox is the failure the phrase gets borrowed by:
+        `docker cp` answers about the container, naming no path, and reading that as absence
+        would end the filesystem path check on every ancestor at once.
+        """
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), _spec())
+            await sandbox.write_file("/maf-sandbox/work/.keep", "", working_directory=_WORK)
+
+            assert await sandbox.stat_file("gone.txt", working_directory=_WORK) is None
+            with pytest.raises(FileNotFoundError):
+                await sandbox.read_file("gone.txt", working_directory=_WORK, max_bytes=1024)
+
+            subprocess.run(
+                ["docker", "rm", "-f", sandbox.container_name],
+                capture_output=True,
+                timeout=60,
+                check=True,
+            )
+            with pytest.raises(RuntimeError, match="could not stat") as raised:
+                await sandbox.stat_file("gone.txt", working_directory=_WORK)
+            assert sandbox.container_name in str(raised.value)
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
     def test_a_symlinked_output_is_refused_at_stat_and_at_read(self):
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())

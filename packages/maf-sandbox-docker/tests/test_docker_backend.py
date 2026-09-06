@@ -125,6 +125,20 @@ def _cp(guest: str) -> tuple[str, ...]:
     return ("cp", f"{_NAME}:{guest}")
 
 
+def _not_in_the_container(guest: str, container: str = _NAME) -> _DockerResult:
+    """What ``docker cp`` answers for a path the container does not have.
+
+    Verbatim from Engine 29.7.2, and the whole point is the path in it: naming the path is
+    how the engine says *this* one is missing, and a message that names something else is
+    not an absence the backend may act on.
+    """
+    return _DockerResult(
+        1,
+        b"",
+        f"Error response from daemon: Could not find the file {guest} in container {container}",
+    )
+
+
 #: Every stat and every read walks the components from the root down: the root itself,
 #: `/maf-sandbox`, then `/maf-sandbox/work`. A fake engine that cannot answer for either
 #: refuses both as a path through a non-directory, so all are seeded as directories here —
@@ -316,7 +330,8 @@ def _machine(
         if args[0] == "logs":
             return _DockerResult(0, b"listening on 3128\n", "")
         if args[0] == "cp" and args[1] != "-":
-            return _DockerResult(1, b"", "no such file")
+            container, _, guest = args[1].partition(":")
+            return _not_in_the_container(guest, container)
         return _DockerResult(0, b"", "")
 
     return respond
@@ -955,11 +970,7 @@ class TestRemove:
     def _sandbox(self):
         # The walk stats every ancestor, so the fake has to answer for them; anything else
         # under the work directory is simply not there, which a removal treats as success.
-        overrides = {
-            **_WORK_IS_A_DIRECTORY,
-            ("cp",): _DockerResult(1, b"", "Error: Could not find the file in container"),
-        }
-        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=_WORK_IS_A_DIRECTORY))
         return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
 
     def test_a_recursive_removal_is_rm_rf_behind_a_double_dash(self):
@@ -1083,7 +1094,6 @@ class TestWhichPrincipalACommandCarries:
     def _sandbox(self, overrides=None, *, capabilities_dropped=False):
         merged = {
             **_WORK_IS_A_DIRECTORY,
-            ("cp",): _DockerResult(1, b"", "Error: Could not find the file in container"),
             **(_CAPS_DROPPED if capabilities_dropped else {}),
             **(overrides or {}),
         }
@@ -1182,7 +1192,6 @@ class TestTheReachRuleChoosesThePrincipal:
             _cp("/"): _DockerResult(0, _owned_directory_tar(".", 0, 0o755), ""),
             _cp("/maf-sandbox"): _DockerResult(0, _directory_tar("maf-sandbox"), ""),
             _cp(_WORK): _DockerResult(0, work_dir_entry, ""),
-            ("cp",): _DockerResult(1, b"", "Error: Could not find the file in container"),
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
@@ -1248,8 +1257,9 @@ class TestTheAncestorsAboveTheWorkDirAreChecked:
     """The half of `reclaim`'s argument that is read rather than asserted, once per container."""
 
     def _backend(self, parent: bytes | None, image: str = _SPEC.image):
-        overrides = {("cp",): _DockerResult(1, b"", "Error: Could not find the file in container")}
-        overrides[("cp", f"{_NAME}:/")] = _DockerResult(0, _owned_directory_tar(".", 0, 0o755), "")
+        overrides = {
+            ("cp", f"{_NAME}:/"): _DockerResult(0, _owned_directory_tar(".", 0, 0o755), "")
+        }
         if parent is not None:
             overrides[_cp("/maf-sandbox")] = _DockerResult(0, parent, "")
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
@@ -1429,7 +1439,6 @@ class TestAContainerThatVanishedBehindThisBackend:
             running=[_NAME],
             overrides={
                 **_WORK_IS_A_DIRECTORY,
-                ("cp",): _DockerResult(1, b"", "Error: Could not find the file in container"),
                 ("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied"),
             },
         )
@@ -1845,9 +1854,8 @@ class TestStatFile:
         assert entry.size_bytes is None
 
     def test_a_missing_path_is_none(self):
-        sandbox, _ = self._sandbox_streaming(
-            b"", rc=1, stderr="Could not find the file /maf-sandbox/work/x"
-        )
+        absent = _not_in_the_container(f"{_WORK}/x")
+        sandbox, _ = self._sandbox_streaming(b"", rc=1, stderr=absent.stderr)
         assert asyncio.run(sandbox.stat_file("x", working_directory=_WORK)) is None
 
     def test_the_stat_bounds_the_transfer_to_one_tar_block(self):
@@ -1921,12 +1929,117 @@ class TestReadFile:
     def test_a_missing_file_raises_file_not_found(self):
         overrides = {
             **_WORK_IS_A_DIRECTORY,
-            ("cp",): _DockerResult(1, b"", "No such file or directory"),
+            _cp(f"{_WORK}/gone"): _not_in_the_container(f"{_WORK}/gone"),
         }
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
         with pytest.raises(FileNotFoundError):
             asyncio.run(sandbox.read_file("gone", working_directory=_WORK, max_bytes=10))
+
+
+class TestAFailureBorrowingTheAbsenceWords:
+    """Absence ends the filesystem path check, so only the engine naming *this* path is one.
+
+    Reading any other failure as absence would end the check over a component nobody looked
+    at, handing the read every ancestor unclassified.  The cases below are the two halves of
+    the rule and the shapes that reach it: a gone container and an unreachable daemon's socket
+    are real failures carrying the words of absence about something that is not a path; the
+    last one names the path and is not about absence; and the sharpest is
+    ``test_an_absence_about_another_path_is_not_about_this_one``, the engine's own absence
+    sentence, with its own phrase, about a path this one merely contains.
+    """
+
+    #: Engine 29.7.2, and the reason a missing *container* is not a missing path: it names one.
+    _NO_CONTAINER = f"Error response from daemon: No such container: {_NAME}"
+    #: A `docker cp` whose daemon is not reachable, verbatim from the Linux client 29.8.0 —
+    #: the errno underneath the socket, said about a socket rather than about any guest path.
+    _NO_SOCKET = (
+        "failed to connect to the docker API at unix:///tmp/nope.sock; check if the path is "
+        "correct and if the daemon is running: dial unix /tmp/nope.sock: connect: "
+        "no such file or directory"
+    )
+    #: The other way round: a failure that names the path and says nothing about absence.
+    #: Without it, "the message mentions this path" would be the whole test.
+    _OPAQUE = f"the daemon gave up on {_WORK}"
+
+    def _sandbox(self, component: str, stderr: str):
+        """A machine that answers ``stderr`` for the stat of ``component`` and nothing else."""
+        overrides = {**_WORK_IS_A_DIRECTORY, _cp(component): _DockerResult(1, b"", stderr)}
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        fake.mark()
+        return sandbox, fake
+
+    @pytest.mark.parametrize(
+        "stderr",
+        [_NO_CONTAINER, _NO_SOCKET, _OPAQUE],
+        ids=["no-container", "socket-error", "names-the-path-but-not-absence"],
+    )
+    def test_an_ancestor_that_could_not_be_read_raises_rather_than_ending_the_check(self, stderr):
+        sandbox, fake = self._sandbox(_WORK, stderr)
+        with pytest.raises(RuntimeError, match="could not stat"):
+            asyncio.run(sandbox.stat_file("out.png", working_directory=_WORK))
+        # And it stopped there: the entry's own copy is what the check was standing in front of.
+        assert fake.cp_since_mark() == [(*_cp("/maf-sandbox"), "-"), (*_cp(_WORK), "-")]
+
+    #: The two ways a message can hold this component without being about it, one per
+    #: boundary.  A child is what the engine really sends while an ancestor is being checked;
+    #: a longer path *ending* in this one is the mirror, which docker does not produce and
+    #: which is why the leading boundary is otherwise unpinned.
+    @pytest.mark.parametrize(
+        "named",
+        [f"{_WORK}/out.png", f"/srv{_WORK}"],
+        ids=["a-child-of-this-one", "a-path-ending-in-this-one"],
+    )
+    def test_an_absence_about_another_path_is_not_about_this_one(self, named: str):
+        """The message has to name the component, not a path that merely contains it."""
+        sandbox, _ = self._sandbox(_WORK, _not_in_the_container(named).stderr)
+        with pytest.raises(RuntimeError, match="could not stat"):
+            asyncio.run(sandbox.stat_file("out.png", working_directory=_WORK))
+
+    def test_an_absence_about_a_name_differing_only_in_case_is_a_different_file(self):
+        """A guest filesystem is case-sensitive, so `Out.PNG` and `out.png` are two files.
+
+        The engine echoes the spelling it was asked for, so this message cannot arise from
+        this copy — but folding the path's case is what would let one file's absence answer
+        for the other's, and the answer it would give ends the check.
+        """
+        named = _not_in_the_container(f"{_WORK}/Out.PNG")
+        sandbox, _ = self._sandbox(f"{_WORK}/out.png", named.stderr)
+        with pytest.raises(RuntimeError, match="could not stat"):
+            asyncio.run(sandbox.stat_file("out.png", working_directory=_WORK))
+
+    def test_a_read_that_failed_is_not_an_output_that_was_never_produced(self):
+        """`FileNotFoundError` tells a kind its workload wrote nothing, which is a verdict on
+        the guest.  A transport that failed has said nothing about the guest."""
+        sandbox, _ = self._sandbox(f"{_WORK}/out.png", self._NO_CONTAINER)
+        with pytest.raises(RuntimeError, match="could not read"):
+            asyncio.run(sandbox.read_file("out.png", working_directory=_WORK, max_bytes=1000))
+
+    #: Names a caller may legitimately declare, and the engine echoes each one back as given.
+    #: A case-folded compare and an escaped one are what keep these absent rather than raising,
+    #: and every other path in this suite is lowercase and metacharacter-free.
+    @pytest.mark.parametrize(
+        "name",
+        ["out.png", "Out.PNG", "out(1)[x].png", "a b.txt", "a+b%c.txt"],
+        ids=["plain", "mixed-case", "regex-metacharacters", "a-space", "percent-and-plus"],
+    )
+    def test_the_engine_naming_the_path_is_still_absence(self, name: str):
+        """The control: the same phrase, said about the path the copy asked for."""
+        absent = _not_in_the_container(f"{_WORK}/{name}")
+        sandbox, _ = self._sandbox(f"{_WORK}/{name}", absent.stderr)
+        assert asyncio.run(sandbox.stat_file(name, working_directory=_WORK)) is None
+
+    def test_a_removal_against_a_container_that_went_is_a_failure_not_a_missing_file(self):
+        """`remove`'s own check reaches the engine, so a gone container fails the removal.
+
+        It wraps the root stat and not the check below it, which is the reachable difference:
+        `rm -f` would otherwise be sent to a container that is not there and its failure
+        reported as the path's.
+        """
+        sandbox, _ = self._sandbox("/maf-sandbox", self._NO_CONTAINER)
+        with pytest.raises(RuntimeError, match="could not stat"):
+            asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
 
 
 class TestASymlinkedAncestorOfTheWorkingDirectory:
@@ -1945,7 +2058,6 @@ class TestASymlinkedAncestorOfTheWorkingDirectory:
             _cp(f"{self._NESTED}/hostname"): _DockerResult(
                 0, _tar_bytes("hostname", self._HOSTNAME), ""
             ),
-            ("cp",): _DockerResult(1, b"", "Error: Could not find the file in container"),
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
@@ -1974,7 +2086,6 @@ class TestASymlinkedParentEscapesLexicalConfinement:
             ),
             _cp(f"{_WORK}/real.txt"): _DockerResult(0, _tar_bytes("real.txt", b"artifact"), ""),
             _cp(f"{_WORK}/pipe"): _DockerResult(0, _fifo_tar("pipe"), ""),
-            ("cp",): _DockerResult(1, b"", "Error: Could not find the file in container"),
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
@@ -2193,7 +2304,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         overrides = {
             **_WORK_IS_A_DIRECTORY,
             ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"ghost\n", ""),
-            ("cp", f"{_NAME}:/etc/passwd"): _DockerResult(1, b"", "no such file"),
+            ("cp", f"{_NAME}:/etc/passwd"): _not_in_the_container("/etc/passwd"),
             ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(0, b"10001\n", ""),
             ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(1, b"", "id: cannot"),
         }
@@ -2312,7 +2423,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         overrides = {
             **_WORK_IS_A_DIRECTORY,
             ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"app\n", ""),
-            ("cp", f"{_NAME}:/etc/passwd"): _DockerResult(1, b"", "no such file"),
+            ("cp", f"{_NAME}:/etc/passwd"): _not_in_the_container("/etc/passwd"),
             ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(0, b"20001\n", ""),
             ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(0, b"10001\n", ""),
         }
