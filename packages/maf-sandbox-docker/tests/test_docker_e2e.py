@@ -61,7 +61,6 @@ from maf_sandbox.conformance import (
     assert_files_delete_conformance,
     assert_files_in_conformance,
     assert_files_out_conformance,
-    assert_reach_conformance,
 )
 
 # Feature-detected, not floored: the published-cores gate runs this suite against every
@@ -70,6 +69,12 @@ try:
     from maf_sandbox.conformance import assert_reclaim_conformance
 except ImportError:
     assert_reclaim_conformance = None
+
+# The same, for the reach rule's suite, which arrives with the core that states the rule.
+try:
+    from maf_sandbox.conformance import assert_reach_conformance
+except ImportError:
+    assert_reach_conformance = None
 
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
@@ -490,11 +495,15 @@ class TestAWorkDirTheImageGaveItsOwnUser:
         user, and `remove` reads the reach rule off its own check and stays at that user's
         authority.
         """
+        if assert_reach_conformance is None:
+            pytest.skip("this maf-sandbox predates the reach suite (< 0.35)")
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
 
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), self._spec())
+            # The narrowing does not cross into this closure; the assert re-establishes it.
+            assert assert_reach_conformance is not None
             results = await assert_reach_conformance(
                 PosixGuestSubject(
                     sandbox=sandbox,
@@ -1082,11 +1091,15 @@ class TestReachAgainstARealEngine:
     """
 
     def test_it_answers_the_reach_probes(self):
+        if assert_reach_conformance is None:
+            pytest.skip("this maf-sandbox predates the reach suite (< 0.35)")
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
 
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
+            # The narrowing does not cross into this closure; the assert re-establishes it.
+            assert assert_reach_conformance is not None
             results = await assert_reach_conformance(
                 PosixGuestSubject(
                     sandbox=sandbox,
