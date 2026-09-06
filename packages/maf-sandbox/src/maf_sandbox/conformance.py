@@ -69,7 +69,6 @@ Nothing here imports a test framework: this module ships in the wheel.  A failur
 
 from __future__ import annotations
 
-import contextlib
 import posixpath
 import shlex
 import time
@@ -1926,10 +1925,16 @@ async def _probe_a_removal_stays_at_the_guests_authority(
     await subject.plant_file(survivor, b"only the host could take this\n")
     if not await subject.plant_directory_the_guest_cannot_write_into(held):
         return
-    with contextlib.suppress(OSError):
+    try:
         await subject.sandbox.remove(
             "reach-delete/held", working_directory=subject.working_directory, recursive=True
         )
+    except TimeoutError:
+        # An OSError subclass, and not the refusal caught below: a call that never finished
+        # leaves the survivor standing for a reason that says nothing about which principal ran.
+        raise
+    except OSError:
+        pass
     if not await subject.exists(survivor):
         raise AssertionError(
             "the removal emptied a directory the guest program cannot write into, from under a "

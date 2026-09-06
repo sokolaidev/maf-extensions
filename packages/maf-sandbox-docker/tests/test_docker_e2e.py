@@ -1090,7 +1090,8 @@ class TestReachAgainstARealEngine:
     one, so both probes pass having distinguished nothing. That is worth running: it holds the
     suite to answering *cleanly* on the image every other suite here uses, and a probe that
     started failing on a root guest would be a probe reading something other than authority.
-    `TestAGuestThatIsNotRoot` is where the same suite has something to find.
+    `TestAWorkDirTheImageGaveItsOwnUser` is where the same suite has something to find:
+    a guest that is neither root nor locked out of `work_dir`.
     """
 
     def test_it_answers_the_reach_probes(self):

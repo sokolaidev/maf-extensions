@@ -1993,6 +1993,26 @@ class TestReachConformance:
             [p.name for p in REACH_PROBES], None
         )
 
+    def test_a_removal_that_times_out_does_not_pass_the_probe(self):
+        """`TimeoutError` is an `OSError`, and the survivor stands either way.
+
+        A call that never finished read nothing about which principal ran, so accepting it as
+        the guest-authority refusal reports the strongest pass this suite has on a backend that
+        did nothing at all.
+        """
+
+        class _TimesOut(_SimulatedGuest):
+            async def remove(self, path, *, working_directory, recursive=False):
+                del path, working_directory, recursive
+                raise TimeoutError("the service never answered")
+
+        failures = _sim_results(
+            _SimSubject(sandbox=_TimesOut(), working_directory=_WORK, capabilities=_EVERYTHING),
+            run_reach_probes,
+        )
+        assert failures["a-removal-stays-at-the-guests-authority"] is not None
+        assert "TimeoutError" in failures["a-removal-stays-at-the-guests-authority"]
+
     @pytest.mark.parametrize("missing", ["mkdir", "chmod"])
     def test_a_guest_missing_a_utility_raises_rather_than_passing(self, missing):
         """127 is the harness failing, not the guest refusing, and the two look alike here.
