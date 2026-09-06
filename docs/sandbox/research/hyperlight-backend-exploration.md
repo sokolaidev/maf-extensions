@@ -324,8 +324,10 @@ missing. Where the decision was clear, an issue exists.
    — backend configuration, not vocabulary — recorded so it reads as chosen. Same shape as
    #377 the day two backends differ in what they can bound.
 5. **Per-run effective-state serialization.** Their provider writes the effective config
-   into session state every run; we record nothing about the run we served. Clear win,
-   no open axes: #380.
+   into session state every run. Matched, per *call* rather than per run — the unit this
+   suite names — as `EffectiveState`, written by `effective_state_middleware()`. Ours is
+   the served answer rather than the configured one, and it carries the sealed host-tool
+   registry's names, which their snapshot has no equivalent of. #380.
 6. **How artifacts surface in chat.** Their output files return as inline `Content` bytes
    and render immediately; ours land through sinks as references — the right
    confidentiality posture and a worse demo. The open question is whether reference-only

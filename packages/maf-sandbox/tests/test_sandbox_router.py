@@ -2884,6 +2884,7 @@ class TestPolicyVocabularyExports:
 _PROTOCOL_MODULES = frozenset(
     {
         "_containment",
+        "_effective_state",
         "_error_detail",
         "_file_provenance",
         "_host_tools",
