@@ -230,10 +230,8 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             recorded[BACKEND_EGRESS_MODES] = sorted_values(event.declarations.egress_modes)
         surface = spec.host_tools
         if surface is not None:
-            # Nothing at all where no registry was wired, rather than an empty set and a
-            # `False`: "a surface with no unstamped tool" and "no surface" are different
-            # answers to *under whose authority could this run act*, and a recorder that
-            # rendered them alike would report the second as the first.
+            # All four or none: an empty set beside a `False` would read as a surface that
+            # carries no authority, which is not what no surface at all means.
             recorded[SURFACE_IDENTITIES] = sorted_values(surface.identities)
             recorded[SURFACE_UNDECLARED] = surface.has_undeclared
             recorded[SURFACE_CALL_CAP] = surface.max_host_tool_calls_per_run
