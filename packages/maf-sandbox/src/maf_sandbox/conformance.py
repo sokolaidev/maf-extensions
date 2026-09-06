@@ -1930,10 +1930,12 @@ async def _probe_a_removal_stays_at_the_guests_authority(
             "reach-delete/held", working_directory=subject.working_directory, recursive=True
         )
     except TimeoutError:
-        # An OSError subclass, and not the refusal caught below: a call that never finished
+        # An OSError subclass, so the handler below would take it: a call that never finished
         # leaves the survivor standing for a reason that says nothing about which principal ran.
         raise
     except OSError:
+        # The outcome this probe wants rather than one it asserts on — a removal held to the
+        # guest's authority refuses here — so the exception is read for its type and no further.
         pass
     if not await subject.exists(survivor):
         raise AssertionError(
