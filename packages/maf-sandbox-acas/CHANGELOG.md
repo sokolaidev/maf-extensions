@@ -4,6 +4,13 @@ All notable changes to `maf-sandbox-acas` are documented here. The format follow
 
 Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, and the entries below name it as it was — their tags and compare links point at real history and are left as they were written. `maf-sandbox-aca` is not maintained past `0.2.3`; PyPI names cannot be reused, so the rename is a new distribution rather than a continuation of that one.
 
+## [0.19.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.18.1...maf-sandbox-acas-v0.19.0) (2026-09-06)
+
+
+### Features
+
+* acas and wslc declare the POSIX guest they hand out ([#588](https://github.com/sokolaidev/maf-extensions/issues/588)) ([#946](https://github.com/sokolaidev/maf-extensions/issues/946)) ([4109b18](https://github.com/sokolaidev/maf-extensions/commit/4109b188e8eac21e24d1496e88d65ffb07eda97a))
+
 ## [0.18.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.18.0...maf-sandbox-acas-v0.18.1) (2026-09-06)
 
 
