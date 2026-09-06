@@ -24,6 +24,7 @@ from ._observer import (
     ACQUIRE,
     CALL,
     DISPOSE,
+    EGRESS,
     FILES_IN,
     FILES_OUT,
     HOST_TOOL_CALL,
@@ -33,6 +34,7 @@ from ._observer import (
 
 __all__ = [
     "ACQUIRE",
+    "EGRESS",
     "CALL",
     "DISPOSE",
     "FILES_IN",
