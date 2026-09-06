@@ -1203,6 +1203,38 @@ class TestAnImageWhoseGuestIsNotRoot:
             "the hint lost the answer a working probe measured"
         )
 
+    def test_a_cold_acquire_cannot_demote_a_uid_another_cold_acquire_measured(self):
+        """The race on the path a create actually takes, which the two direct-call race tests
+        above do not reach.
+
+        Two cold acquires for one image overlap. One measures a real uid; the other answers no
+        uid and finishes second. Demoting the hint to `None` would refuse before a create for
+        every acquire after it, and the pre-create refusal raises before any sandbox exists to
+        correct the verdict — so one spurious answer costs a working image its capabilities
+        until the process restarts (#969).
+        """
+        client = _GuestGroupClient(_guest_reporting(0))
+        backend = _backend_with(client)
+        identity = ("pinned-id", "python-nonroot:3.13")
+
+        # The acquire that measured root.
+        asyncio.run(backend.acquire(self._key("scope-a"), _spec_requiring(Capability.EXEC)))
+        assert backend._guest_uids[identity] == 0
+
+        # The overlapping one, finishing second against a guest that answers no uid.
+        client._answer = _GuestAnswer(stdout="", stderr="not found", exit_code=127)
+        asyncio.run(backend.acquire(self._key("scope-b"), _spec_requiring(Capability.EXEC)))
+
+        assert backend._guest_uids[identity] == 0, "a non-uid answer demoted a measured uid"
+        assert backend._sandbox_uids["sbx-2"] is None, "the second sandbox borrowed the hint"
+
+        # And the hint still lets a fresh acquire reach a create rather than being refused
+        # before one exists — the availability half the demotion would have cost.
+        client._answer = _guest_reporting(0)
+        assert asyncio.run(
+            backend.acquire(self._key("scope-c"), _spec_requiring(Capability.FILES_DELETE))
+        )
+
     def test_a_remembered_root_uid_does_not_license_a_newly_booted_image(self):
         """The hole a per-image memo leaves once the memo is load-bearing for reach.
 

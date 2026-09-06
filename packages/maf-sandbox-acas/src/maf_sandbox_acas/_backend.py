@@ -965,9 +965,10 @@ class AcasSandboxBackend:
         exists; ``freshly_created`` says this one was just booted, which makes the memo the
         wrong answer — it describes whatever the same reference resolved to last time.
 
-        An image whose uid cannot be read is **served the functional set**, and asked only
-        once: refusing on an unreadable probe would take a working root image off a deployment,
-        and re-probing would put an ``exec`` round trip in front of every tool call.  It is
+        An image whose uid cannot be read is **served the functional set**: refusing on an
+        unreadable probe would take a working root image off a deployment.  It is asked again
+        unless the guest *answered* — a definitive non-uid reply is recorded, so it costs no
+        ``exec`` per tool call, where a timeout is retried on the next acquire.  It is
         **refused the reach set**, because an unread uid is not evidence of root, and the two
         directions are not interchangeable: a functional refusal that guesses wrong costs a
         ``Permission denied`` the deployment sees, and a reach one costs a host-authority
@@ -990,7 +991,7 @@ class AcasSandboxBackend:
             uid = self._guest_uids[identity]
         elif freshly_created:
             # A new artefact from the same reference, so the hint is about the previous one.
-            uid = await self._probe_guest_uid(sandbox, spec, replacing=True)
+            uid = await self._probe_guest_uid(sandbox, spec)
         elif sandbox.sandbox_id in self._sandbox_uids:
             # A warm reuse reads the verdict for *this* sandbox and never the image hint:
             # another sandbox booted from the same name may have moved the hint since.
@@ -1081,19 +1082,16 @@ class AcasSandboxBackend:
         self._sandbox_uids[sandbox_id] = uid
         self._guest_uids[identity] = uid
 
-    async def _probe_guest_uid(
-        self, sandbox: _AcasSandbox, spec: SandboxSpec, *, replacing: bool = False
-    ) -> int | None:
+    async def _probe_guest_uid(self, sandbox: _AcasSandbox, spec: SandboxSpec) -> int | None:
         """The uid ``exec`` runs as, ``None`` when the guest cannot say. Answered by the guest.
 
-        Three rules the hint in ``_guest_uids`` holds to. A **definitive** non-uid answer — a
-        non-zero exit, a word, no ``id`` in the image — is a fact about the artefact and is
-        recorded, so it is not re-asked on every acquire. A **transient** failure records
-        nothing, because one timeout must not withdraw a capability for the life of the
-        backend. And a failure never displaces an answer, so a racing probe records through
-        ``setdefault`` and falls back to what is there — except under ``replacing``, where the
-        caller has just booted a new artefact and the stored value is the thing being
-        corrected.
+        Three rules. A **definitive** non-uid answer — a non-zero exit, a word, no ``id`` in
+        the image — is a fact about *this sandbox* and is recorded against it. A **transient**
+        failure records nothing, because one timeout must not withdraw a capability for as long
+        as a sandbox lives. And **no failure ever displaces an answer**: both maps take it
+        through ``setdefault``, so a probe that raced a working one, or that ran against a
+        reference now resolving elsewhere, cannot demote what was measured. Only a uid replaces
+        a uid, which is how a repointed reference is corrected.
 
         What ``None`` costs is the caller's and is not one policy:
         :meth:`_refuse_or_warn_where_the_guest_is_not_root` serves the functional set on it and
@@ -1121,7 +1119,7 @@ class AcasSandboxBackend:
             )
             # Never the image hint: it can hold another sandbox's answer, and nothing has
             # verified this one. Its own verdict if it has one, otherwise nothing.
-            return None if replacing else self._sandbox_uids.get(sandbox.sandbox_id)
+            return self._sandbox_uids.get(sandbox.sandbox_id)
         reported = answered.stdout.strip()
         if answered.exit_code != 0 or not reported.isdecimal():
             logger.debug(
@@ -1131,11 +1129,12 @@ class AcasSandboxBackend:
                 answered.exit_code,
                 reported,
             )
-            if replacing:
-                self._remember(sandbox.sandbox_id, identity, None)
-                return None
-            # The hint keeps whatever another probe measured; the verdict comes from this
-            # sandbox's own map and never from that hint, which describes some other guest.
+            # The hint keeps a concrete uid even against a fresh sandbox, because it only
+            # answers the refusal that runs before a create: too permissive there costs one
+            # create, after which the fresh probe decides, and too strict refuses a working
+            # image with no sandbox in existence to correct the verdict (#969). The verdict
+            # comes from this sandbox's own map and never from the hint, which is some other
+            # guest's answer.
             self._guest_uids.setdefault(identity, None)
             return self._sandbox_uids.setdefault(sandbox.sandbox_id, None)
         uid = int(reported)
