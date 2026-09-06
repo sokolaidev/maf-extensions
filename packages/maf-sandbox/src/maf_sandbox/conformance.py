@@ -314,6 +314,10 @@ class PosixGuestSubject:
         the way :meth:`exists` and :meth:`plant_directory_the_guest_owns` do.  A missing ``rm``
         read as "cannot delete" would leave the probe asserting on a calibration it never made,
         and a backend that refuses the protected tree for its own reasons would then pass.
+
+        **Absence is only asked about after ``rm`` reports success.**  A parent the guest cannot
+        search refuses the removal *and* hides the file from ``test -e``, so reading absence
+        first would call the survivor deleted — on exactly the shape this exists to measure.
         """
         removed = await self.sandbox.exec(
             ["rm", "-f", path],
@@ -325,6 +329,8 @@ class PosixGuestSubject:
                 f"could not ask the guest to remove {path!r} "
                 f"(`rm -f` exited {removed.exit_code}): {removed.stderr.strip()}"
             )
+        if removed.exit_code != 0:
+            return False
         return not await self.exists(path)
 
     async def _writable(self, path: str) -> bool:
