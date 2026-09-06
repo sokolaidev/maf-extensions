@@ -1,5 +1,9 @@
 # maf-sandbox-otel
 
+[![PyPI](https://img.shields.io/pypi/v/maf-sandbox-otel)](https://pypi.org/project/maf-sandbox-otel/) [![Python](https://img.shields.io/pypi/pyversions/maf-sandbox-otel)](https://pypi.org/project/maf-sandbox-otel/) [![License](https://img.shields.io/badge/license-MIT-green)](https://github.com/sokolaidev/maf-extensions/blob/main/LICENSE)
+
+> **Experimental.** This package is early-stage (pre-1.0, `Development Status :: 4 - Beta`) — its API may change or be removed in a future release without notice. Importing it emits a one-time `MafSandboxOtelExperimentalWarning`; suppress it with `warnings.filterwarnings("ignore", category=maf_sandbox_otel.MafSandboxOtelExperimentalWarning)` once you've read the notice.
+
 **OpenTelemetry records of what a sandbox did** — which conversation was served what posture, which host tools a guest called and under whose authority, what crossed the boundary and with what integrity label, and how each sandbox disposed **by key** was disposed of. A conversation's sandboxes can also go away in a *scope purge*, which core emits no event for and which is therefore not audited here — see [the limits](#three-limits-worth-knowing-before-you-rely-on-it) below.
 
 `maf-sandbox` reports these as events on an observer seam and records nothing itself. This package is one observer: it turns each event into a **log record** and a **span**, and the countable ones into a **metric**. A store read has no duration of its own, so its span is a single instant. Every signal goes through the providers you give the constructor, so records you route to a security pipeline do not also land on the application's trace. It depends on `maf-sandbox` and the OpenTelemetry **API**, and on nothing else — no backend, no agent framework, no SDK.
@@ -71,7 +75,3 @@ An observer is called synchronously inside the call it records — on the event 
 **Whether export blocks the call is your SDK configuration, not this package.** A `BatchSpanProcessor` and a `BatchLogRecordProcessor` hand off to their own thread, which is what keeps a slow collector away from a sandbox call. The `Simple*` processors call the exporter **synchronously**, inside `span.end()` and `logger.emit()` — so configured that way, a network exporter blocks the call for as long as the export takes. Use the batch processors where call latency matters; the simple ones are for tests, which is what this package's own suite uses them for.
 
 A failure here never reaches the call — `maf-sandbox` contains whatever an observer does and logs it. With two deliberate exceptions: `SystemExit` and `KeyboardInterrupt` are the host's own control flow rather than a recorder failing, so core lets them through, including when one arrives as a leaf of an exception group. Nothing in this package raises them, but an exporter or a provider you configure can, and if it does the call goes down with it.
-
-## Licence
-
-MIT — see [LICENSE](LICENSE).
