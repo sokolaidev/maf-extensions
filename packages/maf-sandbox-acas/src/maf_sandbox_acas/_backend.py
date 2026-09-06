@@ -1062,8 +1062,9 @@ class AcasSandboxBackend:
                 "Repointing the same reference does not lift this by itself: the refusal is "
                 "answered from a remembered verdict and stops the create that would re-read "
                 "it. Something else has to read the reference again — an acquire this gate "
-                "does not refuse, which still creates a sandbox and probes it, a reference "
-                "this backend has not seen yet, or a restart of this process."
+                "does not refuse *and* that has no warm sandbox to reuse, since a reuse skips "
+                "the create and the probe with it, a reference this backend has not seen yet, "
+                "or a restart of this process."
                 if sandbox is None or sandbox.sandbox_id in self._sandbox_uids
                 else "Nothing was remembered, because the probe did not land, so an identical "
                 "acquire asks again rather than repeating this from a cached answer."
@@ -1116,13 +1117,18 @@ class AcasSandboxBackend:
         sandbox_id = self._registry.pop(registry_key, None)
         if sandbox_id is not None:
             self._sandbox_uids.pop(sandbox_id, None)
-        # A probe awaiting `exec` can record a verdict *after* its sandbox left the registry,
-        # because a disposal takes no acquire lock. Sweeping here rather than on the write
-        # keeps recording O(1) and bounds the map by what is held plus whatever raced the last
-        # removal, where popping one id alone would leave those orphans unreachable.
+        return sandbox_id
+
+    def _sweep_orphan_verdicts(self) -> None:
+        """Drop verdicts whose sandboxes are no longer registered.
+
+        Popping by id cannot reach every one: a probe awaiting ``exec`` can record *after* its
+        sandbox left the registry, because a disposal takes no acquire lock.  Run once per
+        removal batch rather than once per removal, which is what keeps purging n sandboxes
+        linear rather than quadratic.
+        """
         live = set(self._registry.values())
         self._sandbox_uids = {sid: u for sid, u in self._sandbox_uids.items() if sid in live}
-        return sandbox_id
 
     async def _probe_guest_uid(self, sandbox: _AcasSandbox, spec: SandboxSpec) -> int | None:
         """The uid ``exec`` runs as, ``None`` when the guest cannot say. Answered by the guest.
@@ -1171,12 +1177,15 @@ class AcasSandboxBackend:
                 answered.exit_code,
                 reported,
             )
-            # The hint keeps a concrete uid even against a fresh sandbox, because it only
-            # answers the refusal that runs before a create: too permissive there costs one
-            # create, after which the fresh probe decides, and too strict refuses a working
-            # image with no sandbox in existence to correct the verdict (#969). The verdict
-            # comes from this sandbox's own map and never from the hint, which is some other
-            # guest's answer.
+            # The hint keeps a concrete uid even against a fresh sandbox, because demoting it
+            # on one answer is what #969's permanent refusal is made of, and a probe cannot
+            # tell a repointed reference from a racing measurement without ordering it does
+            # not have. The price is a *recurring* one, not the single create an earlier
+            # version of this comment claimed: a reference repointed from root to an image
+            # with no `id` passes the stale `0` on every acquire, creates, probes, refuses and
+            # discards the sandbox — billable each time, until something replaces the hint.
+            # #971 carries closing it. The verdict comes from this sandbox's own map and never
+            # from the hint, which is some other guest's answer.
             self._guest_uids.setdefault(identity, None)
             return self._sandbox_uids.setdefault(sandbox.sandbox_id, None)
         uid = int(reported)
@@ -1204,6 +1213,7 @@ class AcasSandboxBackend:
                 ]
             )
         )
+        self._sweep_orphan_verdicts()
         if not wanted:
             return None
         # Before the first await: the registry no longer holds these and there is no listing
@@ -1276,6 +1286,7 @@ class AcasSandboxBackend:
         ]
         for k, _ in known:
             self._forget_sandbox(k)
+        self._sweep_orphan_verdicts()
 
         try:
             gc = self._group_client()

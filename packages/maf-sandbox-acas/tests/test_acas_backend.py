@@ -1376,11 +1376,12 @@ class TestAnImageWhoseGuestIsNotRoot:
         """The race on the path a create actually takes, which the two direct-call race tests
         below do not reach.
 
-        Two cold acquires for one image overlap. One measures a real uid; the other answers no
-        uid and finishes second. Demoting the hint to `None` would refuse before a create for
-        every acquire after it, and the pre-create refusal raises before any sandbox exists to
-        correct the verdict — so one spurious answer costs a working image its capabilities
-        until the process restarts (#969).
+        Two cold acquires for one image, the second answering no uid. Sequential rather than
+        concurrent — the ordering that matters is which answer lands last, not that the calls
+        overlap — so this pins the rule and not the race: a later non-uid answer must not
+        demote a measured uid. Demoting it would refuse before a create for every acquire
+        after, and that refusal raises before any sandbox exists to correct the verdict, so one
+        spurious answer costs a working image its capabilities (#969).
         """
         client = _GuestGroupClient(_guest_reporting(0))
         backend = _backend_with(client)
@@ -1405,11 +1406,10 @@ class TestAnImageWhoseGuestIsNotRoot:
         )
 
     def test_a_remembered_root_uid_does_not_license_a_newly_booted_image(self):
-        """The hole a per-image memo leaves once the memo is load-bearing for reach.
+        """A create probes the sandbox it booted rather than trusting a remembered uid.
 
-        A prebuilt catalogue name is mutable. Repoint it from a root image to a non-root one
-        and, without a re-probe, every later acquire reuses the remembered `0`, skips the
-        probe, and serves the host-authority delete this whole gate exists to withhold.
+        An image reference is mutable, so a hint saying root describes whatever it last
+        resolved to, and only a fresh probe can decide the sandbox in hand.
         """
         from maf_sandbox import SandboxCapabilityNotSupported
 
