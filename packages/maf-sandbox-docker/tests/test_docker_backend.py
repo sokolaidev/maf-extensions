@@ -19,6 +19,7 @@ import sys
 import tarfile
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 
 import pytest
 from maf_sandbox import (
@@ -3641,9 +3642,23 @@ class TestTheProxysOwnDecisionsReachARecord:
         decisions, _ = _egress_decisions("ALLOW ::1:443\n")
         assert (decisions[0].host, decisions[0].port) == ("::1", 443)
 
-    def test_a_log_past_the_bound_is_reported_as_cut(self):
+    def test_a_log_past_the_bound_is_cut_to_the_bound_and_says_so(self):
+        """The bound is on what the drain hands over, not only on what it asks the engine
+        for. Reading one line past it is how the cut is detected; keeping that line would
+        hand back the *oldest* decision of an over-long window while claiming the newest."""
         text = "".join(f"ALLOW h{n}.example:443\n" for n in range(_PROXY_LOG_TAIL + 1))
-        assert _egress_decisions(text)[1] is True
+        decisions, truncated = _egress_decisions(text)
+        assert truncated is True
+        assert len(decisions) == _PROXY_LOG_TAIL
+        assert decisions[0].host == "h1.example"  # the oldest went, not the newest
+
+    def test_a_log_exactly_on_the_bound_is_handed_over_whole(self):
+        """`truncated` is exact rather than cautious: the read asks for one line past the
+        bound, so getting only the bound back proves nothing was cut."""
+        text = "".join(f"ALLOW h{n}.example:443\n" for n in range(_PROXY_LOG_TAIL))
+        decisions, truncated = _egress_decisions(text)
+        assert truncated is False
+        assert len(decisions) == _PROXY_LOG_TAIL
 
     def test_the_declaration_is_made_only_where_something_enforces(self):
         """Without a proxy image there is no allowlist to decide anything, so a `True` here
@@ -3697,6 +3712,40 @@ class TestTheProxysOwnDecisionsReachARecord:
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert [e.unreadable for e in seen] == ["daemon said no"]
         assert seen[0].decisions == ()
+
+    def test_a_purge_drains_every_proxy_the_registry_can_attribute(self):
+        """`dispose_scope` is the routine cleanup — a thread deletion, a `scope` block closing —
+        so a purge that drained nothing lost the last window of every sandbox on the ordinary
+        path, while `observes_egress` told a reader the sandbox was watched."""
+        seen: list[EgressObserved] = []
+        drained = _DockerResult(0, b"DENY evil.example:443", "")
+        backend, _fake = _backend_with(
+            _machine(overrides={("logs", "--tail"): drained}), config=_ALLOW_CONFIG
+        )
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+        assert [d.host for e in seen for d in e.decisions] == ["evil.example"]
+        assert [e.key for e in seen] == [_KEY]
+
+    def test_a_disposal_drains_the_proxy_of_an_egress_the_registry_no_longer_names(self):
+        """`_container_name` folds the egress identity, so one key and kind served under two
+        allowlists has two containers and the registry kept only the later. The earlier one's
+        proxy is reached by the label sweep, and its decisions go with it unless drained."""
+        seen: list[EgressObserved] = []
+        other = replace(_ALLOW_SPEC, egress_allow=("example.invalid",))
+        first = _container_name(_KEY, other.kind, "allow:" + ",".join(other.egress_allow))
+        drained = _DockerResult(0, b"ALLOW example.invalid:443", "")
+        backend, _fake = _backend_with(
+            _machine(running=[first], overrides={("logs", "--tail"): drained}),
+            config=_ALLOW_CONFIG,
+        )
+        asyncio.run(backend.acquire(_KEY, other))
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.dispose(_KEY))
+        assert _proxy_name(first) in [c.args[-1] for c in _fake.matching("logs", "--tail")]
+        assert len(seen) == 2  # the name the registry kept, and the one it forgot
 
     def test_the_last_window_is_drained_at_disposal(self):
         seen: list[EgressObserved] = []

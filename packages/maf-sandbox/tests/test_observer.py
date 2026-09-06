@@ -44,6 +44,7 @@ from maf_sandbox import (
     OutputsCollected,
     OutputSink,
     SandboxAcquired,
+    SandboxBackendNotPermitted,
     SandboxCapabilityNotSupported,
     SandboxDisposed,
     SandboxEntry,
@@ -950,6 +951,37 @@ class TestABackendReportsWhatItsEgressEnforcementDecided:
         _router(backend, observer=_Recorder(fail=RuntimeError("boom")))
         assert backend.report is not None
         backend.report(_drain())  # no raise
+
+    def test_a_router_that_refused_to_build_installs_no_reporter(self):
+        """The handout reaches outside the object, so a reporter installed before a refusal
+        would leave the backend reading a log on every acquire and reporting into a router the
+        host never received and cannot switch off."""
+        backend = _Reporting()
+        with pytest.raises(SandboxBackendNotPermitted):
+            SandboxRouter([backend], min_isolation=Isolation.MICROVM, observer=_Recorder())
+        assert backend.report is None
+
+    def test_a_router_that_collects_nothing_switches_a_backend_off(self):
+        """Not the same as staying quiet. One backend instance may be registered on two routers,
+        and one that only declined to install would leave it reporting into whichever wired it
+        first — paying for a read on every acquire this router serves, and filing those records
+        under an observer that never served the sandbox."""
+        backend = _Reporting()
+        _router(backend, observer=_Recorder())
+        assert backend.report is not None
+        _router(backend)
+        assert backend.report is None
+
+    def test_moving_a_backend_to_a_second_observed_router_is_named(self, caplog):
+        """One backend holds one reporter, so the second router's observer silently collects
+        the first one's sandboxes too. Warned rather than refused: refusing would break the
+        ordinary case this cannot tell apart, a host that discarded a router and built another
+        over the same backend."""
+        backend = _Reporting()
+        _router(backend, observer=_Recorder())
+        with caplog.at_level(logging.WARNING, logger="test_observer"):
+            _router(backend, observer=_Recorder())
+        assert backend.report is not None
 
     def test_the_declaration_without_the_method_is_warned_about(self, caplog):
         """Silence from this pair means *unwatched*, and the declaration says *watched* — which
