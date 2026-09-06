@@ -33,6 +33,7 @@ from maf_sandbox_acas import (
     disk_image_base,
     resolve_disk_image_id,
 )
+from maf_sandbox_acas._backend import _Held
 
 _ENDPOINT = "https://management.example.azuredevcompute.io"
 
@@ -754,11 +755,16 @@ def _spec_requiring(*capabilities):
     )
 
 
-class TestAnImageWhoseGuestCannotWrite:
-    """The file plane writes as root and `exec` runs as the image's `USER`, so on a non-root
-    image a guest program can create nothing beside the files it was given (#722).
+class TestAnImageWhoseGuestIsNotRoot:
+    """One image property, two refusals, and they are not the same refusal.
 
-    `acquire` is where that is answered rather than `ensure_can_serve`: the router matches a
+    The file plane writes as root and `exec` runs as the image's `USER`. So a guest program on
+    a non-root image can create nothing beside the files it was given, which is what makes
+    `FILES_OUT` and `HOST_TOOLS` unservable (#722); and every data-plane call acts with more
+    authority than that guest, which is what makes `FILES_DELETE` unsafe to serve even though
+    it works (#950). The second is a reach rule, so it fails closed where the first fails open.
+
+    `acquire` is where both are answered rather than `ensure_can_serve`: the router matches a
     capability set before any image is running, so nothing earlier can know the uid.
     """
 
@@ -824,6 +830,68 @@ class TestAnImageWhoseGuestCannotWrite:
                 )
             )
 
+    def test_deleting_is_refused_for_reach_rather_than_for_want_of_writing(self):
+        """`FILES_DELETE` works perfectly well on a non-root image, and that is the problem.
+
+        The data plane deletes as the host, and the check keeping a removal inside the working
+        directory is not held, so a guest that swaps a parent redirects a delete it could not
+        have performed itself (#950). The message has to say *that* rather than the
+        cannot-write reason, since a reader who fixes the wrong thing changes nothing.
+        """
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+
+        with pytest.raises(SandboxCapabilityNotSupported) as refusal:
+            asyncio.run(
+                backend.acquire(
+                    self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+                )
+            )
+
+        message = str(refusal.value)
+        assert "files_delete" in message
+        assert "uid 10001" in message
+        assert "separate calls" in message, message
+        assert "could never have deleted itself" in message, message
+        # The other reason is about creating files, and this spec asks for nothing that needs it.
+        assert "Permission denied" not in message, message
+
+    def test_deleting_alone_is_enough_to_make_the_uid_worth_reading(self):
+        """The probe gate and the refusal set are two constants, and a capability added to one
+        and not the other is refused by nothing at all."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+
+        with pytest.raises(SandboxCapabilityNotSupported, match="files_delete"):
+            asyncio.run(backend.acquire(self._key(), _spec_requiring(Capability.FILES_DELETE)))
+
+        assert client.probes == [("id -u", "/")], "a spec requiring only FILES_DELETE never probed"
+
+    def test_both_reasons_are_named_when_a_spec_asks_for_both(self):
+        """One message rather than two acquires: a caller that drops `FILES_OUT` on the strength
+        of the first refusal would otherwise meet the second on the next call."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+
+        with pytest.raises(SandboxCapabilityNotSupported) as refusal:
+            asyncio.run(
+                backend.acquire(
+                    self._key(),
+                    _spec_requiring(Capability.EXEC, Capability.FILES_OUT, Capability.FILES_DELETE),
+                )
+            )
+
+        message = str(refusal.value)
+        assert "files_delete" in message and "files_out" in message, message
+        assert "Permission denied" in message, message
+        assert "could never have deleted itself" in message, message
+
     def test_a_root_guest_is_served(self):
         client = _GuestGroupClient(_guest_reporting(0))
         backend = _backend_with(client)
@@ -834,6 +902,18 @@ class TestAnImageWhoseGuestCannotWrite:
 
         assert sandbox.sandbox_id == "sbx-1"
         assert client.probes == [("id -u", "/")]
+
+    def test_a_root_guest_is_still_served_a_delete(self):
+        """The withholding is keyed on the guest's uid and nothing else: where the guest is
+        root, a redirected delete reaches only what it could have deleted anyway."""
+        client = _GuestGroupClient(_guest_reporting(0))
+        backend = _backend_with(client)
+
+        sandbox = asyncio.run(
+            backend.acquire(self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE))
+        )
+
+        assert sandbox.sandbox_id == "sbx-1"
 
     def test_the_probe_never_runs_in_the_working_directory(self):
         """Nothing has created `work_dir` at acquire, so a probe run there would fail for a
@@ -890,6 +970,87 @@ class TestAnImageWhoseGuestCannotWrite:
 
         assert sandbox.sandbox_id == "sbx-1"
 
+    def test_each_branch_names_the_remedy_that_would_actually_lift_it(self):
+        """A root `USER` does not answer `id -u`, so an unread image told to rebuild for one
+        rebuilds and is refused again. The two branches need two remedies."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        spec = _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+
+        unread_backend = _backend_with(_GuestGroupClient(RuntimeError("no id in this image")))
+        known_backend = _backend_with(_GuestGroupClient(_guest_reporting(10001)))
+
+        with pytest.raises(SandboxCapabilityNotSupported) as unread:
+            asyncio.run(unread_backend.acquire(self._key(), spec))
+        with pytest.raises(SandboxCapabilityNotSupported) as known:
+            asyncio.run(known_backend.acquire(self._key(), spec))
+
+        unread_message, known_message = str(unread.value), str(known.value)
+        # The unread branch must not send an operator to the Dockerfile: that is the fix that
+        # looks right, changes the uid nothing can read, and is refused identically.
+        assert "answers 'id -u' with 0" in unread_message, unread_message
+        assert "a root USER alone does not" in unread_message, unread_message
+        # The known branch keeps the remedy that does work there.
+        assert "an image whose USER is root" in known_message, known_message
+        assert "id -u" not in known_message, known_message
+
+    def test_a_guest_that_cannot_be_asked_is_still_refused_a_delete(self):
+        """The reach set fails the other way, and the direction is the whole point.
+
+        `uid is None` is the absence of evidence, not evidence of root. Serving the functional
+        set on it costs a `Permission denied` the deployment sees; serving the reach set on it
+        costs a host-authority delete nothing reports, so this one refuses.
+        """
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(RuntimeError("no shell in this image"))
+        backend = _backend_with(client)
+
+        with pytest.raises(SandboxCapabilityNotSupported) as refusal:
+            asyncio.run(
+                backend.acquire(
+                    self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+                )
+            )
+
+        message = str(refusal.value)
+        assert "files_delete" in message
+        assert "not evidence of root" in message, message
+        # It has no uid to name, and naming `None` as one would send a reader looking for it.
+        assert "uid None" not in message, message
+
+    def test_an_unreadable_probe_refuses_only_the_reach_half(self):
+        """One refusal names both sets, and an unknown uid still splits them: the spec keeps
+        `FILES_OUT`, which is served on no evidence, and loses only `FILES_DELETE`."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(RuntimeError("no shell in this image"))
+        backend = _backend_with(client)
+
+        with pytest.raises(SandboxCapabilityNotSupported) as refusal:
+            asyncio.run(
+                backend.acquire(
+                    self._key(),
+                    _spec_requiring(Capability.EXEC, Capability.FILES_OUT, Capability.FILES_DELETE),
+                )
+            )
+
+        message = str(refusal.value)
+        assert "files_delete" in message
+        assert "files_out" not in message, message
+        assert "Permission denied" not in message, message
+
+    def test_an_unreadable_probe_warns_about_nothing(self, caplog):
+        """The warning describes a wall an unread image may not have, and one issued on every
+        unreadable probe would train a reader to ignore it."""
+        client = _GuestGroupClient(RuntimeError("no shell in this image"))
+        backend = _backend_with(client)
+
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox_acas"):
+            asyncio.run(backend.acquire(self._key(), _spec_requiring(Capability.EXEC)))
+
+        assert caplog.records == []
+
     def test_a_failed_command_is_not_read_as_a_uid(self):
         client = _GuestGroupClient(_GuestAnswer(stdout="", stderr="not found", exit_code=127))
         backend = _backend_with(client)
@@ -907,34 +1068,413 @@ class TestAnImageWhoseGuestCannotWrite:
             backend.acquire(self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_OUT))
         )
 
-    def test_an_image_that_could_not_answer_is_asked_only_once(self):
-        """An image with no `id` would otherwise put a round trip, and its timeout, in front
-        of every tool call — including the warm reuse the probe used to skip entirely."""
-        client = _GuestGroupClient(RuntimeError("no shell in this image"))
+    def test_an_image_that_answered_that_it_has_no_uid_is_asked_only_once(self):
+        """A guest that answered and said something that is not a uid is a fact about the
+        artefact, so it is remembered: re-asking would put a round trip, and its timeout, in
+        front of every tool call.
+        Measured on the **warm** path, which is where memoising is observable at all: a cold
+        acquire re-probes whatever the memo holds, so counting across two creates would pass
+        without the memo doing anything.
+        """
+        client = _GuestGroupClient(_GuestAnswer(stdout="", stderr="not found", exit_code=127))
         backend = _backend_with(client)
         spec = _spec_requiring(Capability.EXEC, Capability.FILES_OUT)
 
-        asyncio.run(backend.acquire(self._key("scope-a"), spec))
-        asyncio.run(backend.acquire(self._key("scope-b"), spec))
+        asyncio.run(backend.acquire(self._key(), spec))  # cold: probes and records
+        asyncio.run(backend.acquire(self._key(), spec))  # warm: the memo answers
 
         assert len(client.probes) == 1
+        assert backend._guest_uids == {("pinned-id", "python-nonroot:3.13"): None}
 
-    def test_the_uid_is_read_once_per_image(self):
-        """A property of the image, not of the sandbox: a second key pays no round trip."""
+    def test_a_probe_that_never_landed_is_asked_again(self):
+        """A timeout is not a fact about the image, and remembering one as `None` would take
+        `FILES_DELETE` off a **root** image for the life of the backend — no way back short of
+        a restart, on the strength of one dropped call.
+
+        Same warm path as the test above, and the pair is the whole point: one answer is
+        remembered and the other is not.
+        """
+        client = _GuestGroupClient(RuntimeError("transport dropped"))
+        backend = _backend_with(client)
+        spec = _spec_requiring(Capability.EXEC, Capability.FILES_OUT)
+
+        asyncio.run(backend.acquire(self._key(), spec))
+        asyncio.run(backend.acquire(self._key(), spec))
+
+        assert len(client.probes) == 2, "a dropped probe was remembered as an answer"
+        assert backend._guest_uids == {}, "a transient failure recorded a verdict"
+
+    def test_the_uid_is_read_once_per_sandbox_rather_than_once_per_image(self):
+        """The memo answers before a create and on a warm reuse; it does not answer *for* a
+        create. A second key boots a second artefact from the same reference, and an image
+        reference is the service's to repoint, so the memo describes the previous one."""
         client = _GuestGroupClient(_guest_reporting(0))
         backend = _backend_with(client)
         spec = _spec_requiring(Capability.EXEC, Capability.FILES_OUT)
 
         asyncio.run(backend.acquire(self._key("scope-a"), spec))
-        asyncio.run(backend.acquire(self._key("scope-b"), spec))
+        asyncio.run(backend.acquire(self._key("scope-a"), spec))  # warm: the memo answers
+        asyncio.run(backend.acquire(self._key("scope-b"), spec))  # cold: a new artefact
 
-        assert len(client.probes) == 1
+        assert len(client.probes) == 2, "a create trusted the memo, or a warm reuse re-probed"
+
+    def test_one_sandbox_cannot_license_another_that_shares_its_image_name(self):
+        """The verdict belongs to the sandbox, not to the reference it booted from.
+
+        Two keys boot two sandboxes from one mutable name. The second is root and moves the
+        image-level hint to `0`; a warm reacquire of the **first**, whose guest is not root,
+        must not read that `0` and be handed the host-authority delete without being asked.
+        """
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+        deleting = _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+        execing = _spec_requiring(Capability.EXEC)
+
+        # The non-root sandbox, kept warm under its own key.
+        asyncio.run(backend.acquire(self._key("scope-a"), execing))
+        # A second sandbox from the same name, after the reference was repointed to root. Set
+        # on the group, so every client it hands out from here answers `0` — including the one
+        # the warm reacquire below builds for the *first* sandbox, which is the trap: reading
+        # the answer instead of the recorded verdict would pass this test for the wrong reason.
+        client._answer = _guest_reporting(0)
+        asyncio.run(backend.acquire(self._key("scope-b"), execing))
+        assert backend._guest_uids[("pinned-id", "python-nonroot:3.13")] == 0, (
+            "the second sandbox did not move the image-level hint, so this proves nothing"
+        )
+
+        # Warm reuse of the first — the guest that is still 10001.
+        with pytest.raises(SandboxCapabilityNotSupported, match="files_delete"):
+            asyncio.run(backend.acquire(self._key("scope-a"), deleting))
+
+    def _unverified_beside_a_root_sandbox(self, retry_answer):
+        """A sandbox whose own probe never landed, kept warm beside a root one on the same
+        image name — so the hint says `0` and nothing has ever read *this* guest.
+
+        `retry_answer` is what its warm re-probe meets, which is the branch under test.
+        """
+        client = _GuestGroupClient(RuntimeError("transport dropped"))
+        backend = _backend_with(client)
+
+        # Its create-time probe drops, so it records no verdict of its own.
+        asyncio.run(backend.acquire(self._key("scope-a"), _spec_requiring(Capability.EXEC)))
+        assert not any(h.probed for h in backend._registry.values()), (
+            "the dropped probe recorded a verdict after all"
+        )
+
+        # A second sandbox, root, moves the image-level hint.
+        client._answer = _guest_reporting(0)
+        asyncio.run(backend.acquire(self._key("scope-b"), _spec_requiring(Capability.EXEC)))
+        assert backend._guest_uids[("pinned-id", "python-nonroot:3.13")] == 0
+
+        client._answer = retry_answer
+        return backend
+
+    def test_an_unverified_sandbox_does_not_inherit_a_root_hint_when_its_retry_drops(self):
+        """The fallback must be this sandbox's own verdict or nothing — never the hint, which
+        is another guest's answer. Inheriting it serves the delete to a guest nobody read."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        backend = self._unverified_beside_a_root_sandbox(RuntimeError("dropped again"))
+
+        with pytest.raises(SandboxCapabilityNotSupported, match="files_delete"):
+            asyncio.run(
+                backend.acquire(
+                    self._key("scope-a"), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+                )
+            )
+
+    def test_an_unverified_sandbox_does_not_inherit_a_root_hint_on_a_non_uid_answer(self):
+        """The same inheritance down the definitive branch, which additionally *records* the
+        borrowed `0` as this sandbox's verdict and would license every acquire after it."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        backend = self._unverified_beside_a_root_sandbox(
+            _GuestAnswer(stdout="", stderr="not found", exit_code=127)
+        )
+
+        with pytest.raises(SandboxCapabilityNotSupported, match="files_delete"):
+            asyncio.run(
+                backend.acquire(
+                    self._key("scope-a"), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+                )
+            )
+
+        unverified = backend._registry[("scope-a", "thread-1", "devops-engineer", "codeact")]
+        assert unverified.uid is None, "it recorded another guest's uid"
+        assert backend._guest_uids[("pinned-id", "python-nonroot:3.13")] == 0, (
+            "the hint lost the answer a working probe measured"
+        )
+
+    def test_a_verdict_cannot_outlive_the_sandbox_it_describes(self):
+        """It lives on the registry entry, so disposal takes it with no sweeping to get wrong.
+
+        Both answer kinds, because they are recorded on different lines: a uid and a definitive
+        non-uid reply. And a probe that lands after its entry is dropped writes to an object
+        nobody holds, which is what a map beside the registry could not arrange.
+        """
+        for answer in (_guest_reporting(0), _GuestAnswer(stdout="", stderr="no id", exit_code=127)):
+            client = _GuestGroupClient(answer)
+            backend = _backend_with(client)
+            key = self._key("scope-a")
+
+            asyncio.run(backend.acquire(key, _spec_requiring(Capability.EXEC)))
+            held = next(iter(backend._registry.values()))
+            assert held.probed, f"{answer} recorded no verdict, so this proves nothing"
+
+            asyncio.run(backend.dispose(key))
+
+            assert backend._registry == {}, f"the entry outlived its sandbox for {answer}"
+            # The detached entry is what a late probe would write to, and nothing reads it.
+            held.uid, held.probed = 0, True
+            assert backend._registry == {}, "a late write reached the backend"
+
+    def test_a_warm_root_sandbox_is_not_refused_by_another_sandbox_s_hint(self):
+        """The hint must not answer for a sandbox that has a verdict of its own.
+
+        A verified-root sandbox kept warm, then a non-root one created from the same mutable
+        name, which moves the hint to `10001`. The next `FILES_DELETE` acquire for the warm
+        root sandbox must read *its* `0`, not the hint — and it only can if the registry is
+        consulted before the hint is.
+        """
+        client = _GuestGroupClient(_guest_reporting(0))
+        backend = _backend_with(client)
+
+        asyncio.run(backend.acquire(self._key("scope-a"), _spec_requiring(Capability.EXEC)))
+        client._answer = _guest_reporting(10001)
+        asyncio.run(backend.acquire(self._key("scope-b"), _spec_requiring(Capability.EXEC)))
+        assert backend._guest_uids[("pinned-id", "python-nonroot:3.13")] == 10001, (
+            "the non-root sandbox did not move the hint, so this proves nothing"
+        )
+
+        # Warm reuse of the root sandbox. Its own verdict clears it; the hint would not.
+        warm = asyncio.run(
+            backend.acquire(self._key("scope-a"), _spec_requiring(Capability.FILES_DELETE))
+        )
+
+        assert warm.sandbox_id == "sbx-1"
+
+    def test_the_refusal_says_what_it_takes_to_get_the_reference_re_read(self):
+        """Both remedies are unreachable while the hint that refuses also stops the create
+        that would re-read it, and an operator following one would repeat the refusal.
+
+        Stated as ways to force a re-read rather than as the only ones: an acquire this gate
+        does not refuse still creates a sandbox and probes it, which corrects the hint too.
+        """
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+
+        with pytest.raises(SandboxCapabilityNotSupported) as refusal:
+            asyncio.run(
+                backend.acquire(
+                    self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+                )
+            )
+
+        message = str(refusal.value)
+        assert "Repointing the same reference does not lift this by itself" in message, message
+        assert "an acquire this gate does not refuse" in message, message
+        assert "restart of this process" in message, message
+
+    def test_a_refused_fresh_sandbox_is_gone_so_the_hint_decides_the_advice(self):
+        """A refused create is deleted with its verdict, so what answers the next acquire is
+        the hint — and a permissive one lets that acquire create and probe again.
+
+        The verdict existing at the moment of the refusal is therefore the wrong test: it is
+        removed by the handler that catches this very refusal.
+        """
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(0))
+        backend = _backend_with(client)
+        asyncio.run(backend.acquire(self._key("scope-a"), _spec_requiring(Capability.EXEC)))
+        assert backend._guest_uids[("pinned-id", "python-nonroot:3.13")] == 0
+
+        # A definitive non-uid answer: the verdict is recorded, then the refusal deletes it.
+        client._answer = _GuestAnswer(stdout="", stderr="not found", exit_code=127)
+        with pytest.raises(SandboxCapabilityNotSupported) as refusal:
+            asyncio.run(
+                backend.acquire(
+                    self._key("scope-b"), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+                )
+            )
+
+        message = str(refusal.value)
+        assert "Nothing was remembered" in message, message
+        assert "restart of this process" not in message, message
+        assert backend._guest_uids[("pinned-id", "python-nonroot:3.13")] == 0, (
+            "the hint was demoted, so the next acquire would not re-create and this passes "
+            "for the wrong reason"
+        )
+
+    def test_a_permissive_hint_is_not_an_obstacle_the_refusal_should_name(self):
+        """Hint *presence* is the wrong test; whether anything will answer next time is right.
+
+        A `0` hint permits the create, that sandbox's probe then drops, and nothing is
+        recorded — so the next identical acquire creates and probes again. Advising a new
+        reference or a restart there names an obstacle that is not in the way.
+        """
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(0))
+        backend = _backend_with(client)
+        # A permissive hint, from an acquire that measured root.
+        asyncio.run(backend.acquire(self._key("scope-a"), _spec_requiring(Capability.EXEC)))
+        assert backend._guest_uids[("pinned-id", "python-nonroot:3.13")] == 0
+
+        client._answer = RuntimeError("transport dropped")
+        with pytest.raises(SandboxCapabilityNotSupported) as refusal:
+            asyncio.run(
+                backend.acquire(
+                    self._key("scope-b"), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+                )
+            )
+
+        message = str(refusal.value)
+        assert "Nothing was remembered" in message, message
+        assert "restart of this process" not in message, message
+
+    def test_an_unread_uid_does_not_claim_the_guest_lacks_the_reach(self):
+        """The refusal is right because root was not established, and the reason must say only
+        that: an image that cannot run `id -u` may well be running as root."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(RuntimeError("no id in this image"))
+        backend = _backend_with(client)
+
+        with pytest.raises(SandboxCapabilityNotSupported) as unread:
+            asyncio.run(
+                backend.acquire(
+                    self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+                )
+            )
+        with pytest.raises(SandboxCapabilityNotSupported) as known:
+            asyncio.run(
+                _backend_with(_GuestGroupClient(_guest_reporting(10001))).acquire(
+                    self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+                )
+            )
+
+        assert "is not known to be able to delete itself" in str(unread.value), str(unread.value)
+        # The measured branch keeps the stronger claim, which it has actually established.
+        assert "could never have deleted itself" in str(known.value), str(known.value)
+
+    def test_the_pre_create_hint_never_warns_about_the_guest(self, caplog):
+        """A warning there describes whatever the reference last resolved to, and marks the
+        pair warned — silencing the accurate one the post-create probe could have made."""
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+        execing = _spec_requiring(Capability.EXEC)
+
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox_acas"):
+            asyncio.run(backend.acquire(self._key("scope-a"), execing))
+        assert caplog.records, "the first acquire warned about nothing, so this proves nothing"
+
+        # A second key reads the hint before any sandbox exists, and the reference now resolves
+        # to root. A warning there would be about the old artefact, and would consume the
+        # once-per-pair budget the accurate one needs.
+        backend._warned_about_the_guest.clear()
+        client._answer = _guest_reporting(0)
+        caplog.clear()
+
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox_acas"):
+            asyncio.run(backend.acquire(self._key("scope-b"), execing))
+
+        assert caplog.records == [], f"warned from the hint: {caplog.text}"
+
+    def test_a_refusal_from_a_dropped_probe_says_the_next_acquire_asks_again(self):
+        """The recovery advice is only true where something was remembered.
+
+        A probe that never landed records nothing, so an identical acquire re-probes and may
+        well succeed. Telling that operator to find a new reference or restart would hide the
+        simplest recovery there is — try again.
+        """
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(RuntimeError("transport dropped"))
+        backend = _backend_with(client)
+
+        with pytest.raises(SandboxCapabilityNotSupported) as refusal:
+            asyncio.run(
+                backend.acquire(
+                    self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+                )
+            )
+
+        message = str(refusal.value)
+        assert "Nothing was remembered" in message, message
+        assert "asks again" in message, message
+        # The blocking advice belongs to the other branch and would be false here.
+        assert "restart of this process" not in message, message
+        assert backend._guest_uids == {}, "something was remembered after all"
+
+    def test_a_cold_acquire_cannot_demote_a_uid_another_cold_acquire_measured(self):
+        """The race on the path a create actually takes, which the two direct-call race tests
+        below do not reach.
+
+        Two cold acquires for one image, the second answering no uid. Sequential rather than
+        concurrent — the ordering that matters is which answer lands last, not that the calls
+        overlap — so this pins the rule and not the race: a later non-uid answer must not
+        demote a measured uid. Demoting it would refuse before a create for every acquire
+        after, and that refusal raises before any sandbox exists to correct the verdict, so one
+        spurious answer costs a working image its capabilities (#969).
+        """
+        client = _GuestGroupClient(_guest_reporting(0))
+        backend = _backend_with(client)
+        identity = ("pinned-id", "python-nonroot:3.13")
+
+        # The acquire that measured root.
+        asyncio.run(backend.acquire(self._key("scope-a"), _spec_requiring(Capability.EXEC)))
+        assert backend._guest_uids[identity] == 0
+
+        # The overlapping one, finishing second against a guest that answers no uid.
+        client._answer = _GuestAnswer(stdout="", stderr="not found", exit_code=127)
+        asyncio.run(backend.acquire(self._key("scope-b"), _spec_requiring(Capability.EXEC)))
+
+        assert backend._guest_uids[identity] == 0, "a non-uid answer demoted a measured uid"
+        assert (
+            backend._registry[("scope-b", "thread-1", "devops-engineer", "codeact")].uid is None
+        ), "the second sandbox borrowed the hint"
+
+        # And the hint still lets a fresh acquire reach a create rather than being refused
+        # before one exists — the availability half the demotion would have cost.
+        client._answer = _guest_reporting(0)
+        assert asyncio.run(
+            backend.acquire(self._key("scope-c"), _spec_requiring(Capability.FILES_DELETE))
+        )
+
+    def test_a_remembered_root_uid_does_not_license_a_newly_booted_image(self):
+        """A create probes the sandbox it booted rather than trusting a remembered uid.
+
+        An image reference is mutable, so a hint saying root describes whatever it last
+        resolved to, and only a fresh probe can decide the sandbox in hand.
+        """
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+        spec = _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+        # What an earlier acquire measured, before the reference was repointed.
+        backend._guest_uids[("pinned-id", "python-nonroot:3.13")] = 0
+
+        with pytest.raises(SandboxCapabilityNotSupported, match="files_delete"):
+            asyncio.run(backend.acquire(self._key(), spec))
+
+        assert backend._guest_uids[("pinned-id", "python-nonroot:3.13")] == 10001, (
+            "the fresh probe did not correct the memo, so the next acquire repeats the mistake"
+        )
 
     def test_a_dropped_probe_does_not_displace_a_uid_another_one_measured(self):
-        """Two cold acquires for one image overlap, and the one that fails writes second.
+        """A second probe of an already-measured sandbox drops, and answers what was measured.
 
-        `None` is served, so recording it over a measured uid turns the gate off for the life
-        of the backend — this races towards the open failure.
+        Driven by calling the probe directly on the entry a real acquire filled, which is the
+        losing half of two overlapping probes without scheduling the fake to produce one. The
+        rule is that neither the entry nor the hint may lose a uid to a failure: an entry
+        demoted to `None` would refuse the reach set for as long as that sandbox lives, and a
+        hint demoted would refuse the next key before it could create anything.
         """
         from maf_sandbox import SandboxCapabilityNotSupported
 
@@ -947,7 +1487,8 @@ class TestAnImageWhoseGuestCannotWrite:
         for handed_out in client.clients:
             handed_out._answer = RuntimeError("transport dropped")
 
-        answered = asyncio.run(backend._probe_guest_uid(sandbox, execing))
+        held = backend._registry[("scope-a", "thread-1", "devops-engineer", "codeact")]
+        answered = asyncio.run(backend._probe_guest_uid(sandbox, execing, held))
 
         assert answered == 10001, "the losing probe reported its failure over the measurement"
         assert backend._guest_uids[identity] == 10001
@@ -959,7 +1500,8 @@ class TestAnImageWhoseGuestCannotWrite:
             )
 
     def test_an_unreadable_answer_does_not_displace_one_either(self):
-        """The same race down the other failure path, which a non-numeric answer reaches."""
+        """The same, down the other failure path: a guest that answers with something that is
+        not a uid. Its entry is marked probed and keeps the uid it already had."""
         client = _GuestGroupClient(_guest_reporting(10001))
         backend = _backend_with(client)
         execing = _spec_requiring(Capability.EXEC)
@@ -969,7 +1511,8 @@ class TestAnImageWhoseGuestCannotWrite:
         for handed_out in client.clients:
             handed_out._answer = _GuestAnswer(stdout="", stderr="not found", exit_code=127)
 
-        answered = asyncio.run(backend._probe_guest_uid(sandbox, execing))
+        held = backend._registry[("scope-a", "thread-1", "devops-engineer", "codeact")]
+        answered = asyncio.run(backend._probe_guest_uid(sandbox, execing, held))
 
         assert answered == 10001
         assert backend._guest_uids[identity] == 10001
@@ -997,7 +1540,7 @@ class TestAnImageWhoseGuestCannotWrite:
         client = _GuestGroupClient(_guest_reporting(10001))
         backend = _backend_with(client)
         key = self._key()
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "codeact")] = "sbx-warm"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "codeact")] = _Held("sbx-warm")
 
         with pytest.raises(SandboxCapabilityNotSupported):
             asyncio.run(
@@ -1050,14 +1593,14 @@ class TestAnImageWhoseGuestCannotWrite:
         backend = _backend_with(client)
         key = self._key()
         registry_key = (key.scope, key.thread_id, key.agent_dir, "codeact")
-        backend._registry[registry_key] = "sbx-warm"
+        backend._registry[registry_key] = _Held("sbx-warm")
 
         with pytest.raises(SandboxCapabilityNotSupported):
             asyncio.run(
                 backend.acquire(key, _spec_requiring(Capability.EXEC, Capability.FILES_OUT))
             )
 
-        assert backend._registry == {registry_key: "sbx-warm"}
+        assert backend._registry == {registry_key: _Held("sbx-warm", uid=10001, probed=True)}
         assert client.deleted == []
 
     def test_a_refused_reuse_is_not_logged_as_a_reuse(self, caplog):
@@ -1068,7 +1611,7 @@ class TestAnImageWhoseGuestCannotWrite:
         client = _GuestGroupClient(_guest_reporting(10001))
         backend = _backend_with(client)
         key = self._key()
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "codeact")] = "sbx-warm"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "codeact")] = _Held("sbx-warm")
 
         with caplog.at_level(logging.INFO, logger="maf_sandbox_acas"):
             with pytest.raises(SandboxCapabilityNotSupported):
@@ -1132,7 +1675,7 @@ class TestDisposeScope:
     def test_unions_the_registry_with_the_service_listing(self):
         client = _FakeGroupClient(sandboxes=[_FakeSandbox("sbx-remote")])
         backend = _backend_with(client)
-        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = "sbx-local"
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = _Held("sbx-local")
 
         assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")).disposed == 2
         assert sorted(client.deleted) == ["sbx-local", "sbx-remote"]
@@ -1140,7 +1683,7 @@ class TestDisposeScope:
     def test_does_not_delete_another_scopes_sandbox(self):
         client = _FakeGroupClient()
         backend = _backend_with(client)
-        backend._registry[("scope-b", "thread-1", "devops-engineer", "bicep")] = "sbx-other"
+        backend._registry[("scope-b", "thread-1", "devops-engineer", "bicep")] = _Held("sbx-other")
 
         assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")).disposed == 0
         assert client.deleted == []
@@ -1149,7 +1692,7 @@ class TestDisposeScope:
     def test_registry_entries_are_dropped_even_when_the_delete_fails(self):
         """A stale entry is worse than none — the next acquire would try to resume it."""
         backend = _backend_with(_ExplodingGroupClient())
-        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = "sbx-local"
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = _Held("sbx-local")
 
         asyncio.run(backend.dispose_scope("scope-a", "thread-1"))
         assert backend._registry == {}
@@ -1168,7 +1711,7 @@ class TestDisposeScope:
         the service, and keep the ids — the registry is popped before the client is built, so
         without the record they are in neither place and the next `dispose` reports them gone."""
         backend = AcasSandboxBackend(_config())
-        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = "sbx-1"
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = _Held("sbx-1")
 
         def _unreachable():
             raise RuntimeError("no credential")
@@ -1323,7 +1866,7 @@ class TestDispose:
         client = _FakeGroupClient()
         backend = _backend_with(client)
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-1")
 
         asyncio.run(backend.dispose(key))
         assert client.deleted == ["sbx-1"]
@@ -1340,7 +1883,7 @@ class TestDispose:
     def test_a_delete_that_lands_reports_nothing(self):
         backend = _backend_with(_FakeGroupClient())
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-1")
 
         assert asyncio.run(backend.dispose(key)) is None
 
@@ -1348,7 +1891,7 @@ class TestDispose:
         """Never raising is the contract, so the reason is the only way the router hears (#641)."""
         backend = _backend_with(_ExplodingGroupClient())
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-1")
 
         reason = asyncio.run(backend.dispose(key))
         assert reason is not None
@@ -1360,7 +1903,7 @@ class TestDispose:
         """An id a delete could not remove outlives the registry entry it came from."""
         backend = _backend_with(_ExplodingGroupClient())
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-1")
 
         assert asyncio.run(backend.dispose(key)) is not None
         second = asyncio.run(backend.dispose(key))
@@ -1370,7 +1913,7 @@ class TestDispose:
     def test_a_group_client_that_cannot_be_built_keeps_the_ids_for_a_retry(self):
         backend = AcasSandboxBackend(_config())
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-1")
 
         def _unreachable():
             raise RuntimeError("no credential")
@@ -1393,7 +1936,7 @@ class TestDispose:
 
         backend = _backend_with(_Hangs())
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-1")
 
         async def cut_short() -> None:
             async with asyncio.timeout(0.05):
@@ -1432,7 +1975,7 @@ class TestDispose:
 
         backend = _backend_with(_Gone())
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-1")
 
         assert asyncio.run(backend.dispose(key)) is None
 
@@ -1441,7 +1984,7 @@ class TestDispose:
         with no record of it anywhere."""
         backend = AcasSandboxBackend(_config())
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-1")
 
         def _unreachable():
             raise RuntimeError("no credential")
@@ -1459,7 +2002,7 @@ class TestDispose:
         prefix = ("scope-a", "thread-1", "devops-engineer")
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
         backend = _backend_with(_FakeGroupClient())
-        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = "sbx-1"
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = _Held("sbx-1")
         original = backend._delete
 
         async def slow_delete(group_client, sandbox_id):
@@ -1565,7 +2108,7 @@ class TestLifecycleLogging:
         client = _FakeGroupClient()
         backend = _backend_with(client)
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-warm"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-warm")
 
         from maf_sandbox import SandboxSpec
 
@@ -1579,7 +2122,7 @@ class TestLifecycleLogging:
         client = _FakeGroupClient()
         backend = _backend_with(client)
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-1")
 
         with caplog.at_level(logging.INFO, logger="maf_sandbox_acas"):
             asyncio.run(backend.dispose(key))
@@ -1684,7 +2227,9 @@ class TestConcurrentAcquire:
         assert client.create_calls == 1
         assert client.peak_creates == 1
         assert first.sandbox_id == second.sandbox_id == "sbx-1"
-        assert backend._registry == {("scope-a", "thread-1", "devops-engineer", "bicep"): "sbx-1"}
+        assert backend._registry == {
+            ("scope-a", "thread-1", "devops-engineer", "bicep"): _Held("sbx-1")
+        }
 
     def test_a_second_key_is_not_held_up_behind_the_first(self):
         """Per key, not one lock for the backend — two conversations must not serialise."""
@@ -1765,8 +2310,8 @@ class TestKindIdentity:
         client = _FakeGroupClient()
         backend = _backend_with(client)
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-b"
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "codeact")] = "sbx-c"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-b")
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "codeact")] = _Held("sbx-c")
 
         asyncio.run(backend.dispose(key))
 
@@ -1833,7 +2378,7 @@ class TestErrorDetailAdoption:
         client = _ResumeFailsGroupClient()
         backend = _backend_with(client)
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-warm"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-warm")
 
         from maf_sandbox import SandboxSpec
 
@@ -1859,7 +2404,7 @@ class TestErrorDetailAdoption:
 
         backend = _backend_with(_DeleteFailsGroupClient())
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-1")
 
         with caplog.at_level(logging.WARNING, logger="maf_sandbox_acas"):
             asyncio.run(backend.dispose(key))
