@@ -302,10 +302,12 @@ class EgressDecision:
 class EgressObserved(SandboxEvent):
     """What one sandbox's egress enforcement decided, keyed to the sandbox that caused it.
 
-    This is the event that separates *allowed* from *reached*.  :class:`SandboxAcquired`
-    carries the mode and the allowlist a sandbox was served under, which is what its spec asked
-    for; this carries what the guest then did with that, which is what an operator asking
-    "which conversations reached host X" is actually asking.
+    This is the event that separates what a spec *allowed* from what a guest *attempted*.
+    :class:`SandboxAcquired` carries the mode and the allowlist a sandbox was served under;
+    this carries every ``CONNECT`` the enforcer answered and how it answered.  Only an
+    ``ALLOW`` opened a tunnel — a ``DENY`` names a host the guest asked for and did not get
+    — so a reader counting reached destinations filters on the verb rather than on the
+    presence of a decision.
 
     **It arrives in batches, after the fact.**  A backend enforcing egress in a proxy of its own
     reads that proxy's record when it takes the proxy down, so one event covers a window rather

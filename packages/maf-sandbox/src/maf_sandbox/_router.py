@@ -10,6 +10,7 @@ denials (capabilities and identities this posture refuses whatever the backend c
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import inspect
 import logging
@@ -753,38 +754,38 @@ class SandboxRouter:
         self._hand_out_the_egress_reporter()
 
     def _hand_out_the_egress_reporter(self) -> None:
-        """Give every backend that can read its own egress enforcement somewhere to report it.
+        """Tell every backend that can report egress where to report it, or that it must not.
 
-        **Every backend that can report is told, including by a router that collects nothing.**
-        Such a router hands over ``None``, which is not the same as staying quiet: a backend
-        instance may be registered on more than one router, and one that only declined to
-        install would leave the backend reporting into whichever router wired it first — paying
-        for a log read on every acquire this router serves, and filing those records under an
-        observer that never served the sandbox.  Passing ``None`` switches it off instead.
-
-        A backend reads its enforcer's record by asking the engine, which costs a round trip on
-        a path an acquire waits on, so an uninstrumented deployment ends up exactly where it
-        started: no reporter, no reads.
-
-        A backend that *declares* :attr:`~maf_sandbox.BackendDeclarations.observes_egress` and
-        implements no :class:`~maf_sandbox.ObservesEgress` is warned about rather than refused.
-        The mistake is worth naming loudly: a reader who finds no egress decisions for a key
-        consults exactly that declaration to decide whether silence means nothing was attempted,
-        and this pair makes it mean nothing was watched.  It is still a records mistake, and
-        refusing every workload over one would trade a blind spot for an outage.
+        Every one is told, including by a router with no observer, which hands over ``None``:
+        one backend instance may be registered on two routers, and leaving a live reporter in
+        place would charge this router's acquires to the other one's observer.  **All or none**
+        — ``observe_egress`` is a backend's code and may raise, so one that has already taken a
+        reporter is handed ``None`` back before the failure propagates.
         """
-        for backend in self._backends:
-            reports = isinstance(backend, ObservesEgress)
-            if not reports and _claims_egress_observation(backend):
-                logger.warning(
-                    "sandbox backend %r declares observes_egress and implements no "
-                    "observe_egress, so it reports no egress decisions and a reader has no way "
-                    "to tell that from a guest that attempted none. Implement ObservesEgress, "
-                    "or drop the declaration — the default says the honest thing.",
-                    _recorded_name(backend),
-                )
-            if reports:
-                backend.observe_egress(self._report_egress if self._observer is not None else None)
+        installed: list[ObservesEgress] = []
+        report = self._report_egress if self._observer is not None else None
+        try:
+            for backend in self._backends:
+                reports = isinstance(backend, ObservesEgress)
+                if not reports and _claims_egress_observation(backend):
+                    logger.warning(
+                        "sandbox backend %r declares observes_egress and implements no "
+                        "observe_egress, so it reports no egress decisions and a reader has no "
+                        "way to tell that from a guest that attempted none. Implement "
+                        "ObservesEgress, or drop the declaration — the default says the honest "
+                        "thing.",
+                        _recorded_name(backend),
+                    )
+                if reports:
+                    backend.observe_egress(report)
+                    installed.append(backend)
+        except BaseException:
+            for taken in installed:
+                # Best effort, and contained: this is already unwinding, and a backend that
+                # cannot be switched off must not replace the failure that got us here.
+                with contextlib.suppress(Exception):
+                    taken.observe_egress(None)
+            raise
 
     def _report_egress(self, event: EgressObserved) -> None:
         """Record one backend's egress drain, contained exactly as every other event is.

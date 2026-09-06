@@ -334,7 +334,10 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             self._isolate(lambda: self._purged_sandboxes.add(event.disposed, measured))
 
     def egress_observed(self, event: EgressObserved) -> None:
-        """Record what a sandbox's egress enforcement decided — what the guest actually reached.
+        """Record every ``CONNECT`` a sandbox's egress enforcement answered, and how.
+
+        Attempts rather than arrivals: only ``ALLOW`` opened a tunnel, so
+        ``maf_sandbox.egress.allowed`` counts reached destinations and ``…decisions`` counts tries.
 
         The counts are what a query groups by, and they are on the record whether or not the
         targets are: "which conversations opened a tunnel to anything this week, and how many

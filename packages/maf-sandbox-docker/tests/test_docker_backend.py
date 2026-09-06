@@ -3747,6 +3747,64 @@ class TestTheProxysOwnDecisionsReachARecord:
         assert _proxy_name(first) in [c.args[-1] for c in _fake.matching("logs", "--tail")]
         assert len(seen) == 2  # the name the registry kept, and the one it forgot
 
+    def test_the_bound_flag_says_may_have_been_cut_rather_than_was(self):
+        """Characterisation, green before and after: a window of the bound plus the proxy's own
+        readiness line keeps every decision and still reports `truncated`. The read is bounded in
+        lines, so a full answer cannot say whether the line beyond it was a decision — and "there
+        may be more" is the direction a record is allowed to be wrong in."""
+        text = "listening on 3128; allowing: nothing\n" + "".join(
+            f"ALLOW h{n}.example:443\n" for n in range(_PROXY_LOG_TAIL)
+        )
+        decisions, truncated = _egress_decisions(text)
+        assert len(decisions) == _PROXY_LOG_TAIL
+        assert decisions[0].host == "h0.example"
+        assert truncated is True
+
+    def test_an_orphan_proxy_is_drained_even_though_its_workload_went_first(self):
+        """A sweep can return a proxy whose workload was removed independently. Filtering the
+        proxy out and then removing it deletes exactly the record the drain exists to read."""
+        seen: list[EgressObserved] = []
+        drained = _DockerResult(0, b"DENY orphan.example:443", "")
+        backend, _fake = _backend_with(
+            _machine(
+                running=[_AL_PROXY],
+                overrides={("logs", "--tail"): drained},
+            ),
+            config=_ALLOW_CONFIG,
+        )
+        backend._acquired[_AL] = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+        assert [d.host for e in seen for d in e.decisions] == ["orphan.example"]
+
+    def test_a_purge_attributes_a_name_the_registry_has_replaced(self):
+        """`_container_name` folds the egress identity, so a second allowlist for one key and
+        kind replaces the registry entry — and the first container is still swept."""
+        seen: list[EgressObserved] = []
+        other = replace(_ALLOW_SPEC, egress_allow=("example.invalid",))
+        first = _container_name(_KEY, other.kind, "allow:" + ",".join(other.egress_allow))
+        drained = _DockerResult(0, b"ALLOW example.invalid:443", "")
+        backend, _fake = _backend_with(
+            _machine(running=[first], overrides={("logs", "--tail"): drained}),
+            config=_ALLOW_CONFIG,
+        )
+        asyncio.run(backend.acquire(_KEY, other))
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+        assert _proxy_name(first) in [c.args[-1] for c in _fake.matching("logs", "--tail")]
+
+    def test_the_proxy_is_stopped_before_its_log_is_read(self):
+        """A guest sharing the conversation can answer a CONNECT between the read and the
+        removal, and that decision would then exist nowhere."""
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        backend.observe_egress(lambda _event: None)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        order = [i for i, c in enumerate(fake.calls) if c.args[:1] in (("stop",),)]
+        reads = [i for i, c in enumerate(fake.calls) if c.args[:2] == ("logs", "--tail")]
+        assert order and reads
+        assert min(order) < min(reads)
+
     def test_the_last_window_is_drained_at_disposal(self):
         seen: list[EgressObserved] = []
         backend, _fake = _backend_with(

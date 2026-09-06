@@ -331,26 +331,25 @@ def _egress_decisions(text: str) -> tuple[tuple[EgressDecision, ...], bool]:
     verb can only be one this proxy wrote.  It can still hold anything else a byte can be, which
     is why the recorder holds it to the rule an artifact name is held to.
 
-    ``truncated`` is exact rather than cautious, because the read asks for one line past the
-    bound: getting that line back is what proves the window ran over, and dropping it is what
-    keeps the promise.  So a log holding exactly the bound reports ``False`` and hands over all
-    of it, and one holding a single line more reports ``True`` and hands over the newest bound.
+    ``truncated`` says the window **may** have run past the bound, never that it did.  The read
+    asks the engine for one line more than the bound, so a full answer means there was more to
+    give — but the extra line may have been the readiness line rather than a decision.  It is
+    wrong only towards "there may be more", which is the safe way for a record to be wrong.
     """
     lines = text.splitlines()
-    # Trimmed before parsing, not after: the bound is on what this hands over, and reading one
-    # line past it is how the cut is detected at all. Keeping that line would hand back the
-    # *oldest* decision of an over-long window while claiming the most recent ones.
-    truncated = len(lines) > _PROXY_LOG_TAIL
-    decisions = tuple(
+    parsed = tuple(
         EgressDecision(
             decision=cast("EgressDecisionCode", found["decision"]),
             host=found["host"],
             port=int(found["port"]),
         )
-        for line in lines[-_PROXY_LOG_TAIL:]
+        for line in lines
         if (found := _EGRESS_DECISION.match(line.strip()))
     )
-    return decisions, truncated
+    # The bound is on decisions, so a readiness line does not spend one of them. `truncated`
+    # stays keyed on the *lines*, because that is the only thing that says the engine had more
+    # to give: it answers a bounded read, so a full page back means there was a page after it.
+    return parsed[-_PROXY_LOG_TAIL:], len(lines) > _PROXY_LOG_TAIL
 
 
 def _reads_as_absent(stderr: str, target: str) -> bool:
@@ -925,6 +924,10 @@ class DockerSandboxBackend:
         #: ledger. A `dispose` clears an entry once the removal lands; a scope purge never
         #: does, because a name is not a generation and it cannot tell the two apart.
         self._undeleted: dict[tuple[str, str, str], set[str]] = {}
+        #: Container name -> the key prefix it was acquired under, for every name this
+        #: process created. What lets a purge key an `EgressObserved` on a container the
+        #: registry no longer names. Pruned as names are removed.
+        self._acquired: dict[str, tuple[str, str, str]] = {}
         # Get-or-create serialised per (running loop, key, kind), for the same reason wslc does
         # it: a create names no container until it returns, so two acquires racing one key would
         # each build a network, a proxy and a sandbox. Per loop because an asyncio.Lock binds to
@@ -1021,6 +1024,14 @@ class DockerSandboxBackend:
         if report is None:
             return
         started = time.monotonic()
+        # Stopped before it is read, not merely before it is removed. Every caller here is
+        # about to take the proxy away, and a guest sharing this conversation can open a
+        # CONNECT between the read and the removal — a decision that would then exist nowhere.
+        # Contained, because a proxy that will not stop is still worth reading.
+        with contextlib.suppress(Exception):
+            await self._docker(
+                "stop", _proxy_name(name), timeout=self._config.command_timeout_seconds
+            )
         unreadable: str | None = None
         decisions: tuple[EgressDecision, ...] = ()
         truncated = False
@@ -1211,6 +1222,11 @@ class DockerSandboxBackend:
             # is running by now, and a name the registry never saw is one the disposal fallback
             # cannot reach when a label listing fails.
             self._registry[(key.scope, key.thread_id, key.agent_dir, spec.kind)] = name
+            # Beside the registry rather than in it: the registry is keyed on the kind and
+            # a name folds the egress identity too, so serving one key and kind under a
+            # second allowlist replaces the entry and leaves the first container with no
+            # key anyone can supply. A drain needs one, so every name keeps its own.
+            self._acquired[name] = (key.scope, key.thread_id, key.agent_dir)
             facts = await self._container_facts(name, spec)
             return _DockerSandbox(
                 self._docker,
@@ -1548,13 +1564,16 @@ class DockerSandboxBackend:
         fails, and its entries are dropped either way.
         """
         mine = [k for k in list(self._registry) if k[0] == scope and k[1] == thread_id]
-        # Read before the registry is emptied, and the only thing that makes a purge's proxies
-        # attributable: `EgressObserved` needs a key, and a purge is addressed by a conversation.
-        # A registry entry carries the agent dir the key is missing, so a sandbox this process
-        # created can be drained; one another replica created cannot be, and its last window
-        # goes with it. That is the gap `observes_egress` does not close.
+        # What makes a purge's proxies attributable at all: `EgressObserved` needs a key and a
+        # purge is addressed by a conversation, so the agent dir has to come from somewhere.
+        # Every name this process acquired under this conversation, not only the ones the
+        # registry still points at — a replaced egress identity and a name a failed delete
+        # retained are both reached by the sweep below. A container another replica created is
+        # not in here and cannot be drained; that is the gap `observes_egress` does not close.
         attributable = {
-            self._registry[k]: SandboxKey(scope=k[0], thread_id=k[1], agent_dir=k[2]) for k in mine
+            name: SandboxKey(scope=prefix[0], thread_id=prefix[1], agent_dir=prefix[2])
+            for name, prefix in self._acquired.items()
+            if prefix[0] == scope and prefix[1] == thread_id
         }
         remembered = [self._registry.pop(k) for k in mine]
         retained = {
@@ -1608,10 +1627,16 @@ class DockerSandboxBackend:
         # here or nowhere. `drain_key` answers `None` for a name this process cannot attribute,
         # which is a container another replica created, and that window is lost with it.
         if drain_key is not None:
-            for workload in (n for n in names if not n.endswith(_PROXY_SUFFIX)):
+            # Normalised to the workload the proxy belongs to, because a sweep can return a
+            # proxy whose workload went separately — filtering those out would delete exactly
+            # the record this exists to read. `dict.fromkeys` keeps the usual pair to one drain.
+            for workload in dict.fromkeys(n.removesuffix(_PROXY_SUFFIX) for n in names):
                 attributed = drain_key(workload)
                 if attributed is not None:
                     await self._drain_the_proxy(workload, attributed)
+
+        for name in names:
+            self._acquired.pop(name.removesuffix(_PROXY_SUFFIX), None)
 
         count = 0
         undeleted: dict[str, DisposalFailure] = {}
