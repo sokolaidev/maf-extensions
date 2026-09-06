@@ -314,17 +314,21 @@ class EgressObserved(SandboxEvent):
     at all — see :attr:`~maf_sandbox.BackendDeclarations.observes_egress`, which is what stops
     an empty record reading as a clean one.
 
-    ``dropped`` is what a bound cut: a guest is free to make more requests than anyone wants to
-    hold in memory, so a drain reads a bounded tail and says how much it did not read rather
-    than trimming silently.  ``unreadable`` names why a drain returned nothing where the enforcer
-    was expected to have written something — the record of a window nobody can account for is
-    the point, so this is an event rather than a log line.
+    ``truncated`` says the bound cut this drain: a guest is free to make more requests than
+    anyone wants to hold in memory, so a drain reads a bounded tail and these are the most
+    recent decisions rather than all of them.  It is a flag and not a count because no enforcer
+    read this way can say how many it did not hand over, and a count that could only ever be
+    guessed is worse than the flag that cannot lie.
+
+    ``unreadable`` names why a drain came back with nothing where the enforcer was expected to
+    have written something.  A window nobody can account for is exactly what an operator needs
+    to see, so it is a field on an event rather than a line in a log.
     """
 
     key: SandboxKey
     backend: str
     decisions: tuple[EgressDecision, ...]
-    dropped: int
+    truncated: bool
     unreadable: str | None
     seconds: float
     #: Always ``None``, and it is a field rather than an omission so that a recorder reading
