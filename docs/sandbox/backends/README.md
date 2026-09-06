@@ -28,7 +28,7 @@ A backend states the object once — `declarations` — rather than four attribu
 | **Reuse & purge** | warm resume over cold create; labels at create, purge by label from the service; get-or-create serialised per key | reuse, restart, adopt-on-name-conflict; labels at create, purge by label from the engine | sub-second creates; egress scaffolding re-ensured on every acquire; labels and label purge | records every key, spec, dispose and purge; `acquire_error` for a kind's degrade path |
 | **Where it runs** | anywhere with the service reachable | macOS, Linux, Windows with WSL 2, and CI runners | Windows with WSL only | this process |
 
-**No shipped backend declares `RUN_CODE`, and none declares a guest family.** `run_code` is a `Sandbox` method rather than an optional extra, so all four implement it — three of them as a refusal that names the backend and the reason, the fake as scripted output.
+**No shipped backend declares `RUN_CODE`.** `run_code` is a `Sandbox` method rather than an optional extra, so all four implement it — three of them as a refusal that names the backend and the reason, the fake as scripted output. The guest family is the row that moved: all three real backends declare one now, and only the fake is silent.
 
 The four rows below `isolation` are fields of that backend's `declarations`. Every cell is read from each backend's `_backend.py`, which is the source of record; the router's own view of the same rows is [`../policy-isolation.md`](../policy-isolation.md) § "The map", and what each capability obligates is [`../capabilities.md`](../capabilities.md).
 

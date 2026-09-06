@@ -271,8 +271,7 @@ class TestGuestFamilyDeclaration:
     """`os_families` is stated rather than read: every sandbox the service boots is Linux.
 
     That constant is what `exec`'s `shlex.join` quoting and this backend's `posixpath` path
-    arithmetic are written against, so it is a declaration the router can match rather than an
-    assumption in a comment.
+    arithmetic are written against, so the router matches it rather than taking it on trust.
     """
 
     def test_declares_posix(self):
@@ -302,7 +301,6 @@ class TestTheRouterMatchesTheDeclaredFamily:
         return SandboxRouter([AcasSandboxBackend(_config())])
 
     def test_a_posix_workload_is_served(self):
-        """What changed: this spec was refused against the silence this backend used to keep."""
         self._router().ensure_can_serve(
             SandboxSpec(kind="bicep", requires_os_family=OsFamily.POSIX)
         )
@@ -314,7 +312,7 @@ class TestTheRouterMatchesTheDeclaredFamily:
             )
 
     def test_a_spec_naming_no_family_is_served(self):
-        """Every spec written before the declaration existed, unchanged."""
+        """A spec that names no family is refused by nothing, which keeps the axis additive."""
         self._router().ensure_can_serve(SandboxSpec(kind="bicep"))
 
 
