@@ -1940,18 +1940,23 @@ class TestReadFile:
 class TestAFailureBorrowingTheAbsenceWords:
     """Absence ends the filesystem path check, so only the engine naming *this* path is one.
 
-    The phrases travel on failures that say nothing about any path — a container that has
-    gone, a socket underneath an unreachable daemon — and reading one of those as absence
-    would end the check over a component nobody looked at, handing the read every ancestor
-    unclassified.  Naming the path is not enough on its own either, which the last case is.
+    Reading any other failure as absence would end the check over a component nobody looked
+    at, handing the read every ancestor unclassified.  The cases below are the two halves of
+    the rule and the shapes that reach it: a gone container and an unreachable daemon's socket
+    are real failures carrying the words of absence about something that is not a path; the
+    last one names the path and is not about absence; and the sharpest is
+    ``test_an_absence_about_a_path_below_this_one_is_not_this_one``, the engine's own absence
+    sentence, with its own phrase, about a path this one merely contains.
     """
 
     #: Engine 29.7.2, and the reason a missing *container* is not a missing path: it names one.
     _NO_CONTAINER = f"Error response from daemon: No such container: {_NAME}"
-    #: The socket underneath an unreachable daemon, carrying the errno as its own absence.
+    #: A `docker cp` whose daemon is not reachable, verbatim from the Linux client 29.8.0 —
+    #: the errno underneath the socket, said about a socket rather than about any guest path.
     _NO_SOCKET = (
-        "Cannot connect to the Docker daemon at unix:///var/run/docker.sock: "
-        "connect: no such file or directory"
+        "failed to connect to the docker API at unix:///tmp/nope.sock; check if the path is "
+        "correct and if the daemon is running: dial unix /tmp/nope.sock: connect: "
+        "no such file or directory"
     )
     #: The other way round: a failure that names the path and says nothing about absence.
     #: Without it, "the message mentions this path" would be the whole test.
@@ -1990,11 +1995,30 @@ class TestAFailureBorrowingTheAbsenceWords:
         with pytest.raises(RuntimeError, match="could not read"):
             asyncio.run(sandbox.read_file("out.png", working_directory=_WORK, max_bytes=1000))
 
-    def test_the_engine_naming_the_path_is_still_absence(self):
+    #: Names a caller may legitimately declare, and the engine echoes each one back as given.
+    #: A case-folded compare and an escaped one are what keep these absent rather than raising,
+    #: and every other path in this suite is lowercase and metacharacter-free.
+    @pytest.mark.parametrize(
+        "name",
+        ["out.png", "Out.PNG", "out(1)[x].png", "a b.txt", "a+b%c.txt"],
+        ids=["plain", "mixed-case", "regex-metacharacters", "a-space", "percent-and-plus"],
+    )
+    def test_the_engine_naming_the_path_is_still_absence(self, name: str):
         """The control: the same phrase, said about the path the copy asked for."""
-        absent = _not_in_the_container(f"{_WORK}/out.png")
-        sandbox, _ = self._sandbox(f"{_WORK}/out.png", absent.stderr)
-        assert asyncio.run(sandbox.stat_file("out.png", working_directory=_WORK)) is None
+        absent = _not_in_the_container(f"{_WORK}/{name}")
+        sandbox, _ = self._sandbox(f"{_WORK}/{name}", absent.stderr)
+        assert asyncio.run(sandbox.stat_file(name, working_directory=_WORK)) is None
+
+    def test_a_removal_against_a_container_that_went_is_a_failure_not_a_missing_file(self):
+        """`remove`'s own check reaches the engine, so a gone container fails the removal.
+
+        It wraps the root stat and not the check below it, which is the reachable difference:
+        `rm -f` would otherwise be sent to a container that is not there and its failure
+        reported as the path's.
+        """
+        sandbox, _ = self._sandbox("/maf-sandbox", self._NO_CONTAINER)
+        with pytest.raises(RuntimeError, match="could not stat"):
+            asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
 
 
 class TestASymlinkedAncestorOfTheWorkingDirectory:
