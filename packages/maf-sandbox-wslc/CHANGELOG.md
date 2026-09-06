@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.16.0...maf-sandbox-wslc-v0.16.1) (2026-09-06)
+
+
+### Fixes
+
+* admit maf-sandbox 0.35 in the dependents' range, and require 0.34 in the samples ([#930](https://github.com/sokolaidev/maf-extensions/issues/930)) ([4293f12](https://github.com/sokolaidev/maf-extensions/commit/4293f1224533f5074eb204321af6824b03268691))
+
 ## [0.16.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.15.1...maf-sandbox-wslc-v0.16.0) (2026-09-05)
 
 
