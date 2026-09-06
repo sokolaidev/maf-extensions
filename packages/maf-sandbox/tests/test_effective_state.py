@@ -475,3 +475,18 @@ class TestTheMiddlewareWritesIntoSessionState:
             self._run(session)
         assert session.state[EFFECTIVE_STATE_KEY] == "somebody else's"
         assert any("was overwritten" in record.getMessage() for record in caplog.records)
+
+    def test_an_occupied_key_says_so_once_rather_than_per_call(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        """The condition holds for every call afterwards, so the flag is what bounds the log."""
+        from maf_sandbox import maf as _maf
+
+        monkeypatch.setattr(_maf, "_warned_about_an_occupied_key", False)
+        session = self._session()
+        session.state[EFFECTIVE_STATE_KEY] = "somebody else's"
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox.maf"):
+            self._run(session)
+            self._run(session)
+        said = [record for record in caplog.records if "was overwritten" in record.getMessage()]
+        assert len(said) == 1
