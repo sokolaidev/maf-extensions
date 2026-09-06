@@ -110,6 +110,10 @@ class _Recorder(SandboxObserver):
     def only(self, kind: type[SandboxEvent]) -> list:
         return [event for event in self.events if isinstance(event, kind)]
 
+    def calls(self) -> set[object]:
+        """The `call` every event carries, read by name — the base class declares none."""
+        return {getattr(event, "call") for event in self.events}
+
     def one(self, kind: type[SandboxEvent]):
         found = self.only(kind)
         assert len(found) == 1, f"expected exactly one {kind.__name__}, got {found}"
@@ -1740,7 +1744,7 @@ class TestEveryRecordSaysWhichCallItCameFrom:
             OutputsCollected,
             ToolCallEnded,
         }
-        assert {event.call for event in recorder.events} == {ended.call}
+        assert recorder.calls() == {ended.call}
 
     def test_two_calls_in_flight_in_one_conversation_are_told_apart(self):
         """The case the column exists for: one session serves both, so both carry one key."""
