@@ -19,7 +19,7 @@ for why the pairing is Docker beside the in-process backend.
 #     "azure-identity",
 #     "maf-sandbox-bicep",
 #     "maf-sandbox-docker>=0.4",
-#     "maf-sandbox>=0.33",
+#     "maf-sandbox>=0.34",
 # ]
 # ///
 
@@ -91,12 +91,12 @@ BICEP_TOOL = "bicep_validate"
 _RESTORE_FAILED = "BCP192"
 
 #: What a result that reached the sandbox looks like — sample 05's regex, for its reason.
-#: `bicep_validate` answers with an error string *before* it acquires anything when no
-#: conversation is bound, when a name has the wrong suffix, and when the sandbox will not
-#: start, so counting every result would credit act 4 with a compile that never ran. Each
-#: phase renders one line at the start of a line, which a refusal has no way to produce. It
-#: matters more here than in sample 05: a blocked restore is a compile that ran and failed,
-#: and act 4's whole claim is that it can tell that apart from a sandbox that never came up.
+#: `bicep_validate` refuses *before* it acquires anything when no conversation is bound, when a name
+#: has the wrong suffix, and when the sandbox will not start, so counting every result would credit
+#: act 4 with a compile that never ran. Each phase renders one line at the start of a line, which a
+#: refusal has no way to produce. It matters more here than in sample 05: a blocked restore is a
+#: compile that ran and failed, and act 4's whole claim is that it can tell that apart from a
+#: sandbox that never came up.
 _PHASES = re.compile(r"^build\(.*^lint\(", re.MULTILINE | re.DOTALL)
 
 #: Everything act 4 needs. The other five acts need none of it, so this is read inside act 4

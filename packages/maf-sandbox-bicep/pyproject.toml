@@ -1,6 +1,6 @@
 [project]
 name = "maf-sandbox-bicep"
-version = "0.13.0"
+version = "0.13.1"
 description = "Sandboxed Bicep validation (bicep build + bicep lint) as a Microsoft Agent Framework tool — reference implementation of agent-framework#7568 — written against maf-sandbox so it runs on any sandbox backend."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
@@ -30,8 +30,13 @@ dependencies = [
     # dependency. No Azure import, no backend import; a test enforces both.
     # Upper-bounded too: maf-sandbox has not yet reached a stable API, so every release
     # before 1.0.0 may include breaking changes (see its CHANGELOG). Moving either end of
-    # this range has an order to it — see RELEASING.md.
-    "maf-sandbox>=0.33.0,<0.34",
+    # this range has an order to it — see RELEASING.md. The floor tracks the release where
+    # the surface this kind calls actually arrives; admit anything older and a published
+    # wheel resolves a maf-sandbox base missing it — a keyword argument as much as an import,
+    # and that one fails when the tool is attached, where no import check is looking. The
+    # number itself is below, and `scripts/set_dependents_range.py` moves the ceiling — so
+    # this says which release the floor is for, never which release that is.
+    "maf-sandbox>=0.34.0,<0.36",
     # The `@tool` decorator and AgentFileStore. MAF is a genuine dependency of the tool
     # itself, not of the host application.
     "agent-framework-core>=1.13.0,<2",

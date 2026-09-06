@@ -21,22 +21,35 @@ module decides only *what* reaches it and *when*.  Two of those decisions are lo
 from __future__ import annotations
 
 import contextlib
+import logging
 import posixpath
+import time
 import unicodedata
 from collections.abc import Awaitable, Callable, Generator
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import Literal
 
+from ._observer import (
+    LandedOutput,
+    OutputsCollected,
+    SandboxObserver,
+    record,
+    refuse_an_unusable_observer,
+)
 from ._protocol import (
     DeclaredOutput,
     EntryKind,
     OutputDisposition,
     Sandbox,
+    SandboxKey,
     SandboxSpec,
     TransferLimits,
 )
 from ._refusals import echoed_name
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "MAX_ARTIFACT_NAME_BYTES",
@@ -46,6 +59,7 @@ __all__ = [
     "OutputSink",
     "SandboxArtifactNameCollision",
     "SandboxArtifactNameInvalid",
+    "SandboxLandingExists",
     "SandboxLandingNotConfined",
     "SandboxLandingNotText",
     "SandboxOutputError",
@@ -140,6 +154,16 @@ class SandboxOutputUnreachable(SandboxOutputError):
 
 class SandboxTransferCapExceeded(SandboxOutputError):
     """A collection asks to move more than the workload's own ``files_out`` caps allow."""
+
+
+class SandboxLandingExists(SandboxOutputError):
+    """A sink refused a destination that was already occupied — by a file, a directory or a
+    link, and whether it is the leaf or a component of the name that is in the way.
+
+    Raised *during* delivery rather than before it, so a collection whose third name repeats
+    leaves its first two landed.  That residue is the one :func:`collect_outputs` documents,
+    and this is the refusal that makes it ordinary rather than rare.
+    """
 
 
 class SandboxLandingNotConfined(SandboxOutputError):
@@ -254,27 +278,49 @@ class OutputSink:
     per_call: bool = False
 
 
+def _already_there(name: str) -> str:
+    """The refusal a sink gives for an occupied destination.
+
+    Says only what the guest already knows — its own name — because a kind may put this family
+    in front of the model verbatim.  No host path, and no remedy the model cannot act on.
+    """
+    return f"artifact {name!r} is already there, and this sink does not replace what it finds."
+
+
 def _landed_display(artifact: Artifact, _destination: Path) -> str:
     """The default line a model sees for a landed artifact: its name and its size."""
     return f"{artifact.name} ({len(artifact.content)} bytes)"
 
 
 def make_file_system_sink(
-    root: Path, *, display: Callable[[Artifact, Path], str] = _landed_display
+    root: Path,
+    *,
+    display: Callable[[Artifact, Path], str] = _landed_display,
+    existing: Literal["refuse", "replace"] = "refuse",
 ) -> OutputSink:
     """An :class:`OutputSink` that writes each artifact under ``root``, refusing any that would
     land outside it.
 
-    The refusal is why this exists; the writing is three lines.
+    The refusals are why this exists; the writing is one line.
     :func:`validate_artifact_name` is **lexical** — it bounds the name and says nothing about
     what is already sitting at the path that name resolves to — so a symlink in ``root`` carries
     a write straight out of it, the host-side twin of the symlinked ancestor a guest path is
     checked for.  Every host that lands to a filesystem has to make this check.
 
-    It stays a check rather than a guarantee: resolving and writing are two calls, so a
-    destination replaced in between is followed, and a host landing genuinely hostile output
-    wants no-follow primitives underneath.  What this closes is the standing case — something
-    already in the way when the run started.
+    That one stays a check rather than a guarantee: resolving and writing are two calls, so a
+    path relinked in between is followed, and a host landing genuinely hostile output wants
+    no-follow primitives underneath.  What it closes is the standing case — something already
+    in the way when the run started.  The occupancy refusal below has no such window, because
+    exclusive creation asks and writes in one call.
+
+    ``existing`` decides what an occupied destination means.  The default refuses it, because
+    the name check in :func:`collect_outputs` is per collection and a name is not fresh just
+    because this call is.  ``"replace"`` is the host saying it means to land over what is
+    there — which **a workload landing one stable name needs**, since its own previous call
+    is the commonest thing in the way.  Two limits are worth knowing: the refusal arrives per
+    artifact, during delivery, so a collection whose third name is occupied leaves the first
+    two landed; and it is exclusive creation rather than a look, so nothing can take the
+    destination between asking and writing.
 
     ``display`` is the one line the model is allowed to see, and a kind that introduces its
     artifacts in its own words supplies its own; ``handle`` is always the host path, which
@@ -282,11 +328,16 @@ def make_file_system_sink(
 
     Raises:
         SandboxLandingNotConfined: when a destination resolves outside ``root``.
+        SandboxLandingExists: when the destination, or a component of the name above it, is
+            already occupied and ``existing`` is not ``"replace"``.  Under ``"replace"`` a
+            leaf that is a directory is the one occupant this cannot land over, and the
+            operating system's own error surfaces rather than a member of this family.
     """
     confined_root = root.resolve()
 
     async def deliver(artifact: Artifact) -> LandedArtifact:
-        destination = (confined_root / artifact.name).resolve()
+        named = confined_root / artifact.name
+        destination = named.resolve()
         if not destination.is_relative_to(confined_root):
             # Neither path is named. This family is the one a kind may show the model
             # verbatim — `maf-sandbox-codeact` interpolates it straight into the tool result
@@ -299,8 +350,24 @@ def make_file_system_sink(
                 "Something on that path leaves it — a link, most likely — and writing "
                 "would follow it."
             )
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(artifact.content)
+        # Compared against the opt-out rather than against the default, so a value that is
+        # neither refuses instead of landing over host state.
+        replacing = existing == "replace"
+        # Two questions, because neither answers the other. `named` rather than `destination`
+        # for the link, since a dangling one standing at the name leaves a free path where it
+        # points; and `exists()` because it answers alike for a file and a directory, where
+        # exclusive creation reports a directory differently on each platform.
+        if not replacing and (named.is_symlink() or destination.exists()):
+            raise SandboxLandingExists(_already_there(artifact.name))
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with destination.open("wb" if replacing else "xb") as landing:
+                landing.write(artifact.content)
+        except (FileExistsError, NotADirectoryError) as exc:
+            # Exclusive creation closes the window the check above leaves open, and is also
+            # how a component of the name that is already a file arrives — as `EEXIST` from
+            # `mkdir` on Windows and `ENOTDIR` on POSIX, which is why both are caught.
+            raise SandboxLandingExists(_already_there(artifact.name)) from exc
         return LandedArtifact(
             name=artifact.name,
             display=display(artifact, destination),
@@ -678,6 +745,8 @@ async def collect_outputs(
     sink: OutputSink | None = None,
     outputs: tuple[DeclaredOutput, ...] = (),
     call_id: str | None = None,
+    observer: SandboxObserver | None = None,
+    key: SandboxKey | None = None,
 ) -> tuple[LandedArtifact, ...]:
     """Pull the declared outputs and land the ones that land, in declaration order.
 
@@ -710,9 +779,23 @@ async def collect_outputs(
         call_id: This call's own id, stamped onto every :class:`Artifact` so a sink can keep
             one call's landings apart from the next's. A kind reads it off the id its
             per-call guest directory is named by. Required — before the sandbox is touched —
-            by a sink declaring :attr:`OutputSink.per_call`, and ignored by every other.
+            by a sink declaring :attr:`OutputSink.per_call`, and ignored by every other. Also
+            carried onto the record below, so a query can reach the folder the artifacts
+            landed in.
+        observer: Where this collection is recorded — one
+            :class:`~maf_sandbox.OutputsCollected`, whether it landed everything or
+            was refused part-way. This is a function rather than a host-policy object, so it
+            takes the observer as an argument instead of registering one: a kind passes the
+            router's (``session.observer``). Default ``None`` records nothing and builds no
+            event; anything else is checked the way the two registration points check
+            theirs, before the sandbox is touched.
+        key: The sandbox the outputs came out of, carried onto that record. What joins the
+            artifacts to the conversation that produced them; without one the record says which
+            kind collected and nothing about whose.
 
     Raises:
+        TypeError: when ``observer`` is not a :class:`~maf_sandbox.SandboxObserver`, or
+            overrides an event method with a coroutine function.
         ValueError: when ``outputs`` is passed and the spec does not admit call-time names, and
             when a ``per_call`` sink is given nothing to name a folder with.
         SandboxOutputSinkRequired: when an output lands and no sink was supplied.
@@ -726,6 +809,48 @@ async def collect_outputs(
         SandboxArtifactNameInvalid: when a declared name breaks the narrow invariant.
         SandboxArtifactNameCollision: when two landing names are one file at the destination —
             identical, or differing only by case or by Unicode form.
+    """
+    if observer is None:
+        return await _collect(sandbox, spec, sink, outputs, call_id, None)
+    refuse_an_unusable_observer(observer, argument="observer")
+    delivered: list[LandedOutput] = []
+    started = time.monotonic()
+    refusal: str | None = None
+    try:
+        return await _collect(sandbox, spec, sink, outputs, call_id, delivered)
+    except BaseException as exc:
+        refusal = type(exc).__name__
+        raise
+    finally:
+        record(
+            observer,
+            OutputsCollected(
+                key=key,
+                kind=spec.kind,
+                declared=len(spec.declared_outputs) + len(outputs),
+                limits=spec.files_out,
+                landed=tuple(delivered),
+                seconds=time.monotonic() - started,
+                refusal=refusal,
+                call_id=call_id,
+            ),
+            logger,
+        )
+
+
+async def _collect(
+    sandbox: Sandbox,
+    spec: SandboxSpec,
+    sink: OutputSink | None,
+    outputs: tuple[DeclaredOutput, ...],
+    call_id: str | None,
+    delivered: list[LandedOutput] | None,
+) -> tuple[LandedArtifact, ...]:
+    """The whole of :func:`collect_outputs`, split so one record covers every way out of it.
+
+    ``delivered`` grows as each artifact is accepted, so a refusal part-way still reports what
+    a sink already took, which the return value cannot.  ``None`` where nobody is recording, so
+    that a host with no observer builds no part of an event rather than one row per artifact.
     """
     if outputs and not spec.outputs_named_at_call_time:
         raise ValueError(
@@ -757,5 +882,14 @@ async def collect_outputs(
 
     landed: list[LandedArtifact] = []
     for artifact in await _read_all(sandbox, spec, to_read, sink, call_id):
-        landed.append(await sink.deliver(artifact))
+        accepted = await sink.deliver(artifact)
+        landed.append(accepted)
+        if delivered is not None:
+            delivered.append(
+                LandedOutput(
+                    name=accepted.name,
+                    size_bytes=len(artifact.content),
+                    media_type=artifact.media_type,
+                )
+            )
     return tuple(landed)

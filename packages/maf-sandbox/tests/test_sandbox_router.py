@@ -2883,10 +2883,12 @@ class TestPolicyVocabularyExports:
 #: quietly neither.
 _PROTOCOL_MODULES = frozenset(
     {
+        "_containment",
         "_error_detail",
         "_file_provenance",
         "_host_tools",
         "_host_tools_over_exec",
+        "_observer",
         "_outputs",
         "_protocol",
         "_purger",

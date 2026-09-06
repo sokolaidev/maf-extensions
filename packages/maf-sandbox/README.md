@@ -103,11 +103,11 @@ A workload's only return channel used to be `ExecResult.stdout`, which is right 
 
 **`validate_artifact_name` is lexical, so a sink still has to confine its own destination.** It refuses `..`, absolute paths, backslashes and empty segments, so the *name* cannot traverse — which is not the same as safe, because it says nothing about what is already sitting at the path that name resolves to. A symlink in the output directory carries the write straight out of it: the same failure class as [#142](https://github.com/sokolaidev/maf-extensions/issues/142), on the host side of the boundary.
 
-**`make_file_system_sink(root)` is that check, packaged.** It resolves each destination, refuses anything leaving `root` with `SandboxLandingNotConfined`, creates the parents a nested name needs, and writes. Reach for it rather than writing the four lines yourself — two samples here wrote them by hand and only one got it right. Pass `display` when the kind introduces its artifacts in its own words. It stays a check rather than a guarantee, and that is a property of the filesystem rather than of the helper: resolving and writing are two calls, so a host landing genuinely hostile output wants no-follow primitives underneath. What it closes is the standing case — something already in the way when the run started.
+**`make_file_system_sink(root)` is that check, packaged.** It resolves each destination, refuses anything leaving `root` with `SandboxLandingNotConfined`, refuses one that is already there with `SandboxLandingExists`, creates the parents a nested name needs, and writes. That second refusal is the default because the name check in `collect_outputs` is per collection — a name is not fresh just because this call is, and a root more than one conversation lands in is a channel between them. It is an exclusive create rather than a look, so nothing takes the destination in between. **A workload landing one stable name wants `existing="replace"`**, since its own previous call is then the commonest thing in the way; and either way the refusal arrives per artifact, during delivery, so a collection whose third name is occupied leaves the first two landed. Reach for it rather than writing the four lines yourself — two samples here wrote them by hand and only one got it right. Pass `display` when the kind introduces its artifacts in its own words. It stays a check rather than a guarantee, and that is a property of the filesystem rather than of the helper: resolving and writing are two calls, so a host landing genuinely hostile output wants no-follow primitives underneath. What it closes is the standing case — something already in the way when the run started.
 
 A sink landing somewhere that is *not* a filesystem — a blob container, a UI panel — writes its own `deliver` and owns the equivalent question for that destination.
 
-**`make_file_store_sink(store, *, provenance=None)` is the packaged one for an `agent_framework` `AgentFileStore`**, and it lands `<call_id>/<name>` rather than `<name>`: the model reads its own output back with a file-read tool instead of being told by the workload which names landed, and one call's file can never answer for the next call's. The folder is the host-minted call id, which `collect_outputs(call_id=...)` supplies — required rather than optional, because the sink declares `OutputSink.per_call`. A destination that already exists is refused rather than replaced, every landing is recorded into `provenance` *before* the bytes are written, and an artifact whose bytes are not UTF-8 is refused with `SandboxLandingNotText` rather than mangled into a store that holds text. Point it at a store the model can read and **not** write — never the one the agent's `file_access_write` writes to. `sandbox_outputs_read_tools(store)` is the other half — `<prefix>_ls` and `<prefix>_read` over that store and nothing else, read-only by construction rather than by a flag. It exists because `FileAccessProvider` names its tools from fixed constants, so a second one of those is a name collision rather than a second store. [`docs/sandbox/hosts.md`](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/hosts.md) carries the wiring and the trade: those two tools carry no label of their own, so a host that withholds a workload's guest output and then wires them has moved that output onto a path it classifies rather than kept it away from the model.
+**`make_file_store_sink(store, *, provenance=None)` is the packaged one for an `agent_framework` `AgentFileStore`**, and it lands `<call_id>/<name>` rather than `<name>`: the model reads its own output back with a file-read tool instead of being told by the workload which names landed, and one call's file can never answer for the next call's. The folder is the host-minted call id, which `collect_outputs(call_id=...)` supplies — required rather than optional, because the sink declares `OutputSink.per_call`. A destination that already exists is refused with `SandboxLandingExists` rather than replaced, every landing is recorded into `provenance` *before* the bytes are written, and an artifact whose bytes are not UTF-8 is refused with `SandboxLandingNotText` rather than mangled into a store that holds text. Point it at a store the model can read and **not** write — never the one the agent's `file_access_write` writes to. `sandbox_outputs_read_tools(store)` is the other half — `<prefix>_ls` and `<prefix>_read` over that store and nothing else, read-only by construction rather than by a flag. It exists because `FileAccessProvider` names its tools from fixed constants, so a second one of those is a name collision rather than a second store. [`docs/sandbox/hosts.md`](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/hosts.md) carries the wiring and the trade: those two tools carry no label of their own, so a host that withholds a workload's guest output and then wires them has moved that output onto a path it classifies rather than kept it away from the model.
 
 ```python
 from pathlib import Path
@@ -178,6 +178,50 @@ return [
 **Label as little as you can, and never every item.** A per-item label replaces the item's *whole* label, confidentiality included, and this package has no confidentiality value to put there — those are the host's vocabulary, carried verbatim. An item left unlabelled takes the call's own label instead, and the result's combined label is the most restrictive across every item, so one unlabelled item is what keeps the host's classification. `sandboxed_tool` refuses a result whose every item carries a label, because nothing in it is left to carry the call's; `labelled_result_item` refuses `SourceIntegrity.UNTRUSTED` for the same reason from the other side, since the untrusted item is the one holding what the call produced. `str` stays valid and stays the common case.
 
 What may carry `TRUSTED` is narrow — text whose value **and whose presence** are independent of everything the call touched, which in practice means standing guidance emitted on every return path. A count, an exit status, a size, or a line emitted only on failure all fail that test however they are split out. [`docs/sandbox/information-flow.md`](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/information-flow.md) carries the rule and the measurements behind it.
+
+## Recording what the sandbox did
+
+This package logs, at `warning`, and a log line is neither structured nor keyed. A deployment asked *which conversation reached that host, which host tools ran under whose authority, what crossed the boundary and with what label* answers from records, so `SandboxObserver` is the seam that hands them over: six frozen events, in this package's own vocabulary, joined by the `SandboxKey` that addresses a sandbox. `SandboxAcquired` and `SandboxDisposed` always carry one; `HostToolCalled`, `StoreFileRead` and `OutputsCollected` type it `SandboxKey | None`, since each has a case with no sandbox behind it; and `ToolCallEnded` carries `keys`, a tuple of every key the call touched — acquired, refused, or only read the store under — so that each of its other events has a call to join to.
+
+```python
+from maf_sandbox import (
+    HostToolCalled,
+    HostToolRegistry,
+    Isolation,
+    SandboxAcquired,
+    SandboxObserver,
+    SandboxRouter,
+)
+from maf_sandbox.testing import InProcessSandboxBackend
+
+
+class Records(SandboxObserver):
+    """Override what you want; every event the base class answers with nothing."""
+
+    def sandbox_acquired(self, event: SandboxAcquired) -> None:
+        emit(thread=event.key.thread_id, egress=str(event.spec.egress), refused=event.refusal)
+
+    def host_tool_called(self, event: HostToolCalled) -> None:
+        emit(tool=event.tool, sink=event.sink, how=event.outcome, bytes=event.response_bytes)
+
+
+def emit(**attributes: object) -> None:
+    """Wherever this host's records go — a queue, an exporter, a SIEM."""
+
+
+records = Records()
+# Both registration points, since `host_tool_called` above comes from the registry and never
+# from the router. The floor is lowered only for the in-process fake, which declares
+# `Isolation.NONE`; a real backend leaves the default `microvm` floor where it is.
+router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE, observer=records)
+registry = HostToolRegistry(observer=records)
+```
+
+`SandboxAcquired` and `SandboxDisposed` come from the router; `HostToolCalled` from `HostToolRegistry(observer=…)`, which is where every other host-tool policy lives; `StoreFileRead` from `SandboxToolSession.read_file` and `ToolCallEnded` from the wrapper `sandboxed_tool` builds, both reading the router's; and `OutputsCollected` from `collect_outputs(..., observer=session.observer, key=key)`, which is a function rather than a policy object and so takes both as arguments.
+
+Three things to know before writing one. **Every way out is recorded** — a refused acquire, an exhausted host-tool cap, a collection refused part-way, a call taken by a cancel — and an acquire's, a collection's or a call's failure is recorded as the exception's *class name*, never its message, which can carry a backend's endpoint. `HostToolCalled.refusal` is the exception: it holds the sanitized sentence the guest was answered with, so treat that one as guest-influenced rather than host-only. **An observer cannot fail a call**: its exceptions are contained and logged, and its return value is never read. **It can, however, slow one down, and it is entered from more than one thread** — it runs wherever the call is served, which for a synchronous tool body is a worker thread, so hand the event to a thread-safe queue or a batching exporter and do no I/O in it. A host that registers nothing builds no event at all.
+
+[`docs/sandbox/observability.md`](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/observability.md) carries what each event holds, what a recorder should treat as guest-chosen, and what the seam does not yet see — the egress proxy's own `ALLOW`/`DENY` lines among them.
 
 ## Upgrading to 0.27
 

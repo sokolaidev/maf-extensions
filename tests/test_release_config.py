@@ -465,6 +465,27 @@ class TestDependentsPinMafSandboxInAShapeTheRangeScriptCanRead:
             )
 
 
+class TestTheBuildLoopsDiscoverEveryPackage:
+    """Both wheel-building loops enumerate `packages/*/` rather than naming distributions.
+
+    A hand-written set goes stale on the commit that adds a package, and it goes stale
+    *silently*: the loop still succeeds, so the only symptom is that the new package's suite
+    never runs against a candidate core and its wheel is absent from the co-installed set the
+    sibling gate checks. Nothing else in this repository would notice.
+    """
+
+    @pytest.mark.parametrize("step", ["Build the sibling wheels", "Build the dependents' wheels"])
+    def test_it_names_no_distribution(self, step: str):
+        block = run_block(PUBLISH_WORKFLOW, step)
+        named = sorted(
+            path.rsplit("/", 1)[-1]
+            for path in PACKAGE_PATHS
+            if path.rsplit("/", 1)[-1] != "maf-sandbox" and path.rsplit("/", 1)[-1] in block
+        )
+        assert not named, f"{step!r} hand-lists {named}: discover from packages/*/ instead"
+        assert "packages/*/" in block, f"{step!r} does not enumerate packages/*/"
+
+
 class TestRoutineAutomationDoesNotClaimToCloseAnIssue:
     """A pull request the release workflow opens every cycle cannot close a specific issue.
 
@@ -1198,3 +1219,108 @@ class TestThePropagationPoll:
 
         code, _ = run_propagation(responses)
         assert code == 1
+
+
+_FIRST_RELEASE = """# Changelog
+
+## 0.1.0 (2026-09-05)
+
+
+### Features
+
+* a sandbox observer that records what a sandbox did ([#907](https://example.invalid/907))
+"""
+
+_LATER_RELEASE = """# Changelog
+
+## [0.15.1](https://example.invalid/compare/v0.15.0...v0.15.1) (2026-09-06)
+
+
+### Fixes
+
+* admit maf-sandbox 0.35 in the dependents' range ([#930](https://example.invalid/930))
+
+## [0.15.0](https://example.invalid/compare/v0.14.0...v0.15.0) (2026-09-05)
+
+
+### Features
+
+* the release before this one
+"""
+
+_TWO_DIGIT_PATCH = """# Changelog
+
+## 0.1.10 (2026-09-07)
+
+
+### Fixes
+
+* the tenth patch
+
+## 0.1.1 (2026-09-06)
+
+
+### Fixes
+
+* the first patch
+"""
+
+
+def _extract_notes(tmp_path: Path, version: str, changelog: str) -> tuple[int, str, str]:
+    """Run the publish workflow's changelog step over ``changelog``; answer code, body, log."""
+    if shutil.which("bash") is None:
+        pytest.skip("no bash on PATH; the release runner is ubuntu-latest")
+    package = tmp_path / "packages" / "maf-sandbox-otel"
+    package.mkdir(parents=True)
+    (package / "CHANGELOG.md").write_text(changelog, encoding="utf-8", newline="\n")
+    script = (
+        "PACKAGE=maf-sandbox-otel\n"
+        f"VERSION={version}\n"
+        "GITHUB_OUTPUT=out.txt\n"
+        ": > out.txt\n"
+        f"{run_block(PUBLISH_WORKFLOW, 'Extract the changelog section')}\n"
+    )
+    # Bytes in, for the reason `_execute_step` gives: text mode would translate the newlines
+    # and bash rejects `set -euo pipefail\r`.
+    result = subprocess.run(
+        ["bash", "-s"], input=script.encode("utf-8"), capture_output=True, cwd=tmp_path
+    )
+    return (
+        result.returncode,
+        (tmp_path / "out.txt").read_text("utf-8"),
+        result.stdout.decode("utf-8", "replace") + result.stderr.decode("utf-8", "replace"),
+    )
+
+
+class TestTheReleaseNotesReadEitherChangelogHeading:
+    """Both shapes release-please writes are read, and neither reaches past its own section.
+
+    A package's first release has no earlier tag to compare against, so release-please writes
+    a bare `## 0.1.0 (date)` where every later one gets `## [0.2.0](…compare…)`. Reading only
+    the linked shape publishes the wheel and then fails the job that records the Release, which
+    is what happened to maf-sandbox-otel 0.1.0.
+    """
+
+    def test_a_first_release_is_read(self, tmp_path: Path):
+        code, body, log = _extract_notes(tmp_path, "0.1.0", _FIRST_RELEASE)
+        assert code == 0, log
+        assert "a sandbox observer that records what a sandbox did" in body
+        assert "pip install maf-sandbox-otel==0.1.0" in body
+
+    def test_a_later_release_is_still_read(self, tmp_path: Path):
+        code, body, log = _extract_notes(tmp_path, "0.15.1", _LATER_RELEASE)
+        assert code == 0, log
+        assert "admit maf-sandbox 0.35 in the dependents' range" in body
+        assert "the release before this one" not in body, "it ran past its own section"
+
+    def test_a_shorter_version_does_not_borrow_a_longer_one(self, tmp_path: Path):
+        code, body, log = _extract_notes(tmp_path, "0.1.1", _TWO_DIGIT_PATCH)
+        assert code == 0, log
+        assert "the first patch" in body
+        assert "the tenth patch" not in body, "`## 0.1.10` was read as `0.1.1`"
+
+    def test_a_missing_section_still_fails_and_names_both_shapes(self, tmp_path: Path):
+        code, _, log = _extract_notes(tmp_path, "0.9.9", _FIRST_RELEASE)
+        assert code != 0
+        assert "::error::" in log
+        assert "## [0.9.9]" in log and "## 0.9.9" in log

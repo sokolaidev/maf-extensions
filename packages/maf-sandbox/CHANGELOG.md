@@ -2,6 +2,19 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.34.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.33.0...maf-sandbox-v0.34.0) (2026-09-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* a landing sink refuses a destination that already exists, unless the host asks to replace it ([#927](https://github.com/sokolaidev/maf-extensions/issues/927))
+
+### Features
+
+* a host can register an observer and be told what a sandbox did — acquires, host-tool calls, file crossings and per-key disposals, refusals included ([#906](https://github.com/sokolaidev/maf-extensions/issues/906)) ([d3a2b92](https://github.com/sokolaidev/maf-extensions/commit/d3a2b927a1eb760f18c2fc77286049e6ec5c1d10))
+* a landing sink refuses a destination that already exists, unless the host asks to replace it ([#927](https://github.com/sokolaidev/maf-extensions/issues/927)) ([ec31519](https://github.com/sokolaidev/maf-extensions/commit/ec31519de2c47533948bb993d0ed6ac13d903d11))
+* standing guidance is committed where a tool is attached, and every result is held to it ([#918](https://github.com/sokolaidev/maf-extensions/issues/918)) ([857860d](https://github.com/sokolaidev/maf-extensions/commit/857860d84a7871069c27e6e0c70670db405c3ed9))
+
 ## [0.33.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.32.0...maf-sandbox-v0.33.0) (2026-09-05)
 
 

@@ -1,6 +1,6 @@
 name: Publish
 
-# Six packages share this workflow, so the run's own title has to say which one. Without a
+# Seven packages share this workflow, so the run's own title has to say which one. Without a
 # `run-name` every run is called "Publish", and a deployment-review prompt — in the mobile
 # app especially, where the reviewer sees the title and the job list and nothing else — asks
 # for approval to upload without naming what.
@@ -23,6 +23,7 @@ on:
       - "maf-sandbox-bicep-v*"
       - "maf-sandbox-codeact-v*"
       - "maf-sandbox-docker-v*"
+      - "maf-sandbox-otel-v*"
       - "maf-sandbox-wslc-v*"
   # Rehearsal path: publish any package to TestPyPI without cutting a real tag.
   workflow_dispatch:
@@ -37,6 +38,7 @@ on:
           - maf-sandbox-bicep
           - maf-sandbox-codeact
           - maf-sandbox-docker
+          - maf-sandbox-otel
           - maf-sandbox-wslc
       target:
         description: "Registry"
@@ -339,9 +341,11 @@ jobs:
           PACKAGE: ${{ needs.build.outputs.package }}
         run: |
           set -euo pipefail
-          for sibling in maf-sandbox-acas maf-sandbox-bicep maf-sandbox-codeact \
-                         maf-sandbox-docker maf-sandbox-wslc; do
-            if [ "$sibling" != "$PACKAGE" ]; then
+          # Discovered rather than listed: a hand-written set goes stale on the commit that
+          # adds a package, and it goes stale silently — the loop still succeeds.
+          for path in packages/*/; do
+            sibling=$(basename "$path")
+            if [ "$sibling" != "maf-sandbox" ] && [ "$sibling" != "$PACKAGE" ]; then
               uv build --package "$sibling" --out-dir dist/
             fi
           done
@@ -412,9 +416,13 @@ jobs:
         if: ${{ needs.build.outputs.package == 'maf-sandbox' }}
         run: |
           set -euo pipefail
-          for dependent in maf-sandbox-acas maf-sandbox-bicep maf-sandbox-codeact \
-                           maf-sandbox-docker maf-sandbox-wslc; do
-            uv build --package "$dependent" --out-dir dist/
+          # Discovered rather than listed, so the suite this gate runs against a candidate core
+          # is every dependent there is, including one added since it was last edited.
+          for path in packages/*/; do
+            dependent=$(basename "$path")
+            if [ "$dependent" != "maf-sandbox" ]; then
+              uv build --package "$dependent" --out-dir dist/
+            fi
           done
 
       - name: Run every dependent's suite against this core
@@ -665,14 +673,21 @@ jobs:
         run: |
           set -euo pipefail
           changelog="packages/${PACKAGE}/CHANGELOG.md"
-          # From this version's heading up to (not including) the next one.
-          section="$(awk -v heading="## [${VERSION}]" '
-            index($0, heading) == 1 { capture = 1; next }
+          # From this version's heading up to (not including) the next one. release-please
+          # links the heading to a compare view — `## [0.2.0](…)` — only when there is an
+          # earlier tag to compare against, so a package's first release carries a bare
+          # `## 0.1.0 (date)` and matches neither the linked shape nor an exact line. Each
+          # shape is anchored on its own delimiter, `]` or the space before the date, because
+          # a prefix test alone would read `## 0.1.10` as `0.1.1`.
+          section="$(awk -v version="${VERSION}" '
+            index($0, "## [" version "]") == 1 { capture = 1; next }
+            index($0, "## " version " ") == 1 { capture = 1; next }
+            $0 == "## " version { capture = 1; next }
             capture && /^## / { exit }
             capture { print }
           ' "$changelog")"
           if [ -z "$(echo "$section" | tr -d '[:space:]')" ]; then
-            echo "::error::no '## [${VERSION}]' section in ${changelog} — add the entry before tagging"
+            echo "::error::no '## [${VERSION}]' or '## ${VERSION}' section in ${changelog} — add the entry before tagging"
             exit 1
           fi
           {

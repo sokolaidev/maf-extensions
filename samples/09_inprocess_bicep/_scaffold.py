@@ -100,6 +100,19 @@ def quoted(text: str) -> str:
     )
 
 
+def result_text(result: object) -> str:
+    """One tool result as text, whether the tool answered with a string or with content items.
+
+    A tool that labels part of what it returns answers with a list of items, and `str` of a list
+    renders their reprs rather than their text — a difference that reads as a tool which
+    suddenly returned nothing a check can recognise.
+    """
+    if isinstance(result, list):
+        items: list[object] = result
+        return "\n".join(str(getattr(item, "text", None) or "") for item in items)
+    return str(result)
+
+
 def tool_results(reply: object, name: str) -> list[str]:
     """Everything the tool `name` returned during `reply`, in the order it came back.
 
@@ -118,7 +131,7 @@ def tool_results(reply: object, name: str) -> list[str]:
         and getattr(content, "name", None) == name
     }
     return [
-        str(getattr(content, "result", ""))
+        result_text(getattr(content, "result", ""))
         for message in getattr(reply, "messages", [])
         for content in message.contents
         if getattr(content, "type", None) == "function_result"

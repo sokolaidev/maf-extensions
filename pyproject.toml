@@ -35,6 +35,10 @@ dev = [
     # Wide where the tooling bands are narrow, and deliberately: a sample declares it unpinned,
     # so a check held to an older minor would pass against a version no live run uses.
     "agent-framework-openai>=1.13.0,<2",
+    # `maf-sandbox-otel` ships against the OpenTelemetry *API* alone, so its own tests are the
+    # only thing here that needs an SDK: the in-memory exporters are what let a test read back
+    # what the recorder actually put on a wire, rather than only that it returned.
+    "opentelemetry-sdk>=1.44,<2",
 ]
 
 # Lint rules for the tree *outside* packages/* — samples/, tests/, scripts/, which belong to no
@@ -102,6 +106,7 @@ executionEnvironments = [
   { root = "packages/maf-sandbox-bicep/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-codeact/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-docker/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
+  { root = "packages/maf-sandbox-otel/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-wslc/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
 ]
 
@@ -123,6 +128,7 @@ testpaths = [
     "packages/maf-sandbox-bicep/tests",
     "packages/maf-sandbox-codeact/tests",
     "packages/maf-sandbox-docker/tests",
+    "packages/maf-sandbox-otel/tests",
     "packages/maf-sandbox-wslc/tests",
 ]
 faulthandler_timeout = 90.0

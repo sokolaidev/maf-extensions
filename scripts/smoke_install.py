@@ -31,6 +31,7 @@ _PACKAGES = {
     "maf-sandbox-bicep": "maf_sandbox_bicep",
     "maf-sandbox-codeact": "maf_sandbox_codeact",
     "maf-sandbox-docker": "maf_sandbox_docker",
+    "maf-sandbox-otel": "maf_sandbox_otel",
     "maf-sandbox-wslc": "maf_sandbox_wslc",
 }
 
@@ -156,6 +157,30 @@ def _smoke_maf_sandbox_acas() -> str:
     )
 
 
+def _rendered(result: object) -> str:
+    """A tool result as text, whether the tool answered with one string or with items.
+
+    A kind that labels part of what it returns answers with a list of items, and `str` of a
+    list renders their reprs rather than their text.
+    """
+    if isinstance(result, list):
+        items: list[object] = result
+        return "\n".join(str(getattr(item, "text", None) or "") for item in items)
+    return str(result)
+
+
+def _labelled(result: object) -> list[object]:
+    """The items of ``result`` carrying a label of their own."""
+    if not isinstance(result, list):
+        return []
+    items: list[object] = result
+    return [
+        item
+        for item in items
+        if "security_label" in (getattr(item, "additional_properties", None) or {})
+    ]
+
+
 def _smoke_maf_sandbox_bicep() -> str:
     from maf_sandbox import CallerContext, Isolation, SandboxRouter
     from maf_sandbox.testing import (
@@ -190,9 +215,14 @@ def _smoke_maf_sandbox_bicep() -> str:
     sandbox = InProcessSandbox(outputs={"bicep build": _SARIF}, default_stdout=_EMPTY_SARIF)
     written = _recording(sandbox)
     backend = InProcessSandboxBackend(sandbox)
-    out = asyncio.run(_bicep_tool(store, backend)(files=["main.bicep"]))
+    answer = asyncio.run(_bicep_tool(store, backend)(files=["main.bicep"]))
+    out = _rendered(answer)
     if "BCP035" not in out:
         raise SystemExit(f"FAIL: diagnostics missing from tool output: {out!r}")
+    # The split a FIDES host reads: the standing sentence carries a label of its own and the
+    # diagnostics carry none, so hiding the untrusted half leaves the sentence readable.
+    if len(_labelled(answer)) != 1 or _labelled(answer)[0] is not answer[-1]:
+        raise SystemExit(f"FAIL: the result is not one labelled sentence closing it: {answer!r}")
     if not any(path.endswith("/main.bicep") for path in written):
         raise SystemExit(f"FAIL: the workload never wrote the file into the sandbox: {written}")
     if len(backend.keys) != 1:
@@ -204,7 +234,7 @@ def _smoke_maf_sandbox_bicep() -> str:
     # whether or not its build included these modules.
     miss_store = InMemoryStore({"main.bicep": "x"})
     miss_backend = InProcessSandboxBackend(InProcessSandbox(default_stdout=_EMPTY_SARIF))
-    miss = asyncio.run(_bicep_tool(miss_store, miss_backend)(files=["absent.bicep"]))
+    miss = _rendered(asyncio.run(_bicep_tool(miss_store, miss_backend)(files=["absent.bicep"])))
     if "not in this tool's file listing" not in miss:
         raise SystemExit(f"FAIL: a listing miss did not say so: {miss!r}")
     if miss_backend.keys:
@@ -215,7 +245,7 @@ def _smoke_maf_sandbox_bicep() -> str:
     hostile = "a;$(id).bicep"
     unsafe_store = InMemoryStore({hostile: "x"})
     unsafe_backend = InProcessSandboxBackend(InProcessSandbox(default_stdout=_EMPTY_SARIF))
-    unsafe = asyncio.run(_bicep_tool(unsafe_store, unsafe_backend)(files=[hostile]))
+    unsafe = _rendered(asyncio.run(_bicep_tool(unsafe_store, unsafe_backend)(files=[hostile])))
     if "[A-Za-z0-9._/-]" not in unsafe:
         raise SystemExit(f"FAIL: an unsafe name was not named as such: {unsafe!r}")
     if unsafe_backend.keys or unsafe_backend.sandbox.commands:
@@ -373,6 +403,42 @@ def _smoke_maf_sandbox_codeact() -> str:
     )
 
 
+def _smoke_maf_sandbox_otel() -> str:
+    from maf_sandbox import (
+        Egress,
+        IsolationScope,
+        SandboxAcquired,
+        SandboxKey,
+        SandboxObserver,
+        SandboxSpec,
+    )
+    from maf_sandbox_otel import NAMESPACE, OpenTelemetrySandboxObserver, hashed_key
+
+    if not issubclass(OpenTelemetrySandboxObserver, SandboxObserver):
+        raise SystemExit(
+            "FAIL: the recorder is not a SandboxObserver, so nothing would register it"
+        )
+
+    # No SDK is installed here, which is the case a host without telemetry configured is in: the
+    # API's no-op providers answer, and recording must still cost nothing and raise nothing.
+    observer = OpenTelemetrySandboxObserver()
+    key = SandboxKey(scope="s", thread_id="t", agent_dir="a")
+    observer.sandbox_acquired(
+        SandboxAcquired(
+            key=key,
+            spec=SandboxSpec(kind="smoke", egress=Egress.CLOSED),
+            isolation_scope=IsolationScope.CONVERSATION,
+            backend="none",
+            isolation=None,
+            declarations=None,
+            seconds=0.0,
+        )
+    )
+    if hashed_key(key) != hashed_key(key) or NAMESPACE != "maf_sandbox":
+        raise SystemExit(f"FAIL: the join column is unstable or renamed ({NAMESPACE})")
+    return "the recorder registers as an observer and records against no-op providers"
+
+
 def _smoke_maf_sandbox_wslc() -> str:
     from maf_sandbox import Egress, Isolation
     from maf_sandbox_wslc import (
@@ -447,6 +513,7 @@ _SMOKES = {
     "maf-sandbox-bicep": _smoke_maf_sandbox_bicep,
     "maf-sandbox-codeact": _smoke_maf_sandbox_codeact,
     "maf-sandbox-docker": _smoke_maf_sandbox_docker,
+    "maf-sandbox-otel": _smoke_maf_sandbox_otel,
     "maf-sandbox-wslc": _smoke_maf_sandbox_wslc,
 }
 

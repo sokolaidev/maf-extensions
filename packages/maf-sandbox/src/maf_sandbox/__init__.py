@@ -43,6 +43,12 @@ one to a host-supplied :class:`~maf_sandbox.OutputSink`.  The host does the writ
 file store, a blob container or a UI panel is a property of the application, and this
 package writes nothing anywhere.
 
+It also owns the seam a host *records* through: :class:`~maf_sandbox.SandboxObserver` and one
+frozen event per acquire, disposal, host-tool call, store read, collection and tool call.  Off
+by default, contained so no observer can fail a call, and written in this package's vocabulary
+rather than a telemetry one — turning an event into a span belongs above this layer, not in it.
+``docs/sandbox/observability.md`` carries what each event holds and what the seam does not see.
+
 This package imports no backend and no host application.
 
 One module sits outside that claim: :mod:`maf_sandbox.maf`, the MAF glue
@@ -90,6 +96,20 @@ from ._host_tools_over_exec import (
     launcher_script,
     reclaim_run,
 )
+from ._observer import (
+    DisposalReport,
+    HostToolCalled,
+    HostToolOutcome,
+    LandedOutput,
+    OutputsCollected,
+    SandboxAcquired,
+    SandboxDisposed,
+    SandboxEvent,
+    SandboxObserver,
+    StoreFileRead,
+    StoreReadOutcome,
+    ToolCallEnded,
+)
 from ._outputs import (
     MAX_ARTIFACT_NAME_BYTES,
     Artifact,
@@ -98,6 +118,7 @@ from ._outputs import (
     OutputSink,
     SandboxArtifactNameCollision,
     SandboxArtifactNameInvalid,
+    SandboxLandingExists,
     SandboxLandingNotConfined,
     SandboxLandingNotText,
     SandboxOutputError,
@@ -181,6 +202,17 @@ from ._router import (
 from ._shim import host_tool_shim
 
 __all__ = [
+    "HostToolCalled",
+    "HostToolOutcome",
+    "LandedOutput",
+    "OutputsCollected",
+    "SandboxAcquired",
+    "SandboxDisposed",
+    "SandboxEvent",
+    "SandboxObserver",
+    "StoreFileRead",
+    "StoreReadOutcome",
+    "ToolCallEnded",
     "CALLS_DIRECTORY",
     "DEFAULT_BACKEND_DECLARATIONS",
     "DEFAULT_CAPABILITIES",
@@ -203,6 +235,7 @@ __all__ = [
     "DeclaredOutput",
     "DisposalCode",
     "DisposalFailure",
+    "DisposalReport",
     "HostToolCallResult",
     "Egress",
     "EntryKind",
@@ -244,6 +277,7 @@ __all__ = [
     "SandboxEntry",
     "SandboxIdentityDenied",
     "SandboxKey",
+    "SandboxLandingExists",
     "SandboxLandingNotConfined",
     "SandboxLandingNotText",
     "SandboxLimits",

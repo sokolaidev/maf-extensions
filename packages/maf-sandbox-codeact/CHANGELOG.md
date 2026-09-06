@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.13.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.13.0...maf-sandbox-codeact-v0.13.1) (2026-09-06)
+
+
+### Fixes
+
+* admit maf-sandbox 0.35 in the dependents' range, and require 0.34 in the samples ([#930](https://github.com/sokolaidev/maf-extensions/issues/930)) ([4293f12](https://github.com/sokolaidev/maf-extensions/commit/4293f1224533f5074eb204321af6824b03268691))
+
+## [0.13.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.12.0...maf-sandbox-codeact-v0.13.0) (2026-09-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* **codeact:** the withheld route sentence is committed at attach, not just written at the call ([#920](https://github.com/sokolaidev/maf-extensions/issues/920))
+
+### Features
+
+* **codeact:** the withheld route sentence is committed at attach, not just written at the call ([#920](https://github.com/sokolaidev/maf-extensions/issues/920)) ([a2d14cd](https://github.com/sokolaidev/maf-extensions/commit/a2d14cd92312554691be91c83786dadbbbd5d04a))
+
 ## [0.12.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.11.0...maf-sandbox-codeact-v0.12.0) (2026-09-05)
 
 

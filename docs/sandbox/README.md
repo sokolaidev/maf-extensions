@@ -105,9 +105,7 @@ What that looks like in one turn — note that exactly two things cross the proc
 
 Exactly one module imports `agent_framework`, and it is deliberately not re-exported from the package: `import maf_sandbox` stays cheap and framework-free for a backend author or a workload's own test suite, while a host reaches the conveniences by name. Both halves are pinned by tests.
 
-A host wires three things.
-
-**The tools.** A kind's factory returns a plain list of MAF tools, which go onto the agent like any others:
+A host wires three things: the tools, the request context they read, and disposal. All three, and one turn served through them:
 
 ```python
 router = SandboxRouter([AcasSandboxBackend(config)])
@@ -126,13 +124,27 @@ agent = Agent(
     # `trusted` floor would be refused for the reason `FileStoreProvenance` gives.
     middleware=[file_store_provenance_middleware(record)],
 )
+
+# Serving one turn. Without this block the sandbox outlives the turn and nothing here
+# reclaims it — only the backend's own lifecycle policy eventually does.
+async with router.scope(scope, thread_id) as disposal:
+    response = await agent.run(prompt)
+# Filled however the block ended, but this line is not reached when the turn raises — a host
+# that has to hear about `undisposed` logs it from a `finally` of its own.
+logger.info("reclaimed %d, still there: %s", disposal.disposed, disposal.undisposed)
+
+# On the host's own conversation-delete path: the turns no scope block wrapped, and whatever
+# a scope block's own purge reported it could not delete.
+await SandboxPurger(router).purge_scoped_thread(scope, thread_id)
 ```
 
-**The request context.** `make_caller_context` takes *callables*, read per call, rather than values. A sandbox is keyed by `(scope, thread_id, agent_dir)` — and by `call_id` as well for a workload that runs one sandbox per call, and a host that builds one agent and serves many conversations with it would — if the scope and thread were captured at construction time — let one conversation address another conversation's sandbox. Nothing in this stack accepts a scope, a thread id or a file path from the model: the file store listing is the boundary that decides what a name is allowed to resolve to.
+**The tools.** A kind's factory returns a plain list of MAF tools, which go onto the agent like any others.
 
-`list_all_files` above is `maf_sandbox.maf`'s — it walks the store's `list_children` one level at a time and answers `ListedFile` entries: a store-relative path, and what the host knows about the bytes at it. `provenance=` is what supplies the second half, and leaving it off is not neutral — every entry then reads `None`, *unestablished*, and a kind reading that store can never label anything from it. Pair the record with `file_store_provenance_middleware(record)` on the agent, which is what makes it observe the model's own writes; [`hosts.md`](hosts.md) carries the wiring and the one window it leaves open. It sits beside `make_caller_context` rather than in core because it reads `FileStoreEntry.type`, which is the framework's. A workload with no file channel at all passes `list_no_files`, which is a stated decision rather than an empty lambda the next reader has to interpret. Either way a failure to enumerate **propagates**: answering an empty list would read as "the store has no files" and refuse every name for the wrong reason.
+**The request context.** `make_caller_context` takes three *callables*, read per call rather than captured as values. Two of them say who is calling — the scope and the conversation — and those, with `agent_dir`, are what a sandbox is keyed by (a workload that runs one sandbox per call adds the call's own id). There is no default and no fallback here: a call with no conversation bound is refused rather than served from a shared key, and nothing in this stack takes a scope, a thread id or a file path from the model. Captured at construction time instead, a host that builds one agent and serves many conversations with it would let one conversation address another's sandbox ([`architecture.md`](architecture.md) § Keying).
 
-**Disposal.** `SandboxPurger` participates in thread deletion, so deleting a conversation takes its sandboxes with it, and `dispose_scope` deletes by service-side label — which reclaims sandboxes the calling replica never created. A host that serves one conversation at a time can let `router.scope(scope, thread_id)` make that call for it: an async context manager that disposes however its block ends, and afterwards reports the count and — when the delete did not land — the reason, because zero reclaimed reads the same whether there was nothing to reclaim or nothing worked. One disposal is the framework's own: a sandbox it could not clean after a call — a removal that failed, or a stop that did not reach the program's whole process group — is disposed before the next call can reuse it, and the host loosens that on the router, never a kind ([`tool-call.md`](tool-call.md) § Cleanup).
+The third enumerates the caller's files, and that listing decides which names a workload may pass into a sandbox. `list_all_files(store, provenance=record)` is the usual answer; a workload with no file channel passes `list_no_files`, by name rather than as an empty lambda. `provenance=` is optional and leaving it off is not neutral — every entry then lists as *unestablished*, and a kind reading that store can never label anything from it. The record observes nothing unless `file_store_provenance_middleware(record)` is on the agent, which is what the comment in the snippet is about. [`hosts.md`](hosts.md) carries both wirings and the window each leaves open.
+
+**Disposal.** Acquiring a sandbox is get-or-create and the default spec shares one across a conversation, so it outlives the turn that made it — which is what makes a fix-and-retry loop warm — and **nothing in the library then reclaims it**. (A workload that asks for one sandbox per call is the exception: the framework destroys that one when the call returns.) What is left is the backend's own platform policy, and it differs: on ACAS's default lifecycle a sandbox idles a minute, suspends resumable for ten more and is then deleted, while a local Docker container just stays. The snippet's last two blocks are how a host takes that decision back instead. `router.scope(scope, thread_id)` disposes however its block ends, exception included, and fills its record either way: the count, and — when a delete did not land — the reason, because zero reclaimed reads the same whether there was nothing to reclaim or nothing worked. Reading that record back is the host's, and a turn that raises carries the exception past any line after the block. `SandboxPurger` on the conversation-delete path is the backstop twice over — for the turns no scope block wrapped, and for what a scope block's own best-effort purge reported it could not delete: it deletes by service-side label, so it reclaims sandboxes the calling replica never created, and it cannot fail the delete it is attached to. One disposal is not the host's at all: a sandbox the framework could not clean after a call — a removal that failed, or a stop that did not reach the program's whole process group — is disposed before the next call can reuse it, and the host loosens that on the router, never a kind ([`tool-call.md`](tool-call.md) § Cleanup). [`samples/12_purge_lifecycle`](../../samples/12_purge_lifecycle/) counts all three moments against `docker ps`.
 
 Two behaviours are worth knowing before the first call, because both are deliberate and neither is what a host would arrive at by accident:
 
@@ -141,7 +153,7 @@ Two behaviours are worth knowing before the first call, because both are deliber
 
 ## The guarantees, in detail
 
-**Truth in place of plausibility.** The agent stops reporting that a template looks valid and starts reporting what the compiler said. Everything else here is what it costs to get that safely.
+**Truth in place of plausibility** is what an agent gains here, and it is a *kind*'s doing rather than the seam's: `bicep_validate` reports what the compiler said instead of what a template looks like, and any tool that ran the real thing would. What the protocol guarantees is the rest — the conditions under which running it is safe, each one refused rather than degraded where it does not hold.
 
 **Isolation declared rather than hoped for.** A host sets a minimum isolation floor on an ordered ladder — `none`, `runtime`, `os_process`, `container`, `hardened_container`, `microvm`, `vm` — and a backend below it is refused *at construction*, not at the first tool call, so a misconfigured deployment cannot start with the feature apparently enabled and quietly unsafe. A router selecting per spec judges that across the whole registration instead — it refuses when nothing clears the floor, and warns about any individual backend below it, which it keeps and never routes to. The default is `microvm`, the production posture; a workload's spec may raise the floor and can never lower it.
 
@@ -152,6 +164,8 @@ Two behaviours are worth knowing before the first call, because both are deliber
 **Egress closed unless opened.** A spec names the hosts its work may reach, and a backend that cannot confine egress to that list is refused. A spec silent about egress gets the closed configuration, never the open one.
 
 **Failures that do not leak.** When a sandbox is unavailable the model receives a fixed sentence saying the run degraded, and nothing else. The provider's own message — endpoint, subscription, tenant — goes to the log instead, because a tool result is persisted into the transcript.
+
+**Claims about the result, refused where nothing licenses them.** A sandbox makes the work safe to *run*; the label on the result is what decides whether it is safe to *say*. MAF's information-flow module (FIDES) reads a kind's declaration before every call, which makes that declaration a claim — in the same class as a backend's isolation claim — rather than something this suite verifies. Two claims it can check, and refuses: an explicit `trusted` result over a channel nothing establishes as trusted, and a `trusted` file-store floor on a record no middleware was ever built to fill. Declaring nothing is never refused — it is a delegation to the framework's own label join rather than a fail-safe ([`information-flow.md`](information-flow.md)).
 
 ## Where to read next
 
@@ -164,6 +178,7 @@ Two behaviours are worth knowing before the first call, because both are deliber
 - [`hosts.md`](hosts.md) — the host boundary: where artifacts land, host tools called outward, identity, and the storage base.
 - [`information-flow.md`](information-flow.md) — what a kind may claim about the result it hands back, why the claim is about derivation rather than authorship, and the rules a kind writer follows.
 - [`guest-platform-and-commands.md`](guest-platform-and-commands.md) — the guest-platform axis: what a kind may assume about the far side of the boundary, and how a backend finds out.
+- [`observability.md`](observability.md) — the observer a host registers, the events it is handed, and what the seam does not see.
 - [`kinds/README.md`](kinds/README.md) — what a kind is, what it owes the protocol, and the two that ship.
 - [`backends/README.md`](backends/README.md) — the shipped backends side by side, and what each one honestly declares.
 - [`backends/writing-a-backend.md`](backends/writing-a-backend.md) — the ordered path for a new backend author: what each `Sandbox` method owes, what to reach for, what never to do, and the probes that prove it.

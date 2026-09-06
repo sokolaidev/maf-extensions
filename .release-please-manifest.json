@@ -1,8 +1,9 @@
 {
-  "packages/maf-sandbox": "0.33.0",
-  "packages/maf-sandbox-acas": "0.18.0",
-  "packages/maf-sandbox-bicep": "0.13.0",
-  "packages/maf-sandbox-codeact": "0.12.0",
-  "packages/maf-sandbox-docker": "0.15.0",
-  "packages/maf-sandbox-wslc": "0.16.0"
+  "packages/maf-sandbox": "0.34.0",
+  "packages/maf-sandbox-acas": "0.18.1",
+  "packages/maf-sandbox-bicep": "0.13.1",
+  "packages/maf-sandbox-codeact": "0.13.1",
+  "packages/maf-sandbox-docker": "0.15.1",
+  "packages/maf-sandbox-otel": "0.1.1",
+  "packages/maf-sandbox-wslc": "0.16.1"
 }

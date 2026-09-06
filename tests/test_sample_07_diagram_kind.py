@@ -13,7 +13,7 @@ import struct
 import sys
 import zlib
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import pytest
 from maf_sandbox import (
@@ -87,8 +87,18 @@ def _fn(tool):
     return getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
 
 
-def _tools(sandbox: InProcessSandbox, out_dir: Path, **kwargs):
-    """The sample's own factory, wired to the in-process backend instead of docker."""
+def _tools(
+    sandbox: InProcessSandbox,
+    out_dir: Path,
+    existing: Literal["refuse", "replace"] = "refuse",
+    **kwargs,
+):
+    """The sample's own factory, wired to the in-process backend instead of docker.
+
+    ``existing`` is the sink's, not the kind's: the sample passes nothing and so takes the
+    default, and what it will pass once its floor names the release carrying the parameter is
+    #926.  The tests below drive both, because the two answer the second render differently.
+    """
     backend = InProcessSandboxBackend(
         sandbox,
         declarations=dataclasses.replace(
@@ -100,7 +110,7 @@ def _tools(sandbox: InProcessSandbox, out_dir: Path, **kwargs):
         router,
         "diagram-designer",
         make_caller_context(list_no_files, lambda: "samples", lambda: "07-test"),
-        make_file_system_sink(out_dir),
+        make_file_system_sink(out_dir, existing=existing),
         image=_IMAGE,
         **kwargs,
     )
@@ -244,6 +254,25 @@ class TestTheArtifactLandsUnderTheNameTheSampleChose:
         _render(sandbox, out_dir)
 
         assert (out_dir / "diagram.png").read_bytes() == _png(24, 16)
+
+    def test_a_second_render_finds_its_own_name_taken(self, out_dir: Path):
+        """One stable name is what the separation between guest paths does not buy.
+
+        Two renders share the landed name, so the second meets the sink's default refusal and
+        the kind tells the model the diagram did not come back, while `out/` keeps the first.
+        `existing="replace"` is the answer the sample's README describes and #926 will pass;
+        neither is the sink's to choose.
+        """
+        sandbox = _Renderer()
+        assert "diagram.png" in _render(sandbox, out_dir)
+
+        refused = _render(sandbox, out_dir)
+
+        assert "could not be saved" in refused
+        assert (out_dir / "diagram.png").read_bytes() == _png(24, 16), "the first render stands"
+        assert sorted(path.name for path in out_dir.iterdir()) == ["diagram.png"]
+
+        assert "diagram.png" in _render(_Renderer(), out_dir, existing="replace")
 
     def test_the_model_is_told_where_it_went_and_not_what_it_is(self, out_dir: Path):
         """The sink's one line, and no run id in it."""

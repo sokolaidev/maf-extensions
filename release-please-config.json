@@ -74,6 +74,17 @@
         }
       ]
     },
+    "packages/maf-sandbox-otel": {
+      "package-name": "maf-sandbox-otel",
+      "exclude-paths": ["packages/maf-sandbox-otel/tests"],
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "/uv.lock",
+          "jsonpath": "$.package[?(@.name.value=='maf-sandbox-otel')].version"
+        }
+      ]
+    },
     "packages/maf-sandbox-wslc": {
       "package-name": "maf-sandbox-wslc",
       "exclude-paths": ["packages/maf-sandbox-wslc/tests"],
