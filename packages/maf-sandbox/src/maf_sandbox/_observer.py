@@ -34,20 +34,23 @@ There are two registration points, because there are two host-policy objects:
 one is not obliged to wire the other.  :func:`~maf_sandbox.collect_outputs` is neither — it is a
 function a kind calls per collection, so it takes the observer and the key as arguments.
 
-What this seam does **not** see is the egress proxy's own decisions.  A docker or wslc proxy
-prints its ``ALLOW``/``DENY`` lines inside its own container, and the backend reads that stream
-once, at acquire; ACAS enforces egress in the service.  :class:`SandboxAcquired` records the
-mode and the allowlist a sandbox was *served* under, which is what a spec asked for rather than
-what a guest then reached.
+A backend is not a third registration point.  :class:`SandboxAcquired` records the mode and the
+allowlist a sandbox was *served* under — what its spec asked for — and :class:`EgressObserved`
+records what the guest then reached, which only the thing enforcing egress knows.  A backend
+that can read its own enforcement implements :class:`ObservesEgress` and is handed a reporter
+by the router it is registered on, so the host still wires exactly one observer.  A backend that
+enforces in a service it does not run reports nothing, and says so through
+:attr:`~maf_sandbox.BackendDeclarations.observes_egress` rather than by being silent.
 """
 
 from __future__ import annotations
 
 import inspect
 import logging
+from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Protocol, runtime_checkable
 
 from ._containment import CONTAINED, escapes_containment
 from ._error_detail import error_detail
@@ -66,9 +69,14 @@ from ._protocol import (
 __all__ = [
     "EVENT_METHODS",
     "DisposalReport",
+    "EgressDecision",
+    "EgressDecisionCode",
+    "EgressObserved",
+    "EgressReporter",
     "HostToolCalled",
     "HostToolOutcome",
     "LandedOutput",
+    "ObservesEgress",
     "OutputsCollected",
     "SandboxAcquired",
     "SandboxDisposed",
@@ -265,6 +273,75 @@ class ScopeDisposed(SandboxEvent):
 
     def deliver_to(self, observer: SandboxObserver) -> None:
         observer.scope_disposed(self)
+
+
+#: What an egress enforcer did with one CONNECT.  Both refusals are kept apart because they
+#: refuse different things: ``"DENY"`` is a host absent from the spec's allowlist, and
+#: ``"DENY-NONGLOBAL"`` is an allowlisted host that resolved to a private address — the shape a
+#: guest reaching back at the host's own services takes, which an allowlist alone does not
+#: catch.  ``"UNREACHABLE"`` *allowed* the tunnel and then failed to open it, so it belongs with
+#: the permitted attempts rather than the refused ones.
+EgressDecisionCode = Literal["ALLOW", "DENY", "DENY-NONGLOBAL", "UNREACHABLE"]
+
+
+@dataclass(frozen=True)
+class EgressDecision:
+    """One CONNECT an egress enforcer answered.
+
+    ``host`` is what the *guest* asked for rather than what the spec allowed — on a ``DENY`` it
+    is a name the guest chose, and a recorder holds it to the same rule an artifact name is
+    held to.
+    """
+
+    decision: EgressDecisionCode
+    host: str
+    port: int
+
+
+@dataclass(frozen=True)
+class EgressObserved(SandboxEvent):
+    """What one sandbox's egress enforcement decided, keyed to the sandbox that caused it.
+
+    This is the event that separates what a spec *allowed* from what a guest *attempted*.
+    :class:`SandboxAcquired` carries the mode and the allowlist a sandbox was served under;
+    this carries every ``CONNECT`` the enforcer answered and how it answered.  Only an
+    ``ALLOW`` opened a tunnel — a ``DENY`` names a host the guest asked for and did not get
+    — so a reader counting reached destinations filters on the verb rather than on the
+    presence of a decision.
+
+    **It arrives in batches, after the fact.**  A backend enforcing egress in a proxy of its own
+    reads that proxy's record when it takes the proxy down, so one event covers a window rather
+    than a request, and the decisions inside it are ordered as the enforcer wrote them and carry
+    no timestamps of their own.  A backend enforcing in a service it does not run emits nothing
+    at all — see :attr:`~maf_sandbox.BackendDeclarations.observes_egress`, which is what stops
+    an empty record reading as a clean one.
+
+    ``truncated`` says the window **may** be short of the bound's worth: a guest makes as many
+    requests as it likes, so a drain reads a bounded tail and cannot tell a log that held one
+    line more from one that held ten thousand.  It is a flag rather than a count because no
+    enforcer read this way can say how many it withheld, and it errs towards *there may be
+    more* — the direction a record is allowed to be wrong in.
+
+    ``unreadable`` names why a drain came back with nothing where the enforcer was expected to
+    have written something.  A window nobody can account for is exactly what an operator needs
+    to see, so it is a field on an event rather than a line in a log.
+    """
+
+    key: SandboxKey
+    backend: str
+    decisions: tuple[EgressDecision, ...]
+    truncated: bool
+    unreadable: str | None
+    seconds: float
+    #: Always ``None``, and typed so that saying otherwise does not compile: a drain covers a
+    #: *window* rather than a call, and the decisions in it span whatever calls happened
+    #: between two removals.  :func:`recorded_call` would name the call that happened to
+    #: collect them, which is the one thing this record must not say.  It stays a field so a
+    #: recorder reading ``call`` across the events has no case to special-case.
+    call: Literal[None] = None
+
+    def deliver_to(self, observer: SandboxObserver) -> None:
+        observer.egress_observed(self)
 
 
 #: How one host-tool call ended.  ``"refused"`` covers every sentence the guest was answered
@@ -489,6 +566,9 @@ class SandboxObserver:
     def scope_disposed(self, event: ScopeDisposed) -> None:
         """One backend answered one conversation's purge."""
 
+    def egress_observed(self, event: EgressObserved) -> None:
+        """A backend read what its egress enforcement decided for one sandbox."""
+
     def host_tool_called(self, event: HostToolCalled) -> None:
         """A guest program called back into the host."""
 
@@ -508,6 +588,7 @@ EVENT_METHODS: tuple[str, ...] = (
     "sandbox_acquired",
     "sandbox_disposed",
     "scope_disposed",
+    "egress_observed",
     "host_tool_called",
     "store_file_read",
     "outputs_collected",
@@ -574,3 +655,48 @@ def record(observer: SandboxObserver | None, event: SandboxEvent, logger: loggin
         logger.warning(
             "sandbox observer: %s was not recorded: %s", type(event).__name__, error_detail(exc)
         )
+
+
+#: What a backend reports an :class:`EgressObserved` through.  The router hands one over
+#: already wrapped in :func:`record`, so a backend never holds the host's observer and never has
+#: to contain its failures — calling this is safe from anywhere, including a cleanup path.
+EgressReporter = Callable[[EgressObserved], None]
+
+
+@runtime_checkable
+class ObservesEgress(Protocol):
+    """A backend that can say what its egress enforcement actually decided.
+
+    Implementing this is a claim a backend has to be able to keep: that it enforces egress
+    somewhere it can read afterwards.  A backend enforcing in a service it does not run cannot,
+    and does not implement it — which is a different thing from having nothing to report, and
+    :attr:`~maf_sandbox.BackendDeclarations.observes_egress` is where the difference is written
+    down for a reader who only ever sees the records.
+
+    The router calls :meth:`observe_egress` once, at the end of its construction, with its
+    reporter or with ``None``.  ``None`` is what an *unobserved* router passes, and it is not
+    the same as not calling: a backend instance may be registered on more than one router, so a
+    router that collects nothing has to be able to switch a backend off rather than leave it
+    reporting to whoever wired it last.  A backend does no reading at all until it holds a
+    reporter, because reading a proxy's record costs an engine round trip per acquire and an
+    uninstrumented deployment does not pay it.
+
+    **One backend reports to one router — the last one constructed over it.**  The callback is a
+    single slot, so a host that registers one backend on two *observed* routers gets that
+    backend's records on whichever was built second, including for sandboxes the other served.
+    The seam does not support that arrangement and cannot detect it from here; a backend replacing
+    a live reporter with a different one should say so, which is what both shipped backends do.
+    """
+
+    def observe_egress(self, report: EgressReporter | None) -> EgressReporter | None:
+        """Take the callback to report egress decisions through, and return the one it replaced.
+
+        Returning the old one is what lets a router that fails to construct put a backend back
+        as it found it, rather than switching off reporting a *different* router is still using.
+
+        **It must be atomic.**  Either it takes the reporter and returns the previous one, or
+        it raises having changed nothing.  A hook that stores the new one and then raises
+        cannot be rolled back — the caller never received what it replaced — and the router's
+        restore would put back the wrong thing.
+        """
+        ...

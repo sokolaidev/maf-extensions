@@ -19,12 +19,14 @@ import sys
 import tarfile
 import time
 from collections.abc import Sequence
+from dataclasses import replace
 
 import pytest
 from maf_sandbox import (
     Capability,
     DisposalFailure,
     Egress,
+    EgressObserved,
     EntryKind,
     ExecResult,
     Isolation,
@@ -39,8 +41,12 @@ from maf_sandbox import (
 
 from maf_sandbox_wslc import BACKEND_NAME, WslcSandboxBackend, WslcSandboxConfig
 from maf_sandbox_wslc._backend import (
+    _NOT_FOUND,
+    _PROXY_LOG_BYTES,
+    _PROXY_LOG_TAIL,
     _TAR_BLOCK,
     _container_name,
+    _egress_decisions,
     _network_name,
     _proxy_name,
     _WslcResult,
@@ -57,10 +63,17 @@ _PROBE = ("container", "exec", "--user", "0", _NAME, "test")
 
 
 class _Recorded:
-    def __init__(self, args: tuple[str, ...], stdin: bytes | None, timeout: float | None) -> None:
+    def __init__(
+        self,
+        args: tuple[str, ...],
+        stdin: bytes | None,
+        timeout: float | None,
+        read_limit: int | None = None,
+    ) -> None:
         self.args = args
         self.stdin = stdin
         self.timeout = timeout
+        self.read_limit = read_limit
 
 
 class _FakeWslc:
@@ -77,7 +90,7 @@ class _FakeWslc:
         )
 
     async def __call__(self, *args: str, stdin=None, timeout=None, read_limit=None) -> _WslcResult:
-        self.calls.append(_Recorded(args, stdin, timeout))
+        self.calls.append(_Recorded(args, stdin, timeout, read_limit))
         result = self._responder(args)
         if (
             args[:2] == ("container", "cp")
@@ -1921,3 +1934,258 @@ class TestAllowlistTeardown:
         removed = [c.args[-1] for c in fake.matching("container", "remove")]
         assert _AL in removed and _AL_PROXY in removed
         assert [c.args[-1] for c in fake.matching("network", "remove")] == [_AL_NET]
+
+
+class TestTheProxysOwnDecisionsReachARecord:
+    """What a spec allowed is on the acquire record; what the guest reached is only here.
+
+    The grammar and the drain are this backend's own copies of the docker ones, because the
+    proxy is too — so these hold both to the same behaviour rather than trusting the likeness.
+    """
+
+    def test_it_parses_each_verb_the_proxy_writes(self):
+        decisions, truncated = _egress_decisions(
+            "listening on 3128; allowing: example.com\n"
+            "ALLOW example.com:443\n"
+            "DENY evil.example:443\n"
+            "DENY-NONGLOBAL inside.example:443\n"
+            "UNREACHABLE gone.example:443\n"
+        )
+        assert not truncated
+        assert [d.decision for d in decisions] == ["ALLOW", "DENY", "DENY-NONGLOBAL", "UNREACHABLE"]
+        assert decisions[1].host == "evil.example"
+
+    def test_an_ipv6_literal_keeps_its_own_colons(self):
+        decisions, _ = _egress_decisions("ALLOW ::1:443\n")
+        assert (decisions[0].host, decisions[0].port) == ("::1", 443)
+
+    def test_a_log_past_the_bound_is_cut_to_the_bound_and_says_so(self):
+        text = "".join(f"ALLOW h{n}.example:443\n" for n in range(_PROXY_LOG_TAIL + 1))
+        decisions, truncated = _egress_decisions(text)
+        assert truncated is True
+        assert len(decisions) == _PROXY_LOG_TAIL
+        assert decisions[0].host == "h1.example"  # the oldest went, not the newest
+
+    def test_a_log_exactly_on_the_bound_is_handed_over_whole(self):
+        text = "".join(f"ALLOW h{n}.example:443\n" for n in range(_PROXY_LOG_TAIL))
+        decisions, truncated = _egress_decisions(text)
+        assert truncated is False
+        assert len(decisions) == _PROXY_LOG_TAIL
+
+    def test_the_declaration_is_made_only_where_something_enforces(self):
+        assert _backend_with(config=_ALLOW_CONFIG)[0].declarations.observes_egress is True
+        assert _backend_with()[0].declarations.observes_egress is False
+
+    def test_what_the_proxy_decided_is_reported_against_the_key(self):
+        seen: list[EgressObserved] = []
+        drained = _WslcResult(0, b"DENY evil.example:443\n", b"")
+        backend, _fake = _backend_with(
+            _machine(overrides={("container", "logs", "--tail"): drained}), config=_ALLOW_CONFIG
+        )
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert [(e.key, e.backend) for e in seen] == [(_KEY, "wslc")]
+        assert seen[0].decisions[0].host == "evil.example"
+
+    def test_a_host_that_collects_nothing_never_pays_for_the_read(self):
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("container", "logs", "--tail") == []
+
+    def test_a_proxy_that_is_not_there_reports_nothing(self):
+        seen: list[EgressObserved] = []
+        absent = _WslcResult(1, b"", _NOT_FOUND.encode())
+        backend, _fake = _backend_with(
+            _machine(overrides={("container", "logs", "--tail"): absent}), config=_ALLOW_CONFIG
+        )
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert seen == []
+
+    def test_a_read_that_failed_is_recorded_rather_than_dropped(self):
+        seen: list[EgressObserved] = []
+        broken = _WslcResult(1, b"", b"WSLC_E_SERVICE_UNAVAILABLE")
+        backend, _fake = _backend_with(
+            _machine(overrides={("container", "logs", "--tail"): broken}), config=_ALLOW_CONFIG
+        )
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert [e.unreadable for e in seen] == ["WSLC_E_SERVICE_UNAVAILABLE"]
+
+    def test_a_purge_drains_every_proxy_the_registry_can_attribute(self):
+        """`dispose_scope` is the routine cleanup, so a purge that drained nothing lost the last
+        window of every sandbox on the ordinary path."""
+        seen: list[EgressObserved] = []
+        drained = _WslcResult(0, b"DENY evil.example:443", b"")
+        backend, _fake = _backend_with(
+            _machine(overrides={("container", "logs", "--tail"): drained}), config=_ALLOW_CONFIG
+        )
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+        assert [d.host for e in seen for d in e.decisions] == ["evil.example"]
+        assert [e.key for e in seen] == [_KEY]
+
+    def test_a_disposal_drains_the_proxy_of_an_egress_the_registry_no_longer_names(self):
+        """One key and kind served under two allowlists has two containers, and the registry
+        kept only the later — the earlier proxy is reached by the label sweep alone."""
+        seen: list[EgressObserved] = []
+        other = replace(_ALLOW_SPEC, egress_allow=("example.invalid",))
+        first = _container_name(_KEY, other.kind, "allow:" + ",".join(other.egress_allow))
+        drained = _WslcResult(0, b"ALLOW example.invalid:443", b"")
+        backend, _fake = _backend_with(
+            _machine(running=[first], overrides={("container", "logs", "--tail"): drained}),
+            config=_ALLOW_CONFIG,
+        )
+        asyncio.run(backend.acquire(_KEY, other))
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.dispose(_KEY))
+        assert _proxy_name(first) in [
+            c.args[-1] for c in _fake.matching("container", "logs", "--tail")
+        ]
+        assert len(seen) == 2  # the name the registry kept, and the one it forgot
+
+    def test_the_bound_flag_says_may_have_been_cut_rather_than_was(self):
+        """The read is bounded in lines, so a full page back cannot say whether the line past
+        the bound was a decision or the readiness marker. The flag therefore means *may be
+        short*, and a window that kept every decision can still set it."""
+        text = "listening on 3128; allowing: nothing\n" + "".join(
+            f"ALLOW h{n}.example:443\n" for n in range(_PROXY_LOG_TAIL)
+        )
+        decisions, truncated = _egress_decisions(text)
+        assert len(decisions) == _PROXY_LOG_TAIL
+        assert decisions[0].host == "h0.example"
+        assert truncated is True
+
+    def test_a_purge_attributes_a_name_the_registry_has_replaced(self):
+        seen: list[EgressObserved] = []
+        other = replace(_ALLOW_SPEC, egress_allow=("example.invalid",))
+        first = _container_name(_KEY, other.kind, "allow:" + ",".join(other.egress_allow))
+        drained = _WslcResult(0, b"ALLOW example.invalid:443", b"")
+        backend, _fake = _backend_with(
+            _machine(running=[first], overrides={("container", "logs", "--tail"): drained}),
+            config=_ALLOW_CONFIG,
+        )
+        asyncio.run(backend.acquire(_KEY, other))
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+        assert _proxy_name(first) in [
+            c.args[-1] for c in _fake.matching("container", "logs", "--tail")
+        ]
+
+    def test_the_proxy_is_stopped_before_its_log_is_read(self):
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        backend.observe_egress(lambda _event: None)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        stops = [i for i, c in enumerate(fake.calls) if c.args[:2] == ("container", "stop")]
+        reads = [
+            i for i, c in enumerate(fake.calls) if c.args[:3] == ("container", "logs", "--tail")
+        ]
+        assert stops and reads
+        assert min(stops) < min(reads)
+
+    def test_a_proxy_that_would_not_stop_is_reported_as_an_open_window(self):
+        """A stop that was refused leaves the proxy answering CONNECTs between the read and the
+        removal, so the record must not come back looking clean."""
+        seen: list[EgressObserved] = []
+        overrides = {
+            ("container", "stop"): _WslcResult(1, b"", b"WSLC_E_BUSY"),
+            ("container", "logs", "--tail"): _WslcResult(0, b"ALLOW pypi.org:443", b""),
+        }
+        backend, _fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert [d.host for e in seen for d in e.decisions] == ["pypi.org"]
+        assert "could not be stopped" in str(seen[0].unreadable)
+
+    def test_a_proxy_that_is_simply_absent_is_not_an_open_window(self):
+        seen: list[EgressObserved] = []
+        overrides = {
+            ("container", "stop"): _WslcResult(1, b"", _NOT_FOUND.encode()),
+            ("container", "logs", "--tail"): _WslcResult(0, b"ALLOW pypi.org:443", b""),
+        }
+        backend, _fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert seen[0].unreadable is None
+
+    def test_the_drain_bounds_the_bytes_a_guest_can_make_it_read(self):
+        """The proxy copies the guest's CONNECT target into its line, and the header limit it
+        reads under lets that target approach 64 KiB — so a line bound alone leaves the guest
+        deciding how much the host allocates on a path every acquire waits on."""
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        backend.observe_egress(lambda _event: None)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        read = [c for c in fake.calls if c.args[:3] == ("container", "logs", "--tail")]
+        assert read and all(c.read_limit == _PROXY_LOG_BYTES for c in read)
+
+    def test_a_read_that_hit_the_byte_cap_says_the_window_may_be_short(self):
+        seen: list[EgressObserved] = []
+        page = b"ALLOW h.example:443\n" * (_PROXY_LOG_BYTES // 20)
+        backend, _fake = _backend_with(
+            _machine(overrides={("container", "logs", "--tail"): _WslcResult(0, page, b"")}),
+            config=_ALLOW_CONFIG,
+        )
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert seen and seen[0].truncated is True
+
+    def test_a_capped_read_is_partial_output_rather_than_a_failed_one(self):
+        """The bounded reader kills the command at the cap — `test_a_bounded_read_caps_stdout_
+        and_reaps_the_process` pins the non-zero code — and the fake does not reproduce it."""
+        seen: list[EgressObserved] = []
+        page = b"ALLOW h.example:443\n" * (_PROXY_LOG_BYTES // 20)
+        overrides = {("container", "logs", "--tail"): _WslcResult(137, page, b"killed at limit")}
+        backend, _fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert seen and seen[0].decisions
+        assert seen[0].truncated is True
+        assert seen[0].unreadable is None
+
+    def test_a_proxy_this_process_made_and_then_lost_is_an_open_window(self):
+        seen: list[EgressObserved] = []
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        absent = _WslcResult(1, b"", _NOT_FOUND.encode())
+        fake._responder = _machine(
+            running=[_AL], overrides={("container", "logs", "--tail"): absent}
+        )
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.dispose(_KEY))
+        assert [e.unreadable for e in seen] == [
+            "the proxy is gone, so whatever it decided went with it"
+        ]
+
+    def test_a_closed_sandbox_is_never_reported_as_a_lost_proxy(self):
+        seen: list[EgressObserved] = []
+        backend, _fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.dispose(_KEY))
+        assert seen == []
+
+    def test_the_engines_own_absence_code_reads_as_absent(self):
+        """`container remove` answers `WSLC_E_CONTAINER_NOT_FOUND`; `no such` is the wording
+        `container cp` borrows from docker. Matching only the second made a missing proxy report
+        that it could not be stopped, on every first observed acquire."""
+        seen: list[EgressObserved] = []
+        absent = _WslcResult(1, b"", _NOT_FOUND.encode())
+        overrides = {("container", "stop"): absent, ("container", "logs", "--tail"): absent}
+        backend, _fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert seen == []
+
+    def test_the_last_window_is_drained_at_disposal(self):
+        seen: list[EgressObserved] = []
+        drained = _WslcResult(0, b"ALLOW mcr.microsoft.com:443\n", b"")
+        backend, _fake = _backend_with(
+            _machine(overrides={("container", "logs", "--tail"): drained}), config=_ALLOW_CONFIG
+        )
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.dispose(_KEY))
+        assert [d.host for e in seen for d in e.decisions] == ["mcr.microsoft.com"]

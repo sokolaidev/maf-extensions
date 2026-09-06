@@ -10,6 +10,7 @@ denials (capabilities and identities this posture refuses whatever the backend c
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import inspect
 import logging
@@ -31,6 +32,9 @@ from ._error_detail import error_detail
 from ._host_tools_over_exec import fold_host_tool_call_transfer_limits
 from ._observer import (
     DisposalReport,
+    EgressObserved,
+    EgressReporter,
+    ObservesEgress,
     SandboxAcquired,
     SandboxDisposed,
     SandboxObserver,
@@ -332,8 +336,24 @@ def _has_attribute(backend: SandboxBackend, name: str) -> bool:
     return inspect.getattr_static(backend, name, _MISSING) is not _MISSING
 
 
+def _claims_egress_observation(backend: SandboxBackend) -> bool:
+    """Whether ``backend`` claims it can report what its egress enforcement decided.
+
+    Defensive on purpose.  This runs at construction, before any spec exists, and an unreadable
+    declaration is the per-spec checks' to refuse with the message they have for it — reading
+    one here would move that failure to the constructor and describe it as an observability
+    problem.  So an unreadable declaration answers "no claim", and the reader that is allowed to
+    fail sees it a moment later.
+    """
+    try:
+        declared: object = _declarations(backend)
+    except Exception:  # noqa: BLE001 - not this reader's failure to report
+        return False
+    return getattr(declared, "observes_egress", False) is True
+
+
 def _declarations(backend: SandboxBackend) -> BackendDeclarations:
-    """The one object every optional declaration is read from: one ``getattr``, five fields.
+    """The one object every optional declaration is read from: one ``getattr``, six fields.
 
     Not a Protocol member, so declaring nothing is legal and reads as
     :data:`~maf_sandbox.DEFAULT_BACKEND_DECLARATIONS`.  *Declaring nothing* is narrower than it
@@ -728,6 +748,71 @@ class SandboxRouter:
         else:
             self._backend = self._resolve()
             self._candidates = [] if self._backend is None else [self._backend]
+        # Last, because everything above can raise and this reaches *outside* the object: a
+        # reporter installed before a refusal would leave the backend reading logs on every
+        # acquire and reporting them into a router the host never received and cannot switch
+        # off. Nothing after this line fails.
+        self._hand_out_the_egress_reporter()
+
+    def _hand_out_the_egress_reporter(self) -> None:
+        """Tell every backend that can report egress where to report it, or that it must not.
+
+        Every one is told, including by a router with no observer, which hands over ``None``:
+        one backend instance may be registered on two routers, and leaving a live reporter in
+        place would charge this router's acquires to the other one's observer.  **All or none,
+        and back as it was** — ``observe_egress`` is a backend's code and may raise, so each one
+        that took a reporter is handed its previous one back before the failure propagates.
+        That restore is exact only because the hook is required to be atomic; a backend that
+        stores a reporter and *then* raises never handed over what it replaced, and nothing
+        here can recover it.
+        """
+        installed: list[tuple[ObservesEgress, EgressReporter | None]] = []
+        report = self._egress_reporter() if self._observer is not None else None
+        try:
+            for backend in self._backends:
+                reports = isinstance(backend, ObservesEgress)
+                if not reports and _claims_egress_observation(backend):
+                    logger.warning(
+                        "sandbox backend %r declares observes_egress and implements no "
+                        "observe_egress, so it reports no egress decisions and a reader has no "
+                        "way to tell that from a guest that attempted none. Implement "
+                        "ObservesEgress, or drop the declaration — the default says the honest "
+                        "thing.",
+                        _recorded_name(backend),
+                    )
+                if reports:
+                    # Enrolled *after* the call returns, because only then is there a previous
+                    # reporter to put back. A hook that raises changed nothing — the contract
+                    # requires that — and one that broke the contract handed over nothing this
+                    # could restore, so a placeholder entry would roll back to `None` and
+                    # silence the router whose reporter it was.
+                    installed.append((backend, backend.observe_egress(report)))
+        except BaseException:
+            # Reverse order: the same backend instance may be registered twice, and unwinding
+            # forwards would end by reinstating this router's reporter rather than the original.
+            for taken, previous in reversed(installed):
+                # Best effort, and contained: this is already unwinding, and a backend that
+                # cannot be switched off must not replace the failure that got us here.
+                with contextlib.suppress(Exception):
+                    taken.observe_egress(previous)
+            raise
+
+    def _egress_reporter(self) -> EgressReporter:
+        """A reporter that records through this router without keeping it alive.
+
+        Weak on purpose: a backend outlives the router that registered it whenever a host keeps
+        one and drops the other, and a bound method there would pin the router, and through it
+        the host's observer, for as long as the backend lived.  Once the router is collected the
+        reporter answers nothing, which is the state a dropped router should leave behind.
+        """
+        reference = weakref.ref(self)
+
+        def report(event: EgressObserved) -> None:
+            router = reference()
+            if router is not None:
+                record(router._observer, event, logger)  # noqa: SLF001 - its own attribute
+
+        return report
 
     def _resolve(self) -> SandboxBackend | None:
         if not self._backends:

@@ -19,12 +19,14 @@ import sys
 import tarfile
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 
 import pytest
 from maf_sandbox import (
     Capability,
     DisposalFailure,
     Egress,
+    EgressObserved,
     EntryKind,
     Isolation,
     OsFamily,
@@ -41,8 +43,11 @@ from maf_sandbox_docker import BACKEND_NAME, DockerSandboxBackend, DockerSandbox
 from maf_sandbox_docker._backend import (
     _GATEWAY_MODE_ISOLATED,
     _GATEWAY_MODE_OPTS,
+    _PROXY_LOG_BYTES,
+    _PROXY_LOG_TAIL,
     _container_name,
     _DockerResult,
+    _egress_decisions,
     _network_name,
     _proxy_name,
 )
@@ -3607,3 +3612,318 @@ class TestRemoveNetworkNotFound:
             removed = asyncio.run(backend._remove_network("some-net"))
         assert removed is False
         assert any("failed to remove network" in r.message for r in caplog.records)
+
+
+class TestTheProxysOwnDecisionsReachARecord:
+    """What a spec allowed is on the acquire record; what the guest reached is only here.
+
+    The drain runs on the *acquire* path rather than at disposal alone, because `_ensure_proxy`
+    rebuilds the proxy every acquire — one that waited for the disposal would keep the last
+    call's decisions and lose every one before it.
+    """
+
+    def test_it_parses_each_verb_the_proxy_writes(self):
+        decisions, truncated = _egress_decisions(
+            "listening on 3128; allowing: example.com\n"
+            "ALLOW example.com:443\n"
+            "DENY evil.example:443\n"
+            "DENY-NONGLOBAL inside.example:443\n"
+            "UNREACHABLE gone.example:443\n"
+        )
+        assert not truncated
+        assert [d.decision for d in decisions] == ["ALLOW", "DENY", "DENY-NONGLOBAL", "UNREACHABLE"]
+        assert decisions[1].host == "evil.example"
+        assert {d.port for d in decisions} == {443}
+
+    def test_the_readiness_line_is_not_a_decision(self):
+        """The one line an acquire itself waits for, and it names no target."""
+        assert _egress_decisions("listening on 3128; allowing: nothing\n")[0] == ()
+
+    def test_an_ipv6_literal_keeps_its_own_colons(self):
+        decisions, _ = _egress_decisions("ALLOW ::1:443\n")
+        assert (decisions[0].host, decisions[0].port) == ("::1", 443)
+
+    def test_a_log_past_the_bound_is_cut_to_the_bound_and_says_so(self):
+        """The bound is on what the drain hands over, not only on what it asks the engine
+        for. Reading one line past it is how the cut is detected; keeping that line would
+        hand back the *oldest* decision of an over-long window while claiming the newest."""
+        text = "".join(f"ALLOW h{n}.example:443\n" for n in range(_PROXY_LOG_TAIL + 1))
+        decisions, truncated = _egress_decisions(text)
+        assert truncated is True
+        assert len(decisions) == _PROXY_LOG_TAIL
+        assert decisions[0].host == "h1.example"  # the oldest went, not the newest
+
+    def test_a_log_exactly_on_the_bound_is_handed_over_whole(self):
+        """`truncated` is exact rather than cautious: the read asks for one line past the
+        bound, so getting only the bound back proves nothing was cut."""
+        text = "".join(f"ALLOW h{n}.example:443\n" for n in range(_PROXY_LOG_TAIL))
+        decisions, truncated = _egress_decisions(text)
+        assert truncated is False
+        assert len(decisions) == _PROXY_LOG_TAIL
+
+    def test_the_declaration_is_made_only_where_something_enforces(self):
+        """Without a proxy image there is no allowlist to decide anything, so a `True` here
+        would put a watched-looking record on every closed sandbox."""
+        assert _backend_with(config=_ALLOW_CONFIG)[0].declarations.observes_egress is True
+        assert _backend_with()[0].declarations.observes_egress is False
+
+    def test_what_the_proxy_decided_is_reported_against_the_key(self):
+        seen: list[EgressObserved] = []
+        backend, _fake = _backend_with(
+            _machine(
+                overrides={
+                    ("logs", "--tail"): _DockerResult(0, b"ALLOW mcr.microsoft.com:443\n", "")
+                }
+            ),
+            config=_ALLOW_CONFIG,
+        )
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert [(e.key, e.backend) for e in seen] == [(_KEY, "docker")]
+        assert seen[0].decisions[0].host == "mcr.microsoft.com"
+        assert seen[0].unreadable is None
+
+    def test_a_host_that_collects_nothing_never_pays_for_the_read(self):
+        """The reporter is the switch. Without one the drain's `docker logs` is not issued at
+        all — the readiness read an acquire already does is a different call."""
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert fake.matching("logs", "--tail") == []
+
+    def test_a_proxy_that_is_not_there_reports_nothing(self):
+        """The ordinary first acquire: no previous proxy, and so no window to account for."""
+        seen: list[EgressObserved] = []
+        absent = _DockerResult(1, b"", f"Error: No such container: {_AL_PROXY}")
+        backend, _fake = _backend_with(
+            _machine(overrides={("logs", "--tail"): absent}), config=_ALLOW_CONFIG
+        )
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert seen == []
+
+    def test_a_read_that_failed_is_recorded_rather_than_dropped(self):
+        """A window nobody can account for is what an operator most needs to see, so it is a
+        field on an event and not a line in a log."""
+        seen: list[EgressObserved] = []
+        backend, _fake = _backend_with(
+            _machine(overrides={("logs", "--tail"): _DockerResult(1, b"", "daemon said no")}),
+            config=_ALLOW_CONFIG,
+        )
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert [e.unreadable for e in seen] == ["daemon said no"]
+        assert seen[0].decisions == ()
+
+    def test_a_purge_drains_every_proxy_the_registry_can_attribute(self):
+        """`dispose_scope` is the routine cleanup — a thread deletion, a `scope` block closing —
+        so a purge that drained nothing lost the last window of every sandbox on the ordinary
+        path, while `observes_egress` told a reader the sandbox was watched."""
+        seen: list[EgressObserved] = []
+        drained = _DockerResult(0, b"DENY evil.example:443", "")
+        backend, _fake = _backend_with(
+            _machine(overrides={("logs", "--tail"): drained}), config=_ALLOW_CONFIG
+        )
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+        assert [d.host for e in seen for d in e.decisions] == ["evil.example"]
+        assert [e.key for e in seen] == [_KEY]
+
+    def test_a_disposal_drains_the_proxy_of_an_egress_the_registry_no_longer_names(self):
+        """`_container_name` folds the egress identity, so one key and kind served under two
+        allowlists has two containers and the registry kept only the later. The earlier one's
+        proxy is reached by the label sweep, and its decisions go with it unless drained."""
+        seen: list[EgressObserved] = []
+        other = replace(_ALLOW_SPEC, egress_allow=("example.invalid",))
+        first = _container_name(_KEY, other.kind, "allow:" + ",".join(other.egress_allow))
+        drained = _DockerResult(0, b"ALLOW example.invalid:443", "")
+        backend, _fake = _backend_with(
+            _machine(running=[first], overrides={("logs", "--tail"): drained}),
+            config=_ALLOW_CONFIG,
+        )
+        asyncio.run(backend.acquire(_KEY, other))
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.dispose(_KEY))
+        assert _proxy_name(first) in [c.args[-1] for c in _fake.matching("logs", "--tail")]
+        assert len(seen) == 2  # the name the registry kept, and the one it forgot
+
+    def test_the_bound_flag_says_may_have_been_cut_rather_than_was(self):
+        """The read is bounded in lines, so a full page back cannot say whether the line past
+        the bound was a decision or the readiness marker. The flag therefore means *may be
+        short*, and a window that kept every decision can still set it."""
+        text = "listening on 3128; allowing: nothing\n" + "".join(
+            f"ALLOW h{n}.example:443\n" for n in range(_PROXY_LOG_TAIL)
+        )
+        decisions, truncated = _egress_decisions(text)
+        assert len(decisions) == _PROXY_LOG_TAIL
+        assert decisions[0].host == "h0.example"
+        assert truncated is True
+
+    def test_an_orphan_proxy_is_drained_even_though_its_workload_went_first(self):
+        """A sweep can return a proxy whose workload was removed independently. Filtering the
+        proxy out and then removing it deletes exactly the record the drain exists to read."""
+        seen: list[EgressObserved] = []
+        drained = _DockerResult(0, b"DENY orphan.example:443", "")
+        backend, _fake = _backend_with(
+            _machine(
+                running=[_AL_PROXY],
+                overrides={("logs", "--tail"): drained},
+            ),
+            config=_ALLOW_CONFIG,
+        )
+        backend._acquired[_AL] = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+        assert [d.host for e in seen for d in e.decisions] == ["orphan.example"]
+
+    def test_a_purge_attributes_a_name_the_registry_has_replaced(self):
+        """`_container_name` folds the egress identity, so a second allowlist for one key and
+        kind replaces the registry entry — and the first container is still swept."""
+        seen: list[EgressObserved] = []
+        other = replace(_ALLOW_SPEC, egress_allow=("example.invalid",))
+        first = _container_name(_KEY, other.kind, "allow:" + ",".join(other.egress_allow))
+        drained = _DockerResult(0, b"ALLOW example.invalid:443", "")
+        backend, _fake = _backend_with(
+            _machine(running=[first], overrides={("logs", "--tail"): drained}),
+            config=_ALLOW_CONFIG,
+        )
+        asyncio.run(backend.acquire(_KEY, other))
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+        assert _proxy_name(first) in [c.args[-1] for c in _fake.matching("logs", "--tail")]
+
+    def test_the_proxy_is_stopped_before_its_log_is_read(self):
+        """A guest sharing the conversation can answer a CONNECT between the read and the
+        removal, and that decision would then exist nowhere."""
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        backend.observe_egress(lambda _event: None)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        order = [i for i, c in enumerate(fake.calls) if c.args[:1] in (("stop",),)]
+        reads = [i for i, c in enumerate(fake.calls) if c.args[:2] == ("logs", "--tail")]
+        assert order and reads
+        assert min(order) < min(reads)
+
+    def test_a_proxy_that_would_not_stop_is_reported_as_an_open_window(self):
+        """A stop that was refused leaves the proxy answering CONNECTs between the read and the
+        removal, so the record must not come back looking clean."""
+        seen: list[EgressObserved] = []
+        overrides = {
+            ("stop",): _DockerResult(1, b"", "daemon refused to stop the container"),
+            ("logs", "--tail"): _DockerResult(0, b"ALLOW pypi.org:443", ""),
+        }
+        backend, _fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert [d.host for e in seen for d in e.decisions] == ["pypi.org"]
+        assert "could not be stopped" in str(seen[0].unreadable)
+
+    def test_a_proxy_that_is_simply_absent_is_not_an_open_window(self):
+        """The ordinary first acquire stops nothing, and that is not a failure to report."""
+        seen: list[EgressObserved] = []
+        overrides = {
+            ("stop",): _DockerResult(1, b"", f"Error: No such container: {_AL_PROXY}"),
+            ("logs", "--tail"): _DockerResult(0, b"ALLOW pypi.org:443", ""),
+        }
+        backend, _fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert seen[0].unreadable is None
+
+    def test_the_drain_bounds_the_bytes_a_guest_can_make_it_read(self):
+        """The proxy copies the guest's CONNECT target into its line, and the header limit it
+        reads under lets that target approach 64 KiB — so a line bound alone leaves the guest
+        deciding how much the host allocates on a path every acquire waits on."""
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        backend.observe_egress(lambda _event: None)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        read = [c for c in fake.calls if c.args[:2] == ("logs", "--tail")]
+        assert read and all(c.read_limit == _PROXY_LOG_BYTES for c in read)
+
+    def test_a_read_that_hit_the_byte_cap_says_the_window_may_be_short(self):
+        seen: list[EgressObserved] = []
+        page = b"ALLOW h.example:443\n" * (_PROXY_LOG_BYTES // 20)
+        backend, _fake = _backend_with(
+            _machine(overrides={("logs", "--tail"): _DockerResult(0, page, "")}),
+            config=_ALLOW_CONFIG,
+        )
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert seen and seen[0].truncated is True
+
+    def test_a_capped_read_is_partial_output_rather_than_a_failed_one(self):
+        """The bounded reader *kills* the child to enforce the cap, so a capped log comes back
+        with a non-zero code — which the fake does not reproduce. Classifying that as unreadable
+        threw away every decision in exactly the windows the cap exists for."""
+        seen: list[EgressObserved] = []
+        page = b"ALLOW h.example:443\n" * (_PROXY_LOG_BYTES // 20)
+        overrides = {("logs", "--tail"): _DockerResult(137, page, "killed after the read limit")}
+        backend, _fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert seen and seen[0].decisions
+        assert seen[0].truncated is True
+        assert seen[0].unreadable is None
+
+    def test_a_capped_read_discards_the_line_the_cap_cut_in_half(self):
+        seen: list[EgressObserved] = []
+        page = b"ALLOW h.example:443\n" * (_PROXY_LOG_BYTES // 20) + b"ALLOW half.exam"
+        overrides = {("logs", "--tail"): _DockerResult(137, page, "")}
+        backend, _fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert seen[0].decisions  # not vacuous: the whole lines survived
+        assert all(d.host == "h.example" for d in seen[0].decisions)
+
+    def test_a_proxy_this_process_made_and_then_lost_is_an_open_window(self):
+        """`observes_egress` licenses a reader to treat silence as "nothing was attempted", so a
+        proxy that existed and vanished cannot be silent."""
+        seen: list[EgressObserved] = []
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        # The proxy goes between the acquire and the teardown, which is what a host reboot or
+        # somebody else's `docker rm` looks like from here.
+        absent = _DockerResult(1, b"", f"Error: No such container: {_AL_PROXY}")
+        fake._responder = _machine(running=[_AL], overrides={("logs", "--tail"): absent})
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.dispose(_KEY))
+        assert [e.unreadable for e in seen] == [
+            "the proxy is gone, so whatever it decided went with it"
+        ]
+
+    def test_a_closed_sandbox_is_never_reported_as_a_lost_proxy(self):
+        """It never had one. Only an allowlisted acquire is tracked, so a closed teardown stays
+        silent rather than inventing a window."""
+        seen: list[EgressObserved] = []
+        backend, _fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.dispose(_KEY))
+        assert seen == []
+
+    def test_attribution_survives_a_removal_that_did_not_land(self):
+        """A proxy a removal could not take is still running and still deciding, so a retry has
+        to be able to key its drain."""
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert _AL in backend._acquired
+        # Only now, so the acquire itself is not the thing that fails.
+        fake._responder = _machine(
+            running=[_AL], overrides={("rm",): _DockerResult(1, b"", "device or resource busy")}
+        )
+        asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+        assert _AL in backend._acquired
+
+    def test_the_last_window_is_drained_at_disposal(self):
+        seen: list[EgressObserved] = []
+        backend, _fake = _backend_with(
+            _machine(
+                overrides={("logs", "--tail"): _DockerResult(0, b"DENY evil.example:443\n", "")}
+            ),
+            config=_ALLOW_CONFIG,
+        )
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.dispose(_KEY))
+        assert [d.host for e in seen for d in e.decisions] == ["evil.example"]

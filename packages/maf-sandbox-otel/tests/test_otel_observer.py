@@ -19,6 +19,8 @@ from maf_sandbox import (
     Capability,
     DisposalFailure,
     Egress,
+    EgressDecision,
+    EgressObserved,
     HostToolAggregate,
     HostToolCalled,
     Identity,
@@ -967,3 +969,115 @@ class TestAScopePurgeRecordsTheConversationItCleanedUp:
         asked = build(sensitive=True)
         asked.observer.scope_disposed(a_purge(outcome="may_remain", failure=failure))
         assert "an-endpoint.example" in str(asked.attributes()[f"{NAMESPACE}.disposal.detail"])
+
+
+def a_drain(*, truncated: bool = False, unreadable: str | None = None) -> EgressObserved:
+    return EgressObserved(
+        key=KEY,
+        backend="docker",
+        decisions=(
+            EgressDecision(decision="ALLOW", host="pypi.org", port=443),
+            EgressDecision(decision="DENY", host="evil.example", port=443),
+            EgressDecision(decision="DENY-NONGLOBAL", host="inside.example", port=443),
+            EgressDecision(decision="UNREACHABLE", host="gone.example", port=443),
+        ),
+        truncated=truncated,
+        unreadable=unreadable,
+        seconds=0.5,
+    )
+
+
+class TestEgressDecisions:
+    """What a guest *reached*, which the acquire record cannot answer."""
+
+    def test_the_counts_cross_without_any_hostname(self):
+        """The aggregate question — how many conversations opened a tunnel to anything, and how
+        many were refused — has to be answerable from a pipeline that never sees a host."""
+        recorded = build()
+        recorded.observer.egress_observed(a_drain())
+        attributes = recorded.attributes()
+        assert attributes[f"{NAMESPACE}.egress.decisions"] == 4
+        assert attributes[f"{NAMESPACE}.egress.allowed"] == 1
+        assert attributes[f"{NAMESPACE}.egress.denied"] == 2
+        assert attributes[f"{NAMESPACE}.egress.unreachable"] == 1
+        assert f"{NAMESPACE}.egress.targets" not in attributes
+
+    def test_both_refusals_count_as_denied(self):
+        """`DENY-NONGLOBAL` is an allowlisted name that resolved somewhere private, which is a
+        refusal by a different rule and not a third outcome to group by."""
+        assert recorded_denied(a_drain()) == 2
+
+    def test_a_target_is_guest_chosen_and_waits_to_be_asked_for(self):
+        asked = build(sensitive=True)
+        asked.observer.egress_observed(a_drain())
+        targets = asked.attributes()[f"{NAMESPACE}.egress.targets"]
+        assert "DENY evil.example:443" in list(targets)  # pyright: ignore[reportArgumentType]
+
+    def test_a_span_full_of_refusals_is_not_an_error_span(self):
+        """An enforcer that refused a guest did its job. The failure here is a drain that could
+        not read, and marking a healthy refusal as an error would bury the one that matters."""
+        recorded = build()
+        recorded.observer.egress_observed(a_drain())
+        assert recorded.only_span().status.is_ok
+
+    def test_a_drain_that_could_not_read_is_an_error_span_counted_without_its_reason(self):
+        """The *fact* is shape and always crosses — "how many windows are unaccounted for" is
+        the aggregate an operator asks — while the enforcer's sentence is engine text naming a
+        container or an endpoint, and waits for the gate the way a disposal's detail does."""
+        recorded = build()
+        recorded.observer.egress_observed(a_drain(unreadable="no such container maf-sandbox-ab12"))
+        attributes = recorded.attributes()
+        assert attributes[f"{NAMESPACE}.egress.unaccounted"] is True
+        assert f"{NAMESPACE}.egress.unreadable" not in attributes
+        assert not recorded.only_span().status.is_ok
+
+    def test_the_engines_own_sentence_never_reaches_the_span_status_either(self):
+        """A status description is not an attribute, so no redaction reaches it — putting the
+        sentence there would cross exactly what the attribute gate just held back."""
+        recorded = build()
+        recorded.observer.egress_observed(a_drain(unreadable="no such container maf-sandbox-ab12"))
+        assert recorded.only_span().status.description == "unreadable"
+
+    def test_the_reason_crosses_when_the_host_asked(self):
+        asked = build(sensitive=True)
+        asked.observer.egress_observed(a_drain(unreadable="no such container maf-sandbox-ab12"))
+        attributes = asked.attributes()
+        assert attributes[f"{NAMESPACE}.egress.unreadable"] == "no such container maf-sandbox-ab12"
+        assert attributes[f"{NAMESPACE}.egress.unaccounted"] is True
+
+    def test_a_drain_that_read_cleanly_says_so_rather_than_omitting_the_column(self):
+        """A query counting unaccounted windows groups on this, so it has to be on every
+        record — an absent attribute and a false one are not the same row."""
+        recorded = build()
+        recorded.observer.egress_observed(a_drain())
+        assert recorded.attributes()[f"{NAMESPACE}.egress.unaccounted"] is False
+
+    def test_the_bound_is_recorded_so_a_partial_window_reads_as_one(self):
+        recorded = build()
+        recorded.observer.egress_observed(a_drain(truncated=True))
+        assert recorded.attributes()[f"{NAMESPACE}.egress.truncated"] is True
+
+    def test_one_counter_increment_per_decision_by_verb(self):
+        recorded = build()
+        recorded.observer.egress_observed(a_drain())
+        assert recorded.counter(f"{NAMESPACE}.egress.decisions") == 4
+
+    def test_the_acquire_says_whether_this_sandbox_was_watched_at_all(self):
+        """Without it, a key with no `sandbox.egress` record is unreadable: an ACAS sandbox
+        that reached ten hosts and a docker sandbox that reached none look identical."""
+        recorded = build()
+        recorded.observer.sandbox_acquired(an_acquire())
+        assert recorded.attributes()[f"{NAMESPACE}.backend.observes_egress"] is False
+
+    def test_the_counts_reach_the_log_as_well_as_the_span(self):
+        """A log-only pipeline is the one that survives a trace sampler, and it is the one a
+        security record is kept in."""
+        recorded = build()
+        recorded.observer.egress_observed(a_drain())
+        assert recorded.log_attributes("sandbox.egress")[f"{NAMESPACE}.egress.denied"] == 2
+
+
+def recorded_denied(event: EgressObserved) -> object:
+    recorded = build()
+    recorded.observer.egress_observed(event)
+    return recorded.attributes()[f"{NAMESPACE}.egress.denied"]

@@ -30,7 +30,7 @@ dependencies = [
     # maf-sandbox has not yet reached a stable API, so every release before 1.0.0 may include
     # breaking changes (see its CHANGELOG). Moving either end of this range has an order to it
     # — see RELEASING.md. The floor tracks the release carrying the newest event this package
-    # records, which is ScopeDisposed; admit anything older and a published wheel resolves a
+    # records, which is EgressObserved; admit anything older and a published wheel resolves a
     # maf-sandbox base that does not export it, which fails at import. The number itself is
     # below, and `scripts/set_dependents_range.py` moves it — so this says which release the
     # floor is for, never which release that is.

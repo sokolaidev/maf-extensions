@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import gc
 import inspect
 import json
 import logging
@@ -21,11 +22,15 @@ import pytest
 
 from maf_sandbox import (
     Artifact,
+    BackendDeclarations,
     CallerContext,
     Capability,
     DeclaredOutput,
     DisposalFailure,
     Egress,
+    EgressDecision,
+    EgressObserved,
+    EgressReporter,
     FileStoreProvenance,
     HostToolCalled,
     HostToolRegistry,
@@ -40,6 +45,7 @@ from maf_sandbox import (
     OutputsCollected,
     OutputSink,
     SandboxAcquired,
+    SandboxBackendNotPermitted,
     SandboxCapabilityNotSupported,
     SandboxDisposed,
     SandboxEntry,
@@ -93,6 +99,9 @@ class _Recorder(SandboxObserver):
         self._seen(event)
 
     def scope_disposed(self, event: ScopeDisposed) -> None:
+        self._seen(event)
+
+    def egress_observed(self, event: EgressObserved) -> None:
         self._seen(event)
 
     def host_tool_called(self, event: HostToolCalled) -> None:
@@ -193,6 +202,14 @@ def _every_event() -> list[SandboxEvent]:
             outcome="gone",
             disposed=1,
             failure=None,
+            seconds=0.0,
+        ),
+        EgressObserved(
+            key=_KEY,
+            backend="in-process",
+            decisions=(EgressDecision(decision="ALLOW", host="example.com", port=443),),
+            truncated=False,
+            unreadable=None,
             seconds=0.0,
         ),
         HostToolCalled(
@@ -866,6 +883,187 @@ class _PurgeCancels(InProcessSandboxBackend):
 class _PurgeExits(InProcessSandboxBackend):
     async def dispose_scope(self, scope: str, thread_id: str):
         raise GeneratorExit
+
+
+# Egress decisions
+# ---------------------------------------------------------------------------
+
+
+_WATCHES = dataclasses.replace(FAKE_BACKEND_DECLARATIONS, observes_egress=True)
+
+
+class _Reporting(InProcessSandboxBackend):
+    """A backend that can read its own egress enforcement, as docker and wslc can."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.report: EgressReporter | None = None
+
+    @property
+    def declarations(self) -> BackendDeclarations:
+        return _WATCHES
+
+    def observe_egress(self, report: EgressReporter | None) -> EgressReporter | None:
+        previous, self.report = self.report, report
+        return previous
+
+
+class _ClaimsWithoutReporting(InProcessSandboxBackend):
+    """The wiring mistake: the declaration without the method that keeps it."""
+
+    @property
+    def declarations(self) -> BackendDeclarations:
+        return _WATCHES
+
+
+def _drain(key: SandboxKey = _KEY, **kw) -> EgressObserved:
+    return EgressObserved(
+        key=key,
+        backend="in-process",
+        decisions=(EgressDecision(decision="DENY", host="evil.example", port=443),),
+        truncated=False,
+        unreadable=None,
+        seconds=0.0,
+        **kw,
+    )
+
+
+class TestABackendReportsWhatItsEgressEnforcementDecided:
+    """The one thing a spec's allowlist cannot answer: what the guest then reached."""
+
+    def test_what_a_backend_reports_reaches_the_routers_observer(self):
+        recorder = _Recorder()
+        backend = _Reporting()
+        router = _router(backend, observer=recorder)  # held: the reporter is weak on it
+        assert backend.report is not None
+        backend.report(_drain())
+        assert recorder.one(EgressObserved).decisions[0].host == "evil.example"
+        assert router.observer is recorder
+
+    def test_a_backend_that_outlives_its_router_stops_reporting(self):
+        """The reporter would otherwise be a bound method, pinning the router and through it the
+        host's observer for as long as the backend lived — and a dropped router should leave a
+        backend reporting to nobody rather than to something the host let go."""
+        recorder = _Recorder()
+        backend = _Reporting()
+        router = _router(backend, observer=recorder)
+        assert backend.report is not None
+
+        del router
+        gc.collect()
+
+        backend.report(_drain())  # no raise, and nothing recorded
+        assert recorder.only(EgressObserved) == []
+
+    def test_a_router_with_no_observer_never_hands_one_out(self):
+        """A drain costs an engine round trip per acquire, so an uninstrumented host is left
+        in the state where the backend does no reading at all."""
+        backend = _Reporting()
+        _router(backend)
+        assert backend.report is None
+
+    def test_a_failing_observer_does_not_reach_the_backend_that_reported(self):
+        """A backend calls this from a cleanup path. It is handed something that cannot fail
+        rather than the host's own object, so nothing there has to contain anything."""
+        backend = _Reporting()
+        _router(backend, observer=_Recorder(fail=RuntimeError("boom")))
+        assert backend.report is not None
+        backend.report(_drain())  # no raise
+
+    def test_a_router_that_refused_to_build_installs_no_reporter(self):
+        """The handout reaches outside the object, so a reporter installed before a refusal
+        would leave the backend reading a log on every acquire and reporting into a router the
+        host never received and cannot switch off."""
+        backend = _Reporting()
+        with pytest.raises(SandboxBackendNotPermitted):
+            SandboxRouter([backend], min_isolation=Isolation.MICROVM, observer=_Recorder())
+        assert backend.report is None
+
+    def test_a_router_that_collects_nothing_switches_a_backend_off(self):
+        """Not the same as staying quiet. One backend instance may be registered on two routers,
+        and one that only declined to install would leave it reporting into whichever wired it
+        first — paying for a read on every acquire this router serves, and filing those records
+        under an observer that never served the sandbox."""
+        backend = _Reporting()
+        _router(backend, observer=_Recorder())
+        assert backend.report is not None
+        _router(backend)
+        assert backend.report is None
+
+    def test_moving_a_backend_to_a_second_observed_router_is_named(self, caplog):
+        """One backend holds one reporter, so the second router's observer silently collects
+        the first one's sandboxes too. Warned rather than refused: refusing would break the
+        ordinary case this cannot tell apart, a host that discarded a router and built another
+        over the same backend."""
+        backend = _Reporting()
+        _router(backend, observer=_Recorder())
+        with caplog.at_level(logging.WARNING, logger="test_observer"):
+            _router(backend, observer=_Recorder())
+        assert backend.report is not None
+
+    def test_a_failed_construction_puts_a_shared_backend_back_as_it_found_it(self):
+        """`None` would be worse than doing nothing: it silences a *different* router that is
+        still using this backend, because a construction that raised chose to do so."""
+        backend = _Reporting()
+        first = _router(backend, observer=_Recorder())
+        held = backend.report
+        assert held is not None
+
+        class _RefusesTheReporter(InProcessSandboxBackend):
+            def observe_egress(self, report: EgressReporter | None) -> EgressReporter | None:
+                raise RuntimeError("this backend will not take one")
+
+        with pytest.raises(RuntimeError, match="will not take one"):
+            SandboxRouter(
+                [backend, _RefusesTheReporter()],
+                min_isolation=Isolation.NONE,
+                observer=_Recorder(),
+            )
+        assert backend.report is held
+        assert first.observer is not None
+
+    def test_the_declaration_without_the_method_is_warned_about(self, caplog):
+        """Silence from this pair means *unwatched*, and the declaration says *watched* — which
+        is the one reading that turns an absent record into a clean bill of health."""
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox"):
+            _router(_ClaimsWithoutReporting(), observer=_Recorder())
+        assert "declares observes_egress" in caplog.text
+        assert "in-process" in caplog.text
+
+    def test_the_method_without_the_declaration_still_reports(self):
+        """The declaration is for a reader of the records; the method is what produces them.
+        A backend that under-declares is honest in the safe direction and is not corrected."""
+        recorder = _Recorder()
+
+        class _Quiet(InProcessSandboxBackend):
+            def __init__(self) -> None:
+                super().__init__()
+                self.report: EgressReporter | None = None
+
+            def observe_egress(self, report: EgressReporter | None) -> EgressReporter | None:
+                previous, self.report = self.report, report
+                return previous
+
+        backend = _Quiet()
+        _router(backend, observer=recorder)
+        assert backend.report is not None
+
+    def test_an_unreadable_declaration_is_left_to_the_reader_that_may_fail(self, caplog):
+        """The handout runs first and must not pre-empt the reader that refuses one: an
+        unreadable declaration is already an error with a message of its own, and answering it
+        here would report the wrong field and swallow the right complaint."""
+
+        class _Unreadable(InProcessSandboxBackend):
+            @property
+            def declarations(self):
+                raise RuntimeError("no declarations here")
+
+        with (
+            caplog.at_level(logging.WARNING, logger="maf_sandbox"),
+            pytest.raises(RuntimeError, match="no declarations here"),
+        ):
+            _router(_Unreadable(), observer=_Recorder())
+        assert "observes_egress" not in caplog.text
 
 
 # ---------------------------------------------------------------------------

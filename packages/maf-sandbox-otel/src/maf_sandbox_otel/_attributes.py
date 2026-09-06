@@ -66,6 +66,10 @@ ISOLATION_SCOPE = f"{NAMESPACE}.sandbox.isolation_scope"
 CAPABILITIES = f"{NAMESPACE}.sandbox.capabilities"
 BACKEND_CAPABILITIES = f"{NAMESPACE}.backend.capabilities"
 BACKEND_EGRESS_MODES = f"{NAMESPACE}.backend.egress_modes"
+#: Whether the serving backend can report what its egress enforcement decided.  It rides on
+#: every acquire so that a key with no `sandbox.egress` record can be read correctly: `false`
+#: means nothing was watched, and only `true` makes silence mean nothing was reached.
+BACKEND_OBSERVES_EGRESS = f"{NAMESPACE}.backend.observes_egress"
 
 EGRESS_MODE = f"{NAMESPACE}.egress.mode"
 EGRESS_ALLOW = f"{NAMESPACE}.egress.allow"
@@ -77,6 +81,22 @@ SURFACE_IDENTITIES = f"{NAMESPACE}.surface.identities"
 SURFACE_UNDECLARED = f"{NAMESPACE}.surface.undeclared"
 SURFACE_INTEGRITY = f"{NAMESPACE}.surface.result_integrity"
 SURFACE_CALL_CAP = f"{NAMESPACE}.surface.call_cap"
+#: What a guest *reached*, as distinct from what its spec allowed above.  The counts are what a
+#: query groups by; `EGRESS_TARGETS` is the list of `host:port` the decisions named, and it is
+#: guest-chosen on every refusal, so it crosses only under `record_sensitive_data`.
+EGRESS_DECISIONS = f"{NAMESPACE}.egress.decisions"
+EGRESS_ALLOWED = f"{NAMESPACE}.egress.allowed"
+EGRESS_DENIED = f"{NAMESPACE}.egress.denied"
+EGRESS_UNREACHABLE = f"{NAMESPACE}.egress.unreachable"
+EGRESS_TARGETS = f"{NAMESPACE}.egress.targets"
+EGRESS_TRUNCATED = f"{NAMESPACE}.egress.truncated"
+#: Whether the drain could not read its enforcer's record — the classifier, which always
+#: crosses, beside the sentence below, which is engine text and waits for the gate.  Split for
+#: the reason `DISPOSAL_OUTCOME` and `DISPOSAL_DETAIL` are: "how many windows are unaccounted
+#: for" has to be answerable from a pipeline that holds no host vocabulary at all.
+EGRESS_UNACCOUNTED = f"{NAMESPACE}.egress.unaccounted"
+EGRESS_UNREADABLE = f"{NAMESPACE}.egress.unreadable"
+EGRESS_DECISION = f"{NAMESPACE}.egress.decision"
 
 TOOL = f"{NAMESPACE}.call.tool"
 FAILURE = f"{NAMESPACE}.call.failure"
