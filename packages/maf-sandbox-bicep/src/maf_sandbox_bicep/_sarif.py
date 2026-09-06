@@ -43,6 +43,18 @@ def parse_sarif(text: str) -> list[dict[str, Any]] | None:
     except (json.JSONDecodeError, ValueError):
         return None
 
+    try:
+        return _diagnostics(data)
+    except (AttributeError, TypeError):
+        # Parsing as JSON says nothing about the shape, and every lookup below assumes it —
+        # a `null` where an object belongs, or a top-level array, reaches a `.get` that is not
+        # there. That has to arrive as the documented `None`, which the caller renders and
+        # logs: raised instead, it leaves the tool with no result at all to return.
+        return None
+
+
+def _diagnostics(data: Any) -> list[dict[str, Any]]:
+    """The SARIF walk itself, over a blob that has parsed but is not yet known to be SARIF."""
     diagnostics: list[dict[str, Any]] = []
     for run in data.get("runs", []):
         rules: dict[str, Any] = {}

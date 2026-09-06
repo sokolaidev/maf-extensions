@@ -176,8 +176,7 @@ _ACCEPTED_SUFFIXES = (".bicep", _PARAM_SUFFIX)
 #: diagnostics leaves the model a variable reference that reads exactly like a clean run, so the
 #: sentence says what the rest of the result is and what an unread one is worth. The label holds
 #: only while nothing a call produced reaches the sentence and it stays on every return path,
-#: refusals included, which is why one funnel appends it rather than each `return` — and why it
-#: is committed to `standing_guidance`, where core holds every result to it.
+#: refusals included.
 _UNREAD_IS_NOT_A_PASS = (
     "The rest of this result is the compiler's own text, or the reason there is none. A result "
     "you cannot read is not a clean validation — report the files you named as unvalidated "

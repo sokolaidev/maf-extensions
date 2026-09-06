@@ -1319,30 +1319,66 @@ class TestTheResultSplits:
             image="acr.io/bicep:1",
         )[0]
 
+        # Each entry carries what only its own branch renders, so an entry that quietly
+        # started reaching a different one fails here rather than passing on the sentence.
         answers = {
-            "no thread is bound": self._answer(thread_id=None),
-            "the extension is refused": self._answer(
-                store=InMemoryStore({"main.tf": "x"}), files=["main.tf"]
+            "no thread is bound": (self._answer(thread_id=None), "no active thread context"),
+            "the extension is refused": (
+                self._answer(store=InMemoryStore({"main.tf": "x"}), files=["main.tf"]),
+                "only accepts .bicep and .bicepparam",
             ),
-            "the listing cannot be read": _items(listing_fails, ["main.bicep"]),
-            "the name is unsafe": self._answer(
-                store=InMemoryStore({"a;$(id).bicep": "x"}), files=["a;$(id).bicep"]
+            "the listing cannot be read": (
+                _items(listing_fails, ["main.bicep"]),
+                "could not list",
             ),
-            "the name is not listed": self._answer(files=["other.bicep"]),
-            "the sandbox is unavailable": self._answer(
-                backend=_fake_backend(acquire_error=RuntimeError("no capacity"))
+            "the name is unsafe": (
+                self._answer(store=InMemoryStore({"a;$(id).bicep": "x"}), files=["a;$(id).bicep"]),
+                "[A-Za-z0-9._/-]",
             ),
-            "nothing was named": self._answer(files=[]),
-            "the compiler ran": self._answer(),
+            "the name is not listed": (
+                self._answer(files=["other.bicep"]),
+                "not in this tool's file listing",
+            ),
+            "the sandbox is unavailable": (
+                self._answer(backend=_fake_backend(acquire_error=RuntimeError("no capacity"))),
+                "degrading to T0",
+            ),
+            "nothing was named": (self._answer(files=[]), "No files validated."),
+            "the compiler ran": (self._answer(), "build(main.bicep)"),
         }
 
-        for path, answer in answers.items():
+        for path, (answer, derived) in answers.items():
+            assert derived in str(answer[0].text), path
             assert str(answer[-1].text) == _UNREAD_IS_NOT_A_PASS, path
             assert self._label(answer[0]) is None, path
             assert self._label(answer[-1]) == {
                 "integrity": "trusted",
                 "confidentiality": "public",
             }, path
+
+    def test_a_blob_the_parser_could_not_read_carries_it_too(self):
+        """Valid JSON that is not SARIF reaches the model as a parse failure, which is a
+        return — so the sentence closes it the way it closes every other."""
+        answer = self._answer(backend=_fake_backend(_KeepsWhatItWrote(default_stdout="[]")))
+
+        assert "could not parse SARIF output" in str(answer[0].text)
+        assert str(answer[-1].text) == _UNREAD_IS_NOT_A_PASS
+
+    def test_the_sentence_tells_the_model_what_an_unread_result_is_worth(self):
+        """This sentence is the whole of what a hiding host leaves the model, so its content
+        is the deliverable rather than an implementation detail.
+
+        By clause rather than whole, the way `TestToolDescription` reads the description: what
+        must survive an edit is that it names the condition, the verdict and the action.
+        """
+        sentence = _UNREAD_IS_NOT_A_PASS.lower()
+
+        assert "compiler" in sentence, "the sentence must say whose text the rest of it is"
+        assert "cannot read" in sentence, "it must name the condition the model is in"
+        assert "unvalidated" in sentence, (
+            "it must name the action — reporting the files as unvalidated is the whole point, "
+            "and a sentence that only describes the result leaves the model to guess"
+        )
 
     def test_the_sentence_is_committed_and_not_merely_written(self, monkeypatch):
         """`make_bicep_tools` passes it to `standing_guidance`, so core holds every result to
@@ -1621,6 +1657,25 @@ class TestParseSarif:
 
     def test_returns_empty_for_zero_results(self):
         assert parse_sarif(_EMPTY_SARIF) == []
+
+    @pytest.mark.parametrize(
+        "blob",
+        [
+            pytest.param("[]", id="a-top-level-array"),
+            pytest.param('"hi"', id="a-top-level-string"),
+            pytest.param("5", id="a-top-level-number"),
+            pytest.param("null", id="a-top-level-null"),
+            pytest.param('{"runs": null}', id="runs-is-not-a-list"),
+            pytest.param('{"runs": [{"results": [{"message": null}]}]}', id="a-null-object"),
+        ],
+    )
+    def test_json_that_is_not_sarif_is_a_parse_failure(self, blob: str):
+        """Parsing says nothing about the shape, and every lookup in the walk assumes it.
+
+        `None` is the documented answer and the one the caller renders; raised instead, it
+        escapes the tool body and the model is left with no result at all.
+        """
+        assert parse_sarif(blob) is None
 
 
 class TestAgainstRealBicepOutput:
