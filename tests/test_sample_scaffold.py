@@ -312,8 +312,12 @@ class TestToolResultsReadsWhatTheModelDidNotWrite:
         assert scaffold.tool_results(reply, "execute_code") == ["42"]
 
     def test_a_result_split_into_items_reads_as_the_text_of_each(self):
-        """A tool that labels part of its result answers with items, and `str` of that list
-        renders reprs — which no check looking for the tool's own words can recognise."""
+        """Whatever the framework put in `result`, a list of items reads as their text.
+
+        Not the shape `Content.from_function_result` produces — it joins the items' text into
+        `result` itself, on 1.13.0 and 1.17.0 alike. This holds `tool_results` to the same
+        answer for a host, or a framework version, that hands the items over intact.
+        """
         reply = _turn(
             _call("bicep_validate", "a"),
             _result("a", [SimpleNamespace(text="build(main.bicep): no diagnostics")]),
@@ -334,8 +338,12 @@ class TestResultTextReadsEitherShape:
         assert scaffold.result_text(items) == "the diagnostics\nthe sentence"
 
     def test_an_item_carrying_no_text_contributes_none(self):
-        """A hidden item is a reference rather than words, and rendering `None` as the string
-        "None" would put a word in the evidence that no tool wrote."""
+        """`Content.text` is optional, and rendering `None` as the string "None" would put a
+        word in the evidence that no tool wrote.
+
+        Not what hiding produces — a hidden item carries the variable reference as JSON text,
+        so it renders rather than vanishing.
+        """
         assert scaffold.result_text([SimpleNamespace(text=None)]) == ""
 
 
