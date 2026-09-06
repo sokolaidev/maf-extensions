@@ -751,9 +751,9 @@ class TestTheScopePurgeIsRecorded:
         assert (second.backend, second.outcome, second.failure) == ("second", "gone", None)
 
     def test_a_purge_a_cancel_took_is_still_recorded(self):
-        """`CancelledError` is not an `Exception`, so the `except Exception` the purge already
-        had would drop exactly the record a timed-out thread deletion leaves. The cancel still
-        reaches the caller."""
+        """`CancelledError` is not an `Exception`, so an `except Exception` around the purge
+        drops exactly the record a timed-out thread deletion leaves. The cancel still reaches
+        the caller."""
         recorder = _Recorder()
         router = _router(_PurgeCancels(name="cancels"), observer=recorder)
 
