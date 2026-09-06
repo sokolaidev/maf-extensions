@@ -1901,22 +1901,26 @@ async def _probe_a_removal_stays_at_the_guests_authority(
     # make. `OSError` is what every backend raises for a removal it could not perform at
     # all — a service failure as much as a refusal — so without this a `remove` that is
     # merely unavailable leaves the survivor standing and reads as an authority it never
-    # demonstrated. The guest makes it, so it is removable at either authority; a control
-    # the file plane made would be one a guest-authority removal must refuse. Nothing
-    # catches it: a control that cannot run is this probe failing.
+    # demonstrated. It carries a nested directory because the protected removal is
+    # recursive over content: an empty control is removed by a backend that refuses every
+    # populated tree, which is the incapacity this exists to tell from authority. The guest
+    # makes it, so it is removable at either authority; a control the file plane made would
+    # be one a guest-authority removal must refuse. Nothing catches it: a control that
+    # cannot run is this probe failing.
     removable = f"{swappable}/removable"
-    if await subject.plant_directory_the_guest_owns(removable):
+    if await subject.plant_directory_the_guest_owns(f"{removable}/inner"):
         await subject.sandbox.remove(
             "reach-delete/removable",
             working_directory=subject.working_directory,
             recursive=True,
         )
-        if await subject.exists(removable):
-            raise AssertionError(
-                "the control removal left a directory the guest made standing, so this "
-                "backend's remove is not working here and the refusal below would say "
-                "nothing about which principal ran"
-            )
+        for left, what in ((f"{removable}/inner", "the tree under it"), (removable, "it")):
+            if await subject.exists(left):
+                raise AssertionError(
+                    f"the control removal left {what} standing, so this backend's remove "
+                    f"does not work here and the refusal below would say nothing about "
+                    f"which principal ran"
+                )
     try:
         await subject.sandbox.remove(
             "reach-delete/held", working_directory=subject.working_directory, recursive=True

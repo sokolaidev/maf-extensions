@@ -614,7 +614,9 @@ class _SimulatedGuest:
         if guest == base:
             raise ValueError(f"refusing to remove the working directory itself: {path}")
         prefix = guest.rstrip("/") + "/"
-        under = [stored for stored in (*self.contents, *self.symlinks) if stored.startswith(prefix)]
+        # Directories included: a tree whose only content is an empty directory is still a
+        # populated tree, and a recursive removal has to take it.
+        under = [stored for stored in self._everything() if stored.startswith(prefix)]
         if (under or guest in self.directories) and not recursive:
             raise OSError(f"refusing to remove a directory without recursive: {path}")
         if under and not self._removes_as_the_host and not self._the_guest_can_write(guest):
@@ -2030,6 +2032,29 @@ class TestReachConformance:
         reported = failures["a-removal-stays-at-the-guests-authority"]
         assert reported is not None
         assert ("unavailable" if broken == "raises" else "control removal") in reported
+
+    def test_a_backend_that_only_removes_empty_directories_fails_the_control(self):
+        """The control has to carry content, because the protected removal is recursive.
+
+        A backend that ignores `recursive`, or refuses every populated tree, empties an empty
+        control and then raises on the protected directory — and that refusal is incapacity
+        wearing the shape of guest authority.
+        """
+
+        class _EmptyOnly(_SimulatedGuest):
+            async def remove(self, path, *, working_directory, recursive=False):
+                guest = posixpath.normpath(posixpath.join(working_directory, path))
+                if any(p.startswith(guest.rstrip("/") + "/") for p in self._everything()):
+                    raise OSError("this backend cannot remove a populated tree")
+                await super().remove(path, working_directory=working_directory, recursive=recursive)
+
+        sandbox = _EmptyOnly(writes_as_the_host=True)
+        sandbox.directories.add(_WORK)
+        reported = _sim_results(_subject_over(sandbox), run_reach_probes)[
+            "a-removal-stays-at-the-guests-authority"
+        ]
+        assert reported is not None
+        assert "populated tree" in reported
 
     def test_a_removal_that_times_out_does_not_pass_the_probe(self):
         """`TimeoutError` is an `OSError`, and the survivor stands either way.

@@ -517,9 +517,11 @@ class TestAWorkDirTheImageGaveItsOwnUser:
                     capabilities=backend.declarations.capabilities,
                 )
             )
+            # `skipped` reports the capability gate and nothing else — a probe that stopped on
+            # its own calibration passes and is counted here as a pass — so the two checks below
+            # are what establish that the *write* probe reached its assertion on this image. The
+            # removal probe stops whatever they say, for the reason the docstring gives.
             assert not [r for r in results if r.skipped]
-            # What makes the run above worth anything: a probe that stopped early passes too,
-            # so the image has to be the shape that stops neither.
             identity = await sandbox.exec(["id", "-u"], working_directory="/", timeout=60)
             assert identity.stdout.strip() != "0"
             owner = await sandbox.exec(
