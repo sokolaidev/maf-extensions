@@ -1271,6 +1271,37 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert "an acquire this gate does not refuse" in message, message
         assert "restart of this process" in message, message
 
+    def test_a_refused_fresh_sandbox_is_gone_so_the_hint_decides_the_advice(self):
+        """A refused create is deleted with its verdict, so what answers the next acquire is
+        the hint — and a permissive one lets that acquire create and probe again.
+
+        The verdict existing at the moment of the refusal is therefore the wrong test: it is
+        removed by the handler that catches this very refusal.
+        """
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(0))
+        backend = _backend_with(client)
+        asyncio.run(backend.acquire(self._key("scope-a"), _spec_requiring(Capability.EXEC)))
+        assert backend._guest_uids[("pinned-id", "python-nonroot:3.13")] == 0
+
+        # A definitive non-uid answer: the verdict is recorded, then the refusal deletes it.
+        client._answer = _GuestAnswer(stdout="", stderr="not found", exit_code=127)
+        with pytest.raises(SandboxCapabilityNotSupported) as refusal:
+            asyncio.run(
+                backend.acquire(
+                    self._key("scope-b"), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+                )
+            )
+
+        message = str(refusal.value)
+        assert "Nothing was remembered" in message, message
+        assert "restart of this process" not in message, message
+        assert backend._guest_uids[("pinned-id", "python-nonroot:3.13")] == 0, (
+            "the hint was demoted, so the next acquire would not re-create and this passes "
+            "for the wrong reason"
+        )
+
     def test_a_permissive_hint_is_not_an_obstacle_the_refusal_should_name(self):
         """Hint *presence* is the wrong test; whether anything will answer next time is right.
 

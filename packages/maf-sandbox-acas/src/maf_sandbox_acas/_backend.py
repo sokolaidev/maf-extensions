@@ -1053,11 +1053,11 @@ class AcasSandboxBackend:
                     f"{_GUEST_UID_COMMAND!r} with 0 — a root USER alone does not, and an image "
                     "that cannot run the probe is refused however it is built"
                 )
-            # What decides the advice is whether this call leaves anything behind to answer
-            # the next one: a hint that already answered, or a verdict this probe recorded.
-            # A probe that dropped records neither, so an identical acquire asks again — and
-            # a *permissive* hint is no obstacle either, which is why the presence of one
-            # cannot be the test.
+            # What decides the advice is what will answer the *next* acquire, and that turns
+            # on whether this sandbox survives this one. A refused fresh create is deleted
+            # with its verdict, so the hint answers next time and only a restrictive hint
+            # blocks; a warm sandbox stays, so its own recorded verdict answers; and a probe
+            # that dropped recorded nothing either way, so the next acquire simply asks.
             recovery = (
                 "Repointing the same reference does not lift this by itself: the refusal is "
                 "answered from a remembered verdict and stops the create that would re-read "
@@ -1065,7 +1065,11 @@ class AcasSandboxBackend:
                 "does not refuse *and* that has no warm sandbox to reuse, since a reuse skips "
                 "the create and the probe with it, a reference this backend has not seen yet, "
                 "or a restart of this process."
-                if sandbox is None or sandbox.sandbox_id in self._sandbox_uids
+                if (
+                    self._guest_uids.get(identity, 0) != 0
+                    if sandbox is None or freshly_created
+                    else sandbox.sandbox_id in self._sandbox_uids
+                )
                 else "Nothing was remembered, because the probe did not land, so an identical "
                 "acquire asks again rather than repeating this from a cached answer."
             )
@@ -1126,6 +1130,12 @@ class AcasSandboxBackend:
         sandbox left the registry, because a disposal takes no acquire lock.  Run once per
         removal batch rather than once per removal, which is what keeps purging n sandboxes
         linear rather than quadratic.
+
+        **It does not catch the orphan it is named for at the time that orphan is made.**  A
+        probe still in flight records after this has run, and nothing reaches that entry until
+        the next disposal sweeps.  So the bound is what this backend holds plus whatever has
+        raced a removal since the last one, and closing it takes coordination between the
+        probe and disposal that neither has today — #973.
         """
         live = set(self._registry.values())
         self._sandbox_uids = {sid: u for sid, u in self._sandbox_uids.items() if sid in live}
@@ -1177,14 +1187,11 @@ class AcasSandboxBackend:
                 answered.exit_code,
                 reported,
             )
-            # The hint keeps a concrete uid even against a fresh sandbox, because demoting it
-            # on one answer is what #969's permanent refusal is made of, and a probe cannot
-            # tell a repointed reference from a racing measurement without ordering it does
-            # not have. The price is a *recurring* one, not the single create an earlier
-            # version of this comment claimed: a reference repointed from root to an image
-            # with no `id` passes the stale `0` on every acquire, creates, probes, refuses and
-            # discards the sandbox — billable each time, until something replaces the hint.
-            # #971 carries closing it. The verdict comes from this sandbox's own map and never
+            # A concrete hint survives a fresh non-uid answer: a probe cannot tell a repointed
+            # reference from a racing measurement without ordering it does not have, and
+            # demoting on one answer refuses before the create that would re-read it. The cost
+            # is a create per acquire while a reference stays repointed to an image with no
+            # readable uid (#971). The verdict comes from this sandbox's own map and never
             # from the hint, which is some other guest's answer.
             self._guest_uids.setdefault(identity, None)
             return self._sandbox_uids.setdefault(sandbox.sandbox_id, None)
