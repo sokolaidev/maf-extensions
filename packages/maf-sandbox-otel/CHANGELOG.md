@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-otel-v0.1.0...maf-sandbox-otel-v0.1.1) (2026-09-06)
+
+
+### Documentation
+
+* **otel:** the package page carries the badge row and the pre-1.0 banner, and no link that only resolves in the repository ([#938](https://github.com/sokolaidev/maf-extensions/issues/938)) ([202cd71](https://github.com/sokolaidev/maf-extensions/commit/202cd71ea4c81e030b67d32b9f3718fba2bd5000))
+
 ## 0.1.0 (2026-09-05)
 
 
