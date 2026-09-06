@@ -1925,6 +1925,21 @@ async def _probe_a_removal_stays_at_the_guests_authority(
     await subject.plant_file(survivor, b"only the host could take this\n")
     if not await subject.plant_directory_the_guest_cannot_write_into(held):
         return
+    # The positive control, through the same method and the same authority: a removal this
+    # backend can actually make. `OSError` is what every backend raises for a removal it could
+    # not perform at all — a service failure as much as a refusal — so without this a `remove`
+    # that is merely unavailable leaves the survivor standing and reads as an authority it never
+    # demonstrated. Nothing catches it: a control that cannot run is this probe failing.
+    removable = f"{swappable}/removable"
+    await subject.plant_file(f"{removable}/gone.txt", b"the control this probe needs\n")
+    await subject.sandbox.remove(
+        "reach-delete/removable", working_directory=subject.working_directory, recursive=True
+    )
+    if await subject.exists(f"{removable}/gone.txt"):
+        raise AssertionError(
+            "the control removal left its tree standing, so this backend's remove is not working "
+            "here and the refusal below would say nothing about which principal ran"
+        )
     try:
         await subject.sandbox.remove(
             "reach-delete/held", working_directory=subject.working_directory, recursive=True
@@ -1963,7 +1978,9 @@ REACH_PROBES: tuple[Probe, ...] = (
         why=(
             "a removal carrying more authority than the guest program had, over a path with a "
             "component that program owns, is the reach rule's exact prohibition: the component "
-            "is swappable, and what a swap redirects is a delete the guest cannot make."
+            "is swappable, and what a swap redirects is a delete the guest cannot make. The "
+            "control removal ahead of it is what makes the refusal evidence rather than "
+            "coincidence — a backend whose remove does not work refuses everything."
         ),
         requires=frozenset({Capability.FILES_DELETE}),
         run=_probe_a_removal_stays_at_the_guests_authority,

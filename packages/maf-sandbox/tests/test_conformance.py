@@ -1993,6 +1993,29 @@ class TestReachConformance:
             [p.name for p in REACH_PROBES], None
         )
 
+    @pytest.mark.parametrize("broken", ["raises", "does nothing"])
+    def test_a_removal_that_never_works_does_not_pass_the_probe(self, broken):
+        """A removal that cannot run refuses the protected directory too, and proves nothing.
+
+        `OSError` is what a backend raises for a removal it could not perform at all — ACAS
+        wraps every data-plane exception that way — so without a control the survivor stands
+        and the probe reads a broken backend as one holding the guest's authority.
+        """
+
+        class _Broken(_SimulatedGuest):
+            async def remove(self, path, *, working_directory, recursive=False):
+                del path, working_directory, recursive
+                if broken == "raises":
+                    raise OSError("the data plane is unavailable")
+
+        failures = _sim_results(
+            _SimSubject(sandbox=_Broken(), working_directory=_WORK, capabilities=_EVERYTHING),
+            run_reach_probes,
+        )
+        reported = failures["a-removal-stays-at-the-guests-authority"]
+        assert reported is not None
+        assert ("unavailable" if broken == "raises" else "control removal") in reported
+
     def test_a_removal_that_times_out_does_not_pass_the_probe(self):
         """`TimeoutError` is an `OSError`, and the survivor stands either way.
 
