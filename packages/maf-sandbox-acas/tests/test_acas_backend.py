@@ -1271,6 +1271,32 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert "an acquire this gate does not refuse" in message, message
         assert "restart of this process" in message, message
 
+    def test_a_refusal_from_a_dropped_probe_says_the_next_acquire_asks_again(self):
+        """The recovery advice is only true where something was remembered.
+
+        A probe that never landed records nothing, so an identical acquire re-probes and may
+        well succeed. Telling that operator to find a new reference or restart would hide the
+        simplest recovery there is — try again.
+        """
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(RuntimeError("transport dropped"))
+        backend = _backend_with(client)
+
+        with pytest.raises(SandboxCapabilityNotSupported) as refusal:
+            asyncio.run(
+                backend.acquire(
+                    self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+                )
+            )
+
+        message = str(refusal.value)
+        assert "Nothing was remembered" in message, message
+        assert "asks again" in message, message
+        # The blocking advice belongs to the other branch and would be false here.
+        assert "restart of this process" not in message, message
+        assert backend._guest_uids == {}, "something was remembered after all"
+
     def test_a_cold_acquire_cannot_demote_a_uid_another_cold_acquire_measured(self):
         """The race on the path a create actually takes, which the two direct-call race tests
         below do not reach.

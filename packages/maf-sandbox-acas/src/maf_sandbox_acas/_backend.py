@@ -176,7 +176,8 @@ _GUEST_PROBE_WORKING_DIRECTORY = "/"
 
 #: How long the probe gets. Its own bound rather than `read_timeout_seconds`, which is 120 by
 #: default and describes a read that never returns: a guest that has not answered `id -u` in 30
-#: seconds is not going to, and this runs on the way to a cold acquire.
+#: seconds is not going to. It runs on the way to a cold acquire, and again on a warm one
+#: whose own probe never landed, so a guest dropping every call pays it per acquire.
 _PROBE_TIMEOUT_S = 30.0
 
 
@@ -1044,16 +1045,25 @@ class AcasSandboxBackend:
                     f"{_GUEST_UID_COMMAND!r} with 0 — a root USER alone does not, and an image "
                     "that cannot run the probe is refused however it is built"
                 )
-            raise SandboxCapabilityNotSupported(
-                f"sandbox backend {BACKEND_NAME!r} cannot serve "
-                f"{', '.join(sorted(refused))} to the {spec.kind!r} workload from {image}: "
-                f"{whose_guest}, and it refuses {'; and '.join(reasons)}. Refused here "
-                f"rather than inside the tool call. {remedy}, or narrow what it requires. "
+            # Only a *remembered* answer stands between a corrected image and a re-read. A
+            # probe that never landed recorded nothing, so the next identical acquire simply
+            # asks again, and telling an operator to find a new reference would hide that.
+            recovery = (
                 "Repointing the same reference does not lift this by itself: the refusal is "
                 "answered from a remembered verdict and stops the create that would re-read "
                 "it. Something else has to read the reference again — an acquire this gate "
                 "does not refuse, which still creates a sandbox and probes it, a reference "
                 "this backend has not seen yet, or a restart of this process."
+                if identity in self._guest_uids
+                else "Nothing was remembered, because the probe did not land, so an identical "
+                "acquire asks again rather than repeating this from a cached answer."
+            )
+            raise SandboxCapabilityNotSupported(
+                f"sandbox backend {BACKEND_NAME!r} cannot serve "
+                f"{', '.join(sorted(refused))} to the {spec.kind!r} workload from {image}: "
+                f"{whose_guest}, and it refuses {'; and '.join(reasons)}. Refused here "
+                f"rather than inside the tool call. {remedy}, or narrow what it requires. "
+                f"{recovery}"
             )
         if uid is None:
             # Served, and silently: the warning below describes a wall this image may not have,
