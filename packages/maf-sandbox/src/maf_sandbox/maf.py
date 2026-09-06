@@ -448,9 +448,10 @@ def effective_state_middleware() -> Any:
 def _write_effective_state(context: Any, served: Sequence[EffectiveState]) -> None:
     """Put ``served`` in the session's state under this call's tool, where there is a session.
 
-    A list, because one call may be served more than one sandbox — a kind reaching two backends,
-    or one acquiring under two keys — and rendered to plain JSON here rather than held as
-    objects, because a session store persists what it is given.
+    A list, because one call may be served more than one **posture** — a kind reaching two
+    backends — and rendered to plain JSON here rather than held as objects, because a session
+    store persists what it is given.  A count of postures rather than of sandboxes; see
+    :func:`~maf_sandbox._effective_state.note_effective_state`.
     """
     if not served:
         return

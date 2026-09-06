@@ -221,9 +221,10 @@ def effective_state_is_noted() -> bool:
 def note_effective_state(state: EffectiveState) -> None:
     """Record what one acquire was served, for the call that is collecting.
 
-    A no-op outside one — a router driven directly, or a host that wired no writer. Duplicates
-    are dropped rather than appended: a call that acquires twice on one key is served the same
-    sandbox, and two identical entries would read as two sandboxes.
+    A no-op outside one — a router driven directly, or a host that wired no writer.  An equal
+    snapshot folds into the one already held, so a collection's length counts distinct
+    **postures** and never sandboxes: two keys that resolved to one posture arrive as one entry,
+    and a snapshot names no sandbox to tell them apart with.
     """
     notes = _NOTES.get()
     if notes is not None and state not in notes:

@@ -294,17 +294,36 @@ class TestOnlyAServedAcquireIsRecorded:
             close_effective_state_notes(token)
         assert notes == []
 
-    def test_acquiring_twice_on_one_key_records_one_sandbox(self):
-        """Get-or-create hands back the same sandbox; two entries would read as two of them."""
+    def test_acquiring_twice_on_one_key_records_one_posture(self):
+        """Get-or-create hands back the same sandbox, and two entries would read as two."""
+        assert len(self._postures(KEY, KEY)) == 1
+
+    def test_two_keys_of_one_posture_also_record_one(self):
+        """A snapshot names no sandbox, so what folds is the posture — the length counts those.
+
+        Pinned because the honest reading of the length is the whole contract here: a reader
+        counting entries is counting distinct postures, never sandboxes.
+        """
+        assert len(self._postures(KEY, dataclasses.replace(KEY, agent_dir="agent-2"))) == 1
+
+    def test_two_postures_in_one_call_are_both_recorded(self):
+        """And the fold is by posture rather than a cap of one: a differing spec still lands."""
+        postures = self._postures(KEY, KEY, second_spec=_spec(image="python:3.14"))
+        assert {state.image for state in postures} == {"python:3.13", "python:3.14"}
+
+    def _postures(
+        self, first: SandboxKey, second: SandboxKey, *, second_spec: SandboxSpec | None = None
+    ) -> list[EffectiveState]:
+        """Two acquires inside one collection, and whatever it ends up holding."""
         router = SandboxRouter([_backend()], min_isolation=Isolation.NONE)
         spec = _spec()
         notes, token = open_effective_state_notes()
         try:
-            asyncio.run(router.acquire(KEY, spec))
-            asyncio.run(router.acquire(KEY, spec))
+            asyncio.run(router.acquire(first, spec))
+            asyncio.run(router.acquire(second, second_spec if second_spec is not None else spec))
         finally:
             close_effective_state_notes(token)
-        assert len(notes) == 1
+        return notes
 
     def test_nothing_is_noted_outside_a_call(self):
         """A router driven directly has no call to attribute a snapshot to."""
