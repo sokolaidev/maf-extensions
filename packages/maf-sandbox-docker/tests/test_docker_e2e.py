@@ -70,6 +70,12 @@ try:
 except ImportError:
     assert_reclaim_conformance = None
 
+# The same, for the reach rule's suite, which arrives with the core that states the rule.
+try:
+    from maf_sandbox.conformance import assert_reach_conformance
+except ImportError:
+    assert_reach_conformance = None
+
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
 _IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_IMAGE")
@@ -478,6 +484,57 @@ class TestAWorkDirTheImageGaveItsOwnUser:
 
     def _spec(self) -> SandboxSpec:
         return SandboxSpec(kind="e2e-nocaps", image=_GUEST_OWNED_IMAGE, work_dir=_WORK)
+
+    def test_it_answers_the_reach_probes(self):
+        """`maf_sandbox.conformance`'s REACH suite, on the one image where it can say anything.
+
+        Both other images stop the probes rather than answer them, and for opposite reasons: a
+        root guest has no second authority to distinguish, and an image keeping `work_dir` for
+        root leaves nothing on the path the guest could swap. Here the guest owns `work_dir`
+        and is not root, so the write probe reaches its assertion and passes: `write_file`
+        stamps its entries with the image's user.
+
+        The removal probe **stops** here rather than passing on its merits, and that is a
+        property of this backend rather than a gap. Its protected directory has to be one the
+        file plane created and the guest cannot reopen, and this file plane hands the guest
+        everything it makes under `work_dir` — so no such directory exists to build. What
+        passing says is also bounded: the write probe reads the entry's ownership, while this
+        backend's placement stays the daemon's at root, which #967 carries.
+        """
+        if assert_reach_conformance is None:
+            pytest.skip("this maf-sandbox predates the reach suite (< 0.35)")
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), self._spec())
+            # The narrowing does not cross into this closure; the assert re-establishes it.
+            assert assert_reach_conformance is not None
+            results = await assert_reach_conformance(
+                PosixGuestSubject(
+                    sandbox=sandbox,
+                    working_directory=_WORK,
+                    capabilities=backend.declarations.capabilities,
+                )
+            )
+            # `skipped` reports the capability gate and nothing else — a probe that stopped on
+            # its own calibration passes and is counted here as a pass — so the two checks below
+            # are what establish that the *write* probe reached its assertion on this image. The
+            # removal probe stops whatever they say, for the reason the docstring gives.
+            assert not [r for r in results if r.skipped]
+            identity = await sandbox.exec(["id", "-u"], working_directory="/", timeout=60)
+            assert identity.stdout.strip() != "0"
+            owner = await sandbox.exec(
+                ["sh", "-c", f"test -w {_WORK} && echo writable"],
+                working_directory="/",
+                timeout=60,
+            )
+            assert owner.stdout.strip() == "writable"
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
     def test_reclaim_falls_back_to_the_image_user_when_root_is_refused(self):
         scope = f"e2e-{uuid.uuid4()}"
@@ -1017,6 +1074,42 @@ class TestFilesDeleteAgainstARealEngine:
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
             results = await assert_files_delete_conformance(
+                PosixGuestSubject(
+                    sandbox=sandbox,
+                    working_directory=_WORK,
+                    capabilities=backend.declarations.capabilities,
+                )
+            )
+            assert not [r for r in results if r.skipped]
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+
+class TestReachAgainstARealEngine:
+    """`maf_sandbox.conformance`'s REACH suite — that neither file method outruns the guest.
+
+    Against the root image, where the guest program's authority and the host's are the same
+    one, so both probes pass having distinguished nothing. That is worth running: it holds the
+    suite to answering *cleanly* on the image every other suite here uses, and a probe that
+    started failing on a root guest would be a probe reading something other than authority.
+    `TestAWorkDirTheImageGaveItsOwnUser` is where the same suite has something to find:
+    a guest that is neither root nor locked out of `work_dir`.
+    """
+
+    def test_it_answers_the_reach_probes(self):
+        if assert_reach_conformance is None:
+            pytest.skip("this maf-sandbox predates the reach suite (< 0.35)")
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), _spec())
+            # The narrowing does not cross into this closure; the assert re-establishes it.
+            assert assert_reach_conformance is not None
+            results = await assert_reach_conformance(
                 PosixGuestSubject(
                     sandbox=sandbox,
                     working_directory=_WORK,

@@ -411,18 +411,21 @@ async def refuse_symlinked_ancestors(
 def path_ancestors_are_host_owned(
     walked: Mapping[str, tuple[int, int]], *, empty_means_host_owned: bool
 ) -> bool:
-    """Whether every directory on the walked path is root's and writable by nobody else.
+    """Whether every directory the check inspected is root's and writable by nobody else.
 
-    The reach rule: a removal may run with more authority than the guest program had only
-    where nothing on the path was that program's to replace.  ``walked`` holds ``(uid,
-    mode)`` per component the caller's check on the path collected, and the caller must hand
-    every component the rule is to bind — a missing one is a question for the caller, not a
-    pass.
+    The reach rule as a predicate: an operation may run with more authority than the guest
+    program had only where nothing on the path was that program's to replace.  It binds every
+    method a backend performs with more authority than the guest — a write on a host-authority
+    file plane as much as a removal — and not removal alone.  ``walked`` holds ``(uid, mode)``
+    per component the caller's check on the path collected, and the caller must hand every
+    component the rule is to bind — a missing one is a question for the caller, not a pass.  A
+    backend whose engine reports no ownership has nothing to pass here, and owes one of the
+    three answers :class:`~maf_sandbox.Sandbox` names instead.
 
     An empty mapping is not decided here: it can mean nothing lies above the working
-    directory, or that the walk reached nothing, and the caller names what that means by
+    directory, or that the check reached nothing, and the caller names what that means by
     passing ``empty_means_host_owned``.  Running a *stat* as root buys reach, not trust — the
-    binary answering is the image's either way.  Running a *removal* as root is what needs
+    binary answering is the image's either way.  Running the *operation* as root is what needs
     licensing, and this is what licenses it.
     """
     if not walked:

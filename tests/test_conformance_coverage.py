@@ -28,6 +28,10 @@ SAMPLES = REPO_ROOT / "samples"
 #: three every backend owes regardless of what it declares — a backend declaring none of them
 #: is not a backend. RECLAIM is gated by no `Capability` at all, so unlike FILES_DELETE it has
 #: no withheld-capability answer and no MEASURE escape: every backend owes the assert itself.
+#: REACH is deliberately absent: its probes stop rather than fail wherever nothing on the path
+#: is the guest's to swap, so requiring the call would add a green run to two backends it can
+#: say nothing about. `maf-sandbox-docker` wires it against the one image shape where it bites;
+#: `maf-sandbox-acas` is expected to fail it, and wiring it there is #950's to do.
 #: Appended rather than inserted — `SUITES[0]` and `SUITES[3]` are indexed positionally below,
 #: and a new member must not shift what those point at.
 SUITES = (
