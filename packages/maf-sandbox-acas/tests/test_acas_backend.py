@@ -1147,6 +1147,62 @@ class TestAnImageWhoseGuestIsNotRoot:
         with pytest.raises(SandboxCapabilityNotSupported, match="files_delete"):
             asyncio.run(backend.acquire(self._key("scope-a"), deleting))
 
+    def _unverified_beside_a_root_sandbox(self, retry_answer):
+        """A sandbox whose own probe never landed, kept warm beside a root one on the same
+        image name — so the hint says `0` and nothing has ever read *this* guest.
+
+        `retry_answer` is what its warm re-probe meets, which is the branch under test.
+        """
+        client = _GuestGroupClient(RuntimeError("transport dropped"))
+        backend = _backend_with(client)
+
+        # Its create-time probe drops, so it records no verdict of its own.
+        asyncio.run(backend.acquire(self._key("scope-a"), _spec_requiring(Capability.EXEC)))
+        assert backend._sandbox_uids == {}, "the dropped probe recorded a verdict after all"
+
+        # A second sandbox, root, moves the image-level hint.
+        client._answer = _guest_reporting(0)
+        asyncio.run(backend.acquire(self._key("scope-b"), _spec_requiring(Capability.EXEC)))
+        assert backend._guest_uids[("pinned-id", "python-nonroot:3.13")] == 0
+
+        client._answer = retry_answer
+        return backend
+
+    def test_an_unverified_sandbox_does_not_inherit_a_root_hint_when_its_retry_drops(self):
+        """The fallback must be this sandbox's own verdict or nothing — never the hint, which
+        is another guest's answer. Inheriting it serves the delete to a guest nobody read."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        backend = self._unverified_beside_a_root_sandbox(RuntimeError("dropped again"))
+
+        with pytest.raises(SandboxCapabilityNotSupported, match="files_delete"):
+            asyncio.run(
+                backend.acquire(
+                    self._key("scope-a"), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+                )
+            )
+
+    def test_an_unverified_sandbox_does_not_inherit_a_root_hint_on_a_non_uid_answer(self):
+        """The same inheritance down the definitive branch, which additionally *records* the
+        borrowed `0` as this sandbox's verdict and would license every acquire after it."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        backend = self._unverified_beside_a_root_sandbox(
+            _GuestAnswer(stdout="", stderr="not found", exit_code=127)
+        )
+
+        with pytest.raises(SandboxCapabilityNotSupported, match="files_delete"):
+            asyncio.run(
+                backend.acquire(
+                    self._key("scope-a"), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+                )
+            )
+
+        assert backend._sandbox_uids.get("sbx-1") is None, "it recorded another guest's uid"
+        assert backend._guest_uids[("pinned-id", "python-nonroot:3.13")] == 0, (
+            "the hint lost the answer a working probe measured"
+        )
+
     def test_a_remembered_root_uid_does_not_license_a_newly_booted_image(self):
         """The hole a per-image memo leaves once the memo is load-bearing for reach.
 

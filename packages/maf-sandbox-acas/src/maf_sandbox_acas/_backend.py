@@ -166,7 +166,7 @@ _PROBE_WHEN_REQUIRED = (
     _NEEDS_A_WRITING_GUEST | _UNSAFE_WHERE_THE_GUEST_IS_NOT_ROOT | {Capability.EXEC}
 )
 
-#: How the guest's uid is read, once per image on a cold acquire.
+#: How the guest's uid is read, once per sandbox this backend creates.
 _GUEST_UID_COMMAND = "id -u"
 
 #: Where that runs. Never `spec.work_dir`, which nothing has created yet at acquire: an exec
@@ -989,11 +989,7 @@ class AcasSandboxBackend:
                 return
             uid = self._guest_uids[identity]
         elif freshly_created:
-            # The hint describes the artefact an earlier acquire booted, and this one just
-            # booted a new artefact from the same reference. A prebuilt catalogue name is the
-            # service's to repoint, so a remembered `0` can outlive the image that earned it —
-            # and a stale `0` serves the reach set to a guest nobody has read. One `exec` on a
-            # path that has already paid for a create.
+            # A new artefact from the same reference, so the hint is about the previous one.
             uid = await self._probe_guest_uid(sandbox, spec, replacing=True)
         elif sandbox.sandbox_id in self._sandbox_uids:
             # A warm reuse reads the verdict for *this* sandbox and never the image hint:
@@ -1030,9 +1026,7 @@ class AcasSandboxBackend:
                     "would delete a tree this guest could never have deleted itself — which "
                     "nothing inside the tool call would report at all"
                 )
-            # The remedy differs with the branch, and naming the wrong one sends an operator to
-            # rebuild an image that will be refused again: a root `USER` does not answer the
-            # probe, and it is the answer this branch lacked.
+            # A root `USER` does not answer the probe, so the two branches want two remedies.
             if uid is not None:
                 whose_guest = f"its guest runs as uid {uid}"
                 remedy = "Serve this workload on an image whose USER is root"
@@ -1107,9 +1101,8 @@ class AcasSandboxBackend:
 
         **The answer is the guest's own, so it is worth what the image is.** An image that
         ships an ``id`` printing ``0`` is believed, which is announcement where
-        ``guest-platform-and-commands.md`` § Decision 3 asks for observation. It never grants
-        more than the ungated state it replaced, and closing it takes a uid the host can read
-        rather than ask for — ``docs/sandbox/backends/acas.md`` carries the argument.
+        ``guest-platform-and-commands.md`` § Decision 3 asks for observation.  What that costs
+        and why it is served anyway: ``docs/sandbox/backends/acas.md``.
         """
         image = _image_label(spec)
         identity = _image_identity(spec)
@@ -1126,7 +1119,9 @@ class AcasSandboxBackend:
                 _GUEST_UID_COMMAND,
                 error_detail(unreachable),
             )
-            return None if replacing else self._guest_uids.get(identity)
+            # Never the image hint: it can hold another sandbox's answer, and nothing has
+            # verified this one. Its own verdict if it has one, otherwise nothing.
+            return None if replacing else self._sandbox_uids.get(sandbox.sandbox_id)
         reported = answered.stdout.strip()
         if answered.exit_code != 0 or not reported.isdecimal():
             logger.debug(
@@ -1139,9 +1134,10 @@ class AcasSandboxBackend:
             if replacing:
                 self._remember(sandbox.sandbox_id, identity, None)
                 return None
-            settled = self._guest_uids.setdefault(identity, None)
-            self._sandbox_uids[sandbox.sandbox_id] = settled
-            return settled
+            # The hint keeps whatever another probe measured; the verdict comes from this
+            # sandbox's own map and never from that hint, which describes some other guest.
+            self._guest_uids.setdefault(identity, None)
+            return self._sandbox_uids.setdefault(sandbox.sandbox_id, None)
         uid = int(reported)
         self._remember(sandbox.sandbox_id, identity, uid)
         return uid
