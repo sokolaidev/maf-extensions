@@ -22,6 +22,12 @@ from enum import StrEnum
 from typing import cast
 
 from ._containment import CONTAINED, escapes_containment
+from ._effective_state import (
+    EffectiveState,
+    effective_state_is_noted,
+    note_effective_state,
+)
+from ._error_detail import error_detail
 from ._host_tools_over_exec import fold_host_tool_call_transfer_limits
 from ._observer import (
     DisposalReport,
@@ -478,6 +484,34 @@ def _reported(failure: DisposalFailure | None) -> DisposalReport:
     if failure is None:
         return "gone"
     return "unknown" if failure.code == "unknown" else "may_remain"
+
+
+def _note_what_held(acquired: SandboxAcquired) -> None:
+    """Collect the posture a served acquire ran under, where something is collecting it.
+
+    Asked again rather than left to :func:`note_effective_state`'s own no-op: an observer alone
+    reaches here on every acquire, and it must not pay for a snapshot nobody is holding.
+
+    Contained, and for the reason :func:`_recorded_name` is: the snapshot reads a backend's own
+    declarations, so a backend author's ``frozenset`` runs here — and this sits in a ``finally``
+    over an acquire that has already succeeded, where a raise would replace the sandbox with an
+    exception about the record of it.
+    """
+    if not effective_state_is_noted():
+        return
+    try:
+        state = EffectiveState.of(acquired)
+    except CONTAINED as raised:  # noqa: BLE001 - `_containment` carries the rule
+        if escapes_containment(raised):
+            raise
+        logger.warning(
+            "sandbox effective state: what %r was served was not recorded: %s",
+            acquired.spec.kind,
+            error_detail(raised),
+        )
+        return
+    if state is not None:
+        note_effective_state(state)
 
 
 def _recorded_declarations(
@@ -1253,6 +1287,11 @@ class SandboxRouter:
         backend, and everything after the create — the reclaim refusal's disposal, the
         mid-create disposal — is aimed at the one that served rather than at all of them.
 
+        Every way out is recorded as one :class:`~maf_sandbox.SandboxAcquired`, and a way out
+        that *served* also leaves an :class:`~maf_sandbox.EffectiveState` for whoever is
+        collecting one — see :func:`~maf_sandbox.maf.effective_state_middleware`.  Both are
+        skipped whole when nobody is listening for either.
+
         Raises:
             NoSandboxBackend: when no backend is configured. Callers that check
                 :attr:`enabled` before attaching a tool never reach this.
@@ -1283,7 +1322,7 @@ class SandboxRouter:
                 reaches the caller: a backend that cannot reclaim can never clean it, and a
                 refused acquire must not leave a billable sandbox running.
         """
-        if self._observer is None:
+        if self._observer is None and not effective_state_is_noted():
             return await self._acquire(key, spec, _Serving())
         serving = _Serving()
         started = time.monotonic()
@@ -1295,24 +1334,23 @@ class SandboxRouter:
             raise
         finally:
             isolation, declarations = _recorded_declarations(serving.backend)
-            record(
-                self._observer,
-                SandboxAcquired(
-                    key=key,
-                    # A snapshot, because `SandboxSpec` is frozen only shallowly: `labels` is a
-                    # plain dict the caller keeps a reference to. Handing the live one over
-                    # would let a later write change a record already delivered, and let an
-                    # observer write back into the caller's spec through the event.
-                    spec=_with_snapshotted_labels(spec),
-                    isolation_scope=self.effective_isolation_scope(spec),
-                    backend=(None if serving.backend is None else _recorded_name(serving.backend)),
-                    isolation=isolation,
-                    declarations=declarations,
-                    seconds=time.monotonic() - started,
-                    refusal=refusal,
-                ),
-                logger,
+            acquired = SandboxAcquired(
+                key=key,
+                # A snapshot, because `SandboxSpec` is frozen only shallowly: `labels` is a
+                # plain dict the caller keeps a reference to. Handing the live one over
+                # would let a later write change a record already delivered, and let an
+                # observer write back into the caller's spec through the event.
+                spec=_with_snapshotted_labels(spec),
+                isolation_scope=self.effective_isolation_scope(spec),
+                backend=(None if serving.backend is None else _recorded_name(serving.backend)),
+                isolation=isolation,
+                declarations=declarations,
+                seconds=time.monotonic() - started,
+                refusal=refusal,
             )
+            # The observer first, because that ordering is the one that already existed.
+            record(self._observer, acquired, logger)
+            _note_what_held(acquired)
 
     async def _acquire(self, key: SandboxKey, spec: SandboxSpec, serving: _Serving) -> Sandbox:
         """The whole of :meth:`acquire`, split so one record covers every way out of it.

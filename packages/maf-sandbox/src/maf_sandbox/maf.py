@@ -12,7 +12,7 @@ It is **not** re-exported from the package's ``__init__``, on purpose: ``import 
 has to stay cheap and MAF-free for a backend, a workload's own test suite, or anything else
 that only speaks the protocol.  Reach it by name — ``from maf_sandbox.maf import ...``.
 
-Nine things live here, and each of them had begun to exist twice before it did:
+Ten things live here, and each of them had begun to exist twice before it did:
 
 - :func:`make_caller_context` — how a host says who is calling and which files they own.
 - :func:`sandboxed_tool` — the shape every sandbox workload's tool has: attach nothing when
@@ -33,6 +33,9 @@ Nine things live here, and each of them had begun to exist twice before it did:
 - :func:`file_store_provenance_middleware` — records an agent-driven file-store write into a
   host's :class:`~maf_sandbox.FileStoreProvenance`. Here because it is a ``FunctionMiddleware``;
   the record it fills is stdlib-only and lives beside the protocol vocabulary.
+- :func:`effective_state_middleware` — writes what each sandbox tool call was *served* into the
+  framework's session state. Here for the same two reasons: it is a ``FunctionMiddleware``, and
+  the session it writes into is the framework's.
 - :func:`make_file_store_sink` — an output sink landing each call's artifacts in a folder of an
   ``AgentFileStore``, so the model reads them back through the host's own file tools instead of
   through the workload's result. Here because the destination is the framework's store.
@@ -60,6 +63,11 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
 from ._containment import CONTAINED, escapes_containment
+from ._effective_state import (
+    EffectiveState,
+    close_effective_state_notes,
+    open_effective_state_notes,
+)
 from ._error_detail import error_detail
 from ._file_provenance import FILE_STORE_WRITE_TOOLS, PATH_ARGUMENT, FileStoreProvenance
 from ._observer import (
@@ -125,10 +133,17 @@ ISOLATION_SCOPE_KEY = "sandbox_isolation_scope"
 #: caller that does not care lands here.
 _DEFAULT_LOGGER = logging.getLogger(__name__)
 
+#: Guards every once-per-process warning flag below. Guarded at all, because the paths these
+#: exist for run off the event loop: `asyncio.to_thread` gives each synchronous body a pool
+#: thread, so two can read a flag before either sets it.
+_warning_lock = threading.Lock()
+
 __all__ = [
     "DEFAULT_OUTPUTS_TOOL_PREFIX",
+    "EFFECTIVE_STATE_KEY",
     "ISOLATION_SCOPE_KEY",
     "SOURCE_INTEGRITY_PROPERTY",
+    "effective_state_middleware",
     "file_store_provenance_middleware",
     "SandboxPurger",
     "SandboxToolSession",
@@ -365,6 +380,128 @@ def file_store_provenance_middleware(
     return _FileStoreProvenance()
 
 
+#: Where :func:`effective_state_middleware` writes inside ``AgentSession.state``: one entry per
+#: sandbox tool, holding what its last served call ran under.  Namespaced, so it collides with
+#: neither a host's own state nor a context provider's.
+EFFECTIVE_STATE_KEY = "maf_sandbox.served"
+
+
+def effective_state_middleware() -> Any:
+    """Middleware that writes what a sandbox tool call was **served** into MAF session state.
+
+    A sandbox refuses loudly and serves quietly.  An incident review asking *what could this
+    conversation reach* finds the refusals in the log and nothing at all about the calls that
+    ran.  Wire this and every served call leaves an :class:`~maf_sandbox.EffectiveState` in
+    ``session.state`` — the backend that answered, the isolation rung and the resolved scope,
+    the egress mode and its allowlist, the capabilities, the sealed host-tool surface — where it
+    is persisted with the conversation rather than with a trace::
+
+        Agent(..., middleware=[effective_state_middleware()])
+
+    Order does not matter, and it composes with the other two: each sits in its own layer of one
+    chain, and this one reads nothing any of them writes.
+
+    **It records what held, not what was asked for.**  A refused call writes nothing — it has an
+    exception, a log line and a :class:`~maf_sandbox.SandboxAcquired` of its own, and there is
+    no posture to describe.  So does a call that acquired nothing, which leaves the tool's
+    previous entry standing: *the last posture this tool was served under* stays true across a
+    call that got no sandbox.
+
+    **One entry per tool, overwritten each call.**  Session state is persisted and lives as long
+    as the conversation, so a per-call history here would grow without bound — and per-call is
+    what the observer seam already answers.  What survives here is the current answer, keyed by
+    the tool the model called.
+
+    **Nothing model-chosen reaches it, and neither do the spec's ``labels``** —
+    :class:`~maf_sandbox.EffectiveState` carries why, and it is the reason this record is safe
+    to persist beside a transcript that is classified differently.
+
+    A session is what it writes into (``agent.run(..., session=...)``).  Without one there is
+    nowhere to put the record, which it says once per process rather than once per call.
+    """
+    from agent_framework import FunctionMiddleware
+
+    class _EffectiveState(FunctionMiddleware):  # type: ignore[misc]
+        async def process(self, context: Any, call_next: Any) -> None:
+            served, token = open_effective_state_notes()
+            try:
+                await call_next()
+            finally:
+                # Reset first, so nothing acquired after this call is attributed to it. A task
+                # the body left running keeps its own copy of the variable and can still append
+                # here, which costs nothing: the list is read once, below, and never again.
+                close_effective_state_notes(token)
+                _write_effective_state(context, served)
+
+    return _EffectiveState()
+
+
+def _write_effective_state(context: Any, served: Sequence[EffectiveState]) -> None:
+    """Put ``served`` in the session's state under this call's tool, where there is a session.
+
+    A list, because one call may be served more than one sandbox — a kind reaching two backends,
+    or one acquiring under two keys — and rendered to plain JSON here rather than held as
+    objects, because a session store persists what it is given.
+    """
+    if not served:
+        return
+    state = getattr(getattr(context, "session", None), "state", None)
+    if not isinstance(state, dict):
+        _warn_once_about_a_missing_session()
+        return
+    entries: Any = cast("dict[str, Any]", state).setdefault(EFFECTIVE_STATE_KEY, {})
+    if not isinstance(entries, dict):
+        _warn_once_about_an_occupied_key(type(entries).__name__)
+        return
+    cast("dict[str, Any]", entries)[_tool_called(context, served[0])] = [
+        one.as_dict() for one in served
+    ]
+
+
+def _tool_called(context: Any, served: EffectiveState) -> str:
+    """The tool this call was, or the workload's kind where the framework named no tool.
+
+    The kind rather than a placeholder, because a record filed under the workload it describes
+    still answers the question somebody is asking of it.
+    """
+    name: Any = getattr(getattr(context, "function", None), "name", None)
+    return name if isinstance(name, str) and name else served.kind
+
+
+#: One warning each, under the lock beside `_DEFAULT_LOGGER` and for its reason.
+_warned_about_a_missing_session = False
+_warned_about_an_occupied_key = False
+
+
+def _warn_once_about_a_missing_session() -> None:
+    """Say that there is nowhere to write, which is a wiring mistake with no other symptom."""
+    global _warned_about_a_missing_session
+    with _warning_lock:
+        if _warned_about_a_missing_session:
+            return
+        _warned_about_a_missing_session = True
+    _DEFAULT_LOGGER.warning(
+        "effective_state_middleware: this call carries no session, so what its sandbox was "
+        "served under was not recorded. Run the agent with one — agent.run(..., session=...) — "
+        "or drop the middleware."
+    )
+
+
+def _warn_once_about_an_occupied_key(found: str) -> None:
+    """Say that something else owns the key, rather than overwriting whatever it is."""
+    global _warned_about_an_occupied_key
+    with _warning_lock:
+        if _warned_about_an_occupied_key:
+            return
+        _warned_about_an_occupied_key = True
+    _DEFAULT_LOGGER.warning(
+        "effective_state_middleware: session state already holds a %s at %r, which is not the "
+        "mapping this writes. Nothing was recorded, and nothing was overwritten.",
+        found,
+        EFFECTIVE_STATE_KEY,
+    )
+
+
 def _write_call_arguments(context: Any) -> Mapping[str, Any] | None:
     """The call's arguments as a mapping, or ``None`` where they are not one.
 
@@ -418,11 +555,8 @@ _ORIGINAL_ARGUMENTS_KEY = "original_arguments_for_messages"
 #: the accessor is a thread-local and answers nothing.
 _MIDDLEWARE_RAN_KEY = "context_label"
 
-#: One warning per process, not one per refusal. Guarded, because the path this exists for is
-#: the one that runs off the event loop: `asyncio.to_thread` gives each synchronous body a
-#: pool thread, so two can read the flag before either sets it.
+#: One warning per process, not one per refusal.
 _warned_about_a_missing_record = False
-_warning_lock = threading.Lock()
 
 
 def _warn_once_about_a_missing_record(logger: logging.Logger) -> None:

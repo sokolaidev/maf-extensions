@@ -681,6 +681,7 @@ class HostToolRegistry:
             has_undeclared=bool(undeclared),
             response_limits=self._response_limits,
             max_host_tool_calls_per_run=self._max_host_tool_calls_per_run,
+            names=self.names(),
         )
 
 

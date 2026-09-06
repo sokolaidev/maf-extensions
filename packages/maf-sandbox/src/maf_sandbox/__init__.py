@@ -47,6 +47,9 @@ It also owns the seam a host *records* through: :class:`~maf_sandbox.SandboxObse
 frozen event per acquire, disposal, host-tool call, store read, collection and tool call.  Off
 by default, contained so no observer can fail a call, and written in this package's vocabulary
 rather than a telemetry one — turning an event into a span belongs above this layer, not in it.
+Beside it, :class:`~maf_sandbox.EffectiveState` is one served acquire as a *value* rather than
+an event: the posture a call actually ran under, JSON-serializable, for a host that wants it
+where the conversation lives rather than where the traces do.
 ``docs/sandbox/observability.md`` carries what each event holds and what the seam does not see.
 
 This package imports no backend and no host application.
@@ -66,6 +69,7 @@ reaching for it is a foreseeable mistake: :mod:`maf_sandbox.testing` in producti
 
 from __future__ import annotations
 
+from ._effective_state import EffectiveState
 from ._error_detail import error_detail
 from ._file_provenance import FILE_STORE_WRITE_TOOLS, FileStoreProvenance, store_key
 from ._host_tools import (
@@ -236,6 +240,7 @@ __all__ = [
     "DisposalCode",
     "DisposalFailure",
     "DisposalReport",
+    "EffectiveState",
     "HostToolCallResult",
     "Egress",
     "EntryKind",

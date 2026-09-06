@@ -1,6 +1,6 @@
 # What a sandbox reports about itself
 
-> The seam a host records through: one observer it registers, one frozen event per thing that happened, and the key that joins them. What the seam does not see is at the end, because a record with an unstated blind spot is worse than none.
+> The seam a host records through: one observer it registers, one frozen event per thing that happened, and the key that joins them — plus the snapshot of what held, for the reader who has the conversation and not the trace. What the seam does not see is at the end, because a record with an unstated blind spot is worse than none.
 
 ## The problem
 
@@ -64,7 +64,7 @@ registry = HostToolRegistry(observer=records)
 
 Every event is a frozen dataclass in this package's own vocabulary — a `SandboxKey`, a `SandboxSpec`, a `SourceIntegrity`. Nothing here imports a telemetry library; core's protocol modules are standard library only, and a package that turns these into spans, log records and counters sits above this seam rather than inside it.
 
-`SandboxAcquired` carries the whole `SandboxSpec` rather than a projection of it, deliberately: which fields a record needs is the recorder's question, and a field added to the spec later reaches an existing recorder with no change here. It is also the "what held" half that [#380](https://github.com/sokolaidev/maf-extensions/issues/380) asks for.
+`SandboxAcquired` carries the whole `SandboxSpec` rather than a projection of it, deliberately: which fields a record needs is the recorder's question, and a field added to the spec later reaches an existing recorder with no change here. It is also the "what held" half, and the section below is where that answer goes when a trace is not where somebody will look for it.
 
 **The key is what joins them, and the six do not all carry one the same way.** Three shapes, because three things are true:
 
@@ -75,6 +75,32 @@ Every event is a frozen dataclass in this package's own vocabulary — a `Sandbo
 So a host joining records treats the middle three as joinable when the key is present, and joins the last through its tuple rather than looking for a `key` field it does not have. `collect_outputs` has no key of its own, so a kind that wants its collections joined passes one; the `call_id` it already stamps on each artifact is recorded beside it, which is what reaches the folder a `per_call` sink landed them in. `HostToolRun(key=…)` is the same for a transport: without it a host-tool record says which run called and nothing about whose conversation.
 
 **Every way out of an instrumented site is recorded, not only the successful one.** An acquire that was refused, a host-tool call that a cap exhausted, a collection that a cap refused part-way, a tool call taken by a cancel — each of those is the record an operator goes looking for, and none is emitted beside a `return`. Where a site can wrap its whole body the record comes from a `finally`; where it cannot, the cancellation carries its own catch, because `CancelledError` is not an `Exception` and an `except Exception` that looks exhaustive would drop exactly the disposal a timeout took. **How a refusal is recorded differs by event, and a recorder has to know which it is holding.** `SandboxAcquired.refusal`, `OutputsCollected.refusal` and `ToolCallEnded.failure` are the exception's **class name** and never its message, because a message is what carries a backend's endpoint or an SDK's response body and these records are handed over whole. `HostToolCalled.refusal` is the other kind: it is the sanitized sentence the *guest* was answered with, which is safe for a transcript and so safe for a record — but it is not purely host vocabulary, since the two refusals that fire before a name resolves quote a bounded copy of what the guest asked for. Treat that one field as guest-influenced when deciding what may leave the process.
+
+## What held, written where the conversation lives
+
+The records above answer *what happened*. The adjacent question — **what was live for this call** — has a second destination, because the two survive different things: a span survives with the trace and whatever sampled it, and somebody reading a conversation back a month later has the transcript and no trace at all.
+
+`EffectiveState` is one served acquire as a value rather than an event: the backend that answered, the isolation rung it declared, the scope the host and the spec resolved to, the egress mode and its allowlist, the capabilities the workload required beside the ones the backend declared, the image, the guest working directory, the declared outputs, the transfer caps per direction — and **every tool the sealed host-tool registry was carrying**. That last one is the half no event answered before: a spec's `host_tools` carries the registry's *folds* — its result integrity, its identities, its ceilings — because those are what the router matches on, so which tools were actually callable existed only as the code that registered them.
+
+`effective_state_middleware()` is what writes it. Add it to the agent's middleware and every served call leaves its snapshot in `session.state["maf_sandbox.served"]`, keyed by the tool the model called:
+
+```python
+from agent_framework import Agent
+
+from maf_sandbox.maf import effective_state_middleware
+
+agent = Agent(..., middleware=[effective_state_middleware()])
+```
+
+**The served answer, not the ask.** A refused call writes nothing: it already has an exception, a log line and a `SandboxAcquired` carrying the refusal's class name, and there is no posture to describe. A call that acquired nothing writes nothing either, which leaves the tool's previous entry standing — *the last posture this tool was served under* stays true across a call that got no sandbox.
+
+**One entry per tool, overwritten each call.** Session state is persisted and lives as long as the conversation, so a per-call history here would grow without bound — and per-call is what the events above already answer. What survives here is the current answer, which is the question this destination is good at.
+
+**Posture, never payload — and the spec's `labels` are not in it.** Every field is host configuration or a backend's own declaration: no artifact name, no file name, no code, no result text. Labels are the one that is a decision rather than an obvious omission. They are host deployment vocabulary — a tenant, a cost centre, a subscription — and this record is persisted beside a transcript a deployment may classify differently, so the seam above is where a recorder that wants them reads them, with the host choosing the destination. The `SandboxKey` is out for the same reason and one more: the session **is** that conversation, so a scope and a thread id in its own state answer nothing they do not already.
+
+**And OpenTelemetry sees the same acquire from the other side.** `maf-sandbox-otel` turns each `SandboxAcquired` into a span, a log record and a counter, which is what makes the posture queryable *across* conversations rather than only inside one — the kind, the backend, the image, the isolation rung and scope, the egress mode with its allowlist and count, and both sides of the capability match. Both destinations are built from the one event, so they cannot disagree about what held; what differs is only what each survives. The sealed registry's names are on this record and not yet on that span.
+
+**Nothing is built when nobody is listening.** The acquire path checks for an observer and for an open collection before it composes either, so a host that wired neither pays for neither — the same promise the seam above makes, and pinned the same way.
 
 ## An observer cannot fail a call, and cannot slow one down safely
 
@@ -106,8 +132,9 @@ What a recorder should know is which of these values a *guest* chose. Hostnames 
 |---|---|---|
 | A `SandboxObserver` a host registers, and frozen events in core's own vocabulary | shipped — six events, registered on `SandboxRouter` and `HostToolRegistry`, passed to `collect_outputs`; refusals, cancellations and served calls alike | [#904](https://github.com/sokolaidev/maf-extensions/issues/904) (open) |
 | An observer's failure never reaches the call, and no observer builds no event | shipped — `Exception`, `CancelledError` and `GeneratorExit` contained and logged; `SystemExit` and `KeyboardInterrupt` escape | [#904](https://github.com/sokolaidev/maf-extensions/issues/904) (open) |
-| The served configuration is recorded per acquire, as the whole spec | shipped — `SandboxAcquired.spec`, beside the resolved isolation scope, which the spec alone does not answer | [#380](https://github.com/sokolaidev/maf-extensions/issues/380) (open) |
-| An OpenTelemetry recorder, under the app's providers or a security pipeline's own | partial — `maf-sandbox-otel` implements it: it registers on the router and the host-tool registry and turns each event into a log record, a span — a zero-duration point span for the one event with no duration of its own, a `StoreFileRead` — and a metric where it counts, under the app's providers or a pipeline's own. Core still cannot host it, since its protocol modules are standard library only. What is not covered is what core does not emit — the scope purge in the row below, and the proxy's own lines in the row after it | [#904](https://github.com/sokolaidev/maf-extensions/issues/904) (open); the package is [#907](https://github.com/sokolaidev/maf-extensions/pull/907) |
+| The served configuration is recorded per acquire, as the whole spec — the sealed host-tool registry's names with it | shipped — `SandboxAcquired.spec`, beside the resolved isolation scope, which the spec alone does not answer; `HostToolAggregate.names` is what makes *which tools were callable* answerable from the spec that served rather than only from the code that registered them | [#380](https://github.com/sokolaidev/maf-extensions/issues/380) (closed) |
+| What held reaches the conversation, not only the trace | shipped — `EffectiveState`, one JSON-serializable snapshot per served acquire, written into `AgentSession.state` by `effective_state_middleware()`: one entry per tool, overwritten each call, and posture only — no model-chosen text, no `SandboxSpec.labels`, no `SandboxKey` | [#380](https://github.com/sokolaidev/maf-extensions/issues/380) (closed) |
+| An OpenTelemetry recorder, under the app's providers or a security pipeline's own | partial — `maf-sandbox-otel` implements it: it registers on the router and the host-tool registry and turns each event into a log record, a span — a zero-duration point span for the one event with no duration of its own, a `StoreFileRead` — and a metric where it counts, under the app's providers or a pipeline's own. Core still cannot host it, since its protocol modules are standard library only. What is not covered is what core does not emit — the scope purge in the row below, and the proxy's own lines in the row after it — plus the sealed registry's names, which reach the session-state record above and not yet an acquire span | [#904](https://github.com/sokolaidev/maf-extensions/issues/904) (open); the package is [#907](https://github.com/sokolaidev/maf-extensions/pull/907) |
 | A record says which **call** it came from, not only which sandbox and conversation | open — the key carries no `call_id` at the default scope, so concurrent calls in one conversation are indistinguishable in the records alone. A traced host correlates by the framework's span context meanwhile | [#922](https://github.com/sokolaidev/maf-extensions/issues/922) (open) |
 | A scope purge is recorded, so thread deletion is not the one disposal nobody can see | open — `dispose_scope` emits nothing, and `SandboxDisposed` cannot carry it: a backend answers a purge with a count, not the keys it removed. It wants a seventh event keyed on `(scope, thread_id)` | [#917](https://github.com/sokolaidev/maf-extensions/issues/917) (open) |
 | The proxy's `ALLOW`/`DENY` lines reach a record, keyed to the sandbox that caused them | open — the lines die with the proxy container, and for a service-enforced backend they never leave the guest | [#904](https://github.com/sokolaidev/maf-extensions/issues/904) (open) |
