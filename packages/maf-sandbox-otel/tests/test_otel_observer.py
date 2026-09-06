@@ -8,6 +8,7 @@ the ones a guest chose stay off it until a host says otherwise.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import threading
 from dataclasses import dataclass
@@ -56,6 +57,18 @@ from maf_sandbox_otel import (
 )
 
 KEY = SandboxKey(scope="tenant-a", thread_id="thread-1", agent_dir="agent", call_id="call-9")
+#: ``call`` as a keyword where the core under test has it, and nothing where it does not.
+#:
+#: This suite runs against the workspace core *and* against every published core the wheel's
+#: range admits. ``ToolCallEnded.call`` is on no published core yet, so that second set is empty
+#: today and the check falls back to the core this checkout builds — but a core cut before the
+#: field lands would put one in it that lacks the field. Detected off the class rather than
+#: compared by version, so neither ordering needs an edit here.
+CALL: dict[str, str] = (
+    {"call": "call-4b1e"}
+    if "call" in {field.name for field in dataclasses.fields(ToolCallEnded)}
+    else {}
+)
 SPEC = SandboxSpec(
     kind="execute_code",
     image="python:3.12",
@@ -273,6 +286,7 @@ class TestTheSpanIsWrittenAfterTheFactAndStillNests:
                     seconds=0.1,
                     failure=None,
                     unclean=0,
+                    **CALL,
                 )
             )
 
@@ -298,6 +312,7 @@ class TestTheSpanIsWrittenAfterTheFactAndStillNests:
                 seconds=0.0,
                 failure=None,
                 unclean=0,
+                **CALL,
             )
         )
         span = recorded.only_span()
@@ -355,6 +370,7 @@ class TestEveryEventReachesTheLogPipeline:
                 seconds=1.5,
                 failure=None,
                 unclean=0,
+                **CALL,
             )
         )
         assert recorded.log_bodies() == [
@@ -517,6 +533,7 @@ class TestTheCasesARecorderGetsWrong:
                 seconds=4.0,
                 failure="CancelledError",
                 unclean=1,
+                **CALL,
             )
         )
         span = recorded.only_span()
@@ -538,6 +555,7 @@ class TestTheCasesARecorderGetsWrong:
                 seconds=1.0,
                 failure=None,
                 unclean=0,
+                **CALL,
             )
         )
         assert recorded.attributes()[f"{NAMESPACE}.sandbox.key"] == (
@@ -611,6 +629,7 @@ class TestTheHashIsAJoinColumn:
                 seconds=1.0,
                 failure=None,
                 unclean=0,
+                **CALL,
             )
         )
         attributes = recorded.attributes()
@@ -646,6 +665,7 @@ class TestTheCountersAnswerTheAggregateQuestions:
                 seconds=2.0,
                 failure=None,
                 unclean=0,
+                **CALL,
             )
         )
         assert recorded.counter(f"{NAMESPACE}.call.duration") == 2.0

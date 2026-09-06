@@ -63,11 +63,14 @@ from ._containment import CONTAINED, escapes_containment
 from ._error_detail import error_detail
 from ._file_provenance import FILE_STORE_WRITE_TOOLS, PATH_ARGUMENT, FileStoreProvenance
 from ._observer import (
+    RECORDED_CALL,
+    RecordedCall,
     SandboxObserver,
     StoreFileRead,
     StoreReadOutcome,
     ToolCallEnded,
     record,
+    recorded_call,
 )
 from ._outputs import (
     Artifact,
@@ -186,7 +189,13 @@ class _SandboxToolCall:
     """
 
     owner: object
-    name: str | None = None
+    #: This call's own id: the guest path, a call-scoped key and every record the call emits are
+    #: named by it. Minted at construction rather than on first use, because a record carries it
+    #: from the call's first event, before anything has asked for a path.
+    id: str = field(default_factory=lambda: uuid4().hex)
+    #: Whether a path or a key has been named after `id`, which is what the reclaim removes on.
+    #: A call that only recorded has nothing under `work_dir` to remove.
+    named: bool = False
     #: Every sandbox this call acquired, keyed, and *every* wrapper per key rather than the last.
     #: `acquire` takes a key, so one call can reach two sandboxes and write its name into both —
     #: keeping only the newest would reclaim one of them and say nothing about the other. And a
@@ -517,15 +526,17 @@ def _this_call(owner: object) -> _SandboxToolCall | None:
 
 
 def _call_name(call: _SandboxToolCall) -> str:
-    """This call's own id, allocated on first use and fixed from then on.
+    """This call's id, marked as something a path or a key is now named after.
 
-    One whole id serves both the guest path and the key, because a call-scoped sandbox and the
-    directory inside it name the same call; two would say they were two, and two calls colliding
-    on one are two calls get-or-create hands the same sandbox.
+    One whole id serves both, because a call-scoped sandbox and the directory inside it name the
+    same call; two would say they were two, and two calls colliding on one are two calls
+    get-or-create hands the same sandbox.
+
+    Ask through this only where the id is about to become a name.  A record that merely reports
+    it goes to :attr:`_SandboxToolCall.id`, which the reclaim does not read.
     """
-    if call.name is None:
-        call.name = uuid4().hex
-    return call.name
+    call.named = True
+    return call.id
 
 
 def _prefixed(name: str) -> str:
@@ -1408,6 +1419,9 @@ class SandboxToolSession:
                 integrity=integrity,
                 characters=characters,
                 outcome=outcome,
+                # From the seam rather than from `call` above, which is `None` for a body that
+                # reached a second session: the read still happened inside the outer call.
+                call=recorded_call(),
             ),
             self._logger,
         )
@@ -1509,7 +1523,7 @@ class SandboxToolSession:
                 "walks it, and no later call can name that key. A task outliving the call needs "
                 "a key of its own."
             )
-        if key.call_id and call is not None and key.call_id != call.name:
+        if key.call_id and call is not None and key.call_id != call.id:
             raise RuntimeError(
                 f"{self._name}: acquire() was given a key naming {key.call_id!r}, which is not "
                 "this call. That sandbox is either gone or is the one its own cleanup could not "
@@ -1766,7 +1780,7 @@ async def _reclaim_the_call(
         # there, and no round trip is worth spending to prove it.
         return
     prefix = _prefixed(tool)
-    path = f"{spec.work_dir}/{call.name}" if call.name is not None else spec.work_dir
+    path = f"{spec.work_dir}/{call.id}" if call.named else spec.work_dir
     acquired = tuple(call.acquired.items())
     for index, (key, sandboxes) in enumerate(acquired):
         if key.call_id:
@@ -1814,7 +1828,7 @@ async def _reclaim_the_call(
                 raise
             continue
         reasons: list[str] = []
-        if call.name is not None:
+        if call.named:
             try:
                 # By name, against the working directory — not as one composed string. A
                 # ``work_dir`` the protocol accepts may not be POSIX-shaped, and a composed path
@@ -1822,7 +1836,7 @@ async def _reclaim_the_call(
                 # call on such a spec. Through the live wrapper: the guest path is the same
                 # whichever acquire returned it, and the newest is the one still connected.
                 reason = await reclaim_guest_path(
-                    sandboxes[-1], call.name, working_directory=spec.work_dir, timeout=timeout
+                    sandboxes[-1], call.id, working_directory=spec.work_dir, timeout=timeout
                 )
             except (asyncio.CancelledError, GeneratorExit):
                 # The caller's deadline has passed, and containing this would have the call return
@@ -2343,6 +2357,11 @@ def sandboxed_tool(
         # any synchronous tool.
         @functools.wraps(body)
         def checked(*args: Any, **kwargs: Any) -> Any:
+            # No `_SandboxToolCall` — there is nothing to reclaim — so the id is minted here.
+            # One all the same: every `ToolCallEnded` names its call, and a whole class of tool
+            # would otherwise be the one that does not.
+            recording = RecordedCall(uuid4().hex)
+            recorded = RECORDED_CALL.set(recording)
             started = time.monotonic()
             raised_by_body: BaseException | None = None
             try:
@@ -2357,6 +2376,8 @@ def sandboxed_tool(
                 )
                 return result
             finally:
+                recording.closed = True
+                RECORDED_CALL.reset(recorded)
                 if router.observer is not None:
                     record(
                         router.observer,
@@ -2373,6 +2394,7 @@ def sandboxed_tool(
                             if raised_by_body is None
                             else type(raised_by_body).__name__,
                             unclean=0,
+                            call=recording.id,
                         ),
                         records,
                     )
@@ -2398,6 +2420,11 @@ def sandboxed_tool(
     async def reclaiming(*args: Any, **kwargs: Any) -> Any:
         call = _SandboxToolCall(owner=session)
         token = _CALL.set(call)
+        # Unconditionally, not behind `router.observer`: the two registration points are
+        # independent, and a host recording only host-tool calls would otherwise get runs that
+        # name no call.
+        recording = RecordedCall(call.id)
+        recorded = RECORDED_CALL.set(recording)
         started = time.monotonic()
         # What a transport notes about the sandbox during the body — a stop that did not
         # reach everything — read back once the body has returned.
@@ -2413,8 +2440,8 @@ def sandboxed_tool(
                 raised_by_body = raised
                 raise
             _refuse_a_result_that_carries_no_call_label(result, tool=name)
-            # The id is read rather than allocated where nothing committed needs it, so a
-            # tool with no `{call_id}` sentence keeps the lazy allocation it had.
+            # Gated, because `_call_name` is also what tells the reclaim a directory is named
+            # after this call: a tool with no `{call_id}` sentence must not gain one here.
             _refuse_a_result_that_departs_from_its_guidance(
                 result,
                 tool=name,
@@ -2436,6 +2463,8 @@ def sandboxed_tool(
             if isinstance(failed, (asyncio.CancelledError, GeneratorExit)):
                 bound = min(effective_timeout, _CANCELLED_CALL_GRACE)
             try:
+                # Still published, unlike `_CALL` above: a call-scoped sandbox is disposed on
+                # the way out, and that disposal is this call's rather than the framework's.
                 await _reclaim_the_call(
                     call,
                     router=router,
@@ -2447,22 +2476,30 @@ def sandboxed_tool(
                     unclean=unclean,
                 )
             finally:
-                if router.observer is not None:
-                    record(
-                        router.observer,
-                        ToolCallEnded(
-                            tool=name,
-                            kind=spec.kind,
-                            # Every key the call touched — acquired, refused, or only read the
-                            # store under — so each of its other events has a call to join to.
-                            # `acquired` would name the served ones alone.
-                            keys=tuple(call.touched),
-                            seconds=time.monotonic() - started,
-                            failure=None if failed is None else type(failed).__name__,
-                            unclean=len(unclean),
-                        ),
-                        records,
-                    )
+                try:
+                    if router.observer is not None:
+                        record(
+                            router.observer,
+                            ToolCallEnded(
+                                tool=name,
+                                kind=spec.kind,
+                                # Every key the call touched — acquired, refused, or only read
+                                # the store under — so each of its other events has a call to
+                                # join to. `acquired` would name the served ones alone.
+                                keys=tuple(call.touched),
+                                seconds=time.monotonic() - started,
+                                failure=None if failed is None else type(failed).__name__,
+                                unclean=len(unclean),
+                                call=call.id,
+                            ),
+                            records,
+                        )
+                finally:
+                    # Closed as well as reset, and in that order: a task the body left running
+                    # holds a copy of this context, and the record inside it is the only part
+                    # the copy shares.
+                    recording.closed = True
+                    RECORDED_CALL.reset(recorded)
 
     return [decorate(reclaiming)]
 

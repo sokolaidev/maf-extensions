@@ -30,6 +30,7 @@ from ._observer import (
     SandboxObserver,
     ScopeDisposed,
     record,
+    recorded_call,
     refuse_an_unusable_observer,
 )
 from ._protocol import (
@@ -1156,6 +1157,7 @@ class SandboxRouter:
                 outcome=_reported(failure),
                 failure=failure,
                 seconds=time.monotonic() - started,
+                call=recorded_call(),
             ),
             logger,
         )
@@ -1212,6 +1214,7 @@ class SandboxRouter:
                 disposed=disposed,
                 failure=failure,
                 seconds=time.monotonic() - started,
+                call=recorded_call(),
             ),
             logger,
         )
@@ -1369,6 +1372,7 @@ class SandboxRouter:
                     declarations=declarations,
                     seconds=time.monotonic() - started,
                     refusal=refusal,
+                    call=recorded_call(),
                 ),
                 logger,
             )

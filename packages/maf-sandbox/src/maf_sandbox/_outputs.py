@@ -36,6 +36,7 @@ from ._observer import (
     OutputsCollected,
     SandboxObserver,
     record,
+    recorded_call,
     refuse_an_unusable_observer,
 )
 from ._protocol import (
@@ -833,6 +834,7 @@ async def collect_outputs(
                 seconds=time.monotonic() - started,
                 refusal=refusal,
                 call_id=call_id,
+                call=recorded_call(),
             ),
             logger,
         )
