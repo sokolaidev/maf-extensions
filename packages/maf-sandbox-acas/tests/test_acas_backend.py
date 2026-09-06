@@ -2571,7 +2571,7 @@ class _ConformanceSubject:
         """No guest program here to ask, and the reach probes never reach this subject."""
         raise NotImplementedError(f"no guest here to make {path!r}")
 
-    async def the_guest_could_have_made(self, path: str) -> bool:
+    async def the_guest_can_write(self, path: str) -> bool:
         """No guest program here to ask, and the reach probes never reach this subject."""
         raise NotImplementedError(f"no guest here to ask about {path!r}")
 

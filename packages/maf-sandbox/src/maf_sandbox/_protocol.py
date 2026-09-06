@@ -892,10 +892,13 @@ class Sandbox(Protocol):
                 working directory itself.
             NotADirectoryError: If a parent is neither a directory nor a link.
 
-        The reach rule binds here wherever the file plane acts with more authority than the
-        guest program: what lands must be something that program could have landed, since a
-        directory it owns is one it can swap between the check and the write.  The file name
-        check cannot race: it is text arithmetic over arguments nothing else can reach.
+        **What lands is the guest program's to write.**  A kind's inputs exist to be consumed by
+        that program, which reads them, edits them in place and deletes them when it is done, so
+        a file plane acting with more authority than the guest must not hand back content that
+        program cannot change.  This is the reach rule's write direction: a directory the guest
+        owns is one it can swap between the check and the write, and a plane that lands what the
+        guest cannot touch is one acting above it.  The file name check cannot race: it is text
+        arithmetic over arguments nothing else can reach.
         """
         ...
 

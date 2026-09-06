@@ -111,7 +111,7 @@ class _FakeSubject:
         """No guest program here to ask, and the reach probes never reach this subject."""
         raise NotImplementedError(f"no guest here to make {path!r}")
 
-    async def the_guest_could_have_made(self, path: str) -> bool:
+    async def the_guest_can_write(self, path: str) -> bool:
         """No guest program here to ask, and the reach probes never reach this subject."""
         raise NotImplementedError(f"no guest here to ask about {path!r}")
 
@@ -1346,7 +1346,7 @@ class _RuntimeOnlySubject:
         """No guest program here to ask, and the reach probes never reach this subject."""
         raise NotImplementedError(f"no guest here to make {path!r}")
 
-    async def the_guest_could_have_made(self, path: str) -> bool:
+    async def the_guest_can_write(self, path: str) -> bool:
         """No guest program here to ask, and the reach probes never reach this subject."""
         raise NotImplementedError(f"no guest here to ask about {path!r}")
 
@@ -2032,6 +2032,30 @@ class TestReachConformance:
         reported = failures["a-removal-stays-at-the-guests-authority"]
         assert reported is not None
         assert ("unavailable" if broken == "raises" else "control removal") in reported
+
+    def test_a_control_that_cannot_be_planted_fails_the_probe(self):
+        """The guest just made `swappable`, so failing to make a child under it is a fault.
+
+        Treating it as "no control needed" would let the protected refusal below stand in for
+        evidence it never gathered — the same false pass the control exists to prevent.
+        """
+
+        class _NoControl(_SimulatedGuest):
+            async def exec(self, command, *, working_directory: str, timeout: float):
+                argv = [command] if isinstance(command, str) else list(command)
+                if argv[0:1] == ["mkdir"] and "removable" in argv[-1]:
+                    return ExecResult(stdout="", stderr="refused", exit_code=1)
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        sandbox = _NoControl(writes_as_the_host=True)
+        sandbox.directories.add(_WORK)
+        reported = _sim_results(_subject_over(sandbox), run_reach_probes)[
+            "a-removal-stays-at-the-guests-authority"
+        ]
+        assert reported is not None
+        assert "no control" in reported
 
     def test_a_backend_that_only_removes_empty_directories_fails_the_control(self):
         """The control has to carry content, because the protected removal is recursive.

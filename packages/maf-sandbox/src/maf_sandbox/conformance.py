@@ -186,12 +186,12 @@ class ConformanceSubject(Protocol):
         """
         ...
 
-    async def the_guest_could_have_made(self, path: str) -> bool:
-        """Whether the guest program could have put ``path`` there itself, and could undo it.
+    async def the_guest_can_write(self, path: str) -> bool:
+        """Whether the guest program can write ``path`` — a file's bytes, a directory's entries.
 
-        The reach rule asked about one path that already exists: the guest can write its bytes,
-        and can create or unlink it in its parent.  What a method left behind is how a probe
-        reads the authority it ran with, the operation itself being over by then.
+        One question, asked of different things by the two probes that need it: of what a write
+        left behind, and of a directory a removal was aimed at.  What a method left behind is
+        how a probe reads the authority it ran with, the operation itself being over by then.
         """
         ...
 
@@ -272,13 +272,13 @@ class PosixGuestSubject:
             )
         return made.exit_code == 0
 
-    async def the_guest_could_have_made(self, path: str) -> bool:
-        """``test -w`` on the path and on its parent, which is what creating one there takes.
+    async def the_guest_can_write(self, path: str) -> bool:
+        """``test -w``, which answers for a file and a directory alike.
 
-        Permission rather than ownership: a mode the guest can write is within its reach
-        whoever owns it, and a uid comparison would report that as a violation.
+        Permission rather than ownership: a mode the guest can write is one it controls whoever
+        owns it, and a uid comparison would report that as a violation.
         """
-        return await self._writable(path) and await self._writable(posixpath.dirname(path) or "/")
+        return await self._writable(path)
 
     async def _writable(self, path: str) -> bool:
         """``test -w``, reading an exit code above 1 the way :meth:`exists` does."""
@@ -1874,11 +1874,11 @@ async def _probe_a_write_lands_within_the_guests_reach(
     await subject.sandbox.write_file(
         landed, b"a write the guest could have made\n", working_directory=subject.working_directory
     )
-    if not await subject.the_guest_could_have_made(landed):
+    if not await subject.the_guest_can_write(landed):
         raise AssertionError(
-            f"the file it wrote is beyond the guest program: {landed!r} carries authority that "
-            f"program does not have, and it went into a directory that program owns — which is "
-            f"the directory a swap replaces"
+            f"the guest program cannot write {landed!r}, which `write_file` says it must be able "
+            f"to — a plane landing what the guest cannot change is one acting above it, into a "
+            f"directory that program owns and can therefore replace with a link"
         )
 
 
@@ -1890,12 +1890,17 @@ async def _probe_a_removal_stays_at_the_guests_authority(
     survivor = f"{held}/keep.txt"
     if not await subject.plant_directory_the_guest_owns(swappable):
         return
-    # `held` and the survivor are the *file plane's*, never the guest's: what that plane
-    # creates, it creates at its own authority. A protected directory the guest made would
-    # be one the guest can open again, since it owns the inode, so a removal that emptied it
-    # would have reached only what that program could have reached anyway.
-    await subject.plant_file(survivor, b"only the host could take this\n")
-    if await subject.the_guest_could_have_made(held):
+    # Through `write_file` rather than `plant_file`: `held` has to be the *file plane's*, and
+    # only the plane under test is guaranteed to be that. A subject plants however its guest
+    # allows, so a `plant_file` that ran in the guest would make `held` the guest's — and a
+    # directory the guest owns is one it can open again, so a removal that emptied it would
+    # have reached only what that program could have reached anyway. Hence FILES_IN below.
+    await subject.sandbox.write_file(
+        survivor,
+        b"only the host could take this\n",
+        working_directory=subject.working_directory,
+    )
+    if await subject.the_guest_can_write(held):
         return
     # The positive control, through the same method: a removal this backend can actually
     # make. `OSError` is what every backend raises for a removal it could not perform at
@@ -1908,19 +1913,24 @@ async def _probe_a_removal_stays_at_the_guests_authority(
     # be one a guest-authority removal must refuse. Nothing catches it: a control that
     # cannot run is this probe failing.
     removable = f"{swappable}/removable"
-    if await subject.plant_directory_the_guest_owns(f"{removable}/inner"):
-        await subject.sandbox.remove(
-            "reach-delete/removable",
-            working_directory=subject.working_directory,
-            recursive=True,
+    if not await subject.plant_directory_the_guest_owns(f"{removable}/inner"):
+        raise AssertionError(
+            f"could not make {removable!r} under a directory the guest had just made, so this "
+            f"probe has no control and the refusal below would say nothing about which "
+            f"principal ran"
         )
-        for left, what in ((f"{removable}/inner", "the tree under it"), (removable, "it")):
-            if await subject.exists(left):
-                raise AssertionError(
-                    f"the control removal left {what} standing, so this backend's remove "
-                    f"does not work here and the refusal below would say nothing about "
-                    f"which principal ran"
-                )
+    await subject.sandbox.remove(
+        "reach-delete/removable",
+        working_directory=subject.working_directory,
+        recursive=True,
+    )
+    for left, what in ((f"{removable}/inner", "the tree under it"), (removable, "it")):
+        if await subject.exists(left):
+            raise AssertionError(
+                f"the control removal left {what} standing, so this backend's remove "
+                f"does not work here and the refusal below would say nothing about "
+                f"which principal ran"
+            )
     try:
         await subject.sandbox.remove(
             "reach-delete/held", working_directory=subject.working_directory, recursive=True
@@ -1965,7 +1975,7 @@ REACH_PROBES: tuple[Probe, ...] = (
             "cannot see is a host-authority removal whose target the guest could have taken "
             "anyway: the rule permits reaching that, so the probe stops rather than judging."
         ),
-        requires=frozenset({Capability.FILES_DELETE}),
+        requires=frozenset({Capability.FILES_IN, Capability.FILES_DELETE}),
         run=_probe_a_removal_stays_at_the_guests_authority,
     ),
 )
@@ -1974,18 +1984,11 @@ REACH_PROBES: tuple[Probe, ...] = (
 async def run_reach_probes(subject: ConformanceSubject) -> tuple[ProbeResult, ...]:
     """Run the reach probes. Gated per probe, so a backend serving neither surface skips both.
 
-    **A green run is not the whole rule, and both probes read less than it.** The write probe
-    reads what a write left behind, which a host-authority plane satisfies by stamping the
-    guest's uid (#967). The removal probe reads whether a removal took something the guest
-    could not have taken, so a host-authority removal aimed at something the guest *could*
-    have taken passes it, and where the file plane hands the guest everything it creates that
-    is every target the probe can build, which is why it stops on `maf-sandbox-docker`. Both
-    stop rather than judge wherever the rule permits what they see.
-
-    The layout is left where it lies, ``reach-delete/held`` included — a directory the guest
-    cannot empty, since closing one is how the removal probe gets something to measure.
-    Nothing else in this module reclaims the working directory whole, and a caller that wants
-    one clean runs this suite last.
+    A probe that finds nothing the rule binds returns without asserting, and that counts as a
+    pass — ``skipped`` reports the capability gate and nothing else. The layout is left where
+    it lies, ``reach-delete/held`` included: a directory the guest cannot empty. Nothing else
+    in this module reclaims the working directory whole, and a caller that wants one clean
+    runs this suite last.
     """
     return await _run_suite(subject, None, _plant_nothing, REACH_PROBES)
 
