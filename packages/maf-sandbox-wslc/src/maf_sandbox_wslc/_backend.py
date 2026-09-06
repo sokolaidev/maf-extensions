@@ -216,10 +216,9 @@ def _network_name(container: str) -> str:
 def _reads_as_absent(stderr: str) -> bool:
     """Whether ``stderr`` is this engine saying the container is not there.
 
-    Two spellings because this CLI has two: ``_NOT_FOUND`` is what ``container remove`` and
-    ``container inspect`` answer with, and ``_NO_SUCH`` is the docker-engine wording
-    ``container cp`` borrows.  Matching one of them classified a missing proxy as a window
-    this backend could not account for, which is a false alarm on every first acquire.
+    Two spellings, and a caller has to accept both: ``_NOT_FOUND`` is what ``container remove``
+    and ``container inspect`` answer with, ``_NO_SUCH`` the docker-engine wording ``container
+    cp`` borrows.
     """
     lowered = stderr.lower()
     return _NOT_FOUND.lower() in lowered or _NO_SUCH in lowered
@@ -993,10 +992,10 @@ class WslcSandboxBackend:
             )
         for target in names:
             removal = await self._remove(target)
-            if removal.removed:
-                # Only once it has actually gone. A proxy a removal could not take is
-                # still running and still deciding, and a retry has to be able to key its
-                # drain.
+            if removal.removed and target.endswith(_PROXY_SUFFIX):
+                # Keyed on the *proxy* going, not the pair: a workload can go while its proxy
+                # stays, and that proxy is still running and still deciding. Dropping the entry
+                # then would leave the next purge unable to key its drain.
                 self._acquired.pop(target.removesuffix(_PROXY_SUFFIX), None)
             if removal.removed and not target.endswith(_PROXY_SUFFIX):
                 logger.info("sandbox released: container=%s thread=%s (purge)", target, thread_id)
@@ -1014,7 +1013,9 @@ class WslcSandboxBackend:
         if self._config.egress_proxy_image is not None:
             for workload in (n for n in names if not n.endswith(_PROXY_SUFFIX)):
                 if _proxy_name(workload) not in listed_set:
-                    await self._remove(_proxy_name(workload))
+                    # The same rule as above: attribution goes when the proxy does.
+                    if (await self._remove(_proxy_name(workload))).removed:
+                        self._acquired.pop(workload, None)
                 networks.add(_network_name(workload))
         for net in networks:
             await self._remove_network(net)

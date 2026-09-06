@@ -791,9 +791,10 @@ class SandboxRouter:
             # Reverse order: the same backend instance may be registered twice, and unwinding
             # forwards would end by reinstating this router's reporter rather than the original.
             for taken, previous in reversed(installed):
-                # Best effort, and contained: this is already unwinding, and a backend that
-                # cannot be switched off must not replace the failure that got us here.
-                with contextlib.suppress(Exception):
+                # `BaseException`, not `Exception`: this block is entered for one, so a restore
+                # hook raising a cancel or an interrupt would both replace the failure being
+                # preserved and skip every backend after it. The original is what propagates.
+                with contextlib.suppress(BaseException):
                     taken.observe_egress(previous)
             raise
 

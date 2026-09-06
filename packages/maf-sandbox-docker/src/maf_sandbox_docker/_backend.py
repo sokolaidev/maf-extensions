@@ -1695,10 +1695,10 @@ class DockerSandboxBackend:
             )
         for target in names:
             removal = await self._remove(target)
-            if removal.removed:
-                # Only once it has actually gone. A proxy a removal could not take is
-                # still running and still deciding, and a retry has to be able to key its
-                # drain.
+            if removal.removed and target.endswith(_PROXY_SUFFIX):
+                # Keyed on the *proxy* going, not the pair: a workload can go while its proxy
+                # stays, and that proxy is still running and still deciding. Dropping the entry
+                # then would leave the next purge unable to key its drain.
                 self._acquired.pop(target.removesuffix(_PROXY_SUFFIX), None)
             if removal.removed and not target.endswith(_PROXY_SUFFIX):
                 logger.info("sandbox released: container=%s thread=%s (purge)", target, thread_id)
@@ -1715,7 +1715,9 @@ class DockerSandboxBackend:
         }
         for workload in (n for n in names if not n.endswith(_PROXY_SUFFIX)):
             if _proxy_name(workload) not in listed_set:
-                await self._remove(_proxy_name(workload))
+                # The same rule as above: attribution goes when the proxy does.
+                if (await self._remove(_proxy_name(workload))).removed:
+                    self._acquired.pop(workload, None)
             networks.add(_network_name(workload))
         for net in networks:
             await self._remove_network(net)

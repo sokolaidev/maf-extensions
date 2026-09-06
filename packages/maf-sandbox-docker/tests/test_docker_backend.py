@@ -3915,6 +3915,22 @@ class TestTheProxysOwnDecisionsReachARecord:
         asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
         assert _AL in backend._acquired
 
+    def test_attribution_outlives_a_workload_whose_proxy_would_not_go(self):
+        """A workload can go while its proxy stays, and that proxy is still deciding. Keying the
+        drop on the pair rather than on the proxy left the next purge unable to key it."""
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert _AL in backend._acquired
+
+        def stubborn_proxy(args: tuple[str, ...]) -> _DockerResult:
+            if args[:1] == ("rm",) and args[-1] == _AL_PROXY:
+                return _DockerResult(1, b"", "device or resource busy")
+            return _machine(running=[_AL])(args)
+
+        fake._responder = stubborn_proxy
+        asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+        assert _AL in backend._acquired
+
     def test_the_last_window_is_drained_at_disposal(self):
         seen: list[EgressObserved] = []
         backend, _fake = _backend_with(

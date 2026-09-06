@@ -276,11 +276,13 @@ class ScopeDisposed(SandboxEvent):
 
 
 #: What an egress enforcer did with one CONNECT.  Both refusals are kept apart because they
-#: refuse different things: ``"DENY"`` is a host absent from the spec's allowlist, and
-#: ``"DENY-NONGLOBAL"`` is an allowlisted host that resolved to a private address — the shape a
-#: guest reaching back at the host's own services takes, which an allowlist alone does not
-#: catch.  ``"UNREACHABLE"`` *allowed* the tunnel and then failed to open it, so it belongs with
-#: the permitted attempts rather than the refused ones.
+#: refuse different things.  ``"DENY"`` is the target refused on the enforcer's own terms — a
+#: host absent from the spec's allowlist **or** a port outside the ones it permits, so a
+#: permitted host on a forbidden port lands here too and a reader must not take it for a host
+#: verdict.  ``"DENY-NONGLOBAL"`` is an allowlisted host that resolved to a private address —
+#: the shape a guest reaching back at the host's own services takes, which an allowlist alone
+#: does not catch.  ``"UNREACHABLE"`` *allowed* the tunnel and then failed to open it, so it
+#: belongs with the permitted attempts rather than the refused ones.
 EgressDecisionCode = Literal["ALLOW", "DENY", "DENY-NONGLOBAL", "UNREACHABLE"]
 
 

@@ -1022,6 +1022,37 @@ class TestABackendReportsWhatItsEgressEnforcementDecided:
         assert backend.report is held
         assert first.observer is not None
 
+    def test_a_restore_that_raises_neither_replaces_the_failure_nor_stops_the_rest(self):
+        """The rollback is entered for a `BaseException`, so containing only `Exception` let a
+        cancel inside a restore replace the construction failure and skip every backend after
+        it — in reverse order, that is the ones installed first."""
+        first, second = _Reporting(), _Reporting()
+        held = _Recorder()
+        keeper = _router(first, observer=held)
+        assert first.report is not None and keeper.observer is held
+
+        class _RefusesToRestore(_Reporting):
+            def observe_egress(self, report: EgressReporter | None) -> EgressReporter | None:
+                if report is None:
+                    raise asyncio.CancelledError
+                return super().observe_egress(report)
+
+        awkward = _RefusesToRestore()
+
+        class _RefusesTheReporter(InProcessSandboxBackend):
+            def observe_egress(self, report: EgressReporter | None) -> EgressReporter | None:
+                raise RuntimeError("this backend will not take one")
+
+        with pytest.raises(RuntimeError, match="will not take one"):
+            SandboxRouter(
+                [first, awkward, _RefusesTheReporter(), second],
+                min_isolation=Isolation.NONE,
+                observer=_Recorder(),
+            )
+        # `awkward` refused its own restore; `first` is behind it in reverse order and still had
+        # to be put back, and the construction failure is the one that surfaced.
+        assert first.report is not None
+
     def test_the_declaration_without_the_method_is_warned_about(self, caplog):
         """Silence from this pair means *unwatched*, and the declaration says *watched* — which
         is the one reading that turns an absent record into a clean bill of health."""
