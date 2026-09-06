@@ -292,7 +292,7 @@ class PosixGuestSubject:
         if made.exit_code > 1:
             raise RuntimeError(
                 f"could not ask the guest to make {path!r} "
-                f"(`mkdir -p` exited {made.exit_code}): {made.stderr.strip()}"
+                f"(`mkdir` exited {made.exit_code}): {made.stderr.strip()}"
             )
         return made.exit_code == 0
 
@@ -1967,6 +1967,13 @@ async def _probe_a_removal_takes_nothing_beyond_the_guest(
     # reaching what is inside and there is nothing here to judge.
     if await subject.the_guest_can_delete(decoy):
         return
+    # A parent the guest cannot search hides its entries from the guest's own `test` as surely
+    # as it refuses a removal, so an outcome read through it would call a survivor deleted and
+    # fail a backend that correctly refused. Where the entries cannot be seen before the call,
+    # they cannot be read after it either, and the probe has nothing to judge.
+    for planted in (survivor, decoy):
+        if not await subject.exists(planted):
+            return
     # The positive control, through the same method: a removal this backend can actually make.
     # `OSError` is what every backend raises for a removal it could not perform at all, a
     # service failure as much as a refusal, so without this a `remove` that is merely

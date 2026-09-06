@@ -31,7 +31,10 @@ SAMPLES = REPO_ROOT / "samples"
 #: REACH is deliberately absent: its probes stop rather than fail wherever nothing on the path
 #: is the guest's to swap, so requiring the call would add a green run to two backends it can
 #: say nothing about. `maf-sandbox-docker` wires it against the one image shape where it bites;
-#: `maf-sandbox-acas` is expected to fail it, and wiring it there is #950's to do.
+#: `maf-sandbox-acas` cannot answer either probe today and would not fail them: since #962
+#: it withholds `FILES_DELETE` on a non-root image, so the removal probe skips, and the
+#: write probe stops unless the guest owns `work_dir` — which `acquire` does not create and
+#: the suite's own marker write lands as the host. It needs an image of that shape first.
 #: Appended rather than inserted — `SUITES[0]` and `SUITES[3]` are indexed positionally below,
 #: and a new member must not shift what those point at.
 SUITES = (

@@ -2177,29 +2177,33 @@ class TestReachConformance:
         ]
         assert reported is not None
 
-    def test_a_parent_the_guest_cannot_search_is_not_read_as_a_deletion(self):
-        """An unsearchable parent hides the file from `test -e` as well as refusing the removal.
+    def test_an_unsearchable_parent_stops_the_probe_rather_than_failing_a_refusal(self):
+        """A parent the guest cannot search hides its entries from `test -e` as well.
 
-        Measured: with the parent at mode 0222, `rm -f` exits 1 and `test -e` exits 1 while the
-        file is still there. Asking about absence before `rm` reports success calls that a
-        deletion, and the probe stops on the very shape the calibration exists to find.
+        Measured: at mode 0222 both `rm -f` and `test -e` exit 1 while the file is still there.
+        So a backend that correctly refused would have its survivors read as deleted and be
+        rejected for conforming. The probe stops instead — and the same blindness means a
+        host-authority removal through such a parent is not caught either, which is the cost of
+        reading an outcome the guest cannot see.
         """
 
         class _UnsearchableParent(_SimulatedGuest):
             async def exec(self, command, *, working_directory: str, timeout: float):
                 argv = [command] if isinstance(command, str) else list(command)
-                if "decoy" in argv[-1] and argv[0:1] in (["rm"], ["test"]):
+                if argv[0:1] in (["rm"], ["test"]) and "/held/" in argv[-1]:
                     return ExecResult(stdout="", stderr="Permission denied", exit_code=1)
                 return await super().exec(
                     command, working_directory=working_directory, timeout=timeout
                 )
 
-        sandbox = _UnsearchableParent(writes_as_the_host=True, removes_as_the_host=True)
+        sandbox = _UnsearchableParent(writes_as_the_host=True)
         sandbox.directories.add(_WORK)
-        reported = _sim_results(_subject_over(sandbox), run_reach_probes)[
-            "a-removal-takes-nothing-beyond-the-guest"
-        ]
-        assert reported is not None
+        assert (
+            _sim_results(_subject_over(sandbox), run_reach_probes)[
+                "a-removal-takes-nothing-beyond-the-guest"
+            ]
+            is None
+        )
 
     def test_a_guest_without_rm_raises_rather_than_calibrating_on_nothing(self):
         """127 is the harness failing, and "cannot delete" is what it would otherwise read as.
