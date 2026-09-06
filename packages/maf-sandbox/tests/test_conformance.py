@@ -115,10 +115,6 @@ class _FakeSubject:
         """No guest program here to ask, and the reach probes never reach this subject."""
         raise NotImplementedError(f"no guest here to ask about {path!r}")
 
-    async def plant_directory_the_guest_cannot_write_into(self, path: str) -> bool:
-        """The same: a mode means nothing to a store that keeps bytes and names."""
-        raise NotImplementedError(f"no guest here to close {path!r} against")
-
 
 class _Leaky:
     """A sandbox that really does resolve through a link, with each duty on a switch.
@@ -588,10 +584,12 @@ class _SimulatedGuest:
             raise ValueError(f"{guest!r} is a link")
         if self._writes_as_the_host:
             # Only what this write *creates* becomes the host's: a directory the guest already
-            # made stays the guest's, which is the shape the reach probes plant.
+            # made stays the guest's, which is the shape the reach probes plant. Walked from the
+            # root rather than from `working_directory`, because a caller may name any base and
+            # the engine creates the missing components either way.
             self.beyond_the_guest.add(guest)
-            so_far = base
-            for part in (p for p in posixpath.dirname(guest)[len(base) :].split("/") if p):
+            so_far = ""
+            for part in (p for p in posixpath.dirname(guest).split("/") if p):
                 so_far = f"{so_far}/{part}"
                 if not self._is_there(so_far):
                     self.beyond_the_guest.add(so_far)
@@ -725,14 +723,6 @@ class _SimulatedGuest:
                 posixpath.normpath(posixpath.join(working_directory, argv[-1]))
             )
             return ExecResult(stdout="")
-        if argv[0:1] == ["chmod"]:
-            # `chmod 500 <dir>`: the guest closing a directory against itself. It records the
-            # mode whoever owns the directory, because what a mode *means* is `test -w`'s to
-            # answer and root's answer does not change.
-            self.beyond_the_guest.add(
-                posixpath.normpath(posixpath.join(working_directory, argv[-1]))
-            )
-            return ExecResult(stdout="")
         if argv[0:1] == ["test"]:
             operand = self._resolve(posixpath.normpath(posixpath.join(working_directory, argv[-1])))
             if argv[1:2] == ["-f"]:
@@ -774,6 +764,13 @@ class _SimSubject(PosixGuestSubject):
 
 def _sim_subject(**kwargs) -> _SimSubject:
     sandbox = _SimulatedGuest(**kwargs)
+    return _SimSubject(
+        sandbox=sandbox, working_directory=_WORK, capabilities=_EVERYTHING, exec_timeout=5
+    )
+
+
+def _subject_over(sandbox: _SimulatedGuest) -> _SimSubject:
+    """A subject over an already-built simulator, for the specimens that need seeding first."""
     return _SimSubject(
         sandbox=sandbox, working_directory=_WORK, capabilities=_EVERYTHING, exec_timeout=5
     )
@@ -1350,10 +1347,6 @@ class _RuntimeOnlySubject:
     async def the_guest_could_have_made(self, path: str) -> bool:
         """No guest program here to ask, and the reach probes never reach this subject."""
         raise NotImplementedError(f"no guest here to ask about {path!r}")
-
-    async def plant_directory_the_guest_cannot_write_into(self, path: str) -> bool:
-        """The same: a mode means nothing to a store that keeps bytes and names."""
-        raise NotImplementedError(f"no guest here to close {path!r} against")
 
 
 class TestReclaimConformance:
@@ -1944,6 +1937,20 @@ class TestCallScopeConformance:
             asyncio.run(run())
 
 
+def _host_plane(**kwargs) -> _SimulatedGuest:
+    """A file plane acting as the host over a working directory the guest owns.
+
+    ACAS's shape, and the only one the reach probes can say anything about: #710 records the
+    launcher creating `work_dir` as the guest where a kind shares no file, which is what leaves
+    a component on every path for that program to swap. Seeded here because the suite's own
+    marker file would otherwise make the work directory the host's too, and then nothing under
+    it is plantable and both probes stop.
+    """
+    sandbox = _SimulatedGuest(writes_as_the_host=True, **kwargs)
+    sandbox.directories.add(_WORK)
+    return sandbox
+
+
 class TestReachConformance:
     """The reach rule as probes: what a write left behind, and what a removal took."""
 
@@ -1953,17 +1960,29 @@ class TestReachConformance:
         )
 
     def test_a_write_at_the_hosts_authority_fails_the_write_probe(self):
-        failures = _sim_results(_sim_subject(writes_as_the_host=True), run_reach_probes)
+        failures = _sim_results(_subject_over(_host_plane()), run_reach_probes)
         assert failures["a-write-leaves-nothing-beyond-the-guest"] is not None
+        # The removal here is the guest's, and this specimen makes every removal that principal
+        # could make — so a probe that flagged it would be rejecting a conforming backend. The
+        # protected directory is the file plane's precisely so the guest cannot reopen it.
+        assert failures["a-removal-stays-at-the-guests-authority"] is None
 
-    def test_a_removal_at_the_hosts_authority_fails_the_removal_probe(self):
-        failures = _sim_results(_sim_subject(removes_as_the_host=True), run_reach_probes)
-        assert failures["a-removal-stays-at-the-guests-authority"] is not None
+    def test_a_host_authority_removal_over_a_guest_owned_target_is_not_caught(self):
+        """The limit of what this probe reads, asserted rather than left to be discovered.
+
+        The write plane here is the guest's, so every target the probe can build is one the
+        guest could have emptied itself — and reaching that is what the rule permits. The probe
+        stops instead of judging, which is a pass. Catching this backend needs the swap, and
+        the swap is the race the suite refuses to run.
+        """
+        assert _sim_results(
+            _sim_subject(removes_as_the_host=True), run_reach_probes
+        ) == dict.fromkeys([p.name for p in REACH_PROBES], None)
 
     def test_one_file_plane_at_the_hosts_authority_fails_both(self):
         """The shape a backend has when its data plane is the host's and there is no other."""
         failures = _sim_results(
-            _sim_subject(writes_as_the_host=True, removes_as_the_host=True), run_reach_probes
+            _subject_over(_host_plane(removes_as_the_host=True)), run_reach_probes
         )
         assert all(failure is not None for failure in failures.values())
 
@@ -1974,7 +1993,7 @@ class TestReachConformance:
         why these probes are sharp on one image and vacuous on another.
         """
         assert _sim_results(
-            _sim_subject(guest_is_root=True, writes_as_the_host=True, removes_as_the_host=True),
+            _subject_over(_host_plane(guest_is_root=True, removes_as_the_host=True)),
             run_reach_probes,
         ) == dict.fromkeys([p.name for p in REACH_PROBES], None)
 
@@ -1986,10 +2005,7 @@ class TestReachConformance:
         """
         sandbox = _SimulatedGuest(writes_as_the_host=True, removes_as_the_host=True)
         sandbox.beyond_the_guest.add(_WORK)
-        subject = _SimSubject(
-            sandbox=sandbox, working_directory=_WORK, capabilities=_EVERYTHING, exec_timeout=5
-        )
-        assert _sim_results(subject, run_reach_probes) == dict.fromkeys(
+        assert _sim_results(_subject_over(sandbox), run_reach_probes) == dict.fromkeys(
             [p.name for p in REACH_PROBES], None
         )
 
@@ -2008,10 +2024,9 @@ class TestReachConformance:
                 if broken == "raises":
                     raise OSError("the data plane is unavailable")
 
-        failures = _sim_results(
-            _SimSubject(sandbox=_Broken(), working_directory=_WORK, capabilities=_EVERYTHING),
-            run_reach_probes,
-        )
+        broken_sandbox = _Broken(writes_as_the_host=True)
+        broken_sandbox.directories.add(_WORK)
+        failures = _sim_results(_subject_over(broken_sandbox), run_reach_probes)
         reported = failures["a-removal-stays-at-the-guests-authority"]
         assert reported is not None
         assert ("unavailable" if broken == "raises" else "control removal") in reported
@@ -2029,26 +2044,23 @@ class TestReachConformance:
                 del path, working_directory, recursive
                 raise TimeoutError("the service never answered")
 
-        failures = _sim_results(
-            _SimSubject(sandbox=_TimesOut(), working_directory=_WORK, capabilities=_EVERYTHING),
-            run_reach_probes,
-        )
+        timing_out = _TimesOut(writes_as_the_host=True)
+        timing_out.directories.add(_WORK)
+        failures = _sim_results(_subject_over(timing_out), run_reach_probes)
         assert failures["a-removal-stays-at-the-guests-authority"] is not None
         assert "TimeoutError" in failures["a-removal-stays-at-the-guests-authority"]
 
-    @pytest.mark.parametrize("missing", ["mkdir", "chmod"])
-    def test_a_guest_missing_a_utility_raises_rather_than_passing(self, missing):
+    def test_a_guest_missing_mkdir_raises_rather_than_passing(self):
         """127 is the harness failing, not the guest refusing, and the two look alike here.
 
-        Read as a refusal, a missing `mkdir` says the guest may write nowhere and a missing
-        `chmod` says it writes everywhere — opposite readings that stop the same probes, so the
-        suite would report success having attacked nothing.
+        Read as a refusal, a missing `mkdir` says the guest may write nowhere, which stops both
+        probes — so the suite would report success having attacked nothing.
         """
 
         class _WithoutTheUtility(_SimulatedGuest):
             async def exec(self, command, *, working_directory: str, timeout: float):
                 argv = [command] if isinstance(command, str) else list(command)
-                if argv[0:1] == [missing]:
+                if argv[0:1] == ["mkdir"]:
                     return ExecResult(stdout="", stderr="not found", exit_code=127)
                 return await super().exec(
                     command, working_directory=working_directory, timeout=timeout
@@ -2061,7 +2073,7 @@ class TestReachConformance:
             run_reach_probes,
         )
         assert [f for f in failures.values() if f is not None], (
-            f"a guest without `{missing}` passed every reach probe"
+            "a guest without `mkdir` passed every reach probe"
         )
         assert all("exited 127" in f for f in failures.values() if f is not None)
 
@@ -2079,7 +2091,7 @@ class TestReachConformance:
 
     def test_the_assert_entry_point_names_the_suite(self):
         with pytest.raises(ConformanceFailure, match="REACH conformance probes failed"):
-            asyncio.run(assert_reach_conformance(_sim_subject(writes_as_the_host=True)))
+            asyncio.run(assert_reach_conformance(_subject_over(_host_plane())))
 
 
 class TestEgressConformance:

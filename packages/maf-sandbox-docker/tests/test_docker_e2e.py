@@ -491,12 +491,15 @@ class TestAWorkDirTheImageGaveItsOwnUser:
         Both other images stop the probes rather than answer them, and for opposite reasons: a
         root guest has no second authority to distinguish, and an image keeping `work_dir` for
         root leaves nothing on the path the guest could swap. Here the guest owns `work_dir`
-        and is not root, so both probes bite — `write_file` stamps its entries with the image's
-        user, and `remove` reads the reach rule off its own check and stays at that user's
-        authority.
+        and is not root, so the write probe reaches its assertion and passes: `write_file`
+        stamps its entries with the image's user.
 
-        What passing here does *not* say: the write probe reads the entry's ownership, while
-        this backend's placement stays the daemon's at root, which #967 carries.
+        The removal probe **stops** here rather than passing on its merits, and that is a
+        property of this backend rather than a gap. Its protected directory has to be one the
+        file plane created and the guest cannot reopen, and this file plane hands the guest
+        everything it makes under `work_dir` — so no such directory exists to build. What
+        passing says is also bounded: the write probe reads the entry's ownership, while this
+        backend's placement stays the daemon's at root, which #967 carries.
         """
         if assert_reach_conformance is None:
             pytest.skip("this maf-sandbox predates the reach suite (< 0.35)")

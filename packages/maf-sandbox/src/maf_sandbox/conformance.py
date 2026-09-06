@@ -27,8 +27,8 @@ confinement.  The FILES_IN, EXEC and FILES_DELETE probes verify through :meth:`S
 rather than the pull surface, because a backend with no pull surface still owes those
 capabilities.  They need ``cat``, ``test``, ``printf``, ``pwd``, ``sleep``, ``sh`` and
 ``mkdir`` — beyond ``PosixGuestSubject``'s own ``ln`` and ``test``, which the mandatory reclaim
-suite costs even where no capability suite runs, and ``chmod``, which only the reach probes ask
-for.  So the image has to carry the POSIX core utilities, and what those suites assert is measured
+suite costs even where no capability suite runs.  So the image has to carry the POSIX core
+utilities, and what those suites assert is measured
 against the guest the image ships, which for the suites that run in CI is the image the workflow
 names.
 
@@ -195,16 +195,6 @@ class ConformanceSubject(Protocol):
         """
         ...
 
-    async def plant_directory_the_guest_cannot_write_into(self, path: str) -> bool:
-        """Make the existing directory at ``path`` one the guest program cannot write into.
-
-        Best-effort, and the answer is *measured* rather than assumed: a directory the host
-        owns is already beyond the guest, and one the guest owns has to be closed first.
-        ``False`` means this guest writes anywhere — a root guest, whose authority the host's
-        cannot exceed — and the probe that asked has nothing left to distinguish.
-        """
-        ...
-
 
 @dataclass(frozen=True)
 class PosixGuestSubject:
@@ -289,26 +279,6 @@ class PosixGuestSubject:
         whoever owns it, and a uid comparison would report that as a violation.
         """
         return await self._writable(path) and await self._writable(posixpath.dirname(path) or "/")
-
-    async def plant_directory_the_guest_cannot_write_into(self, path: str) -> bool:
-        """``chmod 500``, then measure — the guest may own the directory or may not.
-
-        Exit 1 is expected and kept: it is ``chmod`` refusing a directory the host owns, which
-        is already the state being asked for.  Above it is ``chmod`` not running, and that has
-        to raise — a missing utility leaves the directory writable, which reads back as a guest
-        that writes anywhere, which stops the removal probe as though it were root.
-        """
-        closed = await self.sandbox.exec(
-            ["chmod", "500", path],
-            working_directory=self.working_directory,
-            timeout=self.exec_timeout,
-        )
-        if closed.exit_code > 1:
-            raise RuntimeError(
-                f"could not ask the guest to close {path!r} "
-                f"(`chmod 500` exited {closed.exit_code}): {closed.stderr.strip()}"
-            )
-        return not await self._writable(path)
 
     async def _writable(self, path: str) -> bool:
         """``test -w``, reading an exit code above 1 the way :meth:`exists` does."""
@@ -1920,26 +1890,33 @@ async def _probe_a_removal_stays_at_the_guests_authority(
     survivor = f"{held}/keep.txt"
     if not await subject.plant_directory_the_guest_owns(swappable):
         return
-    if not await subject.plant_directory_the_guest_owns(held):
-        return
+    # `held` and the survivor are the *file plane's*, never the guest's: what that plane
+    # creates, it creates at its own authority. A protected directory the guest made would
+    # be one the guest can open again, since it owns the inode, so a removal that emptied it
+    # would have reached only what that program could have reached anyway.
     await subject.plant_file(survivor, b"only the host could take this\n")
-    if not await subject.plant_directory_the_guest_cannot_write_into(held):
+    if await subject.the_guest_could_have_made(held):
         return
-    # The positive control, through the same method and the same authority: a removal this
-    # backend can actually make. `OSError` is what every backend raises for a removal it could
-    # not perform at all — a service failure as much as a refusal — so without this a `remove`
-    # that is merely unavailable leaves the survivor standing and reads as an authority it never
-    # demonstrated. Nothing catches it: a control that cannot run is this probe failing.
+    # The positive control, through the same method: a removal this backend can actually
+    # make. `OSError` is what every backend raises for a removal it could not perform at
+    # all — a service failure as much as a refusal — so without this a `remove` that is
+    # merely unavailable leaves the survivor standing and reads as an authority it never
+    # demonstrated. The guest makes it, so it is removable at either authority; a control
+    # the file plane made would be one a guest-authority removal must refuse. Nothing
+    # catches it: a control that cannot run is this probe failing.
     removable = f"{swappable}/removable"
-    await subject.plant_file(f"{removable}/gone.txt", b"the control this probe needs\n")
-    await subject.sandbox.remove(
-        "reach-delete/removable", working_directory=subject.working_directory, recursive=True
-    )
-    if await subject.exists(f"{removable}/gone.txt"):
-        raise AssertionError(
-            "the control removal left its tree standing, so this backend's remove is not working "
-            "here and the refusal below would say nothing about which principal ran"
+    if await subject.plant_directory_the_guest_owns(removable):
+        await subject.sandbox.remove(
+            "reach-delete/removable",
+            working_directory=subject.working_directory,
+            recursive=True,
         )
+        if await subject.exists(removable):
+            raise AssertionError(
+                "the control removal left a directory the guest made standing, so this "
+                "backend's remove is not working here and the refusal below would say "
+                "nothing about which principal ran"
+            )
     try:
         await subject.sandbox.remove(
             "reach-delete/held", working_directory=subject.working_directory, recursive=True
@@ -1980,7 +1957,9 @@ REACH_PROBES: tuple[Probe, ...] = (
             "component that program owns, is the reach rule's exact prohibition: the component "
             "is swappable, and what a swap redirects is a delete the guest cannot make. The "
             "control removal ahead of it is what makes the refusal evidence rather than "
-            "coincidence — a backend whose remove does not work refuses everything."
+            "coincidence — a backend whose remove does not work refuses everything. What this "
+            "cannot see is a host-authority removal whose target the guest could have taken "
+            "anyway: the rule permits reaching that, so the probe stops rather than judging."
         ),
         requires=frozenset({Capability.FILES_DELETE}),
         run=_probe_a_removal_stays_at_the_guests_authority,
@@ -1991,10 +1970,13 @@ REACH_PROBES: tuple[Probe, ...] = (
 async def run_reach_probes(subject: ConformanceSubject) -> tuple[ProbeResult, ...]:
     """Run the reach probes. Gated per probe, so a backend serving neither surface skips both.
 
-    **A green run is not the whole rule.** The removal probe reads the authority its operation
-    ran with; the write probe reads only what the write left behind, which a host-authority
-    plane can satisfy by stamping the guest's uid. The section comment above says why no
-    deterministic probe closes that, and #967 is the residual on the backend measured to have it.
+    **A green run is not the whole rule, and both probes read less than it.** The write probe
+    reads what a write left behind, which a host-authority plane satisfies by stamping the
+    guest's uid (#967). The removal probe reads whether a removal took something the guest
+    could not have taken, so a host-authority removal aimed at something the guest *could*
+    have taken passes it, and where the file plane hands the guest everything it creates that
+    is every target the probe can build, which is why it stops on `maf-sandbox-docker`. Both
+    stop rather than judge wherever the rule permits what they see.
 
     The layout is left where it lies, ``reach-delete/held`` included — a directory the guest
     cannot empty, since closing one is how the removal probe gets something to measure.

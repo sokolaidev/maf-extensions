@@ -2575,10 +2575,6 @@ class _ConformanceSubject:
         """No guest program here to ask, and the reach probes never reach this subject."""
         raise NotImplementedError(f"no guest here to ask about {path!r}")
 
-    async def plant_directory_the_guest_cannot_write_into(self, path: str) -> bool:
-        """The same: a mode means nothing to a store that keeps bytes and names."""
-        raise NotImplementedError(f"no guest here to close {path!r} against")
-
 
 class TestTheSharedConformanceSuite:
     """`maf_sandbox.conformance`, answered by this backend.
