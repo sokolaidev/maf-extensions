@@ -23,11 +23,15 @@ that is not there.
 Two modes, because a release has two shapes:
 
 - **per-candidate** (the default) — this checkout's wheel for one dependent, beside whatever
-  the resolver picks for the others from the index. **A warning, never a failure.** The wheel
-  is pinned here and nobody else pins it, so a combination this cannot find is one the resolver
-  reaches by taking an older sibling. Publishing adds a version to the index; it cannot remove
-  a combination that already resolved. What it does tell you is that the newest of everything
-  does not combine yet, which is worth seeing and is not worth stopping a release for.
+  the resolver picks for the others from the index. **The candidate's own combination is a
+  warning.** The wheel is pinned here and nobody else pins it, so a combination this cannot
+  find is one the resolver reaches by taking an older sibling. Publishing adds a version to the
+  index; it cannot remove a combination that already resolved. What it does tell you is that
+  the newest of everything does not combine yet, which is worth seeing and is not worth
+  stopping a release for. **What does fail is the published family having no resolvable set at
+  all** — not a claim about the candidate, which cannot repair it and cannot have caused it,
+  but about the index, where two published dependents now exclude each other. The report names
+  that pair, because a release blocked by it is blocked until one of the two publishes again.
 - **whole-set** (`--whole-set`) — every wheel in the directory together, no published
   fallbacks. **This one fails**: a release whose own packages cannot share an environment is a
   range that moved past a sibling, and no later publish repairs it.
@@ -55,6 +59,7 @@ from check_published_dependents_admit import (
     dependent_distributions,
     fetch_requires_dist,
 )
+from check_published_dependents_work import fetch_requires_dist_for_version
 from pypi_index import admits, fetch_published_versions, run_check, version
 
 #: uv paints its diagnostics, and the colour survives a pipe into a log or a job summary.
@@ -180,31 +185,112 @@ def published_core_ranges() -> dict[str, str]:
     return ranges
 
 
-def constraints(candidate: str, wheel: Path, published: dict[str, str]) -> tuple[list[str], bool]:
-    """The core ranges in play, and whether they are enough to explain the conflict.
+#: A range as this module compares them: the `>=` floor, and the `<` ceiling when one is named.
+_Range = tuple[tuple[int, ...], tuple[int, ...] | None]
+
+
+def _floor_of(requirement: str) -> tuple[int, ...] | None:
+    """The `>=X` bound an entry declares, or None if it names no lower one.
+
+    The mirror of `ceiling_of`, which this module already leans on for the other end. A bare
+    `>` is deliberately not a match: it excludes its own version, and reading it as `>=` would
+    widen the reported range by exactly the release most likely to be in dispute.
+    """
+    spec = _CORE_ENTRY.sub("", requirement.split(";", 1)[0].strip(), count=1)
+    for clause in spec.split(","):
+        clause = clause.strip()
+        if clause.startswith(">="):
+            return version(clause[2:].strip())
+    return None
+
+
+def _disjoint(left: _Range, right: _Range) -> bool:
+    """Whether two core ranges share no version at all."""
+    left_floor, left_ceiling = left
+    right_floor, right_ceiling = right
+    if right_ceiling is not None and not admits(left_floor, right_ceiling):
+        return True
+    return left_ceiling is not None and not admits(right_floor, left_ceiling)
+
+
+def conflicting_pairs(ranges: dict[str, _Range]) -> list[tuple[str, str]]:
+    """Every pair among ``ranges`` that no single core version satisfies, sorted."""
+    names = sorted(ranges)
+    return [
+        (left, right)
+        for index, left in enumerate(names)
+        for right in names[index + 1 :]
+        if _disjoint(ranges[left], ranges[right])
+    ]
+
+
+def published_spans() -> dict[str, _Range]:
+    """Per dependent, the widest core range any of its published versions declares.
+
+    A pair of spans that do not overlap is a pair the resolver cannot fix by going back a
+    version, which is what separates a real break from a family that merely needs an older
+    sibling. A package with one published release floored above the rest is the shape with
+    nothing to retreat to, and it holds every release that has to resolve the family until one
+    of the two publishes again.
+
+    Over-approximate on purpose: a span runs from the oldest floor to the newest ceiling and so
+    papers over any hole between them, which makes overlapping spans no proof that two versions
+    actually meet. Only the disjoint answer is read, and that one is exact. Reads every
+    published version's metadata, so it belongs on the failing path only.
+    """
+    spans: dict[str, _Range] = {}
+    for distribution in dependent_distributions(_ROOT):
+        floors: list[tuple[int, ...]] = []
+        ceilings: list[tuple[int, ...]] = []
+        unbounded = False
+        for released in fetch_published_versions(distribution) or []:
+            requires = fetch_requires_dist_for_version(distribution, released)
+            if requires is None or (requirement := _core_requirement(requires)) is None:
+                continue
+            floors.append(_floor_of(requirement) or (0,))
+            if (ceiling := ceiling_of([requirement])) is None:
+                unbounded = True
+            else:
+                ceilings.append(ceiling)
+        if floors:
+            spans[distribution] = (min(floors), None if unbounded else max(ceilings))
+    return spans
+
+
+def constraints(
+    candidate: str, wheel: Path, published: dict[str, str]
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """The core ranges in play, and every pair among them no core version satisfies.
 
     uv explains this by walking every historical version of every sibling — hundreds of lines,
-    wrapped to a width it chooses and does not take from COLUMNS. When the core range is what
-    decides it, two lines of metadata say the same thing exactly, so they are read directly.
+    wrapped to a width it chooses and does not take from COLUMNS. When the core ranges are what
+    decide it, naming the two that cannot meet says the same thing in one line.
 
-    The flag is the honest half. These packages also carry `agent-framework-core` and the Azure
-    libraries and can collide there while their core ranges agree, and then this table shows
-    nothing and the resolver's own account is the only account there is.
+    The pairs are looked for across the whole set rather than between the candidate and each
+    sibling in turn. Two *published* siblings that exclude each other make every candidate
+    unresolvable, and a candidate-only reading reports that as ranges which overlap and a
+    conflict lying elsewhere — sending the reader to a resolver dump about a package that is
+    not at fault.
+
+    An empty list is still the honest half: these packages also carry `agent-framework-core`
+    and the Azure libraries, and can collide there while every core range agrees.
     """
     floor, ceiling = declared_range(wheel)
-    lines = [
-        f"    {candidate + ' (this checkout)':<38} maf-sandbox>={_dotted(floor)},<{_dotted(ceiling)}"
-    ]
-    explained = False
-    for distribution, requirement in sorted(published.items()):
+    shown = {candidate: f"maf-sandbox>={_dotted(floor)},<{_dotted(ceiling)}"}
+    ranges: dict[str, _Range] = {candidate: (floor, ceiling)}
+    for distribution, requirement in published.items():
         if distribution == candidate:
             continue
-        sibling_ceiling = ceiling_of([requirement])
-        excludes = sibling_ceiling is not None and not admits(floor, sibling_ceiling)
-        explained = explained or excludes
-        note = f"   excludes {_dotted(floor)}" if excludes else ""
-        lines.append(f"    {distribution + ' (published)':<38} {requirement}{note}")
-    return lines, explained
+        shown[distribution] = requirement
+        ranges[distribution] = (_floor_of(requirement) or (0,), ceiling_of([requirement]))
+    pairs = conflicting_pairs(ranges)
+    lines = []
+    for name in sorted(ranges):
+        label = f"{name} (this checkout)" if name == candidate else f"{name} (published)"
+        against = sorted({side for pair in pairs if name in pair for side in pair if side != name})
+        note = f"   no core meets both this and {', '.join(against)}" if against else ""
+        lines.append(f"    {label:<38} {shown[name]}{note}")
+    return lines, pairs
 
 
 def summarise(lines: list[str]) -> None:
@@ -261,10 +347,21 @@ def main(argv: list[str]) -> int:
             print("\n".join(report(resolved, newest)))
             continue
         warned.append(distribution)
-        print(f"warn {distribution} does not combine with the newest published others")
-        lines, explained = constraints(distribution, wheel, published)
+        lines, pairs = constraints(distribution, wheel, published)
+        # A pair that does not include the candidate is a conflict between two published
+        # siblings: no version of this package could have resolved beside them, so saying it
+        # "does not combine" points the reader at the one artifact that is not at fault.
+        elsewhere = [pair for pair in pairs if distribution not in pair]
+        if elsewhere and not any(distribution in pair for pair in pairs):
+            left, right = elsewhere[0]
+            print(
+                f"warn {distribution} is not the conflict — published {left} and {right} "
+                "exclude each other, so nothing resolves beside them"
+            )
+        else:
+            print(f"warn {distribution} does not combine with the newest published others")
         print("\n".join(lines))
-        if not explained:
+        if not pairs:
             # The core ranges all overlap, so this is a collision somewhere else entirely and
             # the resolver's account is the only one there is. Whole, never a tail.
             print("\n    the core ranges overlap, so the conflict is elsewhere — uv's account:")
@@ -299,14 +396,28 @@ def main(argv: list[str]) -> int:
         print("\nthe family a consumer resolves today:")
         print("\n".join(report(resolved, newest)))
     else:
-        lines += [
-            "No set of published versions resolves at all — that is a real break:",
-            "",
-            "```",
-            error,
-            "```",
-        ]
+        # The gating outcome, so it says which two packages did it rather than leaving that to
+        # be read out of a resolver walking every historical version of every sibling. Spans,
+        # not newest ranges: a newest-range conflict is routine and the resolver goes back a
+        # version for it, where a span conflict is the one nothing can be resolved around.
+        conflicts = conflicting_pairs(published_spans())
+        lines += ["No set of published versions resolves at all — that is a real break.", ""]
+        if conflicts:
+            lines += ["No published version of either side reaches the other's core line:", ""]
+            lines += [f"- `{left}` against `{right}`" for left, right in conflicts]
+            lines += [
+                "",
+                "Until one of each pair publishes a version admitting the other's core line, "
+                "nothing installs both, and every release that has to resolve the family waits "
+                "behind it. Where the narrower side is a new package whose only release floors "
+                "above the rest, yanking that release restores the set until the others catch "
+                "up.",
+                "",
+            ]
+        lines += ["```", error, "```"]
         print("\nno set of published versions resolves at all:", file=sys.stderr)
+        for left, right in conflicts:
+            print(f"  no published {left} and {right} share a core version", file=sys.stderr)
         print(error, file=sys.stderr)
     summarise(lines)
     if not installable:
