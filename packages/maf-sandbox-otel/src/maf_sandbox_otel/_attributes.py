@@ -71,6 +71,15 @@ EGRESS_MODE = f"{NAMESPACE}.egress.mode"
 EGRESS_ALLOW = f"{NAMESPACE}.egress.allow"
 EGRESS_ALLOW_COUNT = f"{NAMESPACE}.egress.allow_count"
 
+# The sealed host-tool *surface* a sandbox was served with, which is a different subject from
+# one call through it: `surface.` describes what could be called, `host_tool.` what was. Under
+# their own prefix rather than a plural of that one, because two names differing by an `s`
+# would be a query somebody writes wrong once and never notices.
+SURFACE_IDENTITIES = f"{NAMESPACE}.surface.identities"
+SURFACE_UNDECLARED = f"{NAMESPACE}.surface.undeclared"
+SURFACE_INTEGRITY = f"{NAMESPACE}.surface.result_integrity"
+SURFACE_CALL_CAP = f"{NAMESPACE}.surface.call_cap"
+
 TOOL = f"{NAMESPACE}.call.tool"
 FAILURE = f"{NAMESPACE}.call.failure"
 UNCLEAN = f"{NAMESPACE}.call.unclean"

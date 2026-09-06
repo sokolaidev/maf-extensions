@@ -8,6 +8,7 @@ the ones a guest chose stay off it until a host says otherwise.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import threading
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ from maf_sandbox import (
     Capability,
     DisposalFailure,
     Egress,
+    HostToolAggregate,
     HostToolCalled,
     Identity,
     Isolation,
@@ -64,6 +66,42 @@ SPEC = SandboxSpec(
 DECLARATIONS = BackendDeclarations(
     capabilities=frozenset({Capability.EXEC}),
     egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED}),
+)
+
+
+def _surface(
+    *,
+    identities: frozenset[Identity],
+    has_undeclared: bool,
+    result_integrity: SourceIntegrity | None,
+) -> HostToolAggregate:
+    """A sealed registry's answer, built directly: what a registry folds to is core's business."""
+    return HostToolAggregate(
+        result_integrity=result_integrity,
+        outbound_caps=frozenset(),
+        identities=identities,
+        requires_approval=Identity.USER in identities,
+        has_undeclared=has_undeclared,
+        response_limits=TransferLimits(1024, 4096, 4),
+        max_host_tool_calls_per_run=8,
+    )
+
+
+WITH_HOST_TOOLS = dataclasses.replace(
+    SPEC,
+    requires=SPEC.requires | {Capability.HOST_TOOLS},
+    host_tools=_surface(
+        identities=frozenset({Identity.APP, Identity.USER}),
+        has_undeclared=True,
+        result_integrity=SourceIntegrity.UNTRUSTED,
+    ),
+)
+A_SINK_ONLY_SURFACE = dataclasses.replace(
+    SPEC,
+    requires=SPEC.requires | {Capability.HOST_TOOLS},
+    host_tools=_surface(
+        identities=frozenset({Identity.APP}), has_undeclared=False, result_integrity=None
+    ),
 )
 
 
@@ -139,10 +177,10 @@ def build(*, sensitive: bool = False) -> Recorded:
     )
 
 
-def an_acquire(*, refusal: str | None = None) -> SandboxAcquired:
+def an_acquire(*, refusal: str | None = None, spec: SandboxSpec = SPEC) -> SandboxAcquired:
     return SandboxAcquired(
         key=KEY,
-        spec=SPEC,
+        spec=spec,
         isolation_scope=IsolationScope.CONVERSATION,
         backend=None if refusal else "docker",
         isolation=None if refusal else Isolation.CONTAINER,
@@ -212,6 +250,37 @@ class TestTheAcquireRecordCarriesThePosture:
         recorded = build()
         recorded.observer.sandbox_acquired(an_acquire(refusal="NoSandboxBackend"))
         assert f"{NAMESPACE}.sandbox.backend" not in recorded.attributes()
+
+    def test_the_sealed_host_tool_surface_is_recorded(self):
+        """Under whose authority the run could act, answerable before any call is made."""
+        recorded = build()
+        recorded.observer.sandbox_acquired(an_acquire(spec=WITH_HOST_TOOLS))
+        attributes = recorded.attributes()
+        assert attributes[f"{NAMESPACE}.surface.identities"] == ("app", "user")
+        assert attributes[f"{NAMESPACE}.surface.undeclared"] is True
+        assert attributes[f"{NAMESPACE}.surface.call_cap"] == 8
+        assert attributes[f"{NAMESPACE}.surface.result_integrity"] == "untrusted"
+
+    def test_a_surface_with_no_integrity_opinion_records_none(self):
+        """A registry of sink-only tools has no source to fold, which is not `untrusted`."""
+        recorded = build()
+        recorded.observer.sandbox_acquired(an_acquire(spec=A_SINK_ONLY_SURFACE))
+        attributes = recorded.attributes()
+        assert f"{NAMESPACE}.surface.result_integrity" not in attributes
+        assert attributes[f"{NAMESPACE}.surface.undeclared"] is False
+
+    def test_a_workload_with_no_registry_records_nothing_about_a_surface(self):
+        """Absent and empty are different answers, and rendering them alike reports the wrong one."""
+        recorded = build()
+        recorded.observer.sandbox_acquired(an_acquire())
+        attributes = recorded.attributes()
+        assert not [name for name in attributes if name.startswith(f"{NAMESPACE}.surface.")]
+
+    def test_the_surface_reaches_the_log_pipeline_too(self):
+        recorded = build()
+        recorded.observer.sandbox_acquired(an_acquire(spec=WITH_HOST_TOOLS))
+        logged = recorded.log_attributes("sandbox.acquire")
+        assert logged[f"{NAMESPACE}.surface.identities"] == ("app", "user")
 
 
 class TestTheSpanIsWrittenAfterTheFactAndStillNests:

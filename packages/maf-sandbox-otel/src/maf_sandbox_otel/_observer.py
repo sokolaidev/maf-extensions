@@ -96,6 +96,10 @@ from ._attributes import (
     STORE_FILE,
     STORE_INTEGRITY,
     STORE_OUTCOME,
+    SURFACE_CALL_CAP,
+    SURFACE_IDENTITIES,
+    SURFACE_INTEGRITY,
+    SURFACE_UNDECLARED,
     TOOL,
     UNCLEAN,
     Redaction,
@@ -213,6 +217,17 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
         if event.declarations is not None:
             recorded[BACKEND_CAPABILITIES] = sorted_values(event.declarations.capabilities)
             recorded[BACKEND_EGRESS_MODES] = sorted_values(event.declarations.egress_modes)
+        surface = spec.host_tools
+        if surface is not None:
+            # Nothing at all where no registry was wired, rather than an empty set and a
+            # `False`: "a surface with no unstamped tool" and "no surface" are different
+            # answers to *under whose authority could this run act*, and a recorder that
+            # rendered them alike would report the second as the first.
+            recorded[SURFACE_IDENTITIES] = sorted_values(surface.identities)
+            recorded[SURFACE_UNDECLARED] = surface.has_undeclared
+            recorded[SURFACE_CALL_CAP] = surface.max_host_tool_calls_per_run
+            if surface.result_integrity is not None:
+                recorded[SURFACE_INTEGRITY] = str(surface.result_integrity)
 
         self._emit(ACQUIRE, recorded, event.seconds, event.refusal)
         self._isolate(
