@@ -1877,9 +1877,30 @@ class TestEveryRecordSaysWhichCallItCameFrom:
 
         asyncio.run(router.acquire(_KEY, _SPEC))
         asyncio.run(router.dispose(_KEY))
+        asyncio.run(router.dispose_scope(_KEY.scope, _KEY.thread_id))
 
         assert recorder.one(SandboxAcquired).call is None
         assert recorder.one(SandboxDisposed).call is None
+        assert recorder.one(ScopeDisposed).call is None
+
+    def test_a_purge_a_call_asked_for_names_that_call(self):
+        """The two ordinary callers are a thread deletion and a closing `scope` block, neither
+        of which is in a call — but the column is on this event for the one that is, and a
+        purge with no call beside it could not be told from those two."""
+        recorder = _Recorder()
+        router = _router(observer=recorder)
+
+        def build(session: SandboxToolSession):
+            async def widget_run() -> str:
+                """Purge the conversation from inside the call."""
+                await router.dispose_scope(_KEY.scope, _KEY.thread_id)
+                return "done"
+
+            return widget_run
+
+        asyncio.run(_fn(_tool(router, build))())
+
+        assert recorder.one(ScopeDisposed).call == recorder.one(ToolCallEnded).call
 
     def test_a_host_tool_run_built_outside_a_call_names_none(self, recwarn):
         recorder = _Recorder()

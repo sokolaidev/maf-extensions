@@ -258,6 +258,10 @@ class ScopeDisposed(SandboxEvent):
     disposed: int
     failure: DisposalFailure | None
     seconds: float
+    #: The tool call this purge ran inside — see :data:`RECORDED_CALL`.  ``None`` for both of
+    #: the ordinary callers, a thread deletion and a ``scope`` block closing, since neither is
+    #: inside a call.
+    call: str | None = None
 
     def deliver_to(self, observer: SandboxObserver) -> None:
         observer.scope_disposed(self)

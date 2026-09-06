@@ -51,9 +51,10 @@ KEY = SandboxKey(scope="tenant-a", thread_id="thread-1", agent_dir="agent")
 #: ``call`` as a keyword where the core under test has it, and nothing where it does not.
 #:
 #: This suite runs against the workspace core *and* against every published core the wheel's
-#: range admits, and ``ToolCallEnded.call`` arrives in a release the range already admits but
-#: the index does not yet carry. Detected rather than compared by version, so it needs no edit
-#: when one publishes — and it goes when this package's floor reaches the release that added it.
+#: range admits. ``ToolCallEnded.call`` is on no published core yet, so that second set is empty
+#: today and the check falls back to the core this checkout builds — but a core cut before the
+#: field lands would put one in it that lacks the field. Detected off the class rather than
+#: compared by version, so neither ordering needs an edit here.
 CALL: dict[str, str] = (
     {"call": "call-4b1e"}
     if "call" in {field.name for field in dataclasses.fields(ToolCallEnded)}

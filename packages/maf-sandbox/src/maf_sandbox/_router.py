@@ -1214,6 +1214,7 @@ class SandboxRouter:
                 disposed=disposed,
                 failure=failure,
                 seconds=time.monotonic() - started,
+                call=recorded_call(),
             ),
             logger,
         )
