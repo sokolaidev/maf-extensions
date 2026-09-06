@@ -114,6 +114,8 @@ DISPOSAL_OUTCOME = f"{NAMESPACE}.disposal.outcome"
 DISPOSAL_CODE = f"{NAMESPACE}.disposal.code"
 DISPOSAL_DETAIL = f"{NAMESPACE}.disposal.detail"
 
+PURGE_DISPOSED = f"{NAMESPACE}.purge.disposed"
+
 
 def _digest(*parts: str) -> str:
     """A stable, non-reading-reversible name for an ordered tuple of strings.
@@ -152,7 +154,17 @@ def hashed_conversation(key: SandboxKey) -> str:
     — which is the query this package exists for, and the scope and thread that would answer it
     directly are redacted by default.
     """
-    return _digest(key.scope, key.thread_id)
+    return hashed_scoped_thread(key.scope, key.thread_id)
+
+
+def hashed_scoped_thread(scope: str, thread_id: str) -> str:
+    """The same name as :func:`hashed_conversation`, from a record that carries no key.
+
+    A scope purge is answered with a count rather than with the keys it removed, so its record
+    names the conversation and nothing narrower.  It has to hash to what the keyed records hash
+    to, or the one event that says a conversation was cleaned up joins to none of them.
+    """
+    return _digest(scope, thread_id)
 
 
 @dataclass(frozen=True)
@@ -188,6 +200,14 @@ class Redaction:
             recorded[SCOPE] = key.scope
             recorded[THREAD_ID] = key.thread_id
             recorded[AGENT_DIR] = key.agent_dir
+        return recorded
+
+    def conversation(self, scope: str, thread_id: str) -> dict[str, AttributeValue]:
+        """The join column for a conversation, for a record with no key to derive one from."""
+        recorded: dict[str, AttributeValue] = {CONVERSATION: hashed_scoped_thread(scope, thread_id)}
+        if self.sensitive:
+            recorded[SCOPE] = scope
+            recorded[THREAD_ID] = thread_id
         return recorded
 
     def keys(self, keys: Sequence[SandboxKey]) -> dict[str, AttributeValue]:
