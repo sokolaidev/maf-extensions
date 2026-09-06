@@ -41,6 +41,7 @@ from maf_sandbox import (
 
 from maf_sandbox_wslc import BACKEND_NAME, WslcSandboxBackend, WslcSandboxConfig
 from maf_sandbox_wslc._backend import (
+    _NOT_FOUND,
     _PROXY_LOG_BYTES,
     _PROXY_LOG_TAIL,
     _TAR_BLOCK,
@@ -1993,7 +1994,7 @@ class TestTheProxysOwnDecisionsReachARecord:
 
     def test_a_proxy_that_is_not_there_reports_nothing(self):
         seen: list[EgressObserved] = []
-        absent = _WslcResult(1, b"", b"no such container")
+        absent = _WslcResult(1, b"", _NOT_FOUND.encode())
         backend, _fake = _backend_with(
             _machine(overrides={("container", "logs", "--tail"): absent}), config=_ALLOW_CONFIG
         )
@@ -2102,7 +2103,7 @@ class TestTheProxysOwnDecisionsReachARecord:
     def test_a_proxy_that_is_simply_absent_is_not_an_open_window(self):
         seen: list[EgressObserved] = []
         overrides = {
-            ("container", "stop"): _WslcResult(1, b"", b"no such container"),
+            ("container", "stop"): _WslcResult(1, b"", _NOT_FOUND.encode()),
             ("container", "logs", "--tail"): _WslcResult(0, b"ALLOW pypi.org:443", b""),
         }
         backend, _fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
@@ -2148,7 +2149,7 @@ class TestTheProxysOwnDecisionsReachARecord:
         seen: list[EgressObserved] = []
         backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
-        absent = _WslcResult(1, b"", b"no such container")
+        absent = _WslcResult(1, b"", _NOT_FOUND.encode())
         fake._responder = _machine(
             running=[_AL], overrides={("container", "logs", "--tail"): absent}
         )
@@ -2164,6 +2165,18 @@ class TestTheProxysOwnDecisionsReachARecord:
         asyncio.run(backend.acquire(_KEY, _SPEC))
         backend.observe_egress(seen.append)
         asyncio.run(backend.dispose(_KEY))
+        assert seen == []
+
+    def test_the_engines_own_absence_code_reads_as_absent(self):
+        """`container remove` answers `WSLC_E_CONTAINER_NOT_FOUND`; `no such` is the wording
+        `container cp` borrows from docker. Matching only the second made a missing proxy report
+        that it could not be stopped, on every first observed acquire."""
+        seen: list[EgressObserved] = []
+        absent = _WslcResult(1, b"", _NOT_FOUND.encode())
+        overrides = {("container", "stop"): absent, ("container", "logs", "--tail"): absent}
+        backend, _fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert seen == []
 
     def test_the_last_window_is_drained_at_disposal(self):

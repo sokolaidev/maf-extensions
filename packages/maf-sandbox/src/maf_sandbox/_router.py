@@ -767,7 +767,7 @@ class SandboxRouter:
         here can recover it.
         """
         installed: list[tuple[ObservesEgress, EgressReporter | None]] = []
-        report = self._report_egress if self._observer is not None else None
+        report = self._egress_reporter() if self._observer is not None else None
         try:
             for backend in self._backends:
                 reports = isinstance(backend, ObservesEgress)
@@ -781,29 +781,38 @@ class SandboxRouter:
                         _recorded_name(backend),
                     )
                 if reports:
-                    # Enrolled before the call, not after: a hook that stores the reporter and
-                    # then raises has already mutated the backend, and one added on the way out
-                    # would be the one the rollback misses. Its previous reporter is what goes
-                    # back — `None` would silence a *different* router that is still using it.
-                    entry: tuple[ObservesEgress, EgressReporter | None] = (backend, None)
-                    installed.append(entry)
-                    installed[-1] = (backend, backend.observe_egress(report))
+                    # Enrolled *after* the call returns, because only then is there a previous
+                    # reporter to put back. A hook that raises changed nothing — the contract
+                    # requires that — and one that broke the contract handed over nothing this
+                    # could restore, so a placeholder entry would roll back to `None` and
+                    # silence the router whose reporter it was.
+                    installed.append((backend, backend.observe_egress(report)))
         except BaseException:
-            for taken, previous in installed:
+            # Reverse order: the same backend instance may be registered twice, and unwinding
+            # forwards would end by reinstating this router's reporter rather than the original.
+            for taken, previous in reversed(installed):
                 # Best effort, and contained: this is already unwinding, and a backend that
                 # cannot be switched off must not replace the failure that got us here.
                 with contextlib.suppress(Exception):
                     taken.observe_egress(previous)
             raise
 
-    def _report_egress(self, event: EgressObserved) -> None:
-        """Record one backend's egress drain, contained exactly as every other event is.
+    def _egress_reporter(self) -> EgressReporter:
+        """A reporter that records through this router without keeping it alive.
 
-        Read at call time rather than bound at handout, so a backend holds a method of this
-        router and never the host's observer — there is nothing here for a backend to fail
-        through, and nothing for it to keep alive.
+        Weak on purpose: a backend outlives the router that registered it whenever a host keeps
+        one and drops the other, and a bound method there would pin the router, and through it
+        the host's observer, for as long as the backend lived.  Once the router is collected the
+        reporter answers nothing, which is the state a dropped router should leave behind.
         """
-        record(self._observer, event, logger)
+        reference = weakref.ref(self)
+
+        def report(event: EgressObserved) -> None:
+            router = reference()
+            if router is not None:
+                record(router._observer, event, logger)  # noqa: SLF001 - its own attribute
+
+        return report
 
     def _resolve(self) -> SandboxBackend | None:
         if not self._backends:

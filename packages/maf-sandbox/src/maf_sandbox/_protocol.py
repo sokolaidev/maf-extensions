@@ -1164,13 +1164,17 @@ class BackendDeclarations:
     #: backend written before this axis already did.  :data:`IsolationScope.CALL` belongs here
     #: only once the backend folds :attr:`SandboxKey.call_id` into the name it gives a sandbox.
     isolation_scopes: frozenset[IsolationScope] = frozenset({IsolationScope.CONVERSATION})
-    #: Whether the backend can report what its egress enforcement decided, rather than only what
-    #: it was configured to allow.  It rides on the acquire record so that a reader who finds no
-    #: egress decisions for a key can tell *nothing was attempted* from *nothing was watched* —
-    #: silence means the second here, which is why the default is ``False`` and a backend has to
-    #: say otherwise.  Saying so obliges the backend to implement
-    #: :class:`~maf_sandbox.ObservesEgress`, and the router warns at construction where it does
-    #: not — loudly, because that pair is what makes an unwatched key read as a quiet one.
+    #: Whether the backend can report what its egress enforcement decided at all, rather than
+    #: only what it was configured to allow.  It rides on the acquire record because ``False``
+    #: is the one reading that is certain: nothing was watched, so no absence means anything.
+    #:
+    #: **``True`` is weaker than "silence means nothing was attempted".**  It says this backend
+    #: reports the windows it can attribute, and a backend keyed on a key can only attribute
+    #: what it acquired — not a sandbox another replica created, and not one from before this
+    #: process started.  Those windows go unreported, so a reader treating silence as safety
+    #: needs the backend's own page for where that holds.  Saying ``True`` obliges the backend
+    #: to implement :class:`~maf_sandbox.ObservesEgress`, and the router warns at construction
+    #: where it does not.
     observes_egress: bool = False
 
 
