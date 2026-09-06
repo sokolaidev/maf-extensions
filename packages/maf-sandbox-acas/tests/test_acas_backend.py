@@ -754,11 +754,16 @@ def _spec_requiring(*capabilities):
     )
 
 
-class TestAnImageWhoseGuestCannotWrite:
-    """The file plane writes as root and `exec` runs as the image's `USER`, so on a non-root
-    image a guest program can create nothing beside the files it was given (#722).
+class TestAnImageWhoseGuestIsNotRoot:
+    """One image property, two refusals, and they are not the same refusal.
 
-    `acquire` is where that is answered rather than `ensure_can_serve`: the router matches a
+    The file plane writes as root and `exec` runs as the image's `USER`. So a guest program on
+    a non-root image can create nothing beside the files it was given, which is what makes
+    `FILES_OUT` and `HOST_TOOLS` unservable (#722); and every data-plane call acts with more
+    authority than that guest, which is what makes `FILES_DELETE` unsafe to serve even though
+    it works (#950). The second is a reach rule, so it fails closed where the first fails open.
+
+    `acquire` is where both are answered rather than `ensure_can_serve`: the router matches a
     capability set before any image is running, so nothing earlier can know the uid.
     """
 
@@ -963,6 +968,63 @@ class TestAnImageWhoseGuestCannotWrite:
         )
 
         assert sandbox.sandbox_id == "sbx-1"
+
+    def test_a_guest_that_cannot_be_asked_is_still_refused_a_delete(self):
+        """The reach set fails the other way, and the direction is the whole point.
+
+        `uid is None` is the absence of evidence, not evidence of root. Serving the functional
+        set on it costs a `Permission denied` the deployment sees; serving the reach set on it
+        costs a host-authority delete nothing reports, so this one refuses.
+        """
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(RuntimeError("no shell in this image"))
+        backend = _backend_with(client)
+
+        with pytest.raises(SandboxCapabilityNotSupported) as refusal:
+            asyncio.run(
+                backend.acquire(
+                    self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+                )
+            )
+
+        message = str(refusal.value)
+        assert "files_delete" in message
+        assert "not evidence of root" in message, message
+        # It has no uid to name, and naming `None` as one would send a reader looking for it.
+        assert "uid None" not in message, message
+
+    def test_an_unreadable_probe_refuses_only_the_reach_half(self):
+        """The two sets are folded into one refusal, and folding their *directions* too is the
+        bug this guards: a spec asking for both keeps the functional half served."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(RuntimeError("no shell in this image"))
+        backend = _backend_with(client)
+
+        with pytest.raises(SandboxCapabilityNotSupported) as refusal:
+            asyncio.run(
+                backend.acquire(
+                    self._key(),
+                    _spec_requiring(Capability.EXEC, Capability.FILES_OUT, Capability.FILES_DELETE),
+                )
+            )
+
+        message = str(refusal.value)
+        assert "files_delete" in message
+        assert "files_out" not in message, message
+        assert "Permission denied" not in message, message
+
+    def test_an_unreadable_probe_warns_about_nothing(self, caplog):
+        """The warning describes a wall an unread image may not have, and one issued on every
+        unreadable probe would train a reader to ignore it."""
+        client = _GuestGroupClient(RuntimeError("no shell in this image"))
+        backend = _backend_with(client)
+
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox_acas"):
+            asyncio.run(backend.acquire(self._key(), _spec_requiring(Capability.EXEC)))
+
+        assert caplog.records == []
 
     def test_a_failed_command_is_not_read_as_a_uid(self):
         client = _GuestGroupClient(_GuestAnswer(stdout="", stderr="not found", exit_code=127))

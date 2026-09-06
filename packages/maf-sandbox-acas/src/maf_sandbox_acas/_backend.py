@@ -151,20 +151,13 @@ _RESUME_TIMEOUT_S = 120
 #: pid, exit and session markers into a directory the file plane made.
 _NEEDS_A_WRITING_GUEST = frozenset({Capability.FILES_OUT, Capability.HOST_TOOLS})
 
-#: What a guest that is not root must not be handed, whatever it can write — a *reach* rule
-#: rather than a functional one, which is why it is a set of its own. `remove` deletes through
-#: the data plane, which acts as the host, and the filesystem path check keeping it inside the
-#: working directory is a check rather than a hold: the check and the `delete_file` are separate
-#: calls, the service resolves a symlinked parent (#708), and a parent swapped in between sends
-#: a recursive removal wherever the link points. On a root image that reaches nothing the guest
-#: could not have deleted itself, which is exactly what `Sandbox.remove` promises. On a non-root
-#: one it is a tree the guest could never have touched, and the promise is broken.
-#:
-#: Withheld rather than gated per call, which is what `maf-sandbox-docker` does instead: its
-#: gate reads each component's owner off the same check, and this data plane's stat payload
-#: carries no owner at all, so there is nothing here to gate on (#950). `Sandbox.reclaim` runs
-#: the same mechanism and is behind no capability, so it cannot be withheld this way; the
-#: argument bounding it is its own, and #710 is where it is still open.
+#: What a guest that is not root must not be handed, whatever it can write. A *reach* rule
+#: rather than a functional one, and a set of its own because the two fail in opposite
+#: directions on an unknown uid: `remove` deletes through the data plane, which acts as the
+#: host, so a delete redirected through a parent swapped after the check reaches what the guest
+#: could not. Withheld rather than gated per call the way `maf-sandbox-docker` gates root,
+#: because that gate reads each component's owner and this data plane's stat payload carries
+#: none. `docs/sandbox/backends/acas.md` carries the argument.
 _UNSAFE_WHERE_THE_GUEST_IS_NOT_ROOT = frozenset({Capability.FILES_DELETE})
 
 #: What makes the guest's uid worth reading at all. `EXEC` earns a warning rather than a
@@ -805,8 +798,9 @@ class AcasSandboxBackend:
 
         Raises:
             SandboxCapabilityNotSupported: when the spec requires ``FILES_OUT`` or
-                ``HOST_TOOLS`` and the image's guest is not root, which
-                :meth:`_refuse_or_warn_where_the_guest_is_not_root` explains.
+                ``HOST_TOOLS`` and the image's guest is not root, or ``FILES_DELETE`` and its
+                guest is not *known* to be root — the two differ on an unreadable probe, and
+                :meth:`_refuse_or_warn_where_the_guest_is_not_root` says why.
         """
         async with self._acquire_lock((key.scope, key.thread_id, key.agent_dir, spec.kind)):
             return await self._get_or_create(key, spec)
@@ -957,9 +951,13 @@ class AcasSandboxBackend:
         :data:`_UNSAFE_WHERE_THE_GUEST_IS_NOT_ROOT` is about, and it is a reach rule rather than
         a functional one.  ``sandbox`` is optional because the memo can answer before one exists.
 
-        An image whose uid cannot be read is **served**, and asked only once: refusing on an
-        unreadable probe would take a working root image off a deployment, and re-probing would
-        put an ``exec`` round trip in front of every tool call.
+        An image whose uid cannot be read is **served the functional set**, and asked only
+        once: refusing on an unreadable probe would take a working root image off a deployment,
+        and re-probing would put an ``exec`` round trip in front of every tool call.  It is
+        **refused the reach set**, because an unread uid is not evidence of root, and the two
+        directions are not interchangeable: a functional refusal that guesses wrong costs a
+        ``Permission denied`` the deployment sees, and a reach one costs a host-authority
+        delete nothing reports.
 
         Raises:
             SandboxCapabilityNotSupported: when the spec requires a capability only a guest that
@@ -976,11 +974,17 @@ class AcasSandboxBackend:
             return
         else:
             uid = await self._probe_guest_uid(sandbox, spec)
-        if uid is None or uid == 0:
+        if uid == 0:
             return
 
+        # The two sets fail in opposite directions on an unknown uid, and folding them here is
+        # what the split above exists to prevent. A functional refusal fails **open**: refusing
+        # on an unreadable probe would take a working root image off a deployment, and being
+        # wrong costs a 'Permission denied' the deployment sees. A reach refusal fails
+        # **closed**: being wrong costs a host-authority delete nothing reports, and `uid is
+        # None` is not evidence of root — it is the absence of evidence either way.
         image = _image_label(spec)
-        unbackable = spec.requires & _NEEDS_A_WRITING_GUEST
+        unbackable = spec.requires & _NEEDS_A_WRITING_GUEST if uid is not None else frozenset()
         unsafe = spec.requires & _UNSAFE_WHERE_THE_GUEST_IS_NOT_ROOT
         refused = unbackable | unsafe
         if refused:
@@ -1002,13 +1006,23 @@ class AcasSandboxBackend:
                     "would delete a tree this guest could never have deleted itself — which "
                     "nothing inside the tool call would report at all"
                 )
+            whose_guest = (
+                f"its guest runs as uid {uid}"
+                if uid is not None
+                else f"its guest did not answer {_GUEST_UID_COMMAND!r}, and an unread uid is not "
+                "evidence of root"
+            )
             raise SandboxCapabilityNotSupported(
                 f"sandbox backend {BACKEND_NAME!r} cannot serve "
-                f"{', '.join(sorted(refused))} to the {spec.kind!r} workload from {image}: its "
-                f"guest runs as uid {uid}, and it refuses {'; and '.join(reasons)}. Refused here "
+                f"{', '.join(sorted(refused))} to the {spec.kind!r} workload from {image}: "
+                f"{whose_guest}, and it refuses {'; and '.join(reasons)}. Refused here "
                 "rather than inside the tool call. Serve this workload on an image whose USER is "
                 "root, or narrow what it requires."
             )
+        if uid is None:
+            # Served, and silently: the warning below describes a wall this image may not have,
+            # and one issued on every unreadable probe would train a reader to ignore it.
+            return
         already_warned = (_image_identity(spec), spec.kind)
         if already_warned in self._warned_about_the_guest:
             return
