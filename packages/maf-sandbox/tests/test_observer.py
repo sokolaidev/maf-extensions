@@ -222,7 +222,13 @@ def _every_event() -> list[SandboxEvent]:
             seconds=0.0,
         ),
         ToolCallEnded(
-            tool="widget_run", kind="test", keys=(_KEY,), seconds=0.0, failure=None, unclean=0
+            tool="widget_run",
+            kind="test",
+            keys=(_KEY,),
+            seconds=0.0,
+            failure=None,
+            unclean=0,
+            call="call-1",
         ),
     ]
 
@@ -1681,6 +1687,183 @@ class TestTheCallIsRecorded:
 
         assert recorder.one(SandboxDisposed).outcome == "gone"
         assert recorder.one(ToolCallEnded).unclean == 1
+
+
+# ---------------------------------------------------------------------------
+# The second join column
+# ---------------------------------------------------------------------------
+
+
+class TestEveryRecordSaysWhichCallItCameFrom:
+    """`call` is the column the key cannot be.
+
+    At the default `CONVERSATION` scope a key carries no `call_id`, so every record of every
+    call on one thread carries the same key. These pin the other column: one id per call, on
+    every event that call emitted, and absent on what happened outside one.
+    """
+
+    def test_every_event_a_call_emits_carries_the_calls_own_id(self, recwarn):
+        """All six, the disposal on the way out included — that one is emitted after the body
+        has returned, so an id published for the body alone would leave the one record about
+        deleting a call's sandbox naming no call."""
+        from maf_sandbox._reclaim import note_unclean
+
+        recorder = _Recorder()
+        router = _router(observer=recorder)
+        registry = HostToolRegistry(observer=recorder)
+        registry.register(_fetch, name="fetch")
+
+        def build(session: SandboxToolSession):
+            async def widget_run() -> str:
+                """Do a thing."""
+                key = session.key()
+                assert isinstance(key, SandboxKey)
+                sandbox = await session.acquire(key)
+                assert not isinstance(sandbox, str)
+                await session.read_file(InMemoryStore({"a.txt": "hi"}), ListedFile("a.txt"))
+                await _run(registry).call("fetch", {"url": "u"})
+                await collect_outputs(sandbox, _SPEC, observer=recorder, key=key)
+                note_unclean(sandbox, "a stop did not reach the program tree")
+                return "done"
+
+            return widget_run
+
+        assert asyncio.run(_fn(_tool(router, build))()) == "done"
+
+        ended = recorder.one(ToolCallEnded)
+        assert ended.call
+        assert {type(event) for event in recorder.events} == {
+            SandboxAcquired,
+            SandboxDisposed,
+            HostToolCalled,
+            StoreFileRead,
+            OutputsCollected,
+            ToolCallEnded,
+        }
+        assert {event.call for event in recorder.events} == {ended.call}
+
+    def test_two_calls_in_flight_in_one_conversation_are_told_apart(self):
+        """The case the column exists for: one session serves both, so both carry one key."""
+        recorder = _Recorder()
+        router = _router(observer=recorder)
+        acquired: list[asyncio.Barrier] = []
+
+        def build(session: SandboxToolSession):
+            async def widget_run(target: str) -> str:
+                """Read one file.
+
+                Args:
+                    target: Which file to read.
+                """
+                key = session.key()
+                assert isinstance(key, SandboxKey)
+                await session.acquire(key)
+                # Neither reads until both have acquired, so the records genuinely interleave
+                # rather than arriving as two blocks a reader could have split by time.
+                await acquired[0].wait()
+                await session.read_file(
+                    InMemoryStore({"a.txt": "a", "b.txt": "b"}), ListedFile(target)
+                )
+                return target
+
+            return widget_run
+
+        tool = _fn(_tool(router, build))
+
+        async def both() -> list[str]:
+            acquired.append(asyncio.Barrier(2))
+            return list(await asyncio.gather(tool(target="a.txt"), tool(target="b.txt")))
+
+        assert sorted(asyncio.run(both())) == ["a.txt", "b.txt"]
+
+        # Both calls were open at once rather than one after the other: neither read until both
+        # had acquired, so no reader of this stream could have split it by time.
+        assert [type(event).__name__ for event in recorder.events[:2]] == [
+            "SandboxAcquired",
+            "SandboxAcquired",
+        ]
+        reads = {event.name: event.call for event in recorder.only(StoreFileRead)}
+        assert reads["a.txt"] != reads["b.txt"]
+        assert set(reads.values()) == {event.call for event in recorder.only(ToolCallEnded)}
+        # And what the key answered about the same six records.
+        assert {event.key for event in recorder.only(StoreFileRead)} == {_KEY}
+
+    def test_the_id_is_the_one_the_calls_guest_path_is_named_by(self):
+        """One id for the call rather than one for its records and another for everything else:
+        a recorder holding a `call` can find the folder that call's files are under."""
+        recorder = _Recorder()
+        router = _router(observer=recorder)
+        seen: list[str] = []
+
+        def build(session: SandboxToolSession):
+            async def widget_run() -> str:
+                """Do a thing."""
+                key = session.key()
+                assert isinstance(key, SandboxKey)
+                await session.acquire(key)
+                seen.append(session.guest_call_path())
+                return "done"
+
+            return widget_run
+
+        asyncio.run(_fn(_tool(router, build))())
+
+        assert seen == [f"{_SPEC.work_dir}/{recorder.one(ToolCallEnded).call}"]
+
+    def test_a_synchronous_body_names_a_call_too(self):
+        """It holds no sandbox and owns no reclaim, so there is no call record to take an id
+        from — and this is the one wrapper where a missing id would go unnoticed."""
+        recorder = _Recorder()
+        router = _router(observer=recorder)
+
+        def build(session: SandboxToolSession):
+            def widget_run() -> str:
+                """Do a thing without awaiting."""
+                return "done"
+
+            return widget_run
+
+        assert _fn(_tool(router, build))() == "done"
+
+        assert recorder.one(ToolCallEnded).call
+
+    def test_what_happened_outside_a_call_names_none(self):
+        """A direct consumer of the router, a scope purge, a framework reclaim: none of them is
+        a tool call, and a recorder is told so rather than left to infer it from a stale id."""
+        recorder = _Recorder()
+        router = _router(observer=recorder)
+
+        asyncio.run(router.acquire(_KEY, _SPEC))
+        asyncio.run(router.dispose(_KEY))
+
+        assert recorder.one(SandboxAcquired).call is None
+        assert recorder.one(SandboxDisposed).call is None
+
+    def test_a_host_tool_run_built_outside_a_call_names_none(self, recwarn):
+        recorder = _Recorder()
+        registry = HostToolRegistry(observer=recorder)
+        registry.register(_fetch, name="fetch")
+
+        asyncio.run(_run(registry).call("fetch", {"url": "u"}))
+
+        assert recorder.one(HostToolCalled).call is None
+
+    def test_a_collection_keeps_its_stamp_and_still_names_the_call_itself(self):
+        """The two fields answer different questions: `call_id` is what a kind asked the sink to
+        stamp, and `call` is which call collected — read from the seam, not from the argument."""
+        recorder = _Recorder()
+        sandbox = InProcessSandbox(seed_files={"/w/a.png": "1"})
+        spec = _outputs_spec(DeclaredOutput(path="a.png"))
+        sink = _Sink(per_call=True)
+
+        asyncio.run(
+            collect_outputs(
+                sandbox, spec, sink=sink.sink, call_id="call-7", observer=recorder, key=_KEY
+            )
+        )
+
+        event = recorder.one(OutputsCollected)
+        assert (event.call_id, event.call) == ("call-7", None)
 
 
 # ---------------------------------------------------------------------------

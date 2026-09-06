@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Literal
 
 from ._observer import (
+    RECORDED_CALL,
     LandedOutput,
     OutputsCollected,
     SandboxObserver,
@@ -833,6 +834,7 @@ async def collect_outputs(
                 seconds=time.monotonic() - started,
                 refusal=refusal,
                 call_id=call_id,
+                call=RECORDED_CALL.get(),
             ),
             logger,
         )

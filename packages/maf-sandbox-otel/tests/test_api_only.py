@@ -46,6 +46,7 @@ from maf_sandbox_otel import (
 )
 
 KEY = SandboxKey(scope="tenant-a", thread_id="thread-1", agent_dir="agent")
+CALL = "call-4b1e"
 LIMITS = TransferLimits(max_bytes_per_file=8, max_total_bytes=32, max_files=64)
 
 
@@ -65,6 +66,7 @@ def every_event() -> list[object]:
             isolation=None,
             declarations=None,
             seconds=0.1,
+            call=CALL,
         ),
         SandboxDisposed(
             key=KEY,
@@ -72,6 +74,7 @@ def every_event() -> list[object]:
             outcome="may_remain",
             failure=DisposalFailure(code="timeout", detail="no answer"),
             seconds=0.2,
+            call=CALL,
         ),
         HostToolCalled(
             run_id="run-1",
@@ -86,6 +89,7 @@ def every_event() -> list[object]:
             response_bytes=16,
             calls=1,
             seconds=0.01,
+            call=CALL,
         ),
         StoreFileRead(
             key=KEY,
@@ -94,6 +98,7 @@ def every_event() -> list[object]:
             integrity=SourceIntegrity.TRUSTED,
             characters=10,
             outcome="read",
+            call=CALL,
         ),
         OutputsCollected(
             key=KEY,
@@ -102,6 +107,7 @@ def every_event() -> list[object]:
             limits=LIMITS,
             landed=(LandedOutput(name="out.png", size_bytes=9, media_type="image/png"),),
             seconds=0.05,
+            call=CALL,
         ),
         ScopeDisposed(
             scope="tenant-a",
@@ -113,7 +119,13 @@ def every_event() -> list[object]:
             seconds=0.3,
         ),
         ToolCallEnded(
-            tool="execute_code", kind="codeact", keys=(KEY,), seconds=1.0, failure=None, unclean=0
+            tool="execute_code",
+            kind="codeact",
+            keys=(KEY,),
+            seconds=1.0,
+            failure=None,
+            unclean=0,
+            call=CALL,
         ),
     ]
 

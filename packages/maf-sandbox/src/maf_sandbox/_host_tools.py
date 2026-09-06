@@ -43,6 +43,7 @@ from typing import Any, TypeVar, cast
 from ._containment import CONTAINED, escapes_containment
 from ._error_detail import error_detail
 from ._observer import (
+    RECORDED_CALL,
     HostToolCalled,
     HostToolOutcome,
     SandboxObserver,
@@ -836,6 +837,11 @@ class HostToolRun:
     that leaves :meth:`call` is a sanitized sentence — the detail a host needs lands in
     ``logger`` instead, exactly the split :mod:`maf_sandbox.maf`'s failure ladder draws.
 
+    **Build it inside the tool call whose program it supervises.**  The tool call being recorded
+    is read here, once, and carried onto every :class:`~maf_sandbox.HostToolCalled` — a run
+    built elsewhere and used later records no call, and a record keyed on ``run_id`` alone
+    cannot be joined to the rest of what that call did.
+
     Args:
         registry: Where names resolve and whose policy (cap, gate, ceilings) applies.
         logger: Where host-tool-call failures write their detail. Defaults to this module's logger;
@@ -873,6 +879,10 @@ class HostToolRun:
         self._logger = logger if logger is not None else _DEFAULT_LOGGER
         self._run_id = run_id if run_id is not None else uuid.uuid4().hex
         self._key = key
+        # Here rather than per call: a guest's callback is served on a task of the transport's
+        # own, whose context is a copy taken when the transport started listening rather than
+        # the body's live one. A run is built inside the call it belongs to, and this is.
+        self._call = RECORDED_CALL.get()
         self._calls = 0
         self._delivered = 0
         self._delivered_bytes = 0
@@ -1097,6 +1107,7 @@ class HostToolRun:
                     response_bytes=called.delivered_bytes,
                     calls=self._calls,
                     seconds=time.monotonic() - started,
+                    call=self._call,
                 ),
                 self._logger,
             )

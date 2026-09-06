@@ -24,6 +24,7 @@ from typing import cast
 from ._containment import CONTAINED, escapes_containment
 from ._host_tools_over_exec import fold_host_tool_call_transfer_limits
 from ._observer import (
+    RECORDED_CALL,
     DisposalReport,
     SandboxAcquired,
     SandboxDisposed,
@@ -1156,6 +1157,7 @@ class SandboxRouter:
                 outcome=_reported(failure),
                 failure=failure,
                 seconds=time.monotonic() - started,
+                call=RECORDED_CALL.get(),
             ),
             logger,
         )
@@ -1369,6 +1371,7 @@ class SandboxRouter:
                     declarations=declarations,
                     seconds=time.monotonic() - started,
                     refusal=refusal,
+                    call=RECORDED_CALL.get(),
                 ),
                 logger,
             )
