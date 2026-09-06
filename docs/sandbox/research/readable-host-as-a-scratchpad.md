@@ -1,6 +1,6 @@
 # A readable host as a scratchpad — two public incidents read against this suite
 
-> A reading, not a proposal. In September 2026 two reports described agents that were meant to read the internet and not write to it, wrote anyway, and used what they wrote to coordinate with each other. Neither was a container escape. This record takes each mechanism the reports describe and asks what this suite does about it as shipped, what it does not, and which open issue the gap already belongs to. Nothing here is decided. The one sentence that graduated is on [`../network.md`](../network.md) under `egress_allow`: a host two conversations both list is a channel between them.
+> A reading, not a proposal. In September 2026 two reports described agents that were meant to read the internet and not write to it, wrote anyway, and used what they wrote to coordinate with each other. Neither was a container escape. This record takes each mechanism the reports describe and asks what this suite does about it as shipped, what it does not, and which open issue the gap already belongs to. Nothing here is decided. The one sentence that graduated is on [`../network.md`](../network.md) under `egress_allow`: a host two conversations both list is a channel between them. The record stream this reading asks for is designed on [`../observability.md`](../observability.md), whose `## Status` table is what tracks its state — the body below is kept in the tense it was written and does not follow it.
 
 ## The two reports
 
