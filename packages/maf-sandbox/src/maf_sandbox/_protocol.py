@@ -875,7 +875,8 @@ class Sandbox(Protocol):
     documentation and beside its declaration, so a host choosing it chooses it knowingly.  An
     engine reporting no ownership cannot feed the predicate above, which is a reason to pick one
     of the three rather than a reason the rule does not apply.
-    :func:`~maf_sandbox.conformance.assert_reach_conformance` is this rule as probes.
+    :func:`~maf_sandbox.conformance.assert_reach_conformance` probes what an outcome can
+    show of it, which is necessary and not sufficient: a green run is evidence, not proof.
     """
 
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:

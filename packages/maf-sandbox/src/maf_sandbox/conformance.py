@@ -2008,11 +2008,15 @@ async def _probe_a_removal_takes_nothing_beyond_the_guest(
         # The outcome this probe wants rather than one it asserts on — a removal held to the
         # guest's authority refuses here — so the exception is read for its type and no further.
         pass
-    if not await subject.exists(survivor):
-        raise AssertionError(
-            "the removal emptied a directory the guest program cannot write into, from under a "
-            "parent that program owns — so the same call through a swapped parent deletes outside"
-        )
+    # Both entries, not just one: a removal that took what it could and then stopped has still
+    # taken something beyond the guest, and checking a single survivor would call that a pass.
+    for taken in (survivor, decoy):
+        if not await subject.exists(taken):
+            raise AssertionError(
+                f"the removal took {taken!r} out of a directory the guest program cannot write "
+                f"into, from under a parent that program owns — so the same call through a "
+                f"swapped parent deletes outside"
+            )
 
 
 REACH_PROBES: tuple[Probe, ...] = (

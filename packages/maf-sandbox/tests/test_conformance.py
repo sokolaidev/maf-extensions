@@ -2012,6 +2012,31 @@ class TestReachConformance:
             _sim_subject(removes_as_the_host=True), run_reach_probes
         ) == dict.fromkeys([p.name for p in REACH_PROBES], None)
 
+    def test_a_removal_that_takes_what_it_can_and_stops_is_caught(self):
+        """Taking part of a tree is still taking something beyond the guest.
+
+        A host-authority removal that unlinks what it reaches and then fails leaves the
+        survivor standing, so checking one entry would call it a pass. Every entry the guest
+        was measured unable to delete has to be there afterwards.
+        """
+
+        class _PartialRemoval(_SimulatedGuest):
+            async def remove(self, path, *, working_directory, recursive=False):
+                guest = posixpath.normpath(posixpath.join(working_directory, path))
+                decoy = f"{guest}/decoy.txt"
+                if decoy in self.contents:
+                    self.contents.pop(decoy)
+                    raise OSError("took what it could reach, then stopped")
+                await super().remove(path, working_directory=working_directory, recursive=recursive)
+
+        sandbox = _PartialRemoval(writes_as_the_host=True)
+        sandbox.directories.add(_WORK)
+        reported = _sim_results(_subject_over(sandbox), run_reach_probes)[
+            "a-removal-takes-nothing-beyond-the-guest"
+        ]
+        assert reported is not None
+        assert "decoy.txt" in reported
+
     def test_a_removal_preflighting_guest_permissions_is_not_caught(self):
         """The limit this probe shares with the write probe, asserted rather than implied.
 
