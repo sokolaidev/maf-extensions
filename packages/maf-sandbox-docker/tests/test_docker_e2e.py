@@ -486,20 +486,14 @@ class TestAWorkDirTheImageGaveItsOwnUser:
         return SandboxSpec(kind="e2e-nocaps", image=_GUEST_OWNED_IMAGE, work_dir=_WORK)
 
     def test_it_answers_the_reach_probes(self):
-        """`maf_sandbox.conformance`'s REACH suite, on the one image where it can say anything.
+        """`maf_sandbox.conformance`'s REACH suite, on the one image whose write probe bites.
 
-        Both other images stop the probes rather than answer them, and for opposite reasons: a
-        root guest has no second authority to distinguish, and an image keeping `work_dir` for
-        root leaves nothing on the path the guest could swap. Here the guest owns `work_dir`
-        and is not root, so the write probe reaches its assertion and passes: `write_file`
-        stamps its entries with the image's user.
-
-        The removal probe **stops** here rather than passing on its merits, and that is a
-        property of this backend rather than a gap. Its protected directory has to be one the
-        file plane created and the guest cannot reopen, and this file plane hands the guest
-        everything it makes under `work_dir` — so no such directory exists to build. What
-        passing says is also bounded: the write probe reads the entry's ownership, while this
-        backend's placement stays the daemon's at root, which #967 carries.
+        A guest that is neither root nor locked out of `work_dir`: the other two images stop the
+        write probe, one for having no second authority and one for leaving the guest nothing to
+        swap. The removal probe stops here too, because its protected directory has to be one
+        the file plane created and the guest cannot reopen, and this plane hands the guest
+        everything it makes under `work_dir`. What either probe's pass is worth is in
+        `maf_sandbox.conformance`.
         """
         if assert_reach_conformance is None:
             pytest.skip("this maf-sandbox predates the reach suite (< 0.35)")

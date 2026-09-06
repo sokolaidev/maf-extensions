@@ -1967,7 +1967,7 @@ class TestReachConformance:
         # The removal here is the guest's, and this specimen makes every removal that principal
         # could make — so a probe that flagged it would be rejecting a conforming backend. The
         # protected directory is the file plane's precisely so the guest cannot reopen it.
-        assert failures["a-removal-stays-at-the-guests-authority"] is None
+        assert failures["a-removal-takes-nothing-beyond-the-guest"] is None
 
     def test_a_host_authority_removal_over_a_guest_owned_target_is_not_caught(self):
         """The limit of what this probe reads, asserted rather than left to be discovered.
@@ -1980,6 +1980,27 @@ class TestReachConformance:
         assert _sim_results(
             _sim_subject(removes_as_the_host=True), run_reach_probes
         ) == dict.fromkeys([p.name for p in REACH_PROBES], None)
+
+    def test_a_removal_preflighting_guest_permissions_is_not_caught(self):
+        """The limit this probe shares with the write probe, asserted rather than implied.
+
+        A backend that checks its target against the guest's permissions, declines what the
+        guest could not have touched, and runs every other removal at the host's authority
+        passes here. It still keeps the window the rule is about: a swap landing after that
+        check redirects a host-authority delete. An outcome is not a principal.
+        """
+
+        class _Preflighting(_SimulatedGuest):
+            async def remove(self, path, *, working_directory, recursive=False):
+                guest = posixpath.normpath(posixpath.join(working_directory, path))
+                if not self._the_guest_can_write(guest):
+                    raise OSError("this backend declines what the guest could not touch")
+                await super().remove(path, working_directory=working_directory, recursive=recursive)
+
+        sandbox = _Preflighting(writes_as_the_host=True, removes_as_the_host=True)
+        sandbox.directories.add(_WORK)
+        failures = _sim_results(_subject_over(sandbox), run_reach_probes)
+        assert failures["a-removal-takes-nothing-beyond-the-guest"] is None
 
     def test_one_file_plane_at_the_hosts_authority_fails_both(self):
         """The shape a backend has when its data plane is the host's and there is no other."""
@@ -2029,7 +2050,7 @@ class TestReachConformance:
         broken_sandbox = _Broken(writes_as_the_host=True)
         broken_sandbox.directories.add(_WORK)
         failures = _sim_results(_subject_over(broken_sandbox), run_reach_probes)
-        reported = failures["a-removal-stays-at-the-guests-authority"]
+        reported = failures["a-removal-takes-nothing-beyond-the-guest"]
         assert reported is not None
         assert ("unavailable" if broken == "raises" else "control removal") in reported
 
@@ -2052,7 +2073,7 @@ class TestReachConformance:
         sandbox = _NoControl(writes_as_the_host=True)
         sandbox.directories.add(_WORK)
         reported = _sim_results(_subject_over(sandbox), run_reach_probes)[
-            "a-removal-stays-at-the-guests-authority"
+            "a-removal-takes-nothing-beyond-the-guest"
         ]
         assert reported is not None
         assert "no control" in reported
@@ -2075,7 +2096,7 @@ class TestReachConformance:
         sandbox = _EmptyOnly(writes_as_the_host=True)
         sandbox.directories.add(_WORK)
         reported = _sim_results(_subject_over(sandbox), run_reach_probes)[
-            "a-removal-stays-at-the-guests-authority"
+            "a-removal-takes-nothing-beyond-the-guest"
         ]
         assert reported is not None
         assert "populated tree" in reported
@@ -2096,8 +2117,8 @@ class TestReachConformance:
         timing_out = _TimesOut(writes_as_the_host=True)
         timing_out.directories.add(_WORK)
         failures = _sim_results(_subject_over(timing_out), run_reach_probes)
-        assert failures["a-removal-stays-at-the-guests-authority"] is not None
-        assert "TimeoutError" in failures["a-removal-stays-at-the-guests-authority"]
+        assert failures["a-removal-takes-nothing-beyond-the-guest"] is not None
+        assert "TimeoutError" in failures["a-removal-takes-nothing-beyond-the-guest"]
 
     def test_a_guest_missing_mkdir_raises_rather_than_passing(self):
         """127 is the harness failing, not the guest refusing, and the two look alike here.

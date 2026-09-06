@@ -1853,15 +1853,16 @@ async def assert_reclaim_conformance(subject: ConformanceSubject) -> tuple[Probe
 # Racing the swap is the wrong way to ask: a race probe can show the window exists and never
 # that it is closed, so it fails intermittently. These read the bound instead, deterministically.
 #
-# The two probes read it to different depths, and the difference is worth knowing before
-# trusting a green run. A removal is one operation performed by one principal, so failing where
-# the guest fails *is* the authority it ran with. A write leaves only its result, and a result
-# says who owns the bytes, not who resolved the path to them — a plane that places at the host's
-# authority and stamps the guest's uid passes. Closing that gap needs either a swap, which is a
-# race, or a write into a directory the guest cannot write; and inside the working directory
-# such a directory is exactly one the guest cannot swap either, which is where the rule permits
-# host authority. The two conditions exclude each other, so no deterministic probe reaches it.
-# #967 is that residual on the one backend measured to have it.
+# **Both read outcomes, and an outcome is not a principal.** What a write left behind, and what
+# a removal was able to take: a backend can satisfy either while acting above the guest. One
+# stamping the guest's uid on what its daemon placed as root passes the write probe; one that
+# preflights a target against the guest's permissions, declines what the guest could not touch
+# and then runs the rest as the host passes the removal probe. Both keep the window a swap
+# needs, which is what the rule is about.
+#
+# Nothing deterministic closes that. Reading the principal takes a swap, which is a race, or an
+# operation the engine performs at a stated authority, which no shipped file plane offers. So
+# these probes are necessary and not sufficient by construction, and each `why` says so.
 
 
 async def _probe_a_write_lands_within_the_guests_reach(
@@ -1882,7 +1883,7 @@ async def _probe_a_write_lands_within_the_guests_reach(
         )
 
 
-async def _probe_a_removal_stays_at_the_guests_authority(
+async def _probe_a_removal_takes_nothing_beyond_the_guest(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
     swappable = f"{paths.work}/reach-delete"
@@ -1965,18 +1966,19 @@ REACH_PROBES: tuple[Probe, ...] = (
         run=_probe_a_write_lands_within_the_guests_reach,
     ),
     Probe(
-        name="a-removal-stays-at-the-guests-authority",
+        name="a-removal-takes-nothing-beyond-the-guest",
         why=(
-            "a removal carrying more authority than the guest program had, over a path with a "
+            "a removal that took what the guest program could not have taken, from under a "
             "component that program owns, is the reach rule's exact prohibition: the component "
             "is swappable, and what a swap redirects is a delete the guest cannot make. The "
-            "control removal ahead of it is what makes the refusal evidence rather than "
-            "coincidence — a backend whose remove does not work refuses everything. What this "
-            "cannot see is a host-authority removal whose target the guest could have taken "
-            "anyway: the rule permits reaching that, so the probe stops rather than judging."
+            "control removal ahead of it makes the refusal evidence rather than coincidence — "
+            "a backend whose remove does not work refuses everything. Necessary and not "
+            "sufficient: a backend declining this target on a permission check and running its "
+            "other removals as the host passes, and so does one whose target the guest could "
+            "have taken anyway, which the rule permits and the probe stops for."
         ),
         requires=frozenset({Capability.FILES_IN, Capability.FILES_DELETE}),
-        run=_probe_a_removal_stays_at_the_guests_authority,
+        run=_probe_a_removal_takes_nothing_beyond_the_guest,
     ),
 )
 
