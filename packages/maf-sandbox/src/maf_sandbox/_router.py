@@ -31,6 +31,8 @@ from ._error_detail import error_detail
 from ._host_tools_over_exec import fold_host_tool_call_transfer_limits
 from ._observer import (
     DisposalReport,
+    EgressObserved,
+    ObservesEgress,
     SandboxAcquired,
     SandboxDisposed,
     SandboxObserver,
@@ -332,8 +334,24 @@ def _has_attribute(backend: SandboxBackend, name: str) -> bool:
     return inspect.getattr_static(backend, name, _MISSING) is not _MISSING
 
 
+def _claims_egress_observation(backend: SandboxBackend) -> bool:
+    """Whether ``backend`` claims it can report what its egress enforcement decided.
+
+    Defensive on purpose.  This runs at construction, before any spec exists, and an unreadable
+    declaration is the per-spec checks' to refuse with the message they have for it — reading
+    one here would move that failure to the constructor and describe it as an observability
+    problem.  So an unreadable declaration answers "no claim", and the reader that is allowed to
+    fail sees it a moment later.
+    """
+    try:
+        declared: object = _declarations(backend)
+    except Exception:  # noqa: BLE001 - not this reader's failure to report
+        return False
+    return getattr(declared, "observes_egress", False) is True
+
+
 def _declarations(backend: SandboxBackend) -> BackendDeclarations:
-    """The one object every optional declaration is read from: one ``getattr``, five fields.
+    """The one object every optional declaration is read from: one ``getattr``, six fields.
 
     Not a Protocol member, so declaring nothing is legal and reads as
     :data:`~maf_sandbox.DEFAULT_BACKEND_DECLARATIONS`.  *Declaring nothing* is narrower than it
@@ -719,6 +737,7 @@ class SandboxRouter:
         self._denied_identities = frozenset(
             Identity(str(identity)) for identity in denied_identities
         )
+        self._hand_out_the_egress_reporter()
         if self._selection is Selection.PER_SPEC:
             # No one backend to resolve, so `backend` has no answer to give and `_candidates`
             # is what every later decision reads instead. In registration order, because that
@@ -728,6 +747,43 @@ class SandboxRouter:
         else:
             self._backend = self._resolve()
             self._candidates = [] if self._backend is None else [self._backend]
+
+    def _hand_out_the_egress_reporter(self) -> None:
+        """Give every backend that can read its own egress enforcement somewhere to report it.
+
+        Only when this router has an observer.  A backend reads its enforcer's record by asking
+        the engine, which costs a round trip on a path an acquire waits on, and a host that
+        registered nothing must not pay for records nobody collects — so an uninstrumented
+        deployment leaves every backend in the silent state it starts in.
+
+        A backend that *declares* :attr:`~maf_sandbox.BackendDeclarations.observes_egress` and
+        implements no :class:`~maf_sandbox.ObservesEgress` is warned about rather than refused.
+        The mistake is worth naming loudly: a reader who finds no egress decisions for a key
+        consults exactly that declaration to decide whether silence means nothing was attempted,
+        and this pair makes it mean nothing was watched.  It is still a records mistake, and
+        refusing every workload over one would trade a blind spot for an outage.
+        """
+        for backend in self._backends:
+            reports = isinstance(backend, ObservesEgress)
+            if not reports and _claims_egress_observation(backend):
+                logger.warning(
+                    "sandbox backend %r declares observes_egress and implements no "
+                    "observe_egress, so it reports no egress decisions and a reader has no way "
+                    "to tell that from a guest that attempted none. Implement ObservesEgress, "
+                    "or drop the declaration — the default says the honest thing.",
+                    _recorded_name(backend),
+                )
+            if reports and self._observer is not None:
+                backend.observe_egress(self._report_egress)
+
+    def _report_egress(self, event: EgressObserved) -> None:
+        """Record one backend's egress drain, contained exactly as every other event is.
+
+        Read at call time rather than bound at handout, so a backend holds a method of this
+        router and never the host's observer — there is nothing here for a backend to fail
+        through, and nothing for it to keep alive.
+        """
+        record(self._observer, event, logger)
 
     def _resolve(self) -> SandboxBackend | None:
         if not self._backends:
