@@ -47,6 +47,10 @@ from maf_sandbox import (
     Capability,
     DisposalFailure,
     Egress,
+    EgressDecision,
+    EgressDecisionCode,
+    EgressObserved,
+    EgressReporter,
     ExecResult,
     Isolation,
     OsFamily,
@@ -60,6 +64,7 @@ from maf_sandbox import (
     SandboxTransferCapExceeded,
     ScopePurge,
     TransferLimits,
+    error_detail,
     fold_disposal_failures,
 )
 from maf_sandbox.paths import (
@@ -162,6 +167,21 @@ _ALLOW_ENV = "MAF_SANDBOX_ALLOW"
 _PROXY_READY_MARKER = "listening"
 _PROXY_READY_ATTEMPTS = 20
 _PROXY_READY_DELAY_S = 0.25
+
+#: How many of the proxy's own lines one drain reads back.  A guest chooses how many requests
+#: it makes, so an unbounded read is a guest-sized allocation on a path an acquire waits on.
+#: The bound is per *drain* rather than per sandbox, and a drain happens on every acquire —
+#: `_ensure_proxy` rebuilds the proxy each time — so only a single call that exceeds it alone
+#: loses anything, and the event says when that happened.
+_PROXY_LOG_TAIL = 2000
+
+#: One decision as the proxy writes it: a verb, a space, and the target it was asked for.  The
+#: host half is greedy so that an IPv6 literal keeps its own colons and only the trailing
+#: `:port` is taken.  **This grammar is owed to the wslc backend too** — the proxy is duplicated
+#: there rather than shared, so a change to one of them is a change to both.
+_EGRESS_DECISION = re.compile(
+    r"^(?P<decision>ALLOW|DENY-NONGLOBAL|DENY|UNREACHABLE) (?P<host>.+):(?P<port>\d+)$"
+)
 
 _NAME_PREFIX = "maf-sandbox-docker-"
 _NET_SUFFIX = "-net"
@@ -296,6 +316,36 @@ def _network_name(container: str) -> str:
 def _proxy_name(container: str) -> str:
     """The egress proxy paired with a sandbox container, derived from its name."""
     return f"{container}{_PROXY_SUFFIX}"
+
+
+def _egress_decisions(text: str) -> tuple[tuple[EgressDecision, ...], bool]:
+    """The decisions in a proxy's output, oldest first, and whether the bound cut them.
+
+    A line that is not a decision is skipped rather than counted.  This reads a stream it does
+    not own: the readiness line an acquire waits for is in it, and a later proxy may write more
+    — and a line this cannot parse is not evidence of a decision it missed.
+
+    The host in a decision is whatever the guest put in its ``CONNECT`` target, so it is
+    guest-chosen text.  It cannot forge a line: the proxy takes the target from the first
+    request line split on whitespace, so a host holds no newline and no space, and a decision
+    verb can only be one this proxy wrote.  It can still hold anything else a byte can be, which
+    is why the recorder holds it to the rule an artifact name is held to.
+
+    ``truncated`` is wrong in one direction only: a log holding exactly the bound plus one line
+    was read whole and is still reported as cut.  A record saying "there may be more" when there
+    is not is the safe way for this to be wrong.
+    """
+    lines = text.splitlines()
+    decisions = tuple(
+        EgressDecision(
+            decision=cast("EgressDecisionCode", found["decision"]),
+            host=found["host"],
+            port=int(found["port"]),
+        )
+        for line in lines
+        if (found := _EGRESS_DECISION.match(line.strip()))
+    )
+    return decisions, len(lines) > _PROXY_LOG_TAIL
 
 
 def _reads_as_absent(stderr: str, target: str) -> bool:
@@ -844,13 +894,23 @@ class DockerSandboxBackend:
         # daemon: it is the one field no input to this constructor could answer. Empty is the
         # absence of an answer rather than a claim, so a backend built here refuses a spec
         # naming a family and leaves every other spec exactly as it was.
+        # `observes_egress` follows `egress_modes` for the same reason it is built from the
+        # config: what this backend can *watch* is what it enforces itself. With a proxy image
+        # the decisions are written in a container this backend owns and can read back; without
+        # one there is no allowlist to decide anything, and claiming to watch an enforcement
+        # that never runs would put a truthful-looking `True` on every closed sandbox.
         self._declarations = BackendDeclarations(
             capabilities=_CAPABILITIES,
             limits=_LIMITS,
             egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED})
             if config.egress_proxy_image
             else frozenset({Egress.CLOSED}),
+            observes_egress=bool(config.egress_proxy_image),
         )
+        # Where egress decisions go once a router with an observer hands over a reporter. `None`
+        # until then, and that is what keeps an uninstrumented host from paying for the read:
+        # every drain is a `docker logs` on a path an acquire waits on.
+        self._egress_report: EgressReporter | None = None
         # (scope, thread_id, agent_dir, kind) -> name: a purge fallback for when the listing
         # fails, never the truth. Holds the last name acquired per key and kind.
         self._registry: dict[tuple[str, str, str, str], str] = {}
@@ -915,6 +975,68 @@ class DockerSandboxBackend:
     @property
     def declarations(self) -> BackendDeclarations:
         return self._declarations
+
+    def observe_egress(self, report: EgressReporter) -> None:
+        """Take the callback this backend reports its proxy's decisions through.
+
+        The router calls this once, and only when it has an observer — so the drains below
+        stay switched off for a host that collects nothing, which is what keeps an extra engine
+        round trip off every allowlisted acquire.
+        """
+        self._egress_report = report
+
+    async def _drain_the_proxy(self, name: str, key: SandboxKey) -> None:
+        """Report what this sandbox's proxy decided, before the container holding it goes.
+
+        **This is called on the acquire path, not only at disposal, and that is the whole
+        design.**  :meth:`_ensure_proxy` removes and rebuilds the proxy on *every* acquire, so a
+        conversation making ten calls destroys ten proxies; a drain that ran only at disposal
+        would keep the last call's decisions and lose every one before it.
+
+        Never raises.  It runs beside a removal on the acquire and disposal paths, where a
+        failure would cost a sandbox or a delete, and no record is worth either.  A drain that
+        could not read reports *that* rather than nothing, because a window with no account of
+        it is the thing an operator most needs to see.
+        """
+        report = self._egress_report
+        if report is None:
+            return
+        started = time.monotonic()
+        unreadable: str | None = None
+        decisions: tuple[EgressDecision, ...] = ()
+        truncated = False
+        try:
+            result = await self._docker(
+                "logs",
+                "--tail",
+                # One past the bound, so a log sitting exactly on it is distinguishable from one
+                # that ran past it. The extra line is read and then thrown away.
+                str(_PROXY_LOG_TAIL + 1),
+                _proxy_name(name),
+                timeout=self._config.command_timeout_seconds,
+            )
+        except Exception as unread:  # noqa: BLE001 - a record is not worth the operation
+            unreadable = error_detail(unread)
+        else:
+            if result.returncode == 0:
+                decisions, truncated = _egress_decisions(result.stdout.decode("utf-8", "replace"))
+            elif not _reads_as_absent(result.stderr, _proxy_name(name)):
+                # A proxy that is simply not there is the ordinary case — a closed sandbox, or
+                # one whose acquire never got that far — and reports nothing at all. Anything
+                # else is a window this backend cannot account for, and says so.
+                unreadable = result.stderr.strip() or f"docker logs exited {result.returncode}"
+        if not decisions and unreadable is None:
+            return
+        report(
+            EgressObserved(
+                key=key,
+                backend=self.name,
+                decisions=decisions,
+                truncated=truncated,
+                unreadable=unreadable,
+                seconds=time.monotonic() - started,
+            )
+        )
 
     async def _families_the_daemon_serves(self) -> frozenset[OsFamily]:
         """What the daemon entitles this backend to declare, empty when it is not sure."""
@@ -1026,7 +1148,7 @@ class DockerSandboxBackend:
             if egress_id:
                 # Before the reuse decision reads it: this can remove the very container the
                 # reads below would otherwise find warm.
-                await self._discard_a_sandbox_on_an_unusable_network(name)
+                await self._discard_a_sandbox_on_an_unusable_network(name, key)
             running = await self._is_running(name)
             stopped = not running and await self._exists(name)
             if not running:
@@ -1363,6 +1485,12 @@ class DockerSandboxBackend:
             # Before the first await: the registry no longer holds these, so a retry finds
             # them only here. Merged, not assigned — teardown for one key is not serialized.
             self._undeleted[prefix] = self._undeleted.get(prefix, set()) | set(candidates)
+        # The last window, and only the last: every acquire before this one already drained its
+        # own proxy on the way to rebuilding it. Over the names this process knows, since a
+        # sandbox another replica created is not one whose proxy this key can name — the sweep
+        # below reaches it by label, and the decisions in it go with it.
+        for container in candidates:
+            await self._drain_the_proxy(container, key)
         swept = await self._purge(
             [
                 (_LABEL_SCOPE, key.scope),
@@ -1877,7 +2005,7 @@ class DockerSandboxBackend:
             return False
         return _reads_as_absent(result.stderr, name)
 
-    async def _discard_a_sandbox_on_an_unusable_network(self, name: str) -> None:
+    async def _discard_a_sandbox_on_an_unusable_network(self, name: str, key: SandboxKey) -> None:
         """Remove an allowlisted sandbox whose network is not one this backend would build.
 
         Its network goes with it, and it cannot go the other way round: the workload holds an
@@ -1907,6 +2035,7 @@ class DockerSandboxBackend:
             return
         logger.info("replacing sandbox %s and network %s: %s", name, net, reason)
         removal = await self._remove(name)
+        await self._drain_the_proxy(name, key)
         await self._remove(_proxy_name(name))
         await self._remove_network(net)
         if removal.failure is not None:
@@ -1935,6 +2064,10 @@ class DockerSandboxBackend:
         # which reads the same field the same way (#407).
         proxy_image = cast("str", self._config.egress_proxy_image)
         proxy = _proxy_name(name)
+        # Before the removal that would take them with it. This is the drain that matters: the
+        # proxy is rebuilt per acquire, so this is where a warm conversation's decisions are
+        # picked up, one call at a time.
+        await self._drain_the_proxy(name, key)
         await self._remove(proxy)
 
         args = ["run", "-d", "--name", proxy, "--network", _network_name(name)]
