@@ -68,7 +68,7 @@ config = WslcSandboxConfig(egress_proxy_image="maf-egress-proxy:local")
 
 Container names are derived from the key rather than remembered, so `acquire` and `dispose` agree on one without a registry to keep in sync. Labels are the durable record `dispose_scope` selects on, and their values are digested when they are long or carry a separator — the same mapping on both sides, because transforming one and not the other makes a purge quietly select nothing.
 
-`stop` is never used. A container whose init process ignores `SIGTERM` takes ten seconds to stop and under a quarter of a second to remove, and there is nothing in a sandbox worth waiting for.
+`stop` is never used to tear a sandbox down. A container whose init process ignores `SIGTERM` takes ten seconds to stop and under a quarter of a second to remove, and there is nothing in a sandbox worth waiting for. The one place it is used is the *egress proxy*, and only where a host registered an observer: its record has to be closed before it is read, or a request answered between the read and the removal reaches nobody. That pays the same ten-second worst case, on the proxy alone, on an acquire that is already collecting records.
 
 ---
 

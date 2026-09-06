@@ -316,11 +316,11 @@ class EgressObserved(SandboxEvent):
     at all — see :attr:`~maf_sandbox.BackendDeclarations.observes_egress`, which is what stops
     an empty record reading as a clean one.
 
-    ``truncated`` says the bound cut this drain: a guest is free to make more requests than
-    anyone wants to hold in memory, so a drain reads a bounded tail and these are the most
-    recent decisions rather than all of them.  It is a flag and not a count because no enforcer
-    read this way can say how many it did not hand over, and a count that could only ever be
-    guessed is worse than the flag that cannot lie.
+    ``truncated`` says the window **may** be short of the bound's worth: a guest makes as many
+    requests as it likes, so a drain reads a bounded tail and cannot tell a log that held one
+    line more from one that held ten thousand.  It is a flag rather than a count because no
+    enforcer read this way can say how many it withheld, and it errs towards *there may be
+    more* — the direction a record is allowed to be wrong in.
 
     ``unreadable`` names why a drain came back with nothing where the enforcer was expected to
     have written something.  A window nobody can account for is exactly what an operator needs
