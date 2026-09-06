@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.15.1...maf-sandbox-docker-v0.15.2) (2026-09-06)
+
+
+### Fixes
+
+* **docker:** a path is absent only where the engine named it, so a failed copy no longer ends the filesystem path check ([#928](https://github.com/sokolaidev/maf-extensions/issues/928)) ([f221f52](https://github.com/sokolaidev/maf-extensions/commit/f221f529f80fa3ee235c47a6fff9fbce1583543f))
+
 ## [0.15.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.15.0...maf-sandbox-docker-v0.15.1) (2026-09-06)
 
 
