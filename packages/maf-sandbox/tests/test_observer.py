@@ -46,10 +46,12 @@ from maf_sandbox import (
     SandboxEvent,
     SandboxKey,
     SandboxObserver,
+    SandboxPurger,
     SandboxRouter,
     SandboxSpec,
     SandboxTransferCapExceeded,
     SandboxUnclean,
+    ScopeDisposed,
     SourceIntegrity,
     StoreFileRead,
     ToolCallEnded,
@@ -88,6 +90,9 @@ class _Recorder(SandboxObserver):
         self._seen(event)
 
     def sandbox_disposed(self, event: SandboxDisposed) -> None:
+        self._seen(event)
+
+    def scope_disposed(self, event: ScopeDisposed) -> None:
         self._seen(event)
 
     def host_tool_called(self, event: HostToolCalled) -> None:
@@ -177,6 +182,15 @@ def _every_event() -> list[SandboxEvent]:
             seconds=0.0,
         ),
         SandboxDisposed(key=_KEY, backend="in-process", outcome="gone", failure=None, seconds=0.0),
+        ScopeDisposed(
+            scope=_KEY.scope,
+            thread_id=_KEY.thread_id,
+            backend="in-process",
+            outcome="gone",
+            disposed=1,
+            failure=None,
+            seconds=0.0,
+        ),
         HostToolCalled(
             run_id="run-1",
             key=_KEY,
@@ -649,6 +663,199 @@ class _UnreclaimableBackend(InProcessSandboxBackend):
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec):
         return object()
+
+
+# ---------------------------------------------------------------------------
+# The scope purge
+# ---------------------------------------------------------------------------
+
+
+class TestTheScopePurgeIsRecorded:
+    """The routine cleanup — a thread deletion, and a `scope` block ending — is a record too.
+
+    Keyed on the conversation rather than on a sandbox, because a backend answers a purge with
+    a count and not with the keys it removed.
+    """
+
+    def test_one_event_per_backend_asked_carrying_its_own_count(self):
+        recorder = _Recorder()
+        first = InProcessSandboxBackend(name="first")
+        first.purge_count = 2
+        second = InProcessSandboxBackend(name="second")
+        second.purge_count = 5
+        router = SandboxRouter([first, second], min_isolation=Isolation.NONE, observer=recorder)
+
+        purge = asyncio.run(router.dispose_scope("scope-a", "thread-1"))
+
+        events = recorder.only(ScopeDisposed)
+        assert [(event.backend, event.disposed) for event in events] == [
+            ("first", 2),
+            ("second", 5),
+        ]
+        # Each record says what its own backend removed; the sweep's total is the caller's.
+        assert purge.disposed == 7
+        assert all(event.outcome == "gone" and event.failure is None for event in events)
+
+    def test_the_conversation_is_what_the_event_is_keyed_on(self):
+        recorder = _Recorder()
+        router = _router(observer=recorder)
+
+        asyncio.run(router.dispose_scope("scope-b", "thread-9"))
+
+        event = recorder.one(ScopeDisposed)
+        assert (event.scope, event.thread_id) == ("scope-b", "thread-9")
+
+    def test_a_backend_that_refuses_is_recorded_with_its_code_and_what_it_did_remove(self):
+        """A partial purge is the case the count alone cannot state: some went, some may not."""
+        recorder = _Recorder()
+        backend = InProcessSandboxBackend(purge_failure=DisposalFailure("refused", "no"))
+        backend.purge_count = 3
+        router = _router(backend, observer=recorder)
+
+        asyncio.run(router.dispose_scope("scope-a", "thread-1"))
+
+        event = recorder.one(ScopeDisposed)
+        assert event.outcome == "may_remain"
+        assert event.disposed == 3
+        assert event.failure == DisposalFailure("refused", "in-process: no")
+
+    def test_a_backend_that_raises_is_recorded_as_unknown_with_no_count(self):
+        recorder = _Recorder()
+        router = _router(_PurgeRaises(name="raises"), observer=recorder)
+
+        asyncio.run(router.dispose_scope("scope-a", "thread-1"))
+
+        event = recorder.one(ScopeDisposed)
+        # Nobody got an answer, so the zero is the absence of one rather than a report that
+        # there was nothing to remove — which is the reading `outcome` is here to prevent.
+        assert (event.outcome, event.disposed) == ("unknown", 0)
+        assert event.failure is not None and event.failure.code == "unknown"
+
+    def test_each_backends_record_carries_its_own_answer_and_not_the_sweeps(self):
+        recorder = _Recorder()
+        router = SandboxRouter(
+            [
+                InProcessSandboxBackend(
+                    name="first", purge_failure=DisposalFailure("refused", "no")
+                ),
+                InProcessSandboxBackend(name="second"),
+            ],
+            min_isolation=Isolation.NONE,
+            observer=recorder,
+        )
+
+        asyncio.run(router.dispose_scope("scope-a", "thread-1"))
+
+        first, second = recorder.only(ScopeDisposed)
+        assert (first.backend, first.outcome) == ("first", "may_remain")
+        assert (second.backend, second.outcome, second.failure) == ("second", "gone", None)
+
+    def test_a_purge_a_cancel_took_is_still_recorded(self):
+        """`CancelledError` is not an `Exception`, so an `except Exception` around the purge
+        drops exactly the record a timed-out thread deletion leaves. The cancel still reaches
+        the caller."""
+        recorder = _Recorder()
+        router = _router(_PurgeCancels(name="cancels"), observer=recorder)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(router.dispose_scope("scope-a", "thread-1"))
+
+        event = recorder.one(ScopeDisposed)
+        assert (event.backend, event.outcome, event.disposed) == ("cancels", "unknown", 0)
+        assert event.failure is not None
+        assert "interrupted by CancelledError" in event.failure.detail
+
+    def test_an_interruption_is_named_rather_than_assumed_to_be_a_cancel(self):
+        recorder = _Recorder()
+        router = _router(_PurgeExits(name="exits"), observer=recorder)
+
+        with pytest.raises(GeneratorExit):
+            asyncio.run(router.dispose_scope("scope-a", "thread-1"))
+
+        event = recorder.one(ScopeDisposed)
+        assert event.failure is not None
+        assert "interrupted by GeneratorExit" in event.failure.detail
+
+    def test_a_backend_that_answered_before_an_interruption_keeps_its_record(self):
+        """The record goes out as each backend answers, so an interruption mid-sweep does not
+        take the ones already given with it."""
+        recorder = _Recorder()
+        router = SandboxRouter(
+            [InProcessSandboxBackend(name="first"), _PurgeCancels(name="cancels")],
+            min_isolation=Isolation.NONE,
+            observer=recorder,
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(router.dispose_scope("scope-a", "thread-1"))
+
+        assert [event.backend for event in recorder.only(ScopeDisposed)] == ["first", "cancels"]
+
+    def test_an_interrupted_purge_does_no_record_work_with_no_observer(self):
+        """Building the failure reads `backend.name`, which is somebody else's property: one
+        raising `SystemExit` would leave here in place of the interruption, on a router that is
+        not observing at all."""
+
+        class _CannotBeNamed(_PurgeCancels):
+            @property
+            def name(self) -> str:
+                raise SystemExit("the process is going down")
+
+        router = _router(_CannotBeNamed(), observer=None)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(router.dispose_scope("scope-a", "thread-1"))
+
+    def test_a_scope_block_ending_records_its_purge(self):
+        """The other way in: `scope(...)` reclaims in a `finally`, so a host that never calls
+        `dispose_scope` by hand still gets the record."""
+        recorder = _Recorder()
+        router = _router(observer=recorder)
+
+        async def run() -> None:
+            async with router.scope("scope-a", "thread-1"):
+                await router.acquire(_KEY, _SPEC)
+
+        asyncio.run(run())
+
+        assert recorder.one(ScopeDisposed).backend == "in-process"
+
+    def test_a_thread_deletion_through_the_purger_records_its_purge(self):
+        recorder = _Recorder()
+        router = _router(observer=recorder)
+
+        asyncio.run(SandboxPurger(router).purge_scoped_thread("scope-a", "thread-1"))
+
+        event = recorder.one(ScopeDisposed)
+        assert (event.scope, event.thread_id) == ("scope-a", "thread-1")
+
+    def test_whether_the_ledger_was_cleared_is_readable_off_the_events(self):
+        """The purge's one conversation-level state change is not a field: every backend
+        answering `gone` is the same condition the router clears the ledger on."""
+        recorder = _Recorder()
+        router = _router(observer=recorder)
+        router.mark_unclean(_KEY, DisposalFailure("refused", "left behind"))
+
+        asyncio.run(router.dispose_scope(_KEY.scope, _KEY.thread_id))
+
+        assert all(event.outcome == "gone" for event in recorder.only(ScopeDisposed))
+        # Which is what the ledger did: the key is servable again.
+        asyncio.run(router.acquire(_KEY, _SPEC))
+
+
+class _PurgeRaises(InProcessSandboxBackend):
+    async def dispose_scope(self, scope: str, thread_id: str):
+        raise RuntimeError("boom")
+
+
+class _PurgeCancels(InProcessSandboxBackend):
+    async def dispose_scope(self, scope: str, thread_id: str):
+        raise asyncio.CancelledError
+
+
+class _PurgeExits(InProcessSandboxBackend):
+    async def dispose_scope(self, scope: str, thread_id: str):
+        raise GeneratorExit
 
 
 # ---------------------------------------------------------------------------
@@ -1490,10 +1697,12 @@ class TestARouterWithNoObserverPaysNothing:
 
         monkeypatch.setattr(_router_module, "SandboxAcquired", _refuse)
         monkeypatch.setattr(_router_module, "SandboxDisposed", _refuse)
+        monkeypatch.setattr(_router_module, "ScopeDisposed", _refuse)
         router = _router()
 
         asyncio.run(router.acquire(_KEY, _SPEC))
         asyncio.run(router.dispose(_KEY))
+        asyncio.run(router.dispose_scope(_KEY.scope, _KEY.thread_id))
 
     def test_no_event_is_built_for_a_host_tool_call(self, recwarn, monkeypatch):
         import maf_sandbox._host_tools as host_tools_module

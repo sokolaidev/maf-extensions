@@ -26,6 +26,7 @@ from maf_sandbox import (
     SandboxKey,
     SandboxObserver,
     SandboxSpec,
+    ScopeDisposed,
     SourceIntegrity,
     StoreFileRead,
     ToolCallEnded,
@@ -101,6 +102,15 @@ def every_event() -> list[object]:
             limits=LIMITS,
             landed=(LandedOutput(name="out.png", size_bytes=9, media_type="image/png"),),
             seconds=0.05,
+        ),
+        ScopeDisposed(
+            scope="tenant-a",
+            thread_id="thread-1",
+            backend="docker",
+            outcome="gone",
+            disposed=2,
+            failure=None,
+            seconds=0.3,
         ),
         ToolCallEnded(
             tool="execute_code", kind="codeact", keys=(KEY,), seconds=1.0, failure=None, unclean=0

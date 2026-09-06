@@ -28,6 +28,7 @@ from maf_sandbox import (
     SandboxDisposed,
     SandboxKey,
     SandboxSpec,
+    ScopeDisposed,
     SourceIntegrity,
     StoreFileRead,
     ToolCallEnded,
@@ -51,6 +52,7 @@ from maf_sandbox_otel import (
     OpenTelemetrySandboxObserver,
     hashed_conversation,
     hashed_key,
+    hashed_scoped_thread,
 )
 
 KEY = SandboxKey(scope="tenant-a", thread_id="thread-1", agent_dir="agent", call_id="call-9")
@@ -150,6 +152,20 @@ def an_acquire(*, refusal: str | None = None) -> SandboxAcquired:
         seconds=0.25,
         refusal=refusal,
     )
+
+
+def a_purge(**overrides: object) -> ScopeDisposed:
+    fields: dict[str, object] = {
+        "scope": KEY.scope,
+        "thread_id": KEY.thread_id,
+        "backend": "docker",
+        "outcome": "gone",
+        "disposed": 2,
+        "failure": None,
+        "seconds": 0.4,
+    }
+    fields.update(overrides)
+    return ScopeDisposed(**fields)  # pyright: ignore[reportArgumentType]
 
 
 def a_store_read(**overrides: object) -> StoreFileRead:
@@ -330,6 +346,7 @@ class TestEveryEventReachesTheLogPipeline:
         observer.sandbox_disposed(
             SandboxDisposed(key=KEY, backend="docker", outcome="gone", failure=None, seconds=0.1)
         )
+        observer.scope_disposed(a_purge())
         observer.tool_call_ended(
             ToolCallEnded(
                 tool="execute_code",
@@ -346,6 +363,7 @@ class TestEveryEventReachesTheLogPipeline:
             "sandbox.files_in",
             "sandbox.files_out",
             "sandbox.dispose",
+            "sandbox.purge",
             "sandbox.call",
         ]
 
@@ -784,4 +802,80 @@ class TestADisposalRecordsItsOutcome:
                 key=KEY, backend="acas", outcome="may_remain", failure=failure, seconds=1.0
             )
         )
+        assert "an-endpoint.example" in str(asked.attributes()[f"{NAMESPACE}.disposal.detail"])
+
+
+class TestAScopePurgeRecordsTheConversationItCleanedUp:
+    """The routine cleanup, and the one record with no key: a purge is answered with a count."""
+
+    def test_it_joins_on_the_conversation_the_keyed_records_carry(self):
+        """The whole value of the record is that it joins — a purge that hashed to something of
+        its own would say a conversation was cleaned up and match none of its own sandboxes."""
+        recorded = build()
+        recorded.observer.scope_disposed(a_purge())
+        attributes = recorded.attributes()
+        assert attributes[f"{NAMESPACE}.sandbox.conversation"] == hashed_conversation(KEY)
+        assert hashed_scoped_thread(KEY.scope, KEY.thread_id) == hashed_conversation(KEY)
+        # No key, and none invented: a backend answers with a count, not with what it removed.
+        assert f"{NAMESPACE}.sandbox.key" not in attributes
+
+    def test_the_scope_and_thread_wait_for_the_switch_the_way_a_keys_parts_do(self):
+        default = build()
+        default.observer.scope_disposed(a_purge())
+        assert f"{NAMESPACE}.sandbox.scope" not in default.attributes()
+
+        asked = build(sensitive=True)
+        asked.observer.scope_disposed(a_purge())
+        attributes = asked.attributes()
+        assert attributes[f"{NAMESPACE}.sandbox.scope"] == "tenant-a"
+        assert attributes[f"{NAMESPACE}.sandbox.thread_id"] == "thread-1"
+
+    def test_what_the_backend_removed_is_on_the_record_and_in_a_counter(self):
+        recorded = build()
+        recorded.observer.scope_disposed(a_purge(backend="docker", disposed=2))
+        recorded.observer.scope_disposed(a_purge(backend="acas", disposed=3))
+        assert recorded.span_names() == ["sandbox.purge"] * 2
+        assert recorded.counter(f"{NAMESPACE}.scope.purges") == 2
+        assert recorded.counter(f"{NAMESPACE}.scope.purged_sandboxes") == 5
+
+    def test_a_partial_purge_names_its_code_and_still_reports_what_went(self):
+        recorded = build()
+        recorded.observer.scope_disposed(
+            a_purge(
+                outcome="may_remain",
+                disposed=1,
+                failure=DisposalFailure(code="timeout", detail="the control plane did not answer"),
+            )
+        )
+        span = recorded.only_span()
+        assert span.status.status_code is StatusCode.ERROR
+        attributes = dict(span.attributes or {})
+        assert attributes[f"{NAMESPACE}.purge.disposed"] == 1
+        assert attributes[f"{NAMESPACE}.disposal.outcome"] == "may_remain"
+        assert attributes[f"{NAMESPACE}.disposal.code"] == "timeout"
+
+    def test_a_purge_that_never_answered_adds_nothing_to_the_sandboxes_removed(self):
+        """Its nought is the absence of an answer, so a sum of that counter stays a count of
+        sandboxes a backend reported removing rather than a guess about the ones it did not."""
+        recorded = build()
+        recorded.observer.scope_disposed(
+            a_purge(
+                outcome="unknown",
+                disposed=0,
+                failure=DisposalFailure(
+                    code="unknown", detail="docker: the purge was interrupted by CancelledError"
+                ),
+            )
+        )
+        assert recorded.counter(f"{NAMESPACE}.scope.purges") == 1
+        assert recorded.counter(f"{NAMESPACE}.scope.purged_sandboxes") == 0
+
+    def test_the_backends_own_sentence_waits_for_the_switch(self):
+        failure = DisposalFailure(code="unreachable", detail="https://an-endpoint.example refused")
+        default = build()
+        default.observer.scope_disposed(a_purge(outcome="may_remain", failure=failure))
+        assert f"{NAMESPACE}.disposal.detail" not in default.attributes()
+
+        asked = build(sensitive=True)
+        asked.observer.scope_disposed(a_purge(outcome="may_remain", failure=failure))
         assert "an-endpoint.example" in str(asked.attributes()[f"{NAMESPACE}.disposal.detail"])
