@@ -223,6 +223,18 @@ registry = HostToolRegistry(observer=records)
 
 Three things to know before writing one. **Every way out is recorded** — a refused acquire, an exhausted host-tool cap, a collection refused part-way, a call taken by a cancel — and an acquire's, a collection's or a call's failure is recorded as the exception's *class name*, never its message, which can carry a backend's endpoint. `HostToolCalled.refusal` is the exception: it holds the sanitized sentence the guest was answered with, so treat that one as guest-influenced rather than host-only. **An observer cannot fail a call**: its exceptions are contained and logged, and its return value is never read. **It can, however, slow one down, and it is entered from more than one thread** — it runs wherever the call is served, which for a synchronous tool body is a worker thread, so hand the event to a thread-safe queue or a batching exporter and do no I/O in it. A host that registers nothing builds no event at all.
 
+**What *held* has a second destination, because the two survive different things.** A span survives with the trace and whatever sampled it; somebody reading a conversation back a month later has the transcript and no trace at all. `EffectiveState` is one served acquire as a value rather than an event — the backend that answered, the isolation rung and the resolved scope, the egress mode with its allowlist, both sides of the capability match, every tool the sealed host-tool registry was carrying, and the `call` that joins it to every event that call emitted — and `effective_state_middleware()` writes it into `AgentSession.state`, one entry per tool, overwritten each call:
+
+```python
+from agent_framework import Agent
+
+from maf_sandbox.maf import effective_state_middleware
+
+agent = Agent(..., middleware=[effective_state_middleware()])
+```
+
+It records the served answer and not the ask, so a refused call writes nothing — it already has an exception, a log line and a `SandboxAcquired` carrying the refusal. And it carries posture, never payload: no model-chosen text, and neither the spec's `labels` nor the `SandboxKey`, since this record is persisted beside a transcript a deployment may classify differently. The call id is the one identifier on it, because a session already knows which conversation it is and cannot say which call.
+
 [`docs/sandbox/observability.md`](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/observability.md) carries what each event holds, what a recorder should treat as guest-chosen, and what the seam does not yet see — the egress proxy's own `ALLOW`/`DENY` lines among them.
 
 ## Upgrading to 0.27

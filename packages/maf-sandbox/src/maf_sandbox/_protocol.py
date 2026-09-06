@@ -593,6 +593,10 @@ class HostToolAggregate:
       match when it serves the spec — reported policy, not a fold performed here.  The count is
       load-bearing there and not only the bytes: it is what turns "one response" into "how many
       files, and how many refusals nothing debits".
+    - ``names`` is the surface itself: every tool the registry was carrying when it sealed.
+      Nothing matches on it — the folds above are what the router reads — and it is here so
+      that *which* tools a sandbox was served with is answerable from the spec that served it.
+      A registry names its tools, so these are host vocabulary and never a guest's spelling.
     """
 
     result_integrity: SourceIntegrity | None
@@ -602,6 +606,9 @@ class HostToolAggregate:
     has_undeclared: bool
     response_limits: TransferLimits
     max_host_tool_calls_per_run: int
+    #: Appended, and defaulted, so it cannot rebind a positional caller's argument — the same
+    #: rule every field added to :class:`SandboxSpec` below has followed.
+    names: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)

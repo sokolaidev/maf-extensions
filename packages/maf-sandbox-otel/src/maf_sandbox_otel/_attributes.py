@@ -71,6 +71,13 @@ EGRESS_MODE = f"{NAMESPACE}.egress.mode"
 EGRESS_ALLOW = f"{NAMESPACE}.egress.allow"
 EGRESS_ALLOW_COUNT = f"{NAMESPACE}.egress.allow_count"
 
+# The sealed surface a sandbox was served with: `surface.` is what could be called, and
+# `host_tool.` above is what was.
+SURFACE_IDENTITIES = f"{NAMESPACE}.surface.identities"
+SURFACE_UNDECLARED = f"{NAMESPACE}.surface.undeclared"
+SURFACE_INTEGRITY = f"{NAMESPACE}.surface.result_integrity"
+SURFACE_CALL_CAP = f"{NAMESPACE}.surface.call_cap"
+
 TOOL = f"{NAMESPACE}.call.tool"
 FAILURE = f"{NAMESPACE}.call.failure"
 UNCLEAN = f"{NAMESPACE}.call.unclean"
