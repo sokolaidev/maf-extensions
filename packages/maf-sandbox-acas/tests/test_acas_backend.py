@@ -824,6 +824,68 @@ class TestAnImageWhoseGuestCannotWrite:
                 )
             )
 
+    def test_deleting_is_refused_for_reach_rather_than_for_want_of_writing(self):
+        """`FILES_DELETE` works perfectly well on a non-root image, and that is the problem.
+
+        The data plane deletes as the host, and the check keeping a removal inside the working
+        directory is not held, so a guest that swaps a parent redirects a delete it could not
+        have performed itself (#950). The message has to say *that* rather than the
+        cannot-write reason, since a reader who fixes the wrong thing changes nothing.
+        """
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+
+        with pytest.raises(SandboxCapabilityNotSupported) as refusal:
+            asyncio.run(
+                backend.acquire(
+                    self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+                )
+            )
+
+        message = str(refusal.value)
+        assert "files_delete" in message
+        assert "uid 10001" in message
+        assert "separate calls" in message, message
+        assert "could never have deleted itself" in message, message
+        # The other reason is about creating files, and this spec asks for nothing that needs it.
+        assert "Permission denied" not in message, message
+
+    def test_deleting_alone_is_enough_to_make_the_uid_worth_reading(self):
+        """The probe gate and the refusal set are two constants, and a capability added to one
+        and not the other is refused by nothing at all."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+
+        with pytest.raises(SandboxCapabilityNotSupported, match="files_delete"):
+            asyncio.run(backend.acquire(self._key(), _spec_requiring(Capability.FILES_DELETE)))
+
+        assert client.probes == [("id -u", "/")], "a spec requiring only FILES_DELETE never probed"
+
+    def test_both_reasons_are_named_when_a_spec_asks_for_both(self):
+        """One message rather than two acquires: a caller that drops `FILES_OUT` on the strength
+        of the first refusal would otherwise meet the second on the next call."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+
+        with pytest.raises(SandboxCapabilityNotSupported) as refusal:
+            asyncio.run(
+                backend.acquire(
+                    self._key(),
+                    _spec_requiring(Capability.EXEC, Capability.FILES_OUT, Capability.FILES_DELETE),
+                )
+            )
+
+        message = str(refusal.value)
+        assert "files_delete" in message and "files_out" in message, message
+        assert "Permission denied" in message, message
+        assert "could never have deleted itself" in message, message
+
     def test_a_root_guest_is_served(self):
         client = _GuestGroupClient(_guest_reporting(0))
         backend = _backend_with(client)
@@ -834,6 +896,18 @@ class TestAnImageWhoseGuestCannotWrite:
 
         assert sandbox.sandbox_id == "sbx-1"
         assert client.probes == [("id -u", "/")]
+
+    def test_a_root_guest_is_still_served_a_delete(self):
+        """The withholding is keyed on the guest's uid and nothing else: where the guest is
+        root, a redirected delete reaches only what it could have deleted anyway."""
+        client = _GuestGroupClient(_guest_reporting(0))
+        backend = _backend_with(client)
+
+        sandbox = asyncio.run(
+            backend.acquire(self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE))
+        )
+
+        assert sandbox.sandbox_id == "sbx-1"
 
     def test_the_probe_never_runs_in_the_working_directory(self):
         """Nothing has created `work_dir` at acquire, so a probe run there would fail for a

@@ -68,7 +68,7 @@ Everything in this table is a live claim about the guest, made by code that has 
 | `_host_tools_over_exec.py`, `launcher_script` | `command -v setsid`, then `setsid nohup sh -c` — `setsid` optional, `nohup` and `sh` not |
 | `_host_tools_over_exec.py`, `_stop_the_program` | `kill -KILL … 2>/dev/null` |
 | `maf-sandbox-docker`, `_backend.py`, `remove` and `reclaim` | It is `rm -rf` / `rm -f`, *"since the engine has no delete primitive"* |
-| `maf-sandbox-acas`, `_backend.py`, `_probe_guest_uid` | The guest answers `id -u`, which the gate on `FILES_OUT` and `HOST_TOOLS` reads. An image that cannot answer is served rather than refused |
+| `maf-sandbox-acas`, `_backend.py`, `_probe_guest_uid` | The guest answers `id -u`, which the gate on `FILES_OUT`, `HOST_TOOLS` and `FILES_DELETE` reads. An image that cannot answer is served rather than refused |
 | `maf-sandbox-acas`, `_backend.py`, `reclaim` | It is `delete_file` on the data plane — no shell, no `rm`. `exec` runs as the image's `USER` and the SDK exposes no selector ([#707](https://github.com/sokolaidev/maf-extensions/pull/707)), so the data plane, which acts as the host, is the removal |
 | `maf-sandbox-wslc`, `_backend.py`, `reclaim` | `rm -rf` over `exec`, the only delete this backend has |
 | `maf-sandbox-codeact` | The interpreter is spelled `python3` |
@@ -172,6 +172,8 @@ Does this backend's capability set depend on commands inside the guest?
 **The first fork keeps the apparatus off the backends it does not apply to.** The ACAS backend's capability set is a property of an API rather than of an image — its `remove` goes through the data plane's own call with no shell involved — so probing it for `rm` narrows nothing the router matches on. A `run_code` backend is the same. Only a backend whose *declared capabilities* are backed by guest commands enters the rest of the tree; an un-gated member like `reclaim` is narrowed by no probe on any backend, because there is no declaration for a probe to withdraw.
 
 **The fork asks about commands, and a capability can depend on the image without depending on one.** ACAS took the `No` branch above and still ended up probing, for a reason this tree did not model: its two planes act as two principals, so on an image whose `USER` is not root the guest can create nothing inside a directory the file plane made — and `FILES_OUT` and `HOST_TOOLS` are unservable there whatever commands the image carries ([#722](https://github.com/sokolaidev/maf-extensions/issues/722)). What it probes is the guest's uid rather than a command, and everything below the third fork applies unchanged: a declared ceiling, a probe on the cold path of `acquire`, a refusal there. **The question the first fork should ask is whether a capability depends on the image at all**, and a command is one way for it to.
+
+**And a capability can be unservable on an image for a reason that has nothing to do with what works there.** The same uid decides `FILES_DELETE` on that backend, where the delete would run perfectly well and is refused because it would run with more authority than the guest has ([#950](https://github.com/sokolaidev/maf-extensions/issues/950)). One probe, one image property, two refusals with different reasons — so a ceiling narrowed at acquire is not only about capability, and a backend that narrows one owes the reason in the refusal rather than a shared sentence covering both.
 
 **The second fork is `OsFamily`,** and it decides how to ask, not what is there: `command -v` on a POSIX guest, `Get-Command` on a Windows one.
 

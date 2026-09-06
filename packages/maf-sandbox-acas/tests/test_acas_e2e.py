@@ -844,7 +844,7 @@ _NONROOT_IMAGE = os.environ.get("MAF_SANDBOX_ACAS_E2E_NONROOT_IMAGE")
 
 
 class TestAnImageWhoseGuestIsNotRoot:
-    """The acquire-time gate, and the wall it rests on, against the service (#722).
+    """The acquire-time gate, and the wall it rests on, against the service (#722, #950).
 
     Costs **two more billable sandboxes** when the environment names such an image, and nothing
     otherwise: the fixture's, and one `test_a_cold_refusal_deletes_the_sandbox_it_had_to_create`
@@ -922,6 +922,27 @@ class TestAnImageWhoseGuestIsNotRoot:
 
         with pytest.raises(SandboxCapabilityNotSupported, match="files_out"):
             nonroot.run(nonroot.backend.acquire(nonroot.key, collecting))
+
+    def test_a_workload_that_deletes_is_refused_at_acquire(self, nonroot: _Live):
+        """The reach half, and free for the same reason: the uid is already known.
+
+        `FILES_DELETE` is withheld here for what a delete could *reach* rather than for what
+        the guest cannot write, so the refusal is asserted on that reason and not merely on the
+        exception (#950).
+        """
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        deleting = SandboxSpec(
+            kind="e2e-nonroot-delete",
+            image=_NONROOT_IMAGE,
+            work_dir=_WORK,
+            requires=frozenset({Capability.EXEC, Capability.FILES_DELETE}),
+        )
+
+        with pytest.raises(SandboxCapabilityNotSupported) as refusal:
+            nonroot.run(nonroot.backend.acquire(nonroot.key, deleting))
+
+        assert "could never have deleted itself" in str(refusal.value), str(refusal.value)
 
     def test_a_cold_refusal_deletes_the_sandbox_it_had_to_create(self, nonroot: _Live, caplog):
         """A refusal that had to create a sandbox to reach its verdict still deletes it.
