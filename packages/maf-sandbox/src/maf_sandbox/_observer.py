@@ -64,6 +64,7 @@ __all__ = [
     "SandboxDisposed",
     "SandboxEvent",
     "SandboxObserver",
+    "ScopeDisposed",
     "StoreFileRead",
     "StoreReadOutcome",
     "ToolCallEnded",
@@ -152,6 +153,44 @@ class SandboxDisposed(SandboxEvent):
 
     def deliver_to(self, observer: SandboxObserver) -> None:
         observer.sandbox_disposed(self)
+
+
+@dataclass(frozen=True)
+class ScopeDisposed(SandboxEvent):
+    """One backend's answer to one conversation's purge — how many went, and what stayed.
+
+    The routine cleanup: :meth:`~maf_sandbox.SandboxRouter.dispose_scope` is what a thread
+    deletion runs and what :meth:`~maf_sandbox.SandboxRouter.scope` runs when its block ends.
+    One event per backend asked, because a purge fans out the same way a disposal does.
+
+    **It is keyed on a conversation rather than on a sandbox**, which is why
+    :class:`SandboxDisposed` cannot carry it: :meth:`~maf_sandbox.SandboxBackend.dispose_scope`
+    answers with a count rather than with the keys it removed, so there is no key to put here.
+    A recorder joins this to the rest on ``(scope, thread_id)``.
+
+    ``disposed`` is what **this** backend reported removing, not the sweep's running total, and
+    it is zero for a backend that raised and for one an interruption took — where zero is the
+    absence of an answer rather than a report that nothing was there.  ``outcome`` is what
+    separates those from a backend that genuinely had nothing to remove, and it reads exactly
+    as :class:`SandboxDisposed`'s does.
+
+    **What the purge did to the unclean ledger is not a field here.**  A purge every backend
+    answered cleanly reopens the conversation's refused keys, and that is one state change for
+    the whole purge rather than one per backend, so the number of keys it reopened is not
+    recorded.  Every backend's ``outcome`` reading ``"gone"`` is the condition the ledger is
+    cleared on, which is as close as these events come to stating it.
+    """
+
+    scope: str
+    thread_id: str
+    backend: str
+    outcome: DisposalReport
+    disposed: int
+    failure: DisposalFailure | None
+    seconds: float
+
+    def deliver_to(self, observer: SandboxObserver) -> None:
+        observer.scope_disposed(self)
 
 
 #: How one host-tool call ended.  ``"refused"`` covers every sentence the guest was answered
@@ -354,6 +393,9 @@ class SandboxObserver:
     def sandbox_disposed(self, event: SandboxDisposed) -> None:
         """One backend answered one disposal."""
 
+    def scope_disposed(self, event: ScopeDisposed) -> None:
+        """One backend answered one conversation's purge."""
+
     def host_tool_called(self, event: HostToolCalled) -> None:
         """A guest program called back into the host."""
 
@@ -372,6 +414,7 @@ class SandboxObserver:
 EVENT_METHODS: tuple[str, ...] = (
     "sandbox_acquired",
     "sandbox_disposed",
+    "scope_disposed",
     "host_tool_called",
     "store_file_read",
     "outputs_collected",

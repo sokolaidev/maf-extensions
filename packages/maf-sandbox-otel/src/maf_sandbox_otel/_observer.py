@@ -40,6 +40,7 @@ from maf_sandbox import (
     SandboxAcquired,
     SandboxDisposed,
     SandboxObserver,
+    ScopeDisposed,
     StoreFileRead,
     ToolCallEnded,
 )
@@ -91,6 +92,7 @@ from ._attributes import (
     OUTPUTS_MAX_FILES,
     OUTPUTS_MAX_TOTAL_BYTES,
     OUTPUTS_NAMES,
+    PURGE_DISPOSED,
     REFUSAL,
     STORE_CHARACTERS,
     STORE_FILE,
@@ -106,6 +108,7 @@ from ._attributes import (
 
 ACQUIRE = "sandbox.acquire"
 DISPOSE = "sandbox.dispose"
+PURGE = "sandbox.purge"
 HOST_TOOL_CALL = "sandbox.host_tool_call"
 FILES_IN = "sandbox.files_in"
 FILES_OUT = "sandbox.files_out"
@@ -163,6 +166,14 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
         )
         self._disposals: Counter = meter.create_counter(
             f"{NAMESPACE}.sandbox.disposals", description="Disposals answered by a backend."
+        )
+        self._purges: Counter = meter.create_counter(
+            f"{NAMESPACE}.scope.purges",
+            description="Conversation purges answered by a backend.",
+        )
+        self._purged_sandboxes: Counter = meter.create_counter(
+            f"{NAMESPACE}.scope.purged_sandboxes",
+            description="Sandboxes a conversation purge reported removing.",
         )
         self._host_tool_calls: Counter = meter.create_counter(
             f"{NAMESPACE}.host_tool.calls",
@@ -251,6 +262,35 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
                 },
             )
         )
+
+    def scope_disposed(self, event: ScopeDisposed) -> None:
+        """Record one backend's answer to one conversation's purge.
+
+        The one record that carries no key: a purge is answered with a count rather than with
+        the sandboxes it removed, so the conversation is what it joins to the others on.
+        """
+        failure = event.failure
+        recorded: dict[str, AttributeValue] = {
+            **self._redaction.conversation(event.scope, event.thread_id),
+            BACKEND: event.backend,
+            DISPOSAL_OUTCOME: event.outcome,
+            PURGE_DISPOSED: event.disposed,
+            **without_none({DISPOSAL_CODE: None if failure is None else str(failure.code)}),
+            **self._redaction.text(DISPOSAL_DETAIL, None if failure is None else failure.detail),
+        }
+        self._emit(PURGE, recorded, event.seconds, None if failure is None else str(failure.code))
+
+        measured: dict[str, AttributeValue] = {
+            BACKEND: event.backend,
+            DISPOSAL_OUTCOME: event.outcome,
+            DISPOSAL_CODE: "" if failure is None else str(failure.code),
+        }
+        self._isolate(lambda: self._purges.add(1, measured))
+        # Under the same outcome, so a sum is not read as a count of sandboxes provably gone:
+        # a backend that raised or was interrupted reports nought, and nought is the absence of
+        # an answer there rather than a report that there was nothing to remove.
+        if event.disposed:
+            self._isolate(lambda: self._purged_sandboxes.add(event.disposed, measured))
 
     def host_tool_called(self, event: HostToolCalled) -> None:
         """Record one call a guest program made back into the host."""
