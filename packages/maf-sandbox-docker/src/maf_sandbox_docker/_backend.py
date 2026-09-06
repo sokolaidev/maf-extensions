@@ -317,12 +317,14 @@ def _reads_as_an_absent_path(stderr: str, guest: str) -> bool:
     Anything else stays a failure.  Why, and which failures borrow the words, is with
     ``_ABSENT_PATH``.
 
-    Both sides are lowered because the phrase is capitalised and a guest path's case is the
-    guest's, and ``guest`` is escaped because a file name may hold regex metacharacters.
+    Only the phrase is case-folded.  The path is compared as spelled, because a guest
+    filesystem is case-sensitive — ``Out.PNG`` and ``out.png`` are two files — and the engine
+    echoes back the spelling it was asked for, so folding it could only let a message about
+    one end the check over the other.  ``guest`` is escaped because a file name may hold
+    regex metacharacters.
     """
-    lowered = stderr.lower()
-    named = re.search(rf"(?:^|\s){re.escape(guest.lower())}(?=\s|$)", lowered)
-    return named is not None and _ABSENT_PATH in lowered
+    named = re.search(rf"(?:^|\s){re.escape(guest)}(?=\s|$)", stderr)
+    return named is not None and _ABSENT_PATH in stderr.lower()
 
 
 def _single_rooted(guest_path: str) -> str:

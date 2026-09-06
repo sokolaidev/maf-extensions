@@ -1997,6 +1997,18 @@ class TestAFailureBorrowingTheAbsenceWords:
         with pytest.raises(RuntimeError, match="could not stat"):
             asyncio.run(sandbox.stat_file("out.png", working_directory=_WORK))
 
+    def test_an_absence_about_a_name_differing_only_in_case_is_a_different_file(self):
+        """A guest filesystem is case-sensitive, so `Out.PNG` and `out.png` are two files.
+
+        The engine echoes the spelling it was asked for, so this message cannot arise from
+        this copy — but folding the path's case is what would let one file's absence answer
+        for the other's, and the answer it would give ends the check.
+        """
+        named = _not_in_the_container(f"{_WORK}/Out.PNG")
+        sandbox, _ = self._sandbox(f"{_WORK}/out.png", named.stderr)
+        with pytest.raises(RuntimeError, match="could not stat"):
+            asyncio.run(sandbox.stat_file("out.png", working_directory=_WORK))
+
     def test_a_read_that_failed_is_not_an_output_that_was_never_produced(self):
         """`FileNotFoundError` tells a kind its workload wrote nothing, which is a verdict on
         the guest.  A transport that failed has said nothing about the guest."""
