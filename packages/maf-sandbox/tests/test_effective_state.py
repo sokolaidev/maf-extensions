@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from maf_sandbox import (
+    CallerContext,
     Capability,
     DeclaredOutput,
     EffectiveState,
@@ -34,6 +35,7 @@ from maf_sandbox import (
     SandboxRouter,
     SandboxSpec,
     SourceIntegrity,
+    ToolCallEnded,
     TransferLimits,
     sandbox_tool,
 )
@@ -43,7 +45,13 @@ from maf_sandbox._effective_state import (
     effective_state_is_noted,
     open_effective_state_notes,
 )
-from maf_sandbox.maf import EFFECTIVE_STATE_KEY, effective_state_middleware
+from maf_sandbox.maf import (
+    EFFECTIVE_STATE_KEY,
+    SandboxToolSession,
+    effective_state_middleware,
+    list_no_files,
+    sandboxed_tool,
+)
 from maf_sandbox.testing import FAKE_BACKEND_DECLARATIONS, InProcessSandboxBackend
 
 if TYPE_CHECKING:
@@ -91,6 +99,20 @@ def _backend() -> InProcessSandboxBackend:
             FAKE_BACKEND_DECLARATIONS,
             capabilities=frozenset({Capability.EXEC, Capability.HOST_TOOLS, Capability.FILES_OUT}),
         )
+    )
+
+
+def _acquired(*, spec: SandboxSpec | None = None, call: str | None = None) -> SandboxAcquired:
+    """A served acquire, built directly — for the cases a real router cannot reach."""
+    return SandboxAcquired(
+        key=KEY,
+        spec=spec if spec is not None else _spec(),
+        isolation_scope=IsolationScope.CONVERSATION,
+        backend="in-process",
+        isolation=None,
+        declarations=None,
+        seconds=0.0,
+        call=call,
     )
 
 
@@ -169,16 +191,7 @@ class TestWhatASnapshotHolds:
 
     def test_the_declarations_are_none_together_where_they_could_not_be_read(self):
         """A degraded read of a sandbox that *was* served, which is not a backend declaring none."""
-        acquired = SandboxAcquired(
-            key=KEY,
-            spec=_spec(),
-            isolation_scope=IsolationScope.CONVERSATION,
-            backend="in-process",
-            isolation=None,
-            declarations=None,
-            seconds=0.0,
-        )
-        state = EffectiveState.of(acquired)
+        state = EffectiveState.of(_acquired())
         assert state is not None
         assert state.backend_capabilities is None
         assert state.backend_egress_modes is None
@@ -196,6 +209,12 @@ class TestPostureNeverPayload:
         assert "cost_centre" not in rendered
         assert "labels" not in rendered
 
+    def test_the_call_id_is_in_it_where_the_key_is_not(self):
+        """The session already is the conversation; what it cannot say is *which call*."""
+        rendered = EffectiveState.of(_acquired(call="call-7"))
+        assert rendered is not None
+        assert rendered.as_dict()["call"] == "call-7"
+
     def test_the_sandbox_key_is_not_in_it(self):
         """The session is already that conversation; a scope and a thread id answer nothing more."""
         (state,) = _served()
@@ -203,9 +222,14 @@ class TestPostureNeverPayload:
         assert KEY.scope not in rendered
         assert KEY.thread_id not in rendered
 
-    def test_every_field_is_host_configuration_or_a_backend_declaration(self):
-        """A field naming something a model chose would put transcript content in a second store."""
+    def test_every_field_is_host_configuration_a_declaration_or_the_call_id(self):
+        """A field naming something a model chose would put transcript content in a second store.
+
+        `call` is the one identifier admitted: the framework generates it, it names nobody on
+        its own, and it is what joins this record to the events the same call emitted.
+        """
         assert {field.name for field in dataclasses.fields(EffectiveState)} == {
+            "call",
             "kind",
             "backend",
             "isolation",
@@ -234,17 +258,7 @@ class TestTheJsonRendering:
 
     def test_every_key_is_present_even_where_the_value_is_unset(self):
         """A fixed shape is what makes a record queryable a month later."""
-        rendered = EffectiveState.of(
-            SandboxAcquired(
-                key=KEY,
-                spec=SandboxSpec(kind="bicep"),
-                isolation_scope=IsolationScope.CONVERSATION,
-                backend="in-process",
-                isolation=None,
-                declarations=None,
-                seconds=0.0,
-            )
-        )
+        rendered = EffectiveState.of(_acquired(spec=SandboxSpec(kind="bicep")))
         assert rendered is not None
         assert rendered.as_dict()["image"] is None
         assert rendered.as_dict()["isolation"] is None
@@ -490,3 +504,63 @@ class TestTheMiddlewareWritesIntoSessionState:
             self._run(session)
         said = [record for record in caplog.records if "was overwritten" in record.getMessage()]
         assert len(said) == 1
+
+
+class TestTheSnapshotJoinsToTheCallThatProducedIt:
+    """Through `sandboxed_tool`, which is what puts a call id in scope for the router to read."""
+
+    def _one_call(self) -> tuple[EffectiveState, ToolCallEnded]:
+        """Run one real sandboxed tool call, and answer with its snapshot and its own record."""
+        seen: list[ToolCallEnded] = []
+
+        class _Records(SandboxObserver):
+            def tool_call_ended(self, event: ToolCallEnded) -> None:
+                seen.append(event)
+
+        router = SandboxRouter([_backend()], min_isolation=Isolation.NONE, observer=_Records())
+        context = CallerContext(
+            current_scope=lambda: "scope-a",
+            current_thread_id=lambda: "thread-1",
+            list_files=list_no_files,
+        )
+
+        def build(session: SandboxToolSession):
+            async def widget_run() -> str:
+                """Do a thing."""
+                key = session.key()
+                assert isinstance(key, SandboxKey)
+                await session.acquire(key)
+                return "done"
+
+            return widget_run
+
+        (tool,) = sandboxed_tool(
+            build,
+            router=router,
+            context=context,
+            agent_dir="agent",
+            spec=_spec(),
+            name="widget_run",
+            logger=logging.getLogger("test_effective_state"),
+        )
+        body = getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
+
+        notes, token = open_effective_state_notes()
+        try:
+            assert asyncio.run(body()) == "done"
+        finally:
+            close_effective_state_notes(token)
+        (state,) = notes
+        (ended,) = seen
+        return state, ended
+
+    def test_the_snapshot_names_the_call_its_own_record_names(self):
+        """One string, so a reader joins the posture to everything else that call did."""
+        state, ended = self._one_call()
+        assert state.call == ended.call
+        assert state.call
+
+    def test_an_acquire_outside_a_call_names_none(self):
+        """A router driven directly has no call to attribute the posture to."""
+        (state,) = _served()
+        assert state.call is None
