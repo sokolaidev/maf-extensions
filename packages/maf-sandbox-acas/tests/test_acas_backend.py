@@ -1067,28 +1067,77 @@ class TestAnImageWhoseGuestIsNotRoot:
             backend.acquire(self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_OUT))
         )
 
-    def test_an_image_that_could_not_answer_is_asked_only_once(self):
-        """An image with no `id` would otherwise put a round trip, and its timeout, in front
-        of every tool call — including the warm reuse the probe used to skip entirely."""
-        client = _GuestGroupClient(RuntimeError("no shell in this image"))
+    def test_an_image_that_answered_that_it_has_no_uid_is_asked_only_once(self):
+        """A guest that answered and said something that is not a uid is a fact about the
+        artefact, so it is remembered: re-asking would put a round trip, and its timeout, in
+        front of every tool call.
+        Measured on the **warm** path, which is where memoising is observable at all: a cold
+        acquire re-probes whatever the memo holds, so counting across two creates would pass
+        without the memo doing anything.
+        """
+        client = _GuestGroupClient(_GuestAnswer(stdout="", stderr="not found", exit_code=127))
         backend = _backend_with(client)
         spec = _spec_requiring(Capability.EXEC, Capability.FILES_OUT)
 
-        asyncio.run(backend.acquire(self._key("scope-a"), spec))
-        asyncio.run(backend.acquire(self._key("scope-b"), spec))
+        asyncio.run(backend.acquire(self._key(), spec))  # cold: probes and records
+        asyncio.run(backend.acquire(self._key(), spec))  # warm: the memo answers
 
         assert len(client.probes) == 1
+        assert backend._guest_uids == {("pinned-id", "python-nonroot:3.13"): None}
 
-    def test_the_uid_is_read_once_per_image(self):
-        """A property of the image, not of the sandbox: a second key pays no round trip."""
+    def test_a_probe_that_never_landed_is_asked_again(self):
+        """A timeout is not a fact about the image, and remembering one as `None` would take
+        `FILES_DELETE` off a **root** image for the life of the backend — no way back short of
+        a restart, on the strength of one dropped call.
+
+        Same warm path as the test above, and the pair is the whole point: one answer is
+        remembered and the other is not.
+        """
+        client = _GuestGroupClient(RuntimeError("transport dropped"))
+        backend = _backend_with(client)
+        spec = _spec_requiring(Capability.EXEC, Capability.FILES_OUT)
+
+        asyncio.run(backend.acquire(self._key(), spec))
+        asyncio.run(backend.acquire(self._key(), spec))
+
+        assert len(client.probes) == 2, "a dropped probe was remembered as an answer"
+        assert backend._guest_uids == {}, "a transient failure recorded a verdict"
+
+    def test_the_uid_is_read_once_per_sandbox_rather_than_once_per_image(self):
+        """The memo answers before a create and on a warm reuse; it does not answer *for* a
+        create. A second key boots a second artefact from the same reference, and an image
+        reference is the service's to repoint, so the memo describes the previous one."""
         client = _GuestGroupClient(_guest_reporting(0))
         backend = _backend_with(client)
         spec = _spec_requiring(Capability.EXEC, Capability.FILES_OUT)
 
         asyncio.run(backend.acquire(self._key("scope-a"), spec))
-        asyncio.run(backend.acquire(self._key("scope-b"), spec))
+        asyncio.run(backend.acquire(self._key("scope-a"), spec))  # warm: the memo answers
+        asyncio.run(backend.acquire(self._key("scope-b"), spec))  # cold: a new artefact
 
-        assert len(client.probes) == 1
+        assert len(client.probes) == 2, "a create trusted the memo, or a warm reuse re-probed"
+
+    def test_a_remembered_root_uid_does_not_license_a_newly_booted_image(self):
+        """The hole a per-image memo leaves once the memo is load-bearing for reach.
+
+        A prebuilt catalogue name is mutable. Repoint it from a root image to a non-root one
+        and, without a re-probe, every later acquire reuses the remembered `0`, skips the
+        probe, and serves the host-authority delete this whole gate exists to withhold.
+        """
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+        spec = _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+        # What an earlier acquire measured, before the reference was repointed.
+        backend._guest_uids[("pinned-id", "python-nonroot:3.13")] = 0
+
+        with pytest.raises(SandboxCapabilityNotSupported, match="files_delete"):
+            asyncio.run(backend.acquire(self._key(), spec))
+
+        assert backend._guest_uids[("pinned-id", "python-nonroot:3.13")] == 10001, (
+            "the fresh probe did not correct the memo, so the next acquire repeats the mistake"
+        )
 
     def test_a_dropped_probe_does_not_displace_a_uid_another_one_measured(self):
         """Two cold acquires for one image overlap, and the one that fails writes second.

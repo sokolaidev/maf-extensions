@@ -9,7 +9,7 @@ The four below `isolation` are fields of this backend's `declarations`.
 | Declaration | Value |
 |---|---|
 | `isolation` | `Isolation.MICROVM` |
-| `capabilities` | `EXEC`, `FILES_IN`, `FILES_OUT`, `FILES_LIST`, `FILES_DELETE`, `HOST_TOOLS` — never `RUN_CODE`, and `run_code` refuses. Three are a **ceiling** rather than a promise: `acquire` withdraws `FILES_OUT` and `HOST_TOOLS` on an image whose guest is not root because the guest cannot write beside what the file plane made, and `FILES_DELETE` on the same image because a delete through that plane acts as the host |
+| `capabilities` | `EXEC`, `FILES_IN`, `FILES_OUT`, `FILES_LIST`, `FILES_DELETE`, `HOST_TOOLS` — never `RUN_CODE`, and `run_code` refuses. Three are a **ceiling** rather than a promise, and the two predicates differ: `acquire` withdraws `FILES_OUT` and `HOST_TOOLS` on an image whose guest **is known not to be root**, because the guest cannot write beside what the file plane made, and `FILES_DELETE` on one whose guest **is not known to be root** — the wider set, taking in an image that cannot answer the probe at all — because a delete through that plane acts as the host |
 | `egress_modes` | `{Egress.ALLOWLIST, Egress.CLOSED}` |
 | `limits` | 32 MiB per file, 128 MiB total, 128 files — the same `TransferLimits` in each direction |
 | `os_families` | `{OsFamily.POSIX}` — a constant rather than a read: every sandbox the service boots is a Linux microVM, from the prebuilt catalogue and from an imported disk image alike. It is what `exec`'s `shlex.join` quoting and this backend's `posixpath` arithmetic rest on |

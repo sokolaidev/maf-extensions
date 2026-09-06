@@ -902,7 +902,9 @@ class AcasSandboxBackend:
             )
         created = _AcasSandbox(sc, self._config.read_timeout_seconds)
         try:
-            await self._refuse_or_warn_where_the_guest_is_not_root(spec, created)
+            await self._refuse_or_warn_where_the_guest_is_not_root(
+                spec, created, freshly_created=True
+            )
         except SandboxCapabilityNotSupported:
             self._registry.pop(registry_key, None)
             await self._release_the_refused(gc, key, sc.sandbox_id)
@@ -938,7 +940,11 @@ class AcasSandboxBackend:
             self._undeleted.pop(prefix, None)
 
     async def _refuse_or_warn_where_the_guest_is_not_root(
-        self, spec: SandboxSpec, sandbox: _AcasSandbox | None = None
+        self,
+        spec: SandboxSpec,
+        sandbox: _AcasSandbox | None = None,
+        *,
+        freshly_created: bool = False,
     ) -> None:
         """Refuse a spec a non-root guest cannot back or must not be handed; warn one that only
         runs commands.
@@ -949,7 +955,9 @@ class AcasSandboxBackend:
         :data:`_NEEDS_A_WRITING_GUEST`, and it is about what the workload can *do*.  The same
         split makes every data-plane call act with more authority than the guest, which is what
         :data:`_UNSAFE_WHERE_THE_GUEST_IS_NOT_ROOT` is about, and it is a reach rule rather than
-        a functional one.  ``sandbox`` is optional because the memo can answer before one exists.
+        a functional one.  ``sandbox`` is optional because the memo can answer before one
+        exists; ``freshly_created`` says this one was just booted, which makes the memo the
+        wrong answer — it describes whatever the same reference resolved to last time.
 
         An image whose uid cannot be read is **served the functional set**, and asked only
         once: refusing on an unreadable probe would take a working root image off a deployment,
@@ -968,7 +976,14 @@ class AcasSandboxBackend:
         if not spec.requires & _PROBE_WHEN_REQUIRED:
             return
         identity = _image_identity(spec)
-        if identity in self._guest_uids:
+        if freshly_created and sandbox is not None:
+            # The memo describes the artefact an earlier acquire booted, and this one just
+            # booted a new artefact from the same reference. A prebuilt catalogue name is the
+            # service's to repoint, so a remembered `0` can outlive the image that earned it —
+            # and a stale `0` serves the reach set to a guest nobody has read. One `exec` on a
+            # path that has already paid for a create.
+            uid = await self._probe_guest_uid(sandbox, spec, replacing=True)
+        elif identity in self._guest_uids:
             uid = self._guest_uids[identity]
         elif sandbox is None:
             return
@@ -1043,7 +1058,9 @@ class AcasSandboxBackend:
             spec.kind,
         )
 
-    async def _probe_guest_uid(self, sandbox: _AcasSandbox, spec: SandboxSpec) -> int | None:
+    async def _probe_guest_uid(
+        self, sandbox: _AcasSandbox, spec: SandboxSpec, *, replacing: bool = False
+    ) -> int | None:
         """The uid ``exec`` runs as, remembered per image, ``None`` when the guest cannot say.
 
         The uid belongs to the artefact a reference names rather than to the sandbox booted
@@ -1051,20 +1068,33 @@ class AcasSandboxBackend:
         memo is this backend instance's, not the module's — unlike ``_images``' disk-image cache
         — so a host that builds a backend per request pays one probe per request.
 
-        **A failure is remembered too**, as ``None``: an image with no ``id`` would otherwise be
-        asked again on every acquire, including the warm reuse the probe used to skip, and each
-        ask is a round trip bounded by :data:`_PROBE_TIMEOUT_S`.
+        **Only a definitive failure is remembered.**  A guest that answered and said something
+        that is not a uid — a non-zero exit, a word, no ``id`` in the image — is a fact about
+        the artefact, so it records as ``None`` rather than being asked again on every acquire,
+        each ask being a round trip bounded by :data:`_PROBE_TIMEOUT_S`.  A **transient**
+        failure — a timeout, a transport error, an exception of any kind — records nothing and
+        the next acquire asks again.
 
-        **A failure never displaces an answer.**  Concurrent cold acquires for one image race
-        here, and a ``None`` written over a real uid would withdraw a capability the image can
-        serve, so both failure paths record through ``setdefault`` and return what the memo
-        holds.
+        That split is what the fail-closed half of the caller's policy needs.  Memoising a
+        transient ``None`` would take :data:`_UNSAFE_WHERE_THE_GUEST_IS_NOT_ROOT` away from a
+        **root** image for the life of the backend, on the strength of one timeout, with no way
+        back short of a restart.
+
+        **A failure never displaces an answer, unless it is about a newer artefact.**
+        Concurrent cold acquires for one image race here, and a ``None`` written over a real uid
+        would withdraw a capability the image can serve — so a definitive failure records
+        through ``setdefault`` and returns what the memo holds, and a transient one falls back
+        to the memo without writing.  ``replacing`` inverts both: the caller is probing a
+        sandbox it has just booted, so the memo describes the artefact *before* this one and is
+        the thing being corrected rather than protected.  A transient failure then answers
+        ``None`` rather than the stale value, because refusing this acquire is the safe half.
 
         What ``None`` then costs is the caller's, and it is not one policy:
         :meth:`_refuse_or_warn_where_the_guest_is_not_root` serves the functional set on it and
         refuses the reach set.
         """
         image = _image_label(spec)
+        identity = _image_identity(spec)
         try:
             answered = await sandbox.exec(
                 _GUEST_UID_COMMAND,
@@ -1073,12 +1103,12 @@ class AcasSandboxBackend:
             )
         except Exception as unreachable:  # noqa: BLE001 - an acquire must not fail over this
             logger.debug(
-                "acas: %s did not answer %r (%s)",
+                "acas: %s did not answer %r (%s); not remembered, so the next acquire asks again",
                 image,
                 _GUEST_UID_COMMAND,
                 error_detail(unreachable),
             )
-            return self._guest_uids.setdefault(_image_identity(spec), None)
+            return None if replacing else self._guest_uids.get(identity)
         reported = answered.stdout.strip()
         if answered.exit_code != 0 or not reported.isdecimal():
             logger.debug(
@@ -1088,9 +1118,12 @@ class AcasSandboxBackend:
                 answered.exit_code,
                 reported,
             )
-            return self._guest_uids.setdefault(_image_identity(spec), None)
+            if replacing:
+                self._guest_uids[identity] = None
+                return None
+            return self._guest_uids.setdefault(identity, None)
         uid = int(reported)
-        self._guest_uids[_image_identity(spec)] = uid
+        self._guest_uids[identity] = uid
         return uid
 
     async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
