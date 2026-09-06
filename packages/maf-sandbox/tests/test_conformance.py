@@ -42,6 +42,7 @@ from maf_sandbox.conformance import (
     FILES_DELETE_PROBES,
     FILES_IN_PROBES,
     FILES_OUT_PROBES,
+    REACH_PROBES,
     RECLAIM_PROBES,
     ConformanceFailure,
     ConformancePaths,
@@ -52,6 +53,7 @@ from maf_sandbox.conformance import (
     assert_files_delete_conformance,
     assert_files_in_conformance,
     assert_files_out_conformance,
+    assert_reach_conformance,
     assert_reclaim_conformance,
     measure_files_delete_probes,
     run_call_scope_probes,
@@ -59,6 +61,7 @@ from maf_sandbox.conformance import (
     run_files_delete_probes,
     run_files_in_probes,
     run_files_out_probes,
+    run_reach_probes,
     run_reclaim_probes,
 )
 from maf_sandbox.testing import (
@@ -103,6 +106,18 @@ class _FakeSubject:
             ["test", "-e", path], working_directory=self.working_directory, timeout=60
         )
         return result.exit_code == 0
+
+    async def plant_directory_the_guest_owns(self, path: str) -> bool:
+        """No guest program here to ask, and the reach probes never reach this subject."""
+        raise NotImplementedError(f"no guest here to make {path!r}")
+
+    async def the_guest_could_have_made(self, path: str) -> bool:
+        """No guest program here to ask, and the reach probes never reach this subject."""
+        raise NotImplementedError(f"no guest here to ask about {path!r}")
+
+    async def plant_directory_the_guest_cannot_write_into(self, path: str) -> bool:
+        """The same: a mode means nothing to a store that keeps bytes and names."""
+        raise NotImplementedError(f"no guest here to close {path!r} against")
 
 
 class _Leaky:
@@ -528,11 +543,23 @@ class _SimulatedGuest:
     """
 
     def __init__(
-        self, *, quoting: bool = True, exit_codes: bool = True, streams: str = "separate"
+        self,
+        *,
+        quoting: bool = True,
+        exit_codes: bool = True,
+        streams: str = "separate",
+        guest_is_root: bool = False,
+        writes_as_the_host: bool = False,
+        removes_as_the_host: bool = False,
     ) -> None:
         self.contents: dict[str, bytes] = {}
         self.symlinks: dict[str, str] = {}
         self.directories: set[str] = set()
+        #: What the guest program cannot write — a mode it closed, or a path the host owns.
+        self.beyond_the_guest: set[str] = set()
+        self._guest_is_root = guest_is_root
+        self._writes_as_the_host = writes_as_the_host
+        self._removes_as_the_host = removes_as_the_host
         self._quoting = quoting
         self._exit_codes = exit_codes
         #: How this specimen answers the stream probe: `separate` keeps the two apart,
@@ -559,6 +586,15 @@ class _SimulatedGuest:
                 raise NotADirectoryError(f"{so_far!r} is not a directory")
         if guest in self.symlinks:
             raise ValueError(f"{guest!r} is a link")
+        if self._writes_as_the_host:
+            # Only what this write *creates* becomes the host's: a directory the guest already
+            # made stays the guest's, which is the shape the reach probes plant.
+            self.beyond_the_guest.add(guest)
+            so_far = base
+            for part in (p for p in posixpath.dirname(guest)[len(base) :].split("/") if p):
+                so_far = f"{so_far}/{part}"
+                if not self._is_there(so_far):
+                    self.beyond_the_guest.add(so_far)
         self.contents[guest] = content.encode("utf-8") if isinstance(content, str) else content
 
     async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
@@ -583,6 +619,8 @@ class _SimulatedGuest:
         under = [stored for stored in (*self.contents, *self.symlinks) if stored.startswith(prefix)]
         if (under or guest in self.directories) and not recursive:
             raise OSError(f"refusing to remove a directory without recursive: {path}")
+        if under and not self._removes_as_the_host and not self._the_guest_can_write(guest):
+            raise OSError(f"cannot empty {guest!r}: the guest program cannot write into it")
         self.contents.pop(guest, None)
         self.directories.discard(guest)
         for stored in under:
@@ -603,6 +641,17 @@ class _SimulatedGuest:
     def _everything(self) -> tuple[str, ...]:
         """Every path this simulator holds, whatever kind it is."""
         return (*self.contents, *self.symlinks, *self.directories)
+
+    def _the_guest_can_write(self, path: str) -> bool:
+        """Root's authority is not reduced by a mode; every other principal's is."""
+        return self._guest_is_root or path not in self.beyond_the_guest
+
+    def _is_there(self, path: str) -> bool:
+        """Anything stored at ``path``, the directory its children imply included."""
+        prefix = path.rstrip("/") + "/"
+        return path in self.directories or any(
+            held == path or held.startswith(prefix) for held in self._everything()
+        )
 
     def _resolve(self, guest: str) -> str:
         """Where a `cat`/`test` actually lands: the guest's own resolution, links followed.
@@ -666,10 +715,21 @@ class _SimulatedGuest:
         if argv[0:1] == ["mkdir"]:
             # `-p` and plain alike: an empty directory is a real entry here, because the
             # simulator's remove refuses one without recursive only when it is recorded.
-            self.directories.add(posixpath.normpath(posixpath.join(working_directory, argv[-1])))
+            operand = posixpath.normpath(posixpath.join(working_directory, argv[-1]))
+            if not self._the_guest_can_write(posixpath.dirname(operand)):
+                return ExecResult(stdout="", stderr="permission denied", exit_code=1)
+            self.directories.add(operand)
             return ExecResult(stdout="")
         if argv[0:1] == ["rmdir"]:
             self.directories.discard(
+                posixpath.normpath(posixpath.join(working_directory, argv[-1]))
+            )
+            return ExecResult(stdout="")
+        if argv[0:1] == ["chmod"]:
+            # `chmod 500 <dir>`: the guest closing a directory against itself. It records the
+            # mode whoever owns the directory, because what a mode *means* is `test -w`'s to
+            # answer and root's answer does not change.
+            self.beyond_the_guest.add(
                 posixpath.normpath(posixpath.join(working_directory, argv[-1]))
             )
             return ExecResult(stdout="")
@@ -677,6 +737,8 @@ class _SimulatedGuest:
             operand = self._resolve(posixpath.normpath(posixpath.join(working_directory, argv[-1])))
             if argv[1:2] == ["-f"]:
                 hits = operand in self.contents
+            elif argv[1:2] == ["-w"]:
+                hits = self._the_guest_can_write(operand)
             else:  # -e
                 hits = (
                     operand in self.contents
@@ -846,7 +908,7 @@ class TestExecConformance:
         assert EXEC_PROBES[-1].name == "a-timeout-raises-timeout-error"
 
     def test_every_probe_says_why_it_is_in_the_suite(self):
-        for probes in (FILES_IN_PROBES, EXEC_PROBES, FILES_DELETE_PROBES):
+        for probes in (FILES_IN_PROBES, EXEC_PROBES, FILES_DELETE_PROBES, REACH_PROBES):
             assert all(len(probe.why) > 40 for probe in probes)
             assert len({probe.name for probe in probes}) == len(probes)
 
@@ -1280,6 +1342,18 @@ class _RuntimeOnlySubject:
         prefix = path.rstrip("/") + "/"
         stored = (*self.sandbox.contents, *self.sandbox.symlinks, *self.sandbox.directories)
         return any(held == path or held.startswith(prefix) for held in stored)
+
+    async def plant_directory_the_guest_owns(self, path: str) -> bool:
+        """No guest program here to ask, and the reach probes never reach this subject."""
+        raise NotImplementedError(f"no guest here to make {path!r}")
+
+    async def the_guest_could_have_made(self, path: str) -> bool:
+        """No guest program here to ask, and the reach probes never reach this subject."""
+        raise NotImplementedError(f"no guest here to ask about {path!r}")
+
+    async def plant_directory_the_guest_cannot_write_into(self, path: str) -> bool:
+        """The same: a mode means nothing to a store that keeps bytes and names."""
+        raise NotImplementedError(f"no guest here to close {path!r} against")
 
 
 class TestReclaimConformance:
@@ -1868,6 +1942,72 @@ class TestCallScopeConformance:
 
         with pytest.raises(ValueError, match="rooted at"):
             asyncio.run(run())
+
+
+class TestReachConformance:
+    """The reach rule as probes: what a write left behind, and what a removal took."""
+
+    def test_the_simulator_answers_every_probe(self):
+        assert _sim_results(_sim_subject(), run_reach_probes) == dict.fromkeys(
+            [p.name for p in REACH_PROBES], None
+        )
+
+    def test_a_write_at_the_hosts_authority_fails_the_write_probe(self):
+        failures = _sim_results(_sim_subject(writes_as_the_host=True), run_reach_probes)
+        assert failures["a-write-lands-within-the-guests-reach"] is not None
+
+    def test_a_removal_at_the_hosts_authority_fails_the_removal_probe(self):
+        failures = _sim_results(_sim_subject(removes_as_the_host=True), run_reach_probes)
+        assert failures["a-removal-stays-at-the-guests-authority"] is not None
+
+    def test_one_file_plane_at_the_hosts_authority_fails_both(self):
+        """The shape a backend has when its data plane is the host's and there is no other."""
+        failures = _sim_results(
+            _sim_subject(writes_as_the_host=True, removes_as_the_host=True), run_reach_probes
+        )
+        assert all(failure is not None for failure in failures.values())
+
+    def test_a_root_guest_passes_with_nothing_to_distinguish(self):
+        """Where the guest is root the two authorities are one, so the rule binds nothing.
+
+        The same specimen that fails both probes above passes both here, which is the whole of
+        why these probes are sharp on one image and vacuous on another.
+        """
+        assert _sim_results(
+            _sim_subject(guest_is_root=True, writes_as_the_host=True, removes_as_the_host=True),
+            run_reach_probes,
+        ) == dict.fromkeys([p.name for p in REACH_PROBES], None)
+
+    def test_a_working_directory_the_guest_cannot_write_stops_both_probes(self):
+        """Nothing on the path is the guest's to replace, so the rule binds nothing here.
+
+        The probes stop rather than fail: a backend acting as the host over a path no guest
+        can swap is exactly the case the rule permits.
+        """
+        sandbox = _SimulatedGuest(writes_as_the_host=True, removes_as_the_host=True)
+        sandbox.beyond_the_guest.add(_WORK)
+        subject = _SimSubject(
+            sandbox=sandbox, working_directory=_WORK, capabilities=_EVERYTHING, exec_timeout=5
+        )
+        assert _sim_results(subject, run_reach_probes) == dict.fromkeys(
+            [p.name for p in REACH_PROBES], None
+        )
+
+    def test_a_backend_declaring_neither_file_capability_skips_both(self):
+        """Gated per probe rather than per suite, so no capability refuses the run itself."""
+        subject = _SimSubject(
+            sandbox=_SimulatedGuest(),
+            working_directory=_WORK,
+            capabilities=frozenset({Capability.EXEC}),
+        )
+        results = asyncio.run(run_reach_probes(subject))
+        assert [result.probe.name for result in results if result.skipped] == [
+            probe.name for probe in REACH_PROBES
+        ]
+
+    def test_the_assert_entry_point_names_the_suite(self):
+        with pytest.raises(ConformanceFailure, match="REACH conformance probes failed"):
+            asyncio.run(assert_reach_conformance(_sim_subject(writes_as_the_host=True)))
 
 
 class TestEgressConformance:

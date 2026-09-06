@@ -2567,6 +2567,18 @@ class _ConformanceSubject:
         """The simulator's own entries, which is a stat that follows nothing."""
         return path in self._client._entries
 
+    async def plant_directory_the_guest_owns(self, path: str) -> bool:
+        """No guest program here to ask, and the reach probes never reach this subject."""
+        raise NotImplementedError(f"no guest here to make {path!r}")
+
+    async def the_guest_could_have_made(self, path: str) -> bool:
+        """No guest program here to ask, and the reach probes never reach this subject."""
+        raise NotImplementedError(f"no guest here to ask about {path!r}")
+
+    async def plant_directory_the_guest_cannot_write_into(self, path: str) -> bool:
+        """The same: a mode means nothing to a store that keeps bytes and names."""
+        raise NotImplementedError(f"no guest here to close {path!r} against")
+
 
 class TestTheSharedConformanceSuite:
     """`maf_sandbox.conformance`, answered by this backend.

@@ -61,6 +61,7 @@ from maf_sandbox.conformance import (
     assert_files_delete_conformance,
     assert_files_in_conformance,
     assert_files_out_conformance,
+    assert_reach_conformance,
 )
 
 # Feature-detected, not floored: the published-cores gate runs this suite against every
@@ -478,6 +479,45 @@ class TestAWorkDirTheImageGaveItsOwnUser:
 
     def _spec(self) -> SandboxSpec:
         return SandboxSpec(kind="e2e-nocaps", image=_GUEST_OWNED_IMAGE, work_dir=_WORK)
+
+    def test_it_answers_the_reach_probes(self):
+        """`maf_sandbox.conformance`'s REACH suite, on the one image where it can say anything.
+
+        Both other images stop the probes rather than answer them, and for opposite reasons: a
+        root guest has no second authority to distinguish, and an image keeping `work_dir` for
+        root leaves nothing on the path the guest could swap. Here the guest owns `work_dir`
+        and is not root, so both probes bite — `write_file` stamps its entries with the image's
+        user, and `remove` reads the reach rule off its own check and stays at that user's
+        authority.
+        """
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), self._spec())
+            results = await assert_reach_conformance(
+                PosixGuestSubject(
+                    sandbox=sandbox,
+                    working_directory=_WORK,
+                    capabilities=backend.declarations.capabilities,
+                )
+            )
+            assert not [r for r in results if r.skipped]
+            # What makes the run above worth anything: a probe that stopped early passes too,
+            # so the image has to be the shape that stops neither.
+            identity = await sandbox.exec(["id", "-u"], working_directory="/", timeout=60)
+            assert identity.stdout.strip() != "0"
+            owner = await sandbox.exec(
+                ["sh", "-c", f"test -w {_WORK} && echo writable"],
+                working_directory="/",
+                timeout=60,
+            )
+            assert owner.stdout.strip() == "writable"
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
     def test_reclaim_falls_back_to_the_image_user_when_root_is_refused(self):
         scope = f"e2e-{uuid.uuid4()}"
@@ -1017,6 +1057,37 @@ class TestFilesDeleteAgainstARealEngine:
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
             results = await assert_files_delete_conformance(
+                PosixGuestSubject(
+                    sandbox=sandbox,
+                    working_directory=_WORK,
+                    capabilities=backend.declarations.capabilities,
+                )
+            )
+            assert not [r for r in results if r.skipped]
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+
+class TestReachAgainstARealEngine:
+    """`maf_sandbox.conformance`'s REACH suite — that neither file method outruns the guest.
+
+    Against the root image, where the guest program's authority and the host's are the same
+    one, so both probes pass having distinguished nothing. That is worth running: it holds the
+    suite to answering *cleanly* on the image every other suite here uses, and a probe that
+    started failing on a root guest would be a probe reading something other than authority.
+    `TestAGuestThatIsNotRoot` is where the same suite has something to find.
+    """
+
+    def test_it_answers_the_reach_probes(self):
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), _spec())
+            results = await assert_reach_conformance(
                 PosixGuestSubject(
                     sandbox=sandbox,
                     working_directory=_WORK,

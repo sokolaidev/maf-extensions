@@ -847,6 +847,28 @@ class Sandbox(Protocol):
     offers anything else: a workload asked to describe its own filesystem can answer falsely,
     and that answer is the one this trusts.  :meth:`reclaim` is outside the count of five, for
     the reason its own docstring gives.
+
+    **Confinement is checked and not held, and the reach rule is what bounds the check being
+    wrong.**  The filesystem path check and the operation it guards are separate engine calls on
+    every shipped backend, so a guest that turns a checked component into a link in between wins.
+    What a won swap costs is decided by *authority* rather than by how narrow the window is: it
+    redirects an operation running at the guest program's own authority to something that program
+    could have reached anyway, and one running at the host's to more.  So the rule every method
+    here owes is about reach — **a swap must not let a method reach anything the guest program
+    could not have reached itself** — and it binds :meth:`write_file` and :meth:`remove` on a
+    host-authority file plane exactly as it binds :meth:`reclaim`.  Acting as the principal that
+    program ran under satisfies it everywhere.  Acting with more authority satisfies it only where
+    no component of the path was that program's to replace, which
+    :func:`~maf_sandbox.paths.path_ancestors_are_host_owned` decides from the ownership the check
+    already collected — and over a model-supplied path that answer is owed per call, because the
+    path changes and so does what lies on it.
+
+    **A backend whose engine cannot answer it owes one of three things**, and no fourth: act at
+    the guest's authority, withhold the capability, or state the residual in the backend's own
+    documentation and beside its declaration, so a host choosing it chooses it knowingly.  An
+    engine reporting no ownership cannot feed the predicate above, which is a reason to pick one
+    of the three rather than a reason the rule does not apply.
+    :func:`~maf_sandbox.conformance.assert_reach_conformance` is this rule as probes.
     """
 
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
@@ -863,9 +885,10 @@ class Sandbox(Protocol):
                 working directory itself.
             NotADirectoryError: If a parent is neither a directory nor a link.
 
-        The filesystem path check and the write are not atomic on any shipped backend; a guest
-        that turns a checked component into a link in between wins.  The file name check cannot
-        race: it is text arithmetic over arguments nothing else can reach.
+        The reach rule binds here wherever the file plane acts with more authority than the
+        guest program: what lands must be something that program could have landed, since a
+        directory it owns is one it can swap between the check and the write.  The file name
+        check cannot race: it is text arithmetic over arguments nothing else can reach.
         """
         ...
 
@@ -972,9 +995,9 @@ class Sandbox(Protocol):
         ``path`` is **model-supplied**, which is what buys the confinement duty and the
         capability gate. :meth:`reclaim` is the other half of that split and is neither.
 
-        The reach rule stated on :meth:`reclaim` binds here too, and harder: ``path`` names
-        components a guest program may own, and a removal resolves every parent even where it
-        unlinks its own operand.
+        The reach rule this protocol states binds here harder than anywhere: ``path`` is the
+        model's, so it names components a guest program may own, and a removal resolves every
+        parent even where it unlinks its own operand.
 
         Raises:
             ValueError: A path outside ``working_directory``, one reached through a link, or
@@ -996,12 +1019,11 @@ class Sandbox(Protocol):
         backend put beside it — can have swapped the path, or a parent, for a link before the
         call returned.
 
-        What the contract holds is **reach**, not the mechanism that bounds it: a swap must
-        not let the removal delete anything that program could not have deleted itself.
-        Removing as the principal the program ran under satisfies that everywhere. Removing
-        with more authority satisfies it only where no component of the path was writable by
-        that program, and a backend that does so owes the argument for why. What more the
-        contract promises is #584's question.
+        What the contract holds is the **reach rule** stated for the whole file surface above:
+        a swap must not let the removal delete anything that program could not have deleted
+        itself. It binds here with no filesystem path check to read the ownership from, so a
+        backend removing with more authority than the guest had owes the argument some other
+        way — from what it learned about the image when it acquired the sandbox, say.
 
         A directory that is not there is success: this runs in a ``finally``. Anything else
         raises.
