@@ -977,12 +977,7 @@ class AcasSandboxBackend:
         if uid == 0:
             return
 
-        # The two sets fail in opposite directions on an unknown uid, and folding them here is
-        # what the split above exists to prevent. A functional refusal fails **open**: refusing
-        # on an unreadable probe would take a working root image off a deployment, and being
-        # wrong costs a 'Permission denied' the deployment sees. A reach refusal fails
-        # **closed**: being wrong costs a host-authority delete nothing reports, and `uid is
-        # None` is not evidence of root — it is the absence of evidence either way.
+        # The asymmetry this method's docstring states: an unknown uid keeps the functional set.
         image = _image_label(spec)
         unbackable: frozenset[Capability] = (
             spec.requires & _NEEDS_A_WRITING_GUEST if uid is not None else frozenset()
@@ -1008,18 +1003,27 @@ class AcasSandboxBackend:
                     "would delete a tree this guest could never have deleted itself — which "
                     "nothing inside the tool call would report at all"
                 )
-            whose_guest = (
-                f"its guest runs as uid {uid}"
-                if uid is not None
-                else f"its guest did not answer {_GUEST_UID_COMMAND!r}, and an unread uid is not "
-                "evidence of root"
-            )
+            # The remedy differs with the branch, and naming the wrong one sends an operator to
+            # rebuild an image that will be refused again: a root `USER` does not answer the
+            # probe, and it is the answer this branch lacked.
+            if uid is not None:
+                whose_guest = f"its guest runs as uid {uid}"
+                remedy = "Serve this workload on an image whose USER is root"
+            else:
+                whose_guest = (
+                    f"its guest did not answer {_GUEST_UID_COMMAND!r}, and an unread uid is not "
+                    "evidence of root"
+                )
+                remedy = (
+                    "Serve this workload on an image whose guest answers "
+                    f"{_GUEST_UID_COMMAND!r} with 0 — a root USER alone does not, and an image "
+                    "that cannot run the probe is refused however it is built"
+                )
             raise SandboxCapabilityNotSupported(
                 f"sandbox backend {BACKEND_NAME!r} cannot serve "
                 f"{', '.join(sorted(refused))} to the {spec.kind!r} workload from {image}: "
                 f"{whose_guest}, and it refuses {'; and '.join(reasons)}. Refused here "
-                "rather than inside the tool call. Serve this workload on an image whose USER is "
-                "root, or narrow what it requires."
+                f"rather than inside the tool call. {remedy}, or narrow what it requires."
             )
         if uid is None:
             # Served, and silently: the warning below describes a wall this image may not have,
@@ -1052,8 +1056,13 @@ class AcasSandboxBackend:
         ask is a round trip bounded by :data:`_PROBE_TIMEOUT_S`.
 
         **A failure never displaces an answer.**  Concurrent cold acquires for one image race
-        here, and ``None`` is served rather than refused, so both failure paths record through
-        ``setdefault`` and return what the memo holds.
+        here, and a ``None`` written over a real uid would withdraw a capability the image can
+        serve, so both failure paths record through ``setdefault`` and return what the memo
+        holds.
+
+        What ``None`` then costs is the caller's, and it is not one policy:
+        :meth:`_refuse_or_warn_where_the_guest_is_not_root` serves the functional set on it and
+        refuses the reach set.
         """
         image = _image_label(spec)
         try:

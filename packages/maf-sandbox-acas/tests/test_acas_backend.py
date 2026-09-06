@@ -969,6 +969,30 @@ class TestAnImageWhoseGuestIsNotRoot:
 
         assert sandbox.sandbox_id == "sbx-1"
 
+    def test_each_branch_names_the_remedy_that_would_actually_lift_it(self):
+        """A root `USER` does not answer `id -u`, so an unread image told to rebuild for one
+        rebuilds and is refused again. The two branches need two remedies."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        spec = _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+
+        unread_backend = _backend_with(_GuestGroupClient(RuntimeError("no id in this image")))
+        known_backend = _backend_with(_GuestGroupClient(_guest_reporting(10001)))
+
+        with pytest.raises(SandboxCapabilityNotSupported) as unread:
+            asyncio.run(unread_backend.acquire(self._key(), spec))
+        with pytest.raises(SandboxCapabilityNotSupported) as known:
+            asyncio.run(known_backend.acquire(self._key(), spec))
+
+        unread_message, known_message = str(unread.value), str(known.value)
+        # The unread branch must not send an operator to the Dockerfile: that is the fix that
+        # looks right, changes the uid nothing can read, and is refused identically.
+        assert "answers 'id -u' with 0" in unread_message, unread_message
+        assert "a root USER alone does not" in unread_message, unread_message
+        # The known branch keeps the remedy that does work there.
+        assert "an image whose USER is root" in known_message, known_message
+        assert "id -u" not in known_message, known_message
+
     def test_a_guest_that_cannot_be_asked_is_still_refused_a_delete(self):
         """The reach set fails the other way, and the direction is the whole point.
 
@@ -995,8 +1019,8 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert "uid None" not in message, message
 
     def test_an_unreadable_probe_refuses_only_the_reach_half(self):
-        """The two sets are folded into one refusal, and folding their *directions* too is the
-        bug this guards: a spec asking for both keeps the functional half served."""
+        """One refusal names both sets, and an unknown uid still splits them: the spec keeps
+        `FILES_OUT`, which is served on no evidence, and loses only `FILES_DELETE`."""
         from maf_sandbox import SandboxCapabilityNotSupported
 
         client = _GuestGroupClient(RuntimeError("no shell in this image"))
