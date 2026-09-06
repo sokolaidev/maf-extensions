@@ -2,6 +2,17 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.14.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.13.1...maf-sandbox-bicep-v0.14.0) (2026-09-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **bicep:** the standing sentence is its own trusted item, so a hidden result no longer reads as a clean one ([#925](https://github.com/sokolaidev/maf-extensions/issues/925))
+
+### Features
+
+* **bicep:** the standing sentence is its own trusted item, so a hidden result no longer reads as a clean one ([#925](https://github.com/sokolaidev/maf-extensions/issues/925)) ([5759272](https://github.com/sokolaidev/maf-extensions/commit/5759272b2f64292542d2fecc9a48b2141af0e8f2))
+
 ## [0.13.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.13.0...maf-sandbox-bicep-v0.13.1) (2026-09-06)
 
 
