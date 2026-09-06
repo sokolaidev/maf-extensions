@@ -381,6 +381,22 @@ def _listed_entry_path(payload: Mapping[str, Any], *, listed: str, working_direc
     return relative
 
 
+@dataclass
+class _Held:
+    """A sandbox this backend is holding, and what it has learned about that guest's uid.
+
+    The uid lives on the entry rather than in a map beside it, so it cannot outlive what it
+    describes: a probe still awaiting ``exec`` when the entry is dropped writes to an object
+    nobody holds any more, where a parallel map would keep an unreachable row.  ``probed``
+    separates "answered ``None``" from "not asked", which is what lets a dropped probe be
+    retried while a definitive non-uid answer is not.
+    """
+
+    sandbox_id: str
+    uid: int | None = None
+    probed: bool = False
+
+
 @dataclass(frozen=True)
 class _Deletion:
     """What one delete did: whether a sandbox went away, and why one did not.
@@ -707,7 +723,7 @@ class AcasSandboxBackend:
         # sandbox — the first spec to arrive would decide the image and egress for both.
         # `dispose_scope` treats this as a fast path, never as the source of truth — see its
         # docstring.
-        self._registry: dict[tuple[str, str, str, str], str] = {}
+        self._registry: dict[tuple[str, str, str, str], _Held] = {}
         #: Sandbox ids a delete could not remove, by key prefix. Apart from the registry,
         #: which `acquire` resumes from and `dispose` pops, so a failed delete is retried and
         #: never served. An entry lives only while its delete keeps failing.
@@ -723,11 +739,6 @@ class AcasSandboxBackend:
         #: runs before a create, which is what spares the second workload a sandbox of its own;
         #: membership, not the value, is what says it was asked.
         self._guest_uids: dict[tuple[str, str], int | None] = {}
-        #: The same uid per **sandbox**, which is where the verdict actually lives: a running
-        #: guest cannot change principal, where the reference it booted from can be repointed
-        #: under the hint above. A warm reuse reads this and never the hint, so two sandboxes
-        #: sharing one mutable name cannot license each other.
-        self._sandbox_uids: dict[str, int | None] = {}
         #: Which (image, kind) pairs have already been warned about. `acquire` runs on every
         #: tool call, and a warning per call is noise rather than a signal.
         self._warned_about_the_guest: set[tuple[tuple[str, str], str]] = set()
@@ -831,8 +842,9 @@ class AcasSandboxBackend:
         """:meth:`acquire`'s body, run under that key's lock."""
         gc = self._group_client()
         registry_key = (key.scope, key.thread_id, key.agent_dir, spec.kind)
-        sandbox_id = self._registry.get(registry_key)
-        if sandbox_id is not None:
+        held = self._registry.get(registry_key)
+        if held is not None:
+            sandbox_id = held.sandbox_id
             try:
                 sc = gc.get_sandbox_client(sandbox_id)
                 await sc.ensure_running(timeout=_RESUME_TIMEOUT_S)
@@ -851,7 +863,7 @@ class AcasSandboxBackend:
                 # sandbox that failed to resume, and the handler above would swallow it into a
                 # replacement create. Before the log, so a refused acquire does not report one
                 # of the three outcomes `acquire` promises to name.
-                await self._refuse_or_warn_where_the_guest_is_not_root(spec, reused)
+                await self._refuse_or_warn_where_the_guest_is_not_root(spec, reused, held=held)
                 logger.info(
                     "sandbox reused: id=%s kind=%s thread=%s agent=%s",
                     sandbox_id,
@@ -860,7 +872,7 @@ class AcasSandboxBackend:
                     key.agent_dir,
                 )
                 return reused
-            self._forget_sandbox(registry_key)
+            self._registry.pop(registry_key, None)
 
         # The hint answers here and nowhere earlier, because here is where a create is about to
         # be paid for: the second workload to meet a refused image is refused without one. A
@@ -898,7 +910,7 @@ class AcasSandboxBackend:
             key.agent_dir,
         )
         # Register immediately, so the sandbox is reachable by purge even if configure fails.
-        self._registry[registry_key] = sc.sandbox_id
+        held = self._registry[registry_key] = _Held(sc.sandbox_id)
         try:
             await self._configure(sc)
         except Exception:  # noqa: BLE001
@@ -913,10 +925,10 @@ class AcasSandboxBackend:
         created = _AcasSandbox(sc, self._config.read_timeout_seconds)
         try:
             await self._refuse_or_warn_where_the_guest_is_not_root(
-                spec, created, freshly_created=True
+                spec, created, held=held, freshly_created=True
             )
         except SandboxCapabilityNotSupported:
-            self._forget_sandbox(registry_key)
+            self._registry.pop(registry_key, None)
             await self._release_the_refused(gc, key, sc.sandbox_id)
             raise
         return created
@@ -954,6 +966,7 @@ class AcasSandboxBackend:
         spec: SandboxSpec,
         sandbox: _AcasSandbox | None = None,
         *,
+        held: _Held | None = None,
         freshly_created: bool = False,
     ) -> None:
         """Refuse a spec a non-root guest cannot back or must not be handed; warn one that only
@@ -987,21 +1000,18 @@ class AcasSandboxBackend:
         if not spec.requires & _PROBE_WHEN_REQUIRED:
             return
         identity = _image_identity(spec)
-        if sandbox is None:
+        if sandbox is None or held is None:
             # Nothing running to ask, so the hint answers or the caller creates one. This is
             # the refusal that spares the second workload a create.
             if identity not in self._guest_uids:
                 return
             uid = self._guest_uids[identity]
-        elif freshly_created:
-            # A new artefact from the same reference, so the hint is about the previous one.
-            uid = await self._probe_guest_uid(sandbox, spec)
-        elif sandbox.sandbox_id in self._sandbox_uids:
-            # A warm reuse reads the verdict for *this* sandbox and never the image hint:
-            # another sandbox booted from the same name may have moved the hint since.
-            uid = self._sandbox_uids[sandbox.sandbox_id]
+        elif held.probed:
+            # This sandbox's own answer, never the image hint: another sandbox booted from the
+            # same reference may have moved that since, and it describes a different guest.
+            uid = held.uid
         else:
-            uid = await self._probe_guest_uid(sandbox, spec)
+            uid = await self._probe_guest_uid(sandbox, spec, held)
         if uid == 0:
             return
 
@@ -1068,7 +1078,7 @@ class AcasSandboxBackend:
                 if (
                     self._guest_uids.get(identity, 0) != 0
                     if sandbox is None or freshly_created
-                    else sandbox.sandbox_id in self._sandbox_uids
+                    else held is not None and held.probed
                 )
                 else "Nothing was remembered, because the probe did not land, so an identical "
                 "acquire asks again rather than repeating this from a cached answer."
@@ -1101,46 +1111,9 @@ class AcasSandboxBackend:
             spec.kind,
         )
 
-    def _remember(self, sandbox_id: str, identity: tuple[str, str], uid: int | None) -> None:
-        """Record an answered probe: the verdict against its sandbox, the hint against the image.
-
-        Only ever called where the guest **answered**, so a transient failure records neither
-        and is asked again — per sandbox as well as per image, since one dropped call must not
-        cost a sandbox its capability for as long as it lives.
-        """
-        self._sandbox_uids[sandbox_id] = uid
-        self._guest_uids[identity] = uid
-
-    def _forget_sandbox(self, registry_key: tuple[str, str, str, str]) -> str | None:
-        """Drop a registry entry and the uid verdict recorded against the sandbox it named.
-
-        Every path that takes a sandbox out of the registry goes through here, so the verdict
-        map is bounded by the sandboxes this backend is holding rather than by every sandbox it
-        has ever created.  Returns the id that left, which the purges collect.
-        """
-        sandbox_id = self._registry.pop(registry_key, None)
-        if sandbox_id is not None:
-            self._sandbox_uids.pop(sandbox_id, None)
-        return sandbox_id
-
-    def _sweep_orphan_verdicts(self) -> None:
-        """Drop verdicts whose sandboxes are no longer registered.
-
-        Popping by id cannot reach every one: a probe awaiting ``exec`` can record *after* its
-        sandbox left the registry, because a disposal takes no acquire lock.  Run once per
-        removal batch rather than once per removal, which is what keeps purging n sandboxes
-        linear rather than quadratic.
-
-        **It does not catch the orphan it is named for at the time that orphan is made.**  A
-        probe still in flight records after this has run, and nothing reaches that entry until
-        the next disposal sweeps.  So the bound is what this backend holds plus whatever has
-        raced a removal since the last one, and closing it takes coordination between the
-        probe and disposal that neither has today — #973.
-        """
-        live = set(self._registry.values())
-        self._sandbox_uids = {sid: u for sid, u in self._sandbox_uids.items() if sid in live}
-
-    async def _probe_guest_uid(self, sandbox: _AcasSandbox, spec: SandboxSpec) -> int | None:
+    async def _probe_guest_uid(
+        self, sandbox: _AcasSandbox, spec: SandboxSpec, held: _Held
+    ) -> int | None:
         """The uid ``exec`` runs as, ``None`` when the guest cannot say. Answered by the guest.
 
         Three rules. A **definitive** non-uid answer — a non-zero exit, a word, no ``id`` in
@@ -1177,7 +1150,7 @@ class AcasSandboxBackend:
             )
             # Never the image hint: it can hold another sandbox's answer, and nothing has
             # verified this one. Its own verdict if it has one, otherwise nothing.
-            return self._sandbox_uids.get(sandbox.sandbox_id)
+            return held.uid if held.probed else None
         reported = answered.stdout.strip()
         if answered.exit_code != 0 or not reported.isdecimal():
             logger.debug(
@@ -1191,12 +1164,15 @@ class AcasSandboxBackend:
             # reference from a racing measurement without ordering it does not have, and
             # demoting on one answer refuses before the create that would re-read it. The cost
             # is a create per acquire while a reference stays repointed to an image with no
-            # readable uid (#971). The verdict comes from this sandbox's own map and never
-            # from the hint, which is some other guest's answer.
+            # readable uid (#971). The verdict is this sandbox's own and never the hint, which
+            # is some other guest's answer; an earlier measurement on this entry stands, so a
+            # racing probe cannot demote it either.
             self._guest_uids.setdefault(identity, None)
-            return self._sandbox_uids.setdefault(sandbox.sandbox_id, None)
+            held.probed = True
+            return held.uid
         uid = int(reported)
-        self._remember(sandbox.sandbox_id, identity, uid)
+        held.uid, held.probed = uid, True
+        self._guest_uids[identity] = uid
         return uid
 
     async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
@@ -1215,12 +1191,11 @@ class AcasSandboxBackend:
         wanted = list(
             dict.fromkeys(
                 [
-                    *(sid for sid in (self._forget_sandbox(k) for k in mine) if sid),
+                    *(h.sandbox_id for h in (self._registry.pop(k, None) for k in mine) if h),
                     *sorted(self._undeleted.get(prefix, ())),
                 ]
             )
         )
-        self._sweep_orphan_verdicts()
         if not wanted:
             return None
         # Before the first await: the registry no longer holds these and there is no listing
@@ -1287,13 +1262,12 @@ class AcasSandboxBackend:
         the labels exist to close.
         """
         known = [
-            (k, sandbox_id)
-            for k, sandbox_id in list(self._registry.items())
+            (k, entry.sandbox_id)
+            for k, entry in list(self._registry.items())
             if k[0] == scope and k[1] == thread_id
         ]
         for k, _ in known:
-            self._forget_sandbox(k)
-        self._sweep_orphan_verdicts()
+            self._registry.pop(k, None)
 
         try:
             gc = self._group_client()

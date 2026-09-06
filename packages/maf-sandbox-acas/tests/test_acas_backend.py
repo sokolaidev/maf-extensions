@@ -33,6 +33,7 @@ from maf_sandbox_acas import (
     disk_image_base,
     resolve_disk_image_id,
 )
+from maf_sandbox_acas._backend import _Held
 
 _ENDPOINT = "https://management.example.azuredevcompute.io"
 
@@ -1158,7 +1159,9 @@ class TestAnImageWhoseGuestIsNotRoot:
 
         # Its create-time probe drops, so it records no verdict of its own.
         asyncio.run(backend.acquire(self._key("scope-a"), _spec_requiring(Capability.EXEC)))
-        assert backend._sandbox_uids == {}, "the dropped probe recorded a verdict after all"
+        assert not any(h.probed for h in backend._registry.values()), (
+            "the dropped probe recorded a verdict after all"
+        )
 
         # A second sandbox, root, moves the image-level hint.
         client._answer = _guest_reporting(0)
@@ -1198,17 +1201,18 @@ class TestAnImageWhoseGuestIsNotRoot:
                 )
             )
 
-        assert backend._sandbox_uids.get("sbx-1") is None, "it recorded another guest's uid"
+        unverified = backend._registry[("scope-a", "thread-1", "devops-engineer", "codeact")]
+        assert unverified.uid is None, "it recorded another guest's uid"
         assert backend._guest_uids[("pinned-id", "python-nonroot:3.13")] == 0, (
             "the hint lost the answer a working probe measured"
         )
 
-    def test_a_disposed_sandbox_takes_its_verdict_with_it(self):
-        """The verdict map is bounded by what this backend holds, not by what it ever created.
+    def test_a_verdict_cannot_outlive_the_sandbox_it_describes(self):
+        """It lives on the registry entry, so disposal takes it with no sweeping to get wrong.
 
-        Both answer kinds, because they are recorded on different lines: a uid and a
-        definitive non-uid reply. A deployment on an image with no `id` would otherwise keep
-        one entry per sandbox for the life of the process.
+        Both answer kinds, because they are recorded on different lines: a uid and a definitive
+        non-uid reply. And a probe that lands after its entry is dropped writes to an object
+        nobody holds, which is what a map beside the registry could not arrange.
         """
         for answer in (_guest_reporting(0), _GuestAnswer(stdout="", stderr="no id", exit_code=127)):
             client = _GuestGroupClient(answer)
@@ -1216,11 +1220,15 @@ class TestAnImageWhoseGuestIsNotRoot:
             key = self._key("scope-a")
 
             asyncio.run(backend.acquire(key, _spec_requiring(Capability.EXEC)))
-            assert backend._sandbox_uids, f"{answer} recorded no verdict, so this proves nothing"
+            held = next(iter(backend._registry.values()))
+            assert held.probed, f"{answer} recorded no verdict, so this proves nothing"
 
             asyncio.run(backend.dispose(key))
 
-            assert backend._sandbox_uids == {}, f"a verdict outlived its sandbox for {answer}"
+            assert backend._registry == {}, f"the entry outlived its sandbox for {answer}"
+            # The detached entry is what a late probe would write to, and nothing reads it.
+            held.uid, held.probed = 0, True
+            assert backend._registry == {}, "a late write reached the backend"
 
     def test_a_warm_root_sandbox_is_not_refused_by_another_sandbox_s_hint(self):
         """The hint must not answer for a sandbox that has a verdict of its own.
@@ -1427,7 +1435,9 @@ class TestAnImageWhoseGuestIsNotRoot:
         asyncio.run(backend.acquire(self._key("scope-b"), _spec_requiring(Capability.EXEC)))
 
         assert backend._guest_uids[identity] == 0, "a non-uid answer demoted a measured uid"
-        assert backend._sandbox_uids["sbx-2"] is None, "the second sandbox borrowed the hint"
+        assert (
+            backend._registry[("scope-b", "thread-1", "devops-engineer", "codeact")].uid is None
+        ), "the second sandbox borrowed the hint"
 
         # And the hint still lets a fresh acquire reach a create rather than being refused
         # before one exists — the availability half the demotion would have cost.
@@ -1474,7 +1484,8 @@ class TestAnImageWhoseGuestIsNotRoot:
         for handed_out in client.clients:
             handed_out._answer = RuntimeError("transport dropped")
 
-        answered = asyncio.run(backend._probe_guest_uid(sandbox, execing))
+        held = backend._registry[("scope-a", "thread-1", "devops-engineer", "codeact")]
+        answered = asyncio.run(backend._probe_guest_uid(sandbox, execing, held))
 
         assert answered == 10001, "the losing probe reported its failure over the measurement"
         assert backend._guest_uids[identity] == 10001
@@ -1496,7 +1507,8 @@ class TestAnImageWhoseGuestIsNotRoot:
         for handed_out in client.clients:
             handed_out._answer = _GuestAnswer(stdout="", stderr="not found", exit_code=127)
 
-        answered = asyncio.run(backend._probe_guest_uid(sandbox, execing))
+        held = backend._registry[("scope-a", "thread-1", "devops-engineer", "codeact")]
+        answered = asyncio.run(backend._probe_guest_uid(sandbox, execing, held))
 
         assert answered == 10001
         assert backend._guest_uids[identity] == 10001
@@ -1524,7 +1536,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         client = _GuestGroupClient(_guest_reporting(10001))
         backend = _backend_with(client)
         key = self._key()
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "codeact")] = "sbx-warm"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "codeact")] = _Held("sbx-warm")
 
         with pytest.raises(SandboxCapabilityNotSupported):
             asyncio.run(
@@ -1577,14 +1589,14 @@ class TestAnImageWhoseGuestIsNotRoot:
         backend = _backend_with(client)
         key = self._key()
         registry_key = (key.scope, key.thread_id, key.agent_dir, "codeact")
-        backend._registry[registry_key] = "sbx-warm"
+        backend._registry[registry_key] = _Held("sbx-warm")
 
         with pytest.raises(SandboxCapabilityNotSupported):
             asyncio.run(
                 backend.acquire(key, _spec_requiring(Capability.EXEC, Capability.FILES_OUT))
             )
 
-        assert backend._registry == {registry_key: "sbx-warm"}
+        assert backend._registry == {registry_key: _Held("sbx-warm", uid=10001, probed=True)}
         assert client.deleted == []
 
     def test_a_refused_reuse_is_not_logged_as_a_reuse(self, caplog):
@@ -1595,7 +1607,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         client = _GuestGroupClient(_guest_reporting(10001))
         backend = _backend_with(client)
         key = self._key()
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "codeact")] = "sbx-warm"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "codeact")] = _Held("sbx-warm")
 
         with caplog.at_level(logging.INFO, logger="maf_sandbox_acas"):
             with pytest.raises(SandboxCapabilityNotSupported):
@@ -1659,7 +1671,7 @@ class TestDisposeScope:
     def test_unions_the_registry_with_the_service_listing(self):
         client = _FakeGroupClient(sandboxes=[_FakeSandbox("sbx-remote")])
         backend = _backend_with(client)
-        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = "sbx-local"
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = _Held("sbx-local")
 
         assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")).disposed == 2
         assert sorted(client.deleted) == ["sbx-local", "sbx-remote"]
@@ -1667,7 +1679,7 @@ class TestDisposeScope:
     def test_does_not_delete_another_scopes_sandbox(self):
         client = _FakeGroupClient()
         backend = _backend_with(client)
-        backend._registry[("scope-b", "thread-1", "devops-engineer", "bicep")] = "sbx-other"
+        backend._registry[("scope-b", "thread-1", "devops-engineer", "bicep")] = _Held("sbx-other")
 
         assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")).disposed == 0
         assert client.deleted == []
@@ -1676,7 +1688,7 @@ class TestDisposeScope:
     def test_registry_entries_are_dropped_even_when_the_delete_fails(self):
         """A stale entry is worse than none — the next acquire would try to resume it."""
         backend = _backend_with(_ExplodingGroupClient())
-        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = "sbx-local"
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = _Held("sbx-local")
 
         asyncio.run(backend.dispose_scope("scope-a", "thread-1"))
         assert backend._registry == {}
@@ -1695,7 +1707,7 @@ class TestDisposeScope:
         the service, and keep the ids — the registry is popped before the client is built, so
         without the record they are in neither place and the next `dispose` reports them gone."""
         backend = AcasSandboxBackend(_config())
-        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = "sbx-1"
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = _Held("sbx-1")
 
         def _unreachable():
             raise RuntimeError("no credential")
@@ -1850,7 +1862,7 @@ class TestDispose:
         client = _FakeGroupClient()
         backend = _backend_with(client)
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-1")
 
         asyncio.run(backend.dispose(key))
         assert client.deleted == ["sbx-1"]
@@ -1867,7 +1879,7 @@ class TestDispose:
     def test_a_delete_that_lands_reports_nothing(self):
         backend = _backend_with(_FakeGroupClient())
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-1")
 
         assert asyncio.run(backend.dispose(key)) is None
 
@@ -1875,7 +1887,7 @@ class TestDispose:
         """Never raising is the contract, so the reason is the only way the router hears (#641)."""
         backend = _backend_with(_ExplodingGroupClient())
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-1")
 
         reason = asyncio.run(backend.dispose(key))
         assert reason is not None
@@ -1887,7 +1899,7 @@ class TestDispose:
         """An id a delete could not remove outlives the registry entry it came from."""
         backend = _backend_with(_ExplodingGroupClient())
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-1")
 
         assert asyncio.run(backend.dispose(key)) is not None
         second = asyncio.run(backend.dispose(key))
@@ -1897,7 +1909,7 @@ class TestDispose:
     def test_a_group_client_that_cannot_be_built_keeps_the_ids_for_a_retry(self):
         backend = AcasSandboxBackend(_config())
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-1")
 
         def _unreachable():
             raise RuntimeError("no credential")
@@ -1920,7 +1932,7 @@ class TestDispose:
 
         backend = _backend_with(_Hangs())
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-1")
 
         async def cut_short() -> None:
             async with asyncio.timeout(0.05):
@@ -1959,7 +1971,7 @@ class TestDispose:
 
         backend = _backend_with(_Gone())
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-1")
 
         assert asyncio.run(backend.dispose(key)) is None
 
@@ -1968,7 +1980,7 @@ class TestDispose:
         with no record of it anywhere."""
         backend = AcasSandboxBackend(_config())
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-1")
 
         def _unreachable():
             raise RuntimeError("no credential")
@@ -1986,7 +1998,7 @@ class TestDispose:
         prefix = ("scope-a", "thread-1", "devops-engineer")
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
         backend = _backend_with(_FakeGroupClient())
-        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = "sbx-1"
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = _Held("sbx-1")
         original = backend._delete
 
         async def slow_delete(group_client, sandbox_id):
@@ -2092,7 +2104,7 @@ class TestLifecycleLogging:
         client = _FakeGroupClient()
         backend = _backend_with(client)
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-warm"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-warm")
 
         from maf_sandbox import SandboxSpec
 
@@ -2106,7 +2118,7 @@ class TestLifecycleLogging:
         client = _FakeGroupClient()
         backend = _backend_with(client)
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-1")
 
         with caplog.at_level(logging.INFO, logger="maf_sandbox_acas"):
             asyncio.run(backend.dispose(key))
@@ -2211,7 +2223,9 @@ class TestConcurrentAcquire:
         assert client.create_calls == 1
         assert client.peak_creates == 1
         assert first.sandbox_id == second.sandbox_id == "sbx-1"
-        assert backend._registry == {("scope-a", "thread-1", "devops-engineer", "bicep"): "sbx-1"}
+        assert backend._registry == {
+            ("scope-a", "thread-1", "devops-engineer", "bicep"): _Held("sbx-1")
+        }
 
     def test_a_second_key_is_not_held_up_behind_the_first(self):
         """Per key, not one lock for the backend — two conversations must not serialise."""
@@ -2292,8 +2306,8 @@ class TestKindIdentity:
         client = _FakeGroupClient()
         backend = _backend_with(client)
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-b"
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "codeact")] = "sbx-c"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-b")
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "codeact")] = _Held("sbx-c")
 
         asyncio.run(backend.dispose(key))
 
@@ -2360,7 +2374,7 @@ class TestErrorDetailAdoption:
         client = _ResumeFailsGroupClient()
         backend = _backend_with(client)
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-warm"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-warm")
 
         from maf_sandbox import SandboxSpec
 
@@ -2386,7 +2400,7 @@ class TestErrorDetailAdoption:
 
         backend = _backend_with(_DeleteFailsGroupClient())
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = _Held("sbx-1")
 
         with caplog.at_level(logging.WARNING, logger="maf_sandbox_acas"):
             asyncio.run(backend.dispose(key))
