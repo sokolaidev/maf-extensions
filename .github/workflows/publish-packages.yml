@@ -673,14 +673,21 @@ jobs:
         run: |
           set -euo pipefail
           changelog="packages/${PACKAGE}/CHANGELOG.md"
-          # From this version's heading up to (not including) the next one.
-          section="$(awk -v heading="## [${VERSION}]" '
-            index($0, heading) == 1 { capture = 1; next }
+          # From this version's heading up to (not including) the next one. release-please
+          # links the heading to a compare view — `## [0.2.0](…)` — only when there is an
+          # earlier tag to compare against, so a package's first release carries a bare
+          # `## 0.1.0 (date)` and matches neither the linked shape nor an exact line. Each
+          # shape is anchored on its own delimiter, `]` or the space before the date, because
+          # a prefix test alone would read `## 0.1.10` as `0.1.1`.
+          section="$(awk -v version="${VERSION}" '
+            index($0, "## [" version "]") == 1 { capture = 1; next }
+            index($0, "## " version " ") == 1 { capture = 1; next }
+            $0 == "## " version { capture = 1; next }
             capture && /^## / { exit }
             capture { print }
           ' "$changelog")"
           if [ -z "$(echo "$section" | tr -d '[:space:]')" ]; then
-            echo "::error::no '## [${VERSION}]' section in ${changelog} — add the entry before tagging"
+            echo "::error::no '## [${VERSION}]' or '## ${VERSION}' section in ${changelog} — add the entry before tagging"
             exit 1
           fi
           {
