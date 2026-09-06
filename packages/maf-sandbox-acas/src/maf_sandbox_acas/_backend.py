@@ -829,10 +829,6 @@ class AcasSandboxBackend:
         """:meth:`acquire`'s body, run under that key's lock."""
         gc = self._group_client()
         registry_key = (key.scope, key.thread_id, key.agent_dir, spec.kind)
-        # From what an earlier acquire measured, so the second workload to meet a refused image
-        # is refused before this one pays for a create.
-        await self._refuse_or_warn_where_the_guest_is_not_root(spec)
-
         sandbox_id = self._registry.get(registry_key)
         if sandbox_id is not None:
             try:
@@ -863,6 +859,12 @@ class AcasSandboxBackend:
                 )
                 return reused
             self._registry.pop(registry_key, None)
+
+        # The hint answers here and nowhere earlier, because here is where a create is about to
+        # be paid for: the second workload to meet a refused image is refused without one. A
+        # warm sandbox never reaches this, and must not — it has a verdict of its own, where
+        # the hint is whatever some other guest last answered for the same reference.
+        await self._refuse_or_warn_where_the_guest_is_not_root(spec)
 
         # Two namespaces, and `image` says which by whether it carries a tag: a bare name is
         # one the service prebuilt, anything else is repository:tag for an image this
@@ -1045,7 +1047,11 @@ class AcasSandboxBackend:
                 f"sandbox backend {BACKEND_NAME!r} cannot serve "
                 f"{', '.join(sorted(refused))} to the {spec.kind!r} workload from {image}: "
                 f"{whose_guest}, and it refuses {'; and '.join(reasons)}. Refused here "
-                f"rather than inside the tool call. {remedy}, or narrow what it requires."
+                f"rather than inside the tool call. {remedy}, or narrow what it requires. "
+                "Repointing the same reference is not enough on its own: this refusal is "
+                "answered from a remembered verdict and stops the create that would re-read "
+                "it, so a corrected image needs a reference this backend has not seen yet, or "
+                "a restart of this process."
             )
         if uid is None:
             # Served, and silently: the warning below describes a wall this image may not have,

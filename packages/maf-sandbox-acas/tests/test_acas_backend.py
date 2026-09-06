@@ -1203,6 +1203,50 @@ class TestAnImageWhoseGuestIsNotRoot:
             "the hint lost the answer a working probe measured"
         )
 
+    def test_a_warm_root_sandbox_is_not_refused_by_another_sandbox_s_hint(self):
+        """The hint must not answer for a sandbox that has a verdict of its own.
+
+        A verified-root sandbox kept warm, then a non-root one created from the same mutable
+        name, which moves the hint to `10001`. The next `FILES_DELETE` acquire for the warm
+        root sandbox must read *its* `0`, not the hint — and it only can if the registry is
+        consulted before the hint is.
+        """
+        client = _GuestGroupClient(_guest_reporting(0))
+        backend = _backend_with(client)
+
+        asyncio.run(backend.acquire(self._key("scope-a"), _spec_requiring(Capability.EXEC)))
+        client._answer = _guest_reporting(10001)
+        asyncio.run(backend.acquire(self._key("scope-b"), _spec_requiring(Capability.EXEC)))
+        assert backend._guest_uids[("pinned-id", "python-nonroot:3.13")] == 10001, (
+            "the non-root sandbox did not move the hint, so this proves nothing"
+        )
+
+        # Warm reuse of the root sandbox. Its own verdict clears it; the hint would not.
+        warm = asyncio.run(
+            backend.acquire(self._key("scope-a"), _spec_requiring(Capability.FILES_DELETE))
+        )
+
+        assert warm.sandbox_id == "sbx-1"
+
+    def test_the_refusal_says_a_repointed_reference_is_not_enough_on_its_own(self):
+        """Both remedies are unreachable while the hint that refuses also stops the create
+        that would re-read it, and an operator following one would repeat the refusal."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+
+        with pytest.raises(SandboxCapabilityNotSupported) as refusal:
+            asyncio.run(
+                backend.acquire(
+                    self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+                )
+            )
+
+        message = str(refusal.value)
+        assert "Repointing the same reference is not enough" in message, message
+        assert "restart of this process" in message, message
+
     def test_a_cold_acquire_cannot_demote_a_uid_another_cold_acquire_measured(self):
         """The race on the path a create actually takes, which the two direct-call race tests
         above do not reach.
