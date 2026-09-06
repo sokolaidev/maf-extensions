@@ -1468,10 +1468,13 @@ class TestAnImageWhoseGuestIsNotRoot:
         )
 
     def test_a_dropped_probe_does_not_displace_a_uid_another_one_measured(self):
-        """Two cold acquires for one image overlap, and the one that fails writes second.
+        """A second probe of an already-measured sandbox drops, and answers what was measured.
 
-        `None` is served, so recording it over a measured uid turns the gate off for the life
-        of the backend — this races towards the open failure.
+        Driven by calling the probe directly on the entry a real acquire filled, which is the
+        losing half of two overlapping probes without scheduling the fake to produce one. The
+        rule is that neither the entry nor the hint may lose a uid to a failure: an entry
+        demoted to `None` would refuse the reach set for as long as that sandbox lives, and a
+        hint demoted would refuse the next key before it could create anything.
         """
         from maf_sandbox import SandboxCapabilityNotSupported
 
@@ -1497,7 +1500,8 @@ class TestAnImageWhoseGuestIsNotRoot:
             )
 
     def test_an_unreadable_answer_does_not_displace_one_either(self):
-        """The same race down the other failure path, which a non-numeric answer reaches."""
+        """The same, down the other failure path: a guest that answers with something that is
+        not a uid. Its entry is marked probed and keeps the uid it already had."""
         client = _GuestGroupClient(_guest_reporting(10001))
         backend = _backend_with(client)
         execing = _spec_requiring(Capability.EXEC)

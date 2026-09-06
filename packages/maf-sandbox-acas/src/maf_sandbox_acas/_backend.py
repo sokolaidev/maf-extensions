@@ -1117,12 +1117,14 @@ class AcasSandboxBackend:
         """The uid ``exec`` runs as, ``None`` when the guest cannot say. Answered by the guest.
 
         Three rules. A **definitive** non-uid answer — a non-zero exit, a word, no ``id`` in
-        the image — is a fact about *this sandbox* and is recorded against it. A **transient**
-        failure records nothing, because one timeout must not withdraw a capability for as long
-        as a sandbox lives. And **no failure ever displaces an answer**: both maps take it
-        through ``setdefault``, so a probe that raced a working one, or that ran against a
-        reference now resolving elsewhere, cannot demote what was measured. Only a uid replaces
-        a uid, which is how a repointed reference is corrected.
+        the image — is a fact about *this sandbox*, so ``held`` is marked probed. A
+        **transient** failure records nothing at all, because one timeout must not withdraw a
+        capability for as long as a sandbox lives. And **no failure ever displaces an answer**,
+        by two different mechanisms now that there is one map and one field: the image hint
+        takes a failure through ``setdefault``, and ``held.uid`` is simply never assigned on
+        one. So a probe that raced a working one, or that ran against a reference now resolving
+        elsewhere, cannot demote what was measured — only a uid replaces a uid, which is how a
+        repointed reference is corrected.
 
         What ``None`` costs is the caller's and is not one policy:
         :meth:`_refuse_or_warn_where_the_guest_is_not_root` serves the functional set on it and
