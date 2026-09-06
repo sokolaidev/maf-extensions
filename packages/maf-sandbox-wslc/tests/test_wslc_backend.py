@@ -41,6 +41,7 @@ from maf_sandbox import (
 
 from maf_sandbox_wslc import BACKEND_NAME, WslcSandboxBackend, WslcSandboxConfig
 from maf_sandbox_wslc._backend import (
+    _PROXY_LOG_BYTES,
     _PROXY_LOG_TAIL,
     _TAR_BLOCK,
     _container_name,
@@ -61,10 +62,17 @@ _PROBE = ("container", "exec", "--user", "0", _NAME, "test")
 
 
 class _Recorded:
-    def __init__(self, args: tuple[str, ...], stdin: bytes | None, timeout: float | None) -> None:
+    def __init__(
+        self,
+        args: tuple[str, ...],
+        stdin: bytes | None,
+        timeout: float | None,
+        read_limit: int | None = None,
+    ) -> None:
         self.args = args
         self.stdin = stdin
         self.timeout = timeout
+        self.read_limit = read_limit
 
 
 class _FakeWslc:
@@ -81,7 +89,7 @@ class _FakeWslc:
         )
 
     async def __call__(self, *args: str, stdin=None, timeout=None, read_limit=None) -> _WslcResult:
-        self.calls.append(_Recorded(args, stdin, timeout))
+        self.calls.append(_Recorded(args, stdin, timeout, read_limit))
         result = self._responder(args)
         if (
             args[:2] == ("container", "cp")
@@ -2101,6 +2109,27 @@ class TestTheProxysOwnDecisionsReachARecord:
         backend.observe_egress(seen.append)
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert seen[0].unreadable is None
+
+    def test_the_drain_bounds_the_bytes_a_guest_can_make_it_read(self):
+        """The proxy copies the guest's CONNECT target into its line, and the header limit it
+        reads under lets that target approach 64 KiB — so a line bound alone leaves the guest
+        deciding how much the host allocates on a path every acquire waits on."""
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        backend.observe_egress(lambda _event: None)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        read = [c for c in fake.calls if c.args[:3] == ("container", "logs", "--tail")]
+        assert read and all(c.read_limit == _PROXY_LOG_BYTES for c in read)
+
+    def test_a_read_that_hit_the_byte_cap_says_the_window_may_be_short(self):
+        seen: list[EgressObserved] = []
+        page = b"ALLOW h.example:443\n" * (_PROXY_LOG_BYTES // 20)
+        backend, _fake = _backend_with(
+            _machine(overrides={("container", "logs", "--tail"): _WslcResult(0, page, b"")}),
+            config=_ALLOW_CONFIG,
+        )
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert seen and seen[0].truncated is True
 
     def test_the_last_window_is_drained_at_disposal(self):
         seen: list[EgressObserved] = []

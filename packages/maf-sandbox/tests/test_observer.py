@@ -902,8 +902,9 @@ class _Reporting(InProcessSandboxBackend):
     def declarations(self) -> BackendDeclarations:
         return _WATCHES
 
-    def observe_egress(self, report: EgressReporter) -> None:
-        self.report = report
+    def observe_egress(self, report: EgressReporter | None) -> EgressReporter | None:
+        previous, self.report = self.report, report
+        return previous
 
 
 class _ClaimsWithoutReporting(InProcessSandboxBackend):
@@ -983,6 +984,27 @@ class TestABackendReportsWhatItsEgressEnforcementDecided:
             _router(backend, observer=_Recorder())
         assert backend.report is not None
 
+    def test_a_failed_construction_puts_a_shared_backend_back_as_it_found_it(self):
+        """`None` would be worse than doing nothing: it silences a *different* router that is
+        still using this backend, because a construction that raised chose to do so."""
+        backend = _Reporting()
+        first = _router(backend, observer=_Recorder())
+        held = backend.report
+        assert held is not None
+
+        class _RefusesTheReporter(InProcessSandboxBackend):
+            def observe_egress(self, report: EgressReporter | None) -> EgressReporter | None:
+                raise RuntimeError("this backend will not take one")
+
+        with pytest.raises(RuntimeError, match="will not take one"):
+            SandboxRouter(
+                [backend, _RefusesTheReporter()],
+                min_isolation=Isolation.NONE,
+                observer=_Recorder(),
+            )
+        assert backend.report is held
+        assert first.observer is not None
+
     def test_the_declaration_without_the_method_is_warned_about(self, caplog):
         """Silence from this pair means *unwatched*, and the declaration says *watched* — which
         is the one reading that turns an absent record into a clean bill of health."""
@@ -1001,8 +1023,9 @@ class TestABackendReportsWhatItsEgressEnforcementDecided:
                 super().__init__()
                 self.report: EgressReporter | None = None
 
-            def observe_egress(self, report: EgressReporter) -> None:
-                self.report = report
+            def observe_egress(self, report: EgressReporter | None) -> EgressReporter | None:
+                previous, self.report = self.report, report
+                return previous
 
         backend = _Quiet()
         _router(backend, observer=recorder)

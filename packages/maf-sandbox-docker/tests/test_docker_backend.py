@@ -43,6 +43,7 @@ from maf_sandbox_docker import BACKEND_NAME, DockerSandboxBackend, DockerSandbox
 from maf_sandbox_docker._backend import (
     _GATEWAY_MODE_ISOLATED,
     _GATEWAY_MODE_OPTS,
+    _PROXY_LOG_BYTES,
     _PROXY_LOG_TAIL,
     _container_name,
     _DockerResult,
@@ -3829,6 +3830,27 @@ class TestTheProxysOwnDecisionsReachARecord:
         backend.observe_egress(seen.append)
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert seen[0].unreadable is None
+
+    def test_the_drain_bounds_the_bytes_a_guest_can_make_it_read(self):
+        """The proxy copies the guest's CONNECT target into its line, and the header limit it
+        reads under lets that target approach 64 KiB — so a line bound alone leaves the guest
+        deciding how much the host allocates on a path every acquire waits on."""
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        backend.observe_egress(lambda _event: None)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        read = [c for c in fake.calls if c.args[:2] == ("logs", "--tail")]
+        assert read and all(c.read_limit == _PROXY_LOG_BYTES for c in read)
+
+    def test_a_read_that_hit_the_byte_cap_says_the_window_may_be_short(self):
+        seen: list[EgressObserved] = []
+        page = b"ALLOW h.example:443\n" * (_PROXY_LOG_BYTES // 20)
+        backend, _fake = _backend_with(
+            _machine(overrides={("logs", "--tail"): _DockerResult(0, page, "")}),
+            config=_ALLOW_CONFIG,
+        )
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert seen and seen[0].truncated is True
 
     def test_the_last_window_is_drained_at_disposal(self):
         seen: list[EgressObserved] = []
