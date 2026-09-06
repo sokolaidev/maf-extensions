@@ -715,6 +715,19 @@ class WslcSandboxBackend:
             return None
         return f"the proxy could not be stopped: {result.stderr_text.strip() or result.returncode}"
 
+    def _forget_attribution(self, workload: str, thread_id: str) -> None:
+        """Drop ``workload``'s proxy attribution, unless a live sandbox has taken the name back.
+
+        Called wherever a proxy is confirmed gone, so that ``_acquired`` means what a drain
+        reads it as: this process believes a proxy exists here.  ``thread_id`` guards a
+        generation race — a name is derived from its key, so a teardown and a concurrent acquire
+        can be about two containers under one string, and dropping the newer one's entry would
+        cost it its drain attribution silently.
+        """
+        held = self._acquired.get(workload)
+        if held is not None and held[1] == thread_id:
+            del self._acquired[workload]
+
     async def _drain_the_proxy(self, name: str, key: SandboxKey) -> None:
         """Report what this sandbox's proxy decided, before the container holding it goes.
 
@@ -990,11 +1003,11 @@ class WslcSandboxBackend:
             )
         for target in names:
             removal = await self._remove(target)
-            if removal.removed and target.endswith(_PROXY_SUFFIX):
-                # Keyed on the *proxy* going, not the pair: a workload can go while its proxy
-                # stays, and that proxy is still running and still deciding. Dropping the entry
-                # then would leave the next purge unable to key its drain.
-                self._acquired.pop(target.removesuffix(_PROXY_SUFFIX), None)
+            if target.endswith(_PROXY_SUFFIX) and removal.failure is None:
+                # Keyed on the *proxy* being gone, not on the pair: a workload can go while
+                # its proxy stays, and that proxy is still deciding. `failure is None` covers
+                # removed and already-absent alike, which are the same thing to a later drain.
+                self._forget_attribution(target.removesuffix(_PROXY_SUFFIX), thread_id)
             if removal.removed and not target.endswith(_PROXY_SUFFIX):
                 logger.info("sandbox released: container=%s thread=%s (purge)", target, thread_id)
                 count += 1
@@ -1012,8 +1025,9 @@ class WslcSandboxBackend:
             for workload in (n for n in names if not n.endswith(_PROXY_SUFFIX)):
                 if _proxy_name(workload) not in listed_set:
                     # The same rule as above: attribution goes when the proxy does.
-                    if (await self._remove(_proxy_name(workload))).removed:
-                        self._acquired.pop(workload, None)
+                    removed = await self._remove(_proxy_name(workload))
+                    if removed.failure is None:
+                        self._forget_attribution(workload, thread_id)
                 networks.add(_network_name(workload))
         for net in networks:
             await self._remove_network(net)
@@ -1236,7 +1250,11 @@ class WslcSandboxBackend:
         # proxy is rebuilt per acquire, so this is where a warm conversation's decisions are
         # picked up, one call at a time.
         await self._drain_the_proxy(name, key)
-        await self._remove(proxy)
+        # Forgotten with the removal, so a replacement that fails to come up leaves no
+        # entry claiming a proxy is there: the retry's drain then reports nothing rather
+        # than a window it already read.
+        if (await self._remove(proxy)).failure is None:
+            self._forget_attribution(name, key.thread_id)
 
         args = ["container", "run", "-d", "--name", proxy, "--network", _network_name(name)]
         args += ["-e", f"{_ALLOW_ENV}={','.join(spec.egress_allow)}"]
