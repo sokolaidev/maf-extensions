@@ -984,7 +984,9 @@ class AcasSandboxBackend:
         # **closed**: being wrong costs a host-authority delete nothing reports, and `uid is
         # None` is not evidence of root — it is the absence of evidence either way.
         image = _image_label(spec)
-        unbackable = spec.requires & _NEEDS_A_WRITING_GUEST if uid is not None else frozenset()
+        unbackable: frozenset[Capability] = (
+            spec.requires & _NEEDS_A_WRITING_GUEST if uid is not None else frozenset()
+        )
         unsafe = spec.requires & _UNSAFE_WHERE_THE_GUEST_IS_NOT_ROOT
         refused = unbackable | unsafe
         if refused:
