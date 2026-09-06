@@ -66,11 +66,10 @@ BICEP_FILE = "main.bicep"
 #: model writes the prose around it, the framework writes this.
 BICEP_TOOL = "bicep_validate"
 
-#: What a result that reached the sandbox looks like. `bicep_validate` answers with an error
-#: string *before* it acquires anything when no conversation is bound, when a name has the wrong
-#: suffix, and when a name is not in its file listing — so counting calls would credit the run
-#: with a compile that never happened. Each phase renders one line at the start of a line, which
-#: a refusal has no way to produce.
+#: What a result that reached the sandbox looks like. `bicep_validate` refuses *before* it acquires
+#: anything when no conversation is bound, when a name has the wrong suffix, and when a name is not
+#: in its file listing — so counting calls would credit the run with a compile that never happened.
+#: Each phase renders one line at the start of a line, which a refusal has no way to produce.
 _PHASES = re.compile(r"^build\(.*^lint\(", re.MULTILINE | re.DOTALL)
 
 #: Everything the sandbox backend needs. `BICEP_SANDBOX_IMAGE` is a local image
