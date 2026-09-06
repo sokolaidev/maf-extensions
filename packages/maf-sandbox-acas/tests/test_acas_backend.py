@@ -17,9 +17,12 @@ from maf_sandbox import (
     DisposalFailure,
     Egress,
     Isolation,
+    OsFamily,
     SandboxBackend,
     SandboxKey,
+    SandboxOsFamilyNotSupported,
     SandboxRouter,
+    SandboxSpec,
 )
 
 from maf_sandbox_acas import (
@@ -257,6 +260,60 @@ class TestBackendIdentity:
         """
         backend = AcasSandboxBackend(_config())
         assert SandboxRouter([backend], selected=BACKEND_NAME).backend is backend
+
+
+# ---------------------------------------------------------------------------
+# The guest family — a constant here, matched by the router at attach (#588)
+# ---------------------------------------------------------------------------
+
+
+class TestGuestFamilyDeclaration:
+    """`os_families` is stated rather than read: every sandbox the service boots is Linux.
+
+    That constant is what `exec`'s `shlex.join` quoting and this backend's `posixpath` path
+    arithmetic are written against, so the router matches it rather than taking it on trust.
+    """
+
+    def test_declares_posix(self):
+        assert AcasSandboxBackend(_config()).declarations.os_families == frozenset({OsFamily.POSIX})
+
+    def test_no_configuration_moves_it(self):
+        """A property of the service, so nothing a host sets may reach it — including `image`.
+
+        The registry and the images are the settings closest to the guest, and neither can
+        make the service boot something that is not a Linux microVM.
+        """
+        for config in (
+            _config(),
+            _config(registry="other.azurecr.io"),
+            _config(subscription_id="sub-2", resource_group="rg-2"),
+        ):
+            assert AcasSandboxBackend(config).declarations.os_families == frozenset(
+                {OsFamily.POSIX}
+            )
+
+
+class TestTheRouterMatchesTheDeclaredFamily:
+    """The point of the declaration: an axis that refuses something, at attach."""
+
+    @staticmethod
+    def _router() -> SandboxRouter:
+        return SandboxRouter([AcasSandboxBackend(_config())])
+
+    def test_a_posix_workload_is_served(self):
+        self._router().ensure_can_serve(
+            SandboxSpec(kind="bicep", requires_os_family=OsFamily.POSIX)
+        )
+
+    def test_a_windows_workload_is_refused(self):
+        with pytest.raises(SandboxOsFamilyNotSupported):
+            self._router().ensure_can_serve(
+                SandboxSpec(kind="bicep", requires_os_family=OsFamily.WINDOWS)
+            )
+
+    def test_a_spec_naming_no_family_is_served(self):
+        """A spec that names no family is refused by nothing, which keeps the axis additive."""
+        self._router().ensure_can_serve(SandboxSpec(kind="bicep"))
 
 
 # ---------------------------------------------------------------------------

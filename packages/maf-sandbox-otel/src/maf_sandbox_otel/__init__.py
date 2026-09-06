@@ -13,7 +13,13 @@ agent framework, and no SDK.  Which exporter runs, and whether one runs at all, 
 application's to decide, exactly as it is for the rest of its telemetry.
 """
 
-from ._attributes import NAMESPACE, Redaction, hashed_conversation, hashed_key
+from ._attributes import (
+    NAMESPACE,
+    Redaction,
+    hashed_conversation,
+    hashed_key,
+    hashed_scoped_thread,
+)
 from ._observer import (
     ACQUIRE,
     CALL,
@@ -21,6 +27,7 @@ from ._observer import (
     FILES_IN,
     FILES_OUT,
     HOST_TOOL_CALL,
+    PURGE,
     OpenTelemetrySandboxObserver,
 )
 
@@ -32,11 +39,13 @@ __all__ = [
     "FILES_OUT",
     "HOST_TOOL_CALL",
     "NAMESPACE",
+    "PURGE",
     "MafSandboxOtelExperimentalWarning",
     "OpenTelemetrySandboxObserver",
     "Redaction",
     "hashed_conversation",
     "hashed_key",
+    "hashed_scoped_thread",
 ]
 
 # Experimental package (Beta): importing it emits a UserWarning rather than a FutureWarning,

@@ -56,7 +56,9 @@ from maf_sandbox import (
     Capability,
     Egress,
     EntryKind,
+    OsFamily,
     SandboxKey,
+    SandboxRouter,
     SandboxSpec,
     SandboxTransferCapExceeded,
     guest_run_layout,
@@ -274,6 +276,27 @@ class TestALiveSandbox:
         finally:
             loop.run_until_complete(backend.dispose_scope(scope, "thread-1"))
             loop.run_until_complete(backend.aclose())
+
+
+class TestTheDeclaredGuestFamilyAgainstTheRealService:
+    """The constant `os_families` states, backed by a sandbox rather than matched on paper.
+
+    Costs no sandbox of its own: the acquire reuses the module's shared one, keyed and kinded
+    the same, so what the router adds here is the family match and nothing else.
+    """
+
+    def test_a_workload_requiring_posix_is_served_and_runs(self, live):
+        spec = _spec(requires_os_family=OsFamily.POSIX)
+        router = SandboxRouter([live.backend])
+        router.ensure_can_serve(spec)
+        sandbox = live.run(router.acquire(live.key, spec))
+        # At `/` rather than `_WORK`: what this asserts is the guest's grammar and argv, which
+        # every Linux image answers for, not a directory some of them carry.
+        ran = live.run(
+            sandbox.exec(["sh", "-c", "printf posix"], working_directory="/", timeout=_EXEC_TIMEOUT)
+        )
+        assert ran.exit_code == 0, ran.stderr
+        assert ran.stdout == "posix"
 
 
 @pytest.fixture(scope="module")

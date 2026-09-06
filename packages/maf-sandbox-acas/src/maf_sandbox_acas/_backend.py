@@ -28,6 +28,7 @@ from maf_sandbox import (
     EntryKind,
     ExecResult,
     Isolation,
+    OsFamily,
     Sandbox,
     SandboxBackend,
     SandboxCapabilityNotSupported,
@@ -199,10 +200,15 @@ _FILES_LIMITS = TransferLimits(
 )
 _LIMITS = SandboxLimits(files_in=_FILES_LIMITS, files_out=_FILES_LIMITS)
 
-# What the router reads off this backend. The three fields stated here are constants — the
-# sandbox group's egress policy and the data plane's own surface are both fixed before a spec
-# arrives. `os_families` is left unstated, so the router reads it as the empty set and refuses a
-# spec that asks for a guest shape; declaring the family this backend actually hands out is #588.
+# What the router reads off this backend. The four fields stated here are constants — the
+# sandbox group's egress policy, the data plane's own surface and the guest's shape are all
+# fixed before a spec arrives.
+#
+# `os_families`: POSIX, and no input to this backend can change it. The service boots Linux
+# microVMs, whether from its own prebuilt catalogue or from a disk image imported into the
+# group, so there is nothing to ask an engine and nothing to probe in the guest. That is the
+# constant side of the binding-time fork in `docs/sandbox/guest-platform-and-commands.md`, and
+# it is what `exec`'s `shlex.join` quoting and this module's `posixpath` arithmetic rest on.
 #
 # `egress_modes`: `_egress_policy` builds a Deny-default allowlist — named hosts resolve as
 # ALLOWLIST, an empty allowlist as CLOSED (deny all). Never UNRESTRICTED, because the group's
@@ -243,6 +249,7 @@ _DECLARATIONS = BackendDeclarations(
     ),
     limits=_LIMITS,
     egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED}),
+    os_families=frozenset({OsFamily.POSIX}),
 )
 
 # The data-plane routes and payload fields the pull surface reads for itself, rather than
@@ -402,8 +409,8 @@ class _AcasSandbox:
         propagates so the workload can report it as a diagnostic rather than as a hang.
 
         The SDK's own ``exec`` takes a string only, so a sequence is quoted into one with
-        :func:`shlex.join` first.  ``shlex.join`` produces POSIX quoting, which is correct
-        here because every sandbox this backend hands out is Linux.
+        :func:`shlex.join` first — POSIX quoting, which is the guest shape this backend
+        declares in ``declarations.os_families`` and the router matches a spec against.
         """
         cmd = command if isinstance(command, str) else shlex.join(command)
         result = await asyncio.wait_for(

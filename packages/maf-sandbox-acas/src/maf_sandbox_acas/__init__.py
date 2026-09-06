@@ -9,7 +9,9 @@ app  ->  maf_sandbox  ->  maf_sandbox_acas  ->  the sandbox
 microVM isolation, Deny-default egress with a per-spec allowlist, no ambient identity inside,
 and lifecycle policies that reclaim a billable sandbox after it goes idle.  It declares
 :data:`~maf_sandbox.Isolation.MICROVM`, the router's default floor, so a host that
-configures nothing already permits this backend.
+configures nothing already permits this backend, and
+:data:`~maf_sandbox.OsFamily.POSIX` as the guest shape it hands out — a constant rather than
+a read, because every sandbox the service boots is a Linux microVM.
 
 This package is the backend only.  The sandbox kinds that run on it live in sibling
 packages under `src/` — :mod:`maf_sandbox_bicep` first; a GitHub Copilot agent and an Azure CLI
