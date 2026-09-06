@@ -672,12 +672,21 @@ class ObservesEgress(Protocol):
     :attr:`~maf_sandbox.BackendDeclarations.observes_egress` is where the difference is written
     down for a reader who only ever sees the records.
 
-    The router calls :meth:`observe_egress` once, at construction, and only when it has an
-    observer of its own — so a host that registered none leaves every backend in its default
-    state, and a backend must do no reading at all until it is called.  Reading a proxy's record
-    costs an engine round trip per acquire, and an uninstrumented deployment does not pay it.
+    The router calls :meth:`observe_egress` once, at the end of its construction, with its
+    reporter or with ``None``.  ``None`` is what an *unobserved* router passes, and it is not
+    the same as not calling: a backend instance may be registered on more than one router, so a
+    router that collects nothing has to be able to switch a backend off rather than leave it
+    reporting to whoever wired it last.  A backend does no reading at all until it holds a
+    reporter, because reading a proxy's record costs an engine round trip per acquire and an
+    uninstrumented deployment does not pay it.
+
+    **One backend reports to one router — the last one constructed over it.**  The callback is a
+    single slot, so a host that registers one backend on two *observed* routers gets that
+    backend's records on whichever was built second, including for sandboxes the other served.
+    The seam does not support that arrangement and cannot detect it from here; a backend replacing
+    a live reporter with a different one should say so, which is what both shipped backends do.
     """
 
-    def observe_egress(self, report: EgressReporter) -> None:
-        """Take the callback to report egress decisions through."""
+    def observe_egress(self, report: EgressReporter | None) -> None:
+        """Take the callback to report egress decisions through, or ``None`` to stop."""
         ...
