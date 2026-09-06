@@ -18,6 +18,9 @@ every container — and becomes
 network behind a filtering proxy.  These are honest downgrades from a microVM-isolated backend, and
 they are what this package is *for*: the same workload, run locally.
 
+Its ``os_families`` is :data:`~maf_sandbox.OsFamily.POSIX`, a constant rather than a read:
+``wslc`` runs Linux containers and has no other guest to hand out.
+
 This package is the backend only.  The sandbox kinds that run on it live in sibling packages
 and are written against the router's protocol, not against this backend, so they never import
 it.

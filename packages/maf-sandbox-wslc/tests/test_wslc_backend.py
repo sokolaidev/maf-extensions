@@ -28,9 +28,11 @@ from maf_sandbox import (
     EntryKind,
     ExecResult,
     Isolation,
+    OsFamily,
     SandboxBackend,
     SandboxBackendNotPermitted,
     SandboxKey,
+    SandboxOsFamilyNotSupported,
     SandboxRouter,
     SandboxSpec,
 )
@@ -178,6 +180,63 @@ class TestBackendIdentity:
         backend = WslcSandboxBackend(WslcSandboxConfig())
         router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER, selected=BACKEND_NAME)
         assert router.backend is backend
+
+
+class TestGuestFamilyDeclaration:
+    """`os_families` is stated rather than read: `wslc` runs Linux containers and nothing else.
+
+    That constant is what this backend's argv, its `rm -rf` reclaim and its `posixpath` path
+    arithmetic are written against, so the router matches it rather than taking it on trust.
+    """
+
+    def test_declares_posix(self):
+        assert WslcSandboxBackend(WslcSandboxConfig()).declarations.os_families == frozenset(
+            {OsFamily.POSIX}
+        )
+
+    def test_no_configuration_moves_it(self):
+        """A property of the CLI, so nothing a host sets may reach it — the egress proxy
+        image included, which is the one setting that already changes what is declared."""
+        proxied = WslcSandboxConfig(egress_proxy_image="maf-egress-proxy:local")
+        for config in (WslcSandboxConfig(), proxied):
+            assert WslcSandboxBackend(config).declarations.os_families == frozenset(
+                {OsFamily.POSIX}
+            )
+
+
+class TestTheRouterMatchesTheDeclaredFamily:
+    """The point of the declaration: an axis that refuses something, at attach."""
+
+    @staticmethod
+    def _router() -> SandboxRouter:
+        return SandboxRouter(
+            [WslcSandboxBackend(WslcSandboxConfig())], min_isolation=Isolation.CONTAINER
+        )
+
+    def test_a_posix_workload_is_served(self):
+        self._router().ensure_can_serve(
+            SandboxSpec(
+                kind="bicep",
+                image="bicep-sandbox:local",
+                requires=frozenset({Capability.EXEC}),
+                requires_os_family=OsFamily.POSIX,
+            )
+        )
+
+    def test_a_windows_workload_is_refused(self):
+        with pytest.raises(SandboxOsFamilyNotSupported):
+            self._router().ensure_can_serve(
+                SandboxSpec(
+                    kind="bicep",
+                    image="bicep-sandbox:local",
+                    requires=frozenset({Capability.EXEC}),
+                    requires_os_family=OsFamily.WINDOWS,
+                )
+            )
+
+    def test_a_spec_naming_no_family_is_served(self):
+        """A spec that names no family is refused by nothing, which keeps the axis additive."""
+        self._router().ensure_can_serve(_SPEC)
 
 
 class TestRouterFloor:
