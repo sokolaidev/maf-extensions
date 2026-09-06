@@ -420,7 +420,7 @@ def path_ancestors_are_host_owned(
     per component the caller's check on the path collected, and the caller must hand every
     component the rule is to bind — a missing one is a question for the caller, not a pass.  A
     backend whose engine reports no ownership has nothing to pass here, and owes one of the
-    three answers :class:`~maf_sandbox.Sandbox` names instead.
+    four answers :class:`~maf_sandbox.Sandbox` names instead.
 
     An empty mapping is not decided here: it can mean nothing lies above the working
     directory, or that the check reached nothing, and the caller names what that means by

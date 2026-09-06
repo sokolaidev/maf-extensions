@@ -739,6 +739,10 @@ class _SimulatedGuest:
             # `-p` and plain alike: an empty directory is a real entry here, because the
             # simulator's remove refuses one without recursive only when it is recorded.
             operand = posixpath.normpath(posixpath.join(working_directory, argv[-1]))
+            # `-p` is what makes an existing path succeed, which is exactly the distinction
+            # the reach probes depend on, so the simulator has to honour the flag.
+            if "-p" not in argv and self._is_there(operand):
+                return ExecResult(stdout="", stderr="File exists", exit_code=1)
             if not self._the_guest_can_write(posixpath.dirname(operand)):
                 return ExecResult(stdout="", stderr="permission denied", exit_code=1)
             self.directories.add(operand)
@@ -2036,6 +2040,21 @@ class TestReachConformance:
         ]
         assert reported is not None
         assert "decoy.txt" in reported
+
+    def test_a_path_the_image_already_carries_stops_the_probes(self):
+        """`mkdir -p` would have succeeded on it, which proves nothing about who owns it.
+
+        An image shipping the probe's own path under a working directory the guest cannot write
+        would otherwise read as a component that program could swap, and a host-authority plane
+        the rule permits would be rejected for it.
+        """
+        sandbox = _host_plane(removes_as_the_host=True)
+        for carried in (f"{_WORK}/reach-in", f"{_WORK}/reach-delete"):
+            sandbox.directories.add(carried)
+            sandbox.beyond_the_guest.add(carried)
+        assert _sim_results(_subject_over(sandbox), run_reach_probes) == dict.fromkeys(
+            [p.name for p in REACH_PROBES], None
+        )
 
     def test_a_removal_preflighting_guest_permissions_is_not_caught(self):
         """The limit this probe shares with the write probe, asserted rather than implied.

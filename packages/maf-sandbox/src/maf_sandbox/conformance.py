@@ -181,9 +181,14 @@ class ConformanceSubject(Protocol):
     async def plant_directory_the_guest_owns(self, path: str) -> bool:
         """Create a directory at ``path`` as the *guest program*, and say whether it could.
 
-        The component a swap needs.  ``False`` is an answer rather than a failure: a working
-        directory the guest cannot write has nothing on it for that program to replace, so the
-        reach rule binds nothing there and the probe that asked stops.
+        The component a swap needs, and **this call must be what created it**: a path that was
+        already there proves nothing about who owns it, and an image carrying one under a
+        working directory the guest cannot write would otherwise be read as swappable.  One
+        level only, so a nested layout is planted a component at a time.
+
+        ``False`` is an answer rather than a failure — the path exists already, or the guest
+        cannot write its parent, and either way the reach rule binds nothing the probe could
+        judge, so the probe that asked stops.
         """
         ...
 
@@ -272,14 +277,15 @@ class PosixGuestSubject:
         return False
 
     async def plant_directory_the_guest_owns(self, path: str) -> bool:
-        """``mkdir -p`` as the guest. Exit 1 is the refusal; above it is ``mkdir`` not running.
+        """``mkdir`` as the guest, without ``-p``, so an existing path fails rather than passes.
 
-        The distinction decides whether a probe stops or blows up, and stopping is the quiet
-        outcome — an image without ``mkdir`` would otherwise read as a guest that may write
-        nowhere, and the suite would pass having attacked nothing.
+        Exit 1 covers both answers the caller reads as "no" — the path is there already, or the
+        parent refuses — and above it is ``mkdir`` not running.  That distinction decides
+        whether a probe stops or blows up, and an image without ``mkdir`` would otherwise read
+        as a guest that may write nowhere, leaving the suite to pass having attacked nothing.
         """
         made = await self.sandbox.exec(
-            ["mkdir", "-p", path],
+            ["mkdir", path],
             working_directory=self.working_directory,
             timeout=self.exec_timeout,
         )
@@ -1971,9 +1977,11 @@ async def _probe_a_removal_takes_nothing_beyond_the_guest(
     # guest-authority removal must refuse. Nothing catches it: a control that cannot run is
     # this probe failing.
     removable = f"{swappable}/removable"
-    planted_control = await subject.plant_directory_the_guest_owns(
-        f"{removable}/inner"
-    ) and await subject.plant_file_the_guest_owns(f"{removable}/inner/content.txt")
+    planted_control = (
+        await subject.plant_directory_the_guest_owns(removable)
+        and await subject.plant_directory_the_guest_owns(f"{removable}/inner")
+        and await subject.plant_file_the_guest_owns(f"{removable}/inner/content.txt")
+    )
     if not planted_control:
         raise AssertionError(
             f"could not build {removable!r} under a directory the guest had just made, so this "

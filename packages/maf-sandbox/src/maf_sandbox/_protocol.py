@@ -870,11 +870,15 @@ class Sandbox(Protocol):
     already collected — and over a model-supplied path that answer is owed per call, because the
     path changes and so does what lies on it.
 
-    **A backend whose engine cannot answer it owes one of three things**, and no fourth: act at
-    the guest's authority, withhold the capability, or state the residual in the backend's own
-    documentation and beside its declaration, so a host choosing it chooses it knowingly.  An
-    engine reporting no ownership cannot feed the predicate above, which is a reason to pick one
-    of the three rather than a reason the rule does not apply.
+    **A backend whose engine cannot answer it owes one of four things.**  Closing the window is
+    the first and the only one that removes the problem rather than bounding it: resolve and act
+    as one operation — a held descriptor, a no-follow traversal, a provider primitive that takes
+    the path once — and no swap can redirect what is never re-resolved, so host authority is safe
+    without any ownership being read.  Where the engine offers no such primitive, the remaining
+    three bound it instead: act at the guest's authority, withhold the capability, or state the
+    residual in the backend's own documentation and beside its declaration, so a host choosing it
+    chooses it knowingly.  An engine reporting no ownership cannot feed the predicate above,
+    which is a reason to pick one of these rather than a reason the rule does not apply.
     :func:`~maf_sandbox.conformance.assert_reach_conformance` probes what an outcome can
     show of it, which is necessary and not sufficient: a green run is evidence, not proof.
     """
