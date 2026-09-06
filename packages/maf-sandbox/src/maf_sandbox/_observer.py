@@ -13,6 +13,15 @@ the host's own process, so what reaches a wire, and whether a guest-chosen artif
 it, is the recorder's decision; this seam's duty is to hand over what happened without deciding
 that for it.
 
+**Two join columns, and they answer different questions.**  A :class:`~maf_sandbox.SandboxKey`
+says which sandbox and which conversation, and at the default
+:data:`~maf_sandbox.IsolationScope.CONVERSATION` it says nothing about a call: two calls in
+flight on one thread carry the same key.  ``call`` is the other column — the id of the tool call
+a record came from, so those two calls' records separate.  :class:`ToolCallEnded` always names
+one, since it is where a call's other events join; the rest name none for what happened outside
+a call — before one, which a disposal genuinely can, and after one, which a task the body left
+running does.
+
 **An observer is synchronous, thread-safe, and it cannot fail a call.**  It runs wherever the
 call it records is served — an event-loop task, or the worker thread a synchronous tool body
 runs on — so a blocking one blocks that call, and one shared by two calls is entered from two
@@ -36,6 +45,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Literal
 
@@ -64,12 +74,60 @@ __all__ = [
     "SandboxDisposed",
     "SandboxEvent",
     "SandboxObserver",
+    "ScopeDisposed",
     "StoreFileRead",
     "StoreReadOutcome",
     "ToolCallEnded",
     "record",
     "refuse_an_unusable_observer",
 ]
+
+
+@dataclass
+class RecordedCall:
+    """One tool call, as the sites that build events see it: an id, and whether it is still open.
+
+    **Mutable, and that is the whole of it.**  A task starts from a copy of its parent's context,
+    so a child the body left running keeps whatever :data:`RECORDED_CALL` held when it started —
+    and resetting a bare id in the wrapper would not reach that copy.  A store read or an acquire
+    from such a task would go on naming a call whose :class:`ToolCallEnded` has already been
+    delivered, and whose ``keys`` can no longer account for what it touched.  ``closed`` is the
+    one piece of this the copies share, which is why it is what a reader tests.
+    """
+
+    id: str
+    closed: bool = False
+
+
+#: The tool call whose records are being written here, or ``None`` outside one.
+#:
+#: Set by :func:`~maf_sandbox.maf.sandboxed_tool` around the body *and* its reclaim, and read by
+#: every site that builds an event.  A `ContextVar` rather than an argument threaded through
+#: :meth:`~maf_sandbox.SandboxRouter.acquire`, because the acquire and the disposal are on the
+#: far side of the router's own boundary: the router knows nothing about ``sandboxed_tool`` and
+#: must not start to.  It already imports this module to record at all, so reading one more
+#: thing from the seam that owns the events adds no coupling that was not there.
+#:
+#: Read it through :func:`recorded_call`, never off the variable: a live record and a closed
+#: one are both a :class:`RecordedCall`, and only the function tells them apart.
+RECORDED_CALL: ContextVar[RecordedCall | None] = ContextVar(
+    "maf_sandbox_recorded_call", default=None
+)
+
+
+def call_id_of(recorded: RecordedCall | None) -> str | None:
+    """``recorded``'s id while its call is open, and ``None`` before one starts or once it ends.
+
+    Held apart from :func:`recorded_call` for the one caller that cannot read the context where
+    it records: a :class:`~maf_sandbox.HostToolRun` is built inside its call and used from the
+    transport's own tasks, so it keeps the record and asks this.
+    """
+    return None if recorded is None or recorded.closed else recorded.id
+
+
+def recorded_call() -> str | None:
+    """The tool call whose records are being written here, or ``None`` outside one."""
+    return call_id_of(RECORDED_CALL.get())
 
 
 @dataclass(frozen=True)
@@ -105,6 +163,9 @@ class SandboxAcquired(SandboxEvent):
     property calls into somebody else's class, and an acquire must not start failing over the
     record of it.  So ``backend is None`` is the test for "routing never selected one", and a
     ``None`` beside a named backend is a degraded read of a sandbox that was served.
+
+    ``call`` is ``None`` for an acquire a direct consumer of the router asked for, outside any
+    tool call.
     """
 
     key: SandboxKey
@@ -115,6 +176,10 @@ class SandboxAcquired(SandboxEvent):
     declarations: BackendDeclarations | None
     seconds: float
     refusal: str | None = None
+    #: The tool call this acquire was asked from — see :data:`RECORDED_CALL`.  Appended after
+    #: ``refusal``, which already had a default, so it cannot rebind a positional caller's
+    #: argument.
+    call: str | None = None
 
     def deliver_to(self, observer: SandboxObserver) -> None:
         observer.sandbox_acquired(self)
@@ -142,6 +207,10 @@ class SandboxDisposed(SandboxEvent):
     ``"may_remain"`` is a backend naming a failure, and ``"unknown"`` is a disposal that never
     answered at all, where the delete may equally have completed.  A boolean here read the
     second and third as settled facts in opposite directions.
+
+    ``call`` is the one event where its absence is ordinary rather than a gap: a disposal the
+    reclaim asks for on a call's way out names that call, while a scope purge, a framework
+    reclaim and a host disposing by hand happen outside any call and name none.
     """
 
     key: SandboxKey
@@ -149,9 +218,53 @@ class SandboxDisposed(SandboxEvent):
     outcome: DisposalReport
     failure: DisposalFailure | None
     seconds: float
+    #: The tool call this disposal ran inside — see :data:`RECORDED_CALL`.
+    call: str | None = None
 
     def deliver_to(self, observer: SandboxObserver) -> None:
         observer.sandbox_disposed(self)
+
+
+@dataclass(frozen=True)
+class ScopeDisposed(SandboxEvent):
+    """One backend's answer to one conversation's purge — how many went, and what stayed.
+
+    The routine cleanup: :meth:`~maf_sandbox.SandboxRouter.dispose_scope` is what a thread
+    deletion runs and what :meth:`~maf_sandbox.SandboxRouter.scope` runs when its block ends.
+    One event per backend asked, because a purge fans out the same way a disposal does.
+
+    **It is keyed on a conversation rather than on a sandbox**, which is why
+    :class:`SandboxDisposed` cannot carry it: :meth:`~maf_sandbox.SandboxBackend.dispose_scope`
+    answers with a count rather than with the keys it removed, so there is no key to put here.
+    A recorder joins this to the rest on ``(scope, thread_id)``.
+
+    ``disposed`` is what **this** backend reported removing, not the sweep's running total, and
+    it is zero for a backend that raised and for one an interruption took — where zero is the
+    absence of an answer rather than a report that nothing was there.  ``outcome`` is what
+    separates those from a backend that genuinely had nothing to remove, and it reads exactly
+    as :class:`SandboxDisposed`'s does.
+
+    **What the purge did to the unclean ledger is not a field here.**  A purge every backend
+    answered cleanly reopens the conversation's refused keys, and that is one state change for
+    the whole purge rather than one per backend, so the number of keys it reopened is not
+    recorded.  Every backend's ``outcome`` reading ``"gone"`` is the condition the ledger is
+    cleared on, which is as close as these events come to stating it.
+    """
+
+    scope: str
+    thread_id: str
+    backend: str
+    outcome: DisposalReport
+    disposed: int
+    failure: DisposalFailure | None
+    seconds: float
+    #: The tool call this purge ran inside — see :data:`RECORDED_CALL`.  ``None`` for both of
+    #: the ordinary callers, a thread deletion and a ``scope`` block closing, since neither is
+    #: inside a call.
+    call: str | None = None
+
+    def deliver_to(self, observer: SandboxObserver) -> None:
+        observer.scope_disposed(self)
 
 
 #: How one host-tool call ended.  ``"refused"`` covers every sentence the guest was answered
@@ -184,6 +297,11 @@ class HostToolCalled(SandboxEvent):
     how many calls this run has made including this one, so a run that spent its cap is visible
     without differencing.  ``response_bytes`` is what this call delivered, framing included, and
     zero for everything else.
+
+    The call is found where the :class:`~maf_sandbox.HostToolRun` was built rather than per
+    record, because a guest's callback is served on a task of the transport's own, whose context
+    is a copy rather than the body's.  ``call`` is ``None`` for a run built outside a tool call,
+    and for one still answering after its call has ended.
     """
 
     run_id: str
@@ -198,6 +316,8 @@ class HostToolCalled(SandboxEvent):
     response_bytes: int
     calls: int
     seconds: float
+    #: The tool call this run belongs to — see :data:`RECORDED_CALL`.
+    call: str | None = None
 
     def deliver_to(self, observer: SandboxObserver) -> None:
         observer.host_tool_called(self)
@@ -237,6 +357,8 @@ class StoreFileRead(SandboxEvent):
     integrity: SourceIntegrity | None
     characters: int
     outcome: StoreReadOutcome
+    #: The tool call that read — see :data:`RECORDED_CALL`.
+    call: str | None = None
 
     def deliver_to(self, observer: SandboxObserver) -> None:
         observer.store_file_read(self)
@@ -267,8 +389,13 @@ class OutputsCollected(SandboxEvent):
     a ``deliver`` is a push nothing takes back.
 
     ``call_id`` is what the collection was given to stamp on each artifact, which for a
-    ``per_call`` sink names the folder they landed in.  ``key`` reaches the conversation; this
-    reaches the folder.
+    ``per_call`` sink names the folder they landed in.  ``key`` reaches the conversation, and
+    this reaches the folder.
+
+    ``call`` is the separate question of which call collected, which this seam answers for
+    itself rather than trusting a kind's argument for: a kind passing its own call's id spells
+    the two the same, and one passing none — or a meaning of its own — still gets a record that
+    joins.
     """
 
     key: SandboxKey | None
@@ -281,6 +408,8 @@ class OutputsCollected(SandboxEvent):
     #: Appended after ``refusal``, which already had a default, so it cannot rebind a
     #: positional caller's argument.
     call_id: str | None = None
+    #: The tool call that collected — see :data:`RECORDED_CALL`.
+    call: str | None = None
 
     def deliver_to(self, observer: SandboxObserver) -> None:
         observer.outputs_collected(self)
@@ -294,13 +423,14 @@ class ToolCallEnded(SandboxEvent):
     actually cost.  For a body that awaits nothing, this record is delivered on the worker
     thread the framework ran the body on.
 
-    **What this joins to, and what it does not.**  ``keys`` associates the call with the
-    sandboxes and the conversation it touched — not with *this call in particular*.  At the
-    default :data:`~maf_sandbox.IsolationScope.CONVERSATION` a key carries no ``call_id``, so
-    two calls running at once in one conversation carry the same one and their records
-    interleave with nothing to tell them apart.  A recorder that needs per-call correlation has
-    the framework's own span context, or waits for
-    `#922 <https://github.com/sokolaidev/maf-extensions/issues/922>`_.
+    **What each column joins to.**  ``keys`` associates the call with the sandboxes and the
+    conversation it touched — not with *this call in particular*, since at the default
+    :data:`~maf_sandbox.IsolationScope.CONVERSATION` a key carries no ``call_id`` and two calls
+    running at once in one conversation carry the same one.  ``call`` is what separates them,
+    and this is the one event where it is never ``None``: the record is where a call's other
+    events join, so an anchor that could be absent would be no anchor.  It is the same id the
+    call's own guest path and — at :data:`~maf_sandbox.IsolationScope.CALL` — its key are named
+    by, so a recorder has one string for the call rather than two.
 
     ``keys`` is every key the call **touched**, in order, and empty for one that touched none.
     Touched rather than acquired: a refused acquire is named here, so its own
@@ -322,6 +452,8 @@ class ToolCallEnded(SandboxEvent):
     seconds: float
     failure: str | None
     unclean: int
+    #: This call's own id, which every event it emitted carries — see :data:`RECORDED_CALL`.
+    call: str
 
     def deliver_to(self, observer: SandboxObserver) -> None:
         observer.tool_call_ended(self)
@@ -354,6 +486,9 @@ class SandboxObserver:
     def sandbox_disposed(self, event: SandboxDisposed) -> None:
         """One backend answered one disposal."""
 
+    def scope_disposed(self, event: ScopeDisposed) -> None:
+        """One backend answered one conversation's purge."""
+
     def host_tool_called(self, event: HostToolCalled) -> None:
         """A guest program called back into the host."""
 
@@ -372,6 +507,7 @@ class SandboxObserver:
 EVENT_METHODS: tuple[str, ...] = (
     "sandbox_acquired",
     "sandbox_disposed",
+    "scope_disposed",
     "host_tool_called",
     "store_file_read",
     "outputs_collected",

@@ -28,7 +28,9 @@ from ._observer import (
     SandboxAcquired,
     SandboxDisposed,
     SandboxObserver,
+    ScopeDisposed,
     record,
+    recorded_call,
     refuse_an_unusable_observer,
 )
 from ._protocol import (
@@ -1155,6 +1157,7 @@ class SandboxRouter:
                 outcome=_reported(failure),
                 failure=failure,
                 seconds=time.monotonic() - started,
+                call=recorded_call(),
             ),
             logger,
         )
@@ -1181,6 +1184,65 @@ class SandboxRouter:
             DisposalFailure(
                 "unknown",
                 f"{_recorded_name(backend)}: the disposal was interrupted by {type(by).__name__}",
+            ),
+            started,
+        )
+
+    def _record_purge(
+        self,
+        scope: str,
+        thread_id: str,
+        backend: SandboxBackend,
+        disposed: int,
+        failure: DisposalFailure | None,
+        started: float,
+    ) -> None:
+        """Record one backend's answer to one conversation's purge.
+
+        ``disposed`` is this backend's own count rather than the sweep's, the way
+        :meth:`_record_disposal` records this backend's own answer.
+        """
+        if self._observer is None:
+            return
+        record(
+            self._observer,
+            ScopeDisposed(
+                scope=scope,
+                thread_id=thread_id,
+                backend=_recorded_name(backend),
+                outcome=_reported(failure),
+                disposed=disposed,
+                failure=failure,
+                seconds=time.monotonic() - started,
+                call=recorded_call(),
+            ),
+            logger,
+        )
+
+    def _record_an_interrupted_purge(
+        self,
+        scope: str,
+        thread_id: str,
+        backend: SandboxBackend,
+        started: float,
+        by: BaseException,
+    ) -> None:
+        """Record a purge interrupted mid-flight, with ``by`` named in the detail.
+
+        The no-observer check is repeated here for the reason
+        :meth:`_record_an_interrupted_disposal` gives: everything below it reads
+        ``backend.name``, which is somebody else's property.
+        """
+        if self._observer is None:
+            return
+        self._record_purge(
+            scope,
+            thread_id,
+            backend,
+            0,
+            DisposalFailure(
+                "unknown",
+                f"{_recorded_name(backend)}: the purge was interrupted by {type(by).__name__}",
             ),
             started,
         )
@@ -1310,6 +1372,7 @@ class SandboxRouter:
                     declarations=declarations,
                     seconds=time.monotonic() - started,
                     refusal=refusal,
+                    call=recorded_call(),
                 ),
                 logger,
             )
@@ -1708,34 +1771,47 @@ class SandboxRouter:
         :meth:`_dispose_each` takes and for the same reason. Only a purge that landed reopens
         the conversation's refused keys: the one that did not is precisely the one whose
         sandboxes still hold the data those keys were refused over.
+
+        Each backend's answer reaches the observer as a :class:`~maf_sandbox.ScopeDisposed`.
         """
         total = 0
         undisposed: list[DisposalFailure] = []
         for backend in self._backends:
+            started = time.monotonic()
+            # This backend's own answer and its own count, kept apart from the sweep's.
+            answered: DisposalFailure | None = None
+            disposed = 0
             try:
                 purged = await backend.dispose_scope(scope, thread_id)
             except Exception as exc:  # noqa: BLE001 - purge must never fail
-                undisposed.append(DisposalFailure("unknown", f"{backend.name} raised: {exc}"))
+                answered = DisposalFailure("unknown", f"{backend.name} raised: {exc}")
+                undisposed.append(answered)
                 logger.warning(
                     "sandbox router: backend %s failed to purge thread %s: %s",
                     backend.name,
                     thread_id,
                     exc,
                 )
+            except BaseException as interrupted:
+                # The bound expiring mid-sweep, as in `_dispose_each`: nothing below runs, so
+                # this is the interrupted backend's only record.
+                self._record_an_interrupted_purge(scope, thread_id, backend, started, interrupted)
+                raise
             else:
-                total += purged.disposed
+                disposed = purged.disposed
+                total += disposed
                 if purged.undisposed is not None:
-                    undisposed.append(
-                        DisposalFailure(
-                            purged.undisposed.code, f"{backend.name}: {purged.undisposed.detail}"
-                        )
+                    answered = DisposalFailure(
+                        purged.undisposed.code, f"{backend.name}: {purged.undisposed.detail}"
                     )
+                    undisposed.append(answered)
                     logger.warning(
                         "sandbox router: backend %s did not purge thread %s: %s",
                         backend.name,
                         thread_id,
                         purged.undisposed,
                     )
+            self._record_purge(scope, thread_id, backend, disposed, answered, started)
         if not undisposed:
             # The conversation's sandboxes are gone, so nothing under it holds data any more.
             self._unclean = {

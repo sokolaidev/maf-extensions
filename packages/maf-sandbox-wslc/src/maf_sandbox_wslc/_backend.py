@@ -41,6 +41,7 @@ from maf_sandbox import (
     EntryKind,
     ExecResult,
     Isolation,
+    OsFamily,
     Sandbox,
     SandboxBackend,
     SandboxEntry,
@@ -538,11 +539,17 @@ class WslcSandboxBackend:
         # with a proxy image this backend can allowlist named hosts or deny all, and without
         # one it can only close. Never UNRESTRICTED: a container backend always cuts or
         # proxies. `limits` is left at its default, which is the ceiling this backend accepts.
+        #
+        # `os_families` is POSIX and no input can change it: `wslc` runs Linux containers in
+        # WSL 2's utility VM and has no other guest to hand out, so there is no engine to ask
+        # the way the docker backend asks its daemon. It is what `_exec`'s argv, the `rm -rf`
+        # in `reclaim` and this module's `posixpath` arithmetic already rest on.
         self._declarations = BackendDeclarations(
             capabilities=_CAPABILITIES,
             egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED})
             if config.egress_proxy_image
             else frozenset({Egress.CLOSED}),
+            os_families=frozenset({OsFamily.POSIX}),
         )
         # (scope, thread_id, agent_dir, kind) -> name: a purge fallback for when the listing
         # fails, never the truth. Holds the last name acquired per key and kind, which is

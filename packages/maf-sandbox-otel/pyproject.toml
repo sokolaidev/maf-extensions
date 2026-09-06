@@ -29,12 +29,12 @@ dependencies = [
     # The observer seam this package implements, and its whole vocabulary. Upper-bounded too:
     # maf-sandbox has not yet reached a stable API, so every release before 1.0.0 may include
     # breaking changes (see its CHANGELOG). Moving either end of this range has an order to it
-    # — see RELEASING.md. The floor tracks the release where the observer seam this package
-    # subclasses actually arrives; admit anything older and a published wheel resolves a
-    # maf-sandbox base with no SandboxObserver in it, which fails at import. The number itself
-    # is below, and `scripts/set_dependents_range.py` moves it — so this says which release the
+    # — see RELEASING.md. The floor tracks the release carrying the newest event this package
+    # records, which is ScopeDisposed; admit anything older and a published wheel resolves a
+    # maf-sandbox base that does not export it, which fails at import. The number itself is
+    # below, and `scripts/set_dependents_range.py` moves it — so this says which release the
     # floor is for, never which release that is.
-    "maf-sandbox>=0.34.0,<0.36",
+    "maf-sandbox>=0.35.0,<0.36",
     # The OpenTelemetry **API**, never the SDK: which exporter runs, and whether one runs at
     # all, belongs to the application. A host with no SDK installed gets the API's no-op
     # implementations and pays nothing.

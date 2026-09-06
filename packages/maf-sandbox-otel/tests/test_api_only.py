@@ -12,6 +12,8 @@ where there is no SDK to read with.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 from maf_sandbox import (
     DisposalFailure,
@@ -26,6 +28,7 @@ from maf_sandbox import (
     SandboxKey,
     SandboxObserver,
     SandboxSpec,
+    ScopeDisposed,
     SourceIntegrity,
     StoreFileRead,
     ToolCallEnded,
@@ -45,6 +48,18 @@ from maf_sandbox_otel import (
 )
 
 KEY = SandboxKey(scope="tenant-a", thread_id="thread-1", agent_dir="agent")
+#: ``call`` as a keyword where the core under test has it, and nothing where it does not.
+#:
+#: This suite runs against the workspace core *and* against every published core the wheel's
+#: range admits. ``ToolCallEnded.call`` is on no published core yet, so that second set is empty
+#: today and the check falls back to the core this checkout builds — but a core cut before the
+#: field lands would put one in it that lacks the field. Detected off the class rather than
+#: compared by version, so neither ordering needs an edit here.
+CALL: dict[str, str] = (
+    {"call": "call-4b1e"}
+    if "call" in {field.name for field in dataclasses.fields(ToolCallEnded)}
+    else {}
+)
 LIMITS = TransferLimits(max_bytes_per_file=8, max_total_bytes=32, max_files=64)
 
 
@@ -102,8 +117,23 @@ def every_event() -> list[object]:
             landed=(LandedOutput(name="out.png", size_bytes=9, media_type="image/png"),),
             seconds=0.05,
         ),
+        ScopeDisposed(
+            scope="tenant-a",
+            thread_id="thread-1",
+            backend="docker",
+            outcome="gone",
+            disposed=2,
+            failure=None,
+            seconds=0.3,
+        ),
         ToolCallEnded(
-            tool="execute_code", kind="codeact", keys=(KEY,), seconds=1.0, failure=None, unclean=0
+            tool="execute_code",
+            kind="codeact",
+            keys=(KEY,),
+            seconds=1.0,
+            failure=None,
+            unclean=0,
+            **CALL,
         ),
     ]
 
