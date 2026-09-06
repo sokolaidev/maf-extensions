@@ -1036,6 +1036,13 @@ class TestEgressDecisions:
         recorded.observer.egress_observed(a_drain())
         assert recorded.counter(f"{NAMESPACE}.egress.decisions") == 4
 
+    def test_the_acquire_says_whether_this_sandbox_was_watched_at_all(self):
+        """Without it, a key with no `sandbox.egress` record is unreadable: an ACAS sandbox
+        that reached ten hosts and a docker sandbox that reached none look identical."""
+        recorded = build()
+        recorded.observer.sandbox_acquired(an_acquire())
+        assert recorded.attributes()[f"{NAMESPACE}.backend.observes_egress"] is False
+
     def test_the_counts_reach_the_log_as_well_as_the_span(self):
         """A log-only pipeline is the one that survives a trace sampler, and it is the one a
         security record is kept in."""
