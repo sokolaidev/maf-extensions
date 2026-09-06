@@ -1020,11 +1020,37 @@ class TestEgressDecisions:
         recorded.observer.egress_observed(a_drain())
         assert recorded.only_span().status.is_ok
 
-    def test_a_drain_that_could_not_read_is_an_error_span_naming_why(self):
+    def test_a_drain_that_could_not_read_is_an_error_span_counted_without_its_reason(self):
+        """The *fact* is shape and always crosses — "how many windows are unaccounted for" is
+        the aggregate an operator asks — while the enforcer's sentence is engine text naming a
+        container or an endpoint, and waits for the gate the way a disposal's detail does."""
         recorded = build()
-        recorded.observer.egress_observed(a_drain(unreadable="daemon said no"))
-        assert recorded.attributes()[f"{NAMESPACE}.egress.unreadable"] == "daemon said no"
+        recorded.observer.egress_observed(a_drain(unreadable="no such container maf-sandbox-ab12"))
+        attributes = recorded.attributes()
+        assert attributes[f"{NAMESPACE}.egress.unaccounted"] is True
+        assert f"{NAMESPACE}.egress.unreadable" not in attributes
         assert not recorded.only_span().status.is_ok
+
+    def test_the_engines_own_sentence_never_reaches_the_span_status_either(self):
+        """A status description is not an attribute, so no redaction reaches it — putting the
+        sentence there would cross exactly what the attribute gate just held back."""
+        recorded = build()
+        recorded.observer.egress_observed(a_drain(unreadable="no such container maf-sandbox-ab12"))
+        assert recorded.only_span().status.description == "unreadable"
+
+    def test_the_reason_crosses_when_the_host_asked(self):
+        asked = build(sensitive=True)
+        asked.observer.egress_observed(a_drain(unreadable="no such container maf-sandbox-ab12"))
+        attributes = asked.attributes()
+        assert attributes[f"{NAMESPACE}.egress.unreadable"] == "no such container maf-sandbox-ab12"
+        assert attributes[f"{NAMESPACE}.egress.unaccounted"] is True
+
+    def test_a_drain_that_read_cleanly_says_so_rather_than_omitting_the_column(self):
+        """A query counting unaccounted windows groups on this, so it has to be on every
+        record — an absent attribute and a false one are not the same row."""
+        recorded = build()
+        recorded.observer.egress_observed(a_drain())
+        assert recorded.attributes()[f"{NAMESPACE}.egress.unaccounted"] is False
 
     def test_the_bound_is_recorded_so_a_partial_window_reads_as_one(self):
         recorded = build()

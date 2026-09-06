@@ -77,6 +77,7 @@ from ._attributes import (
     EGRESS_MODE,
     EGRESS_TARGETS,
     EGRESS_TRUNCATED,
+    EGRESS_UNACCOUNTED,
     EGRESS_UNREACHABLE,
     EGRESS_UNREADABLE,
     FAILURE,
@@ -131,6 +132,9 @@ FILES_OUT = "sandbox.files_out"
 CALL = "sandbox.call"
 
 _NANOSECONDS = 1_000_000_000
+#: What a failed drain puts in its span's status, in place of the enforcer's own sentence. A
+#: status description is not an attribute, so no redaction reaches it — see `egress_observed`.
+_UNREADABLE = "unreadable"
 _logger = logging.getLogger(__name__)
 
 
@@ -351,14 +355,24 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             EGRESS_DENIED: sum(1 for one in decisions if one.decision.startswith("DENY")),
             EGRESS_UNREACHABLE: sum(1 for one in decisions if one.decision == "UNREACHABLE"),
             EGRESS_TRUNCATED: event.truncated,
-            **without_none({EGRESS_UNREADABLE: event.unreadable}),
+            # Split the way a disposal's is: the *fact* that a window is unaccounted for is
+            # shape and crosses always, and the enforcer's own sentence is content. That
+            # sentence is engine text — a container name, an endpoint, a path — which is host
+            # vocabulary in exactly the sense `DISPOSAL_DETAIL` is, so it waits to be asked for.
+            EGRESS_UNACCOUNTED: event.unreadable is not None,
+            **self._redaction.text(EGRESS_UNREADABLE, event.unreadable),
             **self._redaction.texts(
                 EGRESS_TARGETS, (f"{one.decision} {one.host}:{one.port}" for one in decisions)
             ),
         }
         # A drain that could not read is the failure here. An enforcer that refused a guest did
         # its job, so a span full of `DENY` is a healthy span and is not marked otherwise.
-        self._emit(EGRESS, recorded, event.seconds, event.unreadable)
+        #
+        # The status description is the fixed word rather than the engine's sentence, for the
+        # reason a disposal's is its `DisposalCode`: a span status is not an attribute and no
+        # redaction reaches it, so putting the sentence there would cross whatever the gate
+        # above just held back.
+        self._emit(EGRESS, recorded, event.seconds, _UNREADABLE if event.unreadable else None)
         for one in decisions:
             self._isolate(
                 lambda decision=one.decision: self._egress.add(

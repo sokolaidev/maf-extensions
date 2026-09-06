@@ -90,6 +90,11 @@ EGRESS_DENIED = f"{NAMESPACE}.egress.denied"
 EGRESS_UNREACHABLE = f"{NAMESPACE}.egress.unreachable"
 EGRESS_TARGETS = f"{NAMESPACE}.egress.targets"
 EGRESS_TRUNCATED = f"{NAMESPACE}.egress.truncated"
+#: Whether the drain could not read its enforcer's record — the classifier, which always
+#: crosses, beside the sentence below, which is engine text and waits for the gate.  Split for
+#: the reason `DISPOSAL_OUTCOME` and `DISPOSAL_DETAIL` are: "how many windows are unaccounted
+#: for" has to be answerable from a pipeline that holds no host vocabulary at all.
+EGRESS_UNACCOUNTED = f"{NAMESPACE}.egress.unaccounted"
 EGRESS_UNREADABLE = f"{NAMESPACE}.egress.unreadable"
 EGRESS_DECISION = f"{NAMESPACE}.egress.decision"
 

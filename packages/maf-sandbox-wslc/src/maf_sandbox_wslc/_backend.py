@@ -29,7 +29,7 @@ import re
 import tarfile
 import time
 import weakref
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import TYPE_CHECKING, Protocol, cast
@@ -218,24 +218,29 @@ def _egress_decisions(text: str) -> tuple[tuple[EgressDecision, ...], bool]:
     request line split on whitespace, so a host holds no newline and no space, and a decision
     verb can only be one this proxy wrote.
 
-    ``truncated`` is wrong in one direction only: a log holding exactly the bound plus one line
-    was read whole and is still reported as cut.  "There may be more" is the safe way for a
-    record to be wrong.
+    ``truncated`` is exact rather than cautious, because the read asks for one line past the
+    bound: getting that line back is what proves the window ran over, and dropping it is what
+    keeps the promise.  So a log holding exactly the bound reports ``False`` and hands over all
+    of it, and one holding a single line more reports ``True`` and hands over the newest bound.
 
     **The docker backend carries its own copy of this**, as it carries its own proxy — a change
     to the grammar in one of them is owed to the other.
     """
     lines = text.splitlines()
+    # Trimmed before parsing, not after: the bound is on what this hands over, and reading one
+    # line past it is how the cut is detected at all. Keeping that line would hand back the
+    # *oldest* decision of an over-long window while claiming the most recent ones.
+    truncated = len(lines) > _PROXY_LOG_TAIL
     decisions = tuple(
         EgressDecision(
             decision=cast("EgressDecisionCode", found["decision"]),
             host=found["host"],
             port=int(found["port"]),
         )
-        for line in lines
+        for line in lines[-_PROXY_LOG_TAIL:]
         if (found := _EGRESS_DECISION.match(line.strip()))
     )
-    return decisions, len(lines) > _PROXY_LOG_TAIL
+    return decisions, truncated
 
 
 def _proxy_name(container: str) -> str:
@@ -644,13 +649,27 @@ class WslcSandboxBackend:
     def declarations(self) -> BackendDeclarations:
         return self._declarations
 
-    def observe_egress(self, report: EgressReporter) -> None:
-        """Take the callback this backend reports its proxy's decisions through.
+    def observe_egress(self, report: EgressReporter | None) -> None:
+        """Take the callback this backend reports its proxy's decisions through, or ``None``.
 
-        The router calls this once, and only when it has an observer — so the drains below stay
-        switched off for a host that collects nothing, which is what keeps an extra engine round
-        trip off every allowlisted acquire.
+        The router calls this at the end of its construction, with its reporter when it has an
+        observer and with ``None`` when it does not — so the drains below stay switched off for
+        a host that collects nothing, which is what keeps an extra engine round trip off every
+        allowlisted acquire.
+
+        **Replacing a live reporter is warned about, not refused.**  One backend has one slot,
+        so registering this instance on a second observed router silently moves its records to
+        that router's observer, including for sandboxes the first one served. Refusing would
+        break the ordinary case this cannot tell apart — a host that discarded a router and
+        built another over the same backend — so the mistake is named rather than blocked.
         """
+        if report is not None and self._egress_report is not None and report != self._egress_report:
+            logger.warning(
+                "egress reporting for this backend moved to a different router: one backend "
+                "holds one reporter, so its decisions now reach the newer router's observer "
+                "even for sandboxes the older one served. Give each router its own backend "
+                "instance if both are meant to record."
+            )
         self._egress_report = report
 
     async def _drain_the_proxy(self, name: str, key: SandboxKey) -> None:
@@ -772,11 +791,9 @@ class WslcSandboxBackend:
             # them only here. Merged, not assigned — teardown for one key is not serialized.
             self._undeleted[prefix] = self._undeleted.get(prefix, set()) | set(candidates)
         # The last window, and only the last: every acquire before this one already drained its
-        # own proxy on the way to rebuilding it. Over the names this process knows, since a
-        # sandbox another replica created is not one whose proxy this key can name — the sweep
-        # below reaches it by label, and the decisions in it go with it.
-        for container in candidates:
-            await self._drain_the_proxy(container, key)
+        # own proxy on the way to rebuilding it. Every container the labels reach belongs to
+        # this key by construction, so all of them are attributable — including one served
+        # under an egress configuration this backend no longer runs.
         swept = await self._purge(
             [
                 (_LABEL_SCOPE, key.scope),
@@ -785,6 +802,7 @@ class WslcSandboxBackend:
             ],
             fallback=candidates,
             thread_id=key.thread_id,
+            drain_key=lambda _name: key,
         )
         # Only on a normal return, so a cancelled sweep keeps the whole set; over-retaining is
         # the safe direction, since a container already gone drops out next attempt. Read from
@@ -817,6 +835,14 @@ class WslcSandboxBackend:
         already be gone is worse than no entry.
         """
         mine = [k for k in list(self._registry) if k[0] == scope and k[1] == thread_id]
+        # Read before the registry is emptied, and the only thing that makes a purge's proxies
+        # attributable: `EgressObserved` needs a key, and a purge is addressed by a conversation.
+        # A registry entry carries the agent dir the key is missing, so a sandbox this process
+        # created can be drained; one another replica created cannot be, and its last window
+        # goes with it. That is the gap `observes_egress` does not close.
+        attributable = {
+            self._registry[k]: SandboxKey(scope=k[0], thread_id=k[1], agent_dir=k[2]) for k in mine
+        }
         remembered = [self._registry.pop(k) for k in mine]
         retained = {
             p: set(names)
@@ -831,13 +857,18 @@ class WslcSandboxBackend:
                 )
             ),
             thread_id=thread_id,
+            drain_key=attributable.get,
         )
         # Nothing is subtracted here: the container this sweep removed and one recorded since
         # carry the same name, so taking one away drops the other.
         return ScopePurge(swept.count, swept.reason)
 
     async def _purge(
-        self, label_filters: list[tuple[str, str]], fallback: list[str], thread_id: str
+        self,
+        label_filters: list[tuple[str, str]],
+        fallback: list[str],
+        thread_id: str,
+        drain_key: Callable[[str], SandboxKey | None] | None = None,
     ) -> _Sweep:
         """Remove the containers a label query returns, plus their proxies and networks.
 
@@ -856,6 +887,18 @@ class WslcSandboxBackend:
         listed_set = set(listed)
         stranded = [n for n in fallback if n not in listed_set]
         names = [*listed, *stranded]
+
+        # Every proxy this sweep is about to remove, drained first and keyed to the sandbox it
+        # belonged to. Over the *listed* names rather than the remembered ones: `_container_name`
+        # folds the egress identity, so one key and kind served under two allowlists has two
+        # containers and the registry kept only the later — the earlier one's proxy is reached
+        # here or nowhere. `drain_key` answers `None` for a name this process cannot attribute,
+        # which is a container another replica created, and that window is lost with it.
+        if drain_key is not None:
+            for workload in (n for n in names if not n.endswith(_PROXY_SUFFIX)):
+                attributed = drain_key(workload)
+                if attributed is not None:
+                    await self._drain_the_proxy(workload, attributed)
 
         count = 0
         undeleted: dict[str, DisposalFailure] = {}

@@ -737,7 +737,6 @@ class SandboxRouter:
         self._denied_identities = frozenset(
             Identity(str(identity)) for identity in denied_identities
         )
-        self._hand_out_the_egress_reporter()
         if self._selection is Selection.PER_SPEC:
             # No one backend to resolve, so `backend` has no answer to give and `_candidates`
             # is what every later decision reads instead. In registration order, because that
@@ -747,14 +746,25 @@ class SandboxRouter:
         else:
             self._backend = self._resolve()
             self._candidates = [] if self._backend is None else [self._backend]
+        # Last, because everything above can raise and this reaches *outside* the object: a
+        # reporter installed before a refusal would leave the backend reading logs on every
+        # acquire and reporting them into a router the host never received and cannot switch
+        # off. Nothing after this line fails.
+        self._hand_out_the_egress_reporter()
 
     def _hand_out_the_egress_reporter(self) -> None:
         """Give every backend that can read its own egress enforcement somewhere to report it.
 
-        Only when this router has an observer.  A backend reads its enforcer's record by asking
-        the engine, which costs a round trip on a path an acquire waits on, and a host that
-        registered nothing must not pay for records nobody collects — so an uninstrumented
-        deployment leaves every backend in the silent state it starts in.
+        **Every backend that can report is told, including by a router that collects nothing.**
+        Such a router hands over ``None``, which is not the same as staying quiet: a backend
+        instance may be registered on more than one router, and one that only declined to
+        install would leave the backend reporting into whichever router wired it first — paying
+        for a log read on every acquire this router serves, and filing those records under an
+        observer that never served the sandbox.  Passing ``None`` switches it off instead.
+
+        A backend reads its enforcer's record by asking the engine, which costs a round trip on
+        a path an acquire waits on, so an uninstrumented deployment ends up exactly where it
+        started: no reporter, no reads.
 
         A backend that *declares* :attr:`~maf_sandbox.BackendDeclarations.observes_egress` and
         implements no :class:`~maf_sandbox.ObservesEgress` is warned about rather than refused.
@@ -773,8 +783,8 @@ class SandboxRouter:
                     "or drop the declaration — the default says the honest thing.",
                     _recorded_name(backend),
                 )
-            if reports and self._observer is not None:
-                backend.observe_egress(self._report_egress)
+            if reports:
+                backend.observe_egress(self._report_egress if self._observer is not None else None)
 
     def _report_egress(self, event: EgressObserved) -> None:
         """Record one backend's egress drain, contained exactly as every other event is.
