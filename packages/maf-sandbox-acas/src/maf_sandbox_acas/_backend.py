@@ -151,11 +151,22 @@ _RESUME_TIMEOUT_S = 120
 #: pid, exit and session markers into a directory the file plane made.
 _NEEDS_A_WRITING_GUEST = frozenset({Capability.FILES_OUT, Capability.HOST_TOOLS})
 
+#: What a guest that is not root must not be handed, whatever it can write. A *reach* rule
+#: rather than a functional one, and a set of its own because the two fail in opposite
+#: directions on an unknown uid: `remove` deletes through the data plane, which acts as the
+#: host, so a delete redirected through a parent swapped after the check reaches what the guest
+#: could not. Withheld rather than gated per call the way `maf-sandbox-docker` gates root,
+#: because that gate reads each component's owner and this data plane's stat payload carries
+#: none. `docs/sandbox/backends/acas.md` carries the argument.
+_UNSAFE_WHERE_THE_GUEST_IS_NOT_ROOT = frozenset({Capability.FILES_DELETE})
+
 #: What makes the guest's uid worth reading at all. `EXEC` earns a warning rather than a
 #: refusal: a command whose whole result is its stdout runs fine as any user.
-_PROBE_WHEN_REQUIRED = _NEEDS_A_WRITING_GUEST | {Capability.EXEC}
+_PROBE_WHEN_REQUIRED = (
+    _NEEDS_A_WRITING_GUEST | _UNSAFE_WHERE_THE_GUEST_IS_NOT_ROOT | {Capability.EXEC}
+)
 
-#: How the guest's uid is read, once per image on a cold acquire.
+#: How the guest's uid is read, once per sandbox this backend creates.
 _GUEST_UID_COMMAND = "id -u"
 
 #: Where that runs. Never `spec.work_dir`, which nothing has created yet at acquire: an exec
@@ -233,9 +244,13 @@ _LIMITS = SandboxLimits(files_in=_FILES_LIMITS, files_out=_FILES_LIMITS)
 # does. That gap is #111's axis, and it is the same gap `EXEC` already has: a kind execing
 # `python3` against an image without Python fails inside the sandbox today.
 #
-# The image does narrow one thing, and `acquire` is where it lands rather than here: a guest that
-# is not root can create nothing inside a directory the file plane made, so this pair is refused
-# there for such an image (#722).
+# The image narrows this set two ways, and `acquire` is where both land rather than here, since
+# nothing before a running guest can read its uid. A guest that is not root can create nothing
+# inside a directory the file plane made, so `FILES_OUT` and `HOST_TOOLS` are refused for such an
+# image (#722). And that same split gives every data-plane call more authority than the guest, so
+# `FILES_DELETE` is refused there too — not for want of working, but because a delete the guest
+# can redirect is a delete beyond its reach (#950). Three of six are therefore a **ceiling**
+# rather than a promise; `FILES_IN` stays, with a residual `write_file` states (#951).
 _DECLARATIONS = BackendDeclarations(
     capabilities=frozenset(
         {
@@ -388,6 +403,22 @@ class _AcasSandbox:
         return self._sc.sandbox_id
 
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
+        """Write ``content`` at ``path`` through the data plane, which lands it as ``0:0``.
+
+        **The residual to know before choosing this backend for a non-root image.**  The
+        confinement check and this write are separate calls, and the service resolves a
+        symlinked parent, so a guest that replaces a checked component in between has the write
+        followed — and this plane acts as the host, so the bytes land root-owned at a path the
+        guest could not have written itself.  On a root image that is a confinement failure and
+        nothing more, since the guest was already root.  On a non-root one it is more than the
+        guest had, which is the reach rule :meth:`~maf_sandbox.Sandbox.reclaim` states.
+
+        Stated rather than refused, where :meth:`remove` is refused: the protocol states the
+        reach rule for removals and says nothing yet about writes (#951), and withholding
+        ``FILES_IN`` would leave this backend no in-door at all on such an image.  Closing it
+        properly needs ownership in the data plane's stat payload, the same upstream read #710
+        needs — see ``docs/sandbox/backends/acas.md``.
+        """
         # `create_dirs=True` is the SDK's own default, and it is passed explicitly anyway.
         # A workload may hand us a nested path — `infra/main.bicep` is the example in the
         # bicep tool's own description — and without it every such write fails on a missing
@@ -478,6 +509,13 @@ class _AcasSandbox:
         filesystem path check still runs before the delete. A directory is refused without
         ``recursive`` whatever it holds: the rule is on the entry's kind, because a backend
         that cannot enumerate cannot tell empty from full.
+
+        **That check is not held, which is why the capability behind this is withheld on a
+        non-root image.**  The check and the delete are separate calls, so a parent swapped in
+        between is followed, and this plane deletes as the host.  Where the guest is root that
+        reaches nothing it could not have deleted itself; where it is not, it reaches a tree it
+        could never have touched, so ``acquire`` refuses ``FILES_DELETE`` there —
+        :data:`_UNSAFE_WHERE_THE_GUEST_IS_NOT_ROOT` carries the argument, and #950 the decision.
         """
         from azure.core.exceptions import ResourceNotFoundError
 
@@ -678,10 +716,16 @@ class AcasSandboxBackend:
         # connection pool per tool invocation.
         self._clients: dict[asyncio.AbstractEventLoop, tuple[Any, Any]] = {}
         #: The uid `exec` runs as, per image a spec named — `None` where the image could not
-        #: say. A property of the image rather than of the sandbox booted from it, so one probe
-        #: answers for every sandbox after; membership, not the value, is what says it was
-        #: asked, because an image with no `id` must not be re-probed on every tool call.
+        #: say. A **hint** rather than a verdict: an image reference is the service's to
+        #: repoint, so this describes whatever it last resolved to. It answers the refusal that
+        #: runs before a create, which is what spares the second workload a sandbox of its own;
+        #: membership, not the value, is what says it was asked.
         self._guest_uids: dict[tuple[str, str], int | None] = {}
+        #: The same uid per **sandbox**, which is where the verdict actually lives: a running
+        #: guest cannot change principal, where the reference it booted from can be repointed
+        #: under the hint above. A warm reuse reads this and never the hint, so two sandboxes
+        #: sharing one mutable name cannot license each other.
+        self._sandbox_uids: dict[str, int | None] = {}
         #: Which (image, kind) pairs have already been warned about. `acquire` runs on every
         #: tool call, and a warning per call is noise rather than a signal.
         self._warned_about_the_guest: set[tuple[tuple[str, str], str]] = set()
@@ -760,8 +804,9 @@ class AcasSandboxBackend:
 
         Raises:
             SandboxCapabilityNotSupported: when the spec requires ``FILES_OUT`` or
-                ``HOST_TOOLS`` and the image's guest is not root, which
-                :meth:`_refuse_or_warn_where_the_guest_cannot_write` explains.
+                ``HOST_TOOLS`` and the image's guest is not root, or ``FILES_DELETE`` and its
+                guest is not *known* to be root — the two differ on an unreadable probe, and
+                :meth:`_refuse_or_warn_where_the_guest_is_not_root` says why.
         """
         async with self._acquire_lock((key.scope, key.thread_id, key.agent_dir, spec.kind)):
             return await self._get_or_create(key, spec)
@@ -784,10 +829,6 @@ class AcasSandboxBackend:
         """:meth:`acquire`'s body, run under that key's lock."""
         gc = self._group_client()
         registry_key = (key.scope, key.thread_id, key.agent_dir, spec.kind)
-        # From what an earlier acquire measured, so the second workload to meet a refused image
-        # is refused before this one pays for a create.
-        await self._refuse_or_warn_where_the_guest_cannot_write(spec)
-
         sandbox_id = self._registry.get(registry_key)
         if sandbox_id is not None:
             try:
@@ -808,7 +849,7 @@ class AcasSandboxBackend:
                 # sandbox that failed to resume, and the handler above would swallow it into a
                 # replacement create. Before the log, so a refused acquire does not report one
                 # of the three outcomes `acquire` promises to name.
-                await self._refuse_or_warn_where_the_guest_cannot_write(spec, reused)
+                await self._refuse_or_warn_where_the_guest_is_not_root(spec, reused)
                 logger.info(
                     "sandbox reused: id=%s kind=%s thread=%s agent=%s",
                     sandbox_id,
@@ -818,6 +859,12 @@ class AcasSandboxBackend:
                 )
                 return reused
             self._registry.pop(registry_key, None)
+
+        # The hint answers here and nowhere earlier, because here is where a create is about to
+        # be paid for: the second workload to meet a refused image is refused without one. A
+        # warm sandbox never reaches this, and must not — it has a verdict of its own, where
+        # the hint is whatever some other guest last answered for the same reference.
+        await self._refuse_or_warn_where_the_guest_is_not_root(spec)
 
         # Two namespaces, and `image` says which by whether it carries a tag: a bare name is
         # one the service prebuilt, anything else is repository:tag for an image this
@@ -863,7 +910,9 @@ class AcasSandboxBackend:
             )
         created = _AcasSandbox(sc, self._config.read_timeout_seconds)
         try:
-            await self._refuse_or_warn_where_the_guest_cannot_write(spec, created)
+            await self._refuse_or_warn_where_the_guest_is_not_root(
+                spec, created, freshly_created=True
+            )
         except SandboxCapabilityNotSupported:
             self._registry.pop(registry_key, None)
             await self._release_the_refused(gc, key, sc.sandbox_id)
@@ -898,49 +947,116 @@ class AcasSandboxBackend:
         else:
             self._undeleted.pop(prefix, None)
 
-    async def _refuse_or_warn_where_the_guest_cannot_write(
-        self, spec: SandboxSpec, sandbox: _AcasSandbox | None = None
+    async def _refuse_or_warn_where_the_guest_is_not_root(
+        self,
+        spec: SandboxSpec,
+        sandbox: _AcasSandbox | None = None,
+        *,
+        freshly_created: bool = False,
     ) -> None:
-        """Refuse a spec whose guest could not create the files it collects; warn one that only
+        """Refuse a spec a non-root guest cannot back or must not be handed; warn one that only
         runs commands.
 
-        The file plane writes as root and ``exec`` runs as the image's ``USER``, so on a
-        non-root image a guest program can create nothing inside a directory the file plane
-        made.  ``sandbox`` is optional because the memo can answer before one exists.
+        Two refusals with one trigger and two different reasons.  The file plane writes as root
+        and ``exec`` runs as the image's ``USER``, so on a non-root image a guest program can
+        create nothing inside a directory the file plane made — that is
+        :data:`_NEEDS_A_WRITING_GUEST`, and it is about what the workload can *do*.  The same
+        split makes every data-plane call act with more authority than the guest, which is what
+        :data:`_UNSAFE_WHERE_THE_GUEST_IS_NOT_ROOT` is about, and it is a reach rule rather than
+        a functional one.  ``sandbox`` is optional because the memo can answer before one
+        exists; ``freshly_created`` says this one was just booted, which makes the memo the
+        wrong answer — it describes whatever the same reference resolved to last time.
 
-        An image whose uid cannot be read is **served**, and asked only once: refusing on an
-        unreadable probe would take a working root image off a deployment, and re-probing would
-        put an ``exec`` round trip in front of every tool call.
+        An image whose uid cannot be read is **served the functional set**: refusing on an
+        unreadable probe would take a working root image off a deployment.  It is asked again
+        unless the guest *answered* — a definitive non-uid reply is recorded, so it costs no
+        ``exec`` per tool call, where a timeout is retried on the next acquire.  It is
+        **refused the reach set**, because an unread uid is not evidence of root, and the two
+        directions are not interchangeable: a functional refusal that guesses wrong costs a
+        ``Permission denied`` the deployment sees, and a reach one costs a host-authority
+        delete nothing reports.
 
         Raises:
             SandboxCapabilityNotSupported: when the spec requires a capability only a guest that
-                can write is able to back.
+                can write is able to back, or one this backend must not serve to a guest that is
+                not root.  Both are named in one message where a spec asks for both, so a caller
+                narrowing its ``requires`` is not sent round the loop twice.
         """
         if not spec.requires & _PROBE_WHEN_REQUIRED:
             return
         identity = _image_identity(spec)
-        if identity in self._guest_uids:
+        if sandbox is None:
+            # Nothing running to ask, so the hint answers or the caller creates one. This is
+            # the refusal that spares the second workload a create.
+            if identity not in self._guest_uids:
+                return
             uid = self._guest_uids[identity]
-        elif sandbox is None:
-            return
+        elif freshly_created:
+            # A new artefact from the same reference, so the hint is about the previous one.
+            uid = await self._probe_guest_uid(sandbox, spec)
+        elif sandbox.sandbox_id in self._sandbox_uids:
+            # A warm reuse reads the verdict for *this* sandbox and never the image hint:
+            # another sandbox booted from the same name may have moved the hint since.
+            uid = self._sandbox_uids[sandbox.sandbox_id]
         else:
             uid = await self._probe_guest_uid(sandbox, spec)
-        if uid is None or uid == 0:
+        if uid == 0:
             return
 
+        # The asymmetry this method's docstring states: an unknown uid keeps the functional set.
         image = _image_label(spec)
-        refused = spec.requires & _NEEDS_A_WRITING_GUEST
+        unbackable: frozenset[Capability] = (
+            spec.requires & _NEEDS_A_WRITING_GUEST if uid is not None else frozenset()
+        )
+        unsafe = spec.requires & _UNSAFE_WHERE_THE_GUEST_IS_NOT_ROOT
+        refused = unbackable | unsafe
         if refused:
+            reasons: list[str] = []
+            if unbackable:
+                reasons.append(
+                    f"{', '.join(sorted(unbackable))} because every directory this backend's file "
+                    "plane creates belongs to root and is writable by nobody else, so the guest "
+                    "program can create neither a declared output beside the files it was given "
+                    "nor the host-tool transport's own markers — inside the tool call that "
+                    "arrives as a shell's 'Permission denied'"
+                )
+            if unsafe:
+                reasons.append(
+                    f"{', '.join(sorted(unsafe))} because remove deletes through that same file "
+                    "plane, which acts as the host, and the check that keeps it inside the "
+                    "working directory is not held: the check and the delete are separate calls, "
+                    "the service resolves a symlinked parent, and a parent swapped in between "
+                    "would delete a tree this guest could never have deleted itself — which "
+                    "nothing inside the tool call would report at all"
+                )
+            # A root `USER` does not answer the probe, so the two branches want two remedies.
+            if uid is not None:
+                whose_guest = f"its guest runs as uid {uid}"
+                remedy = "Serve this workload on an image whose USER is root"
+            else:
+                whose_guest = (
+                    f"its guest did not answer {_GUEST_UID_COMMAND!r}, and an unread uid is not "
+                    "evidence of root"
+                )
+                remedy = (
+                    "Serve this workload on an image whose guest answers "
+                    f"{_GUEST_UID_COMMAND!r} with 0 — a root USER alone does not, and an image "
+                    "that cannot run the probe is refused however it is built"
+                )
             raise SandboxCapabilityNotSupported(
                 f"sandbox backend {BACKEND_NAME!r} cannot serve "
-                f"{', '.join(sorted(refused))} to the {spec.kind!r} workload from {image}: its "
-                f"guest runs as uid {uid}, and every directory this backend's file plane creates "
-                "belongs to root and is writable by nobody else, so the guest program can create "
-                "neither a declared output beside the files it was given nor the host-tool "
-                "transport's own markers. Refused here rather than inside the tool call, where "
-                "it arrives as a shell's 'Permission denied'. Serve this workload on an image "
-                "whose USER is root, or narrow what it requires."
+                f"{', '.join(sorted(refused))} to the {spec.kind!r} workload from {image}: "
+                f"{whose_guest}, and it refuses {'; and '.join(reasons)}. Refused here "
+                f"rather than inside the tool call. {remedy}, or narrow what it requires. "
+                "Repointing the same reference is not enough on its own: this refusal is "
+                "answered from a remembered verdict and stops the create that would re-read "
+                "it, so a corrected image needs a reference this backend has not seen yet, or "
+                "a restart of this process."
             )
+        if uid is None:
+            # Served, and silently: the warning below describes a wall this image may not have,
+            # and one issued on every unreadable probe would train a reader to ignore it.
+            return
         already_warned = (_image_identity(spec), spec.kind)
         if already_warned in self._warned_about_the_guest:
             return
@@ -955,23 +1071,45 @@ class AcasSandboxBackend:
             spec.kind,
         )
 
+    def _remember(self, sandbox_id: str, identity: tuple[str, str], uid: int | None) -> None:
+        """Record an answered probe: the verdict against its sandbox, the hint against the image.
+
+        Only ever called where the guest **answered**, so a transient failure records neither
+        and is asked again — per sandbox as well as per image, since one dropped call must not
+        cost a sandbox its capability for as long as it lives.
+
+        The per-sandbox map is pruned here rather than at each registry removal: a sandbox id
+        leaves the registry in four places across ``acquire`` and two purges, and a verdict
+        outliving its sandbox is a leak rather than a hazard, so one sweep per answer is the
+        cheaper place to pay for it.
+        """
+        live = set(self._registry.values()) | {sandbox_id}
+        self._sandbox_uids = {sid: u for sid, u in self._sandbox_uids.items() if sid in live}
+        self._sandbox_uids[sandbox_id] = uid
+        self._guest_uids[identity] = uid
+
     async def _probe_guest_uid(self, sandbox: _AcasSandbox, spec: SandboxSpec) -> int | None:
-        """The uid ``exec`` runs as, remembered per image, ``None`` when the guest cannot say.
+        """The uid ``exec`` runs as, ``None`` when the guest cannot say. Answered by the guest.
 
-        The uid belongs to the artefact a reference names rather than to the sandbox booted
-        from it, so one round trip on one cold acquire answers for every sandbox after it.  The
-        memo is this backend instance's, not the module's — unlike ``_images``' disk-image cache
-        — so a host that builds a backend per request pays one probe per request.
+        Three rules. A **definitive** non-uid answer — a non-zero exit, a word, no ``id`` in
+        the image — is a fact about *this sandbox* and is recorded against it. A **transient**
+        failure records nothing, because one timeout must not withdraw a capability for as long
+        as a sandbox lives. And **no failure ever displaces an answer**: both maps take it
+        through ``setdefault``, so a probe that raced a working one, or that ran against a
+        reference now resolving elsewhere, cannot demote what was measured. Only a uid replaces
+        a uid, which is how a repointed reference is corrected.
 
-        **A failure is remembered too**, as ``None``: an image with no ``id`` would otherwise be
-        asked again on every acquire, including the warm reuse the probe used to skip, and each
-        ask is a round trip bounded by :data:`_PROBE_TIMEOUT_S`.
+        What ``None`` costs is the caller's and is not one policy:
+        :meth:`_refuse_or_warn_where_the_guest_is_not_root` serves the functional set on it and
+        refuses the reach set.
 
-        **A failure never displaces an answer.**  Concurrent cold acquires for one image race
-        here, and ``None`` is served rather than refused, so both failure paths record through
-        ``setdefault`` and return what the memo holds.
+        **The answer is the guest's own, so it is worth what the image is.** An image that
+        ships an ``id`` printing ``0`` is believed, which is announcement where
+        ``guest-platform-and-commands.md`` § Decision 3 asks for observation.  What that costs
+        and why it is served anyway: ``docs/sandbox/backends/acas.md``.
         """
         image = _image_label(spec)
+        identity = _image_identity(spec)
         try:
             answered = await sandbox.exec(
                 _GUEST_UID_COMMAND,
@@ -980,12 +1118,14 @@ class AcasSandboxBackend:
             )
         except Exception as unreachable:  # noqa: BLE001 - an acquire must not fail over this
             logger.debug(
-                "acas: %s did not answer %r (%s)",
+                "acas: %s did not answer %r (%s); not remembered, so the next acquire asks again",
                 image,
                 _GUEST_UID_COMMAND,
                 error_detail(unreachable),
             )
-            return self._guest_uids.setdefault(_image_identity(spec), None)
+            # Never the image hint: it can hold another sandbox's answer, and nothing has
+            # verified this one. Its own verdict if it has one, otherwise nothing.
+            return self._sandbox_uids.get(sandbox.sandbox_id)
         reported = answered.stdout.strip()
         if answered.exit_code != 0 or not reported.isdecimal():
             logger.debug(
@@ -995,9 +1135,16 @@ class AcasSandboxBackend:
                 answered.exit_code,
                 reported,
             )
-            return self._guest_uids.setdefault(_image_identity(spec), None)
+            # The hint keeps a concrete uid even against a fresh sandbox, because it only
+            # answers the refusal that runs before a create: too permissive there costs one
+            # create, after which the fresh probe decides, and too strict refuses a working
+            # image with no sandbox in existence to correct the verdict (#969). The verdict
+            # comes from this sandbox's own map and never from the hint, which is some other
+            # guest's answer.
+            self._guest_uids.setdefault(identity, None)
+            return self._sandbox_uids.setdefault(sandbox.sandbox_id, None)
         uid = int(reported)
-        self._guest_uids[_image_identity(spec)] = uid
+        self._remember(sandbox.sandbox_id, identity, uid)
         return uid
 
     async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
