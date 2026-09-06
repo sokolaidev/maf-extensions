@@ -66,6 +66,10 @@ ISOLATION_SCOPE = f"{NAMESPACE}.sandbox.isolation_scope"
 CAPABILITIES = f"{NAMESPACE}.sandbox.capabilities"
 BACKEND_CAPABILITIES = f"{NAMESPACE}.backend.capabilities"
 BACKEND_EGRESS_MODES = f"{NAMESPACE}.backend.egress_modes"
+#: Whether the serving backend can report what its egress enforcement decided.  It rides on
+#: every acquire so that a key with no `sandbox.egress` record can be read correctly: `false`
+#: means nothing was watched, and only `true` makes silence mean nothing was reached.
+BACKEND_OBSERVES_EGRESS = f"{NAMESPACE}.backend.observes_egress"
 
 EGRESS_MODE = f"{NAMESPACE}.egress.mode"
 EGRESS_ALLOW = f"{NAMESPACE}.egress.allow"

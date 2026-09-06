@@ -61,6 +61,7 @@ from ._attributes import (
     BACKEND,
     BACKEND_CAPABILITIES,
     BACKEND_EGRESS_MODES,
+    BACKEND_OBSERVES_EGRESS,
     CALL_ID,
     CAPABILITIES,
     DISPOSAL_CODE,
@@ -246,6 +247,11 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
         if event.declarations is not None:
             recorded[BACKEND_CAPABILITIES] = sorted_values(event.declarations.capabilities)
             recorded[BACKEND_EGRESS_MODES] = sorted_values(event.declarations.egress_modes)
+            # The attribute that stops an absence of `sandbox.egress` reading as an absence of
+            # traffic. It belongs here rather than only on the drain, because the record that
+            # answers "was this sandbox watched" has to exist for a sandbox that produced no
+            # drain at all — which is exactly the case it is needed for.
+            recorded[BACKEND_OBSERVES_EGRESS] = event.declarations.observes_egress
         surface = spec.host_tools
         if surface is not None:
             # All four or none: an empty set beside a `False` would read as a surface that
