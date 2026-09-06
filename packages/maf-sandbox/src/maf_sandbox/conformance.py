@@ -310,14 +310,21 @@ class PosixGuestSubject:
     async def the_guest_can_delete(self, path: str) -> bool:
         """``rm -f``, then look: the outcome rather than a reading of the parent's mode.
 
-        A guest missing ``rm`` answers "cannot", which stops nothing and leaves the probe that
-        asked to assert — the safe direction, since the alternative is a probe that stops.
+        Exit 1 is the refusal being measured; above it is ``rm`` not running, and that raises
+        the way :meth:`exists` and :meth:`plant_directory_the_guest_owns` do.  A missing ``rm``
+        read as "cannot delete" would leave the probe asserting on a calibration it never made,
+        and a backend that refuses the protected tree for its own reasons would then pass.
         """
-        await self.sandbox.exec(
+        removed = await self.sandbox.exec(
             ["rm", "-f", path],
             working_directory=self.working_directory,
             timeout=self.exec_timeout,
         )
+        if removed.exit_code > 1:
+            raise RuntimeError(
+                f"could not ask the guest to remove {path!r} "
+                f"(`rm -f` exited {removed.exit_code}): {removed.stderr.strip()}"
+            )
         return not await self.exists(path)
 
     async def _writable(self, path: str) -> bool:

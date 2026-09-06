@@ -2110,11 +2110,11 @@ class TestReachConformance:
         assert "no control" in reported
 
     def test_a_directory_the_guest_cannot_empty_is_not_read_off_its_write_bit(self):
-        """Write permission is not the power to empty: search permission and the sticky bit.
+        """Write permission is not the power to empty a directory.
 
-        Measured on a real engine while writing this: `test -w` calls a mode-0222 directory and
-        a sticky 1777 one writable, and `rm` is refused in both. Reading the calibration off the
-        mode stopped the probe on exactly the shape it exists to catch.
+        Unlinking an entry needs search permission as well, and a sticky bit decides whose
+        entries may go — so `test -w` answers "writable" for a mode-0222 directory and for a
+        sticky one holding another principal's file, and `rm` is refused in both.
         """
 
         class _StickyLike(_SimulatedGuest):
@@ -2132,6 +2132,30 @@ class TestReachConformance:
             "a-removal-takes-nothing-beyond-the-guest"
         ]
         assert reported is not None
+
+    def test_a_guest_without_rm_raises_rather_than_calibrating_on_nothing(self):
+        """127 is the harness failing, and "cannot delete" is what it would otherwise read as.
+
+        The probe would then assert on a calibration it never made, and a backend refusing the
+        protected tree for reasons of its own would pass having had nothing measured about it.
+        """
+
+        class _NoRm(_SimulatedGuest):
+            async def exec(self, command, *, working_directory: str, timeout: float):
+                argv = [command] if isinstance(command, str) else list(command)
+                if argv[0:1] == ["rm"]:
+                    return ExecResult(stdout="", stderr="not found", exit_code=127)
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        sandbox = _NoRm(writes_as_the_host=True)
+        sandbox.directories.add(_WORK)
+        reported = _sim_results(_subject_over(sandbox), run_reach_probes)[
+            "a-removal-takes-nothing-beyond-the-guest"
+        ]
+        assert reported is not None
+        assert "exited 127" in reported
 
     def test_a_backend_refusing_trees_with_files_fails_the_control(self):
         """The control matches the protected tree's shape: a directory holding a regular file.
