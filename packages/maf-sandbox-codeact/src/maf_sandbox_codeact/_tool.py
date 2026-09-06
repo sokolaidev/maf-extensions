@@ -74,7 +74,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
 
     from agent_framework import AgentFileStore
-    from maf_sandbox import HostToolAggregate, HostToolRegistry, LandedArtifact, Sandbox
+    from maf_sandbox import HostToolAggregate, HostToolRegistry, LandedArtifact, Sandbox, SandboxKey
 
 logger = logging.getLogger(__name__)
 
@@ -1156,7 +1156,7 @@ async def _execute(
             # A fresh run per call: the host-tool-call cap and the ledger bound one program.
             result = await host_tool_calls_over_exec(
                 sandbox,
-                HostToolRun(host_tool_call.registry, logger=logger),
+                HostToolRun(host_tool_call.registry, logger=logger, key=key),
                 layout,
                 timeout=timeout,
                 interpreter=_INTERPRETER,
@@ -1228,6 +1228,7 @@ async def _execute(
     collected = await _collect(
         session,
         sandbox,
+        key,
         guest_prefix,
         call_id,
         outputs,
@@ -1585,6 +1586,7 @@ def _validated_output_names(
 async def _collect(
     session: SandboxToolSession,
     sandbox: Sandbox,
+    key: SandboxKey,
     guest_prefix: str,
     call_id: str,
     outputs: CodeactOutputs,
@@ -1598,6 +1600,10 @@ async def _collect(
 
     ``call_id`` is passed to :func:`~maf_sandbox.collect_outputs` whatever the sink does with
     it: a host swapping in one that lands per call changes nothing here.
+
+    ``key`` is the caller's, taken before the run rather than read again here, and it goes to
+    the same call beside ``session.observer`` — the pair is what puts a collection's record
+    under the conversation whose files these are.
     """
     sink = session.output_sink
     if sink is None:  # unreachable: `sandboxed_tool` refuses this spec without a sink
@@ -1644,7 +1650,15 @@ async def _collect(
         for name in declared
     )
     try:
-        landed = await collect_outputs(sandbox, spec, sink=sink, outputs=call_time, call_id=call_id)
+        landed = await collect_outputs(
+            sandbox,
+            spec,
+            sink=sink,
+            outputs=call_time,
+            call_id=call_id,
+            observer=session.observer,
+            key=key,
+        )
     except SandboxOutputError as exc:
         logger.warning("execute_code: could not save this run's files: %s", error_detail(exc))
         if withhold:
