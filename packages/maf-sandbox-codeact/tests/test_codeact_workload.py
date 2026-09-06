@@ -39,16 +39,22 @@ from maf_sandbox import (
     EntryKind,
     ExecResult,
     GuestRunLayout,
+    HostToolCalled,
     HostToolRegistry,
     Identity,
     LandedArtifact,
     ListedFile,
     MafSandboxHostToolsWarning,
     NameNormalization,
+    OutputsCollected,
     OutputSink,
+    SandboxAcquired,
     SandboxCapabilityNotSupported,
     SandboxEntry,
+    SandboxEvent,
+    SandboxKey,
     SandboxLimits,
+    SandboxObserver,
     SandboxOutputError,
     SandboxOutputSinkRequired,
     SandboxProgramTimeout,
@@ -461,12 +467,18 @@ def _context(*, thread_id: str | None = "thread-1") -> CallerContext:
     )
 
 
-def _tool(backend: InProcessSandboxBackend, *, thread_id: str | None = "thread-1", **kw):
+def _tool(
+    backend: InProcessSandboxBackend,
+    *,
+    thread_id: str | None = "thread-1",
+    observer: SandboxObserver | None = None,
+    **kw,
+):
     tools = make_codeact_tools(
         # Below the default floor: this suite exercises the workload, not the floor check. Read
         # off the backend rather than named, so renaming the ladder's bottom rung is not a
         # change to this package.
-        SandboxRouter([backend], min_isolation=backend.isolation),
+        SandboxRouter([backend], min_isolation=backend.isolation, observer=observer),
         "data-analyst",
         _context(thread_id=thread_id),
         image="registry.invalid/python:3.13",
@@ -3674,6 +3686,93 @@ class TestWithoutARegistry:
         assert not isinstance(argv, str)
         assert list(argv) == ["python3", f"{run_dir}/{_PROGRAM_FILENAME}"]
         assert set(sandbox.written) == {f"{run_dir}/{_PROGRAM_FILENAME}"}
+
+
+# ---------------------------------------------------------------------------
+# What a host records — the two events this kind is the only source of
+# ---------------------------------------------------------------------------
+
+#: The key `_context` and `_tool` resolve to between them: the host's scope, the conversation,
+#: and the agent directory baked in at factory time.
+_KEY = SandboxKey("scope-a", "thread-1", "data-analyst")
+
+
+class _Recorder(SandboxObserver):
+    """A host's observer, kept whole, registered on the router and the registry alike.
+
+    One object for both because that is what makes a key a join: an acquire's record and a
+    call's are only comparable where they are read together.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[SandboxEvent] = []
+
+    def sandbox_acquired(self, event: SandboxAcquired) -> None:
+        self.events.append(event)
+
+    def host_tool_called(self, event: HostToolCalled) -> None:
+        self.events.append(event)
+
+    def outputs_collected(self, event: OutputsCollected) -> None:
+        self.events.append(event)
+
+    def one(self, kind: type[SandboxEvent]) -> Any:
+        found = [event for event in self.events if isinstance(event, kind)]
+        assert len(found) == 1, f"expected exactly one {kind.__name__}, got {self.events}"
+        return found[0]
+
+
+class TestWhatAHostRecordsOfThisKind:
+    def test_a_collection_is_recorded_against_the_conversation_that_produced_it(self):
+        """`collect_outputs` builds no event for a caller that hands it no observer, so a kind
+        that passes none leaves files **out** — the direction an exfiltration audit is about —
+        as the one crossing nothing records.
+
+        `call_id` is asserted against the run directory because that is what a query reaches
+        the artifacts by: the key names the conversation, and this names the folder.
+        """
+        recorder = _Recorder()
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink, observer=recorder)
+
+        _run_producing(tool, sandbox, {"report.csv": b"a,b\n"}, outputs=["report.csv"])
+
+        event = recorder.one(OutputsCollected)
+        assert event.key == _KEY == recorder.one(SandboxAcquired).key
+        assert event.kind == CODEACT_KIND
+        assert [(landed.name, landed.size_bytes) for landed in event.landed] == [("report.csv", 4)]
+        assert event.refusal is None
+        assert event.call_id == _run_dirs(sandbox)[0].rsplit("/", 1)[-1]
+
+    def test_a_collection_the_sink_refused_is_recorded_under_the_same_key(self):
+        """A refused collection is the record an audit wants most, and the one a kind's own
+        `except` would otherwise swallow before anything saw it."""
+        recorder = _Recorder()
+        sandbox = _ProducingSandbox()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, _RefusingSink(), observer=recorder)
+
+        _run_producing(tool, sandbox, {"report.csv": b"a,b\n"}, outputs=["report.csv"])
+
+        event = recorder.one(OutputsCollected)
+        assert (event.key, event.refusal, event.landed) == (_KEY, "SandboxOutputError", ())
+
+    def test_a_host_tool_record_names_the_sandbox_its_run_belongs_to(self):
+        """Keyed on `run_id` alone a record joins to its own program and to nothing else — not
+        to the conversation, and not to the acquire that served the sandbox it ran in."""
+        recorder = _Recorder()
+        sandbox = _CallingSandbox("_round_half_up", {"value": 3.6})
+        tool = _tool(
+            _backend(sandbox, capabilities=_CALLS),
+            host_tools=_registry(_round_half_up, observer=recorder),
+            observer=recorder,
+        )
+
+        _run(tool, "print(_round_half_up(value=3.6))")
+
+        event = recorder.one(HostToolCalled)
+        assert event.key == _KEY == recorder.one(SandboxAcquired).key
+        assert event.tool == "_round_half_up"
 
 
 # ---------------------------------------------------------------------------
