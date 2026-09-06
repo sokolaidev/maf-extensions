@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.16.1...maf-sandbox-wslc-v0.17.0) (2026-09-06)
+
+
+### Features
+
+* acas and wslc declare the POSIX guest they hand out ([#588](https://github.com/sokolaidev/maf-extensions/issues/588)) ([#946](https://github.com/sokolaidev/maf-extensions/issues/946)) ([4109b18](https://github.com/sokolaidev/maf-extensions/commit/4109b188e8eac21e24d1496e88d65ffb07eda97a))
+
 ## [0.16.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.16.0...maf-sandbox-wslc-v0.16.1) (2026-09-06)
 
 
