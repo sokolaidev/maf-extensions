@@ -77,6 +77,17 @@ SURFACE_IDENTITIES = f"{NAMESPACE}.surface.identities"
 SURFACE_UNDECLARED = f"{NAMESPACE}.surface.undeclared"
 SURFACE_INTEGRITY = f"{NAMESPACE}.surface.result_integrity"
 SURFACE_CALL_CAP = f"{NAMESPACE}.surface.call_cap"
+#: What a guest *reached*, as distinct from what its spec allowed above.  The counts are what a
+#: query groups by; `EGRESS_TARGETS` is the list of `host:port` the decisions named, and it is
+#: guest-chosen on every refusal, so it crosses only under `record_sensitive_data`.
+EGRESS_DECISIONS = f"{NAMESPACE}.egress.decisions"
+EGRESS_ALLOWED = f"{NAMESPACE}.egress.allowed"
+EGRESS_DENIED = f"{NAMESPACE}.egress.denied"
+EGRESS_UNREACHABLE = f"{NAMESPACE}.egress.unreachable"
+EGRESS_TARGETS = f"{NAMESPACE}.egress.targets"
+EGRESS_TRUNCATED = f"{NAMESPACE}.egress.truncated"
+EGRESS_UNREADABLE = f"{NAMESPACE}.egress.unreadable"
+EGRESS_DECISION = f"{NAMESPACE}.egress.decision"
 
 TOOL = f"{NAMESPACE}.call.tool"
 FAILURE = f"{NAMESPACE}.call.failure"

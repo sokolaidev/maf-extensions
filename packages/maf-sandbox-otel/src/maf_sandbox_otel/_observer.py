@@ -8,10 +8,11 @@ event has one, so a call's shape is visible beside the agent framework's own.  A
 through the providers the constructor was given, so a host that routed these records somewhere
 of its own gets all of them and the application's trace gets none.  And a handful of
 **counters** answer the aggregate questions — how many sandboxes were served or refused, how
-many host-tool calls and under what outcome, how many bytes a sink took — without anybody
-reading a record at all.
-Not *tunnels*: what a guest actually reached is not on this seam at all, and a counter named
-for it would invite reading allowed egress as observed egress.
+many host-tool calls and under what outcome, how many bytes a sink took, how many egress
+decisions went which way — without anybody reading a record at all.  The egress counter is
+named for the *decisions an enforcer reported*, not for tunnels: only a backend that can watch
+its own enforcement contributes to it, so a zero means nothing was reported and never that
+nothing was reached.
 
 **Spans are written after the fact.**  An observer is told what happened once it has happened,
 so each span is created with an explicit start time and ended immediately.  Its parent is
@@ -35,6 +36,7 @@ import time
 from collections.abc import Callable, Mapping
 
 from maf_sandbox import (
+    EgressObserved,
     HostToolCalled,
     OutputsCollected,
     SandboxAcquired,
@@ -67,7 +69,15 @@ from ._attributes import (
     DURATION,
     EGRESS_ALLOW,
     EGRESS_ALLOW_COUNT,
+    EGRESS_ALLOWED,
+    EGRESS_DECISION,
+    EGRESS_DECISIONS,
+    EGRESS_DENIED,
     EGRESS_MODE,
+    EGRESS_TARGETS,
+    EGRESS_TRUNCATED,
+    EGRESS_UNREACHABLE,
+    EGRESS_UNREADABLE,
     FAILURE,
     HOST_TOOL_CALLS,
     HOST_TOOL_DECLARED,
@@ -113,6 +123,7 @@ from ._attributes import (
 ACQUIRE = "sandbox.acquire"
 DISPOSE = "sandbox.dispose"
 PURGE = "sandbox.purge"
+EGRESS = "sandbox.egress"
 HOST_TOOL_CALL = "sandbox.host_tool_call"
 FILES_IN = "sandbox.files_in"
 FILES_OUT = "sandbox.files_out"
@@ -178,6 +189,13 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
         self._purged_sandboxes: Counter = meter.create_counter(
             f"{NAMESPACE}.scope.purged_sandboxes",
             description="Sandboxes a conversation purge reported removing.",
+        )
+        # Named for the decision rather than for a tunnel, because only a backend that watches
+        # its own enforcement contributes: a zero here is "nothing was reported", which is not
+        # the same claim as "nothing was reached".
+        self._egress: Counter = meter.create_counter(
+            f"{NAMESPACE}.egress.decisions",
+            description="Egress decisions an enforcer reported, by verb.",
         )
         self._host_tool_calls: Counter = meter.create_counter(
             f"{NAMESPACE}.host_tool.calls",
@@ -304,6 +322,43 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
         # an answer there rather than a report that there was nothing to remove.
         if event.disposed:
             self._isolate(lambda: self._purged_sandboxes.add(event.disposed, measured))
+
+    def egress_observed(self, event: EgressObserved) -> None:
+        """Record what a sandbox's egress enforcement decided — what the guest actually reached.
+
+        The counts are what a query groups by, and they are on the record whether or not the
+        targets are: "which conversations opened a tunnel to anything this week, and how many
+        were refused" has to be answerable from a pipeline that never sees a hostname.
+
+        A target is guest-chosen on every refusal — the host in a ``DENY`` is whatever the
+        program asked for — so the list of them crosses only under ``record_sensitive_data``,
+        the way an artifact name does.  ``ALLOW`` targets are held to the same rule rather than
+        split out: an allowlist can name a wildcard, so an allowed host is not always one the
+        spec spelled, and a rule that held only sometimes would be read as one that held.
+        """
+        decisions = event.decisions
+        recorded: dict[str, AttributeValue] = {
+            **self._redaction.key(event.key),
+            BACKEND: event.backend,
+            EGRESS_DECISIONS: len(decisions),
+            EGRESS_ALLOWED: sum(1 for one in decisions if one.decision == "ALLOW"),
+            EGRESS_DENIED: sum(1 for one in decisions if one.decision.startswith("DENY")),
+            EGRESS_UNREACHABLE: sum(1 for one in decisions if one.decision == "UNREACHABLE"),
+            EGRESS_TRUNCATED: event.truncated,
+            **without_none({EGRESS_UNREADABLE: event.unreadable}),
+            **self._redaction.texts(
+                EGRESS_TARGETS, (f"{one.decision} {one.host}:{one.port}" for one in decisions)
+            ),
+        }
+        # A drain that could not read is the failure here. An enforcer that refused a guest did
+        # its job, so a span full of `DENY` is a healthy span and is not marked otherwise.
+        self._emit(EGRESS, recorded, event.seconds, event.unreadable)
+        for one in decisions:
+            self._isolate(
+                lambda decision=one.decision: self._egress.add(
+                    1, {BACKEND: event.backend, EGRESS_DECISION: decision}
+                )
+            )
 
     def host_tool_called(self, event: HostToolCalled) -> None:
         """Record one call a guest program made back into the host."""

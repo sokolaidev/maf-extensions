@@ -19,6 +19,8 @@ from maf_sandbox import (
     Capability,
     DisposalFailure,
     Egress,
+    EgressDecision,
+    EgressObserved,
     HostToolAggregate,
     HostToolCalled,
     Identity,
@@ -967,3 +969,82 @@ class TestAScopePurgeRecordsTheConversationItCleanedUp:
         asked = build(sensitive=True)
         asked.observer.scope_disposed(a_purge(outcome="may_remain", failure=failure))
         assert "an-endpoint.example" in str(asked.attributes()[f"{NAMESPACE}.disposal.detail"])
+
+
+def a_drain(*, truncated: bool = False, unreadable: str | None = None) -> EgressObserved:
+    return EgressObserved(
+        key=KEY,
+        backend="docker",
+        decisions=(
+            EgressDecision(decision="ALLOW", host="pypi.org", port=443),
+            EgressDecision(decision="DENY", host="evil.example", port=443),
+            EgressDecision(decision="DENY-NONGLOBAL", host="inside.example", port=443),
+            EgressDecision(decision="UNREACHABLE", host="gone.example", port=443),
+        ),
+        truncated=truncated,
+        unreadable=unreadable,
+        seconds=0.5,
+    )
+
+
+class TestEgressDecisions:
+    """What a guest *reached*, which the acquire record cannot answer."""
+
+    def test_the_counts_cross_without_any_hostname(self):
+        """The aggregate question — how many conversations opened a tunnel to anything, and how
+        many were refused — has to be answerable from a pipeline that never sees a host."""
+        recorded = build()
+        recorded.observer.egress_observed(a_drain())
+        attributes = recorded.attributes()
+        assert attributes[f"{NAMESPACE}.egress.decisions"] == 4
+        assert attributes[f"{NAMESPACE}.egress.allowed"] == 1
+        assert attributes[f"{NAMESPACE}.egress.denied"] == 2
+        assert attributes[f"{NAMESPACE}.egress.unreachable"] == 1
+        assert f"{NAMESPACE}.egress.targets" not in attributes
+
+    def test_both_refusals_count_as_denied(self):
+        """`DENY-NONGLOBAL` is an allowlisted name that resolved somewhere private, which is a
+        refusal by a different rule and not a third outcome to group by."""
+        assert recorded_denied(a_drain()) == 2
+
+    def test_a_target_is_guest_chosen_and_waits_to_be_asked_for(self):
+        asked = build(sensitive=True)
+        asked.observer.egress_observed(a_drain())
+        targets = asked.attributes()[f"{NAMESPACE}.egress.targets"]
+        assert "DENY evil.example:443" in list(targets)  # pyright: ignore[reportArgumentType]
+
+    def test_a_span_full_of_refusals_is_not_an_error_span(self):
+        """An enforcer that refused a guest did its job. The failure here is a drain that could
+        not read, and marking a healthy refusal as an error would bury the one that matters."""
+        recorded = build()
+        recorded.observer.egress_observed(a_drain())
+        assert recorded.only_span().status.is_ok
+
+    def test_a_drain_that_could_not_read_is_an_error_span_naming_why(self):
+        recorded = build()
+        recorded.observer.egress_observed(a_drain(unreadable="daemon said no"))
+        assert recorded.attributes()[f"{NAMESPACE}.egress.unreadable"] == "daemon said no"
+        assert not recorded.only_span().status.is_ok
+
+    def test_the_bound_is_recorded_so_a_partial_window_reads_as_one(self):
+        recorded = build()
+        recorded.observer.egress_observed(a_drain(truncated=True))
+        assert recorded.attributes()[f"{NAMESPACE}.egress.truncated"] is True
+
+    def test_one_counter_increment_per_decision_by_verb(self):
+        recorded = build()
+        recorded.observer.egress_observed(a_drain())
+        assert recorded.counter(f"{NAMESPACE}.egress.decisions") == 4
+
+    def test_the_counts_reach_the_log_as_well_as_the_span(self):
+        """A log-only pipeline is the one that survives a trace sampler, and it is the one a
+        security record is kept in."""
+        recorded = build()
+        recorded.observer.egress_observed(a_drain())
+        assert recorded.log_attributes("sandbox.egress")[f"{NAMESPACE}.egress.denied"] == 2
+
+
+def recorded_denied(event: EgressObserved) -> object:
+    recorded = build()
+    recorded.observer.egress_observed(event)
+    return recorded.attributes()[f"{NAMESPACE}.egress.denied"]
