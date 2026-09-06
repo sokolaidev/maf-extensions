@@ -1945,7 +1945,7 @@ class TestAFailureBorrowingTheAbsenceWords:
     the rule and the shapes that reach it: a gone container and an unreachable daemon's socket
     are real failures carrying the words of absence about something that is not a path; the
     last one names the path and is not about absence; and the sharpest is
-    ``test_an_absence_about_a_path_below_this_one_is_not_this_one``, the engine's own absence
+    ``test_an_absence_about_another_path_is_not_about_this_one``, the engine's own absence
     sentence, with its own phrase, about a path this one merely contains.
     """
 
@@ -1982,9 +1982,18 @@ class TestAFailureBorrowingTheAbsenceWords:
         # And it stopped there: the entry's own copy is what the check was standing in front of.
         assert fake.cp_since_mark() == [(*_cp("/maf-sandbox"), "-"), (*_cp(_WORK), "-")]
 
-    def test_an_absence_about_a_path_below_this_one_is_not_this_one(self):
-        """The message has to name the component, not a path the component is a prefix of."""
-        sandbox, _ = self._sandbox(_WORK, _not_in_the_container(f"{_WORK}/out.png").stderr)
+    #: The two ways a message can hold this component without being about it, one per
+    #: boundary.  A child is what the engine really sends while an ancestor is being checked;
+    #: a longer path *ending* in this one is the mirror, which docker does not produce and
+    #: which is why the leading boundary is otherwise unpinned.
+    @pytest.mark.parametrize(
+        "named",
+        [f"{_WORK}/out.png", f"/srv{_WORK}"],
+        ids=["a-child-of-this-one", "a-path-ending-in-this-one"],
+    )
+    def test_an_absence_about_another_path_is_not_about_this_one(self, named: str):
+        """The message has to name the component, not a path that merely contains it."""
+        sandbox, _ = self._sandbox(_WORK, _not_in_the_container(named).stderr)
         with pytest.raises(RuntimeError, match="could not stat"):
             asyncio.run(sandbox.stat_file("out.png", working_directory=_WORK))
 
