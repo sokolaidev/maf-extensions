@@ -27,17 +27,26 @@ import asyncio
 import os
 import shutil
 import uuid
+import warnings
 from typing import Any
 
 import pytest
 from maf_sandbox import (
     Artifact,
     CallerContext,
+    HostToolCalled,
+    HostToolRegistry,
     Isolation,
     LandedArtifact,
+    MafSandboxHostToolsWarning,
+    OutputsCollected,
     OutputSink,
+    SandboxAcquired,
+    SandboxEvent,
+    SandboxObserver,
     SandboxRouter,
     TransferLimits,
+    sandbox_tool,
 )
 
 pytest.importorskip(
@@ -98,27 +107,34 @@ def _callable(tool):
 def _items_in_a_container(
     code: str,
     *,
-    mode: CodeactOutputs,
-    sink: _RecordingSink,
+    mode: CodeactOutputs = CodeactOutputs.NONE,
+    sink: _RecordingSink | None = None,
     files_out: TransferLimits | None = None,
     withhold: bool = False,
+    observer: SandboxObserver | None = None,
+    host_tools: HostToolRegistry | None = None,
     **call_kwargs: Any,
 ):
     """Build the tool over a real Docker backend, run ``code`` in it, and dispose.
 
     One container per call. They are free — the whole reason this suite can run on a pull
     request — and a shared one would let a program see what an earlier test wrote.
+
+    ``observer`` goes on the router; a registry carries its own, so a caller recording both
+    passes the same object twice, which is how a host wires it.
     """
     thread_id = f"thread-{uuid.uuid4()}"
     backend = DockerSandboxBackend(DockerSandboxConfig())
     extra: dict[str, Any] = {} if files_out is None else {"files_out": files_out}
+    if sink is not None:
+        extra["output_sink"] = sink.sink
     tools = make_codeact_tools(
-        SandboxRouter([backend], min_isolation=backend.isolation),
+        SandboxRouter([backend], min_isolation=backend.isolation, observer=observer),
         "data-analyst",
         _context(thread_id),
         image=_IMAGE,
         outputs=mode,
-        output_sink=sink.sink,
+        host_tools=host_tools,
         withhold_guest_output=withhold,
         **extra,
     )
@@ -430,3 +446,92 @@ class TestWithheldOutputAgainstARealInterpreter:
         )
 
         assert sink.names == []
+
+
+class _Recorder(SandboxObserver):
+    """A host's observer, kept whole, registered on the router and the registry alike."""
+
+    def __init__(self) -> None:
+        self.events: list[SandboxEvent] = []
+
+    def sandbox_acquired(self, event: SandboxAcquired) -> None:
+        self.events.append(event)
+
+    def host_tool_called(self, event: HostToolCalled) -> None:
+        self.events.append(event)
+
+    def outputs_collected(self, event: OutputsCollected) -> None:
+        self.events.append(event)
+
+    def one(self, kind: type[SandboxEvent]) -> Any:
+        found = [event for event in self.events if isinstance(event, kind)]
+        assert len(found) == 1, f"expected exactly one {kind.__name__}, got {self.events}"
+        return found[0]
+
+
+@sandbox_tool(source=None, sink=None, identity=None)
+def _round_half_up(value: float) -> int:
+    return int(value + 0.5)
+
+
+def _registry_recording_into(recorder: _Recorder) -> HostToolRegistry:
+    """A registry serving one function, with the registration notice the host reads once
+    filtered out."""
+    registry = HostToolRegistry(observer=recorder)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=MafSandboxHostToolsWarning)
+        registry.register(_round_half_up)
+    return registry
+
+
+class TestWhatAHostRecordsOfARealRun:
+    """The two records this kind is the only source of, on the one backend that serves both.
+
+    Offline an artifact's size comes from the same dict the fake answered the read from, and a
+    host-tool request is scripted rather than carried: no shim is imported, no supervisor
+    polls, and the program never runs. Here the engine stats and reads the bytes, and the
+    request is a file a real interpreter wrote — so each record is built from what crossed
+    rather than from what this package believes about a guest.
+    """
+
+    def test_a_collection_out_of_a_real_container_is_recorded_under_its_key(self):
+        sink = _RecordingSink()
+        recorder = _Recorder()
+        code = """
+open("report.csv", "w", encoding="utf-8").write("a,b,c")
+print("wrote it")
+"""
+        answer = _run_in_a_container(
+            code,
+            mode=CodeactOutputs.DECLARED,
+            sink=sink,
+            outputs=["report.csv"],
+            observer=recorder,
+        )
+
+        assert sink.names == ["report.csv"], answer
+        event = recorder.one(OutputsCollected)
+        assert event.key == recorder.one(SandboxAcquired).key
+        assert event.refusal is None
+        # Five bytes the engine weighed and read, not five this test handed a fake.
+        assert [(landed.name, landed.size_bytes) for landed in event.landed] == [("report.csv", 5)]
+        # The record and the sink name the same call, which is what reaches the folder a
+        # per_call sink would have landed the artifact under.
+        assert event.call_id and event.call_id == sink.delivered[0].call_id
+
+    def test_a_host_tool_call_from_a_real_guest_names_the_sandbox_it_ran_in(self):
+        """A real program imports the shim, a real supervisor answers it, and the record the
+        registry keeps says which sandbox the run was executing in."""
+        recorder = _Recorder()
+        code = """
+import maf_host_tools
+print("the host said", maf_host_tools.call("_round_half_up", value=3.6))
+"""
+        answer = _run_in_a_container(
+            code, observer=recorder, host_tools=_registry_recording_into(recorder)
+        )
+
+        assert "the host said 4" in answer, answer
+        event = recorder.one(HostToolCalled)
+        assert event.key == recorder.one(SandboxAcquired).key
+        assert (event.tool, event.refusal) == ("_round_half_up", None)
