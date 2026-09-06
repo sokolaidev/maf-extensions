@@ -748,18 +748,27 @@ class WslcSandboxBackend:
         except Exception as unread:  # noqa: BLE001 - a record is not worth the operation
             unreadable = error_detail(unread)
         else:
-            if result.returncode == 0:
-                decisions, truncated = _egress_decisions(result.stdout_text)
-                # A read that stopped at the byte cap is a window that may be short for
-                # a second reason, and the flag means the same thing either way.
-                truncated = truncated or len(result.stdout) >= _PROXY_LOG_BYTES
+            # A read that filled the buffer is *partial output*, not a failure: the bounded
+            # reader kills the child to enforce the cap, so its exit code says nothing here.
+            capped = len(result.stdout) >= _PROXY_LOG_BYTES
+            if result.returncode == 0 or capped:
+                text = result.stdout_text
+                if capped:
+                    # The cap lands wherever it lands, and half a target is not a decision.
+                    text = text[: text.rfind("\n") + 1]
+                decisions, truncated = _egress_decisions(text)
+                truncated = truncated or capped
             elif _NO_SUCH not in result.stderr_text.lower():
-                # A proxy that is simply not there is the ordinary case — a closed sandbox, or
-                # one whose acquire never got that far — and reports nothing at all. Anything
-                # else is a window this backend cannot account for, and says so.
                 unreadable = result.stderr_text.strip() or f"wslc logs exited {result.returncode}"
+            elif name in self._acquired:
+                # Absent, and this process made its proxy: the window it held is gone rather
+                # than never having existed. A name nothing acquired stays silent, which is
+                # the ordinary first acquire.
+                unreadable = "the proxy is gone, so whatever it decided went with it"
         unreadable = " / ".join(part for part in (unquiesced, unreadable) if part) or None
-        if not decisions and unreadable is None:
+        # `truncated` alone is worth an event: a capped read whose first line was already
+        # incomplete yields no decision and still says the window was not seen whole.
+        if not decisions and unreadable is None and not truncated:
             return
         report(
             EgressObserved(
@@ -820,7 +829,11 @@ class WslcSandboxBackend:
             # a name folds the egress identity too, so serving one key and kind under a
             # second allowlist replaces the entry and leaves the first container with no
             # key anyone can supply. A drain needs one, so every name keeps its own.
-            self._acquired[name] = (key.scope, key.thread_id, key.agent_dir)
+            if egress_id:
+                # Only a sandbox that *has* a proxy: this map is what a later drain keys
+                # on, and a closed sandbox has no record to attribute — listing one would
+                # make every closed teardown report a proxy that was never there.
+                self._acquired[name] = (key.scope, key.thread_id, key.agent_dir)
             return _WslcSandbox(self._wslc, name, self._config.command_timeout_seconds)
 
     async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
@@ -956,9 +969,6 @@ class WslcSandboxBackend:
                 if attributed is not None:
                     await self._drain_the_proxy(workload, attributed)
 
-        for name in names:
-            self._acquired.pop(name.removesuffix(_PROXY_SUFFIX), None)
-
         count = 0
         undeleted: dict[str, DisposalFailure] = {}
         unlisted = None
@@ -971,6 +981,11 @@ class WslcSandboxBackend:
             )
         for target in names:
             removal = await self._remove(target)
+            if removal.removed:
+                # Only once it has actually gone. A proxy a removal could not take is
+                # still running and still deciding, and a retry has to be able to key its
+                # drain.
+                self._acquired.pop(target.removesuffix(_PROXY_SUFFIX), None)
             if removal.removed and not target.endswith(_PROXY_SUFFIX):
                 logger.info("sandbox released: container=%s thread=%s (purge)", target, thread_id)
                 count += 1

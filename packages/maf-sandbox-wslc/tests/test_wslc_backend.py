@@ -2131,6 +2131,41 @@ class TestTheProxysOwnDecisionsReachARecord:
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert seen and seen[0].truncated is True
 
+    def test_a_capped_read_is_partial_output_rather_than_a_failed_one(self):
+        """The bounded reader kills the command at the cap — `test_a_bounded_read_caps_stdout_
+        and_reaps_the_process` pins the non-zero code — and the fake does not reproduce it."""
+        seen: list[EgressObserved] = []
+        page = b"ALLOW h.example:443\n" * (_PROXY_LOG_BYTES // 20)
+        overrides = {("container", "logs", "--tail"): _WslcResult(137, page, b"killed at limit")}
+        backend, _fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert seen and seen[0].decisions
+        assert seen[0].truncated is True
+        assert seen[0].unreadable is None
+
+    def test_a_proxy_this_process_made_and_then_lost_is_an_open_window(self):
+        seen: list[EgressObserved] = []
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        absent = _WslcResult(1, b"", b"no such container")
+        fake._responder = _machine(
+            running=[_AL], overrides={("container", "logs", "--tail"): absent}
+        )
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.dispose(_KEY))
+        assert [e.unreadable for e in seen] == [
+            "the proxy is gone, so whatever it decided went with it"
+        ]
+
+    def test_a_closed_sandbox_is_never_reported_as_a_lost_proxy(self):
+        seen: list[EgressObserved] = []
+        backend, _fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        backend.observe_egress(seen.append)
+        asyncio.run(backend.dispose(_KEY))
+        assert seen == []
+
     def test_the_last_window_is_drained_at_disposal(self):
         seen: list[EgressObserved] = []
         drained = _WslcResult(0, b"ALLOW mcr.microsoft.com:443\n", b"")
