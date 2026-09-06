@@ -102,9 +102,14 @@ from ._host_tools_over_exec import (
 )
 from ._observer import (
     DisposalReport,
+    EgressDecision,
+    EgressDecisionCode,
+    EgressObserved,
+    EgressReporter,
     HostToolCalled,
     HostToolOutcome,
     LandedOutput,
+    ObservesEgress,
     OutputsCollected,
     SandboxAcquired,
     SandboxDisposed,
@@ -207,9 +212,14 @@ from ._router import (
 from ._shim import host_tool_shim
 
 __all__ = [
+    "EgressDecision",
+    "EgressDecisionCode",
+    "EgressObserved",
+    "EgressReporter",
     "HostToolCalled",
     "HostToolOutcome",
     "LandedOutput",
+    "ObservesEgress",
     "OutputsCollected",
     "SandboxAcquired",
     "SandboxDisposed",

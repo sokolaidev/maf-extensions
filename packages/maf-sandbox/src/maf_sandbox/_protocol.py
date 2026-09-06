@@ -1164,6 +1164,14 @@ class BackendDeclarations:
     #: backend written before this axis already did.  :data:`IsolationScope.CALL` belongs here
     #: only once the backend folds :attr:`SandboxKey.call_id` into the name it gives a sandbox.
     isolation_scopes: frozenset[IsolationScope] = frozenset({IsolationScope.CONVERSATION})
+    #: Whether the backend can report what its egress enforcement decided, rather than only what
+    #: it was configured to allow.  It rides on the acquire record so that a reader who finds no
+    #: egress decisions for a key can tell *nothing was attempted* from *nothing was watched* —
+    #: silence means the second here, which is why the default is ``False`` and a backend has to
+    #: say otherwise.  Saying so obliges the backend to implement
+    #: :class:`~maf_sandbox.ObservesEgress`, and the router warns at construction where it does
+    #: not — loudly, because that pair is what makes an unwatched key read as a quiet one.
+    observes_egress: bool = False
 
 
 #: What a backend declaring no ``declarations`` is read as: every field at its own silence rule.

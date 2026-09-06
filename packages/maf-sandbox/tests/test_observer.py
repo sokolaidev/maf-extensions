@@ -26,6 +26,9 @@ from maf_sandbox import (
     DeclaredOutput,
     DisposalFailure,
     Egress,
+    EgressDecision,
+    EgressObserved,
+    EgressReporter,
     FileStoreProvenance,
     HostToolCalled,
     HostToolRegistry,
@@ -93,6 +96,9 @@ class _Recorder(SandboxObserver):
         self._seen(event)
 
     def scope_disposed(self, event: ScopeDisposed) -> None:
+        self._seen(event)
+
+    def egress_observed(self, event: EgressObserved) -> None:
         self._seen(event)
 
     def host_tool_called(self, event: HostToolCalled) -> None:
@@ -193,6 +199,14 @@ def _every_event() -> list[SandboxEvent]:
             outcome="gone",
             disposed=1,
             failure=None,
+            seconds=0.0,
+        ),
+        EgressObserved(
+            key=_KEY,
+            backend="in-process",
+            decisions=(EgressDecision(decision="ALLOW", host="example.com", port=443),),
+            dropped=0,
+            unreadable=None,
             seconds=0.0,
         ),
         HostToolCalled(
@@ -866,6 +880,110 @@ class _PurgeCancels(InProcessSandboxBackend):
 class _PurgeExits(InProcessSandboxBackend):
     async def dispose_scope(self, scope: str, thread_id: str):
         raise GeneratorExit
+
+
+# Egress decisions
+# ---------------------------------------------------------------------------
+
+
+class _Reporting(InProcessSandboxBackend):
+    """A backend that can read its own egress enforcement, as docker and wslc can."""
+
+    declarations = dataclasses.replace(FAKE_BACKEND_DECLARATIONS, observes_egress=True)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.report: EgressReporter | None = None
+
+    def observe_egress(self, report: EgressReporter) -> None:
+        self.report = report
+
+
+class _ClaimsWithoutReporting(InProcessSandboxBackend):
+    """The wiring mistake: the declaration without the method that keeps it."""
+
+    declarations = dataclasses.replace(FAKE_BACKEND_DECLARATIONS, observes_egress=True)
+
+
+def _drain(key: SandboxKey = _KEY, **kw) -> EgressObserved:
+    return EgressObserved(
+        key=key,
+        backend="in-process",
+        decisions=(EgressDecision(decision="DENY", host="evil.example", port=443),),
+        dropped=0,
+        unreadable=None,
+        seconds=0.0,
+        **kw,
+    )
+
+
+class TestABackendReportsWhatItsEgressEnforcementDecided:
+    """The one thing a spec's allowlist cannot answer: what the guest then reached."""
+
+    def test_what_a_backend_reports_reaches_the_routers_observer(self):
+        recorder = _Recorder()
+        backend = _Reporting()
+        _router(backend, observer=recorder)
+        assert backend.report is not None
+        backend.report(_drain())
+        assert recorder.one(EgressObserved).decisions[0].host == "evil.example"
+
+    def test_a_router_with_no_observer_never_hands_one_out(self):
+        """A drain costs an engine round trip per acquire, so an uninstrumented host is left
+        in the state where the backend does no reading at all."""
+        backend = _Reporting()
+        _router(backend)
+        assert backend.report is None
+
+    def test_a_failing_observer_does_not_reach_the_backend_that_reported(self):
+        """A backend calls this from a cleanup path. It is handed something that cannot fail
+        rather than the host's own object, so nothing there has to contain anything."""
+        backend = _Reporting()
+        _router(backend, observer=_Recorder(fail=RuntimeError("boom")))
+        assert backend.report is not None
+        backend.report(_drain())  # no raise
+
+    def test_the_declaration_without_the_method_is_warned_about(self, caplog):
+        """Silence from this pair means *unwatched*, and the declaration says *watched* — which
+        is the one reading that turns an absent record into a clean bill of health."""
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox"):
+            _router(_ClaimsWithoutReporting(), observer=_Recorder())
+        assert "declares observes_egress" in caplog.text
+        assert "in-process" in caplog.text
+
+    def test_the_method_without_the_declaration_still_reports(self):
+        """The declaration is for a reader of the records; the method is what produces them.
+        A backend that under-declares is honest in the safe direction and is not corrected."""
+        recorder = _Recorder()
+
+        class _Quiet(InProcessSandboxBackend):
+            def __init__(self) -> None:
+                super().__init__()
+                self.report: EgressReporter | None = None
+
+            def observe_egress(self, report: EgressReporter) -> None:
+                self.report = report
+
+        backend = _Quiet()
+        _router(backend, observer=recorder)
+        assert backend.report is not None
+
+    def test_an_unreadable_declaration_is_left_to_the_reader_that_may_fail(self, caplog):
+        """The handout runs first and must not pre-empt the reader that refuses one: an
+        unreadable declaration is already an error with a message of its own, and answering it
+        here would report the wrong field and swallow the right complaint."""
+
+        class _Unreadable(InProcessSandboxBackend):
+            @property
+            def declarations(self):
+                raise RuntimeError("no declarations here")
+
+        with (
+            caplog.at_level(logging.WARNING, logger="maf_sandbox"),
+            pytest.raises(RuntimeError, match="no declarations here"),
+        ):
+            _router(_Unreadable(), observer=_Recorder())
+        assert "observes_egress" not in caplog.text
 
 
 # ---------------------------------------------------------------------------
