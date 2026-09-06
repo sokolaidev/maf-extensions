@@ -1117,6 +1117,36 @@ class TestAnImageWhoseGuestIsNotRoot:
 
         assert len(client.probes) == 2, "a create trusted the memo, or a warm reuse re-probed"
 
+    def test_one_sandbox_cannot_license_another_that_shares_its_image_name(self):
+        """The verdict belongs to the sandbox, not to the reference it booted from.
+
+        Two keys boot two sandboxes from one mutable name. The second is root and moves the
+        image-level hint to `0`; a warm reacquire of the **first**, whose guest is not root,
+        must not read that `0` and be handed the host-authority delete without being asked.
+        """
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+        deleting = _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+        execing = _spec_requiring(Capability.EXEC)
+
+        # The non-root sandbox, kept warm under its own key.
+        asyncio.run(backend.acquire(self._key("scope-a"), execing))
+        # A second sandbox from the same name, after the reference was repointed to root. Set
+        # on the group, so every client it hands out from here answers `0` — including the one
+        # the warm reacquire below builds for the *first* sandbox, which is the trap: reading
+        # the answer instead of the recorded verdict would pass this test for the wrong reason.
+        client._answer = _guest_reporting(0)
+        asyncio.run(backend.acquire(self._key("scope-b"), execing))
+        assert backend._guest_uids[("pinned-id", "python-nonroot:3.13")] == 0, (
+            "the second sandbox did not move the image-level hint, so this proves nothing"
+        )
+
+        # Warm reuse of the first — the guest that is still 10001.
+        with pytest.raises(SandboxCapabilityNotSupported, match="files_delete"):
+            asyncio.run(backend.acquire(self._key("scope-a"), deleting))
+
     def test_a_remembered_root_uid_does_not_license_a_newly_booted_image(self):
         """The hole a per-image memo leaves once the memo is load-bearing for reach.
 

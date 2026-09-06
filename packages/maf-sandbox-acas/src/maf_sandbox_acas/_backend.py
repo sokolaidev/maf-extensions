@@ -716,10 +716,16 @@ class AcasSandboxBackend:
         # connection pool per tool invocation.
         self._clients: dict[asyncio.AbstractEventLoop, tuple[Any, Any]] = {}
         #: The uid `exec` runs as, per image a spec named — `None` where the image could not
-        #: say. A property of the image rather than of the sandbox booted from it, so one probe
-        #: answers for every sandbox after; membership, not the value, is what says it was
-        #: asked, because an image with no `id` must not be re-probed on every tool call.
+        #: say. A **hint** rather than a verdict: an image reference is the service's to
+        #: repoint, so this describes whatever it last resolved to. It answers the refusal that
+        #: runs before a create, which is what spares the second workload a sandbox of its own;
+        #: membership, not the value, is what says it was asked.
         self._guest_uids: dict[tuple[str, str], int | None] = {}
+        #: The same uid per **sandbox**, which is where the verdict actually lives: a running
+        #: guest cannot change principal, where the reference it booted from can be repointed
+        #: under the hint above. A warm reuse reads this and never the hint, so two sandboxes
+        #: sharing one mutable name cannot license each other.
+        self._sandbox_uids: dict[str, int | None] = {}
         #: Which (image, kind) pairs have already been warned about. `acquire` runs on every
         #: tool call, and a warning per call is noise rather than a signal.
         self._warned_about_the_guest: set[tuple[tuple[str, str], str]] = set()
@@ -976,17 +982,23 @@ class AcasSandboxBackend:
         if not spec.requires & _PROBE_WHEN_REQUIRED:
             return
         identity = _image_identity(spec)
-        if freshly_created and sandbox is not None:
-            # The memo describes the artefact an earlier acquire booted, and this one just
+        if sandbox is None:
+            # Nothing running to ask, so the hint answers or the caller creates one. This is
+            # the refusal that spares the second workload a create.
+            if identity not in self._guest_uids:
+                return
+            uid = self._guest_uids[identity]
+        elif freshly_created:
+            # The hint describes the artefact an earlier acquire booted, and this one just
             # booted a new artefact from the same reference. A prebuilt catalogue name is the
             # service's to repoint, so a remembered `0` can outlive the image that earned it —
             # and a stale `0` serves the reach set to a guest nobody has read. One `exec` on a
             # path that has already paid for a create.
             uid = await self._probe_guest_uid(sandbox, spec, replacing=True)
-        elif identity in self._guest_uids:
-            uid = self._guest_uids[identity]
-        elif sandbox is None:
-            return
+        elif sandbox.sandbox_id in self._sandbox_uids:
+            # A warm reuse reads the verdict for *this* sandbox and never the image hint:
+            # another sandbox booted from the same name may have moved the hint since.
+            uid = self._sandbox_uids[sandbox.sandbox_id]
         else:
             uid = await self._probe_guest_uid(sandbox, spec)
         if uid == 0:
@@ -1058,40 +1070,46 @@ class AcasSandboxBackend:
             spec.kind,
         )
 
+    def _remember(self, sandbox_id: str, identity: tuple[str, str], uid: int | None) -> None:
+        """Record an answered probe: the verdict against its sandbox, the hint against the image.
+
+        Only ever called where the guest **answered**, so a transient failure records neither
+        and is asked again — per sandbox as well as per image, since one dropped call must not
+        cost a sandbox its capability for as long as it lives.
+
+        The per-sandbox map is pruned here rather than at each registry removal: a sandbox id
+        leaves the registry in four places across ``acquire`` and two purges, and a verdict
+        outliving its sandbox is a leak rather than a hazard, so one sweep per answer is the
+        cheaper place to pay for it.
+        """
+        live = set(self._registry.values()) | {sandbox_id}
+        self._sandbox_uids = {sid: u for sid, u in self._sandbox_uids.items() if sid in live}
+        self._sandbox_uids[sandbox_id] = uid
+        self._guest_uids[identity] = uid
+
     async def _probe_guest_uid(
         self, sandbox: _AcasSandbox, spec: SandboxSpec, *, replacing: bool = False
     ) -> int | None:
-        """The uid ``exec`` runs as, remembered per image, ``None`` when the guest cannot say.
+        """The uid ``exec`` runs as, ``None`` when the guest cannot say. Answered by the guest.
 
-        The uid belongs to the artefact a reference names rather than to the sandbox booted
-        from it, so one round trip on one cold acquire answers for every sandbox after it.  The
-        memo is this backend instance's, not the module's — unlike ``_images``' disk-image cache
-        — so a host that builds a backend per request pays one probe per request.
+        Three rules the hint in ``_guest_uids`` holds to. A **definitive** non-uid answer — a
+        non-zero exit, a word, no ``id`` in the image — is a fact about the artefact and is
+        recorded, so it is not re-asked on every acquire. A **transient** failure records
+        nothing, because one timeout must not withdraw a capability for the life of the
+        backend. And a failure never displaces an answer, so a racing probe records through
+        ``setdefault`` and falls back to what is there — except under ``replacing``, where the
+        caller has just booted a new artefact and the stored value is the thing being
+        corrected.
 
-        **Only a definitive failure is remembered.**  A guest that answered and said something
-        that is not a uid — a non-zero exit, a word, no ``id`` in the image — is a fact about
-        the artefact, so it records as ``None`` rather than being asked again on every acquire,
-        each ask being a round trip bounded by :data:`_PROBE_TIMEOUT_S`.  A **transient**
-        failure — a timeout, a transport error, an exception of any kind — records nothing and
-        the next acquire asks again.
-
-        That split is what the fail-closed half of the caller's policy needs.  Memoising a
-        transient ``None`` would take :data:`_UNSAFE_WHERE_THE_GUEST_IS_NOT_ROOT` away from a
-        **root** image for the life of the backend, on the strength of one timeout, with no way
-        back short of a restart.
-
-        **A failure never displaces an answer, unless it is about a newer artefact.**
-        Concurrent cold acquires for one image race here, and a ``None`` written over a real uid
-        would withdraw a capability the image can serve — so a definitive failure records
-        through ``setdefault`` and returns what the memo holds, and a transient one falls back
-        to the memo without writing.  ``replacing`` inverts both: the caller is probing a
-        sandbox it has just booted, so the memo describes the artefact *before* this one and is
-        the thing being corrected rather than protected.  A transient failure then answers
-        ``None`` rather than the stale value, because refusing this acquire is the safe half.
-
-        What ``None`` then costs is the caller's, and it is not one policy:
+        What ``None`` costs is the caller's and is not one policy:
         :meth:`_refuse_or_warn_where_the_guest_is_not_root` serves the functional set on it and
         refuses the reach set.
+
+        **The answer is the guest's own, so it is worth what the image is.** An image that
+        ships an ``id`` printing ``0`` is believed, which is announcement where
+        ``guest-platform-and-commands.md`` § Decision 3 asks for observation. It never grants
+        more than the ungated state it replaced, and closing it takes a uid the host can read
+        rather than ask for — ``docs/sandbox/backends/acas.md`` carries the argument.
         """
         image = _image_label(spec)
         identity = _image_identity(spec)
@@ -1119,11 +1137,13 @@ class AcasSandboxBackend:
                 reported,
             )
             if replacing:
-                self._guest_uids[identity] = None
+                self._remember(sandbox.sandbox_id, identity, None)
                 return None
-            return self._guest_uids.setdefault(identity, None)
+            settled = self._guest_uids.setdefault(identity, None)
+            self._sandbox_uids[sandbox.sandbox_id] = settled
+            return settled
         uid = int(reported)
-        self._guest_uids[identity] = uid
+        self._remember(sandbox.sandbox_id, identity, uid)
         return uid
 
     async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
