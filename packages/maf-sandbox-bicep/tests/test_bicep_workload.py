@@ -1374,6 +1374,11 @@ class TestTheResultSplits:
         sentence = _UNREAD_IS_NOT_A_PASS.lower()
 
         assert "compiler" in sentence, "the sentence must say whose text the rest of it is"
+        assert "reason there is none" in sentence, (
+            "and it must allow for there being no compiler text at all — that clause is what "
+            "keeps the sentence true on the paths that refuse before anything compiles, which "
+            "is what licenses the label"
+        )
         assert "cannot read" in sentence, "it must name the condition the model is in"
         assert "unvalidated" in sentence, (
             "it must name the action — reporting the files as unvalidated is the whole point, "
