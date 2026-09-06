@@ -111,6 +111,14 @@ class _FakeSubject:
         """No guest program here to ask, and the reach probes never reach this subject."""
         raise NotImplementedError(f"no guest here to make {path!r}")
 
+    async def plant_file_the_guest_owns(self, path: str) -> bool:
+        """No guest program here to ask, and the reach probes never reach this subject."""
+        raise NotImplementedError(f"no guest here to write {path!r}")
+
+    async def the_guest_can_delete(self, path: str) -> bool:
+        """The same: nothing here removes anything on a guest's behalf."""
+        raise NotImplementedError(f"no guest here to remove {path!r}")
+
     async def the_guest_can_write(self, path: str) -> bool:
         """No guest program here to ask, and the reach probes never reach this subject."""
         raise NotImplementedError(f"no guest here to ask about {path!r}")
@@ -712,6 +720,21 @@ class _SimulatedGuest:
             substituted = re.sub(r"\$\(echo ([^)]*)\)", r"\1", argv[4])
             first = substituted.split()[0] if substituted.split() else ""
             return ExecResult(stdout=first)
+        if argv[0:1] == ["rm"]:
+            # `rm -f <path>`: the guest's own removal, allowed where it can write the parent.
+            operand = posixpath.normpath(posixpath.join(working_directory, argv[-1]))
+            if self._the_guest_can_write(posixpath.dirname(operand)):
+                self.contents.pop(operand, None)
+                self.symlinks.pop(operand, None)
+                self.directories.discard(operand)
+                self.beyond_the_guest.discard(operand)
+            return ExecResult(stdout="")
+        if argv[0:1] == ["sh"] and argv[1:2] == ["-c"] and len(argv) == 6 and ">" in argv[2]:
+            # `printf %s "$1" > "$2"`: the guest planting a regular file of its own.
+            operand = posixpath.normpath(posixpath.join(working_directory, argv[-1]))
+            if self._the_guest_can_write(posixpath.dirname(operand)):
+                self.contents[operand] = argv[4].encode()
+            return ExecResult(stdout="")
         if argv[0:1] == ["mkdir"]:
             # `-p` and plain alike: an empty directory is a real entry here, because the
             # simulator's remove refuses one without recursive only when it is recorded.
@@ -1345,6 +1368,14 @@ class _RuntimeOnlySubject:
     async def plant_directory_the_guest_owns(self, path: str) -> bool:
         """No guest program here to ask, and the reach probes never reach this subject."""
         raise NotImplementedError(f"no guest here to make {path!r}")
+
+    async def plant_file_the_guest_owns(self, path: str) -> bool:
+        """No guest program here to ask, and the reach probes never reach this subject."""
+        raise NotImplementedError(f"no guest here to write {path!r}")
+
+    async def the_guest_can_delete(self, path: str) -> bool:
+        """The same: nothing here removes anything on a guest's behalf."""
+        raise NotImplementedError(f"no guest here to remove {path!r}")
 
     async def the_guest_can_write(self, path: str) -> bool:
         """No guest program here to ask, and the reach probes never reach this subject."""
@@ -2077,6 +2108,76 @@ class TestReachConformance:
         ]
         assert reported is not None
         assert "no control" in reported
+
+    def test_a_directory_the_guest_cannot_empty_is_not_read_off_its_write_bit(self):
+        """Write permission is not the power to empty: search permission and the sticky bit.
+
+        Measured on a real engine while writing this: `test -w` calls a mode-0222 directory and
+        a sticky 1777 one writable, and `rm` is refused in both. Reading the calibration off the
+        mode stopped the probe on exactly the shape it exists to catch.
+        """
+
+        class _StickyLike(_SimulatedGuest):
+            async def exec(self, command, *, working_directory: str, timeout: float):
+                argv = [command] if isinstance(command, str) else list(command)
+                if argv[0:1] == ["rm"] and "decoy" in argv[-1]:
+                    return ExecResult(stdout="", stderr="Operation not permitted", exit_code=1)
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        sandbox = _StickyLike(removes_as_the_host=True)
+        sandbox.directories.add(_WORK)
+        reported = _sim_results(_subject_over(sandbox), run_reach_probes)[
+            "a-removal-takes-nothing-beyond-the-guest"
+        ]
+        assert reported is not None
+
+    def test_a_backend_refusing_trees_with_files_fails_the_control(self):
+        """The control matches the protected tree's shape: a directory holding a regular file.
+
+        A directory-only control is removed by a backend that refuses every recursive removal
+        carrying a file, and the protected refusal then reads as authority rather than as the
+        same incapacity.
+        """
+
+        class _DirsOnly(_SimulatedGuest):
+            async def remove(self, path, *, working_directory, recursive=False):
+                guest = posixpath.normpath(posixpath.join(working_directory, path))
+                prefix = guest.rstrip("/") + "/"
+                if any(held.startswith(prefix) for held in self.contents):
+                    raise OSError("this backend refuses a tree carrying a regular file")
+                await super().remove(path, working_directory=working_directory, recursive=recursive)
+
+        sandbox = _DirsOnly(writes_as_the_host=True)
+        sandbox.directories.add(_WORK)
+        reported = _sim_results(_subject_over(sandbox), run_reach_probes)[
+            "a-removal-takes-nothing-beyond-the-guest"
+        ]
+        assert reported is not None
+        assert "regular file" in reported
+
+    def test_a_backend_without_files_in_is_never_asked_to_plant(self):
+        """Both probes need FILES_IN, so a backend withholding it must be skipped, not called.
+
+        `_run_suite` gates per probe *after* the planter runs, and the shipped subject plants
+        through `write_file` — so planting unconditionally would raise from a surface such a
+        backend never promised, instead of reporting two skips.
+        """
+
+        class _NoWrites(_SimulatedGuest):
+            async def write_file(self, path, content, *, working_directory: str) -> None:
+                del path, content, working_directory
+                raise NotImplementedError("this backend declares no FILES_IN")
+
+        subject = _SimSubject(
+            sandbox=_NoWrites(),
+            working_directory=_WORK,
+            capabilities=frozenset({Capability.EXEC}),
+            exec_timeout=5,
+        )
+        results = asyncio.run(run_reach_probes(subject))
+        assert [r.probe.name for r in results if r.skipped] == [p.name for p in REACH_PROBES]
 
     def test_a_backend_that_only_removes_empty_directories_fails_the_control(self):
         """The control has to carry content, because the protected removal is recursive.

@@ -2571,6 +2571,14 @@ class _ConformanceSubject:
         """No guest program here to ask, and the reach probes never reach this subject."""
         raise NotImplementedError(f"no guest here to make {path!r}")
 
+    async def plant_file_the_guest_owns(self, path: str) -> bool:
+        """No guest program here to ask, and the reach probes never reach this subject."""
+        raise NotImplementedError(f"no guest here to write {path!r}")
+
+    async def the_guest_can_delete(self, path: str) -> bool:
+        """The same: nothing here removes anything on a guest's behalf."""
+        raise NotImplementedError(f"no guest here to remove {path!r}")
+
     async def the_guest_can_write(self, path: str) -> bool:
         """No guest program here to ask, and the reach probes never reach this subject."""
         raise NotImplementedError(f"no guest here to ask about {path!r}")
