@@ -494,6 +494,9 @@ class TestAWorkDirTheImageGaveItsOwnUser:
         and is not root, so both probes bite — `write_file` stamps its entries with the image's
         user, and `remove` reads the reach rule off its own check and stays at that user's
         authority.
+
+        What passing here does *not* say: the write probe reads the entry's ownership, while
+        this backend's placement stays the daemon's at root, which #967 carries.
         """
         if assert_reach_conformance is None:
             pytest.skip("this maf-sandbox predates the reach suite (< 0.35)")

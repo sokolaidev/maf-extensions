@@ -265,12 +265,22 @@ class PosixGuestSubject:
         return False
 
     async def plant_directory_the_guest_owns(self, path: str) -> bool:
-        """``mkdir -p`` as the guest, whose exit code is the answer this returns."""
+        """``mkdir -p`` as the guest. Exit 1 is the refusal; above it is ``mkdir`` not running.
+
+        The distinction decides whether a probe stops or blows up, and stopping is the quiet
+        outcome — an image without ``mkdir`` would otherwise read as a guest that may write
+        nowhere, and the suite would pass having attacked nothing.
+        """
         made = await self.sandbox.exec(
             ["mkdir", "-p", path],
             working_directory=self.working_directory,
             timeout=self.exec_timeout,
         )
+        if made.exit_code > 1:
+            raise RuntimeError(
+                f"could not ask the guest to make {path!r} "
+                f"(`mkdir -p` exited {made.exit_code}): {made.stderr.strip()}"
+            )
         return made.exit_code == 0
 
     async def the_guest_could_have_made(self, path: str) -> bool:
@@ -284,14 +294,21 @@ class PosixGuestSubject:
     async def plant_directory_the_guest_cannot_write_into(self, path: str) -> bool:
         """``chmod 500``, then measure — the guest may own the directory or may not.
 
-        ``chmod``'s own exit code is deliberately unread: it fails on a directory the host
-        owns, which is already the state being asked for.
+        Exit 1 is expected and kept: it is ``chmod`` refusing a directory the host owns, which
+        is already the state being asked for.  Above it is ``chmod`` not running, and that has
+        to raise — a missing utility leaves the directory writable, which reads back as a guest
+        that writes anywhere, which stops the removal probe as though it were root.
         """
-        await self.sandbox.exec(
+        closed = await self.sandbox.exec(
             ["chmod", "500", path],
             working_directory=self.working_directory,
             timeout=self.exec_timeout,
         )
+        if closed.exit_code > 1:
+            raise RuntimeError(
+                f"could not ask the guest to close {path!r} "
+                f"(`chmod 500` exited {closed.exit_code}): {closed.stderr.strip()}"
+            )
         return not await self._writable(path)
 
     async def _writable(self, path: str) -> bool:
@@ -1865,8 +1882,17 @@ async def assert_reclaim_conformance(subject: ConformanceSubject) -> tuple[Probe
 #
 # A swap must not let a method reach anything the guest program could not have reached itself.
 # Racing the swap is the wrong way to ask: a race probe can show the window exists and never
-# that it is closed, so it fails intermittently. These read the bound instead, which is
-# deterministic — what a write left behind, and whether a removal did what the guest cannot.
+# that it is closed, so it fails intermittently. These read the bound instead, deterministically.
+#
+# The two probes read it to different depths, and the difference is worth knowing before
+# trusting a green run. A removal is one operation performed by one principal, so failing where
+# the guest fails *is* the authority it ran with. A write leaves only its result, and a result
+# says who owns the bytes, not who resolved the path to them — a plane that places at the host's
+# authority and stamps the guest's uid passes. Closing that gap needs either a swap, which is a
+# race, or a write into a directory the guest cannot write; and inside the working directory
+# such a directory is exactly one the guest cannot swap either, which is where the rule permits
+# host authority. The two conditions exclude each other, so no deterministic probe reaches it.
+# #967 is that residual on the one backend measured to have it.
 
 
 async def _probe_a_write_lands_within_the_guests_reach(
@@ -1913,11 +1939,14 @@ async def _probe_a_removal_stays_at_the_guests_authority(
 
 REACH_PROBES: tuple[Probe, ...] = (
     Probe(
-        name="a-write-lands-within-the-guests-reach",
+        name="a-write-leaves-nothing-beyond-the-guest",
         why=(
             "a file plane acting as the host lands bytes the guest program could not have "
             "landed, into a directory that program owns — and a directory it owns is one it "
-            "can replace with a link, which sends the same bytes outside at that authority."
+            "can replace with a link, which sends the same bytes outside at that authority. "
+            "This reads the result and not the resolution, so it is necessary and not "
+            "sufficient: a plane that places as the host and stamps the guest's uid passes it "
+            "(#967). The section comment above says why nothing deterministic does better."
         ),
         requires=frozenset({Capability.FILES_IN}),
         run=_probe_a_write_lands_within_the_guests_reach,
@@ -1937,6 +1966,11 @@ REACH_PROBES: tuple[Probe, ...] = (
 
 async def run_reach_probes(subject: ConformanceSubject) -> tuple[ProbeResult, ...]:
     """Run the reach probes. Gated per probe, so a backend serving neither surface skips both.
+
+    **A green run is not the whole rule.** The removal probe reads the authority its operation
+    ran with; the write probe reads only what the write left behind, which a host-authority
+    plane can satisfy by stamping the guest's uid. The section comment above says why no
+    deterministic probe closes that, and #967 is the residual on the backend measured to have it.
 
     The layout is left where it lies, ``reach-delete/held`` included — a directory the guest
     cannot empty, since closing one is how the removal probe gets something to measure.

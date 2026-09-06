@@ -1954,7 +1954,7 @@ class TestReachConformance:
 
     def test_a_write_at_the_hosts_authority_fails_the_write_probe(self):
         failures = _sim_results(_sim_subject(writes_as_the_host=True), run_reach_probes)
-        assert failures["a-write-lands-within-the-guests-reach"] is not None
+        assert failures["a-write-leaves-nothing-beyond-the-guest"] is not None
 
     def test_a_removal_at_the_hosts_authority_fails_the_removal_probe(self):
         failures = _sim_results(_sim_subject(removes_as_the_host=True), run_reach_probes)
@@ -1992,6 +1992,35 @@ class TestReachConformance:
         assert _sim_results(subject, run_reach_probes) == dict.fromkeys(
             [p.name for p in REACH_PROBES], None
         )
+
+    @pytest.mark.parametrize("missing", ["mkdir", "chmod"])
+    def test_a_guest_missing_a_utility_raises_rather_than_passing(self, missing):
+        """127 is the harness failing, not the guest refusing, and the two look alike here.
+
+        Read as a refusal, a missing `mkdir` says the guest may write nowhere and a missing
+        `chmod` says it writes everywhere — opposite readings that stop the same probes, so the
+        suite would report success having attacked nothing.
+        """
+
+        class _WithoutTheUtility(_SimulatedGuest):
+            async def exec(self, command, *, working_directory: str, timeout: float):
+                argv = [command] if isinstance(command, str) else list(command)
+                if argv[0:1] == [missing]:
+                    return ExecResult(stdout="", stderr="not found", exit_code=127)
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        failures = _sim_results(
+            _SimSubject(
+                sandbox=_WithoutTheUtility(), working_directory=_WORK, capabilities=_EVERYTHING
+            ),
+            run_reach_probes,
+        )
+        assert [f for f in failures.values() if f is not None], (
+            f"a guest without `{missing}` passed every reach probe"
+        )
+        assert all("exited 127" in f for f in failures.values() if f is not None)
 
     def test_a_backend_declaring_neither_file_capability_skips_both(self):
         """Gated per probe rather than per suite, so no capability refuses the run itself."""
