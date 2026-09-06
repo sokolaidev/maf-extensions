@@ -80,6 +80,8 @@ It does not prove compatibility. A name that still exists but changed its call s
 
 **And the family has to install as a family.** `scripts/check_suite_installs_together.py` puts the candidate beside the rest and asks the resolver, because the samples take several of these together: a range that moved past a *sibling* rather than past the index leaves the set unresolvable while every per-package check passes.
 
+**The one shape it fails on is the published family having no resolvable set at all**, which is not a fact about the release in front of it and cannot be fixed by editing that release. It happens when a dependent's every published version excludes another's — most easily a *new* package, whose single release floors on a core the rest have not caught up to yet and which has no earlier version for the resolver to retreat to. `maf-sandbox-otel` 0.1.0 did exactly that on 2026-09-06 and held every remaining publish in the 0.34.0 drain, because the check that would let the others catch up is the one the break fails. The report names the pair. The recovery is to **yank the narrower release**, publish the siblings that were waiting, then unyank it — a yank is also the honest answer, since that wheel genuinely cannot be installed beside its siblings until they move. Publishing a brand-new package **last** in a drain, after every existing dependent admits the new core, avoids it entirely.
+
 Between them the checks cover all four ways a core and a dependent can be paired, and the ranges they enforce are promises about immutable artifacts. Which pairing each one proves, what is still uncovered, and the two windows that stay open across the `pypi` approval wait are in [`docs/release-compatibility.md`](docs/release-compatibility.md).
 
 ## Versioning
