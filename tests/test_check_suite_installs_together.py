@@ -122,33 +122,152 @@ class TestWhyItDoesNotCombine:
     def test_a_sibling_whose_ceiling_excludes_the_floor_is_named(self, tmp_path: Path):
         wheel = _wheel_declaring(tmp_path, self._CANDIDATE, "maf-sandbox>=0.23.1,<0.25")
         published = {"maf-sandbox-acas": "maf-sandbox<0.23,>=0.21.0"}
-        lines, explained = check.constraints("maf-sandbox-wslc", wheel, published)
-        assert explained, "a ceiling below the candidate's floor is the whole explanation"
-        assert "maf-sandbox>=0.23.1,<0.25" in lines[0]
-        assert "excludes 0.23.1" in lines[1]
+        lines, pairs = check.constraints("maf-sandbox-wslc", wheel, published)
+        assert pairs == [("maf-sandbox-acas", "maf-sandbox-wslc")]
+        assert "maf-sandbox>=0.23.1,<0.25" in lines[1]
+        assert "no core meets both this and maf-sandbox-wslc" in lines[0]
 
     def test_the_candidate_is_not_listed_against_itself(self, tmp_path: Path):
         wheel = _wheel_declaring(tmp_path, self._CANDIDATE, "maf-sandbox>=0.23.1,<0.25")
         published = {"maf-sandbox-wslc": "maf-sandbox<0.23,>=0.21.0"}
-        lines, explained = check.constraints("maf-sandbox-wslc", wheel, published)
+        lines, pairs = check.constraints("maf-sandbox-wslc", wheel, published)
         assert len(lines) == 1, "the published self is an older version, not a sibling"
-        assert not explained
+        assert pairs == []
 
     def test_overlapping_ranges_leave_it_unexplained(self, tmp_path: Path):
         """The honest half: agree on the core and the collision is somewhere else entirely.
 
         These packages also carry agent-framework and the Azure libraries. When the table
-        explains nothing the caller prints the resolver's own account instead, so a `True` here
+        explains nothing the caller prints the resolver's own account instead, so a pair here
         would swallow the only account there is.
         """
         wheel = _wheel_declaring(tmp_path, self._CANDIDATE, "maf-sandbox>=0.23.1,<0.25")
         published = {"maf-sandbox-acas": "maf-sandbox>=0.22.0,<0.25"}
-        lines, explained = check.constraints("maf-sandbox-wslc", wheel, published)
-        assert not explained
-        assert "excludes" not in lines[1]
+        lines, pairs = check.constraints("maf-sandbox-wslc", wheel, published)
+        assert pairs == []
+        assert "no core meets both" not in lines[1]
 
     def test_a_sibling_with_no_ceiling_does_not_explain_anything(self, tmp_path: Path):
         wheel = _wheel_declaring(tmp_path, self._CANDIDATE, "maf-sandbox>=0.23.1,<0.25")
         published = {"maf-sandbox-acas": "maf-sandbox>=0.21.0"}
-        _, explained = check.constraints("maf-sandbox-wslc", wheel, published)
-        assert not explained
+        _, pairs = check.constraints("maf-sandbox-wslc", wheel, published)
+        assert pairs == []
+
+    def test_a_sibling_whose_floor_is_above_the_candidates_ceiling_is_named(self, tmp_path: Path):
+        """The other edge, which a ceiling-only reading never saw.
+
+        `constraints` used to compare each sibling's ceiling against the candidate's floor and
+        nothing else, so a sibling that had moved *ahead* of the candidate explained nothing.
+        """
+        wheel = _wheel_declaring(tmp_path, self._CANDIDATE, "maf-sandbox>=0.21.0,<0.23")
+        published = {"maf-sandbox-acas": "maf-sandbox>=0.34.0,<0.36"}
+        _, pairs = check.constraints("maf-sandbox-wslc", wheel, published)
+        assert pairs == [("maf-sandbox-acas", "maf-sandbox-wslc")]
+
+
+class TestWhenTheConflictIsNotTheCandidates:
+    """Two published siblings that exclude each other, which no candidate can resolve beside.
+
+    This is the shape that blocked the 0.34.0 drain: `maf-sandbox-otel` 0.1.0 floored on 0.34
+    with no earlier version to retreat to, while three siblings still capped below it. Reading
+    only the candidate's own edges called every candidate the offender in turn and then sent
+    the reader to a resolver dump about a package that could not have caused it.
+    """
+
+    _CANDIDATE = "maf_sandbox_wslc-0.16.1-py3-none-any.whl"
+    _SPLIT = {
+        "maf-sandbox-docker": "maf-sandbox<0.34,>=0.33.0",
+        "maf-sandbox-otel": "maf-sandbox<0.36,>=0.34.0",
+    }
+
+    def test_the_published_pair_is_named_though_the_candidate_admits_both(self, tmp_path: Path):
+        wheel = _wheel_declaring(tmp_path, self._CANDIDATE, "maf-sandbox>=0.33.0,<0.36")
+        lines, pairs = check.constraints("maf-sandbox-wslc", wheel, self._SPLIT)
+        assert pairs == [("maf-sandbox-docker", "maf-sandbox-otel")]
+        candidate_row = next(line for line in lines if "this checkout" in line)
+        assert "no core meets both" not in candidate_row, (
+            "the candidate spans both halves, so naming it is what sent the reader to uv"
+        )
+
+    def test_a_family_that_agrees_has_no_conflicts(self, tmp_path: Path):
+        agreed = {
+            "maf-sandbox-docker": "maf-sandbox<0.36,>=0.34.0",
+            "maf-sandbox-otel": "maf-sandbox<0.36,>=0.34.0",
+        }
+        wheel = _wheel_declaring(tmp_path, self._CANDIDATE, "maf-sandbox>=0.34.0,<0.36")
+        _, pairs = check.constraints("maf-sandbox-wslc", wheel, agreed)
+        assert pairs == []
+
+    def test_a_floor_is_read_off_the_entry(self):
+        assert check._floor_of("maf-sandbox>=0.34.0,<0.36") == (0, 34, 0)
+        assert check._floor_of('maf-sandbox<0.36,>=0.34.0; python_version >= "3.12"') == (0, 34, 0)
+
+    def test_a_bare_greater_than_is_not_a_floor(self):
+        """`>0.34` excludes 0.34 itself, so reading it as `>=` would widen what is reported."""
+        assert check._floor_of("maf-sandbox>0.34,<0.36") is None
+
+    def test_an_entry_with_no_lower_bound_has_no_floor(self):
+        assert check._floor_of("maf-sandbox<0.36") is None
+
+
+class TestWhichConflictCannotBeResolvedAround:
+    """A newest-range conflict the resolver walks around, against one it cannot.
+
+    `maf-sandbox-codeact` split the family the same night: 0.13.0 floored on 0.34 while three
+    siblings still capped below it, and it cost nothing, because 0.12.0 was there to retreat
+    to. `maf-sandbox-otel` had one release and no earlier line, so the identical shape became a
+    break that held every remaining publish. Naming the first as the cause would send a
+    maintainer to yank the wrong release, so the failing path reads spans rather than the
+    newest ranges.
+    """
+
+    _CAN_RETREAT = {
+        "maf-sandbox-codeact": {
+            "0.12.0": "maf-sandbox>=0.33.0,<0.34",
+            "0.13.0": "maf-sandbox>=0.34.0,<0.36",
+        },
+        "maf-sandbox-docker": {"0.15.0": "maf-sandbox>=0.33.0,<0.34"},
+    }
+    _CANNOT = {
+        "maf-sandbox-docker": {"0.15.0": "maf-sandbox>=0.33.0,<0.34"},
+        "maf-sandbox-otel": {"0.1.0": "maf-sandbox>=0.34.0,<0.36"},
+    }
+
+    def _spans(self, monkeypatch: pytest.MonkeyPatch, index: dict, yanked: set = frozenset()):
+        monkeypatch.setattr(check, "dependent_distributions", lambda root: sorted(index))
+        monkeypatch.setattr(check, "fetch_published_versions", lambda name: sorted(index[name]))
+        monkeypatch.setattr(
+            check,
+            "fetch_requires_dist_for_version",
+            lambda name, released: (
+                None if (name, released) in yanked else [index[name][released], "pytest"]
+            ),
+        )
+        return check.published_spans()
+
+    def test_a_sibling_with_an_older_line_is_not_named(self, monkeypatch: pytest.MonkeyPatch):
+        spans = self._spans(monkeypatch, self._CAN_RETREAT)
+        assert spans["maf-sandbox-codeact"] == ((0, 33, 0), (0, 36))
+        assert check.conflicting_pairs(spans) == [], (
+            "the newest versions do conflict, but 0.12.0 still meets docker — naming this pair "
+            "would point a yank at the wrong release"
+        )
+
+    def test_a_sibling_with_only_one_line_is_named(self, monkeypatch: pytest.MonkeyPatch):
+        spans = self._spans(monkeypatch, self._CANNOT)
+        assert check.conflicting_pairs(spans) == [("maf-sandbox-docker", "maf-sandbox-otel")]
+
+    def test_yanking_the_narrower_release_clears_it(self, monkeypatch: pytest.MonkeyPatch):
+        """The recovery: a yanked version leaves no span, so the family resolves again."""
+        spans = self._spans(monkeypatch, self._CANNOT, yanked={("maf-sandbox-otel", "0.1.0")})
+        assert "maf-sandbox-otel" not in spans
+        assert check.conflicting_pairs(spans) == []
+
+    def test_an_unbounded_entry_leaves_the_span_open(self, monkeypatch: pytest.MonkeyPatch):
+        index = {
+            "maf-sandbox-docker": {"0.15.0": "maf-sandbox>=0.33.0"},
+            "maf-sandbox-otel": {"0.1.0": "maf-sandbox>=0.34.0,<0.36"},
+        }
+        spans = self._spans(monkeypatch, index)
+        assert spans["maf-sandbox-docker"] == ((0, 33, 0), None)
+        assert check.conflicting_pairs(spans) == []
