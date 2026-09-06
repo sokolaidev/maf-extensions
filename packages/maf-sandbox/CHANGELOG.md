@@ -2,6 +2,19 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.35.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.34.0...maf-sandbox-v0.35.0) (2026-09-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* every observer record names the call it came from, so two calls in one conversation are told apart ([#952](https://github.com/sokolaidev/maf-extensions/issues/952))
+
+### Features
+
+* every observer record names the call it came from, so two calls in one conversation are told apart ([#952](https://github.com/sokolaidev/maf-extensions/issues/952)) ([f254794](https://github.com/sokolaidev/maf-extensions/commit/f25479422d4e51a6ea0b4ec20ed7f6440aea30af))
+* **sandbox:** what each sandbox call was served is recorded into MAF session state, the sealed registry's tool names included ([#953](https://github.com/sokolaidev/maf-extensions/issues/953)) ([197367b](https://github.com/sokolaidev/maf-extensions/commit/197367bb229f4b37035cbdcd496c4c622f2ebf88))
+* the scope purge is recorded, so the cleanup a thread deletion runs is no longer the one disposal nobody can see ([#947](https://github.com/sokolaidev/maf-extensions/issues/947)) ([580790d](https://github.com/sokolaidev/maf-extensions/commit/580790d36ad3969e5333bbf31ef93f46c6889b3e))
+
 ## [0.34.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.33.0...maf-sandbox-v0.34.0) (2026-09-05)
 
 
