@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import gc
 import inspect
 import json
 import logging
@@ -933,10 +934,26 @@ class TestABackendReportsWhatItsEgressEnforcementDecided:
     def test_what_a_backend_reports_reaches_the_routers_observer(self):
         recorder = _Recorder()
         backend = _Reporting()
-        _router(backend, observer=recorder)
+        router = _router(backend, observer=recorder)  # held: the reporter is weak on it
         assert backend.report is not None
         backend.report(_drain())
         assert recorder.one(EgressObserved).decisions[0].host == "evil.example"
+        assert router.observer is recorder
+
+    def test_a_backend_that_outlives_its_router_stops_reporting(self):
+        """The reporter would otherwise be a bound method, pinning the router and through it the
+        host's observer for as long as the backend lived — and a dropped router should leave a
+        backend reporting to nobody rather than to something the host let go."""
+        recorder = _Recorder()
+        backend = _Reporting()
+        router = _router(backend, observer=recorder)
+        assert backend.report is not None
+
+        del router
+        gc.collect()
+
+        backend.report(_drain())  # no raise, and nothing recorded
+        assert recorder.only(EgressObserved) == []
 
     def test_a_router_with_no_observer_never_hands_one_out(self):
         """A drain costs an engine round trip per acquire, so an uninstrumented host is left

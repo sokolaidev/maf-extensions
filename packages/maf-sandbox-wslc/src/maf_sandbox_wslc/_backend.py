@@ -213,6 +213,18 @@ def _network_name(container: str) -> str:
     return f"{container}{_NET_SUFFIX}"
 
 
+def _reads_as_absent(stderr: str) -> bool:
+    """Whether ``stderr`` is this engine saying the container is not there.
+
+    Two spellings because this CLI has two: ``_NOT_FOUND`` is what ``container remove`` and
+    ``container inspect`` answer with, and ``_NO_SUCH`` is the docker-engine wording
+    ``container cp`` borrows.  Matching one of them classified a missing proxy as a window
+    this backend could not account for, which is a false alarm on every first acquire.
+    """
+    lowered = stderr.lower()
+    return _NOT_FOUND.lower() in lowered or _NO_SUCH in lowered
+
+
 def _egress_decisions(text: str) -> tuple[tuple[EgressDecision, ...], bool]:
     """The decisions in a proxy's output, oldest first, and whether the window may be short.
 
@@ -702,7 +714,7 @@ class WslcSandboxBackend:
             )
         except Exception as refused:  # noqa: BLE001 - the drain is worth attempting anyway
             return f"the proxy could not be stopped: {error_detail(refused)}"
-        if result.returncode == 0 or _NO_SUCH in result.stderr_text.lower():
+        if result.returncode == 0 or _reads_as_absent(result.stderr_text):
             return None
         return f"the proxy could not be stopped: {result.stderr_text.strip() or result.returncode}"
 
@@ -758,7 +770,7 @@ class WslcSandboxBackend:
                     text = text[: text.rfind("\n") + 1]
                 decisions, truncated = _egress_decisions(text)
                 truncated = truncated or capped
-            elif _NO_SUCH not in result.stderr_text.lower():
+            elif not _reads_as_absent(result.stderr_text):
                 unreadable = result.stderr_text.strip() or f"wslc logs exited {result.returncode}"
             elif name in self._acquired:
                 # Absent, and this process made its proxy: the window it held is gone rather
