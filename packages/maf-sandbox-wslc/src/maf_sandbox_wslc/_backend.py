@@ -131,6 +131,13 @@ _PROXY_READY_MARKER = "listening"
 #: proxy each time — so only a single call that exceeds it alone loses anything.
 _PROXY_LOG_TAIL = 2000
 
+#: How many bytes one drain reads back, whatever the line bound says.  The proxy copies the
+#: guest's ``CONNECT`` target into its line verbatim and the header limit it reads under
+#: lets that target approach 64 KiB, so bounding lines alone leaves the guest deciding how
+#: much the host allocates on a path every acquire waits on.  A well-formed decision is a
+#: verb, a host of at most 253 bytes and a port, so this is ample per line and still a cap.
+_PROXY_LOG_BYTES = _PROXY_LOG_TAIL * 512
+
 #: One decision as the proxy writes it: a verb, a space, and the target it was asked for.  The
 #: host half is greedy so an IPv6 literal keeps its own colons and only the trailing `:port` is
 #: taken.  **This grammar is owed to the docker backend too** — the proxy is duplicated there
@@ -207,7 +214,7 @@ def _network_name(container: str) -> str:
 
 
 def _egress_decisions(text: str) -> tuple[tuple[EgressDecision, ...], bool]:
-    """The decisions in a proxy's output, oldest first, and whether the bound cut them.
+    """The decisions in a proxy's output, oldest first, and whether the window may be short.
 
     A line that is not a decision is skipped rather than counted.  This reads a stream it does
     not own: the readiness line an acquire waits for is in it, and a later proxy may write more
@@ -652,8 +659,11 @@ class WslcSandboxBackend:
     def declarations(self) -> BackendDeclarations:
         return self._declarations
 
-    def observe_egress(self, report: EgressReporter | None) -> None:
+    def observe_egress(self, report: EgressReporter | None) -> EgressReporter | None:
         """Take the callback this backend reports its proxy's decisions through, or ``None``.
+
+        Returns the reporter it replaced, which is what a router that fails to construct puts
+        back — see :class:`~maf_sandbox.ObservesEgress`.
 
         The router calls this at the end of its construction, with its reporter when it has an
         observer and with ``None`` when it does not — so the drains below stay switched off for
@@ -673,7 +683,9 @@ class WslcSandboxBackend:
                 "even for sandboxes the older one served. Give each router its own backend "
                 "instance if both are meant to record."
             )
+        previous = self._egress_report
         self._egress_report = report
+        return previous
 
     async def _quiesce(self, target: str) -> str | None:
         """Stop ``target`` so its record is closed, and say why if it would not.
@@ -731,12 +743,16 @@ class WslcSandboxBackend:
                 str(_PROXY_LOG_TAIL + 1),
                 proxy,
                 timeout=self._config.command_timeout_seconds,
+                read_limit=_PROXY_LOG_BYTES,
             )
         except Exception as unread:  # noqa: BLE001 - a record is not worth the operation
             unreadable = error_detail(unread)
         else:
             if result.returncode == 0:
                 decisions, truncated = _egress_decisions(result.stdout_text)
+                # A read that stopped at the byte cap is a window that may be short for
+                # a second reason, and the flag means the same thing either way.
+                truncated = truncated or len(result.stdout) >= _PROXY_LOG_BYTES
             elif _NO_SUCH not in result.stderr_text.lower():
                 # A proxy that is simply not there is the ordinary case — a closed sandbox, or
                 # one whose acquire never got that far — and reports nothing at all. Anything

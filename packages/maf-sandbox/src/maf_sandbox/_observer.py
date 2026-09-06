@@ -689,6 +689,10 @@ class ObservesEgress(Protocol):
     a live reporter with a different one should say so, which is what both shipped backends do.
     """
 
-    def observe_egress(self, report: EgressReporter | None) -> None:
-        """Take the callback to report egress decisions through, or ``None`` to stop."""
+    def observe_egress(self, report: EgressReporter | None) -> EgressReporter | None:
+        """Take the callback to report egress decisions through, and return the one it replaced.
+
+        Returning the old one is what lets a router that fails to construct put a backend back
+        as it found it, rather than switching off reporting a *different* router is still using.
+        """
         ...
