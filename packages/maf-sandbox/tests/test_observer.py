@@ -21,6 +21,7 @@ import pytest
 
 from maf_sandbox import (
     Artifact,
+    BackendDeclarations,
     CallerContext,
     Capability,
     DeclaredOutput,
@@ -886,14 +887,19 @@ class _PurgeExits(InProcessSandboxBackend):
 # ---------------------------------------------------------------------------
 
 
+_WATCHES = dataclasses.replace(FAKE_BACKEND_DECLARATIONS, observes_egress=True)
+
+
 class _Reporting(InProcessSandboxBackend):
     """A backend that can read its own egress enforcement, as docker and wslc can."""
-
-    declarations = dataclasses.replace(FAKE_BACKEND_DECLARATIONS, observes_egress=True)
 
     def __init__(self) -> None:
         super().__init__()
         self.report: EgressReporter | None = None
+
+    @property
+    def declarations(self) -> BackendDeclarations:
+        return _WATCHES
 
     def observe_egress(self, report: EgressReporter) -> None:
         self.report = report
@@ -902,7 +908,9 @@ class _Reporting(InProcessSandboxBackend):
 class _ClaimsWithoutReporting(InProcessSandboxBackend):
     """The wiring mistake: the declaration without the method that keeps it."""
 
-    declarations = dataclasses.replace(FAKE_BACKEND_DECLARATIONS, observes_egress=True)
+    @property
+    def declarations(self) -> BackendDeclarations:
+        return _WATCHES
 
 
 def _drain(key: SandboxKey = _KEY, **kw) -> EgressObserved:
