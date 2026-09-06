@@ -17,8 +17,9 @@ that for it.
 says which sandbox and which conversation, and at the default
 :data:`~maf_sandbox.IsolationScope.CONVERSATION` it says nothing about a call: two calls in
 flight on one thread carry the same key.  ``call`` is the other column — the id of the tool call
-a record came from, so those two calls' records separate.  It is ``None`` on anything that
-happened outside a call, which a disposal genuinely does.
+a record came from, so those two calls' records separate.  :class:`ToolCallEnded` always names
+one, since it is where a call's other events join; the rest name none for what happened outside
+a call at all, which a disposal genuinely can.
 
 **An observer is synchronous, thread-safe, and it cannot fail a call.**  It runs wherever the
 call it records is served — an event-loop task, or the worker thread a synchronous tool body
@@ -85,7 +86,7 @@ __all__ = [
 #:
 #: Set by :func:`~maf_sandbox.maf.sandboxed_tool` around the body *and* its reclaim, and read by
 #: every site that builds an event.  A `ContextVar` rather than an argument threaded through
-#: :meth:`~maf_sandbox.SandboxRouter.acquire`, because two of the sites that need it are on the
+#: :meth:`~maf_sandbox.SandboxRouter.acquire`, because the acquire and the disposal are on the
 #: far side of the router's own boundary: the router knows nothing about ``sandboxed_tool`` and
 #: must not start to.  It already imports this module to record at all, so reading one more
 #: thing from the seam that owns the events adds no coupling that was not there.
@@ -174,9 +175,9 @@ class SandboxDisposed(SandboxEvent):
     answered at all, where the delete may equally have completed.  A boolean here read the
     second and third as settled facts in opposite directions.
 
-    ``call`` is the one event where its absence is ordinary rather than a gap: a call-scoped
-    sandbox is deleted on its own call's way out and names it, while a scope purge and a
-    framework reclaim happen outside any call and name none.
+    ``call`` is the one event where its absence is ordinary rather than a gap: a disposal the
+    reclaim asks for on a call's way out names that call, while a scope purge, a framework
+    reclaim and a host disposing by hand happen outside any call and name none.
     """
 
     key: SandboxKey
@@ -389,10 +390,10 @@ class ToolCallEnded(SandboxEvent):
     conversation it touched — not with *this call in particular*, since at the default
     :data:`~maf_sandbox.IsolationScope.CONVERSATION` a key carries no ``call_id`` and two calls
     running at once in one conversation carry the same one.  ``call`` is what separates them,
-    and it is the only field on the seam that is never ``None``: this record is where a call's
-    other events join, so an anchor that could be absent would be no anchor.  It is the same id
-    the call's own guest path and — at :data:`~maf_sandbox.IsolationScope.CALL` — its key are
-    named by, so a recorder has one string for the call rather than two.
+    and this is the one event where it is never ``None``: the record is where a call's other
+    events join, so an anchor that could be absent would be no anchor.  It is the same id the
+    call's own guest path and — at :data:`~maf_sandbox.IsolationScope.CALL` — its key are named
+    by, so a recorder has one string for the call rather than two.
 
     ``keys`` is every key the call **touched**, in order, and empty for one that touched none.
     Touched rather than acquired: a refused acquire is named here, so its own
