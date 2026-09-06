@@ -1271,6 +1271,81 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert "an acquire this gate does not refuse" in message, message
         assert "restart of this process" in message, message
 
+    def test_a_permissive_hint_is_not_an_obstacle_the_refusal_should_name(self):
+        """Hint *presence* is the wrong test; whether anything will answer next time is right.
+
+        A `0` hint permits the create, that sandbox's probe then drops, and nothing is
+        recorded — so the next identical acquire creates and probes again. Advising a new
+        reference or a restart there names an obstacle that is not in the way.
+        """
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(0))
+        backend = _backend_with(client)
+        # A permissive hint, from an acquire that measured root.
+        asyncio.run(backend.acquire(self._key("scope-a"), _spec_requiring(Capability.EXEC)))
+        assert backend._guest_uids[("pinned-id", "python-nonroot:3.13")] == 0
+
+        client._answer = RuntimeError("transport dropped")
+        with pytest.raises(SandboxCapabilityNotSupported) as refusal:
+            asyncio.run(
+                backend.acquire(
+                    self._key("scope-b"), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+                )
+            )
+
+        message = str(refusal.value)
+        assert "Nothing was remembered" in message, message
+        assert "restart of this process" not in message, message
+
+    def test_an_unread_uid_does_not_claim_the_guest_lacks_the_reach(self):
+        """The refusal is right because root was not established, and the reason must say only
+        that: an image that cannot run `id -u` may well be running as root."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(RuntimeError("no id in this image"))
+        backend = _backend_with(client)
+
+        with pytest.raises(SandboxCapabilityNotSupported) as unread:
+            asyncio.run(
+                backend.acquire(
+                    self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+                )
+            )
+        with pytest.raises(SandboxCapabilityNotSupported) as known:
+            asyncio.run(
+                _backend_with(_GuestGroupClient(_guest_reporting(10001))).acquire(
+                    self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+                )
+            )
+
+        assert "is not known to be able to delete itself" in str(unread.value), str(unread.value)
+        # The measured branch keeps the stronger claim, which it has actually established.
+        assert "could never have deleted itself" in str(known.value), str(known.value)
+
+    def test_the_pre_create_hint_never_warns_about_the_guest(self, caplog):
+        """A warning there describes whatever the reference last resolved to, and marks the
+        pair warned — silencing the accurate one the post-create probe could have made."""
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+        execing = _spec_requiring(Capability.EXEC)
+
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox_acas"):
+            asyncio.run(backend.acquire(self._key("scope-a"), execing))
+        assert caplog.records, "the first acquire warned about nothing, so this proves nothing"
+
+        # A second key reads the hint before any sandbox exists, and the reference now resolves
+        # to root. A warning there would be about the old artefact, and would consume the
+        # once-per-pair budget the accurate one needs.
+        backend._warned_about_the_guest.clear()
+        client._answer = _guest_reporting(0)
+        caplog.clear()
+
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox_acas"):
+            asyncio.run(backend.acquire(self._key("scope-b"), execing))
+
+        assert caplog.records == [], f"warned from the hint: {caplog.text}"
+
     def test_a_refusal_from_a_dropped_probe_says_the_next_acquire_asks_again(self):
         """The recovery advice is only true where something was remembered.
 

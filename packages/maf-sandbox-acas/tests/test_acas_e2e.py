@@ -848,9 +848,11 @@ class TestAnImageWhoseGuestIsNotRoot:
 
     Costs **two more billable sandboxes** when the environment names such an image, and nothing
     otherwise: the fixture's, and one `test_a_cold_refusal_deletes_the_sandbox_it_had_to_create`
-    creates on a backend of its own. A warm refusal pays for neither — the uid is remembered per
-    image, so the acquire that is refused never reaches a create — which is why the cold path
-    cannot borrow the fixture's.
+    creates on a backend of its own. The refusals below pay for neither, because the fixture's
+    acquire already left an image-level hint and that is what the refusal running before a
+    create reads — which is why the cold path, on a backend with no hint yet, cannot borrow
+    the fixture's sandbox. The authoritative verdict is per sandbox; the hint is only what
+    spares a second workload a create.
     """
 
     @pytest.fixture(scope="class")

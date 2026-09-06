@@ -1023,13 +1023,21 @@ class AcasSandboxBackend:
                     "arrives as a shell's 'Permission denied'"
                 )
             if unsafe:
+                # An unread uid establishes nothing about the guest, including that it is not
+                # root, so the reason must not claim the reach it could not measure.
+                reach = (
+                    "could never have deleted itself — which nothing inside the tool call "
+                    "would report at all"
+                    if uid is not None
+                    else "is not known to be able to delete itself — which nothing inside the "
+                    "tool call would report at all"
+                )
                 reasons.append(
                     f"{', '.join(sorted(unsafe))} because remove deletes through that same file "
                     "plane, which acts as the host, and the check that keeps it inside the "
                     "working directory is not held: the check and the delete are separate calls, "
                     "the service resolves a symlinked parent, and a parent swapped in between "
-                    "would delete a tree this guest could never have deleted itself — which "
-                    "nothing inside the tool call would report at all"
+                    f"would delete a tree this guest {reach}"
                 )
             # A root `USER` does not answer the probe, so the two branches want two remedies.
             if uid is not None:
@@ -1045,16 +1053,18 @@ class AcasSandboxBackend:
                     f"{_GUEST_UID_COMMAND!r} with 0 — a root USER alone does not, and an image "
                     "that cannot run the probe is refused however it is built"
                 )
-            # Only a *remembered* answer stands between a corrected image and a re-read. A
-            # probe that never landed recorded nothing, so the next identical acquire simply
-            # asks again, and telling an operator to find a new reference would hide that.
+            # What decides the advice is whether this call leaves anything behind to answer
+            # the next one: a hint that already answered, or a verdict this probe recorded.
+            # A probe that dropped records neither, so an identical acquire asks again — and
+            # a *permissive* hint is no obstacle either, which is why the presence of one
+            # cannot be the test.
             recovery = (
                 "Repointing the same reference does not lift this by itself: the refusal is "
                 "answered from a remembered verdict and stops the create that would re-read "
                 "it. Something else has to read the reference again — an acquire this gate "
                 "does not refuse, which still creates a sandbox and probes it, a reference "
                 "this backend has not seen yet, or a restart of this process."
-                if identity in self._guest_uids
+                if sandbox is None or sandbox.sandbox_id in self._sandbox_uids
                 else "Nothing was remembered, because the probe did not land, so an identical "
                 "acquire asks again rather than repeating this from a cached answer."
             )
@@ -1065,9 +1075,12 @@ class AcasSandboxBackend:
                 f"rather than inside the tool call. {remedy}, or narrow what it requires. "
                 f"{recovery}"
             )
-        if uid is None:
-            # Served, and silently: the warning below describes a wall this image may not have,
-            # and one issued on every unreadable probe would train a reader to ignore it.
+        if uid is None or sandbox is None:
+            # Served, and silently. An unreadable probe would otherwise warn about a wall this
+            # image may not have, on every acquire. And the pre-create path is reading a hint
+            # from whatever the reference last resolved to, so warning here would describe the
+            # wrong artefact *and* mark the pair warned, silencing the accurate one the
+            # post-create call is about to be able to make.
             return
         already_warned = (_image_identity(spec), spec.kind)
         if already_warned in self._warned_about_the_guest:
@@ -1103,6 +1116,12 @@ class AcasSandboxBackend:
         sandbox_id = self._registry.pop(registry_key, None)
         if sandbox_id is not None:
             self._sandbox_uids.pop(sandbox_id, None)
+        # A probe awaiting `exec` can record a verdict *after* its sandbox left the registry,
+        # because a disposal takes no acquire lock. Sweeping here rather than on the write
+        # keeps recording O(1) and bounds the map by what is held plus whatever raced the last
+        # removal, where popping one id alone would leave those orphans unreachable.
+        live = set(self._registry.values())
+        self._sandbox_uids = {sid: u for sid, u in self._sandbox_uids.items() if sid in live}
         return sandbox_id
 
     async def _probe_guest_uid(self, sandbox: _AcasSandbox, spec: SandboxSpec) -> int | None:
