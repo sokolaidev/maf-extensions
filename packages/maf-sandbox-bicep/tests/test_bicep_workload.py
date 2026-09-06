@@ -1672,15 +1672,34 @@ class TestParseSarif:
             pytest.param("null", id="a-top-level-null"),
             pytest.param('{"runs": null}', id="runs-is-not-a-list"),
             pytest.param('{"runs": [{"results": [{"message": null}]}]}', id="a-null-object"),
+            pytest.param('{"runs": {}}', id="runs-is-an-object"),
+            pytest.param('{"runs": [{"results": {}}]}', id="results-is-an-object"),
+            pytest.param(
+                '{"runs": [{"results": [{"locations": {}}]}]}', id="locations-is-an-object"
+            ),
+            pytest.param(
+                '{"runs": [{"tool": {"driver": {"rules": {}}}}]}', id="rules-is-an-object"
+            ),
+            pytest.param(
+                '{"runs": [{"results": [{"locations": [{"physicalLocation":'
+                ' {"artifactLocation": {"uri": 5}}}]}]}]}',
+                id="a-uri-that-is-not-a-string",
+            ),
         ],
     )
     def test_json_that_is_not_sarif_is_a_parse_failure(self, blob: str):
         """Parsing says nothing about the shape, and every lookup in the walk assumes it.
 
-        `None` is the documented answer and the one the caller renders; raised instead, it
-        escapes the tool body and the model is left with no result at all.
+        `None` is the documented answer and the one the caller renders. The wrong *container*
+        is the dangerous half: an object where SARIF says an array iterates as empty, so it
+        would render as "no diagnostics" — a broken sandbox read as a clean build.
         """
         assert parse_sarif(blob) is None
+
+    def test_a_document_with_no_runs_is_still_zero_diagnostics(self):
+        """The container checks must not turn a legitimately empty report into a failure."""
+        assert parse_sarif(json.dumps({"version": "2.1.0"})) == []
+        assert parse_sarif(json.dumps({"version": "2.1.0", "runs": []})) == []
 
 
 class TestAgainstRealBicepOutput:
