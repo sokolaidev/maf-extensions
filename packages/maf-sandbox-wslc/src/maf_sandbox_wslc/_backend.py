@@ -27,6 +27,7 @@ import logging
 import posixpath
 import re
 import tarfile
+import time
 import weakref
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -38,6 +39,10 @@ from maf_sandbox import (
     Capability,
     DisposalFailure,
     Egress,
+    EgressDecision,
+    EgressDecisionCode,
+    EgressObserved,
+    EgressReporter,
     EntryKind,
     ExecResult,
     Isolation,
@@ -48,6 +53,7 @@ from maf_sandbox import (
     SandboxKey,
     SandboxSpec,
     ScopePurge,
+    error_detail,
     fold_disposal_failures,
 )
 from maf_sandbox.paths import (
@@ -118,6 +124,20 @@ _LABEL_ROLE = "maf-sandbox.role"
 _PROXY_PORT = 3128
 _ALLOW_ENV = "MAF_SANDBOX_ALLOW"
 _PROXY_READY_MARKER = "listening"
+
+#: How many of the proxy's own lines one drain reads back.  A guest chooses how many requests
+#: it makes, so an unbounded read is a guest-sized allocation on a path an acquire waits on.
+#: The bound is per *drain*, and a drain happens on every acquire — `_ensure_proxy` rebuilds the
+#: proxy each time — so only a single call that exceeds it alone loses anything.
+_PROXY_LOG_TAIL = 2000
+
+#: One decision as the proxy writes it: a verb, a space, and the target it was asked for.  The
+#: host half is greedy so an IPv6 literal keeps its own colons and only the trailing `:port` is
+#: taken.  **This grammar is owed to the docker backend too** — the proxy is duplicated there
+#: rather than shared, so a change to one of them is a change to both.
+_EGRESS_DECISION = re.compile(
+    r"^(?P<decision>ALLOW|DENY-NONGLOBAL|DENY|UNREACHABLE) (?P<host>.+):(?P<port>\d+)$"
+)
 _PROXY_READY_ATTEMPTS = 20
 _PROXY_READY_DELAY_S = 0.25
 
@@ -184,6 +204,38 @@ _PROXY_SUFFIX = "-proxy"
 def _network_name(container: str) -> str:
     """The internal network paired with a sandbox container, derived from its name."""
     return f"{container}{_NET_SUFFIX}"
+
+
+def _egress_decisions(text: str) -> tuple[tuple[EgressDecision, ...], bool]:
+    """The decisions in a proxy's output, oldest first, and whether the bound cut them.
+
+    A line that is not a decision is skipped rather than counted.  This reads a stream it does
+    not own: the readiness line an acquire waits for is in it, and a later proxy may write more
+    — and a line this cannot parse is not evidence of a decision it missed.
+
+    The host in a decision is whatever the guest put in its ``CONNECT`` target, so it is
+    guest-chosen text.  It cannot forge a line: the proxy takes the target from the first
+    request line split on whitespace, so a host holds no newline and no space, and a decision
+    verb can only be one this proxy wrote.
+
+    ``truncated`` is wrong in one direction only: a log holding exactly the bound plus one line
+    was read whole and is still reported as cut.  "There may be more" is the safe way for a
+    record to be wrong.
+
+    **The docker backend carries its own copy of this**, as it carries its own proxy — a change
+    to the grammar in one of them is owed to the other.
+    """
+    lines = text.splitlines()
+    decisions = tuple(
+        EgressDecision(
+            decision=cast("EgressDecisionCode", found["decision"]),
+            host=found["host"],
+            port=int(found["port"]),
+        )
+        for line in lines
+        if (found := _EGRESS_DECISION.match(line.strip()))
+    )
+    return decisions, len(lines) > _PROXY_LOG_TAIL
 
 
 def _proxy_name(container: str) -> str:
@@ -544,13 +596,23 @@ class WslcSandboxBackend:
         # WSL 2's utility VM and has no other guest to hand out, so there is no engine to ask
         # the way the docker backend asks its daemon. It is what `_exec`'s argv, the `rm -rf`
         # in `reclaim` and this module's `posixpath` arithmetic already rest on.
+        #
+        # `observes_egress` reads the proxy image for the reason `egress_modes` does: what this
+        # backend can *watch* is what it enforces itself, in a proxy container it owns. Without
+        # one there is no allowlist deciding anything, and a `True` there would put a
+        # watched-looking record on every closed sandbox.
         self._declarations = BackendDeclarations(
             capabilities=_CAPABILITIES,
             egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED})
             if config.egress_proxy_image
             else frozenset({Egress.CLOSED}),
             os_families=frozenset({OsFamily.POSIX}),
+            observes_egress=bool(config.egress_proxy_image),
         )
+        # Where egress decisions go once a router with an observer hands over a reporter. `None`
+        # until then, which is what keeps an uninstrumented host from paying for the read: every
+        # drain is a `container logs` on a path an acquire waits on.
+        self._egress_report: EgressReporter | None = None
         # (scope, thread_id, agent_dir, kind) -> name: a purge fallback for when the listing
         # fails, never the truth. Holds the last name acquired per key and kind, which is
         # enough to reclaim them.
@@ -581,6 +643,70 @@ class WslcSandboxBackend:
     @property
     def declarations(self) -> BackendDeclarations:
         return self._declarations
+
+    def observe_egress(self, report: EgressReporter) -> None:
+        """Take the callback this backend reports its proxy's decisions through.
+
+        The router calls this once, and only when it has an observer — so the drains below stay
+        switched off for a host that collects nothing, which is what keeps an extra engine round
+        trip off every allowlisted acquire.
+        """
+        self._egress_report = report
+
+    async def _drain_the_proxy(self, name: str, key: SandboxKey) -> None:
+        """Report what this sandbox's proxy decided, before the container holding it goes.
+
+        **This is called on the acquire path, not only at disposal, and that is the whole
+        design.**  :meth:`_ensure_proxy` removes and rebuilds the proxy on *every* acquire, so a
+        conversation making ten calls destroys ten proxies; a drain that ran only at disposal
+        would keep the last call's decisions and lose every one before it.
+
+        Never raises.  It runs beside a removal on the acquire and disposal paths, where a
+        failure would cost a sandbox or a delete, and no record is worth either.  A drain that
+        could not read reports *that* rather than nothing, because a window with no account of
+        it is what an operator most needs to see.
+        """
+        report = self._egress_report
+        if report is None:
+            return
+        proxy = _proxy_name(name)
+        started = time.monotonic()
+        unreadable: str | None = None
+        decisions: tuple[EgressDecision, ...] = ()
+        truncated = False
+        try:
+            result = await self._wslc(
+                "container",
+                "logs",
+                "--tail",
+                # One past the bound, so a log sitting exactly on it is distinguishable from one
+                # that ran past it. The extra line is read and then thrown away.
+                str(_PROXY_LOG_TAIL + 1),
+                proxy,
+                timeout=self._config.command_timeout_seconds,
+            )
+        except Exception as unread:  # noqa: BLE001 - a record is not worth the operation
+            unreadable = error_detail(unread)
+        else:
+            if result.returncode == 0:
+                decisions, truncated = _egress_decisions(result.stdout_text)
+            elif _NO_SUCH not in result.stderr_text.lower():
+                # A proxy that is simply not there is the ordinary case — a closed sandbox, or
+                # one whose acquire never got that far — and reports nothing at all. Anything
+                # else is a window this backend cannot account for, and says so.
+                unreadable = result.stderr_text.strip() or f"wslc logs exited {result.returncode}"
+        if not decisions and unreadable is None:
+            return
+        report(
+            EgressObserved(
+                key=key,
+                backend=self.name,
+                decisions=decisions,
+                truncated=truncated,
+                unreadable=unreadable,
+                seconds=time.monotonic() - started,
+            )
+        )
 
     # -- SandboxBackend -----------------------------------------------------------
 
@@ -645,6 +771,12 @@ class WslcSandboxBackend:
             # Before the first await: the registry no longer holds these, so a retry finds
             # them only here. Merged, not assigned — teardown for one key is not serialized.
             self._undeleted[prefix] = self._undeleted.get(prefix, set()) | set(candidates)
+        # The last window, and only the last: every acquire before this one already drained its
+        # own proxy on the way to rebuilding it. Over the names this process knows, since a
+        # sandbox another replica created is not one whose proxy this key can name — the sweep
+        # below reaches it by label, and the decisions in it go with it.
+        for container in candidates:
+            await self._drain_the_proxy(container, key)
         swept = await self._purge(
             [
                 (_LABEL_SCOPE, key.scope),
@@ -972,6 +1104,10 @@ class WslcSandboxBackend:
         """
         proxy_image = cast("str", self._config.egress_proxy_image)
         proxy = _proxy_name(name)
+        # Before the removal that would take them with it. This is the drain that matters: the
+        # proxy is rebuilt per acquire, so this is where a warm conversation's decisions are
+        # picked up, one call at a time.
+        await self._drain_the_proxy(name, key)
         await self._remove(proxy)
 
         args = ["container", "run", "-d", "--name", proxy, "--network", _network_name(name)]
