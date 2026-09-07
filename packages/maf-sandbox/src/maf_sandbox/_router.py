@@ -22,6 +22,7 @@ from contextlib import asynccontextmanager
 from enum import StrEnum
 from typing import cast
 
+from ._cleanup import CleanupGate, established_cleanup, resolve_cleanup
 from ._containment import CONTAINED, escapes_containment
 from ._effective_state import (
     EffectiveState,
@@ -44,11 +45,13 @@ from ._observer import (
     refuse_an_unusable_observer,
 )
 from ._protocol import (
+    CLEANUP_RANK,
     DEFAULT_BACKEND_DECLARATIONS,
     ISOLATION_RANK,
     ISOLATION_SCOPE_RANK,
     BackendDeclarations,
     Capability,
+    Cleanup,
     DisposalCode,
     DisposalFailure,
     Identity,
@@ -294,6 +297,31 @@ def _refuse_a_sandbox_that_cannot_be_reclaimed(sandbox: Sandbox) -> None:
             "working directory, removed recursively, where a missing directory is success — and "
             "`maf_sandbox.conformance.assert_reclaim_conformance` proves the implementation."
         )
+
+
+def _instance_id_of(sandbox: Sandbox, backend: SandboxBackend) -> str | None:
+    """The sandbox's engine identity, or ``None`` when this backend does not answer it.
+
+    Read rather than required, and this is the one place the protocol's member is treated as
+    optional. The reason is the direction the two failures point: a backend that cannot name its
+    sandbox loses *adoption* — a refinement — while raising here would take out `acquire` itself
+    on every backend written before the member existed. An answer that is not a non-empty string
+    is `None` too, since a set membership over an unhashable or a mistyped value would fail
+    somewhere less obvious than here.
+    """
+    try:
+        answered = cast("object", sandbox.instance_id)
+    except (AttributeError, NotImplementedError):
+        return None
+    except Exception:  # noqa: BLE001 — a backend's property must not take out the acquire
+        logger.warning(
+            "sandbox router: backend %s raised reading instance_id, so its sandboxes are not "
+            "recognised across acquires",
+            _recorded_name(backend),
+            exc_info=True,
+        )
+        return None
+    return answered if isinstance(answered, str) and answered else None
 
 
 def _declared_isolation(backend: SandboxBackend) -> Isolation:
@@ -685,6 +713,7 @@ class SandboxRouter:
         *,
         min_isolation: Isolation = Isolation.MICROVM,
         min_isolation_scope: IsolationScope = IsolationScope.CONVERSATION,
+        min_cleanup: Cleanup = Cleanup.RECLAIM,
         selected: str | None = None,
         selection: Selection = Selection.FIXED,
         denied_capabilities: Iterable[Capability] = (),
@@ -720,6 +749,15 @@ class SandboxRouter:
         ] = weakref.WeakKeyDictionary()
         self._min_isolation = Isolation(str(min_isolation))
         self._min_isolation_scope = IsolationScope(str(min_isolation_scope))
+        # The host's floor, and the ladder's weakest rung by default — which is *not* a default
+        # of "reclaim". What a call actually ends on is the weakest rung the spec and the
+        # backend establish at or above this, and a spec that claims nothing establishes only
+        # DISPOSE, so silence here still leaves nothing behind. Raising it is how a host
+        # overrides a kind's claim without arguing with the kind.
+        self._min_cleanup = Cleanup(str(min_cleanup))
+        # Calls in flight per (key, kind), and the cleanups their sandboxes owe. A cleanup above
+        # RECLAIM cannot run under a sibling, so the last call out runs it — see `CleanupGate`.
+        self._gate = CleanupGate()
         self._selected_name = selected
         self._selection = Selection(str(selection))
         if self._selection is Selection.PER_SPEC and selected is not None:
@@ -974,6 +1012,52 @@ class SandboxRouter:
                     key=ISOLATION_SCOPE_RANK.__getitem__,
                 )
             )
+        )
+
+    def _effective_cleanup_floor(self, spec: SandboxSpec) -> Cleanup:
+        """The stricter of the host's floor and the spec's — a spec may raise, never lower."""
+        if spec.min_cleanup is None:
+            return self._min_cleanup
+        return max(self._min_cleanup, spec.min_cleanup, key=CLEANUP_RANK.__getitem__)
+
+    def effective_cleanup(self, spec: SandboxSpec) -> Cleanup:
+        """Which rung a call on ``spec`` will end on, before one has run.
+
+        Public beside :meth:`effective_isolation_scope` so a host can read what every call will
+        cost — a create, a reset, or a directory removal — from :meth:`ensure_can_serve` rather
+        than from a latency graph.  It folds three things: the host's floor, the spec's, and
+        what the spec and the serving backend *establish* between them.
+
+        **It refuses nothing**, because :data:`~maf_sandbox.Cleanup.DISPOSE` is established by
+        construction everywhere, so every floor resolves to something serveable.  A spec no
+        backend can serve at all raises here for that reason instead, through the same
+        refusal :meth:`ensure_can_serve` runs — the cleanup is not what refuses it.
+
+        At :data:`~maf_sandbox.IsolationScope.CALL` the answer is
+        :data:`~maf_sandbox.Cleanup.DISPOSE` whatever the ladder says: the sandbox was created
+        for this call, so the delete is the cleanup rather than an escalation over one.
+        """
+        if self.effective_isolation_scope(spec) is IsolationScope.CALL:
+            return Cleanup.DISPOSE
+        backend = self._refuse_unless_backend_can_serve(spec)
+        return self._cleanup_on(backend, spec)
+
+    def _cleanup_on(self, backend: SandboxBackend, spec: SandboxSpec) -> Cleanup:
+        """The rung for this spec on this backend, once the backend is already chosen.
+
+        A capability this package does not recognise is dropped rather than refused: the
+        capability *match* is where an unreadable declaration is answered, and this runs after
+        it. What is left decides only which rungs exist, and an unknown name establishes none.
+        """
+        declared = _declared_set(
+            backend, cast("object", _declarations(backend).capabilities), "capabilities"
+        )
+        known = {str(member) for member in Capability}
+        capabilities = frozenset(
+            Capability(str(capability)) for capability in declared if str(capability) in known
+        )
+        return resolve_cleanup(
+            established_cleanup(spec, capabilities), self._effective_cleanup_floor(spec)
         )
 
     def _refuse_unless_backend_can_serve(self, spec: SandboxSpec) -> SandboxBackend:

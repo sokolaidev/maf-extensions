@@ -267,6 +267,11 @@ class _Leaky:
         """One specimen, one instance — nothing here is ever reset or re-created."""
         return "leaky"
 
+    async def reset(self, *, timeout: float) -> None:
+        """No snapshot, so no rung to restore from. Spelled out because the protocol member is
+        what `isinstance` checks, and a specimen has to satisfy it to stand in for a sandbox."""
+        raise NotImplementedError
+
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
         """A plain recursive removal. This specimen's leak is the pull surface, not this one."""
         del working_directory, timeout
