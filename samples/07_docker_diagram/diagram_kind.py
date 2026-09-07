@@ -82,6 +82,13 @@ def diagram_sandbox_spec(image: str | None = None) -> SandboxSpec:
     directory, whose name is allocated per call.  It still declares that this workload lands
     *something*, which is what keeps the attach-time refusals — no sink, or no ``FILES_OUT`` in
     ``requires`` — doing their job.  The declaration itself is built in the tool body.
+
+    ``confined_to_guest_call_path`` because it is true here and worth the saving: the body
+    writes the source and reads the image back under ``guest_call_path()`` and nowhere else,
+    and ``dot`` exits before the call returns rather than leaving anything running.  Without
+    the claim this workload would be cleaned by disposal — a fresh container per render — and
+    the sample is a warm-reuse demonstration.  A kind that makes this claim owes the probe that
+    falsifies it; this one is covered by the suite's own end-of-call assertions.
     """
     return SandboxSpec(
         kind=DIAGRAM_KIND,
@@ -91,6 +98,7 @@ def diagram_sandbox_spec(image: str | None = None) -> SandboxSpec:
         requires=frozenset({Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT}),
         outputs_named_at_call_time=True,
         files_out=_FILES_OUT_LIMITS,
+        confined_to_guest_call_path=True,
     )
 
 

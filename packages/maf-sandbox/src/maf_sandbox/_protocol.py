@@ -1160,23 +1160,6 @@ class Sandbox(Protocol):
         """
         ...
 
-    @property
-    def instance_id(self) -> str:
-        """The engine's own identifier for the sandbox now running — a container id, a sandbox id.
-
-        Stable for the life of the physical sandbox and **new after a** :meth:`reset`, which is
-        what makes it the thing the router recognises a sandbox by.  Neither of the two values
-        that look like they would do instead can: the wrapper object is fresh on every
-        ``acquire`` on every backend here, and the derived name folds the egress policy, so both
-        answer "the same sandbox?" wrongly in one direction.
-
-        A member rather than an optional read, because the router refuses to *adopt* a sandbox it
-        cannot identify and a silent fallback would make every backend look unrecognised — see
-        :meth:`SandboxBackend.acquire`.  Answer it from the engine rather than from anything the
-        guest can influence.
-        """
-        ...
-
     async def reset(self, *, timeout: float) -> None:
         """Return the sandbox to the state it had at ``acquire``, before the first input reached it.
 
@@ -1190,10 +1173,8 @@ class Sandbox(Protocol):
         engine can only do the former should declare no :data:`Capability.SNAPSHOT` and take the
         disposal instead — the rung exists to be cheaper than a create, not to be a weaker one.
 
-        The sandbox stays addressable under the same key and kind.  :attr:`instance_id` changes,
-        because on a platform with no in-place restore this is a delete and a create from a
-        baseline, and a router that kept the old id would fail to notice it is holding a
-        different sandbox.
+        The sandbox stays addressable under the same key and kind, whether the engine restores
+        it in place or replaces it with a create from a baseline.
 
         Raises on failure, unlike :meth:`SandboxBackend.dispose`: the caller escalates a failed
         reset to a disposal, which it can only do if it is told.
@@ -1402,9 +1383,7 @@ class SandboxBackend(Protocol):
         """
         ...
 
-    async def dispose(
-        self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
-    ) -> DisposalFailure | None:
+    async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> DisposalFailure | None:
         """Delete this key's sandboxes, if any. Best-effort: never raises.
 
         ``kind`` narrows it to one. ``None`` means every kind's, because a key may own one
@@ -1412,13 +1391,6 @@ class SandboxBackend(Protocol):
         this method meant before the argument existed, so the default is the old behaviour.
         Narrowing matters once a cleanup is *routine*: a conversation running two kinds would
         otherwise have one kind's end-of-call disposal delete the other kind's warm sandbox.
-
-        ``instance_id`` is a guard rather than a selector. When given, delete only if the
-        sandbox you would delete is still that one, and report ``"refused"`` rather than
-        deleting a different sandbox that has since taken the name — the router hands it in so
-        a disposal decided against one instance cannot land on its replacement. A backend whose
-        engine cannot compare it may ignore it; the router's own ledger still holds, and the
-        window this closes is narrower than the one it already accepts.
 
         **Return a :class:`DisposalFailure` when a sandbox may still be there, or ``None``.**
         ``None`` is read as disposed, and a backend with no way to check returns it too — the

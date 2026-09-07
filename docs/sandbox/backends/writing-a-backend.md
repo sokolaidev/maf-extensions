@@ -49,6 +49,15 @@ The framework's cleanup, running in a `finally`, gated by no capability — ever
 - **Never:** raise where the contract promises success — a directory that is not there is success, because this member runs in a `finally` and a second failure over the first buries it. Never run raised without the reach check: the raised removal is exactly what a guest that swapped a component is after, and the license is the check, not the uid. The placement guards — not absolute, fewer than two components from the root — are worth repeating on your side too: this removal is recursive and irreversible, and neither guard should depend on the caller having derived the path correctly.
 - **Proved by:** `a-created-directory-is-gone`, `nested-content-goes-with-it`, `a-link-inside-is-unlinked-not-followed`, `a-missing-directory-is-success`, `an-absent-working-directory-still-succeeds`.
 
+### `reset`
+
+The `Cleanup.RESET` rung, behind `Capability.SNAPSHOT`. Declare neither and this stays a `NotImplementedError` the router never calls — it resolves to that rung only for a backend that declares the capability. Spell the member out anyway: a type checker reads the protocol, not your declarations.
+
+- **Owes:** the sandbox as it stood at `acquire`, before the first input reached it — every path a call wrote **and** every process a call started, gone, within `timeout`. The sandbox stays addressable under the same key and kind. Unlike `dispose`, this **raises** on failure: the caller escalates a failed reset to a disposal, which it can only do if you tell it.
+- **Use:** whatever your engine offers — an in-place restore, or a delete plus a create from a baseline snapshot taken before any input. Where it is the latter, take the baseline at create and never after a call has served: a snapshot of a sandbox that has run something preserves exactly the residue this rung exists to remove.
+- **Never:** declare `SNAPSHOT` for a restore that brings back the disk and not the processes. This rung exists to be *cheaper* than a create, never weaker than one, and a survivor that outlives it defeats the whole default. Take the disposal instead and declare nothing.
+- **Proved by:** nothing yet — the probe belongs with the first backend that declares the capability, and none does.
+
 ### `stat_file`
 
 - **Owes:** describe the path, or `None` when nothing is there. The `SandboxEntry` you hand back carries `path` relative to `working_directory`, not your engine's resolved absolute — the same contract `list_dir` owes below. Stat is the contract, not an optimisation — the caller stats, refuses anything over its cap or whose `size_bytes` came back `None`, and only then reads. It is `lstat`-like: the **final** component is described rather than refused, because `EntryKind.SYMLINK` is how a caller learns it is a link; the parents are still checked, because a stat through one reports a type and a size from outside the working directory even though no byte crosses.

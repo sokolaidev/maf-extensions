@@ -22,7 +22,13 @@ from contextlib import asynccontextmanager
 from enum import StrEnum
 from typing import cast
 
-from ._cleanup import CleanupGate, established_cleanup, resolve_cleanup
+from ._cleanup import (
+    QUEUED_CALL_TIMEOUT,
+    ExclusiveSlots,
+    established_cleanup,
+    needs_a_slot,
+    resolve_cleanup,
+)
 from ._containment import CONTAINED, escapes_containment
 from ._effective_state import (
     EffectiveState,
@@ -297,31 +303,6 @@ def _refuse_a_sandbox_that_cannot_be_reclaimed(sandbox: Sandbox) -> None:
             "working directory, removed recursively, where a missing directory is success — and "
             "`maf_sandbox.conformance.assert_reclaim_conformance` proves the implementation."
         )
-
-
-def _instance_id_of(sandbox: Sandbox, backend: SandboxBackend) -> str | None:
-    """The sandbox's engine identity, or ``None`` when this backend does not answer it.
-
-    Read rather than required, and this is the one place the protocol's member is treated as
-    optional. The reason is the direction the two failures point: a backend that cannot name its
-    sandbox loses *adoption* — a refinement — while raising here would take out `acquire` itself
-    on every backend written before the member existed. An answer that is not a non-empty string
-    is `None` too, since a set membership over an unhashable or a mistyped value would fail
-    somewhere less obvious than here.
-    """
-    try:
-        answered = cast("object", sandbox.instance_id)
-    except (AttributeError, NotImplementedError):
-        return None
-    except Exception:  # noqa: BLE001 — a backend's property must not take out the acquire
-        logger.warning(
-            "sandbox router: backend %s raised reading instance_id, so its sandboxes are not "
-            "recognised across acquires",
-            _recorded_name(backend),
-            exc_info=True,
-        )
-        return None
-    return answered if isinstance(answered, str) and answered else None
 
 
 def _declared_isolation(backend: SandboxBackend) -> Isolation:
@@ -755,9 +736,9 @@ class SandboxRouter:
         # DISPOSE, so silence here still leaves nothing behind. Raising it is how a host
         # overrides a kind's claim without arguing with the kind.
         self._min_cleanup = Cleanup(str(min_cleanup))
-        # Calls in flight per (key, kind), and the cleanups their sandboxes owe. A cleanup above
-        # RECLAIM cannot run under a sibling, so the last call out runs it — see `CleanupGate`.
-        self._gate = CleanupGate()
+        # A sandbox cleaned by anything above RECLAIM serves one call at a time, so the call
+        # running the cleanup is the only call there — see `ExclusiveSlots`.
+        self._slots = ExclusiveSlots()
         self._selected_name = selected
         self._selection = Selection(str(selection))
         if self._selection is Selection.PER_SPEC and selected is not None:
@@ -1664,6 +1645,130 @@ class SandboxRouter:
                 self.mark_unclean(key, _coded(served.name, reported))
             raise
         return sandbox
+
+    async def enter_call(
+        self, key: SandboxKey, spec: SandboxSpec, *, timeout: float = QUEUED_CALL_TIMEOUT
+    ) -> None:
+        """Admit one call to this ``(key, kind)``, holding the sandbox where the rung demands it.
+
+        A workload cleaned by anything above :data:`~maf_sandbox.Cleanup.RECLAIM` gets the
+        sandbox to itself: the cleanup at the end removes or rewinds the whole thing, which
+        cannot happen under a sibling.  On ``RECLAIM`` this does nothing at all, and calls share
+        the sandbox exactly as they always have.
+
+        Whoever calls this owes :meth:`finish_call`, exactly as a per-call workload's caller
+        owes ``dispose_call``.
+
+        Raises:
+            TimeoutError: a sibling held the sandbox for longer than ``timeout``. Refusing beats
+                waiting behind a call that is never going to return.
+        """
+        if not needs_a_slot(self.effective_cleanup(spec)):
+            return
+        await self._slots.take(key, spec.kind, timeout=timeout)
+
+    def release_call(self, key: SandboxKey, kind: str) -> None:
+        """Give a held sandbox back without cleaning it.
+
+        For a call that took the slot and then never reached its cleanup — a refused acquire, a
+        body that raised first. On ``RECLAIM`` nothing was taken and this does nothing.
+        """
+        self._slots.release(key, kind)
+
+    async def finish_call(
+        self,
+        key: SandboxKey,
+        spec: SandboxSpec,
+        *,
+        rung: Cleanup,
+        sandbox: Sandbox | None,
+        unclean: str | None = None,
+    ) -> str | None:
+        """Run this call's cleanup and give the sandbox back.
+
+        Returns why it did not land, or ``None``.
+
+        Only ever called by the one call that holds the sandbox, which is what makes the strong
+        rungs safe: there is no sibling to reset out from under and no count to reach nought.
+        A ``RECLAIM`` never reaches here — its removal is the call's own directory and runs
+        wherever the framework runs it.
+
+        Never raises.  This is a ``finally``'s work, and a failure that replaced the call's own
+        result with a message about cleanup would be the wrong thing to report.
+        """
+        try:
+            return await self._run_the_rung(key, spec, rung, sandbox, unclean)
+        finally:
+            self._slots.release(key, spec.kind)
+
+    async def _run_the_rung(
+        self,
+        key: SandboxKey,
+        spec: SandboxSpec,
+        rung: Cleanup,
+        sandbox: Sandbox | None,
+        unclean: str | None,
+    ) -> str | None:
+        """The rung itself, with a reset that failed escalating to the disposal below it."""
+        backend = self.backend_for(spec)
+        if backend is None:
+            return None
+        if rung is Cleanup.RESET and sandbox is not None and unclean is None:
+            # Not over an unclean note: a reset restores the filesystem, and the note says a
+            # program the call started may still be running. Only a delete answers that.
+            try:
+                async with asyncio.timeout(self._reclaim.timeout):
+                    await sandbox.reset(timeout=self._reclaim.timeout)
+            except (asyncio.CancelledError, GeneratorExit):
+                raise
+            except Exception as unreset:  # noqa: BLE001 — escalates rather than propagates
+                logger.warning(
+                    "sandbox router: resetting the %s sandbox for %s/%s failed, so it is "
+                    "disposed instead: %s",
+                    _recorded_name(backend),
+                    key.scope,
+                    key.thread_id,
+                    error_detail(unreset),
+                )
+            else:
+                return None
+        return await self._dispose_the_kind(key, spec, backend, unclean)
+
+    async def _dispose_the_kind(
+        self, key: SandboxKey, spec: SandboxSpec, backend: SandboxBackend, unclean: str | None
+    ) -> str | None:
+        """The ladder's disposal: one kind's sandbox on the backend that served it.
+
+        Narrowed to the kind, because a conversation running two kinds would otherwise have one
+        kind's end-of-call disposal take the other kind's warm sandbox with it.
+        """
+        started = time.monotonic()
+        try:
+            async with asyncio.timeout(self._reclaim.timeout):
+                reported = await backend.dispose(key, kind=spec.kind)
+        except TimeoutError:
+            reported = f"the delete did not finish within {self._reclaim.timeout:g}s"
+        except (asyncio.CancelledError, GeneratorExit):
+            self._record_an_interrupted_disposal(key, backend, started, asyncio.CancelledError())
+            raise
+        except Exception as undisposed:  # noqa: BLE001 — a `finally` must not raise over a result
+            reported = str(undisposed)
+        failure = None if reported is None else _coded(_recorded_name(backend), reported)
+        self._record_disposal(key, backend, failure, started)
+        if failure is None:
+            return None
+        logger.warning(
+            "sandbox router: the end-of-call disposal for %s/%s (%s) did not land: %s",
+            key.scope,
+            key.thread_id,
+            spec.kind,
+            failure,
+        )
+        if self._reclaim.failed_reclaim_policy is not FailedReclaimPolicy.KEEP:
+            # The sandbox is still there holding what this call left, and an unclean note means
+            # something may still be running in it. Neither is servable to the next call.
+            self.mark_unclean(key, failure)
+        return f"{failure}" if unclean is None else f"{unclean}; {failure}"
 
     async def dispose(self, key: SandboxKey) -> None:
         """Delete every kind's sandbox for ``key``. Best-effort across every registered backend."""

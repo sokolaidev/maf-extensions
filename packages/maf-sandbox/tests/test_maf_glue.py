@@ -90,13 +90,20 @@ from maf_sandbox.testing import (
     InProcessSandboxBackend,
 )
 
+# The suite's workload writes only through `guest_call_path()` — see `_reclaiming_body` — so
+# the confinement claim is true of it, and stating it is what puts these tests on the
+# `Cleanup.RECLAIM` rung they were written for. A spec that claims nothing is cleaned by
+# disposal, which is the shipped default and has its own tests rather than these.
 _SPEC = SandboxSpec(
     kind="test",
     egress=Egress.ALLOWLIST,
     egress_allow=("example.invalid",),
     work_dir="/maf-sandbox/work",
+    confined_to_guest_call_path=True,
 )
-_NO_EGRESS_SPEC = SandboxSpec(kind="test", work_dir="/maf-sandbox/work")
+_NO_EGRESS_SPEC = SandboxSpec(
+    kind="test", work_dir="/maf-sandbox/work", confined_to_guest_call_path=True
+)
 
 #: A spec that opens no channel the framework cannot establish — no file store, no network, no
 #: host tools.  `DEFAULT_CAPABILITIES` holds `FILES_IN`, so a spec saying nothing about

@@ -22,11 +22,12 @@ import shlex
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 from typing import TYPE_CHECKING
-from uuid import uuid4
 
 from ._outputs import SandboxTransferCapExceeded
 from ._protocol import (
+    DEFAULT_CAPABILITIES,
     BackendDeclarations,
+    Capability,
     DisposalFailure,
     Egress,
     EntryKind,
@@ -168,13 +169,12 @@ class InProcessSandbox:
         self._outputs = outputs or {}
         self._raises = raises
         self._default_stdout = default_stdout
-        self._instance_id = uuid4().hex
         #: Programs a call started that outlived it, as a backend whose ``exec`` detaches would
         #: leave. Nothing here starts one; a test appends to it to make a sandbox that a
         #: ``RECLAIM`` cannot honestly clean.
         self.running: set[str] = set()
-        #: Every ``reset`` call, as the instance id it retired. A test asserts the rung ran.
-        self.resets: list[str] = []
+        #: One entry per ``reset`` call, so a test can assert the rung ran.
+        self.resets: list[int] = []
         #: What :meth:`reset` restores to — every path and every running program as they stood
         #: before any input reached this sandbox. Taken here rather than on the first write,
         #: because a baseline taken after a call has served preserves the residue the reset
@@ -191,11 +191,6 @@ class InProcessSandbox:
             set(self.running),
         )
 
-    @property
-    def instance_id(self) -> str:
-        """This sandbox's identity, new after every :meth:`reset` as the protocol requires."""
-        return self._instance_id
-
     async def reset(self, *, timeout: float) -> None:
         """Restore the baseline: every path and every survivor go back to their pre-input state.
 
@@ -203,16 +198,13 @@ class InProcessSandbox:
         with no engine. ``timeout`` is accepted and unused — nothing here can be slow.
         """
         del timeout
-        self.resets.append(self._instance_id)
+        self.resets.append(len(self.resets))
         contents, symlinks, non_regular, directories, running = self._baseline
         self.contents = dict(contents)
         self.symlinks = set(symlinks)
         self.non_regular = set(non_regular)
         self.directories = set(directories)
         self.running = set(running)
-        # New, because a reset is a delete and a create from a baseline on a platform with no
-        # in-place restore, and a router holding the old id would not notice the substitution.
-        self._instance_id = uuid4().hex
 
     def changed_paths(self) -> frozenset[str]:
         """Every path that differs from the baseline — this fake's half of the fingerprint.
@@ -411,7 +403,11 @@ class InProcessSandbox:
 #: because the router's silence rule there refuses every spec, and an offline suite that has to
 #: opt out of the attach refusal in every test is measuring the fake rather than the workload.
 FAKE_BACKEND_DECLARATIONS = BackendDeclarations(
-    egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED})
+    # `RECLAIM` beside the defaults, because this fake really does implement `reclaim` and a
+    # backend that does not declare it establishes no `Cleanup.RECLAIM` — every workload on it
+    # would be cleaned by disposal, which is the right default and the wrong fake.
+    capabilities=DEFAULT_CAPABILITIES | {Capability.RECLAIM},
+    egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED}),
 )
 
 
@@ -543,9 +539,7 @@ class InProcessSandboxBackend:
             self.sandboxes[(key, spec.kind)] = held
         return held
 
-    async def dispose(
-        self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
-    ) -> DisposalFailure | None:
+    async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> DisposalFailure | None:
         self.disposed.append(key)
         self.disposed_kinds.append(kind)
         if self.dispose_error is not None:
@@ -560,19 +554,6 @@ class InProcessSandboxBackend:
             for entry in self.sandboxes
             if entry[0] == key and (kind is None or entry[1] == kind)
         ]
-        if instance_id is not None:
-            # The guard, not a selector: a disposal decided against one instance must not land
-            # on the replacement that has since taken its place under the same key.
-            standing = [
-                entry for entry in taking if self.sandboxes[entry].instance_id == instance_id
-            ]
-            if not standing:
-                return DisposalFailure(
-                    "refused",
-                    f"the sandbox for {key.scope}/{key.thread_id} is no longer instance "
-                    f"{instance_id}, so this disposal was not applied to its replacement",
-                )
-            taking = standing
         for held in taking:
             del self.sandboxes[held]
         return None

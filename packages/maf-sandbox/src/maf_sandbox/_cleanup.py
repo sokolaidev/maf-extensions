@@ -1,34 +1,49 @@
-"""The cleanup ladder: which rung a call ends on, and who may run it.
+"""The cleanup ladder: which rung a call ends on, and who may be inside the sandbox while it does.
 
 Two things live here.  :func:`established_cleanup` answers what a spec and a backend *between
 them* establish, which is the whole of "dispose by default" — a workload that claims nothing is
-cleaned by disposal.  :class:`CleanupGate` answers *when* a rung above ``RECLAIM`` may run,
-because deleting or resetting a sandbox under a call still using it is a failed call.
+cleaned by disposal.  :class:`ExclusiveSlots` answers who else may be in the sandbox, and the
+rule is one sentence: **a sandbox cleaned by anything above** :data:`~maf_sandbox.Cleanup.RECLAIM`
+**serves one call at a time.**
+
+That is what makes the strong rungs safe rather than a counting scheme.  A reset or a delete
+under a running sibling is a failed call, so the alternative would be counting calls in flight,
+condemning the sandbox when one leaves, and making later arrivals wait out a cleanup — three
+states and a race for each.  Serialising instead means the call running the cleanup is provably
+the only call there, so there is nothing to count and nothing to condemn.
+
+``RECLAIM`` takes no slot and behaves exactly as it always has: calls share the sandbox, and the
+one case that still deletes it under a sibling — a reclaim that failed, or a program that would
+not stop — kills that sibling.  ``docs/sandbox/tool-call.md`` § Concurrency has always priced
+that as the accepted cost of an escalation, and it stays rare because it is a failure path.
 
 ``docs/sandbox/tool-call.md`` carries the decision; this is the mechanism.
-
-**The gate is loop-neutral by construction.**  A router serves more than one event loop, and an
-:mod:`asyncio` primitive binds to the loop that first contends it.  So the state here is plain
-data under a :class:`threading.Lock`, and a waiter registers a future on *its own* loop that the
-last call out resolves through that loop's ``call_soon_threadsafe``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Iterable
-from dataclasses import dataclass, field
-from enum import StrEnum
+import weakref
 
 from ._protocol import CLEANUP_RANK, Capability, Cleanup, SandboxKey, SandboxSpec
 
 __all__ = [
-    "CleanupGate",
-    "PendingCleanup",
+    "QUEUED_CALL_TIMEOUT",
+    "ExclusiveSlots",
     "established_cleanup",
+    "needs_a_slot",
     "resolve_cleanup",
 ]
+
+#: How long a call waits for the sandbox it needs when a sibling is using it exclusively.
+#:
+#: It is waiting for a whole tool call rather than for a cleanup, so seconds are too few — and
+#: it cannot be unbounded, because a call that never returns would take its conversation with
+#: it.  A constant rather than a router keyword until a host asks for one: the number that
+#: matters to a host is its own call timeout, and this only has to be larger than a typical
+#: sibling and smaller than forever.
+QUEUED_CALL_TIMEOUT = 120.0
 
 
 def established_cleanup(spec: SandboxSpec, declared: frozenset[Capability]) -> frozenset[Cleanup]:
@@ -63,212 +78,93 @@ def resolve_cleanup(established: frozenset[Cleanup], floor: Cleanup) -> Cleanup:
     return min(above, key=CLEANUP_RANK.__getitem__)
 
 
-@dataclass(frozen=True)
-class PendingCleanup:
-    """One sandbox's owed cleanup, as the last call out will run it.
+def needs_a_slot(rung: Cleanup) -> bool:
+    """Whether a call ending on ``rung`` must hold the sandbox to itself.
 
-    Keyed by the backend and the sandbox's ``instance_id`` rather than by the key, because two
-    calls under one key may have been served by two sandboxes — an adoption, a reset, a router
-    selecting per spec — and running one call's rung against the other's sandbox would clean the
-    wrong thing.
+    The whole of the concurrency rule, written once: everything above ``RECLAIM`` removes the
+    sandbox or rewinds it, which cannot happen under a sibling.
     """
-
-    backend: str
-    instance_id: str
-    rung: Cleanup
-    #: The kind whose sandbox this is, so a disposal narrows to it rather than taking a sibling
-    #: kind's warm sandbox with it.
-    kind: str
-    #: Set when this record came from a failed reclaim or an unstopped program rather than from
-    #: the routine ladder.  The rung is a disposal either way; what this changes is that the key
-    #: is marked unclean, so no later call is admitted until a disposal lands.
-    unclean: str | None = None
-
-    def strongest(self, other: PendingCleanup) -> PendingCleanup:
-        """Whichever of the two owes more — the stronger rung, and any unclean reason kept."""
-        winner = self if CLEANUP_RANK[self.rung] >= CLEANUP_RANK[other.rung] else other
-        reason = self.unclean or other.unclean
-        return winner if reason == winner.unclean else replace_reason(winner, reason)
+    return CLEANUP_RANK[rung] > CLEANUP_RANK[Cleanup.RECLAIM]
 
 
-def replace_reason(record: PendingCleanup, reason: str | None) -> PendingCleanup:
-    """``record`` with its unclean reason set — spelled out because the class is frozen."""
-    return PendingCleanup(
-        backend=record.backend,
-        instance_id=record.instance_id,
-        rung=record.rung,
-        kind=record.kind,
-        unclean=reason,
-    )
+class ExclusiveSlots:
+    """One lock per ``(key, kind)``, held for a whole call, taken only above ``RECLAIM``.
 
+    **Per running event loop**, because an :class:`asyncio.Lock` binds to the loop that first
+    waits on it and this router serves more than one.  The shape is the one
+    :class:`~maf_sandbox.SandboxRouter` already uses for its disposal locks: a weak-keyed table
+    of loops, each holding a weak-valued table of locks, so a lock lives exactly as long as
+    something is holding or waiting on it and a contended lock never keeps its loop alive.
 
-class _State(StrEnum):
-    """Where an entry is between admitting calls and being cleaned."""
-
-    #: Calls are admitted and the sandbox is reused.
-    SERVING = "serving"
-    #: A call out has recorded a cleanup above ``RECLAIM``, so the sandbox is condemned. Calls
-    #: already running finish; no new one is admitted, because handing a newcomer the first
-    #: call's residue is what the default exists to stop.
-    DRAINING = "draining"
-    #: The count reached nought and the pending records are being run.
-    CLEANING = "cleaning"
-
-
-@dataclass
-class _Entry:
-    """The gate's state for one ``(key, kind)``. Plain data; the lock outside guards it."""
-
-    state: _State = _State.SERVING
-    in_flight: int = 0
-    pending: dict[tuple[str, str], PendingCleanup] = field(
-        default_factory=dict[tuple[str, str], PendingCleanup]
-    )
-    #: One per waiting acquire, each on the loop that registered it.
-    waiters: list[tuple[asyncio.AbstractEventLoop, asyncio.Future[None]]] = field(
-        default_factory=list[tuple[asyncio.AbstractEventLoop, "asyncio.Future[None]"]]
-    )
-
-
-class CleanupGate:
-    """Counts calls in flight per ``(key, kind)`` and decides when a cleanup may run.
-
-    A `RESET` or a `DISPOSE` runs when the count reaches nought; a ``RECLAIM`` runs at once,
-    since the call directory is the call's own and no sibling is using it.
-
-    **The zero transition is a gate, not only a number.**  A count that reached nought and then
-    awaited its cleanup would leave a window in which a new call increments, acquires the warm
-    sandbox through get-or-create, and has it deleted underneath it.  So the state moves to
-    ``CLEANING`` before the first await, and an acquire arriving in ``DRAINING`` or ``CLEANING``
-    waits rather than being served.
-
-    **The count is per router, and that is the bound.**  Two routers over one engine, in one
-    process or across replicas, each count to nought on their own and the first there deletes the
-    sandbox under the other's call.  No engine here can count acquires across replicas and a
-    marker inside the sandbox is the guest's to forge, so this does not pretend to a lease it
-    cannot hold: cleanup above ``RECLAIM`` at
-    :data:`~maf_sandbox.IsolationScope.CONVERSATION` is sound where a conversation's turns pass
-    through one router at a time.  A host that cannot promise that raises
-    ``min_isolation_scope`` to :data:`~maf_sandbox.IsolationScope.CALL`, where there is no
-    shared sandbox to delete out from under anyone.
+    Two calls in *different* loops therefore do not exclude each other, which is the same bound
+    the router's disposal locks carry and the same bound the isolation scope answers: a host that
+    serves one conversation from more than one loop or process raises ``min_isolation_scope`` to
+    :data:`~maf_sandbox.IsolationScope.CALL`, where every call has a sandbox of its own and there
+    is nothing to share.
     """
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._entries: dict[tuple[SandboxKey, str], _Entry] = {}
+        self._loops: weakref.WeakKeyDictionary[
+            asyncio.AbstractEventLoop,
+            weakref.WeakValueDictionary[tuple[SandboxKey, str], asyncio.Lock],
+        ] = weakref.WeakKeyDictionary()
+        # Guards the two tables only, never held across an await.
+        self._guard = threading.Lock()
+        # Strong references to the locks a caller is currently holding, so a weak-valued entry
+        # is not collected while its holder is between `take` and `release` — which would let a
+        # second call build a fresh lock and walk straight into the sandbox.
+        self._held: dict[tuple[asyncio.AbstractEventLoop, SandboxKey, str], asyncio.Lock] = {}
 
-    def _entry(self, key: SandboxKey, kind: str) -> _Entry:
-        """The entry for this pair, created on first use. Call under the lock."""
-        return self._entries.setdefault((key, kind), _Entry())
+    def _lock_for(self, key: SandboxKey, kind: str) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        with self._guard:
+            per_loop: weakref.WeakValueDictionary[tuple[SandboxKey, str], asyncio.Lock] | None = (
+                self._loops.get(loop)
+            )
+            if per_loop is None:
+                per_loop = weakref.WeakValueDictionary[tuple[SandboxKey, str], asyncio.Lock]()
+                self._loops[loop] = per_loop
+            lock = per_loop.get((key, kind))
+            if lock is None:
+                lock = asyncio.Lock()
+                per_loop[(key, kind)] = lock
+            return lock
 
-    async def enter(self, key: SandboxKey, kind: str, *, timeout: float) -> None:
-        """Admit one call, waiting out a cleanup already condemned or in flight.
+    async def take(self, key: SandboxKey, kind: str, *, timeout: float) -> None:
+        """Hold this sandbox for the calling task, waiting out a sibling that has it.
 
         Raises:
-            TimeoutError: the condemned sandbox was not cleaned within ``timeout``. Refusing is
-                the safe direction: the alternative is being served a sandbox a cleanup is about
-                to delete, or hanging a call forever behind a cleanup that will never land
-                because whoever owed it never arrived.
+            TimeoutError: a sibling held it for longer than ``timeout``. Refusing beats waiting
+                for ever behind a call that is never going to return.
         """
-        while True:
-            with self._lock:
-                entry = self._entry(key, kind)
-                if entry.state is _State.SERVING:
-                    entry.in_flight += 1
-                    return
-                waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-                entry.waiters.append((asyncio.get_running_loop(), waiter))
-            try:
-                await asyncio.wait_for(waiter, timeout)
-            except TimeoutError:
-                with self._lock:
-                    entry = self._entry(key, kind)
-                    entry.waiters = [held for held in entry.waiters if held[1] is not waiter]
-                raise TimeoutError(
-                    f"the sandbox for {key.scope}/{key.thread_id}/{key.agent_dir} kind {kind!r} "
-                    f"is being cleaned and did not finish within {timeout:g}s, so this call was "
-                    "not admitted to it. A cleanup above RECLAIM runs when the last call using "
-                    "the sandbox returns; a call that acquired without ever finishing holds the "
-                    "count open."
-                ) from None
+        lock = self._lock_for(key, kind)
+        loop = asyncio.get_running_loop()
+        try:
+            async with asyncio.timeout(timeout):
+                await lock.acquire()
+        except TimeoutError:
+            raise TimeoutError(
+                f"another call is using the sandbox for {key.scope}/{key.thread_id}/"
+                f"{key.agent_dir} and did not finish within {timeout:g}s. A workload cleaned by "
+                "anything stronger than a reclaim runs one call at a time in its sandbox, "
+                "because a reset or a delete cannot run under a sibling."
+            ) from None
+        with self._guard:
+            self._held[(loop, key, kind)] = lock
 
-    def owes(self, key: SandboxKey, kind: str, record: PendingCleanup) -> None:
-        """Record what one call's sandbox owes, folded with anything already owed for it.
+    def release(self, key: SandboxKey, kind: str) -> None:
+        """Give the sandbox back. A pair this task does not hold is ignored, not an error."""
+        loop = asyncio.get_running_loop()
+        with self._guard:
+            lock = self._held.pop((loop, key, kind), None)
+        if lock is not None and lock.locked():
+            lock.release()
 
-        Condemns the entry as soon as a rung above ``RECLAIM`` is recorded: the sandbox is going
-        from that moment, and admitting a third call into it while a second is still in flight
-        would hand the newcomer the first call's residue under a default that promises neither.
-        """
-        with self._lock:
-            entry = self._entry(key, kind)
-            at = (record.backend, record.instance_id)
-            held = entry.pending.get(at)
-            entry.pending[at] = record if held is None else held.strongest(record)
-            if CLEANUP_RANK[entry.pending[at].rung] > CLEANUP_RANK[Cleanup.RECLAIM]:
-                if entry.state is _State.SERVING:
-                    entry.state = _State.DRAINING
-
-    def leave(self, key: SandboxKey, kind: str) -> tuple[PendingCleanup, ...]:
-        """Retire one call, and return the records to run when it was the last one out.
-
-        Empty means somebody else is still in flight, or nothing is owed.  A non-empty answer
-        moves the entry to ``CLEANING`` **before the caller's first await**, which is what makes
-        the zero transition a gate rather than a number.
-        """
-        with self._lock:
-            entry = self._entry(key, kind)
-            entry.in_flight = max(0, entry.in_flight - 1)
-            if entry.in_flight > 0 or not entry.pending:
-                if entry.in_flight == 0 and not entry.pending:
-                    self._release(key, kind, entry)
-                return ()
-            entry.state = _State.CLEANING
-            return tuple(entry.pending.values())
-
-    def cleaned(self, key: SandboxKey, kind: str) -> None:
-        """Every record landed: forget the entry and wake whoever was waiting for it.
-
-        Called whether the records succeeded or not.  A cleanup that failed has already marked
-        the key unclean, and that refusal — not a waiter left hanging — is what keeps the next
-        call out.
-        """
-        with self._lock:
-            entry = self._entries.get((key, kind))
-            if entry is None:
-                return
-            entry.pending.clear()
-            self._release(key, kind, entry)
-
-    def _release(self, key: SandboxKey, kind: str, entry: _Entry) -> None:
-        """Drop the entry and resolve its waiters. Call under the lock."""
-        waiters = entry.waiters
-        entry.waiters = []
-        self._entries.pop((key, kind), None)
-        for loop, waiter in waiters:
-            # Through the waiter's own loop: the router serves more than one, and resolving a
-            # future from a foreign loop is undefined rather than merely unfair.
-            loop.call_soon_threadsafe(_resolve, waiter)
-
-    def in_flight(self, key: SandboxKey, kind: str) -> int:
-        """How many calls are using this pair's sandbox right now. For tests and diagnostics."""
-        with self._lock:
-            entry = self._entries.get((key, kind))
-            return 0 if entry is None else entry.in_flight
-
-    def forget(self, keys: Iterable[SandboxKey]) -> None:
-        """Drop every entry for these keys, waking anyone waiting.
-
-        What a scope purge and a hand disposal owe: the sandboxes are gone, so a waiter blocked
-        on a cleanup that will now never run would wait out its whole timeout for nothing.
-        """
-        with self._lock:
-            for key, kind in [pair for pair in self._entries if pair[0] in set(keys)]:
-                entry = self._entries[(key, kind)]
-                entry.pending.clear()
-                self._release(key, kind, entry)
-
-
-def _resolve(waiter: asyncio.Future[None]) -> None:
-    """Complete a waiter unless its own call already gave up on it."""
-    if not waiter.done():
-        waiter.set_result(None)
+    def holds(self, key: SandboxKey, kind: str) -> bool:
+        """Whether this loop is holding the pair. For tests and diagnostics."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        with self._guard:
+            return (loop, key, kind) in self._held

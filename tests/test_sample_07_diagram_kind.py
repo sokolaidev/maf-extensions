@@ -102,7 +102,11 @@ def _tools(
     backend = InProcessSandboxBackend(
         sandbox,
         declarations=dataclasses.replace(
-            FAKE_BACKEND_DECLARATIONS, capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
+            FAKE_BACKEND_DECLARATIONS,
+            # `RECLAIM` beside them, because this kind claims confinement and the rung needs
+            # both halves: without the backend's declaration the sample would be cleaned by
+            # disposal, and these tests are about what the reclaim removes.
+            capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT, Capability.RECLAIM},
         ),
     )
     router = SandboxRouter([backend], min_isolation=Isolation.NONE)

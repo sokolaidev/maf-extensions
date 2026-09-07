@@ -262,11 +262,6 @@ class _Leaky:
             self.contents.pop(stored, None)
             self.links.pop(stored, None)
 
-    @property
-    def instance_id(self) -> str:
-        """One specimen, one instance — nothing here is ever reset or re-created."""
-        return "leaky"
-
     async def reset(self, *, timeout: float) -> None:
         """No snapshot, so no rung to restore from. Spelled out because the protocol member is
         what `isinstance` checks, and a specimen has to satisfy it to stand in for a sandbox."""

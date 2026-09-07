@@ -156,14 +156,21 @@ class TestInProcessSandboxBackend:
         """A proxy-capable live backend's shape: the default CLOSED spec and an ALLOWLIST spec
         both resolve, rather than every consumer's offline test becoming a test of the refusal.
 
-        It is the one field `FAKE_BACKEND_DECLARATIONS` departs from
-        `DEFAULT_BACKEND_DECLARATIONS` on, because that silence rule refuses every spec.
+        One of the two fields `FAKE_BACKEND_DECLARATIONS` departs from
+        `DEFAULT_BACKEND_DECLARATIONS` on, because that silence rule refuses every spec. The
+        other is `capabilities`, for the reason the test below it gives.
         """
         assert InProcessSandboxBackend().declarations.egress_modes == frozenset(
             {Egress.ALLOWLIST, Egress.CLOSED}
         )
+        # Put both departures back and nothing else has moved, which is what pins this fake to
+        # the shipped default rather than to a snapshot of it.
         assert (
-            dataclasses.replace(FAKE_BACKEND_DECLARATIONS, egress_modes=frozenset())
+            dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                egress_modes=frozenset(),
+                capabilities=DEFAULT_CAPABILITIES,
+            )
             == BackendDeclarations()
         )
 
@@ -196,9 +203,13 @@ class TestInProcessSandboxBackend:
         )
         assert kept.declarations.egress_modes == frozenset({Egress.ALLOWLIST, Egress.CLOSED})
 
-    def test_capabilities_default_to_what_every_sandbox_owes(self):
-        """`write_file` and `exec` — the two the `Sandbox` protocol already obligates."""
-        assert InProcessSandboxBackend().declarations.capabilities == DEFAULT_CAPABILITIES
+    def test_capabilities_are_what_every_sandbox_owes_plus_the_reclaim_this_one_implements(self):
+        """`write_file` and `exec`, the two the `Sandbox` protocol already obligates, and
+        `RECLAIM` — which this fake really does implement, and which a backend has to declare
+        for any workload on it to reach the `Cleanup.RECLAIM` rung rather than being disposed."""
+        assert InProcessSandboxBackend().declarations.capabilities == (
+            DEFAULT_CAPABILITIES | {Capability.RECLAIM}
+        )
 
     def test_acquire_records_the_key_and_spec_and_returns_the_sandbox(self):
         sandbox = InProcessSandbox()

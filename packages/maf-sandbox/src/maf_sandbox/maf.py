@@ -94,6 +94,7 @@ from ._outputs import (
 from ._protocol import (
     CallerContext,
     Capability,
+    Cleanup,
     DisposalFailure,
     Egress,
     IsolationScope,
@@ -184,6 +185,13 @@ _SANDBOX_UNCLEAN = (
     "that could not be removed, or a program that may still be running — and it could not be "
     "disposed. Nothing runs in it until it is."
 )
+#: Distinct from `_SANDBOX_UNCLEAN`, because the two ask different things of the reader. That
+#: one says the sandbox is closed until somebody acts; this one says a cleanup is in flight and
+#: the same call is worth making again. Nothing is wrong with the key.
+_SANDBOX_BUSY = (
+    "Error: the sandbox for this conversation is being cleaned after a previous call and did "
+    "not finish in time, so this call was not admitted to it. Retrying is reasonable."
+)
 
 #: What the removal gets when the body was cancelled, instead of the full ``reclaim_timeout``.
 #:
@@ -230,6 +238,12 @@ class _SandboxToolCall:
     #: returned before acquiring anything — still names the key its other events carry.
     touched: list[SandboxKey] = field(default_factory=list[SandboxKey])
     closed: bool = False
+    #: Every ``(key, kind)`` this call was admitted to by the router's cleanup gate, so the
+    #: `finally` leaves exactly what it entered. Kept apart from `acquired` because the two
+    #: count differently: a call that reacquires one key appends twice there and enters once
+    #: here, and a call whose acquire was *refused* entered here and acquired nothing. Leaving
+    #: fewer times than entering holds the count open and makes every later call wait it out.
+    entered: set[tuple[SandboxKey, str]] = field(default_factory=set[tuple[SandboxKey, str]])
 
 
 #: The call a tool body is running inside, or ``None`` outside one.
@@ -1685,6 +1699,17 @@ class SandboxToolSession:
             # so registering a call-naming key under a conversation-scoped workload would have the
             # `finally` delete the conversation's own sandbox over an acquire the router refused.
             call.acquired.setdefault(key, [])
+        if call is not None and not call.closed and (key, self._spec.kind) not in call.entered:
+            # Before the acquire, so a call arriving while the last one's disposal is in flight
+            # waits for it instead of being handed a sandbox that is about to go. Recorded
+            # before the await for the same reason the per-call key is: a cancellation inside
+            # the wait must still leave the `finally` something to retire.
+            call.entered.add((key, self._spec.kind))
+            try:
+                await self._router.enter_call(key, self._spec)
+            except TimeoutError as exc:
+                self._logger.warning(f"{self._log_prefix}: %s", exc)
+                return _SANDBOX_BUSY
         try:
             sandbox = await self._router.acquire(key, self._spec)
         except ATTACH_REFUSALS as exc:
@@ -1882,6 +1907,40 @@ async def _dispose_the_call_sandbox(
     return None if landed else "the delete did not land"
 
 
+def _resolved_rung(
+    router: SandboxRouter, spec: SandboxSpec, *, prefix: str, logger: logging.Logger
+) -> Cleanup:
+    """Which rung this call ends on, and :data:`Cleanup.DISPOSE` when that cannot be worked out.
+
+    The resolution reads the backend's declarations, which can raise for a shape this package
+    cannot read — and this runs in a ``finally``, where that would replace whatever the call was
+    already reporting.  Falling back to the strongest rung is the safe direction: a disposal
+    needs nothing from the spec and leaves nothing behind.
+    """
+    try:
+        return router.effective_cleanup(spec)
+    except Exception as unreadable:  # noqa: BLE001 — a `finally` must not raise over a result
+        logger.warning(
+            f"{prefix}: could not work out which cleanup this call earns, so its sandbox is "
+            "disposed: %s",
+            error_detail(unreadable),
+        )
+        return Cleanup.DISPOSE
+
+
+def _give_back_the_sandbox(call: _SandboxToolCall, *, router: SandboxRouter) -> None:
+    """Release every sandbox this call still holds exclusively.
+
+    The cleanup itself has already run for a key that reached it; what is left here is every
+    pair the call *entered* and then never cleaned — an acquire the router refused, a body that
+    raised before it ever got a sandbox. A slot left held would make every later call on that
+    sandbox wait out the queue bound for nothing.
+    """
+    for key, kind in tuple(call.entered):
+        router.release_call(key, kind)
+    call.entered.clear()
+
+
 async def _reclaim_the_call(
     call: _SandboxToolCall,
     *,
@@ -1918,7 +1977,9 @@ async def _reclaim_the_call(
     """
     if not call.acquired:
         # Nothing was acquired, so nothing was written and nothing ran — there is nothing
-        # there, and no round trip is worth spending to prove it.
+        # there, and no round trip is worth spending to prove it. The gate is still retired:
+        # a call that entered and was then refused holds the count open otherwise.
+        _give_back_the_sandbox(call, router=router)
         return
     prefix = _prefixed(tool)
     path = f"{spec.work_dir}/{call.id}" if call.named else spec.work_dir
@@ -1969,7 +2030,51 @@ async def _reclaim_the_call(
                 raise
             continue
         reasons: list[str] = []
-        if call.named:
+        rung = _resolved_rung(router, spec, prefix=prefix, logger=logger)
+        if rung is not Cleanup.RECLAIM:
+            # The sandbox is going, whole. Removing the call's directory first would be a round
+            # trip spent on bytes the reset or the delete takes anyway — and on a backend whose
+            # `exec` detaches it would remove the very files that identify what is still
+            # running. This call holds the sandbox exclusively, so the cleanup runs here rather
+            # than waiting for anyone: there is nobody else in it.
+            noted = [
+                reason for owner, reason in unclean if any(owner is held for held in sandboxes)
+            ]
+            if noted:
+                logger.warning(
+                    f"{prefix}: the sandbox is not clean after this call: %s", "; ".join(noted)
+                )
+            try:
+                left = await router.finish_call(
+                    key,
+                    spec,
+                    rung=rung,
+                    sandbox=sandboxes[-1],
+                    unclean="; ".join(noted) or None,
+                )
+            except (asyncio.CancelledError, GeneratorExit):
+                _refuse_not_yet_reclaimed(router, acquired, index)
+                logger.warning(
+                    f"{prefix}: the sandbox was not cleaned: the call was cancelled during the %s",
+                    str(rung),
+                )
+                raise
+            call.entered.discard((key, spec.kind))
+            if left is None:
+                continue
+            # The router has already disposed and already marked the key, so the escalation
+            # below would be a second disposal over the same sandbox. Only the report is owed.
+            logger.warning(f"{prefix}: the sandbox was not cleaned: %s", left)
+            if on_failure is not None:
+                await _tell_the_host(
+                    on_failure,
+                    ReclaimFailure(tool=tool, key=key, path=path, reason=left, disposal="failed"),
+                    prefix=prefix,
+                    logger=logger,
+                    timeout=timeout,
+                )
+            continue
+        if call.named and rung is Cleanup.RECLAIM:
             try:
                 # By name, against the working directory — not as one composed string. A
                 # ``work_dir`` the protocol accepts may not be POSIX-shaped, and a composed path
@@ -2031,6 +2136,8 @@ async def _reclaim_the_call(
             # must not reacquire a sandbox still holding this call's data.
             _refuse_not_yet_reclaimed(router, acquired, index + 1)
             raise
+    # Last: a pair whose cleanup ran gave its sandbox back there, and this covers the rest.
+    _give_back_the_sandbox(call, router=router)
 
 
 #: The one substitution a committed sentence may carry, and the reason there is exactly one.

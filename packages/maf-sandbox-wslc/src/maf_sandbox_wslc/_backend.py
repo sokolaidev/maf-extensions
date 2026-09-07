@@ -571,6 +571,19 @@ class _WslcSandbox:
             "workload already requires it, or declare a backend whose engine answers that check."
         )
 
+    async def reset(self, *, timeout: float) -> None:
+        """Not offered: this backend declares no :data:`~maf_sandbox.Capability.SNAPSHOT`.
+
+        Spelled out rather than inherited, because the protocol member is what a caller and a
+        type checker read. The router never reaches it — it resolves to
+        :data:`~maf_sandbox.Cleanup.RESET` only for a backend that declares the capability — so
+        this raising is a statement rather than a failure path.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not snapshot, so it cannot be reset to its pre-input "
+            "state. Its sandboxes are cleaned by a reclaim or a disposal."
+        )
+
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
         """Remove ``directory`` with ``rm -rf`` over :meth:`_exec`, as ``--user 0``.
 
@@ -859,9 +872,15 @@ class WslcSandboxBackend:
                 self._acquired[name] = (key.scope, key.thread_id, key.agent_dir)
             return _WslcSandbox(self._wslc, name, self._config.command_timeout_seconds)
 
-    async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
+    async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> DisposalFailure | None:
         """Delete every container for ``key`` — every kind, closed or allowlisted — with
         proxies and networks.
+
+        ``kind`` narrows the sweep to one workload's sandbox. ``None`` is every kind's, which is
+        what this method meant before the argument existed and is what a caller releasing the
+        whole key means. The framework passes a kind for its end-of-call disposal, so a
+        conversation running two kinds does not have one kind's cleanup take the other's warm
+        sandbox with it.
 
         By label, so it reaches a sandbox created under an egress configuration this backend no
         longer runs; the registry name is the fallback for when the listing itself fails. Never
@@ -869,7 +888,9 @@ class WslcSandboxBackend:
         whose data is still sitting in a container.
         """
         prefix = (key.scope, key.thread_id, key.agent_dir)
-        mine = [k for k in list(self._registry) if k[:3] == prefix]
+        mine = [
+            k for k in list(self._registry) if k[:3] == prefix and (kind is None or k[3] == kind)
+        ]
         remembered = [self._registry.pop(k) for k in mine]
         candidates = list(dict.fromkeys([*remembered, *sorted(self._undeleted.get(prefix, ()))]))
         if candidates:
