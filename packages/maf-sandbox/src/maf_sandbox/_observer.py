@@ -49,7 +49,7 @@ import inspect
 import logging
 from collections.abc import Callable
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
 
 from ._containment import CONTAINED, escapes_containment
@@ -60,12 +60,11 @@ from ._protocol import (
     Identity,
     Isolation,
     IsolationScope,
-    ListedFile,
     SandboxKey,
     SandboxSpec,
     SourceIntegrity,
     TransferLimits,
-    weakest_integrity,
+    weakest_level,
 )
 
 __all__ = [
@@ -89,10 +88,32 @@ __all__ = [
     "StoreFileRead",
     "StoreReadOutcome",
     "ToolCallEnded",
-    "fed_from_store",
+    "fed_with",
     "record",
     "refuse_an_unusable_observer",
 ]
+
+
+@dataclass(frozen=True)
+class FedFromStore:
+    """What one call was fed out of the host's file store, folded into a single answer.
+
+    A call that read nothing carries none of these rather than an empty fold:
+    :func:`~maf_sandbox.weakest_integrity` answers ``TRUSTED`` for an empty listing, which would
+    read here as a call fed trusted content.
+    """
+
+    #: How many reads this folds — reads, not distinct files.  Never zero.
+    reads: int
+    #: The weakest level across them, ``None`` where the host establishes nothing about one.
+    weakest: SourceIntegrity | None
+
+
+def fed_with(fed: FedFromStore | None, level: SourceIntegrity | None) -> FedFromStore:
+    """``fed`` extended by one read at ``level``, folded rather than accumulated."""
+    if fed is None:
+        return FedFromStore(reads=1, weakest=level)
+    return FedFromStore(reads=fed.reads + 1, weakest=weakest_level((fed.weakest, level)))
 
 
 @dataclass
@@ -109,9 +130,9 @@ class RecordedCall:
 
     id: str
     closed: bool = False
-    #: The reads that fed this call text, which :func:`fed_from_store` folds.  A read that
-    #: answered ``absent`` or ``refused`` fed nothing and is not here.
-    fed: list[ListedFile] = field(default_factory=list[ListedFile])
+    #: What has fed this call so far, folded by :func:`fed_with`.  A read that answered
+    #: ``absent`` or ``refused`` fed nothing and does not reach it.
+    fed: FedFromStore | None = None
 
 
 #: The tool call whose records are being written here, or ``None`` outside one.
@@ -499,28 +520,6 @@ class OutputsCollected(SandboxEvent):
 
     def deliver_to(self, observer: SandboxObserver) -> None:
         observer.outputs_collected(self)
-
-
-@dataclass(frozen=True)
-class FedFromStore:
-    """What one call was fed out of the host's file store, folded into a single answer.
-
-    A call that read nothing carries none of these rather than an empty fold:
-    :func:`~maf_sandbox.weakest_integrity` answers ``TRUSTED`` for an empty listing, which would
-    read here as a call fed trusted content.
-    """
-
-    #: How many reads this folds — reads, not distinct files.  Never zero.
-    reads: int
-    #: The weakest level across them, ``None`` where the host establishes nothing about one.
-    weakest: SourceIntegrity | None
-
-
-def fed_from_store(call: RecordedCall) -> FedFromStore | None:
-    """The fold across what ``call`` was fed, or ``None`` where it read nothing that fed it."""
-    if not call.fed:
-        return None
-    return FedFromStore(reads=len(call.fed), weakest=weakest_integrity(call.fed))
 
 
 @dataclass(frozen=True)

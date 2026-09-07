@@ -2042,6 +2042,30 @@ class TestTheCallRecordsWhatFedIt:
             reads=1, weakest=SourceIntegrity.UNTRUSTED
         )
 
+    def test_a_second_session_that_records_nothing_still_feeds_the_call(self):
+        """The inner router has no observer, so its read emits no event and still fed the call."""
+        recorder = _Recorder()
+        router = _router(observer=recorder)
+        store = InMemoryStore({"a.txt": "1"}, integrity=SourceIntegrity.UNTRUSTED)
+
+        def build(session: SandboxToolSession):
+            async def widget_run() -> str:
+                """Do a thing."""
+                unrecorded = SandboxToolSession(
+                    _router(), _context(), "agent-2", _SPEC, name="other_run", logger=_LOG
+                )
+                await unrecorded.read_file(store, ListedFile("a.txt", SourceIntegrity.UNTRUSTED))
+                return "done"
+
+            return widget_run
+
+        asyncio.run(_fn(_tool(router, build))())
+
+        assert not [event for event in recorder.events if isinstance(event, StoreFileRead)]
+        assert recorder.one(ToolCallEnded).fed == FedFromStore(
+            reads=1, weakest=SourceIntegrity.UNTRUSTED
+        )
+
     def test_a_synchronous_body_folds_what_it_read_too(self):
         """A body that awaits nothing gets its own wrapper, and can still run a read itself."""
         recorder = _Recorder()
