@@ -212,8 +212,10 @@ class TestTheDeclaredCoreFloor:
     that needs a live model and a real backend per version. So the claim is made true by
     construction instead: a sample is documentation of the current library, not a package with
     consumers to keep compatible, so every sample declares the current core minor and these
-    tests are what stop that rotting. `scripts/set_dependents_range.py` moves them all after a
-    core release, in the pull request that already moves the packages' range.
+    tests are what stop that rotting. `scripts/set_dependents_range.py --samples` moves them
+    all, in a `chore:` pull request of its own once the dependents that admit the release have
+    published — never in the one that moves the packages' range, which is the merge that took
+    fourteen of fifteen samples unsatisfiable on 0.33.0.
     """
 
     _PACKAGE = Path(__file__).resolve().parent.parent / "packages" / "maf-sandbox"
@@ -241,8 +243,8 @@ class TestTheDeclaredCoreFloor:
         match = re.fullmatch(r"maf-sandbox>=(\d+(?:\.\d+)*)", found[0].strip())
         assert match, (
             f"{sample.name} declares {found[0]!r}. The floor has to be a bare "
-            "`maf-sandbox>=X` — that is the shape scripts/set_dependents_range.py edits "
-            "after a core release, and one it cannot read stops that step."
+            "`maf-sandbox>=X` — that is the shape `scripts/set_dependents_range.py --samples` "
+            "edits after a core release, and one it cannot read stops that run."
         )
         return tuple(int(part) for part in match.group(1).split("."))
 
@@ -291,7 +293,8 @@ class TestTheDeclaredCoreFloor:
         assert not wrong, (
             f"a sample declares {wrong[0]}; this repository's core is at {core} and the release "
             f"before it was {previous}. Move every sample's floor with "
-            "`python scripts/set_dependents_range.py <released-version>`."
+            "`python scripts/set_dependents_range.py --samples <released-version>`, as a "
+            "`chore:` of its own once the dependents admitting that core have published."
         )
 
     @pytest.mark.parametrize("sample", _SAMPLE_DIRS, ids=lambda path: path.name)

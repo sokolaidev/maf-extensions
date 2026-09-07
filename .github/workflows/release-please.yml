@@ -70,14 +70,13 @@ jobs:
         if: always()
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      # After maf-sandbox publishes, its dependents' range moves at both ends: the floor to the
-      # version that just published, in the packages that look like they need it, and the
-      # ceiling two minors up so the release after it needs nobody's permission. The
-      # post-release step of RELEASING.md's release order (#41, #178).
+      # After maf-sandbox publishes, its dependents' range moves: the ceiling onto the line that
+      # just released, the floor where that ceiling already admitted it. The post-release step of
+      # RELEASING.md's release order (#41, #178).
       #
       # One step, because the two bounds are one string: split across two pull requests, each
       # rewrites the whole constraint and whichever merges second reverts the other's half
-      # (#195). The separation is not real; only the collision would be.
+      # (#195). No `--samples`, so what this opens cannot carry a sample.
       - name: Propose the dependents' range
         if: >-
           steps.release.outputs.releases_created == 'true'
@@ -98,7 +97,7 @@ jobs:
           # alone (uv.lock records the workspace edge without a specifier, so it does not move).
           python3 scripts/set_dependents_range.py "$VERSION"
           if git diff --quiet; then
-            echo "every dependent's range and every sample floor already covers maf-sandbox ${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+            echo "every dependent's range already covers maf-sandbox ${VERSION}" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           if [ -z "$title" ]; then
@@ -134,13 +133,13 @@ jobs:
 
           It carries both ends of the range, because they are one string and two pull requests editing it each reverted the other's half (#195). The two ends are not the same kind of claim, so read them differently:
 
-          **The ceiling is uniform and is a claim about nobody's code.** It widens to admit the minor after @VERSION@, before that minor exists — which holds either way, since a ceiling admits a version whether or not it has been released. Widening only enlarges an accepted set, so it cannot make a resolution fail. What it buys is that the next core minor can be released without leaving the index unresolvable as a set (#175) and without anyone having to remember step 1 (#177). Nothing here needs your judgement.
+          **The ceiling is uniform and is a claim about nobody's code.** It opens onto @VERSION@'s own line and stops there. Widening only enlarges an accepted set, so it cannot make a resolution fail, and what it buys is that these packages can be installed beside the core that just published (#175, #177). Nothing here needs your judgement.
 
-          **The floor is a guess, and usually a wrong one.** It moves in every dependent whose ceiling already admitted @VERSION@ and whose floor was a minor behind — a shape, not evidence that a package's code uses this release. Ceilings are widened for everyone at once, so admitting a version says nothing about needing it. A floor should move only for a package that relies on API or behaviour this release introduced or changed; a new import is the obvious case, but a fixed bug in an existing call counts too. For the rest it pins a version they do not need and over-constrains their consumers.
+          **It deliberately does not reach the minor after @VERSION@.** Admitting a version and being tested against it are the same condition — `check_core_against_dependents.py` runs every published dependent whose ceiling admits the candidate — so a ceiling reaching ahead makes every breaking core wait on republishing the dependents it breaks. `docs/release-compatibility.md` has the argument.
 
-          **The samples' floor is neither, and it is the one thing here you should not decline.** Every `samples/*/agent.py` declares the same `maf-sandbox>=<minor>` and all of them move to @VERSION@'s minor together. Nothing under `samples/` is packaged, so this constrains no consumer: a sample documents the current library, and the version it is actually run against is the only claim it can honestly make. Declining leaves it pointing at a core nothing here runs it on — which never fails, because `uv` resolves the newest admissible version anyway, and so goes unnoticed until a reader whose resolution is capped elsewhere gets a plausible wrong answer (#343).
+          **The floor moves with it, in every dependent a minor behind.** Together the two leave each dependent on one core minor: the suite is released as a set rather than carrying several core lines, which is the maintenance choice behind this. It is not evidence that a package's code needs @VERSION@ — decline a hunk for a package you want left on an older core, and be aware that its consumers then cannot install it beside a sibling that did move.
 
-          **The exception, and the only one: decline the samples' half too when @VERSION@ is already on PyPI and no dependent admitting it has published yet.** That is the order this pull request is not written for, and moving the samples in it fails rather than rots. `scripts/check_samples_against_declared_core.py` stops using its `--local-core` escape the moment something published satisfies the floor, and then resolves each block with the core pinned from the index and that block's dependents taken from there as well — where every published one still caps below @VERSION@. Each sample naming a dependent goes unsatisfiable, and that blocks the dependent releases whose publishing is what fixes it. Leave the samples where they are, and move them in a `chore:` pull request once all of them are out.
+          **Nothing under `samples/` is in this pull request**, deliberately: merged with the packages' hunk it takes the whole suite unsatisfiable whenever the core reached the index first (0.33.0, 0.34.0). Run `scripts/set_dependents_range.py --samples @VERSION@` as a `chore:` once every dependent has published; `tests/test_sample_metadata.py` reds if it is forgotten for two releases.
 
           **To decline a floor without losing its ceiling**, edit that line back to the floor it had and leave the new upper bound alone — the two now live in one hunk, so dropping the hunk wholesale would give up the widening too. Retitle it feat:/breaking if adopting the version is more than a patch for a dependent; the title says fix: so the bot does not choose the bump.
 

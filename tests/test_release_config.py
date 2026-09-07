@@ -526,8 +526,9 @@ class TestTheProposalBodySurvivesTheShell:
         'held at "Approve and run", the same as a Release PR\'s',
         "**Check that it actually published before merging this.**",
         "**The ceiling is uniform and is a claim about nobody's code.**",
-        "**The floor is a guess, and usually a wrong one.**",
-        "**The exception, and the only one: decline the samples' half too when",
+        "**The floor moves with it, in every dependent a minor behind.**",
+        "**It deliberately does not reach the minor after",
+        "**Nothing under `samples/` is in this pull request**",
         "**To decline a floor without losing its ceiling**",
         "**Then merge it, and let the dependent releases it cuts publish.**",
     )
