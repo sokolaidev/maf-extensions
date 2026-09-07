@@ -107,7 +107,7 @@ The inventory includes stopped containers, proxies without a workload and networ
 | Decision | State | Tracking |
 |---|---|---|
 | An independent cleanup runner and a maximum-lifetime or lease policy | deferred design | [#1008](https://github.com/sokolaidev/maf-extensions/issues/1008) (open) |
-| Explicit age-based cleanup of Docker workloads, proxies and networks | API shipped; independent runner remains deferred | [#1008](https://github.com/sokolaidev/maf-extensions/issues/1008) (open), the Docker scope of [#808](https://github.com/sokolaidev/maf-extensions/issues/808) (open) |
+| Explicit age-based cleanup of Docker workloads, proxies and networks | API shipped; independent runner remains deferred | API delivered by [#1012](https://github.com/sokolaidev/maf-extensions/pull/1012) (merged), under [#1008](https://github.com/sokolaidev/maf-extensions/issues/1008) (open), the Docker scope of [#808](https://github.com/sokolaidev/maf-extensions/issues/808) (open) |
 | The backend, its declarations, and `FILES_OUT` from the day the package existed | shipped | [#109](https://github.com/sokolaidev/maf-extensions/issues/109) open as the `FILES_OUT` tracking issue; the docker item landed first, as the gate |
 | No `FILES_LIST` — no engine-level enumeration primitive | by design | [#353](https://github.com/sokolaidev/maf-extensions/issues/353) (open) asks whether the tar stream could carry it after all |
 | `egress_modes = {CLOSED}`, or `{CLOSED, ALLOWLIST}` with a proxy image; a mode outside the set is refused rather than degraded | shipped | [#530](https://github.com/sokolaidev/maf-extensions/pull/530) (merged) under [#265](https://github.com/sokolaidev/maf-extensions/issues/265) (closed) |
