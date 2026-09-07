@@ -1896,8 +1896,8 @@ class TestStatFile:
 
 
 class TestReadFile:
-    def _sandbox_streaming(self, stream: bytes):
-        overrides = {**_WORK_IS_A_DIRECTORY, ("cp",): _DockerResult(0, stream, "")}
+    def _sandbox_streaming(self, stream: bytes, *, rc: int = 0):
+        overrides = {**_WORK_IS_A_DIRECTORY, ("cp",): _DockerResult(rc, stream, "")}
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
         return asyncio.run(backend.acquire(_KEY, _SPEC))
 
@@ -1906,6 +1906,37 @@ class TestReadFile:
         sandbox = self._sandbox_streaming(_tar_bytes("out.png", payload))
         got = asyncio.run(sandbox.read_file("out.png", working_directory=_WORK, max_bytes=1000))
         assert got == payload
+
+    @pytest.mark.parametrize("rc", [0, 1])
+    @pytest.mark.parametrize("received", [0, 1500])
+    def test_an_incomplete_body_is_refused(self, rc: int, received: int):
+        from maf_sandbox_docker._backend import _TAR_BLOCK
+
+        stream = _tar_bytes("out.png", b"x" * 4000)[: _TAR_BLOCK + received]
+        sandbox = self._sandbox_streaming(stream, rc=rc)
+        with pytest.raises(
+            RuntimeError,
+            match=f"incomplete body.*expected 4000 bytes, received {received}",
+        ):
+            asyncio.run(sandbox.read_file("out.png", working_directory=_WORK, max_bytes=4000))
+
+    @pytest.mark.parametrize("max_bytes", [15, 1000])
+    def test_a_complete_body_survives_a_nonzero_exit(self, max_bytes: int):
+        from maf_sandbox_docker._backend import _TAR_BLOCK
+
+        payload = b"x" * 15
+        stream = _tar_bytes("out.png", payload)[: _TAR_BLOCK + len(payload)]
+        sandbox = self._sandbox_streaming(stream, rc=1)
+        assert (
+            asyncio.run(sandbox.read_file("out.png", working_directory=_WORK, max_bytes=max_bytes))
+            == payload
+        )
+
+    def test_an_empty_file_returns_an_empty_body(self):
+        sandbox = self._sandbox_streaming(_tar_bytes("empty.txt", b""))
+        assert (
+            asyncio.run(sandbox.read_file("empty.txt", working_directory=_WORK, max_bytes=0)) == b""
+        )
 
     def test_a_body_over_the_cap_is_refused_not_truncated(self):
         sandbox = self._sandbox_streaming(_tar_bytes("out.png", b"x" * 100))

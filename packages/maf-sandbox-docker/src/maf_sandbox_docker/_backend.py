@@ -875,7 +875,13 @@ class _DockerSandbox:
             raise SandboxTransferCapExceeded(
                 f"{path!r} is {info.size} bytes and the caller allowed {max_bytes}"
             )
-        return result.stdout[_TAR_BLOCK : _TAR_BLOCK + info.size]
+        body = result.stdout[_TAR_BLOCK : _TAR_BLOCK + info.size]
+        if len(body) < info.size:
+            raise RuntimeError(
+                f"docker returned an incomplete body for {path!r}: "
+                f"expected {info.size} bytes, received {len(body)}"
+            )
+        return body
 
     async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
         """Not supported: this backend does not declare :data:`~maf_sandbox.Capability.FILES_LIST`.
