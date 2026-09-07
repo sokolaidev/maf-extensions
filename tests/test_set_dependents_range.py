@@ -11,11 +11,9 @@ which is a shape rather than evidence the package uses it — the floor is judge
 ceiling as it was rather than as this run leaves it, and a constraint the pattern cannot read
 stops the step instead of silently no-opping.
 
-The samples used to ride the same edit (#343) and now move only under `--samples`, which
-switches the file set rather than adding to it. Merged with the packages' hunk they take the
-whole set unsatisfiable whenever the core reaches the index first, which is what blocked the
-dependent releases on 0.33.0 and failed seven live samples on 0.34.0. The release workflow
-passes no flag, and `TestTheTwoFileSetsNeverMoveTogether` is what keeps the two apart.
+The samples used to ride the same edit (#343) and now move only under `--samples`, because
+merged with the packages' hunk they take the whole set unsatisfiable whenever the core reaches
+the index first (0.33.0, 0.34.0).
 """
 
 from __future__ import annotations
@@ -80,20 +78,12 @@ class TestTheTarget:
         assert ranges.target_ceiling(released) == expected
 
     def test_it_admits_every_patch_of_the_release(self):
-        ceiling = ranges.target_ceiling((0, 7, 0))
-        assert ranges._admits((0, 7, 9), ceiling), "a patch of the released minor must resolve"
+        assert ranges._admits((0, 7, 9), ranges.target_ceiling((0, 7, 0)))
 
     def test_it_does_not_admit_the_next_minor(self):
-        """The change this class exists for: the ceiling stops naming an unwritten release.
-
-        Admitting a version and being tested against it are the same condition, so a ceiling
-        reaching the next minor made every breaking core red before it was written — and let a
-        consumer resolve a core beside a dependent published before it.
-        """
-        ceiling = ranges.target_ceiling((0, 7, 0))
-        assert not ranges._admits((0, 8, 0), ceiling), (
-            "0.8.0 does not exist when 0.7.0 releases; admitting it is a claim nothing checked"
-        )
+        # Admitting a version and being tested against it are the same condition, so reaching
+        # the next minor made every breaking core red before it was written.
+        assert not ranges._admits((0, 8, 0), ranges.target_ceiling((0, 7, 0)))
 
 
 class TestParseConstraint:
@@ -110,14 +100,9 @@ class TestParseConstraint:
 class TestBothBoundsInOneEdit:
     """#195: two writers on one line meant the second merge reverted the first.
 
-    One writer still carries both bounds, but under a ceiling that admits only the released
-    line the two almost never move in the same run. The floor is judged against the ceiling
-    **as it stood**, so it moves only where that ceiling already admitted the release — and a
-    ceiling that admitted it is at or above the new target, so it does not widen. A ceiling
-    written to a *patch*, below the target and above the release, is the one shape left where
-    both move, and it is what these use. In an ordinary cycle the range pull request carries
-    the ceiling alone and a floor is a human's decision, which is what the module docstring
-    always said it was.
+    Under a ceiling admitting only the released line the two rarely move together: a ceiling
+    that already admitted the release is at or above the new target, so it does not widen. A
+    *patch* ceiling is the shape left where both move, and it is what these use.
     """
 
     def test_a_core_minor_can_still_move_the_floor_and_the_ceiling_together(self):
@@ -133,8 +118,7 @@ class TestBothBoundsInOneEdit:
         assert "<0.8.5" not in text
 
     def test_an_ordinary_cycle_moves_the_ceiling_alone(self):
-        # The common case now: <0.8 does not admit 0.8.0, so the floor stays where a human put
-        # it and only the ceiling opens onto the line that was just released.
+        # <0.8 does not admit 0.8.0, so the floor stays where a human put it.
         text, moved = ranges.set_range(_pyproject("maf-sandbox>=0.7.0,<0.8"), (0, 8, 0))
         assert moved == frozenset({CEILING})
         assert "maf-sandbox>=0.7.0,<0.9" in text
@@ -273,14 +257,10 @@ class TestTheSampleFloor:
 
 
 class TestTheTwoFileSetsNeverMoveTogether:
-    """The separation this script exists to keep: `--samples` switches, it does not add.
+    """`--samples` switches the file set, it does not add to it.
 
-    Merged with the packages' hunk the samples' floor takes the whole set unsatisfiable
-    whenever the core reaches the index before its dependents do —
-    `check_samples_against_declared_core.py` pins the new core and resolves each block's
-    dependents from the index, where none admits it yet. Fourteen of fifteen samples went
-    unsatisfiable that way on 0.33.0, and seven live samples failed on 0.34.0. The release
-    workflow passes no `--samples`, so what it opens cannot carry one.
+    One commit holding both is what took fourteen of fifteen samples unsatisfiable on 0.33.0
+    and failed seven live samples on 0.34.0.
     """
 
     def _sample(self, tmp_path: Path, name: str, text: str) -> Path:
@@ -326,10 +306,8 @@ class TestTheTwoFileSetsNeverMoveTogether:
             ranges.run("0.8.0", tmp_path, samples=True)
 
     def test_two_dependencies_on_one_line_are_refused_not_half_read(self, tmp_path: Path):
-        # Legal TOML, and not the layout the floor pattern reads. The danger is not the
-        # refusal — it is the version of this that skips: a looser `maf-sandbox` probe would
-        # miss the base behind the sibling on that line and leave a stale floor behind a green
-        # run.
+        # Legal TOML the floor pattern cannot read. The danger is the version that skips: a
+        # looser probe misses the base behind the sibling and leaves a stale floor behind green.
         self._sample(
             tmp_path,
             "01_a",
@@ -464,15 +442,9 @@ class TestOverATree:
         assert path.read_text("utf-8") == after
 
     def test_a_widened_ceiling_offers_the_floor_on_the_next_run(self, tmp_path: Path):
-        """Running twice for one release is not the same as running once, and never was.
+        """Recorded, not guarded: a ceiling this widened admits the release on a second run.
 
-        The floor is judged against the ceiling as it stood when the run began, so a ceiling
-        this script widened admits the release by the time a *second* run reads it. Under the
-        old two-minor ceiling that needed a dependent whose ceiling excluded the release; under
-        a ceiling that admits only the released line it is every dependent. Neither shape
-        reaches the release workflow, which runs once per release against `main`, and the
-        second run proposes a floor bump rather than doing anything to a published artifact —
-        so this is recorded here rather than guarded against.
+        Pre-existing, and out of reach of the workflow, which runs once per release on `main`.
         """
         path = self._write(tmp_path, "dep-a", "maf-sandbox>=0.7.0,<0.8")
 

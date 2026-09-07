@@ -16,47 +16,22 @@ resolvable (RELEASING.md, Release order), so admitting a version says nothing ab
 package's code needs it. Whether a floor should move is the reviewer's call on the pull
 request this opens.
 
-**The ceiling** admits the released line and nothing above it: 0.35.0 gives `<0.36`.
+**The ceiling** admits the released line and nothing above it: 0.35.0 gives `<0.36`. It reached
+a minor further until 0.35.0, when every published dependent admitting the unreleased next core
+became a gate on it — `docs/release-compatibility.md` has the argument. It only ever widens, so
+a patch changes nothing.
 
-It used to reach a minor further, so that the *next* core was admitted before it existed. At
-0.x that is a compatibility claim about an unwritten release, and 11 of the first 16 core
-minors declared breaking changes — so the claim was false more often than true, and the core
-release is what paid for it. Admitting a version and being tested against it are the same
-condition: `check_core_against_dependents.py` runs every published dependent whose ceiling
-admits the candidate, so a breaking core was refused until each of them republished. Core
-0.35.0 stalled that way on 2026-09-07, on two published `maf-sandbox-otel` versions whose fix
-was already in the tree.
+**The samples' floor moves only under `--samples`**, which switches the file set rather than
+adding to it. Merged with the packages' hunk it takes the whole suite unsatisfiable whenever
+the core reaches the index first (0.33.0, 0.34.0); the release workflow passes no flag, so what
+it opens cannot carry a sample.
 
-Admitting only what exists ends that, and it ends the hazard rather than the check: no
-consumer can resolve a core beside a dependent published before it, so there is no untested
-pairing left for that gate to refuse. The pairing is still proven, at the release that makes
-it — `check_dependent_works_with_published_cores.py` runs the dependent's suite against every
-published core its new range admits. What this costs is reach: a non-breaking core no longer
-arrives for consumers until each dependent widens and republishes.
+`--print-title` prints the subject for what the same arguments would change, so the workflow
+does not derive the rule a second time.
 
-Both refusals from the scripts this replaces are kept. The ceiling only ever widens, so a
-patch changes nothing. The floor is judged against the ceiling **as it was**, not as this run
-leaves it — otherwise widening would authorise the very floor bump the old ceiling refused,
-and a deliberately narrow ceiling would silently become an adoption.
-
-**The samples' floor moves behind `--samples`**, and never in the same run. It used to ride
-this edit, and it cannot: once the core is on the index and the dependents are not,
-`check_samples_against_declared_core.py` resolves every block against a core no published
-dependent admits, and each sample naming one goes unsatisfiable — which blocks the dependent
-releases whose publishing is what would fix it. That took fourteen of fifteen samples down on
-0.33.0 and seven live samples on 0.34.0, both times because the samples' hunk was merged with
-the packages'. The release workflow passes no `--samples`, so the pull request it opens cannot
-carry one; a maintainer runs it once the dependents have published, as a `chore:` of its own,
-and `tests/test_sample_metadata.py` reds if that is forgotten for two releases. The flag keeps
-the sixteen edits and their refusals in one place rather than in sixteen hand edits.
-
-`--print-title` prints the commit subject for what this would change, without changing it, so
-the workflow naming it in a commit and a pull request reads it from here rather than deriving
-the rule a second time — and so the subject can name the bounds that actually moved.
-
-Exits non-zero if a package that depends on maf-sandbox carries a constraint this cannot read:
-editing by pattern silently no-ops when the string drifts, and a release step that quietly
-does nothing while looking healthy is worse than one that stops.
+Exits non-zero on a constraint it cannot read: editing by pattern silently no-ops when the
+string drifts, and a release step that does nothing while looking healthy is worse than one
+that stops.
 """
 
 from __future__ import annotations
@@ -70,18 +45,11 @@ _CONSTRAINT = re.compile(r"maf-sandbox>=(\d+(?:\.\d+)*),<(\d+(?:\.\d+)*)")
 #: The distribution name at the head of a dependency string, before any version operator.
 _DIST_NAME = re.compile(r"[A-Za-z0-9._-]+")
 
-#: A sample's floor: a whole `#`-prefixed line of the PEP 723 block, holding that dependency
-#: and nothing else. The rewrites below are `count=1`, and the samples carry paragraphs of
-#: prose above their block, so the `#` and the two quotes are what keep a sentence quoting
-#: `"maf-sandbox>=X"` from being the match that moves instead of the dependency. The
-#: closing quote is a lookahead so the substitution replaces the version and nothing else,
-#: and the line anchor makes any other layout unreadable rather than half-read — see
-#: `_SAMPLE_BASE`, which is what turns unreadable into a stopped step.
+#: A sample's floor, anchored to its own `#` line: the rewrite is `count=1`, and prose above
+#: the block quoting `"maf-sandbox>=X"` would otherwise be the match that moves.
 _SAMPLE_FLOOR = re.compile(r'(?m)^(?P<lead>#[ \t]+"maf-sandbox>=)(?P<floor>\d+(?:\.\d+)*)(?=")')
-#: Any dependency on the base distribution, anywhere on a `#`-prefixed line. Deliberately
-#: looser than the pattern above: the two disagreeing is the signal that a sample declares
-#: maf-sandbox in a shape this cannot edit, and that has to stop the run rather than skip it
-#: silently. The lookahead is what keeps the sibling `maf-sandbox-acas` from answering for it.
+#: Looser, on purpose: the two disagreeing means a shape this cannot edit, which stops the run
+#: rather than skipping it. The lookahead keeps `maf-sandbox-acas` from answering for the base.
 _SAMPLE_BASE = re.compile(r'(?m)^#[ \t].*"maf-sandbox(?![-A-Za-z0-9_.])[^"]*"')
 
 FLOOR = "floor"
@@ -112,22 +80,13 @@ def parse_constraint(constraint: str) -> tuple[tuple[int, ...], tuple[int, ...]]
 
 
 def target_ceiling(released: tuple[int, ...]) -> tuple[int, ...]:
-    """The bound that admits ``released``'s line and nothing above it.
-
-    One minor up: ``<0.36`` admits every 0.35 patch and excludes 0.36.0, which does not exist
-    when this runs. See the module docstring for why it stopped reaching a minor further.
-    """
+    """The bound admitting ``released``'s line: ``<0.36`` takes every 0.35 patch, not 0.36.0."""
     major, minor = (tuple(released) + (0, 0))[:2]
     return (major, minor + 1)
 
 
 def target_sample_floor(released: tuple[int, ...]) -> tuple[int, ...]:
-    """The floor every sample declares after ``released``: its minor, without its patch.
-
-    Minor-only for two reasons. It is what the samples already spell, and it makes a patch
-    release a no-op — a diff rewriting sixteen files to say what they already say costs a
-    reviewer real attention and buys a claim nobody made.
-    """
+    """The floor every sample declares: ``released``'s minor, so a patch rewrites nothing."""
     major, minor = (tuple(released) + (0, 0))[:2]
     return (major, minor)
 
@@ -201,12 +160,8 @@ def plan(
     """What this would write, without writing it: ``(path, new text, bounds moved)``.
 
     Separate from :func:`run` so ``--print-title`` can name what is about to change without
-    changing it, and so the workflow never re-derives the rule.
-
-    ``samples`` switches the file set rather than adding to it, and it is the whole of the
-    separation the module docstring describes: the release workflow never passes it, so the
-    pull request it opens cannot carry a sample. The two sets are never planned together —
-    one commit holding both is the shape that took the suite unsatisfiable twice.
+    changing it. ``samples`` switches the file set rather than adding to it: the two are never
+    planned together, which is the whole of the separation.
     """
     released = _version(released_text)
     planned: list[tuple[Path, str, frozenset[str]]] = []
@@ -256,17 +211,8 @@ def run(released_text: str, repo_root: Path, *, samples: bool = False) -> list[P
 def title(released_text: str, moved: frozenset[str]) -> str:
     """The commit subject for the bounds that moved, or ``""`` when none did.
 
-    `fix:` is required rather than stylistic: `chore:` and `ci:` release nothing here, and
-    both halves are only worth anything once *published* — the ceiling because a dependent
-    that cannot resolve the new core is one nobody can adopt it through, the floor because a
-    floor nobody can install is not a constraint. See RELEASING.md, Release order.
-
-    The samples are the exception. A change is attributed to a package by the files it
-    touches, and only `packages/*` is configured, so a samples-only commit cuts no release
-    whatever type it carries — `fix:` there would be inert rather than harmful. It says
-    `chore:` because that is what AGENTS.md prescribes for a touch outside a package, and
-    because `chore:` releases nothing *by type* rather than by the accident of which paths
-    happen to be configured today.
+    `fix:` is load-bearing: `chore:` and `ci:` release nothing, and an unpublished range is
+    worth nothing. The samples are `chore:` because nothing under `samples/` is packaged.
     """
     released = _version(released_text)
     admitted = target_ceiling(released)
@@ -286,12 +232,7 @@ def title(released_text: str, moved: frozenset[str]) -> str:
 
 
 def main(argv: list[str]) -> int:
-    """CLI entry: rewrite the dependents' ranges, or with ``--samples`` the samples' floors.
-
-    ``--print-title`` prints the commit subject for what the same arguments would change,
-    without changing it. The two file sets are never written by one invocation: the release
-    workflow passes no ``--samples``, so the pull request it opens cannot carry one.
-    """
+    """CLI entry: rewrite the dependents' ranges, or with ``--samples`` the samples' floors."""
     repo_root = Path(__file__).resolve().parent.parent
     rest = [argument for argument in argv[1:] if argument != "--samples"]
     samples = "--samples" in argv[1:]

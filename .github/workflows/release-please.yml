@@ -71,20 +71,12 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # After maf-sandbox publishes, its dependents' range moves: the ceiling onto the line that
-      # just released, and the floor to that version in the packages whose ceiling already
-      # admitted it. The post-release step of RELEASING.md's release order (#41, #178).
-      #
-      # The ceiling names only what exists. It used to reach a minor further so the *next* core
-      # needed nobody's permission, and that made every published dependent a gate on it — 11 of
-      # the first 16 core minors were breaking, and 0.35.0 stalled on two published otel versions
-      # whose fix was already merged. Nothing under `samples/` is touched: merged with this hunk
-      # the samples' floor takes the whole set unsatisfiable whenever the core reaches the index
-      # first, which is what blocked the dependent releases on 0.33.0 and failed seven live
-      # samples on 0.34.0. It moves in a `chore:` pull request once the dependents are out.
+      # just released, the floor where that ceiling already admitted it. The post-release step of
+      # RELEASING.md's release order (#41, #178).
       #
       # One step, because the two bounds are one string: split across two pull requests, each
       # rewrites the whole constraint and whichever merges second reverts the other's half
-      # (#195). The separation is not real; only the collision would be.
+      # (#195). No `--samples`, so what this opens cannot carry a sample.
       - name: Propose the dependents' range
         if: >-
           steps.release.outputs.releases_created == 'true'
@@ -143,11 +135,11 @@ jobs:
 
           **The ceiling is uniform and is a claim about nobody's code.** It opens onto @VERSION@'s own line and stops there. Widening only enlarges an accepted set, so it cannot make a resolution fail, and what it buys is that these packages can be installed beside the core that just published (#175, #177). Nothing here needs your judgement.
 
-          **It deliberately does not reach the minor after @VERSION@.** It used to, so that the next core release needed nobody's permission — but admitting a version and being tested against it are the same condition: `check_core_against_dependents.py` runs every published dependent whose ceiling admits the candidate, so a breaking core was refused until each of them republished, and 11 of the first 16 core minors were breaking. A ceiling naming an unreleased version is also a compatibility claim nobody has checked, and a consumer can resolve it. Admitting only what exists ends both, and the pairing is still proven where the adoption happens — at each dependent's own release, against the core its new range admits.
+          **It deliberately does not reach the minor after @VERSION@.** Admitting a version and being tested against it are the same condition — `check_core_against_dependents.py` runs every published dependent whose ceiling admits the candidate — so a ceiling reaching ahead makes every breaking core wait on republishing the dependents it breaks. `docs/release-compatibility.md` has the argument.
 
-          **The floor is a guess, and usually a wrong one.** It moves in every dependent whose ceiling already admitted @VERSION@ and whose floor was a minor behind — a shape, not evidence that a package's code uses this release. A floor should move only for a package that relies on API or behaviour this release introduced or changed; a new import is the obvious case, but a fixed bug in an existing call counts too. For the rest it pins a version they do not need and over-constrains their consumers. Under a ceiling that admits only the released line this rarely fires at all, so a floor that should move is usually yours to add here.
+          **The floor is a guess, and usually a wrong one.** It moves in every dependent whose ceiling already admitted @VERSION@ and whose floor was a minor behind — a shape, not evidence that a package's code uses this release. A floor should move only for a package that relies on API or behaviour this release introduced or changed. Under this ceiling it rarely fires, so a floor that should move is usually yours to add here.
 
-          **Nothing under `samples/` is in this pull request**, and that is deliberate rather than an omission. Merged with the packages' hunk the samples' floor takes the whole set unsatisfiable whenever the core reached the index before its dependents: `check_samples_against_declared_core.py` pins the new core and resolves each block's dependents from the index, where none of them admits it yet. That took fourteen of fifteen samples down on 0.33.0 and failed seven live samples on 0.34.0, both times blocking the dependent releases whose publishing was the fix. Move the samples in a `chore:` pull request once every dependent has published; `tests/test_sample_metadata.py` reds if that is forgotten for two releases.
+          **Nothing under `samples/` is in this pull request**, deliberately: merged with the packages' hunk it takes the whole suite unsatisfiable whenever the core reached the index first (0.33.0, 0.34.0). Run `scripts/set_dependents_range.py --samples @VERSION@` as a `chore:` once every dependent has published; `tests/test_sample_metadata.py` reds if it is forgotten for two releases.
 
           **To decline a floor without losing its ceiling**, edit that line back to the floor it had and leave the new upper bound alone — the two now live in one hunk, so dropping the hunk wholesale would give up the widening too. Retitle it feat:/breaking if adopting the version is more than a patch for a dependent; the title says fix: so the bot does not choose the bump.
 
