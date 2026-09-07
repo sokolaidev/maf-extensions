@@ -977,6 +977,59 @@ class TestStatGuestTarHeader:
 # ---------------------------------------------------------------------------
 
 
+class TestNarrowedDisposal:
+    @pytest.mark.parametrize("kind", ["bicep", "x" * 100, "unsafe=kind", "sha256-" + "a" * 48])
+    @pytest.mark.parametrize("whole_key", [False, True])
+    def test_label_sweep_preserves_siblings_and_matches_creation(self, kind, whole_key):
+        from maf_sandbox_wslc._backend import _sandbox_labels
+
+        selected = _sandbox_labels(_KEY, SandboxSpec(kind=kind))["maf-sandbox.kind"]
+        sibling = _sandbox_labels(_KEY, SandboxSpec(kind="sibling"))["maf-sandbox.kind"]
+        labels = {"selected": selected, "sibling": sibling}
+
+        def respond(args):
+            if args[:2] == ("container", "list"):
+                filters = [value for value in args if value.startswith("label=maf-sandbox.kind=")]
+                names = [
+                    name
+                    for name, value in labels.items()
+                    if not filters or filters == [f"label=maf-sandbox.kind={value}"]
+                ]
+                payload = json.dumps([{"Id": name, "Name": name} for name in names]).encode()
+                return _WslcResult(0, payload, b"")
+            return _WslcResult(0, b"", b"")
+
+        backend, fake = _backend_with(respond)
+        assert not backend._registry
+        asyncio.run(backend.dispose(_KEY, kind=None if whole_key else kind))
+        removed = [
+            call.args[-1] for call in fake.calls if call.args[:3] == ("container", "remove", "-f")
+        ]
+        assert set(removed) == ({"selected", "sibling"} if whole_key else {"selected"})
+
+    def test_failed_narrowed_disposal_keeps_its_own_retry_candidates(self):
+        overrides = {
+            ("container", "list"): _WslcResult(1, b"", b"listing unavailable"),
+            ("container", "remove", "-f"): _WslcResult(1, b"", b"remove refused"),
+        }
+        backend, fake = _backend_with(_machine(overrides=overrides))
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        backend._registry[(*prefix, "a")] = "selected"
+        backend._registry[(*prefix, "b")] = "sibling"
+        assert asyncio.run(backend.dispose(_KEY, kind="a")) is not None
+        assert asyncio.run(backend.dispose(_KEY, kind="a")) is not None
+        removed = [
+            call.args[-1] for call in fake.calls if call.args[:3] == ("container", "remove", "-f")
+        ]
+        assert removed == ["selected", "selected"]
+        assert backend._registry[(*prefix, "b")] == "sibling"
+        asyncio.run(backend.dispose(_KEY))
+        removed = [
+            call.args[-1] for call in fake.calls if call.args[:3] == ("container", "remove", "-f")
+        ]
+        assert set(removed[-2:]) == {"selected", "sibling"}
+
+
 class TestDispose:
     def test_removes_the_container_by_name(self):
         backend, fake = _backend_with(_machine(running=[_NAME]))
