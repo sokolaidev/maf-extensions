@@ -118,6 +118,7 @@ from ._reclaim import (
 from ._refusals import echoed_name
 from ._router import (
     ATTACH_REFUSALS,
+    CallAdmission,
     NoSandboxBackend,
     SandboxRouter,
     SandboxUnclean,
@@ -237,9 +238,9 @@ class _SandboxToolCall:
     #: returned before acquiring anything — still names the key its other events carry.
     touched: list[SandboxKey] = field(default_factory=list[SandboxKey])
     closed: bool = False
-    #: Successfully admitted pairs and the cleanup rung each hold permits.
-    entered: dict[tuple[SandboxKey, str], Cleanup] = field(
-        default_factory=dict[tuple[SandboxKey, str], Cleanup]
+    #: Each admitted pair retains its serving backend and permitted cleanup rung.
+    entered: dict[tuple[SandboxKey, str], CallAdmission] = field(
+        default_factory=dict[tuple[SandboxKey, str], CallAdmission]
     )
     #: Conversation acquires retain their hold until a late result has been cleaned.
     acquiring: dict[SandboxKey, int] = field(default_factory=dict[SandboxKey, int])
@@ -1716,19 +1717,20 @@ class SandboxToolSession:
             call.acquired.setdefault(key, [])
         if call is not None and (key, self._spec.kind) not in call.entered:
             try:
-                rung = await self._router.enter_call(key, self._spec, owner=call.id)
+                admission = await self._router.enter_call(key, self._spec, owner=call.id)
             except TimeoutError as exc:
                 self._logger.warning(f"{self._log_prefix}: %s", exc)
                 return _SANDBOX_BUSY
-            call.entered[(key, self._spec.kind)] = rung
+            call.entered[(key, self._spec.kind)] = admission
             if call.closed:
                 self._router.release_call(key, self._spec.kind, owner=call.id)
                 call.entered.pop((key, self._spec.kind), None)
                 raise RuntimeError(
                     f"{self._name}: acquire() has no open tool call; this one has returned"
                 )
+        admission = None if call is None else call.entered[(key, self._spec.kind)]
         try:
-            sandbox = await self._router.acquire(key, self._spec)
+            sandbox = await self._router.acquire(key, self._spec, _admission=admission)
         except ATTACH_REFUSALS as exc:
             self._logger.warning(
                 f"{self._log_prefix}: workload refused before it ran: %s", error_detail(exc)
@@ -1762,7 +1764,7 @@ class SandboxToolSession:
             # delete for this key, so what came back is a sandbox nothing is left to remove: take
             # it here, and refuse rather than hand a task something it cannot have cleaned up.
             landed = await self._router.dispose_call(
-                key, timeout=self._router.reclaim.timeout, spec=self._spec
+                key, timeout=self._router.reclaim.timeout, spec=self._spec, _admission=admission
             )
             if landed:
                 fate = "It has been disposed and the result refused."
@@ -1899,6 +1901,7 @@ async def _dispose_the_call_sandbox(
     *,
     router: SandboxRouter,
     spec: SandboxSpec,
+    admission: CallAdmission,
     prefix: str,
     logger: logging.Logger,
     timeout: float,
@@ -1909,12 +1912,10 @@ async def _dispose_the_call_sandbox(
     that a stop did not reach everything is answered by the same delete.  Nothing is marked
     unclean: that refuses a key's next acquire, and this key has none.
 
-    ``spec`` is passed on rather than dropped because it is what names the backend to ask on a
-    router that selects per spec — the delete is aimed at the one that served this call, not
-    swept across every backend registered.
+    The admission identifies the backend that served the call.
     """
     try:
-        landed = await router.dispose_call(key, timeout=timeout, spec=spec)
+        landed = await router.dispose_call(key, timeout=timeout, spec=spec, _admission=admission)
     except (asyncio.CancelledError, GeneratorExit):
         logger.warning(
             f"{prefix}: the call's sandbox was not disposed — the call was cancelled during the "
@@ -1955,11 +1956,10 @@ async def _reclaim_the_call(
     ``FailedReclaimPolicy`` does not loosen it. A sandbox is unclean when the removal did not
     happen, or when
     ``unclean`` carries a transport's note that a stop did not reach everything the program
-    started.  At :data:`~maf_sandbox.IsolationScope.CONVERSATION` either of those leaves the
-    residue readable by every later call, so the framework disposes the sandbox — unless the
-    host opted down — and only then tells the host.  At ``CALL`` the delete above was already
-    the cleanup, and a leak it could not take is one no later call can address: nothing is
-    escalated, nothing is opted down from, and the host is told what did not happen.
+    started. RESET restores both filesystem and process state; failed reset escalates to
+    disposal. RECLAIM cannot clear a surviving process, so an unclean note escalates it to
+    disposal unless the host opted down. At CALL scope, disposal is the cleanup itself and
+    cannot be opted out of; the host is told about any sandbox that remains.
     ``timeout`` bounds the removal, the disposal and the report separately, so one sandbox
     can cost up to three times it.
 
@@ -2019,12 +2019,16 @@ async def _clean_each_sandbox(
 ) -> None:
     """Clean each acquired sandbox while the caller retains its admission holds."""
     for index, (key, sandboxes) in enumerate(acquired):
+        admission = call.entered.get((key, spec.kind))
         if key.call_id:
+            if admission is None or not admission.served:
+                continue
             try:
                 undisposed = await _dispose_the_call_sandbox(
                     key,
                     router=router,
                     spec=spec,
+                    admission=admission,
                     prefix=prefix,
                     logger=logger,
                     timeout=timeout,
@@ -2064,9 +2068,9 @@ async def _clean_each_sandbox(
                 raise
             continue
         reasons: list[str] = []
-        rung = call.entered[(key, spec.kind)]
+        assert admission is not None
+        rung = admission.rung
         if rung is not Cleanup.RECLAIM:
-            # Reset and disposal remove the whole sandbox, so no directory reclaim is needed.
             noted = [
                 reason for owner, reason in unclean if any(owner is held for held in sandboxes)
             ]
@@ -2078,7 +2082,7 @@ async def _clean_each_sandbox(
                 left = await router.finish_call(
                     key,
                     spec,
-                    rung=rung,
+                    admission=admission,
                     sandbox=sandboxes[-1],
                     owner=call.id,
                     unclean="; ".join(noted) or None,

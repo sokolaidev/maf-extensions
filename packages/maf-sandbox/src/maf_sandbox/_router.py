@@ -477,6 +477,15 @@ def _declared_isolation_scopes(
 
 
 @dataclasses.dataclass
+class CallAdmission:
+    """A call's backend and cleanup rung, retained until its hold is released."""
+
+    backend: SandboxBackend
+    rung: Cleanup
+    served: bool = False
+
+
+@dataclasses.dataclass
 class _Serving:
     """Which backend an in-flight acquire chose, for the record that covers every way out."""
 
@@ -1011,13 +1020,13 @@ class SandboxRouter:
         CALL scope always disposes. Other scopes choose the cheapest established rung meeting
         both floors; DISPOSE is always available. An unservable spec raises the same refusal as
         ensure_can_serve."""
-        if self.effective_isolation_scope(spec) is IsolationScope.CALL:
-            return Cleanup.DISPOSE
         backend = self._refuse_unless_backend_can_serve(spec)
         return self._cleanup_on(backend, spec)
 
     def _cleanup_on(self, backend: SandboxBackend, spec: SandboxSpec) -> Cleanup:
         """Resolve cleanup on the chosen backend, ignoring unknown capabilities."""
+        if self.effective_isolation_scope(spec) is IsolationScope.CALL:
+            return Cleanup.DISPOSE
         declared = _declared_set(
             backend, cast("object", _declarations(backend).capabilities), "capabilities"
         )
@@ -1051,11 +1060,8 @@ class SandboxRouter:
     ) -> tuple[SandboxBackend | None, list[tuple[SandboxBackend, Exception]]]:
         """The first candidate that can serve ``spec``, and each one refused ahead of it.
 
-        A pure function of the spec, the registered backends and their declarations, and of
-        nothing else — no load, health, latency or cost is consulted. Callers may rely on that:
-        asking twice **with the same spec** cannot name two backends. It says nothing about two
-        different specs, which may route apart under one key and are meant to.
-        :class:`Selection` carries why.
+        Selection uses the spec and current declarations, never load, health, latency or cost.
+        An admitted call retains its chosen backend through cleanup.
         """
         passed_over: list[tuple[SandboxBackend, Exception]] = []
         for backend in self._candidates:
@@ -1478,7 +1484,9 @@ class SandboxRouter:
             code=reported.code if reported is not None else None,
         )
 
-    async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> Sandbox:
+    async def acquire(
+        self, key: SandboxKey, spec: SandboxSpec, *, _admission: CallAdmission | None = None
+    ) -> Sandbox:
         """Return a running sandbox for ``key``, creating one if needed.
 
         Runs the same floor, capability, limit and egress checks as :meth:`ensure_can_serve`
@@ -1524,12 +1532,12 @@ class SandboxRouter:
                 refused acquire must not leave a billable sandbox running.
         """
         if self._observer is None and not effective_state_is_noted():
-            return await self._acquire(key, spec, _Serving())
+            return await self._acquire(key, spec, _Serving(), _admission)
         serving = _Serving()
         started = time.monotonic()
         refusal: str | None = None
         try:
-            return await self._acquire(key, spec, serving)
+            return await self._acquire(key, spec, serving, _admission)
         except BaseException as exc:
             refusal = type(exc).__name__
             raise
@@ -1554,7 +1562,13 @@ class SandboxRouter:
             record(self._observer, acquired, logger)
             _note_what_held(acquired)
 
-    async def _acquire(self, key: SandboxKey, spec: SandboxSpec, serving: _Serving) -> Sandbox:
+    async def _acquire(
+        self,
+        key: SandboxKey,
+        spec: SandboxSpec,
+        serving: _Serving,
+        admission: CallAdmission | None,
+    ) -> Sandbox:
         """The whole of :meth:`acquire`, split so one record covers every way out of it.
 
         ``serving`` is filled in as soon as a backend is chosen, so a refusal raised *after* the
@@ -1575,7 +1589,13 @@ class SandboxRouter:
                 "served unclean.",
                 code=reported.code if reported is not None else None,
             )
-        served = serving.backend = self._refuse_unless_backend_can_serve(spec)
+        if admission is None:
+            served = self._refuse_unless_backend_can_serve(spec)
+        else:
+            served = admission.backend
+            self._refuse_host_denials(spec)
+            self._refuse_unless_this_backend_can_serve(served, spec)
+        serving.backend = served
         scope = self.effective_isolation_scope(spec)
         if scope is IsolationScope.CALL and not key.call_id:
             raise ValueError(
@@ -1594,6 +1614,8 @@ class SandboxRouter:
                 "shared sandbox at the end of one call. Drop the call id, or raise the "
                 "workload's isolation_scope."
             )
+        if admission is not None:
+            admission.served = True
         sandbox = await served.acquire(key, spec)
         if key in self._unclean:
             # Read again after the create: the check above is only as fresh as the moment
@@ -1641,13 +1663,14 @@ class SandboxRouter:
         *,
         owner: str,
         timeout: float = QUEUED_CALL_TIMEOUT,
-    ) -> Cleanup:
-        """Admit a call and return the cleanup rung its hold permits.
+    ) -> CallAdmission:
+        """Admit a call and retain the backend and cleanup rung its hold permits.
 
         RECLAIM takes a shared hold; stronger rungs take an exclusive one. The caller must retain
-        the returned rung for cleanup and eventually call finish_call or release_call. Raises
-        TimeoutError when incompatible owners outlast the bound."""
-        rung = self.effective_cleanup(spec)
+        the admission for acquire and cleanup, then call finish_call or release_call.
+        Raises TimeoutError when incompatible owners outlast the bound."""
+        backend = self._refuse_unless_backend_can_serve(spec)
+        rung = self._cleanup_on(backend, spec)
         await self._slots.take(
             key,
             spec.kind,
@@ -1655,7 +1678,7 @@ class SandboxRouter:
             exclusive=needs_exclusive_use(rung),
             timeout=timeout,
         )
-        return rung
+        return CallAdmission(backend, rung)
 
     def release_call(self, key: SandboxKey, kind: str, *, owner: str) -> None:
         """Release this call's hold without cleaning; an owner holding nothing releases nothing."""
@@ -1666,7 +1689,7 @@ class SandboxRouter:
         key: SandboxKey,
         spec: SandboxSpec,
         *,
-        rung: Cleanup,
+        admission: CallAdmission,
         sandbox: Sandbox | None,
         owner: str,
         unclean: str | None = None,
@@ -1679,7 +1702,9 @@ class SandboxRouter:
         policy; RECLAIM uses the framework's directory removal instead."""
         bound = self._reclaim.timeout if timeout is None else timeout
         try:
-            return await self._run_the_rung(key, spec, rung, sandbox, unclean, bound)
+            return await self._run_the_rung(
+                key, spec, admission.backend, admission.rung, sandbox, unclean, bound
+            )
         finally:
             self._slots.release(key, spec.kind, owner=owner)
 
@@ -1687,18 +1712,14 @@ class SandboxRouter:
         self,
         key: SandboxKey,
         spec: SandboxSpec,
+        backend: SandboxBackend,
         rung: Cleanup,
         sandbox: Sandbox | None,
         unclean: str | None,
         bound: float,
     ) -> str | None:
         """The rung itself, with a reset that failed escalating to the disposal below it."""
-        backend = self.backend_for(spec)
-        if backend is None:
-            return None
-        if rung is Cleanup.RESET and sandbox is not None and unclean is None:
-            # Not over an unclean note: a reset restores the filesystem, and the note says a
-            # program the call started may still be running. Only a delete answers that.
+        if rung is Cleanup.RESET and sandbox is not None:
             try:
                 async with asyncio.timeout(bound):
                     await sandbox.reset(timeout=bound)
@@ -1827,7 +1848,12 @@ class SandboxRouter:
         return True
 
     async def dispose_call(
-        self, key: SandboxKey, *, timeout: float, spec: SandboxSpec | None = None
+        self,
+        key: SandboxKey,
+        *,
+        timeout: float,
+        spec: SandboxSpec | None = None,
+        _admission: CallAdmission | None = None,
     ) -> bool:
         """Delete the sandbox a call-scoped key owns, bounded, and say whether it landed.
 
@@ -1841,16 +1867,10 @@ class SandboxRouter:
         escalation — disposing a sandbox a removal could not clean — where this delete is the
         call's own cleanup and the separation the workload asked for.
 
-        ``spec`` is what names the backend to ask under :data:`Selection.PER_SPEC`, by routing
-        it again rather than by remembering where the sandbox went.  A ``key -> backend`` map
-        would be the shape :meth:`_may_be_refused` already refuses for the unclean ledger — an
-        unbounded map on a host that mints a key per call — and it would answer nothing on a
-        replica that did not create the sandbox.  Omitting it there leaves nothing to route on,
-        so every backend **declaring** :data:`~maf_sandbox.IsolationScope.CALL` is asked and no
-        others: slower than routing, never wrong, and the shipped caller has the spec and
-        passes it.  The exclusion is not an optimisation — a conversation-scoped backend's
-        ``dispose`` sweeps by scope, thread and agent, so asking one would delete a sandbox
-        this call never owned.
+        Framework cleanup supplies the retained admission to reach the serving backend without
+        reading its declarations again. Direct callers route by ``spec``; without one, a
+        per-spec router asks only backends declaring CALL scope, since deleting through a
+        conversation-scoped backend could remove a sandbox this call never owned.
 
         Raises:
             ValueError: when ``key`` names no call, which is a conversation's key and not this
@@ -1866,8 +1886,12 @@ class SandboxRouter:
                 "because a call-scoped key has no next acquire. Use dispose(key), or "
                 "dispose_unclean(key, timeout=...) when a call could not leave it clean."
             )
-        serving, sweep = self._serving_for_call(spec)
-        if serving is not None:
+        if _admission is None:
+            serving, sweep = self._serving_for_call(spec)
+        else:
+            serving = _admission.backend
+            sweep = [serving] if _admission.served else []
+        if _admission is None and serving is not None:
             serves = _declared_isolation_scopes(serving, _declarations(serving))
             if IsolationScope.CALL not in serves:
                 raise ValueError(
@@ -1902,22 +1926,10 @@ class SandboxRouter:
     def _serving_for_call(
         self, spec: SandboxSpec | None
     ) -> tuple[SandboxBackend | None, list[SandboxBackend]]:
-        """Which backend served a call's sandbox, and which backends to ask for the delete.
+        """Resolve a call-scoped delete without an admission, including host denials.
 
-        Routed through :meth:`backend_for` rather than :meth:`_route`, because the host's own
-        denials are part of the question. ``_route`` does not consult them — they are raised
-        once, ahead of it — so a spec this host denies would still pick a backend here, and
-        that backend's ``dispose`` takes **every kind** under the call key. A denied spec never
-        created anything, so the honest answer is nobody.
-
-        The two returns differ only where there is no backend to name: none to ask is a landed
-        delete, and a per-spec router called without a spec has nothing to route on and asks
-        each backend that could be holding a call's sandbox at all.
-
-        **Only those**, and the filter is the same rule the scope guard above enforces for a
-        named backend. A backend serving one sandbox per conversation has none of this call's
-        to delete, and its ``dispose`` sweeps by scope, thread and agent — so asking it would
-        delete the conversation's sandbox out from under every later call.
+        Without a spec, PER_SPEC selection reaches only backends declaring CALL scope:
+        a conversation-scoped backend could otherwise delete a sandbox this call never owned.
         """
         if self._selection is not Selection.PER_SPEC:
             return self._backend, ([] if self._backend is None else [self._backend])

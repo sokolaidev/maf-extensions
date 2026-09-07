@@ -4,7 +4,17 @@ import dataclasses
 
 import pytest
 
-from maf_sandbox import Capability, Cleanup, Isolation, IsolationScope, SandboxRouter, SandboxSpec
+from maf_sandbox import (
+    Capability,
+    Cleanup,
+    Isolation,
+    IsolationScope,
+    SandboxCapabilityDenied,
+    SandboxCapabilityNotSupported,
+    SandboxRouter,
+    SandboxScopeNotEnforced,
+    SandboxSpec,
+)
 from maf_sandbox._cleanup import established_cleanup, resolve_cleanup
 from maf_sandbox.testing import FAKE_BACKEND_DECLARATIONS, InProcessSandboxBackend
 
@@ -94,3 +104,44 @@ def test_call_scope_always_disposes(at_host):
         isolation_scope=IsolationScope.CONVERSATION if at_host else IsolationScope.CALL,
     )
     assert router.effective_cleanup(spec) is Cleanup.DISPOSE
+
+
+@pytest.mark.parametrize("at_host", [False, True])
+@pytest.mark.parametrize(
+    "reason,refusal",
+    [
+        ("scope", SandboxScopeNotEnforced),
+        ("capability", SandboxCapabilityNotSupported),
+        ("denied", SandboxCapabilityDenied),
+    ],
+)
+def test_call_cleanup_preserves_serving_refusals(at_host, reason, refusal):
+    backend = InProcessSandboxBackend(
+        declarations=dataclasses.replace(
+            FAKE_BACKEND_DECLARATIONS,
+            isolation_scopes=(
+                frozenset({IsolationScope.CONVERSATION})
+                if reason == "scope"
+                else frozenset(IsolationScope)
+            ),
+            capabilities=(
+                frozenset() if reason == "capability" else FAKE_BACKEND_DECLARATIONS.capabilities
+            ),
+        )
+    )
+    router = SandboxRouter(
+        [backend],
+        min_isolation=Isolation.NONE,
+        min_isolation_scope=IsolationScope.CALL if at_host else IsolationScope.CONVERSATION,
+        denied_capabilities=frozenset({Capability.EXEC}) if reason == "denied" else frozenset(),
+    )
+    spec = SandboxSpec(
+        kind="test",
+        requires=frozenset({Capability.EXEC}),
+        isolation_scope=IsolationScope.CONVERSATION if at_host else IsolationScope.CALL,
+    )
+    with pytest.raises(refusal) as expected:
+        router.ensure_can_serve(spec)
+    with pytest.raises(refusal) as actual:
+        router.effective_cleanup(spec)
+    assert str(actual.value) == str(expected.value)
