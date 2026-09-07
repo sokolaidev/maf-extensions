@@ -1755,8 +1755,9 @@ class DockerSandboxBackend:
         This is an operator policy across all scopes unless ``scope`` narrows it. Age is
         creation time, not idleness: running sandboxes can be removed. An expired workload
         takes its proxy and network with it, whatever their ages. Without a workload, the
-        proxy's age decides; a network alone uses its own age. Inventory failures prevent
-        deletion; removal failures are returned. No background timer is installed.
+        proxy's age decides; a network alone uses its own age. A group whose age anchor
+        disappears during inventory is skipped. Inventory failures prevent deletion;
+        removal failures are returned. No background timer is installed.
         """
         if older_than <= timedelta(0):
             raise ValueError("older_than must be a positive timedelta")
@@ -1777,8 +1778,33 @@ class DockerSandboxBackend:
         for workload, members in groups.items():
             # The workload's lifetime does not restart when its proxy is rebuilt.
             anchor = min(members, key=lambda t: (t.resource == "network", t.name != workload))
-            if anchor.created < cutoff:
+            if anchor.created >= cutoff:
+                continue
+            # Separate inventories may span a replacement; its age anchor must still exist.
+            try:
+                result = await self._docker(
+                    anchor.resource,
+                    "inspect",
+                    "--format",
+                    "{{.Id}}",
+                    anchor.id,
+                    timeout=self._config.command_timeout_seconds,
+                )
+                if result.returncode != 0:
+                    if _reads_as_absent(result.stderr, anchor.id):
+                        continue
+                    raise RuntimeError(
+                        result.stderr.strip() or f"docker exited {result.returncode}"
+                    )
+                if result.stdout.decode("utf-8").strip() != anchor.id:
+                    raise ValueError("docker inspect returned a different resource ID")
                 expired.add(workload)
+            except Exception as exc:  # noqa: BLE001 - an unread anchor cannot authorize deletion
+                failures.append(
+                    DisposalFailure("unlisted", f"could not revalidate {anchor.name}: {exc}")
+                )
+        if failures:
+            return DockerReapResult(failures=tuple(failures))
         disposed = proxies = networks = 0
         for target in targets:
             if target.workload not in expired:
@@ -1810,6 +1836,8 @@ class DockerSandboxBackend:
                 )
             self._forget_facts(target.name)
             removal = await self._remove(target.id)
+            if is_proxy and prefix is not None and removal.failure is None:
+                self._forget_attribution(target.workload, prefix[1])
             if removal.failure is not None:
                 failures.append(removal.failure)
             elif removal.removed:

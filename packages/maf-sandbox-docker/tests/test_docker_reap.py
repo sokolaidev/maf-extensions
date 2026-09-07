@@ -36,11 +36,14 @@ class _Engine:
         self.resources = {r["Id"]: r for r in resources}
         self.calls: list[tuple[str, ...]] = []
         self.failures: dict[tuple[str, ...], _DockerResult | Exception] = {}
+        self.before_network_list = lambda: None
         self.before_remove = lambda: None
 
     async def __call__(self, *args: str, **kwargs: object) -> _DockerResult:
         self.calls.append(args)
         assert kwargs["timeout"] == 17
+        if args[:2] == ("network", "ls"):
+            self.before_network_list()
         for prefix, result in self.failures.items():
             if args[: len(prefix)] == prefix:
                 if isinstance(result, Exception):
@@ -51,6 +54,10 @@ class _Engine:
             ids = [id for id, r in self.resources.items() if r["Name"].endswith("-net") == network]
             return _DockerResult(0, "\n".join(ids).encode(), "")
         if args[1] == "inspect":
+            if args[-1] not in self.resources:
+                return _DockerResult(1, b"", f"No such {args[0]}: {args[-1]}")
+            if args[3] == "{{.Id}}":
+                return _DockerResult(0, args[-1].encode(), "")
             return _DockerResult(0, json.dumps(self.resources[args[-1]]).encode(), "")
         if args[0] == "logs":
             return _DockerResult(0, b"ALLOW example.com:443\n", "")
@@ -216,6 +223,40 @@ def test_a_replacement_with_the_same_name_survives_the_old_ids_removal():
     assert engine.resources == {replacement["Id"]: replacement}
 
 
+@pytest.mark.parametrize("suffix", ["", "-proxy"])
+def test_a_topology_replaced_between_inventories_survives(suffix):
+    old = _resource(1, suffix=suffix)
+    replacement = [
+        _resource(i, suffix=s, age=timedelta(0)) for i, s in enumerate(("", "-proxy", "-net"), 2)
+    ]
+    engine = _Engine(old, _resource(5, suffix="-net"))
+
+    def replace():
+        engine.resources = {r["Id"]: r for r in replacement}
+
+    engine.before_network_list = replace
+    assert asyncio.run(_backend(engine).reap(timedelta(days=1))) == DockerReapResult()
+    assert engine.resources == {r["Id"]: r for r in replacement}
+    assert engine.removals == []
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [_DockerResult(1, b"", "daemon down"), _DockerResult(0, b"wrong", ""), TimeoutError("hung")],
+)
+def test_an_unreadable_age_anchor_prevents_all_deletion(failure):
+    engine = _Engine(_resource(1), _resource(2, suffix="-net"))
+
+    def fail_revalidation():
+        engine.failures[("container", "inspect")] = failure
+
+    engine.before_network_list = fail_revalidation
+    result = asyncio.run(_backend(engine).reap(timedelta(days=1)))
+    assert result.disposed == result.networks_removed == 0
+    assert result.failures[0].code == "unlisted"
+    assert engine.removals == []
+
+
 def test_failed_removals_are_reported_for_each_resource_and_do_not_stop_the_reap():
     engine = _Engine(_resource(1), _resource(2, suffix="-proxy"), _resource(3, suffix="-net"))
     engine.failures[("rm", "-f", f"{1:064x}")] = _DockerResult(1, b"", "permission denied")
@@ -225,6 +266,36 @@ def test_failed_removals_are_reported_for_each_resource_and_do_not_stop_the_reap
     assert result.proxies_removed == 1
     assert len(result.failures) == 2
     assert all(f.code == "refused" for f in result.failures)
+
+
+@pytest.mark.parametrize("outcome", ["removed", "absent", "refused"])
+def test_proxy_attribution_is_retained_only_when_removal_fails(outcome):
+    proxy = _resource(1, suffix="-proxy")
+    engine = _Engine(proxy)
+    backend = _backend(engine)
+    backend._acquired[_NAME] = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+    events = []
+    backend.observe_egress(events.append)
+    if outcome == "absent":
+        engine.before_remove = engine.resources.clear
+    elif outcome == "refused":
+        engine.failures[("rm", "-f")] = _DockerResult(1, b"", "permission denied")
+
+    result = asyncio.run(backend.reap(timedelta(days=1)))
+    assert result.proxies_removed == (outcome == "removed")
+    assert (_NAME in backend._acquired) == (outcome == "refused")
+    assert len(events) == 1
+    if outcome == "refused":
+        assert result.failures[0].code == "refused"
+        engine.failures.clear()
+        assert asyncio.run(backend.reap(timedelta(days=1))).proxies_removed == 1
+        assert _NAME not in backend._acquired
+        assert len(events) == 2
+    else:
+        assert result.failures == ()
+        engine.failures[("logs",)] = _DockerResult(1, b"", f"No such container: {_NAME}-proxy")
+        asyncio.run(backend._drain_the_proxy(_NAME, _KEY))
+        assert len(events) == 1
 
 
 def test_a_proxy_drain_uses_the_same_id_as_its_removal():
@@ -239,8 +310,9 @@ def test_a_proxy_drain_uses_the_same_id_as_its_removal():
     assert len(events) == 1
     assert events[0].key == _KEY
     assert events[0].decisions[0].host == "example.com"
+    assert {"stop", "logs", "rm"} <= {call[0] for call in engine.calls}
     for call in engine.calls:
-        if call[0] in ("kill", "logs", "rm"):
+        if call[0] in ("stop", "logs", "rm"):
             assert call[-1] == proxy["Id"]
 
 
