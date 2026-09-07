@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import re
 import tomllib
+from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
@@ -123,8 +124,8 @@ def _previous_release(changelog: str) -> tuple[int, int]:
 
 
 def _floors_outside_the_window(
-    floors: set[tuple[int, int]], core: tuple[int, int], previous: tuple[int, int]
-) -> list[tuple[int, int]]:
+    floors: Iterable[tuple[int, ...]], core: tuple[int, int], previous: tuple[int, int]
+) -> list[tuple[int, ...]]:
     """Declared floors this repository does not permit, lowest first.
 
     Exactly two are permitted — the current release and the one before it — because those are
