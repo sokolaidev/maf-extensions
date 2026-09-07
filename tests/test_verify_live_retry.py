@@ -98,6 +98,20 @@ def _budget(retrying: _Retrying = _RETRYING[0]) -> int:
     return int(assignment.group(1))
 
 
+def _looping(workflow: dict) -> list[str]:
+    """Every step carrying a retry loop, counted rather than deduplicated."""
+    return sorted(
+        step.get("name", "?")
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if "attempts=" in step.get("run", "")
+    )
+
+
+def _declared() -> list[str]:
+    return sorted(_the_step(retrying)["name"] for retrying in _RETRYING)
+
+
 @dataclasses.dataclass(frozen=True)
 class _Ran:
     """What one execution of the step said: its status, its output, and how many loops it ran."""
@@ -355,14 +369,13 @@ class TestTheTwoFilesAgreeOnWhatIsRetryable:
 
     def test_no_other_live_sample_retries(self):
         """Only a step whose live model writes what the check grades has earned a loop."""
+        assert _looping(yaml.safe_load(_WORKFLOW.read_text("utf-8"))) == _declared()
+
+    def test_a_copied_loop_reusing_an_existing_step_name_is_still_caught(self):
+        """Step names need not be unique, so a set would collapse the copy and pass."""
         workflow = yaml.safe_load(_WORKFLOW.read_text("utf-8"))
-        looping = {
-            step.get("name", "?")
-            for job in workflow["jobs"].values()
-            for step in job.get("steps", [])
-            if "attempts=" in step.get("run", "")
-        }
-        assert looping == {_the_step(r)["name"] for r in _RETRYING}, looping
+        workflow["jobs"]["invented"] = {"steps": [dict(_the_step(_RETRYING[1]))]}
+        assert _looping(workflow) != _declared()
 
     def test_each_retrying_step_is_a_distinct_step(self):
         """Two entries resolving to one step would leave a real one undriven."""

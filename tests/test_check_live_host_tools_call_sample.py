@@ -1337,3 +1337,92 @@ class TestWhichHalfFailedIsInTheExitStatus:
             encoding="utf-8",
         )
         assert check.main(["check", "--docker", str(path)]) == check.MODEL_DID_NOT_CONVERGE
+
+
+#: One tamper per `_TheModelsHalf` branch, so each is proved to reach exit 3 rather than
+#: only to produce a message. Some need a second edit to keep a line this suite owns
+#: consistent with the first, which is the point: only the model's reason may fire.
+_MODEL_OWNED = {
+    "stages exercised": (("host-tool-call route: lookup stages exercised: 4 of 4", "...: 3 of 4"),),
+    "product names": (("host-tool-call route: product names in the table: 3 of 3", "...: 2 of 3"),),
+    "state totals": (
+        ("host-tool-call route: state totals the program printed: 2 of 2", "...: 1 of 2"),
+    ),
+    "product cells": (
+        ("host-tool-call route: product totals the program printed: 6 of 6", "...: 5 of 6"),
+    ),
+    "table rows": (
+        ("host-tool-call route: table rows the program printed: 6 of 6", "...: 5 of 6"),
+    ),
+    # Edited on the direct side: the host-tool-call shape has to sum to the observer's program
+    # count, and no five positive entries sum to two.
+    "direct paid no more rounds": (
+        (
+            "direct route: 12 lookup(s) over 5 tool-calling",
+            "direct route: 12 lookup(s) over 2 tool-calling",
+        ),
+        ("direct route: tool calls per round: [2, 2, 5, 3, 1]", "...: [7, 6]"),
+    ),
+    "walk too short": (
+        ("host-tool-call route: 25 lookup(s)", "host-tool-call route: 5 lookup(s)"),
+        ("host-tool-call route: round trip: 23 gap(s)", "...: 3 gap(s)"),
+    ),
+    "two programs in one message": (
+        (
+            "host-tool-call route: 25 lookup(s) over 2 tool-calling",
+            "host-tool-call route: 25 lookup(s) over 1 tool-calling",
+        ),
+        ("host-tool-call route: tool calls per round: [1, 1]", "...: [2]"),
+    ),
+    "direct batched across stages": (
+        (
+            "direct route: 12 lookup(s) over 5 tool-calling",
+            "direct route: 12 lookup(s) over 3 tool-calling",
+        ),
+        ("direct route: tool calls per round: [2, 2, 5, 3, 1]", "...: [2, 2, 9]"),
+    ),
+    "direct carried too few figures": (
+        ("direct route: sales figures the model wrote into code: 12 of 12", "...: 11 of 12"),
+        ("into code, direct:         12 of 12", "into code, direct:         11 of 12"),
+    ),
+}
+
+
+def _tamper(edits) -> str:
+    """Apply one branch's edits, keeping `[measured]` prefixes the `...` shorthand stands for."""
+    out = _HEALTHY
+    for old, new in edits:
+        if new.startswith("..."):
+            new = old[: old.rindex(":")] + new[3:]
+        assert old in out, f"{old!r} is not in the fixture"
+        out = out.replace(old, new)
+    assert out != _HEALTHY
+    return out
+
+
+class TestEveryModelOwnedBranchReachesTheRetryStatus:
+    """Message presence is not the contract; the exit status is.
+
+    A branch that lost its `_TheModelsHalf` wrapper would still print the same reason and
+    would silently exit 1, turning a documented retry into a red release.
+    """
+
+    @pytest.mark.parametrize("branch", sorted(_MODEL_OWNED))
+    def test_it_is_the_model_s_half(self, branch: str, tmp_path: Path):
+        output = _tamper(_MODEL_OWNED[branch])
+        reasons = check.assess(output)
+        assert reasons, f"{branch} tripped nothing"
+        assert all(isinstance(r, check._TheModelsHalf) for r in reasons), [
+            r for r in reasons if not isinstance(r, check._TheModelsHalf)
+        ]
+        path = tmp_path / "out.txt"
+        path.write_text(output, encoding="utf-8")
+        assert check.main(["check", str(path)]) == check.MODEL_DID_NOT_CONVERGE
+
+    def test_every_branch_in_the_script_has_a_case_here(self):
+        """A new `_TheModelsHalf` without a case would ship untested."""
+        source = _SCRIPT.read_text(encoding="utf-8")
+        wrapped = source.count("_TheModelsHalf(\n")
+        assert wrapped == len(_MODEL_OWNED), (
+            f"{wrapped} model-owned branches in the script, {len(_MODEL_OWNED)} cases here"
+        )

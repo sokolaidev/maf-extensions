@@ -10,9 +10,11 @@ Sample 15 runs the same call-heavy walk on either backend: ACAS by default, dock
 `FILES_LIST`, so it prints no act-5 leftover lines and that one act is dropped. Everything else
 the check enforces is backend-agnostic and applies to both.
 
-**What is asserted is chosen so a model's mood cannot decide a release.** Both routes run
+**What is asserted is chosen so one model's off run does not decide a release.** Both routes run
 Python in the sandbox and walk the same four stages, so what is enforced is either an
-interpreter's output or a structural property of the two roads:
+interpreter's output or a structural property of the two roads. The properties that read off a
+model-written program are retried rather than exempted, so an attempt that keeps failing them
+still fails the job:
 
 - Both programs printed the whole table — both state totals and all six cells.
 - Direct needed more tool-calling rounds than the host-tool-call route.
@@ -27,11 +29,15 @@ Wall clock, tokens and lookup counts are recorded and never bounded — a thresh
 measurement into a pass mark on somebody else's control plane. What a model *said* is never
 read, and every line must carry the `[measured]` tag at the left margin (#314).
 
-Two of those properties are read off a program a live model wrote, so each reason is classed by
-who owns it and the exit status carries the class.
+Each reason is classed by who owns it and the exit status carries the class. The model's own are
+the walk its program took, the table that program printed, the products it named, how it batched,
+and how many figures the direct route's model carried. This suite's are the round-trip
+arithmetic, the cleanup acts, the cap, the disposals, and any `[measured]` line missing or
+doubled.
 
 Exits non-zero listing every reason it failed: `MODEL_DID_NOT_CONVERGE` when every reason is the
-model's own, 1 when any is this suite's.
+model's own, 1 when any is this suite's. `verify-live.yml` retries on the first and not the
+second, three attempts at most.
 """
 
 from __future__ import annotations
@@ -289,7 +295,7 @@ def _assess_the_whole_walk_happened(output: str) -> list[str]:
 def _assess_both_interpreters_answered(output: str) -> list[str]:
     """Both routes compute in the sandbox, so both are held to what came back.
 
-    Every reason here is the model's own: a complete ledger and a table of zeros is one run.
+    Every reason here is the model's own: a complete ledger and a table of zeros is one attempt.
     """
     found, failures = _per_route(output, _TOTALS, "state totals")
     for route, match in found.items():
