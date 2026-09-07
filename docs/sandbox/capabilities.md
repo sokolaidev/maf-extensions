@@ -244,7 +244,7 @@ The matcher question is unchanged and now reachable, since a `RUN_CODE`-only bac
 
 **`NETWORK` was removed.** It was declared by no backend and required by no spec, and the reason it never acquired either is that it asked a question no kind can answer: whether a workload needs the network is not a fixed property of the kind but the mode the deployment runs it in, so the ask belongs to `Egress` and not beside it — [`research/egress-resolution.md`](research/egress-resolution.md) carries the argument, and [`network.md`](network.md) holds the axis that does the work.
 
-**`SNAPSHOT`** — snapshot and restore for reuse. No shipped backend; [`research/hyperlight-backend-proposal.md`](research/hyperlight-backend-proposal.md) declares it and it is load-bearing there, as both the warm-reuse mechanism and the recovery from a poisoned sandbox.
+**`SNAPSHOT`** — snapshot and restore for reuse. No shipped backend; [`research/hyperlight-backend-proposal.md`](research/hyperlight-backend-proposal.md) declares it and it is load-bearing there, as both the warm-reuse mechanism and the recovery from a poisoned sandbox. It gains a second job under [`tool-call.md`](tool-call.md)'s cleanup ladder: a backend that declares it and implements `Sandbox.reset` establishes the `RESET` rung, which is what lets a sandbox be returned to its pre-input state between calls instead of deleted. That is the rung a backend whose create is expensive needs, so this stops being a capability only a proposed backend would want.
 
 **`ATTACHED_IDENTITY`** — the vocabulary shipped with the enum; the plumbing did not. See [`hosts.md`](hosts.md) for the identity axis and what a spec carrying it would owe.
 

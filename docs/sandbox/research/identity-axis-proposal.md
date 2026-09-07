@@ -64,7 +64,7 @@ class GuestPrincipal(StrEnum):
 
 ## Pillar B — the cleanup ladder, and the rung below the key
 
-**Proposed, on the maintainer's direction of 2026-09-03: a call leaves nothing behind by default, and warm reuse is earned.** [#792](https://github.com/sokolaidev/maf-extensions/issues/792) asked for this on root images. It holds for every image, because the property at stake is what one call leaves for the next, and root only widens its reach. The framework's end-of-call cleanup is resolved from a ladder, and the cheapest rung a kind and a backend establish together is the one that runs.
+**Decided, on the maintainer's direction of 2026-09-03: a call leaves nothing behind by default, and warm reuse is earned.** Graduated into [`../tool-call.md`](../tool-call.md) § Cleanup, which is the rule an implementation cites; what follows is the argument it was decided from. [#792](https://github.com/sokolaidev/maf-extensions/issues/792) asked for this on root images. It holds for every image, because the property at stake is what one call leaves for the next, and root only widens its reach. The framework's end-of-call cleanup is resolved from a ladder, and the cheapest rung a kind and a backend establish together is the one that runs.
 
 ```python
 class Cleanup(StrEnum):
@@ -266,7 +266,7 @@ Gated on M4: `EGRESS_HEADER` call credentials on acas, behind the `provision_cal
 
 ## The direction taken, and the decisions this asks for
 
-**Direction taken, not yet graduated.** A call leaves nothing behind by default. Warm reuse is earned by a kind's confinement claim over a backend's `RECLAIM`, proved on docker, or by a backend's snapshot reset, and a host may raise the floor above either. This is #792's default, for every image rather than for root's. It is the maintainer's direction from the conversation that produced this record, and it stays a proposal here until the pull request that moves it into [`../tool-call.md`](../tool-call.md) with a Status row, which is how a decision becomes the repository's rather than a conversation's.
+**Direction taken, and since graduated.** A call leaves nothing behind by default. Warm reuse is earned by a kind's confinement claim over a backend's `RECLAIM`, proved on docker, or by a backend's snapshot reset, and a host may raise the floor above either. This is #792's default, for every image rather than for root's. It was the maintainer's direction from the conversation that produced this record, and it stayed a proposal here until the pull request that moved it into [`../tool-call.md`](../tool-call.md) with a Status row, which is how a decision becomes the repository's rather than a conversation's. That has happened: the ladder is decided there, and this record keeps the argument behind it. Nothing of it is built.
 
 **Asked.**
 
