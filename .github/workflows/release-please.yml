@@ -137,7 +137,7 @@ jobs:
 
           **It deliberately does not reach the minor after @VERSION@.** Admitting a version and being tested against it are the same condition — `check_core_against_dependents.py` runs every published dependent whose ceiling admits the candidate — so a ceiling reaching ahead makes every breaking core wait on republishing the dependents it breaks. `docs/release-compatibility.md` has the argument.
 
-          **The floor is a guess, and usually a wrong one.** It moves in every dependent whose ceiling already admitted @VERSION@ and whose floor was a minor behind — a shape, not evidence that a package's code uses this release. A floor should move only for a package that relies on API or behaviour this release introduced or changed. Under this ceiling it rarely fires, so a floor that should move is usually yours to add here.
+          **The floor moves with it, in every dependent a minor behind.** Together the two leave each dependent on one core minor: the suite is released as a set rather than carrying several core lines, which is the maintenance choice behind this. It is not evidence that a package's code needs @VERSION@ — decline a hunk for a package you want left on an older core, and be aware that its consumers then cannot install it beside a sibling that did move.
 
           **Nothing under `samples/` is in this pull request**, deliberately: merged with the packages' hunk it takes the whole suite unsatisfiable whenever the core reached the index first (0.33.0, 0.34.0). Run `scripts/set_dependents_range.py --samples @VERSION@` as a `chore:` once every dependent has published; `tests/test_sample_metadata.py` reds if it is forgotten for two releases.
 

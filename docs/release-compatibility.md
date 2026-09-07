@@ -57,7 +57,7 @@ What it does not check is a sample's other floors. Most sample requirements on t
 
 ## What the ranges cost, and why that matters here
 
-`set_dependents_range.target_ceiling` returns `(major, minor + 1)` — the released line, and no headroom. So every core minor invalidates every dependent's ceiling, and the widening pull request that follows cuts a release of all six whose entire content is a two-character edit. That cost is the deliberate half of the trade; the floor is the half that gets examined.
+`set_dependents_range.target_ceiling` returns `(major, minor + 1)` — the released line, and no headroom. The floor moves to the same release, so a dependent carries **one** core minor rather than several: the suite is released as a set. Every core minor therefore cuts a release of all six whose entire content is a two-character edit, and a consumer takes the core and its dependents together or not at all. That is the deliberate cost of not maintaining several core lines at once — the alternative is a dependent whose suite must keep passing against every core its range still admits, which is what the gates below measure.
 
 It used to return `(major, minor + 2)`, and the paragraph here used to argue that widening on schedule was only honest once something verified the promise at the moment of release. The gates were built ([#628](https://github.com/sokolaidev/maf-extensions/issues/628)) and they do verify it — which turned out to be the problem rather than the fix, for the reason the next section gives.
 

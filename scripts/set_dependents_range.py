@@ -9,12 +9,9 @@ scripts run by two steps opening two pull requests that rewrote the same line in
 files (#195): neither conflicted with `main`, so both looked mergeable, and whichever merged
 second reverted the other. One writer, one pull request.
 
-**The floor** moves to the released version, for a dependent whose ceiling admits it and whose
-floor is a minor behind. That is a mechanical selection of candidates, not a detection of
-adoption — ceilings are widened for everyone before a release so the published set stays
-resolvable (RELEASING.md, Release order), so admitting a version says nothing about whether a
-package's code needs it. Whether a floor should move is the reviewer's call on the pull
-request this opens.
+**The floor** moves to the released version, in every dependent a minor behind. With the ceiling
+below, that leaves each dependent on exactly one core minor: the suite ships as a set rather than
+carrying several core lines at once. Declining a hunk is still how a package opts out.
 
 **The ceiling** admits the released line and nothing above it: 0.35.0 gives `<0.36`. It reached
 a minor further until 0.35.0, when every published dependent admitting the unreleased next core
@@ -121,10 +118,8 @@ def set_range(text: str, released: tuple[int, ...]) -> tuple[str, frozenset[str]
     floor, ceiling = _version(match.group(1)), _version(match.group(2))
 
     moved: set[str] = set()
-    # Judged against the ceiling as it stands, before the widening below. See the module
-    # docstring: the two used to run on separate checkouts of `main`, and this keeps that.
     floor_text = match.group(1)
-    if _admits(released, ceiling) and released[:2] > floor[:2]:
+    if released[:2] > floor[:2]:
         floor_text = _text(released)
         moved.add(FLOOR)
 

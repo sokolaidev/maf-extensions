@@ -5,11 +5,10 @@ published. It replaces two scripts that each owned one end of the same string an
 competing pull requests (#195), so the first thing pinned here is that **one edit carries both
 bounds**.
 
-The rest is what made the pair safe, kept: the ceiling only widens, the floor moves only for a
-candidate — a dependent whose ceiling admits the version and whose floor is a minor behind,
-which is a shape rather than evidence the package uses it — the floor is judged against the
-ceiling as it was rather than as this run leaves it, and a constraint the pattern cannot read
-stops the step instead of silently no-opping.
+The rest is what made the pair safe, kept: the ceiling only widens, the floor never lowers, a
+patch moves nothing, and a constraint the pattern cannot read stops the step instead of
+silently no-opping. Both bounds move to the released minor, so a dependent carries one core
+line rather than several.
 
 The samples used to ride the same edit (#343) and now move only under `--samples`, because
 merged with the packages' hunk they take the whole set unsatisfiable whenever the core reaches
@@ -98,30 +97,26 @@ class TestParseConstraint:
 
 
 class TestBothBoundsInOneEdit:
-    """#195: two writers on one line meant the second merge reverted the first.
+    """#195: two writers on one line meant the second merge reverted the first."""
 
-    Under a ceiling admitting only the released line the two rarely move together: a ceiling
-    that already admitted the release is at or above the new target, so it does not widen. A
-    *patch* ceiling is the shape left where both move, and it is what these use.
-    """
-
-    def test_a_core_minor_can_still_move_the_floor_and_the_ceiling_together(self):
-        text, moved = ranges.set_range(_pyproject("maf-sandbox>=0.7.0,<0.8.5"), (0, 8, 0))
+    def test_a_core_minor_moves_the_floor_and_the_ceiling_together(self):
+        text, moved = ranges.set_range(_pyproject("maf-sandbox>=0.7.0,<0.8"), (0, 8, 0))
         assert moved == BOTH
         assert "maf-sandbox>=0.8.0,<0.9" in text
 
     def test_neither_end_is_left_behind_by_the_other(self):
         # The failure mode: an edit that widens and forgets the floor, or vice versa, is what
         # produced two pull requests that each reverted half of the other.
-        text, _ = ranges.set_range(_pyproject("maf-sandbox>=0.7.0,<0.8.5"), (0, 8, 0))
+        text, _ = ranges.set_range(_pyproject("maf-sandbox>=0.7.0,<0.8"), (0, 8, 0))
         assert "0.7.0" not in text
-        assert "<0.8.5" not in text
+        assert "<0.8," not in text and ',<0.8"' not in text
 
-    def test_an_ordinary_cycle_moves_the_ceiling_alone(self):
-        # <0.8 does not admit 0.8.0, so the floor stays where a human put it.
-        text, moved = ranges.set_range(_pyproject("maf-sandbox>=0.7.0,<0.8"), (0, 8, 0))
-        assert moved == frozenset({CEILING})
-        assert "maf-sandbox>=0.7.0,<0.9" in text
+    def test_the_pair_leaves_one_core_minor_in_range(self):
+        # The point of moving both: `>=0.8.0,<0.9` admits the 0.8 line and nothing else.
+        text, _ = ranges.set_range(_pyproject("maf-sandbox>=0.6.0,<0.7"), (0, 8, 0))
+        floor, ceiling = ranges.parse_constraint(text)
+        assert floor[:2] == (0, 8)
+        assert ceiling == (0, 9)
 
 
 class TestTheCeiling:
@@ -141,7 +136,7 @@ class TestTheCeiling:
 
 
 class TestTheFloor:
-    def test_a_new_minor_the_ceiling_admits_moves_the_floor(self):
+    def test_a_new_minor_moves_the_floor(self):
         text, moved = ranges.set_range(_pyproject("maf-sandbox>=0.1.0,<0.3"), (0, 2, 0))
         assert FLOOR in moved
         assert "maf-sandbox>=0.2.0," in text
@@ -156,13 +151,12 @@ class TestTheFloor:
         _, moved = ranges.set_range(_pyproject("maf-sandbox>=0.3.0,<0.5"), (0, 3, 0))
         assert moved == frozenset()
 
-    def test_it_is_judged_against_the_ceiling_as_it_was_not_as_this_leaves_it(self):
-        # <0.8 excludes 0.9.0, so this dependent has not adopted it and its floor must not
-        # move — even though the same edit widens that ceiling to <0.10. Widening authorising
-        # the bump the old ceiling refused is the regression this run could have introduced.
+    def test_a_ceiling_that_excluded_the_release_does_not_hold_the_floor_back(self):
+        # It used to: the floor was judged against the ceiling as it stood, so a dependent two
+        # lines behind kept its floor. The suite now tracks one core minor, so both move.
         text, moved = ranges.set_range(_pyproject("maf-sandbox>=0.7.0,<0.8"), (0, 9, 0))
-        assert moved == frozenset({CEILING})
-        assert "maf-sandbox>=0.7.0,<0.10" in text
+        assert moved == BOTH
+        assert "maf-sandbox>=0.9.0,<0.10" in text
 
 
 class TestSpelling:
@@ -420,7 +414,7 @@ class TestOverATree:
         assert changed == sorted(dependents)
         assert "anyio>=4" in core.read_text("utf-8")
         for path in dependents:
-            assert "maf-sandbox>=0.7.0,<0.9" in path.read_text("utf-8")
+            assert "maf-sandbox>=0.8.0,<0.9" in path.read_text("utf-8")
 
     def test_plan_changes_nothing_on_disk(self, tmp_path: Path):
         path = self._write(tmp_path, "dep-a", "maf-sandbox>=0.7.0,<0.8")
@@ -429,7 +423,7 @@ class TestOverATree:
         planned = ranges.plan("0.8.0", tmp_path)
 
         assert [p for p, _, _ in planned] == [path]
-        assert planned[0][2] == frozenset({CEILING})
+        assert planned[0][2] == BOTH
         assert path.read_text("utf-8") == before
 
     def test_a_second_run_is_a_clean_no_op(self, tmp_path: Path):
@@ -441,18 +435,13 @@ class TestOverATree:
         assert ranges.run("0.8.0", tmp_path) == []
         assert path.read_text("utf-8") == after
 
-    def test_a_widened_ceiling_offers_the_floor_on_the_next_run(self, tmp_path: Path):
-        """Recorded, not guarded: a ceiling this widened admits the release on a second run.
-
-        Pre-existing, and out of reach of the workflow, which runs once per release on `main`.
-        """
-        path = self._write(tmp_path, "dep-a", "maf-sandbox>=0.7.0,<0.8")
-
+    def test_a_dependent_two_lines_behind_lands_on_the_release(self, tmp_path: Path):
+        # Both bounds in one run, so a second changes nothing. While the floor was judged
+        # against the ceiling as it stood, this took two runs to settle.
+        path = self._write(tmp_path, "dep-a", "maf-sandbox>=0.6.0,<0.7")
         assert ranges.run("0.8.0", tmp_path) == [path]
-        assert "maf-sandbox>=0.7.0,<0.9" in path.read_text("utf-8"), "the ceiling alone"
-
-        assert ranges.run("0.8.0", tmp_path) == [path]
-        assert "maf-sandbox>=0.8.0,<0.9" in path.read_text("utf-8"), "now the floor follows"
+        assert "maf-sandbox>=0.8.0,<0.9" in path.read_text("utf-8")
+        assert ranges.run("0.8.0", tmp_path) == []
 
     def test_a_patch_release_moves_nothing(self, tmp_path: Path):
         self._write(tmp_path, "dep-a", "maf-sandbox>=0.8.0,<0.9")
@@ -477,7 +466,7 @@ class TestOverATree:
             "utf-8",
         )
         assert ranges.run("0.8.0", tmp_path) == [path]
-        assert "maf-sandbox>=0.7.0,<0.9" in path.read_text("utf-8")
+        assert "maf-sandbox>=0.8.0,<0.9" in path.read_text("utf-8")
 
     def test_a_dependent_on_only_a_sibling_is_not_mistaken_for_a_base_dependent(
         self, tmp_path: Path
@@ -500,5 +489,5 @@ class TestOverATree:
         assert ranges.run("0.8.0", tmp_path) == [path]
 
         text = path.read_text("utf-8")
-        assert "maf-sandbox>=0.7.0,<0.9" in text
+        assert "maf-sandbox>=0.8.0,<0.9" in text
         assert "maf-sandbox-acas>=0.1.0,<0.3" in text  # the sibling, exactly as it was
