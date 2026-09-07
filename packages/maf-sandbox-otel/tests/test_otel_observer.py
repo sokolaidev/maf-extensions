@@ -90,6 +90,7 @@ def _surface(
     identities: frozenset[Identity],
     has_undeclared: bool,
     result_integrity: SourceIntegrity | None,
+    names: frozenset[str] = frozenset({"post_comment", "read_ticket"}),
 ) -> HostToolAggregate:
     """A sealed registry's answer, built directly: what a registry folds to is core's business."""
     return HostToolAggregate(
@@ -100,6 +101,7 @@ def _surface(
         has_undeclared=has_undeclared,
         response_limits=TransferLimits(1024, 4096, 4),
         max_host_tool_calls_per_run=8,
+        names=names,
     )
 
 
@@ -193,7 +195,9 @@ def build(*, sensitive: bool = False) -> Recorded:
     )
 
 
-def an_acquire(*, refusal: str | None = None, spec: SandboxSpec = SPEC) -> SandboxAcquired:
+def an_acquire(
+    *, refusal: str | None = None, spec: SandboxSpec = SPEC, call: str | None = None
+) -> SandboxAcquired:
     return SandboxAcquired(
         key=KEY,
         spec=spec,
@@ -203,6 +207,7 @@ def an_acquire(*, refusal: str | None = None, spec: SandboxSpec = SPEC) -> Sandb
         declarations=None if refusal else DECLARATIONS,
         seconds=0.25,
         refusal=refusal,
+        call=call,
     )
 
 
@@ -290,6 +295,44 @@ class TestTheAcquireRecordCarriesThePosture:
         assert attributes[f"{NAMESPACE}.surface.undeclared"] is True
         assert attributes[f"{NAMESPACE}.surface.call_cap"] == 8
         assert attributes[f"{NAMESPACE}.surface.result_integrity"] == "untrusted"
+        assert attributes[f"{NAMESPACE}.surface.names"] == ("post_comment", "read_ticket")
+
+    def test_which_tools_were_callable_is_not_derivable_from_the_folds_beside_it(self):
+        recorded = build()
+        spec = dataclasses.replace(
+            WITH_HOST_TOOLS,
+            host_tools=_surface(
+                identities=frozenset({Identity.APP, Identity.USER}),
+                has_undeclared=True,
+                result_integrity=SourceIntegrity.UNTRUSTED,
+                names=frozenset({"delete_branch"}),
+            ),
+        )
+        recorded.observer.sandbox_acquired(an_acquire(spec=spec))
+        attributes = recorded.attributes()
+        assert attributes[f"{NAMESPACE}.surface.identities"] == ("app", "user")
+        assert attributes[f"{NAMESPACE}.surface.names"] == ("delete_branch",)
+
+    def test_a_registry_that_sealed_carrying_nothing_still_records_the_names_it_has(self):
+        """Empty is a surface with no tools, which is not the absence of a surface below."""
+        recorded = build()
+        spec = dataclasses.replace(
+            WITH_HOST_TOOLS,
+            host_tools=_surface(
+                identities=frozenset(),
+                has_undeclared=False,
+                result_integrity=None,
+                names=frozenset(),
+            ),
+        )
+        recorded.observer.sandbox_acquired(an_acquire(spec=spec))
+        assert recorded.attributes()[f"{NAMESPACE}.surface.names"] == ()
+
+    def test_the_registrys_names_reach_the_log_pipeline_too(self):
+        recorded = build()
+        recorded.observer.sandbox_acquired(an_acquire(spec=WITH_HOST_TOOLS))
+        logged = recorded.log_attributes("sandbox.acquire")
+        assert logged[f"{NAMESPACE}.surface.names"] == ("post_comment", "read_ticket")
 
     def test_a_surface_with_no_integrity_opinion_records_none(self):
         """A registry of sink-only tools has no source to fold, which is not `untrusted`."""
@@ -1096,3 +1139,126 @@ def recorded_denied(event: EgressObserved) -> object:
     recorded = build()
     recorded.observer.egress_observed(event)
     return recorded.attributes()[f"{NAMESPACE}.egress.denied"]
+
+
+A_CALL = "call-4b1e"
+
+
+def a_collection(**overrides: object) -> OutputsCollected:
+    fields: dict[str, object] = {
+        "key": KEY,
+        "kind": "codeact",
+        "declared": 1,
+        "limits": TransferLimits(max_bytes_per_file=8, max_total_bytes=32, max_files=64),
+        "landed": (LandedOutput(name="out.png", size_bytes=2048, media_type="image/png"),),
+        "seconds": 0.05,
+    }
+    fields.update(overrides)
+    return OutputsCollected(**fields)  # pyright: ignore[reportArgumentType]
+
+
+class TestARecordNamesTheCallItCameFrom:
+    """`maf_sandbox.call.id` is the join the key cannot make at `CONVERSATION` scope."""
+
+    def test_an_acquire_carries_it(self):
+        recorded = build()
+        recorded.observer.sandbox_acquired(an_acquire(call=A_CALL))
+        assert recorded.attributes()[f"{NAMESPACE}.call.id"] == A_CALL
+
+    def test_a_refused_acquire_carries_it_too(self):
+        recorded = build()
+        recorded.observer.sandbox_acquired(an_acquire(refusal="NoBackend", call=A_CALL))
+        assert recorded.attributes()[f"{NAMESPACE}.call.id"] == A_CALL
+
+    def test_a_host_tool_call_carries_it(self):
+        recorded = build()
+        recorded.observer.host_tool_called(a_host_tool_call(call=A_CALL))
+        assert recorded.attributes()[f"{NAMESPACE}.call.id"] == A_CALL
+
+    def test_a_store_read_carries_it(self):
+        recorded = build()
+        recorded.observer.store_file_read(a_store_read(call=A_CALL))
+        assert recorded.attributes()[f"{NAMESPACE}.call.id"] == A_CALL
+
+    def test_a_collection_carries_it(self):
+        recorded = build()
+        recorded.observer.outputs_collected(a_collection(call=A_CALL))
+        assert recorded.attributes()[f"{NAMESPACE}.call.id"] == A_CALL
+
+    def test_a_disposal_carries_it(self):
+        recorded = build()
+        recorded.observer.sandbox_disposed(
+            SandboxDisposed(
+                key=KEY,
+                backend="docker",
+                outcome="gone",
+                failure=None,
+                seconds=0.1,
+                call=A_CALL,
+            )
+        )
+        assert recorded.attributes()[f"{NAMESPACE}.call.id"] == A_CALL
+
+    def test_a_purge_carries_it(self):
+        recorded = build()
+        recorded.observer.scope_disposed(a_purge(call=A_CALL))
+        assert recorded.attributes()[f"{NAMESPACE}.call.id"] == A_CALL
+
+    def test_the_calls_own_record_always_carries_it(self):
+        recorded = build()
+        recorded.observer.tool_call_ended(
+            ToolCallEnded(
+                tool="execute_code",
+                kind="codeact",
+                keys=(KEY,),
+                seconds=1.5,
+                failure=None,
+                unclean=0,
+                **CALL,
+            )
+        )
+        assert recorded.attributes()[f"{NAMESPACE}.call.id"] == CALL["call"]
+
+    def test_a_drain_never_carries_it(self):
+        """Its window spans whatever calls ran between two removals."""
+        recorded = build()
+        recorded.observer.egress_observed(a_drain())
+        assert f"{NAMESPACE}.call.id" not in recorded.attributes()
+
+    def test_what_happened_outside_a_call_records_no_call(self):
+        """Absent rather than an empty string a query would group on."""
+        recorded = build()
+        recorded.observer.sandbox_acquired(an_acquire(call=None))
+        assert f"{NAMESPACE}.call.id" not in recorded.attributes()
+
+    def test_it_is_not_the_keys_own_call_id(self):
+        """They coincide only at `IsolationScope.CALL`."""
+        recorded = build()
+        recorded.observer.sandbox_acquired(an_acquire(call=A_CALL))
+        attributes = recorded.attributes()
+        assert KEY.call_id != A_CALL
+        assert attributes[f"{NAMESPACE}.call.id"] == A_CALL
+        assert attributes[f"{NAMESPACE}.sandbox.call_id"] == KEY.call_id
+
+    def test_it_crosses_unhashed_while_the_keys_parts_do_not(self):
+        recorded = build(sensitive=False)
+        recorded.observer.sandbox_acquired(an_acquire(call=A_CALL))
+        attributes = recorded.attributes()
+        assert attributes[f"{NAMESPACE}.call.id"] == A_CALL
+        assert f"{NAMESPACE}.sandbox.scope" not in attributes
+
+    def test_it_reaches_the_log_pipeline_too(self):
+        recorded = build()
+        recorded.observer.sandbox_acquired(an_acquire(call=A_CALL))
+        assert recorded.log_attributes("sandbox.acquire")[f"{NAMESPACE}.call.id"] == A_CALL
+
+    def test_two_calls_on_one_conversation_are_told_apart(self):
+        recorded = build()
+        recorded.observer.sandbox_acquired(an_acquire(call="call-one"))
+        recorded.observer.sandbox_acquired(an_acquire(call="call-two"))
+        spans = recorded.spans.get_finished_spans()
+        assert len({(span.attributes or {})[f"{NAMESPACE}.sandbox.key"] for span in spans}) == 1
+        assert {(span.attributes or {})[f"{NAMESPACE}.call.id"] for span in spans} == {
+            "call-one",
+            "call-two",
+        }

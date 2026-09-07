@@ -49,6 +49,7 @@ Splitting them is usually what a security record wants. A SIEM does not want the
 | A collection landed artifacts in a sink | `sandbox.files_out` | `maf_sandbox.outputs.landed_files`, `.landed_bytes` |
 | One backend answered one disposal | `sandbox.dispose` | `maf_sandbox.sandbox.disposals` |
 | One backend answered one conversation's purge | `sandbox.purge` | `maf_sandbox.scope.purges`, `.purged_sandboxes` |
+| A backend reported what its egress enforcement decided | `sandbox.egress` | `maf_sandbox.egress.decisions` |
 | A sandboxed tool call ended | `sandbox.call` | `maf_sandbox.call.duration` |
 
 Every event also emits a log record, and that is the one a security pipeline should keep: it does not depend on anything else being instrumented, and it survives a trace sampler that discarded the span. Attributes are under `maf_sandbox.*`, so they select cleanly out of a pipeline carrying everyone else's.
@@ -62,6 +63,8 @@ A `SandboxKey` is the column almost every record joins on, so it cannot simply b
 `sandbox.purge` is the one record with no key on it, because core's event has none: a backend answers a purge with a count rather than with the sandboxes it removed. It carries `maf_sandbox.sandbox.conversation` — the same hash of `(scope, thread_id)` every keyed record carries beside its key — so the record that says a conversation was cleaned up groups with that conversation's own.
 
 The **call id** is the one part of a key recorded in the clear. The framework generates it per call, it is drawn from nobody's vocabulary, and it is what names the folder a `per_call` sink lands that call's artifacts in — so hashing it would cost the correlation a landing record exists for and protect nothing.
+
+**Two attributes carry a call id, and they are not the same column.** `maf_sandbox.sandbox.call_id` is the key's own, and a key carries one only where the workload runs a sandbox per call. `maf_sandbox.call.id` is which tool call the record came from, and it is on every record that has one — so it, and not the key, is what separates two calls in flight on one conversation. They hold the same string at `IsolationScope.CALL` and only there. `sandbox.call` always carries it, because that is the record the others join to; `sandbox.egress` never does, because a drain covers a window between two removals and the decisions in it span whatever calls happened meanwhile.
 
 ## Two limits worth knowing before you rely on it
 
