@@ -10,7 +10,7 @@ Sample 15 runs the same call-heavy walk on either backend: ACAS by default, dock
 `FILES_LIST`, so it prints no act-5 leftover lines and that one act is dropped. Everything else
 the check enforces is backend-agnostic and applies to both.
 
-**What is asserted is chosen so one model's off run does not decide a release.** Both routes run
+**What is asserted is chosen so one bad attempt does not decide a release.** Both routes run
 Python in the sandbox and walk the same four stages, so what is enforced is either an
 interpreter's output or a structural property of the two roads. The properties that read off a
 model-written program are retried rather than exempted, so an attempt that keeps failing them
@@ -97,9 +97,8 @@ class _TheModelsHalf(str):
     """Mark model-owned failures while retaining string behavior for existing callers."""
 
 
-#: What `main` exits when every failure was the model's own. `verify-live.yml` runs the sample
-#: again on this and on nothing else (#421). 1 stays what it always was, so a workflow that
-#: predates this still sees a non-zero exit and fails.
+#: What `main` exits when every failure was the model's own, and the only status
+#: `verify-live.yml` retries (#421). Every other failure exits 1.
 MODEL_DID_NOT_CONVERGE = 3
 
 _F = re.MULTILINE

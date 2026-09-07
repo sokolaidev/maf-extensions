@@ -284,11 +284,7 @@ class TestTheFixLoopAnnotationDoesNotBlameOneTurn:
 @needs_bash
 @_EACH
 class TestASampleThatNeverRanIsNotTheModelsHalf:
-    """A crash before the check measured nothing, so it neither retries nor goes unrecorded.
-
-    `set -euo pipefail` used to end the step at the pipe, taking the attempt count with it, and
-    the harness only ever made the sample succeed — so nothing here noticed.
-    """
+    """A crash before the check measured nothing, so it neither retries nor goes unrecorded."""
 
     def test_a_crashing_sample_is_not_retried(self, tmp_path: Path, retrying: _Retrying):
         finished = _run(tmp_path, [0], sample_status=7, retrying=retrying)
@@ -351,7 +347,7 @@ class TestTheBudgetIsWrittenOnce:
         assert allowed in words, f"add {allowed} to this table when raising the budget past 8"
         readme = retrying.readme.read_text("utf-8")
         assert f"**{words[allowed]} at most**" in readme, (
-            f"{retrying.readme.relative_to(_ROOT).as_posix()} does not say the run happens "
+            f"{retrying.readme.relative_to(_ROOT).as_posix()} does not say the sample is attempted "
             f"{words[allowed]} at most; the workflow allows {allowed} for {retrying.label}"
         )
 

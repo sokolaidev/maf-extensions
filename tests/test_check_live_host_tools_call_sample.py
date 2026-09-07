@@ -154,8 +154,8 @@ class TestBothProgramsHadToAnswer:
 
     @pytest.mark.parametrize("route", ["host-tool-call route", "direct route"])
     def test_a_missing_total_says_nothing_about_the_transport_that_fed_it(self, route: str):
-        """A run can serve every lookup and still print zeros, so the reason may not claim
-        the program was starved."""
+        """An attempt can serve every lookup and still print zeros, so the reason may not
+        claim the program was starved."""
         broken = _swap(
             f"[measured] {route}: state totals the program printed: 2 of 2",
             f"[measured] {route}: state totals the program printed: 0 of 2",
@@ -1262,7 +1262,7 @@ class TestTheDockerSampleHasNoActFive:
 
 
 class TestWhichHalfFailedIsInTheExitStatus:
-    """A model's off run and a broken transport are different claims and different statuses."""
+    """A model's off attempt and a broken transport are different claims and statuses."""
 
     def _status(self, tmp_path: Path, output: str) -> int:
         path = tmp_path / "out.txt"
