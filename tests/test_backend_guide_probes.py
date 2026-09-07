@@ -42,6 +42,7 @@ REGISTRIES = (
     maf_sandbox.conformance.EXEC_PROBES,
     maf_sandbox.conformance.FILES_DELETE_PROBES,
     maf_sandbox.conformance.RECLAIM_PROBES,
+    maf_sandbox.conformance.REACH_PROBES,
 )
 PROBE_NAMES = frozenset(probe.name for registry in REGISTRIES for probe in registry)
 

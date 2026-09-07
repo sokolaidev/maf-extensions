@@ -17,7 +17,8 @@ a link still refuses every path here and fails the two probes about *naming* wha
 The same shape covers the other capabilities, each as its own suite:
 :func:`assert_files_in_conformance` (:data:`~maf_sandbox.Capability.FILES_IN`),
 :func:`assert_exec_conformance` (:data:`~maf_sandbox.Capability.EXEC`),
-:func:`assert_files_delete_conformance` (:data:`~maf_sandbox.Capability.FILES_DELETE`), and
+:func:`assert_files_delete_conformance` (:data:`~maf_sandbox.Capability.FILES_DELETE`),
+:func:`assert_reach_conformance` (the reach rule, over both file capabilities), and
 :func:`assert_egress_conformance` — that a declared ``Egress.ALLOWLIST`` is *enforced*: the guest
 reaches a host on the allowlist and not one off it (#402).  It takes the allowed and denied URLs
 because a spec's hosts are the deployment's, not this module's, and asserts only the outcome both
@@ -25,10 +26,12 @@ an L3-severing and an L7-proxying backend must share.  The FILES_IN probes also 
 confinement.  The FILES_IN, EXEC and FILES_DELETE probes verify through :meth:`Sandbox.exec`
 rather than the pull surface, because a backend with no pull surface still owes those
 capabilities.  They need ``cat``, ``test``, ``printf``, ``pwd``, ``sleep``, ``sh`` and
-``mkdir`` — beyond ``PosixGuestSubject``'s own ``ln`` and ``test``, which the mandatory reclaim
-suite costs even where no capability suite runs, so the image has to carry the POSIX core
-utilities, and what those suites assert is measured against the guest the image ships, which
-for the suites that run in CI is the image the workflow names.
+``mkdir``, and ``rm`` for the reach probes' own measurements — beyond
+``PosixGuestSubject``'s own ``ln`` and ``test``, which the mandatory reclaim
+suite costs even where no capability suite runs.  So the image has to carry the POSIX core
+utilities, and what those suites assert is measured
+against the guest the image ships, which for the suites that run in CI is the image the workflow
+names.
 
 **Two suites belong to no capability.** ``assert_call_scope_conformance`` is gated by a
 declaration rather than a capability — a backend owes it once it declares
@@ -41,6 +44,13 @@ verify through the subject rather than through ``exec``: they plant with
 :meth:`ConformanceSubject.plant_file` and ask :meth:`ConformanceSubject.exists` what survived.
 A mandatory suite may not require a capability nobody declared — a runtime-only backend answers
 ``exec`` with ``NotImplementedError`` and still owes every probe here (#639).
+
+**And one is gated per probe rather than per suite.**  :func:`assert_reach_conformance` covers the
+reach rule :class:`~maf_sandbox.Sandbox` states for the whole file surface, and that surface spans
+two capabilities, so the gate is on each probe: a backend declaring neither is owed nothing and
+both skip.  Its probes are sharp only where the guest program is not root — where it is, the
+guest's authority and the host's are one, the rule has nothing to bind, and each probe says so by
+passing (#951).
 
 **The EXEC suite may not leave the sandbox alive.**  Its last probe asserts the
 ``TimeoutError`` contract, and two backends discard the whole sandbox when a call times out —
@@ -74,6 +84,7 @@ __all__ = [
     "FILES_DELETE_PROBES",
     "FILES_IN_PROBES",
     "FILES_OUT_PROBES",
+    "REACH_PROBES",
     "RECLAIM_PROBES",
     "ConformanceFailure",
     "ConformancePaths",
@@ -87,6 +98,7 @@ __all__ = [
     "assert_files_delete_conformance",
     "assert_files_in_conformance",
     "assert_files_out_conformance",
+    "assert_reach_conformance",
     "assert_reclaim_conformance",
     "measure_files_delete_probes",
     "plant_layout",
@@ -96,6 +108,7 @@ __all__ = [
     "run_files_delete_probes",
     "run_files_in_probes",
     "run_files_out_probes",
+    "run_reach_probes",
     "run_reclaim_probes",
 ]
 
@@ -165,6 +178,46 @@ class ConformanceSubject(Protocol):
         """
         ...
 
+    async def plant_directory_the_guest_owns(self, path: str) -> bool:
+        """Create a directory at ``path`` as the *guest program*, and say whether it could.
+
+        The component a swap needs, and **this call must be what created it**: a path that was
+        already there proves nothing about who owns it, and an image carrying one under a
+        working directory the guest cannot write would otherwise be read as swappable.  One
+        level only, so a nested layout is planted a component at a time.
+
+        ``False`` is an answer rather than a failure — the path exists already, or the guest
+        cannot write its parent, and either way the reach rule binds nothing the probe could
+        judge, so the probe that asked stops.
+        """
+        ...
+
+    async def plant_file_the_guest_owns(self, path: str) -> bool:
+        """Create a regular file at ``path`` as the *guest program*, and say whether it could.
+
+        A control removal has to match the operation it stands in for, and the protected one is
+        a tree with a regular file in it.
+        """
+        ...
+
+    async def the_guest_can_write(self, path: str) -> bool:
+        """Whether the guest program can write ``path`` — a file's bytes, a directory's entries.
+
+        Asked of what a write left behind, which ``write_file`` says must be the guest's to
+        change.  Not a proxy for whether a *directory* can be emptied: see
+        :meth:`the_guest_can_delete`, which measures that rather than inferring it.
+        """
+        ...
+
+    async def the_guest_can_delete(self, path: str) -> bool:
+        """Whether the guest program can actually remove ``path``, measured by removing it.
+
+        Emptying a directory takes more than its write bit — search permission, and the sticky
+        bit deciding whose entries may go — so this is asked of a decoy the probe planted for
+        the purpose rather than inferred from a mode.
+        """
+        ...
+
 
 @dataclass(frozen=True)
 class PosixGuestSubject:
@@ -222,6 +275,83 @@ class PosixGuestSubject:
                     f"(`test {flag}` exited {result.exit_code}): {result.stderr.strip()}"
                 )
         return False
+
+    async def plant_directory_the_guest_owns(self, path: str) -> bool:
+        """``mkdir`` as the guest, without ``-p``, so an existing path fails rather than passes.
+
+        Exit 1 covers both answers the caller reads as "no" — the path is there already, or the
+        parent refuses — and above it is ``mkdir`` not running.  That distinction decides
+        whether a probe stops or blows up, and an image without ``mkdir`` would otherwise read
+        as a guest that may write nowhere, leaving the suite to pass having attacked nothing.
+        """
+        made = await self.sandbox.exec(
+            ["mkdir", path],
+            working_directory=self.working_directory,
+            timeout=self.exec_timeout,
+        )
+        if made.exit_code > 1:
+            raise RuntimeError(
+                f"could not ask the guest to make {path!r} "
+                f"(`mkdir` exited {made.exit_code}): {made.stderr.strip()}"
+            )
+        return made.exit_code == 0
+
+    async def plant_file_the_guest_owns(self, path: str) -> bool:
+        """A shell redirection as the guest, answered by whether the file is there afterwards."""
+        await self.sandbox.exec(
+            ["sh", "-c", 'printf %s "$1" > "$2"', "_", "planted by the guest", path],
+            working_directory=self.working_directory,
+            timeout=self.exec_timeout,
+        )
+        return await self.exists(path)
+
+    async def the_guest_can_write(self, path: str) -> bool:
+        """``test -w``, asked of what a write left behind.
+
+        Permission rather than ownership: a mode the guest can write is one it controls whoever
+        owns it, and a uid comparison would report that as a violation.
+        """
+        return await self._writable(path)
+
+    async def the_guest_can_delete(self, path: str) -> bool:
+        """``rm -f``, then look: the outcome rather than a reading of the parent's mode.
+
+        Exit 1 is the refusal being measured; above it is ``rm`` not running, and that raises
+        the way :meth:`exists` and :meth:`plant_directory_the_guest_owns` do.  A missing ``rm``
+        read as "cannot delete" would leave the probe asserting on a calibration it never made,
+        and a backend that refuses the protected tree for its own reasons would then pass.
+
+        **Absence is only asked about after ``rm`` reports success.**  A parent the guest cannot
+        search refuses the removal *and* hides the file from ``test -e``, so reading absence
+        first would call the survivor deleted — on exactly the shape this exists to measure.
+        """
+        removed = await self.sandbox.exec(
+            ["rm", "-f", path],
+            working_directory=self.working_directory,
+            timeout=self.exec_timeout,
+        )
+        if removed.exit_code > 1:
+            raise RuntimeError(
+                f"could not ask the guest to remove {path!r} "
+                f"(`rm -f` exited {removed.exit_code}): {removed.stderr.strip()}"
+            )
+        if removed.exit_code != 0:
+            return False
+        return not await self.exists(path)
+
+    async def _writable(self, path: str) -> bool:
+        """``test -w``, reading an exit code above 1 the way :meth:`exists` does."""
+        result = await self.sandbox.exec(
+            ["test", "-w", path],
+            working_directory=self.working_directory,
+            timeout=self.exec_timeout,
+        )
+        if result.exit_code > 1:
+            raise RuntimeError(
+                f"could not see whether the guest can write {path!r} "
+                f"(`test -w` exited {result.exit_code}): {result.stderr.strip()}"
+            )
+        return result.exit_code == 0
 
 
 @dataclass(frozen=True)
@@ -1772,6 +1902,206 @@ async def run_reclaim_probes(subject: ConformanceSubject) -> tuple[ProbeResult, 
 async def assert_reclaim_conformance(subject: ConformanceSubject) -> tuple[ProbeResult, ...]:
     """Run the reclaim probes and raise :class:`ConformanceFailure` if any failed."""
     return _assert_conformance(await run_reclaim_probes(subject), "RECLAIM")
+
+
+# ---------------------------------------------------------------------------
+# REACH — that a method's authority is bounded by the guest program's own (#951)
+# ---------------------------------------------------------------------------
+#
+# A swap must not let a method reach anything the guest program could not have reached itself.
+# Racing the swap is the wrong way to ask: a race probe can show the window exists and never
+# that it is closed, so it fails intermittently. These read the bound instead, deterministically.
+#
+# **Both read outcomes, and an outcome is not a principal.** What a write left behind, and what
+# a removal was able to take: a backend can satisfy either while acting above the guest. One
+# stamping the guest's uid on what its daemon placed as root passes the write probe; one that
+# preflights a target against the guest's permissions, declines what the guest could not touch
+# and then runs the rest as the host passes the removal probe. Both keep the window a swap
+# needs, which is what the rule is about.
+#
+# Nothing deterministic closes that. Reading the principal takes a swap, which is a race, or an
+# operation the engine performs at a stated authority, which no shipped file plane offers. So
+# these probes are necessary and not sufficient by construction, and each `why` says so.
+
+
+async def _probe_a_write_lands_within_the_guests_reach(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    directory = f"{paths.work}/reach-in"
+    landed = f"{directory}/landed.txt"
+    if not await subject.plant_directory_the_guest_owns(directory):
+        return
+    await subject.sandbox.write_file(
+        landed, b"a write the guest could have made\n", working_directory=subject.working_directory
+    )
+    if not await subject.the_guest_can_write(landed):
+        raise AssertionError(
+            f"the guest program cannot write {landed!r}, which `write_file` says it must be able "
+            f"to — a plane landing what the guest cannot change is one acting above it, into a "
+            f"directory that program owns and can therefore replace with a link"
+        )
+    # The other half of the same sentence, and it is not implied by the first: unlinking is the
+    # parent's to permit, so a plane can land a writable file and still leave the guest unable to
+    # take it away when its program is done with it.
+    if not await subject.the_guest_can_delete(landed):
+        raise AssertionError(
+            f"the guest program cannot delete {landed!r}, which `write_file` says it must be able "
+            f"to — a kind's inputs exist to be taken away by the program that consumed them"
+        )
+
+
+async def _probe_a_removal_takes_nothing_beyond_the_guest(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    swappable = f"{paths.work}/reach-delete"
+    held = f"{swappable}/held"
+    survivor = f"{held}/keep.txt"
+    decoy = f"{held}/decoy.txt"
+    if not await subject.plant_directory_the_guest_owns(swappable):
+        return
+    # Through `write_file` rather than `plant_file`: `held` has to be the *file plane's*, and
+    # only the plane under test is guaranteed to be that. A subject plants however its guest
+    # allows, so a `plant_file` that ran in the guest would make `held` the guest's, and a
+    # directory the guest owns is one it can empty itself. Hence FILES_IN below.
+    for planted in (survivor, decoy):
+        await subject.sandbox.write_file(
+            planted,
+            b"only the host could take this",
+            working_directory=subject.working_directory,
+        )
+    # Measured on a decoy rather than read off a mode: emptying a directory takes search
+    # permission as well as write, and a sticky bit decides whose entries may go, so a writable
+    # directory is not one the guest can necessarily clear. Where it can, the rule permits
+    # reaching what is inside and there is nothing here to judge.
+    if await subject.the_guest_can_delete(decoy):
+        return
+    # A parent the guest cannot search hides its entries from the guest's own `test` as surely
+    # as it refuses a removal, so an outcome read through it would call a survivor deleted and
+    # fail a backend that correctly refused. Where the entries cannot be seen before the call,
+    # they cannot be read after it either, and the probe has nothing to judge.
+    for planted in (survivor, decoy):
+        if not await subject.exists(planted):
+            return
+    # The positive control, through the same method: a removal this backend can actually make.
+    # `OSError` is what every backend raises for a removal it could not perform at all, a
+    # service failure as much as a refusal, so without this a `remove` that is merely
+    # unavailable leaves the survivor standing and reads as an authority it never demonstrated.
+    # It matches the protected tree's shape, a directory holding a regular file, because a
+    # backend refusing only those would pass a directory-only control. The guest makes it, so
+    # it is removable at either authority; a control the file plane made would be one a
+    # guest-authority removal must refuse. Nothing catches it: a control that cannot run is
+    # this probe failing.
+    removable = f"{swappable}/removable"
+    planted_control = (
+        await subject.plant_directory_the_guest_owns(removable)
+        and await subject.plant_directory_the_guest_owns(f"{removable}/inner")
+        and await subject.plant_file_the_guest_owns(f"{removable}/inner/content.txt")
+    )
+    if not planted_control:
+        raise AssertionError(
+            f"could not build {removable!r} under a directory the guest had just made, so this "
+            f"probe has no control and the refusal below would say nothing about which "
+            f"principal ran"
+        )
+    await subject.sandbox.remove(
+        "reach-delete/removable",
+        working_directory=subject.working_directory,
+        recursive=True,
+    )
+    for left, what in (
+        (f"{removable}/inner/content.txt", "the file under it"),
+        (f"{removable}/inner", "the tree under it"),
+        (removable, "it"),
+    ):
+        if await subject.exists(left):
+            raise AssertionError(
+                f"the control removal left {what} standing, so this backend's remove "
+                f"does not work here and the refusal below would say nothing about "
+                f"which principal ran"
+            )
+    try:
+        await subject.sandbox.remove(
+            "reach-delete/held", working_directory=subject.working_directory, recursive=True
+        )
+    except TimeoutError:
+        # An OSError subclass, so the handler below would take it: a call that never finished
+        # leaves the survivor standing for a reason that says nothing about which principal ran.
+        raise
+    except OSError:
+        # The outcome this probe wants rather than one it asserts on — a removal held to the
+        # guest's authority refuses here — so the exception is read for its type and no further.
+        pass
+    # Both entries, not just one: a removal that took what it could and then stopped has still
+    # taken something beyond the guest, and checking a single survivor would call that a pass.
+    for taken in (survivor, decoy):
+        if not await subject.exists(taken):
+            raise AssertionError(
+                f"the removal took {taken!r} out of a directory the guest program cannot write "
+                f"into, from under a parent that program owns — so the same call through a "
+                f"swapped parent deletes outside"
+            )
+
+
+REACH_PROBES: tuple[Probe, ...] = (
+    Probe(
+        name="a-write-leaves-nothing-beyond-the-guest",
+        why=(
+            "a file plane acting as the host lands bytes the guest program could not have "
+            "landed, into a directory that program owns — and a directory it owns is one it "
+            "can replace with a link, which sends the same bytes outside at that authority. "
+            "This reads the result and not the resolution, so it is necessary and not "
+            "sufficient: a plane that places as the host and stamps the guest's uid passes it "
+            "(#967). The section comment above says why nothing deterministic does better."
+        ),
+        requires=frozenset({Capability.FILES_IN}),
+        run=_probe_a_write_lands_within_the_guests_reach,
+    ),
+    Probe(
+        name="a-removal-takes-nothing-beyond-the-guest",
+        why=(
+            "a removal that took what the guest program could not have taken, from under a "
+            "component that program owns, is the reach rule's exact prohibition: the component "
+            "is swappable, and what a swap redirects is a delete the guest cannot make. The "
+            "control removal ahead of it makes the refusal evidence rather than coincidence — "
+            "a backend whose remove does not work refuses everything. Necessary and not "
+            "sufficient: a backend declining this target on a permission check and running its "
+            "other removals as the host passes, and so does one whose target the guest could "
+            "have taken anyway, which the rule permits and the probe stops for."
+        ),
+        requires=frozenset({Capability.FILES_IN, Capability.FILES_DELETE}),
+        run=_probe_a_removal_takes_nothing_beyond_the_guest,
+    ),
+)
+
+
+async def _plant_reach_layout(subject: ConformanceSubject) -> ConformancePaths:
+    """Plant the working directory only where a probe will run.
+
+    The gate is per probe and `_run_suite` applies it *after* the planter, so a backend
+    declaring neither surface would otherwise have `plant_file` called on it — and on the
+    shipped subject that is `write_file`, which such a backend never promised. Skipping both
+    probes is the contract; raising from the fixture instead is not.
+    """
+    if any(probe.requires <= subject.capabilities for probe in REACH_PROBES):
+        return await _plant_nothing(subject)
+    return ConformancePaths.under(subject.working_directory)
+
+
+async def run_reach_probes(subject: ConformanceSubject) -> tuple[ProbeResult, ...]:
+    """Run the reach probes. Gated per probe, so a backend serving neither surface skips both.
+
+    A probe that finds nothing the rule binds returns without asserting, and that counts as a
+    pass — ``skipped`` reports the capability gate and nothing else. The layout is left where
+    it lies, ``reach-delete/held`` included: a directory the guest cannot empty. Nothing else
+    in this module reclaims the working directory whole, and a caller that wants one clean
+    runs this suite last.
+    """
+    return await _run_suite(subject, None, _plant_reach_layout, REACH_PROBES)
+
+
+async def assert_reach_conformance(subject: ConformanceSubject) -> tuple[ProbeResult, ...]:
+    """Run the reach probes and raise :class:`ConformanceFailure` if any failed."""
+    return _assert_conformance(await run_reach_probes(subject), "REACH")
 
 
 # ---------------------------------------------------------------------------
