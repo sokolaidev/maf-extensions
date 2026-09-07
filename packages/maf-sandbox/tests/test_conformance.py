@@ -2004,6 +2004,26 @@ class TestReachConformance:
         # protected directory is the file plane's precisely so the guest cannot reopen it.
         assert failures["a-removal-takes-nothing-beyond-the-guest"] is None
 
+    def test_a_write_the_guest_cannot_take_away_fails_the_write_probe(self):
+        """Writable is not deletable: unlinking is the parent's to permit, not the file's.
+
+        A plane can land bytes the guest can edit and still leave it unable to take them away
+        when its program is done, which is the other half of what `write_file` promises.
+        """
+
+        class _LocksTheParent(_SimulatedGuest):
+            async def write_file(self, path, content, *, working_directory: str) -> None:
+                await super().write_file(path, content, working_directory=working_directory)
+                guest = posixpath.normpath(posixpath.join(working_directory, path))
+                if "reach-in" in guest:
+                    self.beyond_the_guest.add(posixpath.dirname(guest))
+
+        reported = _sim_results(_subject_over(_LocksTheParent()), run_reach_probes)[
+            "a-write-leaves-nothing-beyond-the-guest"
+        ]
+        assert reported is not None
+        assert "cannot delete" in reported
+
     def test_a_host_authority_removal_over_a_guest_owned_target_is_not_caught(self):
         """The limit of what this probe reads, asserted rather than left to be discovered.
 

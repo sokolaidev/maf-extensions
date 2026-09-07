@@ -1940,6 +1940,14 @@ async def _probe_a_write_lands_within_the_guests_reach(
             f"to — a plane landing what the guest cannot change is one acting above it, into a "
             f"directory that program owns and can therefore replace with a link"
         )
+    # The other half of the same sentence, and it is not implied by the first: unlinking is the
+    # parent's to permit, so a plane can land a writable file and still leave the guest unable to
+    # take it away when its program is done with it.
+    if not await subject.the_guest_can_delete(landed):
+        raise AssertionError(
+            f"the guest program cannot delete {landed!r}, which `write_file` says it must be able "
+            f"to — a kind's inputs exist to be taken away by the program that consumed them"
+        )
 
 
 async def _probe_a_removal_takes_nothing_beyond_the_guest(
