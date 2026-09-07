@@ -4,6 +4,19 @@ All notable changes to `maf-sandbox-acas` are documented here. The format follow
 
 Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, and the entries below name it as it was — their tags and compare links point at real history and are left as they were written. `maf-sandbox-aca` is not maintained past `0.2.3`; PyPI names cannot be reused, so the rename is a new distribution rather than a continuation of that one.
 
+## [0.19.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.18.1...maf-sandbox-acas-v0.19.0) (2026-09-07)
+
+
+### Features
+
+* acas and wslc declare the POSIX guest they hand out ([#588](https://github.com/sokolaidev/maf-extensions/issues/588)) ([#946](https://github.com/sokolaidev/maf-extensions/issues/946)) ([4109b18](https://github.com/sokolaidev/maf-extensions/commit/4109b188e8eac21e24d1496e88d65ffb07eda97a))
+
+
+### Fixes
+
+* **acas:** a non-root image is refused FILES_DELETE too, because the delete acts as the host and its check is not held ([#962](https://github.com/sokolaidev/maf-extensions/issues/962)) ([b473bb8](https://github.com/sokolaidev/maf-extensions/commit/b473bb89803286c12534e066727b487e07f5d3d4))
+* require maf-sandbox 0.35.0 in the packages that use it ([#991](https://github.com/sokolaidev/maf-extensions/issues/991)) ([a0a063e](https://github.com/sokolaidev/maf-extensions/commit/a0a063e2a459d3dbe1599703d5d410410488d032))
+
 ## [0.18.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.18.0...maf-sandbox-acas-v0.18.1) (2026-09-06)
 
 
