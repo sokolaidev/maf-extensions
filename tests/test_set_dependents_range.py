@@ -11,12 +11,11 @@ which is a shape rather than evidence the package uses it — the floor is judge
 ceiling as it was rather than as this run leaves it, and a constraint the pattern cannot read
 stops the step instead of silently no-opping.
 
-The samples ride the same edit (#343) under a different rule: every one of them declares the
-released minor, unconditionally, because a sample documents the current library rather than
-carrying consumers of its own. What is pinned here is that it is the *minor* — so a patch
-release does not churn fourteen files — that it never lowers, that a sample whose floor has
-drifted out of the readable shape stops the step, and that the parser still finds every
-sample that actually exists.
+The samples used to ride the same edit (#343) and now move only under `--samples`, which
+switches the file set rather than adding to it. Merged with the packages' hunk they take the
+whole set unsatisfiable whenever the core reaches the index first, which is what blocked the
+dependent releases on 0.33.0 and failed seven live samples on 0.34.0. The release workflow
+passes no flag, and `TestTheTwoFileSetsNeverMoveTogether` is what keeps the two apart.
 """
 
 from __future__ import annotations
@@ -64,24 +63,36 @@ def _agent(dependency: str = '"maf-sandbox>=0.7"', docstring: str = "A sample.")
 
 
 class TestTheTarget:
-    """Two minors up, so the release after this one is admitted."""
+    """One minor up: the released line, and no version that does not exist yet."""
 
     @pytest.mark.parametrize(
         ("released", "expected"),
         [
-            ((0, 7, 0), (0, 9)),
-            ((0, 7, 3), (0, 9)),
-            ((0, 9, 0), (0, 11)),
-            ((1, 2, 0), (1, 4)),
+            ((0, 7, 0), (0, 8)),
+            ((0, 7, 3), (0, 8)),
+            ((0, 9, 0), (0, 10)),
+            ((1, 2, 0), (1, 3)),
         ],
     )
-    def test_it_admits_the_next_minor(self, released: tuple[int, ...], expected: tuple[int, ...]):
+    def test_it_admits_the_released_line(
+        self, released: tuple[int, ...], expected: tuple[int, ...]
+    ):
         assert ranges.target_ceiling(released) == expected
 
-    def test_one_minor_up_would_exclude_the_release_it_is_for(self):
-        # The mistake this guards: <0.8 does not admit 0.8.0.
-        assert ranges.target_ceiling((0, 7, 0)) > (0, 8), (
-            "a ceiling of <0.8 excludes the 0.8.0 it is meant to admit"
+    def test_it_admits_every_patch_of_the_release(self):
+        ceiling = ranges.target_ceiling((0, 7, 0))
+        assert ranges._admits((0, 7, 9), ceiling), "a patch of the released minor must resolve"
+
+    def test_it_does_not_admit_the_next_minor(self):
+        """The change this class exists for: the ceiling stops naming an unwritten release.
+
+        Admitting a version and being tested against it are the same condition, so a ceiling
+        reaching the next minor made every breaking core red before it was written — and let a
+        consumer resolve a core beside a dependent published before it.
+        """
+        ceiling = ranges.target_ceiling((0, 7, 0))
+        assert not ranges._admits((0, 8, 0), ceiling), (
+            "0.8.0 does not exist when 0.7.0 releases; admitting it is a claim nothing checked"
         )
 
 
@@ -97,31 +108,48 @@ class TestParseConstraint:
 
 
 class TestBothBoundsInOneEdit:
-    """#195: two writers on one line meant the second merge reverted the first."""
+    """#195: two writers on one line meant the second merge reverted the first.
 
-    def test_a_core_minor_moves_the_floor_and_the_ceiling_together(self):
-        text, moved = ranges.set_range(_pyproject("maf-sandbox>=0.7.0,<0.9"), (0, 8, 0))
+    One writer still carries both bounds, but under a ceiling that admits only the released
+    line the two almost never move in the same run. The floor is judged against the ceiling
+    **as it stood**, so it moves only where that ceiling already admitted the release — and a
+    ceiling that admitted it is at or above the new target, so it does not widen. A ceiling
+    written to a *patch*, below the target and above the release, is the one shape left where
+    both move, and it is what these use. In an ordinary cycle the range pull request carries
+    the ceiling alone and a floor is a human's decision, which is what the module docstring
+    always said it was.
+    """
+
+    def test_a_core_minor_can_still_move_the_floor_and_the_ceiling_together(self):
+        text, moved = ranges.set_range(_pyproject("maf-sandbox>=0.7.0,<0.8.5"), (0, 8, 0))
         assert moved == BOTH
-        assert "maf-sandbox>=0.8.0,<0.10" in text
+        assert "maf-sandbox>=0.8.0,<0.9" in text
 
     def test_neither_end_is_left_behind_by_the_other(self):
         # The failure mode: an edit that widens and forgets the floor, or vice versa, is what
         # produced two pull requests that each reverted half of the other.
-        text, _ = ranges.set_range(_pyproject("maf-sandbox>=0.7.0,<0.9"), (0, 8, 0))
+        text, _ = ranges.set_range(_pyproject("maf-sandbox>=0.7.0,<0.8.5"), (0, 8, 0))
         assert "0.7.0" not in text
-        assert "<0.9," not in text and ',<0.9"' not in text
+        assert "<0.8.5" not in text
+
+    def test_an_ordinary_cycle_moves_the_ceiling_alone(self):
+        # The common case now: <0.8 does not admit 0.8.0, so the floor stays where a human put
+        # it and only the ceiling opens onto the line that was just released.
+        text, moved = ranges.set_range(_pyproject("maf-sandbox>=0.7.0,<0.8"), (0, 8, 0))
+        assert moved == frozenset({CEILING})
+        assert "maf-sandbox>=0.7.0,<0.9" in text
 
 
 class TestTheCeiling:
     def test_a_narrow_ceiling_widens(self):
-        text, moved = ranges.set_range(_pyproject("maf-sandbox>=0.7.0,<0.8"), (0, 7, 0))
+        text, moved = ranges.set_range(_pyproject("maf-sandbox>=0.7.0,<0.7"), (0, 7, 0))
         assert moved == frozenset({CEILING})
-        assert "maf-sandbox>=0.7.0,<0.9" in text
+        assert "maf-sandbox>=0.7.0,<0.8" in text
 
     def test_a_ceiling_already_at_the_target_is_left_alone(self):
-        text, moved = ranges.set_range(_pyproject("maf-sandbox>=0.7.0,<0.9"), (0, 7, 0))
+        text, moved = ranges.set_range(_pyproject("maf-sandbox>=0.7.0,<0.8"), (0, 7, 0))
         assert moved == frozenset()
-        assert "maf-sandbox>=0.7.0,<0.9" in text
+        assert "maf-sandbox>=0.7.0,<0.8" in text
 
     def test_it_never_narrows(self):
         _, moved = ranges.set_range(_pyproject("maf-sandbox>=0.7.0,<1.5"), (0, 7, 0))
@@ -146,17 +174,17 @@ class TestTheFloor:
 
     def test_it_is_judged_against_the_ceiling_as_it_was_not_as_this_leaves_it(self):
         # <0.8 excludes 0.9.0, so this dependent has not adopted it and its floor must not
-        # move — even though the same edit widens that ceiling to <0.11. Widening authorising
+        # move — even though the same edit widens that ceiling to <0.10. Widening authorising
         # the bump the old ceiling refused is the regression this run could have introduced.
         text, moved = ranges.set_range(_pyproject("maf-sandbox>=0.7.0,<0.8"), (0, 9, 0))
         assert moved == frozenset({CEILING})
-        assert "maf-sandbox>=0.7.0,<0.11" in text
+        assert "maf-sandbox>=0.7.0,<0.10" in text
 
 
 class TestSpelling:
     def test_an_unmoved_ceiling_keeps_its_own_spelling(self):
-        # <0.4 already admits the next minor after 0.2.0, so only the floor moves and the
-        # ceiling must come through as it was written.
+        # <0.4 already admits the 0.2 line, so only the floor moves and the ceiling must
+        # come through as it was written.
         text, moved = ranges.set_range(_pyproject("maf-sandbox>=0.1.0,<0.4"), (0, 2, 0))
         assert moved == frozenset({FLOOR})
         assert "maf-sandbox>=0.2.0,<0.4" in text  # not <0.4.0
@@ -164,9 +192,9 @@ class TestSpelling:
     def test_an_unmoved_floor_keeps_its_own_spelling(self):
         # A two-component floor is not this script's house style, but rewriting one it was
         # not asked to touch would put a spurious hunk in front of a reviewer.
-        text, moved = ranges.set_range(_pyproject("maf-sandbox>=0.7,<0.8"), (0, 7, 0))
+        text, moved = ranges.set_range(_pyproject("maf-sandbox>=0.7,<0.7"), (0, 7, 0))
         assert moved == frozenset({CEILING})
-        assert "maf-sandbox>=0.7,<0.9" in text  # not >=0.7.0
+        assert "maf-sandbox>=0.7,<0.8" in text  # not >=0.7.0
 
     def test_a_constraint_it_cannot_read_is_left_for_plan_to_refuse(self):
         _, moved = ranges.set_range(_pyproject("maf-sandbox>=0.7.0"), (0, 7, 0))
@@ -183,7 +211,7 @@ class TestTheSampleFloor:
 
     def test_the_patch_is_dropped(self):
         # A sample declaring >=0.8.3 would claim it needs a patch it has never named, and
-        # would make the next patch release rewrite fourteen files to say the same thing.
+        # would make the next patch release rewrite sixteen files to say the same thing.
         text, _ = ranges.set_sample_floor(_agent(), (0, 8, 3))
         assert '"maf-sandbox>=0.8"' in text
         assert "0.8.3" not in text
@@ -202,7 +230,7 @@ class TestTheSampleFloor:
 
     def test_the_rest_of_the_file_comes_through_byte_for_byte(self):
         # The floor sits inside a comment block that a greedy pattern can run past. Anything
-        # this rewrites beyond the eleven characters of the version is a bug.
+        # this rewrites beyond the version itself is a bug.
         before = _agent()
         after, _ = ranges.set_sample_floor(before, (0, 8, 0))
         assert after == before.replace('"maf-sandbox>=0.7"', '"maf-sandbox>=0.8"')
@@ -210,8 +238,7 @@ class TestTheSampleFloor:
     def test_prose_quoting_the_dependency_is_not_the_thing_that_moves(self):
         # These samples carry paragraphs above their block, and a docstring quoting the line
         # it is describing is an ordinary thing to write. The rewrite is count=1, so a pattern
-        # that accepts prose edits the sentence and leaves the dependency exactly as it was —
-        # the release step then reports success having moved nothing that resolves.
+        # that accepts prose edits the sentence and leaves the dependency exactly as it was.
         prose = 'The block declares "maf-sandbox>=0.7".'
         after, moved = ranges.set_sample_floor(_agent(docstring=prose), (0, 8, 0))
         assert moved == frozenset({SAMPLE})
@@ -234,8 +261,7 @@ class TestTheSampleFloor:
     def test_a_capped_constraint_is_refused_rather_than_half_rewritten(self):
         # `maf-sandbox>=0.7,<0.9` is the packages' shape, and a sample is not a package: it
         # declares a floor and takes whatever is newest. Matching it would move the floor and
-        # leave the ceiling, quietly inventing a range nobody chose; not matching it sends the
-        # sample to plan()'s refusal, where a human decides what the sample meant.
+        # leave the ceiling, quietly inventing a range nobody chose.
         before = _agent('"maf-sandbox>=0.7,<0.9"')
         after, moved = ranges.set_sample_floor(before, (0, 8, 0))
         assert moved == frozenset()
@@ -245,48 +271,66 @@ class TestTheSampleFloor:
         after, _ = ranges.set_sample_floor(_agent(), (0, 8, 0))
         assert '"maf-sandbox-acas",' in after
 
-    def test_a_shape_it_cannot_read_is_left_for_plan_to_refuse(self):
-        _, moved = ranges.set_sample_floor(_agent('"maf-sandbox"'), (0, 8, 0))
-        assert moved == frozenset()
 
+class TestTheTwoFileSetsNeverMoveTogether:
+    """The separation this script exists to keep: `--samples` switches, it does not add.
 
-class TestOverASampleTree:
-    def _write(self, tmp_path: Path, name: str, text: str) -> Path:
+    Merged with the packages' hunk the samples' floor takes the whole set unsatisfiable
+    whenever the core reaches the index before its dependents do —
+    `check_samples_against_declared_core.py` pins the new core and resolves each block's
+    dependents from the index, where none admits it yet. Fourteen of fifteen samples went
+    unsatisfiable that way on 0.33.0, and seven live samples failed on 0.34.0. The release
+    workflow passes no `--samples`, so what it opens cannot carry one.
+    """
+
+    def _sample(self, tmp_path: Path, name: str, text: str) -> Path:
         sample = tmp_path / "samples" / name
         sample.mkdir(parents=True)
         path = sample / "agent.py"
         path.write_text(text, "utf-8")
         return path
 
-    def test_the_packages_and_the_samples_move_in_one_plan(self, tmp_path: Path):
-        # One edit, one pull request — the #195 lesson applied to a third file set.
+    def _package(self, tmp_path: Path, constraint: str) -> Path:
         package = tmp_path / "packages" / "dep-a"
         package.mkdir(parents=True)
-        (package / "pyproject.toml").write_text(
-            '[project]\nname = "dep-a"\ndependencies = ["maf-sandbox>=0.7.0,<0.9"]\n', "utf-8"
-        )
-        sample = self._write(tmp_path, "01_a", _agent())
+        path = package / "pyproject.toml"
+        path.write_text(f'[project]\nname = "dep-a"\ndependencies = ["{constraint}"]\n', "utf-8")
+        return path
 
-        moved: set[str] = set()
-        for _, _, bounds in ranges.plan("0.8.0", tmp_path):
-            moved |= bounds
+    def test_the_default_run_leaves_a_lagging_sample_where_it_is(self, tmp_path: Path):
+        self._package(tmp_path, "maf-sandbox>=0.7.0,<0.8")
+        sample = self._sample(tmp_path, "01_a", _agent())
+        before = sample.read_text("utf-8")
 
-        assert moved == {FLOOR, CEILING, SAMPLE}
-        assert sample in ranges.run("0.8.0", tmp_path)
+        changed = ranges.run("0.8.0", tmp_path)
+
+        assert changed, "the package beside it moved, so this is not passing on an empty plan"
+        assert sample not in changed
+        assert sample.read_text("utf-8") == before
+
+    def test_the_samples_run_leaves_the_packages_where_they_are(self, tmp_path: Path):
+        package = self._package(tmp_path, "maf-sandbox>=0.7.0,<0.8")
+        before = package.read_text("utf-8")
+        sample = self._sample(tmp_path, "01_a", _agent())
+
+        changed = ranges.run("0.8.0", tmp_path, samples=True)
+
+        assert changed == [sample]
+        assert package.read_text("utf-8") == before
 
     def test_a_sample_whose_floor_shape_drifted_fails_loudly(self, tmp_path: Path):
-        # The whole reason this script raises rather than skips: a release-time step that
-        # quietly edits nothing looks exactly like one with nothing to do.
-        self._write(tmp_path, "01_a", _agent('"maf-sandbox"'))
+        # The whole reason this raises rather than skips: a step that quietly edits nothing
+        # looks exactly like one with nothing to do.
+        self._sample(tmp_path, "01_a", _agent('"maf-sandbox"'))
         with pytest.raises(SystemExit):
-            ranges.run("0.8.0", tmp_path)
+            ranges.run("0.8.0", tmp_path, samples=True)
 
     def test_two_dependencies_on_one_line_are_refused_not_half_read(self, tmp_path: Path):
         # Legal TOML, and not the layout the floor pattern reads. The danger is not the
         # refusal — it is the version of this that skips: a looser `maf-sandbox` probe would
-        # miss the base behind the sibling on that line, decide the sample does not use the
-        # core at all, and leave a stale floor behind a green step.
-        self._write(
+        # miss the base behind the sibling on that line and leave a stale floor behind a green
+        # run.
+        self._sample(
             tmp_path,
             "01_a",
             _agent().replace(
@@ -295,30 +339,32 @@ class TestOverASampleTree:
             ),
         )
         with pytest.raises(SystemExit):
-            ranges.run("0.8.0", tmp_path)
-
-    def test_a_capped_sample_constraint_stops_the_step(self, tmp_path: Path):
-        self._write(tmp_path, "01_a", _agent('"maf-sandbox>=0.7,<0.9"'))
-        with pytest.raises(SystemExit):
-            ranges.run("0.8.0", tmp_path)
+            ranges.run("0.8.0", tmp_path, samples=True)
 
     def test_a_sample_naming_only_a_sibling_is_skipped_not_refused(self, tmp_path: Path):
-        self._write(tmp_path, "01_a", _agent('"maf-sandbox-acas>=0.2"'))
-        assert ranges.run("0.8.0", tmp_path) == []
+        self._sample(tmp_path, "01_a", _agent('"maf-sandbox-acas>=0.2"'))
+        assert ranges.run("0.8.0", tmp_path, samples=True) == []
 
-    def test_a_second_run_is_a_clean_no_op(self, tmp_path: Path):
-        path = self._write(tmp_path, "01_a", _agent())
-        assert ranges.run("0.8.0", tmp_path) == [path]
+    def test_a_second_samples_run_is_a_clean_no_op(self, tmp_path: Path):
+        path = self._sample(tmp_path, "01_a", _agent())
+        assert ranges.run("0.8.0", tmp_path, samples=True) == [path]
         after = path.read_text("utf-8")
-        assert ranges.run("0.8.0", tmp_path) == []
+        assert ranges.run("0.8.0", tmp_path, samples=True) == []
         assert path.read_text("utf-8") == after
 
-    def test_every_sample_in_this_repository_is_reached(self):
+    def test_no_sample_in_this_repository_is_in_the_default_plan(self):
+        planned = [path for path, _, _ in ranges.plan("9.9.0", REPO_ROOT)]
+        assert planned, "nothing was planned at all; this test is measuring nothing"
+        assert not [path for path in planned if "samples" in path.parts], (
+            "the samples' floor moves in a pull request of its own, after the dependents publish"
+        )
+
+    def test_every_sample_in_this_repository_is_reached_under_the_flag(self):
         # The parser here and the one in tests/test_sample_metadata.py read the same block by
         # different means. This is what keeps them honest about the real files: a sample the
         # script stops recognising would otherwise sail through every fixture above.
         expected = sorted((REPO_ROOT / "samples").glob("[0-9][0-9]_*/agent.py"))
-        planned = [path for path, _, bounds in ranges.plan("9.9.0", REPO_ROOT) if SAMPLE in bounds]
+        planned = [path for path, _, _ in ranges.plan("9.9.0", REPO_ROOT, samples=True)]
         assert expected, "no samples found; this test is measuring nothing"
         assert planned == expected
 
@@ -326,12 +372,12 @@ class TestOverASampleTree:
 class TestTheTitle:
     def test_both_bounds(self):
         assert ranges.title("0.8.0", BOTH) == (
-            "fix: require maf-sandbox 0.8.0 and admit 0.9 in the dependents' range"
+            "fix: require maf-sandbox 0.8.0 in the dependents, and admit the 0.8 line"
         )
 
     def test_the_ceiling_alone(self):
         assert ranges.title("0.8.0", frozenset({CEILING})) == (
-            "fix: admit maf-sandbox 0.9 in the dependents' range"
+            "fix: admit the maf-sandbox 0.8 line in the dependents' range"
         )
 
     def test_the_floor_alone(self):
@@ -342,20 +388,18 @@ class TestTheTitle:
     def test_nothing_moved_has_no_title(self):
         assert ranges.title("0.8.0", frozenset()) == ""
 
-    def test_both_bounds_and_the_samples(self):
-        assert ranges.title("0.8.0", BOTH | {SAMPLE}) == (
-            "fix: require maf-sandbox 0.8.0 in the dependents and 0.8 in the samples, and admit 0.9"
-        )
+    @pytest.mark.parametrize("moved", [BOTH, frozenset({CEILING})])
+    def test_the_ceiling_clause_names_the_released_line(self, moved: frozenset[str]):
+        # The bound is `<0.9`, and naming *that* would advertise admitting 0.9 — the claim
+        # this policy exists to stop making. The subject says the line it does admit.
+        subject = ranges.title("0.8.0", moved)
+        assert "0.8 line" in subject
+        assert "0.9" not in subject, f"{subject!r} advertises a version that does not exist"
 
-    def test_the_ceiling_and_the_samples(self):
-        assert ranges.title("0.8.0", frozenset({CEILING, SAMPLE})) == (
-            "fix: admit maf-sandbox 0.9 in the dependents' range, and require 0.8 in the samples"
-        )
-
-    def test_the_floor_and_the_samples(self):
-        assert ranges.title("0.8.0", frozenset({FLOOR, SAMPLE})) == (
-            "fix: require maf-sandbox 0.8.0 in the packages that use it, and 0.8 in the samples"
-        )
+    @pytest.mark.parametrize("moved", [BOTH, frozenset({CEILING}), frozenset({FLOOR})])
+    def test_a_title_that_moves_a_package_releases_something(self, moved: frozenset[str]):
+        # chore: and ci: release nothing here, and an unpublished range is worth nothing.
+        assert ranges.title("0.8.0", moved).startswith("fix: ")
 
     def test_the_samples_alone_name_the_minor_not_the_release(self):
         # The files say >=0.8; a subject saying 0.8.0 would advertise a claim no file makes.
@@ -363,50 +407,14 @@ class TestTheTitle:
             "chore: require maf-sandbox 0.8 in every sample's declared floor"
         )
 
-    @pytest.mark.parametrize(
-        "moved", [BOTH | {SAMPLE}, frozenset({CEILING, SAMPLE}), frozenset({FLOOR, SAMPLE})]
-    )
-    def test_no_subject_credits_the_samples_with_the_patch(self, moved: frozenset[str]):
-        # The rule the samples-alone branch follows, applied to the combined ones: the samples
-        # declare a minor, so a clause about them must not read `0.8.0`. Three subjects said it
-        # anyway, which is the author's own standard held in one branch and dropped in three.
-        subject = ranges.title("0.8.0", moved)
-        samples_clause = subject.split("samples")[0].rsplit("and", 1)[-1]
-        assert "0.8.0" not in samples_clause, f"{subject!r} credits the samples with a patch"
-
-    @pytest.mark.parametrize(
-        "moved",
-        [
-            BOTH,
-            frozenset({CEILING}),
-            frozenset({FLOOR}),
-            BOTH | {SAMPLE},
-            frozenset({CEILING, SAMPLE}),
-            frozenset({FLOOR, SAMPLE}),
-        ],
-    )
-    def test_a_title_that_moves_a_package_releases_something(self, moved: frozenset[str]):
-        # chore: and ci: release nothing here, and an unpublished range is worth nothing.
-        assert ranges.title("0.8.0", moved).startswith("fix: ")
-
     def test_a_title_that_moves_only_samples_releases_nothing(self):
-        # Nothing under samples/ is packaged, so fix: would ask release-please for a patch
         # Attribution is by path and only packages/* is configured, so no type would cut a
         # release here. chore: is what AGENTS.md prescribes outside a package, and it is the
         # one that releases nothing by type rather than by which paths happen to be listed.
         assert ranges.title("0.8.0", frozenset({SAMPLE})).startswith("chore: ")
 
     @pytest.mark.parametrize(
-        "moved",
-        [
-            BOTH,
-            frozenset({CEILING}),
-            frozenset({FLOOR}),
-            BOTH | {SAMPLE},
-            frozenset({CEILING, SAMPLE}),
-            frozenset({FLOOR, SAMPLE}),
-            frozenset({SAMPLE}),
-        ],
+        "moved", [BOTH, frozenset({CEILING}), frozenset({FLOOR}), frozenset({SAMPLE})]
     )
     def test_every_combination_that_moved_something_is_named(self, moved: frozenset[str]):
         # The gap this closes: an unhandled combination fell through to "" and the workflow
@@ -425,7 +433,7 @@ class TestOverATree:
     def test_it_edits_the_dependents_and_not_the_core(self, tmp_path: Path):
         core = self._write(tmp_path, "maf-sandbox", "anyio>=4")
         dependents = [
-            self._write(tmp_path, name, "maf-sandbox>=0.7.0,<0.9")
+            self._write(tmp_path, name, "maf-sandbox>=0.7.0,<0.8")
             for name in ("maf-sandbox-acas", "maf-sandbox-wslc")
         ]
 
@@ -434,27 +442,48 @@ class TestOverATree:
         assert changed == sorted(dependents)
         assert "anyio>=4" in core.read_text("utf-8")
         for path in dependents:
-            assert "maf-sandbox>=0.8.0,<0.10" in path.read_text("utf-8")
+            assert "maf-sandbox>=0.7.0,<0.9" in path.read_text("utf-8")
 
     def test_plan_changes_nothing_on_disk(self, tmp_path: Path):
-        path = self._write(tmp_path, "dep-a", "maf-sandbox>=0.7.0,<0.9")
+        path = self._write(tmp_path, "dep-a", "maf-sandbox>=0.7.0,<0.8")
         before = path.read_text("utf-8")
 
         planned = ranges.plan("0.8.0", tmp_path)
 
         assert [p for p, _, _ in planned] == [path]
-        assert planned[0][2] == BOTH
+        assert planned[0][2] == frozenset({CEILING})
         assert path.read_text("utf-8") == before
 
     def test_a_second_run_is_a_clean_no_op(self, tmp_path: Path):
-        path = self._write(tmp_path, "dep-a", "maf-sandbox>=0.7.0,<0.9")
+        # A dependent whose ceiling already admitted the release, so both bounds settle in the
+        # first run and the second has nothing left to reach for.
+        path = self._write(tmp_path, "dep-a", "maf-sandbox>=0.7.0,<0.8.5")
         assert ranges.run("0.8.0", tmp_path) == [path]
         after = path.read_text("utf-8")
         assert ranges.run("0.8.0", tmp_path) == []
         assert path.read_text("utf-8") == after
 
+    def test_a_widened_ceiling_offers_the_floor_on_the_next_run(self, tmp_path: Path):
+        """Running twice for one release is not the same as running once, and never was.
+
+        The floor is judged against the ceiling as it stood when the run began, so a ceiling
+        this script widened admits the release by the time a *second* run reads it. Under the
+        old two-minor ceiling that needed a dependent whose ceiling excluded the release; under
+        a ceiling that admits only the released line it is every dependent. Neither shape
+        reaches the release workflow, which runs once per release against `main`, and the
+        second run proposes a floor bump rather than doing anything to a published artifact —
+        so this is recorded here rather than guarded against.
+        """
+        path = self._write(tmp_path, "dep-a", "maf-sandbox>=0.7.0,<0.8")
+
+        assert ranges.run("0.8.0", tmp_path) == [path]
+        assert "maf-sandbox>=0.7.0,<0.9" in path.read_text("utf-8"), "the ceiling alone"
+
+        assert ranges.run("0.8.0", tmp_path) == [path]
+        assert "maf-sandbox>=0.8.0,<0.9" in path.read_text("utf-8"), "now the floor follows"
+
     def test_a_patch_release_moves_nothing(self, tmp_path: Path):
-        self._write(tmp_path, "dep-a", "maf-sandbox>=0.8.0,<0.10")
+        self._write(tmp_path, "dep-a", "maf-sandbox>=0.8.0,<0.9")
         assert ranges.run("0.8.1", tmp_path) == []
 
     def test_a_dependent_whose_constraint_drifted_fails_loudly(self, tmp_path: Path):
@@ -472,11 +501,11 @@ class TestOverATree:
         package.mkdir(parents=True)
         path = package / "pyproject.toml"
         path.write_text(
-            "[project]\nname = 'dep-a'\ndependencies = ['maf-sandbox>=0.7.0,<0.9']\n",
+            "[project]\nname = 'dep-a'\ndependencies = ['maf-sandbox>=0.7.0,<0.8']\n",
             "utf-8",
         )
         assert ranges.run("0.8.0", tmp_path) == [path]
-        assert "maf-sandbox>=0.8.0,<0.10" in path.read_text("utf-8")
+        assert "maf-sandbox>=0.7.0,<0.9" in path.read_text("utf-8")
 
     def test_a_dependent_on_only_a_sibling_is_not_mistaken_for_a_base_dependent(
         self, tmp_path: Path
@@ -492,12 +521,12 @@ class TestOverATree:
         path = package / "pyproject.toml"
         path.write_text(
             '[project]\nname = "dep-a"\n'
-            'dependencies = ["maf-sandbox-acas>=0.1.0,<0.3", "maf-sandbox>=0.7.0,<0.9"]\n',
+            'dependencies = ["maf-sandbox-acas>=0.1.0,<0.3", "maf-sandbox>=0.7.0,<0.8"]\n',
             "utf-8",
         )
 
         assert ranges.run("0.8.0", tmp_path) == [path]
 
         text = path.read_text("utf-8")
-        assert "maf-sandbox>=0.8.0,<0.10" in text
+        assert "maf-sandbox>=0.7.0,<0.9" in text
         assert "maf-sandbox-acas>=0.1.0,<0.3" in text  # the sibling, exactly as it was
