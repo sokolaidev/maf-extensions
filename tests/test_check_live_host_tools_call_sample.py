@@ -148,7 +148,24 @@ class TestBothProgramsHadToAnswer:
             f"[measured] {route}: state totals the program printed: 2 of 2",
             f"[measured] {route}: state totals the program printed: 1 of 2",
         )
-        assert any("did not finish the walk" in r for r in check.assess(broken))
+        assert any(
+            f"{route}'s program printed 1 of 2 state totals" in r for r in check.assess(broken)
+        )
+
+    @pytest.mark.parametrize("route", ["host-tool-call route", "direct route"])
+    def test_a_missing_total_says_nothing_about_the_transport_that_fed_it(self, route: str):
+        """The ledger above the totals is what reports the walk; this line reports the model.
+
+        A run can serve every lookup and still print a table of zeros, so a missing total is
+        not evidence the program was starved — and nothing in the reason may claim it is.
+        """
+        broken = _swap(
+            f"[measured] {route}: state totals the program printed: 2 of 2",
+            f"[measured] {route}: state totals the program printed: 0 of 2",
+        )
+        reasons = [r for r in check.assess(broken) if "state totals" in r]
+        assert reasons
+        assert not any("did not finish the walk" in r for r in reasons), reasons
 
     @pytest.mark.parametrize("route", ["host-tool-call route", "direct route"])
     def test_a_missing_totals_line_fails(self, route: str):
@@ -1245,3 +1262,85 @@ class TestTheDockerSampleHasNoActFive:
         path.write_text(_DOCKER, encoding="utf-8")
         assert check.main(["check", str(path)]) == 1
         assert "FAIL" in capsys.readouterr().err
+
+
+class TestWhichHalfFailedIsInTheExitStatus:
+    """A model's off run and a broken transport are different claims and different statuses."""
+
+    def _status(self, tmp_path: Path, output: str) -> int:
+        path = tmp_path / "out.txt"
+        path.write_text(output, encoding="utf-8")
+        return check.main(["check", str(path)])
+
+    def test_a_healthy_run_exits_zero(self, tmp_path: Path):
+        assert self._status(tmp_path, _HEALTHY) == 0
+
+    def test_a_table_of_zeros_asks_for_another_attempt(self, tmp_path: Path):
+        """The whole walk served, and every figure in the table missing.
+
+        This is the shape the split exists for: nothing the host did explains it, so the
+        answer is another run rather than a red release.
+        """
+        zeroed = _swap(
+            "[measured] host-tool-call route: state totals the program printed: 2 of 2",
+            "[measured] host-tool-call route: state totals the program printed: 0 of 2",
+        )
+        for line, printed in (("product totals", 0), ("table rows", 0)):
+            zeroed = zeroed.replace(
+                f"[measured] host-tool-call route: {line} the program printed: 6 of 6",
+                f"[measured] host-tool-call route: {line} the program printed: {printed} of 6",
+            )
+        assert self._status(tmp_path, zeroed) == check.MODEL_DID_NOT_CONVERGE
+
+    def test_a_measurement_this_suite_owns_does_not(self, tmp_path: Path):
+        """A sandbox left running is not something a second attempt can mend."""
+        broken = _swap("Disposed 2 sandbox(es).", "Disposed 1 sandbox(es).")
+        assert self._status(tmp_path, broken) == 1
+
+    def test_one_hard_failure_among_the_model_s_is_enough_to_forbid_a_retry(self, tmp_path: Path):
+        both = _swap(
+            "[measured] host-tool-call route: state totals the program printed: 2 of 2",
+            "[measured] host-tool-call route: state totals the program printed: 0 of 2",
+        ).replace("Disposed 2 sandbox(es).", "Disposed 1 sandbox(es).")
+        assert self._status(tmp_path, both) == 1
+
+    def test_the_exit_line_does_not_blame_the_transport(self, tmp_path: Path, capsys):
+        """The same claim the workflow acts on, made here first — and it is read by people."""
+        self._status(
+            tmp_path,
+            _swap(
+                "[measured] host-tool-call route: state totals the program printed: 2 of 2",
+                "[measured] host-tool-call route: state totals the program printed: 0 of 2",
+            ),
+        )
+        said = capsys.readouterr().err
+        assert "Exiting 3" in said, said
+        assert "the host served the lookups it was asked for" in said, said
+
+    def test_the_class_travels_with_the_message_rather_than_being_matched_from_it(self):
+        """A reworded failure must keep its class, so nothing downstream parses prose."""
+        zeroed = check.assess(
+            _swap(
+                "[measured] host-tool-call route: state totals the program printed: 2 of 2",
+                "[measured] host-tool-call route: state totals the program printed: 0 of 2",
+            )
+        )
+        assert zeroed and all(isinstance(r, check._TheModelsHalf) for r in zeroed)
+        disposed = check.assess(_swap("Disposed 2 sandbox(es).", "Disposed 1 sandbox(es)."))
+        assert disposed and not any(isinstance(r, check._TheModelsHalf) for r in disposed)
+
+    def test_a_run_that_never_finished_is_not_the_model_s_half(self, tmp_path: Path):
+        """No output is a sample that died before it measured anything, not a bad walk."""
+        assert self._status(tmp_path, _HEALTHY.split("== 2.")[0]) == 1
+
+    def test_the_docker_run_splits_the_same_way(self, tmp_path: Path):
+        """`--docker` drops act 5; which half owns a failure is not a backend question."""
+        path = tmp_path / "out.txt"
+        path.write_text(
+            _DOCKER.replace(
+                "[measured] host-tool-call route: state totals the program printed: 2 of 2",
+                "[measured] host-tool-call route: state totals the program printed: 0 of 2",
+            ),
+            encoding="utf-8",
+        )
+        assert check.main(["check", "--docker", str(path)]) == check.MODEL_DID_NOT_CONVERGE

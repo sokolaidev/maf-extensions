@@ -123,6 +123,14 @@ Twenty live runs decided this. The lookup count moved between 18 and 29, wall cl
 
 Wall clock, tokens and lookup counts are **recorded and never bounded**, and what a model *said* is never read. Every line the check reads carries the `[measured]` tag at the left margin; `quoted()` prefixes any tagged line inside a model's reply with `> `, so prose that tries to answer for the host is visibly not the host answering.
 
+## Which half failed, and what a second attempt is for
+
+Choosing what to assert is not enough on its own, because the first and fourth bullets above are read off a program a live model wrote — and a run can serve every lookup over all four stages and still print a table of zeros. Nothing the host did explains that, so the check does not report it as though something had. Each reason it gives is classed by who owns it, and the exit status carries the class.
+
+**The model's half** is the walk its program took, the table that program printed, the products it named and how it batched its tool calls. The check exits 3, and the live job runs the whole sample again — **three times at most**, on either backend. Everything else exits 1 on the first attempt: the transport's round-trip arithmetic, both cleanup acts, the cap, the disposals, and any `[measured]` line missing or printed twice. Those are this suite's own, and re-asking a question whose answer cannot change between attempts spends two more billable sandboxes to learn nothing.
+
+Three where [sample 13](../13_bicep_fix_loop/README.md) allows six, because an attempt here is not a local container: the sample holds a sandbox per route, so each one costs two. The attempts are sequential and each disposes its own pair, so the peak the live workflow counts does not move. A budget buys a rate rather than a fix — a walk that never converges still reds the job on the last attempt — and the retry annotates the run and puts the attempt count in the job summary whether it passed or failed, because a silent retry is how a check that fails a run in twenty starts reading green.
+
 ## Prerequisites
 
 `SAMPLE_BACKEND` selects the backend; the model deployment is needed either way (no key — `az login` is enough).

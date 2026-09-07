@@ -1500,11 +1500,45 @@ jobs:
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
-          uv run --no-project samples/15_acas_codeact_host_tools/agent.py | tee /tmp/sample15-out.txt
           # Both routes compute in the sandbox, so both are held to the totals their programs
           # printed; what the check compares is how many tool-calling rounds each road cost and
           # which of them carried the data. stdlib-only, so the runner's own python3 runs it.
-          python3 "$HARNESS"/scripts/check_live_host_tools_call_sample.py /tmp/sample15-out.txt
+          #
+          # Retry only exit 3, which marks model-only failure: the walk the model's program took
+          # and the table it printed. Deterministic failures — the transport's own round-trip
+          # arithmetic, the cleanup acts, the cap, the disposals — exit 1 and stop here, because
+          # another attempt cannot mend them. Annotate retries and summarize attempts so
+          # intermittent failures stay visible rather than reading as a clean pass.
+          #
+          # Three, against sample 13's six, because an attempt here is not free: this sample
+          # holds a sandbox per route, so each one is two more billable ACAS sandboxes and about
+          # three minutes of the twenty this job allows. They are sequential and each attempt
+          # disposes its own pair, so the peak concurrency the header counts is unchanged.
+          allowed=3
+          attempts=0
+          status=0
+          while [ "$attempts" -lt "$allowed" ]; do
+            attempts=$((attempts + 1))
+            # Captured rather than left to `set -e`: a sample that dies here would otherwise
+            # take the whole step with it, before the attempt count is written. It is also not
+            # the model's half — nothing was measured — so it breaks without a second loop.
+            status=0
+            uv run --no-project samples/15_acas_codeact_host_tools/agent.py | tee /tmp/sample15-out.txt || status=$?
+            if [ "$status" -ne 0 ]; then
+              echo "::error title=sample 15 did not run::the sample exited $status, so the check saw nothing"
+              break
+            fi
+            python3 "$HARNESS"/scripts/check_live_host_tools_call_sample.py /tmp/sample15-out.txt || status=$?
+            [ "$status" -eq 3 ] || break
+            if [ "$attempts" -lt "$allowed" ]; then
+              note="the model's half did not converge on attempt $attempts of $allowed and every"
+              note="$note other measurement passed, so the walk runs again (#421)"
+              echo "::warning title=sample 15 retried::$note"
+            fi
+          done
+          said="samples/15_acas_codeact_host_tools: exit $status after $attempts attempt(s), $allowed allowed."
+          echo "$said" | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$status"
 
       - name: Assert the published version the sample resolved
         if: ${{ always() && inputs.version != '' }}
@@ -1596,11 +1630,37 @@ jobs:
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
-          uv run --no-project samples/15_acas_codeact_host_tools/agent.py | tee /tmp/sample15-docker-out.txt
           # The same check as sample-15, with --docker: on docker the backend declares no
           # FILES_LIST, so the run prints no act-5 leftover lines and that one act is dropped.
           # stdlib-only, so the runner's own python3 runs it.
-          python3 "$HARNESS"/scripts/check_live_host_tools_call_sample.py --docker /tmp/sample15-docker-out.txt
+          #
+          # And the same retry, on the same exit 3, for the reason the pair exists: which half
+          # owns a failure is a question about the model and this suite, not about the backend
+          # underneath them, so a leg that retried and a leg that did not would stop being
+          # comparable. Attempts are local containers here rather than billable sandboxes, but
+          # the budget is held equal for that comparison.
+          allowed=3
+          attempts=0
+          status=0
+          while [ "$attempts" -lt "$allowed" ]; do
+            attempts=$((attempts + 1))
+            status=0
+            uv run --no-project samples/15_acas_codeact_host_tools/agent.py | tee /tmp/sample15-docker-out.txt || status=$?
+            if [ "$status" -ne 0 ]; then
+              echo "::error title=sample 15 on docker did not run::the sample exited $status, so the check saw nothing"
+              break
+            fi
+            python3 "$HARNESS"/scripts/check_live_host_tools_call_sample.py --docker /tmp/sample15-docker-out.txt || status=$?
+            [ "$status" -eq 3 ] || break
+            if [ "$attempts" -lt "$allowed" ]; then
+              note="the model's half did not converge on attempt $attempts of $allowed and every"
+              note="$note other measurement passed, so the walk runs again (#421)"
+              echo "::warning title=sample 15 on docker retried::$note"
+            fi
+          done
+          said="samples/15_acas_codeact_host_tools on docker: exit $status after $attempts attempt(s), $allowed allowed."
+          echo "$said" | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$status"
 
       - name: Assert the published version the sample resolved
         if: ${{ always() && inputs.version != '' }}
