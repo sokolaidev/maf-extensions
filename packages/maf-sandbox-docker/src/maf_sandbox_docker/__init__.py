@@ -16,7 +16,7 @@ backend.  Egress is :data:`~maf_sandbox.Egress.CLOSED` by default — ``--networ
 every container — and becomes :data:`~maf_sandbox.Egress.ALLOWLIST` when the config names a
 :func:`proxy_build_context`-built image, which places each sandbox on its own internal network
 behind a filtering proxy.  It declares :data:`~maf_sandbox.Capability.FILES_OUT` — stat from
-the first tar header of ``docker cp``, read from the same stream — and never
+the tar entry header of ``docker cp``, read from the same stream — and never
 :data:`~maf_sandbox.Capability.FILES_LIST`, the enumeration capability Docker has no
 engine-level primitive for.  Its ``os_families`` comes from the daemon rather than from
 configuration: :meth:`DockerSandboxBackend.create` asks once and declares

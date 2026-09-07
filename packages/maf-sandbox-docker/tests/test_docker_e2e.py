@@ -815,21 +815,22 @@ class TestTheGuestFamilyAgainstARealDaemon:
 class TestFilesOutAgainstARealEngine:
     """The acceptance gate: stat, read, cap refusal and symlink refusal on a live tar stream."""
 
-    def test_a_written_output_stats_and_reads_back_byte_identical(self):
+    @pytest.mark.parametrize("path", ["out.png", "café.txt", "a" * 120 + ".txt"])
+    def test_a_written_output_stats_and_reads_back_byte_identical(self, path: str):
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
         payload = b"\x89PNG\r\n\x1a\n" + bytes(range(256))
 
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
-            await sandbox.write_file("/maf-sandbox/work/out.png", payload, working_directory=_WORK)
+            await sandbox.write_file(f"{_WORK}/{path}", payload, working_directory=_WORK)
 
-            entry = await sandbox.stat_file("out.png", working_directory=_WORK)
+            entry = await sandbox.stat_file(path, working_directory=_WORK)
             assert entry is not None
             assert entry.kind is EntryKind.FILE
             assert entry.size_bytes == len(payload)
 
-            got = await sandbox.read_file("out.png", working_directory=_WORK, max_bytes=1 << 20)
+            got = await sandbox.read_file(path, working_directory=_WORK, max_bytes=len(payload))
             assert got == payload
 
         try:
