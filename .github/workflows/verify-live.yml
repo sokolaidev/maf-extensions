@@ -1504,16 +1504,11 @@ jobs:
           # printed; what the check compares is how many tool-calling rounds each road cost and
           # which of them carried the data. stdlib-only, so the runner's own python3 runs it.
           #
-          # Retry only exit 3, which marks model-only failure: the walk the model's program took
-          # and the table it printed. Deterministic failures — the transport's own round-trip
-          # arithmetic, the cleanup acts, the cap, the disposals — exit 1 and stop here, because
-          # another attempt cannot mend them. Annotate retries and summarize attempts so
-          # intermittent failures stay visible rather than reading as a clean pass.
+          # Retry only exit 3, which marks model-only failure; deterministic failures exit 1.
+          # Annotate retries and summarize attempts so intermittent failures remain visible.
           #
-          # Three, against sample 13's six, because an attempt here is not free: this sample
-          # holds a sandbox per route, so each one is two more billable ACAS sandboxes and about
-          # three minutes of the twenty this job allows. They are sequential and each attempt
-          # disposes its own pair, so the peak concurrency the header counts is unchanged.
+          # Three, against sample 13's six, because an attempt holds a sandbox per route and so
+          # costs two. Sequential, and each disposes its own pair, so the peak is unchanged.
           allowed=3
           attempts=0
           status=0
@@ -1634,11 +1629,9 @@ jobs:
           # FILES_LIST, so the run prints no act-5 leftover lines and that one act is dropped.
           # stdlib-only, so the runner's own python3 runs it.
           #
-          # And the same retry, on the same exit 3, for the reason the pair exists: which half
-          # owns a failure is a question about the model and this suite, not about the backend
-          # underneath them, so a leg that retried and a leg that did not would stop being
-          # comparable. Attempts are local containers here rather than billable sandboxes, but
-          # the budget is held equal for that comparison.
+          # The same retry on the same exit 3. Which half owns a failure is not a question about
+          # the backend, so a leg that retried and one that did not would stop being comparable —
+          # the budget is held equal for that, though attempts here are only local containers.
           allowed=3
           attempts=0
           status=0

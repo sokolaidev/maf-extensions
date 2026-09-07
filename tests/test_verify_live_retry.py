@@ -1,10 +1,7 @@
 """Exercise every bounded, model-only retry by running the workflow's real shell blocks.
 
 `uv` and `python3` are stubbed so tests can script check results without matching YAML syntax.
-
-A step earns a retry when its live model does open-ended work the check grades: sample 13's
-repair turn, and sample 15's two programs on either backend. Each is driven here, so a budget
-that only one of them honours is a failure rather than a difference nobody looks at.
+Every retrying step is driven, so a budget only one of them honours fails here.
 """
 
 from __future__ import annotations
@@ -43,9 +40,7 @@ _BASH = shutil.which("bash")
 class _Retrying:
     """A live step that spends a second attempt on its model, and the check it keys on.
 
-    `marks` is what identifies the step inside its own `run:` block: sample 15's two legs run
-    one `agent.py` on two backends, so the path does not tell them apart and the file each
-    tees to does.
+    `marks` finds the step by its `tee` target: sample 15's two legs share one `agent.py`.
     """
 
     label: str
@@ -54,9 +49,8 @@ class _Retrying:
     readme: Path
 
 
-#: Every step allowed to loop. The list is the claim: a job that grows a retry by being copied
-#: from one of these is spending live sandboxes on something no model wrote, and
-#: `test_no_other_live_sample_retries` is what makes that show up here rather than on a bill.
+#: Every step allowed to loop, and the claim `test_no_other_live_sample_retries` holds the
+#: workflow to.
 _RETRYING = (
     _Retrying(
         "sample 13",
@@ -231,13 +225,13 @@ class TestARetryIsNeverSilent:
     def test_the_annotation_names_the_half_it_is_retrying(
         self, tmp_path: Path, retrying: _Retrying
     ):
-        """A warning that says only "retried" leaves a reader to guess what earned it."""
+        """A bare "retried" leaves a reader to guess what earned it."""
         finished = _run(tmp_path, [retrying.check.MODEL_DID_NOT_CONVERGE, 0], retrying=retrying)
         note = next(line for line in finished.stdout.splitlines() if line.startswith("::warning"))
         assert "model's half" in note, note
 
     def test_the_annotation_names_the_step_it_came_from(self, tmp_path: Path, retrying: _Retrying):
-        """Three steps can retry, and their warnings land in one log."""
+        """Their warnings land in one log."""
         finished = _run(tmp_path, [retrying.check.MODEL_DID_NOT_CONVERGE, 0], retrying=retrying)
         note = next(line for line in finished.stdout.splitlines() if line.startswith("::warning"))
         assert f"title={retrying.label} retried" in note, note
@@ -247,8 +241,7 @@ class TestARetryIsNeverSilent:
         assert "2 attempt(s)" in finished.summary, finished.summary
 
     def test_a_run_that_needed_one_attempt_says_so_too(self, tmp_path: Path, retrying: _Retrying):
-        """Otherwise the summary line only appears when something went wrong, and its absence
-        is what a reader would have to notice."""
+        """Otherwise its absence is what a reader has to notice."""
         finished = _run(tmp_path, [0], retrying=retrying)
         assert "1 attempt(s)" in finished.summary, finished.summary
 
@@ -259,7 +252,7 @@ class TestARetryIsNeverSilent:
         assert "exit 1 after 1 attempt(s)" in finished.summary, finished.summary
 
     def test_the_summary_names_the_step_it_describes(self, tmp_path: Path, retrying: _Retrying):
-        """One job summary carries all of them, so an unattributed line describes nobody."""
+        """One summary carries all of them, so an unattributed line describes nobody."""
         finished = _run(tmp_path, [0], retrying=retrying)
         assert finished.summary.startswith("samples/"), finished.summary
 
@@ -317,7 +310,7 @@ class TestTheBudgetIsWrittenOnce:
         assert 'while [ "$attempts" -lt "$allowed" ]' in _the_step(retrying)["run"]
 
     def test_the_retry_notice_reads_the_variable(self, retrying: _Retrying):
-        """Which attempt of how many, so a reader is not counting warnings to find out."""
+        """Which attempt of how many, so a reader is not counting warnings."""
         run = _the_step(retrying)["run"]
         assert 'if [ "$attempts" -lt "$allowed" ]' in run
         assert "attempt $attempts of $allowed" in run
@@ -361,10 +354,7 @@ class TestTheTwoFilesAgreeOnWhatIsRetryable:
         assert retrying.check.MODEL_DID_NOT_CONVERGE not in (0, 1, 2)
 
     def test_no_other_live_sample_retries(self):
-        """A retry is earned by having a live model write something the check then grades, and
-        only these steps do. One that grew a loop by being copied from them would be spending
-        live sandboxes re-asking a question whose answer cannot change between attempts.
-        """
+        """Only a step whose live model writes what the check grades has earned a loop."""
         workflow = yaml.safe_load(_WORKFLOW.read_text("utf-8"))
         looping = {
             step.get("name", "?")
@@ -375,6 +365,6 @@ class TestTheTwoFilesAgreeOnWhatIsRetryable:
         assert looping == {_the_step(r)["name"] for r in _RETRYING}, looping
 
     def test_each_retrying_step_is_a_distinct_step(self):
-        """Two entries resolving to one step would leave a real one undriven and unnoticed."""
+        """Two entries resolving to one step would leave a real one undriven."""
         names = [_the_step(r)["name"] for r in _RETRYING]
         assert len(set(names)) == len(names), names

@@ -154,11 +154,8 @@ class TestBothProgramsHadToAnswer:
 
     @pytest.mark.parametrize("route", ["host-tool-call route", "direct route"])
     def test_a_missing_total_says_nothing_about_the_transport_that_fed_it(self, route: str):
-        """The ledger above the totals is what reports the walk; this line reports the model.
-
-        A run can serve every lookup and still print a table of zeros, so a missing total is
-        not evidence the program was starved — and nothing in the reason may claim it is.
-        """
+        """A run can serve every lookup and still print zeros, so the reason may not claim
+        the program was starved."""
         broken = _swap(
             f"[measured] {route}: state totals the program printed: 2 of 2",
             f"[measured] {route}: state totals the program printed: 0 of 2",
@@ -1276,11 +1273,7 @@ class TestWhichHalfFailedIsInTheExitStatus:
         assert self._status(tmp_path, _HEALTHY) == 0
 
     def test_a_table_of_zeros_asks_for_another_attempt(self, tmp_path: Path):
-        """The whole walk served, and every figure in the table missing.
-
-        This is the shape the split exists for: nothing the host did explains it, so the
-        answer is another run rather than a red release.
-        """
+        """The whole walk served and every figure missing: the shape the split exists for."""
         zeroed = _swap(
             "[measured] host-tool-call route: state totals the program printed: 2 of 2",
             "[measured] host-tool-call route: state totals the program printed: 0 of 2",
@@ -1305,7 +1298,7 @@ class TestWhichHalfFailedIsInTheExitStatus:
         assert self._status(tmp_path, both) == 1
 
     def test_the_exit_line_does_not_blame_the_transport(self, tmp_path: Path, capsys):
-        """The same claim the workflow acts on, made here first — and it is read by people."""
+        """The same claim the workflow acts on, and people read it first."""
         self._status(
             tmp_path,
             _swap(
@@ -1330,7 +1323,7 @@ class TestWhichHalfFailedIsInTheExitStatus:
         assert disposed and not any(isinstance(r, check._TheModelsHalf) for r in disposed)
 
     def test_a_run_that_never_finished_is_not_the_model_s_half(self, tmp_path: Path):
-        """No output is a sample that died before it measured anything, not a bad walk."""
+        """A sample that died before measuring anything is not a bad walk."""
         assert self._status(tmp_path, _HEALTHY.split("== 2.")[0]) == 1
 
     def test_the_docker_run_splits_the_same_way(self, tmp_path: Path):

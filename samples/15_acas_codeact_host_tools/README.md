@@ -125,11 +125,11 @@ Wall clock, tokens and lookup counts are **recorded and never bounded**, and wha
 
 ## Which half failed, and what a second attempt is for
 
-Choosing what to assert is not enough on its own, because the first and fourth bullets above are read off a program a live model wrote — and a run can serve every lookup over all four stages and still print a table of zeros. Nothing the host did explains that, so the check does not report it as though something had. Each reason it gives is classed by who owns it, and the exit status carries the class.
+The first and fourth bullets above are read off a program a live model wrote, and a run can serve every lookup over all four stages and still print a table of zeros. So each reason is classed by who owns it, and the exit status carries the class.
 
-**The model's half** is the walk its program took, the table that program printed, the products it named and how it batched its tool calls. The check exits 3, and the live job runs the whole sample again — **three times at most**, on either backend. Everything else exits 1 on the first attempt: the transport's round-trip arithmetic, both cleanup acts, the cap, the disposals, and any `[measured]` line missing or printed twice. Those are this suite's own, and re-asking a question whose answer cannot change between attempts spends two more billable sandboxes to learn nothing.
+**The model's half** is the walk its program took, the table it printed, the products it named and how it batched. The check exits 3 and the live job runs the sample again — **three times at most**, on either backend. Everything else exits 1 on the first attempt: the round-trip arithmetic, both cleanup acts, the cap, the disposals, and any `[measured]` line missing or doubled.
 
-Three where [sample 13](../13_bicep_fix_loop/README.md) allows six, because an attempt here is not a local container: the sample holds a sandbox per route, so each one costs two. The attempts are sequential and each disposes its own pair, so the peak the live workflow counts does not move. A budget buys a rate rather than a fix — a walk that never converges still reds the job on the last attempt — and the retry annotates the run and puts the attempt count in the job summary whether it passed or failed, because a silent retry is how a check that fails a run in twenty starts reading green.
+Three where [sample 13](../13_bicep_fix_loop/README.md) allows six, because an attempt holds a sandbox per route and so costs two. They are sequential and each disposes its own pair, so the peak does not move. A budget buys a rate, not a fix: a walk that never converges still reds the job, and every retry is annotated with the attempt count in the job summary, because a silent retry is how a flaky check starts reading green.
 
 ## Prerequisites
 

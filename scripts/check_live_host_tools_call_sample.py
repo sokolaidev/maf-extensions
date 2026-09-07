@@ -27,14 +27,11 @@ Wall clock, tokens and lookup counts are recorded and never bounded — a thresh
 measurement into a pass mark on somebody else's control plane. What a model *said* is never
 read, and every line must carry the `[measured]` tag at the left margin (#314).
 
-Choosing what to assert is not enough on its own, because two of the properties above are read
-off a program a live model wrote. Every reason is therefore classed by *who owns it*, and the
-exit status carries the class: `MODEL_DID_NOT_CONVERGE` when every reason is the model's own —
-the walk it wrote, the table it printed, how it batched — and 1 when any of them is this suite's,
-which another model attempt cannot mend. `verify-live.yml` runs the sample again on 3 and on
-nothing else.
+Two of those properties are read off a program a live model wrote, so each reason is classed by
+who owns it and the exit status carries the class.
 
-Exits non-zero listing every reason it failed.
+Exits non-zero listing every reason it failed: `MODEL_DID_NOT_CONVERGE` when every reason is the
+model's own, 1 when any is this suite's.
 """
 
 from __future__ import annotations
@@ -94,12 +91,9 @@ class _TheModelsHalf(str):
     """Mark model-owned failures while retaining string behavior for existing callers."""
 
 
-#: What `main` exits when every failure was the model's own: the program it wrote for either
-#: route, the table that program printed, and how it batched its tool calls. `verify-live.yml`
-#: runs the sample again on this and on nothing else (#421 settled the same split for sample 13).
-#: 1 stays what it always was — a measurement this suite owns disagrees with the run, and no
-#: number of further attempts can mend that. A workflow that predates this sees a non-zero exit
-#: and fails, which is what it did before.
+#: What `main` exits when every failure was the model's own. `verify-live.yml` runs the sample
+#: again on this and on nothing else (#421). 1 stays what it always was, so a workflow that
+#: predates this still sees a non-zero exit and fails.
 MODEL_DID_NOT_CONVERGE = 3
 
 _F = re.MULTILINE
@@ -295,10 +289,7 @@ def _assess_the_whole_walk_happened(output: str) -> list[str]:
 def _assess_both_interpreters_answered(output: str) -> list[str]:
     """Both routes compute in the sandbox, so both are held to what came back.
 
-    Every reason here is the model's own. A complete ledger and a table of zeros is a run this
-    check has to report without calling the transport into question: the ledger says whether the
-    walk finished, these lines say what the model did with what it fetched, and neither stands
-    in for the other.
+    Every reason here is the model's own: a complete ledger and a table of zeros is one run.
     """
     found, failures = _per_route(output, _TOTALS, "state totals")
     for route, match in found.items():
@@ -381,8 +372,7 @@ def _assess_direct_pays_per_stage(output: str) -> list[str]:
             # The walk is fixed, so its floor is arithmetic rather than a tolerance: two state
             # ids, two store lists, five stores' sales and three product names. A run under it
             # did not fetch what the table is made of, whichever route it was on. The model's
-            # half: the program stopped asking, and the ledger is the host's record that it did.
-            # A transport that stopped answering shows up in the round-trip and cleanup acts,
+            # half: a transport that stopped answering fails the round-trip and cleanup acts,
             # which are this suite's own and forbid the retry on their own account.
             failures.append(
                 _TheModelsHalf(
@@ -488,8 +478,7 @@ def _assess_who_carried_the_figures(output: str) -> list[str]:
             # Not "more than none". Every figure has to cross the model on that road, so a
             # partial count is a run that got its data from somewhere this sample did not
             # measure — and it would still read as the contrast while understating it. The
-            # model's half, unlike the host-tool-call clause above it: that one is impossible
-            # for a working sample at any temperature, this one is a model that summarised.
+            # model's half, unlike the clause above it, which no working sample can trip.
             failures.append(
                 _TheModelsHalf(
                     f"the direct route wrote {carried} of {expected} sales figures into a tool "
@@ -883,8 +872,8 @@ def main(argv: list[str]) -> int:
         )
         for reason in failures:
             print(f"  - {reason}", file=sys.stderr)
-        # Which half failed, said out loud rather than left to the exit status. A reader of the
-        # log is the first consumer; `verify-live.yml` is the second (#421).
+        # Which half failed, said out loud rather than left to the exit status: a reader of
+        # the log is the first consumer, `verify-live.yml` the second.
         if all(isinstance(reason, _TheModelsHalf) for reason in failures):
             print(
                 "  every failure above is the model's own — the host served the lookups it was "
