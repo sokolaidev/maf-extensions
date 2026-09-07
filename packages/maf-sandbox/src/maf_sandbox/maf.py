@@ -77,6 +77,7 @@ from ._observer import (
     StoreFileRead,
     StoreReadOutcome,
     ToolCallEnded,
+    fed_with,
     record,
     recorded_call,
 )
@@ -1534,6 +1535,11 @@ class SandboxToolSession:
         outcome: StoreReadOutcome,
     ) -> None:
         """Record one store read, its label folded, for a host that watches what a call reads."""
+        # Before the observer guard: the fold belongs to the call, and a second session whose
+        # own router records nothing still fed it.
+        recording = RECORDED_CALL.get()
+        if outcome == "read" and recording is not None and not recording.closed:
+            recording.fed = fed_with(recording.fed, integrity)
         observer = self.observer
         if observer is None:
             return
@@ -2530,6 +2536,7 @@ def sandboxed_tool(
                             else type(raised_by_body).__name__,
                             unclean=0,
                             call=recording.id,
+                            fed=recording.fed,
                         ),
                         records,
                     )
@@ -2626,6 +2633,7 @@ def sandboxed_tool(
                                 failure=None if failed is None else type(failed).__name__,
                                 unclean=len(unclean),
                                 call=call.id,
+                                fed=recording.fed,
                             ),
                             records,
                         )
