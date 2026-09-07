@@ -15,7 +15,8 @@
 | `FILES_OUT` | Stat and read back the paths a spec declared — `stat_file`, `read_file` | docker, acas |
 | `FILES_LIST` | Enumerate a directory — `list_dir` | acas |
 | `FILES_DELETE` | Delete a path and everything under it — `remove` | docker, acas |
-| `SNAPSHOT` | Snapshot and restore a sandbox for reuse | nobody |
+| `SNAPSHOT` | Snapshot and restore a sandbox for reuse, which also establishes the `RESET` cleanup rung — `Sandbox.reset` | nobody |
+| `RECLAIM` | Take a directory this stack created, which is what the `RECLAIM` cleanup rung runs — `Sandbox.reclaim`, which stays mandatory whether or not this is declared | nobody yet |
 | `ATTACHED_IDENTITY` | A platform-attached identity scoped to the sandbox itself | nobody |
 
 `InProcessSandboxBackend` declares whatever a test claims, defaulting to the set below.
@@ -245,6 +246,8 @@ The matcher question is unchanged and now reachable, since a `RUN_CODE`-only bac
 **`NETWORK` was removed.** It was declared by no backend and required by no spec, and the reason it never acquired either is that it asked a question no kind can answer: whether a workload needs the network is not a fixed property of the kind but the mode the deployment runs it in, so the ask belongs to `Egress` and not beside it — [`research/egress-resolution.md`](research/egress-resolution.md) carries the argument, and [`network.md`](network.md) holds the axis that does the work.
 
 **`SNAPSHOT`** — snapshot and restore for reuse. No shipped backend; [`research/hyperlight-backend-proposal.md`](research/hyperlight-backend-proposal.md) declares it and it is load-bearing there, as both the warm-reuse mechanism and the recovery from a poisoned sandbox. It gains a second job under [`tool-call.md`](tool-call.md)'s cleanup ladder: a backend that declares it and implements `Sandbox.reset` establishes the `RESET` rung, which is what lets a sandbox be returned to its pre-input state between calls instead of deleted. That is the rung a backend whose create is expensive needs, so this stops being a capability only a proposed backend would want.
+
+**`RECLAIM`** — take a directory this stack created. `Sandbox.reclaim` stays mandatory on every backend and behind no capability: the member is implemented whether or not this is declared, and what the declaration adds is whether the framework may *resolve to* that cleanup rung. Absent from `DEFAULT_CAPABILITIES` for the same reason silence resolves to `Cleanup.DISPOSE`: a backend that has not said it can take the directory is cleaned by the rung it certainly has. None of the three shipped backends declares it yet, so every workload on them is cleaned by disposal until they do — docker and acas will, over the reach check each already runs; wslc will not, because its filesystem path check is answered inside the container and an answer the guest can give licenses a recursive delete no more than it licenses `remove`.
 
 **`ATTACHED_IDENTITY`** — the vocabulary shipped with the enum; the plumbing did not. See [`hosts.md`](hosts.md) for the identity axis and what a spec carrying it would owe.
 
