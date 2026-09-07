@@ -148,7 +148,21 @@ class TestBothProgramsHadToAnswer:
             f"[measured] {route}: state totals the program printed: 2 of 2",
             f"[measured] {route}: state totals the program printed: 1 of 2",
         )
-        assert any("did not finish the walk" in r for r in check.assess(broken))
+        assert any(
+            f"{route}'s program printed 1 of 2 state totals" in r for r in check.assess(broken)
+        )
+
+    @pytest.mark.parametrize("route", ["host-tool-call route", "direct route"])
+    def test_a_missing_total_says_nothing_about_the_transport_that_fed_it(self, route: str):
+        """An attempt can serve every lookup and still print zeros, so the reason may not
+        claim the program was starved."""
+        broken = _swap(
+            f"[measured] {route}: state totals the program printed: 2 of 2",
+            f"[measured] {route}: state totals the program printed: 0 of 2",
+        )
+        reasons = [r for r in check.assess(broken) if "state totals" in r]
+        assert reasons
+        assert not any("did not finish the walk" in r for r in reasons), reasons
 
     @pytest.mark.parametrize("route", ["host-tool-call route", "direct route"])
     def test_a_missing_totals_line_fails(self, route: str):
@@ -1245,3 +1259,170 @@ class TestTheDockerSampleHasNoActFive:
         path.write_text(_DOCKER, encoding="utf-8")
         assert check.main(["check", str(path)]) == 1
         assert "FAIL" in capsys.readouterr().err
+
+
+class TestWhichHalfFailedIsInTheExitStatus:
+    """A model's off attempt and a broken transport are different claims and statuses."""
+
+    def _status(self, tmp_path: Path, output: str) -> int:
+        path = tmp_path / "out.txt"
+        path.write_text(output, encoding="utf-8")
+        return check.main(["check", str(path)])
+
+    def test_a_healthy_run_exits_zero(self, tmp_path: Path):
+        assert self._status(tmp_path, _HEALTHY) == 0
+
+    def test_a_table_of_zeros_asks_for_another_attempt(self, tmp_path: Path):
+        """The whole walk served and every figure missing: the shape the split exists for."""
+        zeroed = _swap(
+            "[measured] host-tool-call route: state totals the program printed: 2 of 2",
+            "[measured] host-tool-call route: state totals the program printed: 0 of 2",
+        )
+        for line, printed in (("product totals", 0), ("table rows", 0)):
+            zeroed = zeroed.replace(
+                f"[measured] host-tool-call route: {line} the program printed: 6 of 6",
+                f"[measured] host-tool-call route: {line} the program printed: {printed} of 6",
+            )
+        assert self._status(tmp_path, zeroed) == check.MODEL_DID_NOT_CONVERGE
+
+    def test_a_measurement_this_suite_owns_does_not(self, tmp_path: Path):
+        """A sandbox left running is not something a second attempt can mend."""
+        broken = _swap("Disposed 2 sandbox(es).", "Disposed 1 sandbox(es).")
+        assert self._status(tmp_path, broken) == 1
+
+    def test_one_hard_failure_among_the_model_s_is_enough_to_forbid_a_retry(self, tmp_path: Path):
+        both = _swap(
+            "[measured] host-tool-call route: state totals the program printed: 2 of 2",
+            "[measured] host-tool-call route: state totals the program printed: 0 of 2",
+        ).replace("Disposed 2 sandbox(es).", "Disposed 1 sandbox(es).")
+        assert self._status(tmp_path, both) == 1
+
+    def test_the_exit_line_does_not_blame_the_transport(self, tmp_path: Path, capsys):
+        """The same claim the workflow acts on, and people read it first."""
+        self._status(
+            tmp_path,
+            _swap(
+                "[measured] host-tool-call route: state totals the program printed: 2 of 2",
+                "[measured] host-tool-call route: state totals the program printed: 0 of 2",
+            ),
+        )
+        said = capsys.readouterr().err
+        assert "Exiting 3" in said, said
+        assert "the host served the lookups it was asked for" in said, said
+
+    def test_the_class_travels_with_the_message_rather_than_being_matched_from_it(self):
+        """A reworded failure must keep its class, so nothing downstream parses prose."""
+        zeroed = check.assess(
+            _swap(
+                "[measured] host-tool-call route: state totals the program printed: 2 of 2",
+                "[measured] host-tool-call route: state totals the program printed: 0 of 2",
+            )
+        )
+        assert zeroed and all(isinstance(r, check._TheModelsHalf) for r in zeroed)
+        disposed = check.assess(_swap("Disposed 2 sandbox(es).", "Disposed 1 sandbox(es)."))
+        assert disposed and not any(isinstance(r, check._TheModelsHalf) for r in disposed)
+
+    def test_a_run_that_never_finished_is_not_the_model_s_half(self, tmp_path: Path):
+        """A sample that died before measuring anything is not a bad walk."""
+        assert self._status(tmp_path, _HEALTHY.split("== 2.")[0]) == 1
+
+    def test_the_docker_run_splits_the_same_way(self, tmp_path: Path):
+        """`--docker` drops act 5; which half owns a failure is not a backend question."""
+        path = tmp_path / "out.txt"
+        path.write_text(
+            _DOCKER.replace(
+                "[measured] host-tool-call route: state totals the program printed: 2 of 2",
+                "[measured] host-tool-call route: state totals the program printed: 0 of 2",
+            ),
+            encoding="utf-8",
+        )
+        assert check.main(["check", "--docker", str(path)]) == check.MODEL_DID_NOT_CONVERGE
+
+
+#: One tamper per `_TheModelsHalf` branch, so each is proved to reach exit 3 rather than
+#: only to produce a message. Some need a second edit to keep a line this suite owns
+#: consistent with the first, which is the point: only the model's reason may fire.
+_MODEL_OWNED = {
+    "stages exercised": (("host-tool-call route: lookup stages exercised: 4 of 4", "...: 3 of 4"),),
+    "product names": (("host-tool-call route: product names in the table: 3 of 3", "...: 2 of 3"),),
+    "state totals": (
+        ("host-tool-call route: state totals the program printed: 2 of 2", "...: 1 of 2"),
+    ),
+    "product cells": (
+        ("host-tool-call route: product totals the program printed: 6 of 6", "...: 5 of 6"),
+    ),
+    "table rows": (
+        ("host-tool-call route: table rows the program printed: 6 of 6", "...: 5 of 6"),
+    ),
+    # Edited on the direct side: the host-tool-call shape has to sum to the observer's program
+    # count, and no five positive entries sum to two.
+    "direct paid no more rounds": (
+        (
+            "direct route: 12 lookup(s) over 5 tool-calling",
+            "direct route: 12 lookup(s) over 2 tool-calling",
+        ),
+        ("direct route: tool calls per round: [2, 2, 5, 3, 1]", "...: [7, 6]"),
+    ),
+    "walk too short": (
+        ("host-tool-call route: 25 lookup(s)", "host-tool-call route: 5 lookup(s)"),
+        ("host-tool-call route: round trip: 23 gap(s)", "...: 3 gap(s)"),
+    ),
+    "two programs in one message": (
+        (
+            "host-tool-call route: 25 lookup(s) over 2 tool-calling",
+            "host-tool-call route: 25 lookup(s) over 1 tool-calling",
+        ),
+        ("host-tool-call route: tool calls per round: [1, 1]", "...: [2]"),
+    ),
+    "direct batched across stages": (
+        (
+            "direct route: 12 lookup(s) over 5 tool-calling",
+            "direct route: 12 lookup(s) over 3 tool-calling",
+        ),
+        ("direct route: tool calls per round: [2, 2, 5, 3, 1]", "...: [2, 2, 9]"),
+    ),
+    "direct carried too few figures": (
+        ("direct route: sales figures the model wrote into code: 12 of 12", "...: 11 of 12"),
+        ("into code, direct:         12 of 12", "into code, direct:         11 of 12"),
+    ),
+}
+
+
+def _tamper(edits) -> str:
+    """Apply one branch's edits, keeping `[measured]` prefixes the `...` shorthand stands for."""
+    out = _HEALTHY
+    for old, new in edits:
+        if new.startswith("..."):
+            new = old[: old.rindex(":")] + new[3:]
+        assert old in out, f"{old!r} is not in the fixture"
+        out = out.replace(old, new)
+    assert out != _HEALTHY
+    return out
+
+
+class TestEveryModelOwnedBranchReachesTheRetryStatus:
+    """Message presence is not the contract; the exit status is.
+
+    A branch that lost its `_TheModelsHalf` wrapper would still print the same reason and
+    would silently exit 1, turning a documented retry into a red release.
+    """
+
+    @pytest.mark.parametrize("branch", sorted(_MODEL_OWNED))
+    def test_it_is_the_model_s_half(self, branch: str, tmp_path: Path):
+        output = _tamper(_MODEL_OWNED[branch])
+        reasons = check.assess(output)
+        assert reasons, f"{branch} tripped nothing"
+        assert all(isinstance(r, check._TheModelsHalf) for r in reasons), [
+            r for r in reasons if not isinstance(r, check._TheModelsHalf)
+        ]
+        path = tmp_path / "out.txt"
+        path.write_text(output, encoding="utf-8")
+        assert check.main(["check", str(path)]) == check.MODEL_DID_NOT_CONVERGE
+
+    def test_every_branch_in_the_script_has_a_case_here(self):
+        """A new `_TheModelsHalf` without a case would ship untested."""
+        source = _SCRIPT.read_text(encoding="utf-8")
+        wrapped = source.count("_TheModelsHalf(\n")
+        assert wrapped == len(_MODEL_OWNED), (
+            f"{wrapped} model-owned branches in the script, {len(_MODEL_OWNED)} cases here"
+        )

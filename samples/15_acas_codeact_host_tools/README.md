@@ -123,6 +123,16 @@ Twenty live runs decided this. The lookup count moved between 18 and 29, wall cl
 
 Wall clock, tokens and lookup counts are **recorded and never bounded**, and what a model *said* is never read. Every line the check reads carries the `[measured]` tag at the left margin; `quoted()` prefixes any tagged line inside a model's reply with `> `, so prose that tries to answer for the host is visibly not the host answering.
 
+## Which half failed, and what a second attempt is for
+
+The first and fourth bullets above are read off a program a live model wrote, and an attempt can serve every lookup over all four stages and still print a table of zeros. So each reason is classed by who owns it, and the exit status carries the class.
+
+**The model's half** is all of: the stages its program exercised, the state totals, per-product cells and labelled rows that program printed, the products the host-tool-call table names, whether direct paid more tool-calling rounds than the host-tool-call route, a walk shorter than the twelve lookups the table is made of, a host-tool-call message asking for more than one program, direct batching in fewer batches than there are stages, and the direct route's model carrying fewer than all twelve figures. The check exits 3 and the live job attempts the sample again — **three times at most**, on either backend.
+
+Everything else exits 1 on the first attempt: the round-trip arithmetic, both cleanup acts, the cap, the disposals, the host-tool-call route carrying any figure at all, two of the sample's own lines disagreeing about one attempt, and any `[measured]` line missing or doubled.
+
+Three where [sample 13](../13_bicep_fix_loop/README.md) allows six, because an attempt holds a sandbox per route and so costs two. They are sequential and each disposes its own pair, so the peak does not move. A budget buys a rate, not a fix: a walk that never converges still reds the job, and every retry is annotated with the attempt count in the job summary, because a silent retry is how a flaky check starts reading green.
+
 ## Prerequisites
 
 `SAMPLE_BACKEND` selects the backend; the model deployment is needed either way (no key — `az login` is enough).

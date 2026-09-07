@@ -10,9 +10,11 @@ Sample 15 runs the same call-heavy walk on either backend: ACAS by default, dock
 `FILES_LIST`, so it prints no act-5 leftover lines and that one act is dropped. Everything else
 the check enforces is backend-agnostic and applies to both.
 
-**What is asserted is chosen so a model's mood cannot decide a release.** Both routes run
+**What is asserted is chosen so one bad attempt does not decide a release.** Both routes run
 Python in the sandbox and walk the same four stages, so what is enforced is either an
-interpreter's output or a structural property of the two roads:
+interpreter's output or a structural property of the two roads. The properties that read off a
+model-written program are retried rather than exempted, so an attempt that keeps failing them
+still fails the job:
 
 - Both programs printed the whole table — both state totals and all six cells.
 - Direct needed more tool-calling rounds than the host-tool-call route.
@@ -27,7 +29,15 @@ Wall clock, tokens and lookup counts are recorded and never bounded — a thresh
 measurement into a pass mark on somebody else's control plane. What a model *said* is never
 read, and every line must carry the `[measured]` tag at the left margin (#314).
 
-Exits non-zero listing every reason it failed.
+Each reason is classed by who owns it and the exit status carries the class. The model's own are
+the walk its program took, the table that program printed, the products it named, how it batched,
+and how many figures the direct route's model carried. This suite's are the round-trip
+arithmetic, the cleanup acts, the cap, the disposals, and any `[measured]` line missing or
+doubled.
+
+Exits non-zero listing every reason it failed: `MODEL_DID_NOT_CONVERGE` when every reason is the
+model's own, 1 when any is this suite's. `verify-live.yml` retries on the first and not the
+second, three attempts at most.
 """
 
 from __future__ import annotations
@@ -81,6 +91,15 @@ _PRODUCTS = 3
 #: One per state and product: the table the task asks for, and the thing the state totals
 #: cannot establish on their own, a total being a sum that hides its terms.
 _CELLS = _STATES * _PRODUCTS
+
+
+class _TheModelsHalf(str):
+    """Mark model-owned failures while retaining string behavior for existing callers."""
+
+
+#: What `main` exits when every failure was the model's own, and the only status
+#: `verify-live.yml` retries (#421). Every other failure exits 1.
+MODEL_DID_NOT_CONVERGE = 3
 
 _F = re.MULTILINE
 
@@ -239,9 +258,12 @@ def _assess_the_whole_walk_happened(output: str) -> list[str]:
             failures.append(f"{route} scored itself out of {expected} stages, not {_STAGES}")
         if run != expected:
             failures.append(
-                f"{route} exercised {run} of {expected} lookup stages. The walk is the workload: "
-                "a route that skipped one still prints state totals, because those are sums of "
-                "the amounts, and measures a shorter chain than the one described"
+                _TheModelsHalf(
+                    f"{route} exercised {run} of {expected} lookup stages. The walk is the "
+                    "workload: a route that skipped one still prints state totals, because "
+                    "those are sums of the amounts, and measures a shorter chain than the one "
+                    "described"
+                )
             )
 
     named, problems = _per_route(output, _NAMED, "product names")
@@ -259,15 +281,21 @@ def _assess_the_whole_walk_happened(output: str) -> list[str]:
         # doing the presentation in the place that route naturally does it.
         if route == _HOST_TOOL_CALL and found != expected:
             failures.append(
-                f"the host-tool-call program's table names {found} of {expected} products. The "
-                "model on that route never receives a product name, so the names can only come "
-                "from the program — and a table without them is the fourth stage never having run"
+                _TheModelsHalf(
+                    f"the host-tool-call program's table names {found} of {expected} products. "
+                    "The model on that route never receives a product name, so the names can "
+                    "only come from the program — and a table without them is the fourth stage "
+                    "never having run"
+                )
             )
     return failures
 
 
 def _assess_both_interpreters_answered(output: str) -> list[str]:
-    """Both routes compute in the sandbox, so both are held to what came back."""
+    """Both routes compute in the sandbox, so both are held to what came back.
+
+    Every reason here is the model's own: a complete ledger and a table of zeros is one attempt.
+    """
     found, failures = _per_route(output, _TOTALS, "state totals")
     for route, match in found.items():
         printed, expected = int(match[1]), int(match[2])
@@ -275,9 +303,11 @@ def _assess_both_interpreters_answered(output: str) -> list[str]:
             failures.append(f"{route} scored itself out of {expected} states, not {_STATES}")
         if printed != expected:
             failures.append(
-                f"the {route}'s program printed {printed} of {expected} state totals — an "
-                "interpreter computed them from data the host supplied, so a missing one means "
-                "the program did not finish the walk rather than that a model was careless"
+                _TheModelsHalf(
+                    f"the {route}'s program printed {printed} of {expected} state totals — the "
+                    "host served the data an interpreter was to compute them from, so this is "
+                    "the program the model wrote for this route, not the road underneath it"
+                )
             )
 
     # The totals are sums, so they survive a table that lost its rows. These are the rows.
@@ -289,10 +319,13 @@ def _assess_both_interpreters_answered(output: str) -> list[str]:
             failures.append(f"{route} scored itself out of {expected} product totals, not {_CELLS}")
         if printed != expected:
             failures.append(
-                f"the {route}'s program printed {printed} of {expected} per-state, per-product "
-                "totals. Both state totals can be right while a row underneath them is missing "
-                "or wrong, because a total hides its terms — these are the table the task asked "
-                "for, and they are what says the two routes reached the same answer"
+                _TheModelsHalf(
+                    f"the {route}'s program printed {printed} of {expected} per-state, "
+                    "per-product totals. Both state totals can be right while a row underneath "
+                    "them is missing or wrong, because a total hides its terms — these are the "
+                    "table the task asked for, and they are what says the two routes reached "
+                    "the same answer"
+                )
             )
 
     # The cells are a multiset, so swapping the two states' figures leaves them intact. Rows
@@ -308,10 +341,13 @@ def _assess_both_interpreters_answered(output: str) -> list[str]:
             failures.append(f"{route} scored itself out of {expected} table rows, not {_CELLS}")
         if route == _HOST_TOOL_CALL and printed != expected:
             failures.append(
-                f"the host-tool-call program printed {printed} of {expected} rows with the state "
-                "and product attached. The six values can all be present and belong to the wrong "
-                "rows — two states' figures swapped leaves the same numbers and the same two "
-                "totals — so the labels are what say the table is the answer"
+                _TheModelsHalf(
+                    f"the host-tool-call program printed {printed} of {expected} rows with the "
+                    "state and product attached. The six values can all be present and belong "
+                    "to the wrong rows — two states' figures swapped leaves the same numbers "
+                    "and the same two totals — so the labels are what say the table is the "
+                    "answer"
+                )
             )
     return failures
 
@@ -326,10 +362,12 @@ def _assess_direct_pays_per_stage(output: str) -> list[str]:
         host_tool_call, direct = int(found[_HOST_TOOL_CALL][2]), int(found[_DIRECT][2])
         if direct <= host_tool_call:
             failures.append(
-                f"the direct route took {direct} tool-calling round(s) and the host-tool-call "
-                f"route {host_tool_call} — the comparison this sample exists for is that walking "
-                "the stages in the model's own loop costs more of them, and this run did not "
-                "show it"
+                _TheModelsHalf(
+                    f"the direct route took {direct} tool-calling round(s) and the "
+                    f"host-tool-call route {host_tool_call} — the comparison this sample exists "
+                    "for is that walking the stages in the model's own loop costs more of them, "
+                    "and this run did not show it"
+                )
             )
     for route, match in found.items():
         lookups = int(match[1])
@@ -338,11 +376,16 @@ def _assess_direct_pays_per_stage(output: str) -> list[str]:
         elif lookups < _MINIMUM_LOOKUPS:
             # The walk is fixed, so its floor is arithmetic rather than a tolerance: two state
             # ids, two store lists, five stores' sales and three product names. A run under it
-            # did not fetch what the table is made of, whichever route it was on.
+            # did not fetch what the table is made of, whichever route it was on. The model's
+            # half: a transport that stopped answering fails the round-trip and cleanup acts,
+            # which are this suite's own and forbid the retry on their own account.
             failures.append(
-                f"{route} made {lookups} lookup(s) where the walk needs {_MINIMUM_LOOKUPS} at "
-                "best — two state ids, two store lists, five stores' sales rows and three "
-                "product names. A ledger this short cannot have produced the table above it"
+                _TheModelsHalf(
+                    f"{route} made {lookups} lookup(s) where the walk needs {_MINIMUM_LOOKUPS} "
+                    "at best — two state ids, two store lists, five stores' sales rows and "
+                    "three product names. A ledger this short cannot have produced the table "
+                    "above it"
+                )
             )
 
     for route, shape in shapes.items():
@@ -380,9 +423,12 @@ def _assess_direct_pays_per_stage(output: str) -> list[str]:
             and any(int(entry) > 1 for entry in groups)
         ):
             failures.append(
-                f"the host-tool-call route asked for {max(int(entry) for entry in groups)} tool "
-                "call(s) in one message. Those programs can interleave in the ledger, so the "
-                "observed run-boundary measurement would not describe consecutive programs"
+                _TheModelsHalf(
+                    f"the host-tool-call route asked for "
+                    f"{max(int(entry) for entry in groups)} tool call(s) in one message. Those "
+                    "programs can interleave in the ledger, so the observed run-boundary "
+                    "measurement would not describe consecutive programs"
+                )
             )
     if _DIRECT in shapes:
         groups = [g for g in shapes[_DIRECT][1].split(",") if g.strip()]
@@ -401,9 +447,12 @@ def _assess_direct_pays_per_stage(output: str) -> list[str]:
                 )
         if len(groups) < _STAGES:
             failures.append(
-                f"the direct route asked in {len(groups)} batch(es) and the walk has {_STAGES} "
-                "stages — fewer means it did not have to wait for one stage to answer before "
-                "asking the next, and the workload stopped being the one described"
+                _TheModelsHalf(
+                    f"the direct route asked in {len(groups)} batch(es) and the walk has "
+                    f"{_STAGES} stages — fewer means it did not have to wait for one stage to "
+                    "answer before asking the next, and the workload stopped being the one "
+                    "described"
+                )
             )
     return failures
 
@@ -433,12 +482,15 @@ def _assess_who_carried_the_figures(output: str) -> list[str]:
         if carried != expected:
             # Not "more than none". Every figure has to cross the model on that road, so a
             # partial count is a run that got its data from somewhere this sample did not
-            # measure — and it would still read as the contrast while understating it.
+            # measure — and it would still read as the contrast while understating it. The
+            # model's half, unlike the clause above it, which no working sample can trip.
             failures.append(
-                f"the direct route wrote {carried} of {expected} sales figures into a tool "
-                "call. On that road every value has to cross the model to reach the program, "
-                "so anything short of all of them means the run is not the comparison this "
-                "sample makes"
+                _TheModelsHalf(
+                    f"the direct route wrote {carried} of {expected} sales figures into a tool "
+                    "call. On that road every value has to cross the model to reach the "
+                    "program, so anything short of all of them means the run is not the "
+                    "comparison this sample makes"
+                )
             )
 
     # One restatement per route, matched by route rather than counted. Two for `direct` and
@@ -825,6 +877,17 @@ def main(argv: list[str]) -> int:
         )
         for reason in failures:
             print(f"  - {reason}", file=sys.stderr)
+        # Which half failed, said out loud rather than left to the exit status: a reader of
+        # the log is the first consumer, `verify-live.yml` the second.
+        if all(isinstance(reason, _TheModelsHalf) for reason in failures):
+            print(
+                "  every failure above is the model's own — the host served the lookups it was "
+                "asked for, the transport accounted for every round trip, and the sandboxes "
+                f"went away. Exiting {MODEL_DID_NOT_CONVERGE}: the walk is worth another "
+                "attempt.",
+                file=sys.stderr,
+            )
+            return MODEL_DID_NOT_CONVERGE
         return 1
 
     trips = {route: count for route, _, count in _TRIPS.findall(output)}
