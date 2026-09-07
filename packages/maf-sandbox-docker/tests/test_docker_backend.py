@@ -2769,6 +2769,57 @@ class TestTheGuestIdentityIsReadFromTheContainer:
 
 
 class TestNarrowedDisposal:
+    @pytest.mark.parametrize("kind", ["a", None])
+    @pytest.mark.parametrize("new_ledger", [False, True])
+    def test_concurrent_failure_restores_kind_for_a_narrowed_retry(self, kind, new_ledger):
+        from maf_sandbox_docker._backend import _Sweep
+
+        backend, fake = _backend_with(
+            _machine(overrides={("ps",): _DockerResult(1, b"", "listing unavailable")})
+        )
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        backend._registry[(*prefix, "a")] = "selected"
+        original = backend._purge
+        entered, release = asyncio.Event(), asyncio.Event()
+        attempts = 0
+        failure = DisposalFailure("refused", "remove refused")
+
+        async def sweep(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                entered.set()
+                await release.wait()
+                return _Sweep(0, {"selected": failure})
+            if attempts == 2:
+                return _Sweep(1)
+            return _Sweep(0, {"sibling": failure})
+
+        backend._purge = sweep
+
+        async def scenario():
+            first = asyncio.create_task(backend.dispose(_KEY, kind=kind))
+            await entered.wait()
+            assert await backend.dispose(_KEY, kind="a") is None
+            assert prefix not in backend._undeleted_kinds
+            if new_ledger:
+                backend._registry[(*prefix, "b")] = "sibling"
+                assert await backend.dispose(_KEY, kind="b") is not None
+            release.set()
+            assert await first is not None
+            backend._purge = original
+            await backend.dispose(_KEY, kind="a")
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+        removed = [
+            call.args[-1]
+            for call in fake.calls
+            if call.args[:2] == ("rm", "-f") and not call.args[-1].endswith("-proxy")
+        ]
+        assert removed == ["selected"]
+        assert backend._undeleted == ({prefix: {"sibling"}} if new_ledger else {})
+        assert backend._undeleted_kinds == ({prefix: {"sibling": "b"}} if new_ledger else {})
+
     @pytest.mark.parametrize("kind", ["bicep", "x" * 100, "unsafe=kind", "sha256-" + "a" * 48])
     @pytest.mark.parametrize("whole_key", [False, True])
     def test_label_sweep_preserves_siblings_and_matches_creation(self, kind, whole_key):
