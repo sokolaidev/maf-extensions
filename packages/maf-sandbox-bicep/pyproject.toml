@@ -36,7 +36,7 @@ dependencies = [
     # and that one fails when the tool is attached, where no import check is looking. The
     # number itself is below, and `scripts/set_dependents_range.py` moves the ceiling — so
     # this says which release the floor is for, never which release that is.
-    "maf-sandbox>=0.34.0,<0.36",
+    "maf-sandbox>=0.35.0,<0.37",
     # The `@tool` decorator and AgentFileStore. MAF is a genuine dependency of the tool
     # itself, not of the host application.
     "agent-framework-core>=1.13.0,<2",
