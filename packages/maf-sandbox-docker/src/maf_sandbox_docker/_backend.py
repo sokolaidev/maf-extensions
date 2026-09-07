@@ -837,13 +837,7 @@ class _DockerSandbox:
             )
 
     async def reset(self, *, timeout: float) -> None:
-        """Not offered: this backend declares no :data:`~maf_sandbox.Capability.SNAPSHOT`.
-
-        Spelled out rather than inherited, because the protocol member is what a caller and a
-        type checker read. The router never reaches it — it resolves to
-        :data:`~maf_sandbox.Cleanup.RESET` only for a backend that declares the capability — so
-        this raising is a statement rather than a failure path.
-        """
+        """Unsupported: this backend does not declare Capability.SNAPSHOT."""
         raise NotImplementedError(
             f"{type(self).__name__} does not snapshot, so it cannot be reset to its pre-input "
             "state. Its sandboxes are cleaned by a reclaim or a disposal."
@@ -1036,6 +1030,7 @@ class DockerSandboxBackend:
         #: ledger. A `dispose` clears an entry once the removal lands; a scope purge never
         #: does, because a name is not a generation and it cannot tell the two apart.
         self._undeleted: dict[tuple[str, str, str], set[str]] = {}
+        self._undeleted_kinds: dict[tuple[str, str, str], dict[str, str]] = {}
         #: Container name -> the key prefix it was acquired under, for every name this
         #: process created. What lets a purge key an `EgressObserved` on a container the
         #: registry no longer names. Pruned as names are removed.
@@ -1671,29 +1666,25 @@ class DockerSandboxBackend:
             del self._facts[cached]
 
     async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> DisposalFailure | None:
-        """Delete every container for ``key`` — every kind, closed or allowlisted — with
-        proxies and networks.
+        """Delete this key's sandboxes, narrowed to kind when given.
 
-        ``kind`` narrows the sweep to one workload's sandbox. ``None`` is every kind's, which is
-        what this method meant before the argument existed and is what a caller releasing the
-        whole key means. The framework passes a kind for its end-of-call disposal, so a
-        conversation running two kinds does not have one kind's cleanup take the other's warm
-        sandbox with it.
-
-        By label, so it reaches a sandbox created under an egress configuration this backend no
-        longer runs; the registry name is the fallback for when the listing itself fails. Never
-        raises: a ``docker rm`` that failed comes back as the reason, so the router can refuse
-        a key whose data is still sitting in a container.
-        """
+        Labels reach unregistered containers; retained names cover a failed listing.
+        Failed deletions are retained per kind for retries and reported without raising."""
         prefix = (key.scope, key.thread_id, key.agent_dir)
         mine = [
             k for k in list(self._registry) if k[:3] == prefix and (kind is None or k[3] == kind)
         ]
-        remembered = [self._registry.pop(k) for k in mine]
-        # Only this kind's leftovers when the sweep is narrowed: `_undeleted` is key-wide, so
-        # carrying all of it would hand a sibling kind's undeleted container to a disposal that
-        # was asked for one kind and delete it through the fallback the query no longer names.
-        retained: list[str] = sorted(self._undeleted.get(prefix, ())) if kind is None else []
+        attributed = self._undeleted_kinds.setdefault(prefix, {})
+        remembered: list[str] = []
+        for entry in mine:
+            name = self._registry.pop(entry)
+            remembered.append(name)
+            attributed[name] = entry[3]
+        retained = sorted(
+            name
+            for name in self._undeleted.get(prefix, ())
+            if kind is None or attributed.get(name) == kind
+        )
         candidates = list(dict.fromkeys([*remembered, *retained]))
         if candidates:
             # Before the first await: the registry no longer holds these, so a retry finds
@@ -1703,17 +1694,13 @@ class DockerSandboxBackend:
         # own proxy on the way to rebuilding it. Every container the labels reach belongs to
         # this key by construction, so all of them are attributable — including one served
         # under an egress configuration this backend no longer runs.
-        # The kind label too when one is asked for. Narrowing the registry above is not
-        # enough on its own: `_purge` deletes whatever the *query* returns, so without this a
-        # `dispose(key, kind="a")` still removed kind B's container and its proxy — and the
-        # per-kind end-of-call cleanup means B can be running when A's routine disposal fires.
         wanted = [
             (_LABEL_SCOPE, key.scope),
             (_LABEL_THREAD, key.thread_id),
             (_LABEL_AGENT, key.agent_dir),
         ]
         if kind is not None:
-            wanted.append((_LABEL_KIND, _label_value(kind)))
+            wanted.append((_LABEL_KIND, kind))
         swept = await self._purge(
             wanted,
             fallback=candidates,
@@ -1725,20 +1712,28 @@ class DockerSandboxBackend:
         # the live map, not the snapshot, with no await between read and write. A name does not
         # identify a generation, so a stale sweep can still subtract a newer record: #685.
         still = set(swept.undeleted)
+        if kind is not None:
+            attributed.update(dict.fromkeys(still, kind))
         left = (self._undeleted.get(prefix, set()) | still) - (set(candidates) - still)
         if left:
             self._undeleted[prefix] = left
         else:
             self._undeleted.pop(prefix, None)
+        for name in set(attributed) - left:
+            attributed.pop(name, None)
+        if not attributed:
+            self._undeleted_kinds.pop(prefix, None)
         reported = swept.reason
         if reported is not None:
             return reported
-        if left:
+        outstanding = {name for name in left if kind is None or attributed.get(name) == kind}
+        if outstanding:
             # A disposal still in flight wrote these ahead of its own await. `None` would
             # clear the refusal on a delete nobody confirmed; `unknown` and a count, since
             # neither the outcome nor the names are this attempt's to describe.
             return DisposalFailure(
-                "unknown", f"another disposal has not yet reported on {len(left)} container(s)"
+                "unknown",
+                f"another disposal has not yet reported on {len(outstanding)} container(s)",
             )
         return None
 

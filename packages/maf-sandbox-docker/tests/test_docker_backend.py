@@ -2768,6 +2768,65 @@ class TestTheGuestIdentityIsReadFromTheContainer:
 # ---------------------------------------------------------------------------
 
 
+class TestNarrowedDisposal:
+    @pytest.mark.parametrize("kind", ["bicep", "x" * 100, "unsafe=kind", "sha256-" + "a" * 48])
+    @pytest.mark.parametrize("whole_key", [False, True])
+    def test_label_sweep_preserves_siblings_and_matches_creation(self, kind, whole_key):
+        from maf_sandbox_docker._backend import _sandbox_labels
+
+        selected = _sandbox_labels(_KEY, SandboxSpec(kind=kind))["maf-sandbox.kind"]
+        sibling = _sandbox_labels(_KEY, SandboxSpec(kind="sibling"))["maf-sandbox.kind"]
+        labels = {"selected": selected, "sibling": sibling}
+
+        def respond(args):
+            if args[:1] == ("ps",):
+                filters = [value for value in args if value.startswith("label=maf-sandbox.kind=")]
+                names = [
+                    name
+                    for name, value in labels.items()
+                    if not filters or filters == [f"label=maf-sandbox.kind={value}"]
+                ]
+                payload = ("\n".join(names) + "\n").encode()
+                return _DockerResult(0, payload, "")
+            return _DockerResult(0, b"", "")
+
+        backend, fake = _backend_with(respond)
+        assert not backend._registry
+        asyncio.run(backend.dispose(_KEY, kind=None if whole_key else kind))
+        removed = [
+            call.args[-1]
+            for call in fake.calls
+            if call.args[:2] == ("rm", "-f") and not call.args[-1].endswith("-proxy")
+        ]
+        assert set(removed) == ({"selected", "sibling"} if whole_key else {"selected"})
+
+    def test_failed_narrowed_disposal_keeps_its_own_retry_candidates(self):
+        overrides = {
+            ("ps",): _DockerResult(1, b"", "listing unavailable"),
+            ("rm", "-f"): _DockerResult(1, b"", "remove refused"),
+        }
+        backend, fake = _backend_with(_machine(overrides=overrides))
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        backend._registry[(*prefix, "a")] = "selected"
+        backend._registry[(*prefix, "b")] = "sibling"
+        assert asyncio.run(backend.dispose(_KEY, kind="a")) is not None
+        assert asyncio.run(backend.dispose(_KEY, kind="a")) is not None
+        removed = [
+            call.args[-1]
+            for call in fake.calls
+            if call.args[:2] == ("rm", "-f") and not call.args[-1].endswith("-proxy")
+        ]
+        assert removed == ["selected", "selected"]
+        assert backend._registry[(*prefix, "b")] == "sibling"
+        asyncio.run(backend.dispose(_KEY))
+        removed = [
+            call.args[-1]
+            for call in fake.calls
+            if call.args[:2] == ("rm", "-f") and not call.args[-1].endswith("-proxy")
+        ]
+        assert set(removed[-2:]) == {"selected", "sibling"}
+
+
 class TestDispose:
     @pytest.mark.parametrize("silent", [True, False])
     def test_an_absent_container_does_not_count_as_a_removal(self, silent):
@@ -2796,10 +2855,7 @@ class TestDispose:
         assert fake.matching("rm", "-f") != []
 
     def test_a_narrowed_disposal_asks_the_engine_for_that_kind_only(self):
-        """The registry filter is not the sweep. `_purge` deletes whatever the *label query*
-        returns, so without the kind label a `dispose(key, kind=...)` still removed every kind's
-        container under the key — and the per-kind end-of-call cleanup means the sibling can be
-        running when that happens."""
+        """The engine query must include the kind, even when the registry knows the container."""
         backend, fake = _backend_with(_machine(running=[_NAME]))
         asyncio.run(backend.acquire(_KEY, _SPEC))
         fake.mark()
