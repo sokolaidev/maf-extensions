@@ -64,6 +64,8 @@ The PR-title workflow also compares the title with shipped package diffs. A rele
 
 The scope in parentheses is free-form and optional. Which package a change belongs to is worked out from the files it touches, not from the scope, so a PR touching two packages' shipped files releases both. A package's own `tests/` is excluded from that — changing it alone neither releases the package nor obliges the title to prove an executable change in it.
 
+**Releasing both is usually right, so a change spanning a package and something that depends on it goes in one PR.** Wiring a backend or a kind to a surface the same PR adds to `maf-sandbox`, and raising the floor that surface requires, are changes that package really received. Nothing here asks you to order those releases; that is a maintainer's job, in [`RELEASING.md`](RELEASING.md). Two consequences to accept: the type and any `!` reach every package the PR touches, so a `feat!:` marks a dependent breaking when all it did was adapt — and an **incidental** touch does not get the same excuse. A stale comment or a tidy in a package your change does not depend on drags that package into the release under a changelog line describing something it never received, so commit that separately, as `chore:`.
+
 ## Changelogs
 
 Nobody writes one. `CHANGELOG.md` is assembled from the titles above by [release-please](https://github.com/googleapis/release-please), which keeps a Release PR open per package and files each entry under its type. That section becomes the GitHub Release notes verbatim — so the quality of a release's notes is decided when you name your PR, and nowhere else.
