@@ -39,6 +39,7 @@ import time
 import weakref
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import TYPE_CHECKING, Protocol, cast
 
@@ -83,7 +84,7 @@ from ._proxy import build_context
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["BACKEND_NAME", "DockerSandboxBackend"]
+__all__ = ["BACKEND_NAME", "DockerReapResult", "DockerSandboxBackend"]
 
 #: The name :attr:`DockerSandboxBackend.name` answers to, and the value
 #: :class:`~maf_sandbox.SandboxRouter`'s ``selected=`` matches on.
@@ -959,6 +960,28 @@ class _DockerSandbox:
         )
 
 
+@dataclass(frozen=True)
+class DockerReapResult:
+    """Counts of removed resources, with every failure that made the reap incomplete."""
+
+    disposed: int = 0
+    proxies_removed: int = 0
+    networks_removed: int = 0
+    failures: tuple[DisposalFailure, ...] = ()
+
+
+@dataclass(frozen=True)
+class _ReapTarget:
+    id: str
+    name: str
+    resource: str
+    created: datetime
+
+    @property
+    def workload(self) -> str:
+        return self.name.removesuffix(_PROXY_SUFFIX).removesuffix(_NET_SUFFIX)
+
+
 class DockerSandboxBackend:
     """Hands out container-isolated sandboxes from a Docker-compatible engine."""
 
@@ -1119,7 +1142,9 @@ class DockerSandboxBackend:
         """
         self._acquired.pop(workload, None)
 
-    async def _drain_the_proxy(self, name: str, key: SandboxKey) -> None:
+    async def _drain_the_proxy(
+        self, name: str, key: SandboxKey, *, proxy_id: str | None = None
+    ) -> None:
         """Report what this sandbox's proxy decided, before the container holding it goes.
 
         **This is called on the acquire path, not only at disposal, and that is the whole
@@ -1141,7 +1166,8 @@ class DockerSandboxBackend:
         # CONNECT between the read and the removal — a decision that would then exist nowhere.
         # A stop that was refused leaves that window open, so it is reported rather than
         # swallowed: the read still happens, and the record says it may be short.
-        unquiesced = await self._quiesce(_proxy_name(name))
+        target = proxy_id if proxy_id is not None else _proxy_name(name)
+        unquiesced = await self._quiesce(target)
         unreadable: str | None = None
         decisions: tuple[EgressDecision, ...] = ()
         truncated = False
@@ -1152,7 +1178,7 @@ class DockerSandboxBackend:
                 # One past the bound, so a log sitting exactly on it is distinguishable from one
                 # that ran past it. The extra line is read and then thrown away.
                 str(_PROXY_LOG_TAIL + 1),
-                _proxy_name(name),
+                target,
                 timeout=self._config.command_timeout_seconds,
                 read_limit=_PROXY_LOG_BYTES,
             )
@@ -1169,7 +1195,7 @@ class DockerSandboxBackend:
                     text = text[: text.rfind("\n") + 1]
                 decisions, truncated = _egress_decisions(text)
                 truncated = truncated or capped
-            elif not _reads_as_absent(result.stderr, _proxy_name(name)):
+            elif not _reads_as_absent(result.stderr, target):
                 unreadable = result.stderr.strip() or f"docker logs exited {result.returncode}"
             elif name in self._acquired:
                 # Absent, and this process made its proxy: the window it held is gone rather
@@ -1722,6 +1748,145 @@ class DockerSandboxBackend:
         # Nothing is subtracted here: the container this sweep removed and one recorded since
         # carry the same name, so taking one away drops the other.
         return ScopePurge(swept.count, swept.reason)
+
+    async def reap(self, older_than: timedelta, *, scope: str | None = None) -> DockerReapResult:
+        """Enforce an operator's maximum lifetime on Docker sandboxes and their infrastructure.
+
+        This is an operator policy across all scopes unless ``scope`` narrows it. Age is
+        creation time, not idleness: running sandboxes can be removed. An expired workload
+        takes its proxy and network with it, whatever their ages. Without a workload, the
+        proxy's age decides; a network alone uses its own age. Inventory failures prevent
+        deletion; removal failures are returned. No background timer is installed.
+        """
+        if older_than <= timedelta(0):
+            raise ValueError("older_than must be a positive timedelta")
+        cutoff = datetime.now(UTC) - older_than
+        targets: list[_ReapTarget] = []
+        failures: list[DisposalFailure] = []
+        for resource in ("container", "network"):
+            found, unread = await self._reap_inventory(resource, scope)
+            targets.extend(found)
+            failures.extend(unread)
+        if failures:
+            return DockerReapResult(failures=tuple(failures))
+
+        groups: dict[str, list[_ReapTarget]] = {}
+        for target in targets:
+            groups.setdefault(target.workload, []).append(target)
+        expired: set[str] = set()
+        for workload, members in groups.items():
+            # The workload's lifetime does not restart when its proxy is rebuilt.
+            anchor = min(members, key=lambda t: (t.resource == "network", t.name != workload))
+            if anchor.created < cutoff:
+                expired.add(workload)
+        disposed = proxies = networks = 0
+        for target in targets:
+            if target.workload not in expired:
+                continue
+            if target.resource == "network":
+                # No force: a concurrently acquired container keeps its attached network.
+                try:
+                    result = await self._docker(
+                        "network", "rm", target.id, timeout=self._config.command_timeout_seconds
+                    )
+                except Exception as exc:  # noqa: BLE001 - report each failed removal
+                    failures.append(DisposalFailure("unreachable", f"{target.name}: {exc}"))
+                    continue
+                if result.returncode == 0:
+                    networks += 1
+                elif not _reads_as_absent(result.stderr, target.id):
+                    failures.append(
+                        DisposalFailure("refused", f"{target.name}: {result.stderr.strip()}")
+                    )
+                continue
+
+            is_proxy = target.name.endswith(_PROXY_SUFFIX)
+            prefix = self._acquired.get(target.workload)
+            if is_proxy and prefix is not None:
+                await self._drain_the_proxy(
+                    target.workload,
+                    SandboxKey(scope=prefix[0], thread_id=prefix[1], agent_dir=prefix[2]),
+                    proxy_id=target.id,
+                )
+            self._forget_facts(target.name)
+            removal = await self._remove(target.id)
+            if removal.failure is not None:
+                failures.append(removal.failure)
+            elif removal.removed:
+                if is_proxy:
+                    proxies += 1
+                else:
+                    disposed += 1
+        return DockerReapResult(disposed, proxies, networks, tuple(failures))
+
+    async def _reap_inventory(
+        self, resource: str, scope: str | None
+    ) -> tuple[list[_ReapTarget], list[DisposalFailure]]:
+        """Read immutable identities and creation times before selecting any removal."""
+        args = ["ps", "-a"] if resource == "container" else ["network", "ls"]
+        args += ["--no-trunc", "--format", "{{.ID}}", "--filter", f"name=^{_NAME_PREFIX}"]
+        labels = (_LABEL_SCOPE, _LABEL_THREAD, _LABEL_AGENT, _LABEL_KIND)
+        for label in labels:
+            args += ["--filter", f"label={label}"]
+        if scope is not None:
+            args += ["--filter", f"label={_LABEL_SCOPE}={_label_value(scope)}"]
+        try:
+            listed = await self._docker(*args, timeout=self._config.command_timeout_seconds)
+            if listed.returncode != 0:
+                raise RuntimeError(listed.stderr.strip() or f"docker exited {listed.returncode}")
+            ids = list(dict.fromkeys(listed.stdout.decode("utf-8").splitlines()))
+            if any(not re.fullmatch(r"[0-9a-f]{64}", id) for id in ids):
+                raise ValueError("docker returned an invalid resource ID")
+        except Exception as exc:  # noqa: BLE001 - an unread inventory cannot authorize deletion
+            return [], [DisposalFailure("unlisted", f"could not list {resource}s: {exc}")]
+
+        targets: list[_ReapTarget] = []
+        failures: list[DisposalFailure] = []
+        for id in ids:
+            try:
+                result = await self._docker(
+                    resource,
+                    "inspect",
+                    "--format",
+                    "{{json .}}",
+                    id,
+                    timeout=self._config.command_timeout_seconds,
+                )
+                if result.returncode != 0:
+                    if _reads_as_absent(result.stderr, id):
+                        continue
+                    raise RuntimeError(
+                        result.stderr.strip() or f"docker exited {result.returncode}"
+                    )
+                data = cast(dict[str, object], json.loads(result.stdout))
+                if data["Id"] != id:
+                    raise ValueError("docker inspect returned a different resource ID")
+                name = str(data["Name"]).removeprefix("/")
+                metadata = data["Config"] if resource == "container" else data
+                owned = cast(dict[str, object], metadata)["Labels"]
+                if not isinstance(owned, dict):
+                    continue
+                owned = cast(dict[str, object], owned)
+                if not all(isinstance(owned.get(label), str) and owned[label] for label in labels):
+                    continue
+                if scope is not None and owned[_LABEL_SCOPE] != _label_value(scope):
+                    continue
+                suffix = _NET_SUFFIX if resource == "network" else f"(?:{_PROXY_SUFFIX})?"
+                if not re.fullmatch(rf"{_NAME_PREFIX}[0-9a-f]{{12}}{suffix}", name):
+                    continue
+                if resource == "container" and owned.get(_LABEL_ROLE) != (
+                    "proxy" if name.endswith(_PROXY_SUFFIX) else None
+                ):
+                    continue
+                created = datetime.fromisoformat(str(data["Created"]))
+                if created.tzinfo is None:
+                    raise ValueError("docker returned a creation time without a timezone")
+                targets.append(_ReapTarget(id, name, resource, created))
+            except Exception as exc:  # noqa: BLE001 - a partial inventory cannot authorize deletion
+                failures.append(
+                    DisposalFailure("unlisted", f"could not inspect {resource} {id}: {exc}")
+                )
+        return targets, failures
 
     async def _purge(
         self,

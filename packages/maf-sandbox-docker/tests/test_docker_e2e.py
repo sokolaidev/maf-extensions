@@ -32,6 +32,7 @@ import socket
 import subprocess
 import threading
 import uuid
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -76,7 +77,8 @@ try:
 except ImportError:
     assert_reach_conformance = None
 
-from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
+from maf_sandbox_docker import DockerReapResult, DockerSandboxBackend, DockerSandboxConfig
+from maf_sandbox_docker._backend import _container_name, _sandbox_labels
 
 _IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_IMAGE")
 _PROXY_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE")
@@ -751,6 +753,68 @@ class TestALiveContainer:
             assert _names_on_the_machine(name) == []
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+
+class TestReapAgainstARealEngine:
+    @pytest.mark.parametrize("workload_present", [True, False])
+    def test_a_fresh_backend_reaps_by_age_and_scope_with_its_infrastructure(self, workload_present):
+        scope = f"reap-e2e-{uuid.uuid4().hex}"
+        key, spec = _key(scope), _spec()
+        name = _container_name(key, spec.kind)
+        labels = [
+            arg for k, v in _sandbox_labels(key, spec).items() for arg in ("--label", f"{k}={v}")
+        ]
+        containers: list[str] = []
+        network = ""
+
+        def docker(*args: str) -> str:
+            return subprocess.run(
+                ["docker", *args], capture_output=True, text=True, timeout=60, check=True
+            ).stdout.strip()
+
+        try:
+            network = docker("network", "create", "--internal", *labels, name + "-net")
+            for suffix in ("", "-proxy") if workload_present else ("-proxy",):
+                role = ("--label", "maf-sandbox.role=proxy") if suffix else ()
+                containers.append(
+                    docker(
+                        "run",
+                        "-d",
+                        "--name",
+                        name + suffix,
+                        "--network",
+                        network,
+                        *labels,
+                        *role,
+                        "--entrypoint",
+                        "sleep",
+                        str(_IMAGE),
+                        "300",
+                    )
+                )
+            backend = DockerSandboxBackend(DockerSandboxConfig())
+            assert asyncio.run(backend.reap(timedelta(days=1), scope=scope)) == DockerReapResult()
+            assert (
+                asyncio.run(backend.reap(timedelta(microseconds=1), scope=scope + "-other"))
+                == DockerReapResult()
+            )
+            result = asyncio.run(backend.reap(timedelta(microseconds=1), scope=scope))
+            assert result == DockerReapResult(int(workload_present), 1, 1)
+            assert docker("ps", "-a", "--filter", f"label=maf-sandbox.scope={scope}", "-q") == ""
+            assert (
+                docker("network", "ls", "--filter", f"label=maf-sandbox.scope={scope}", "-q") == ""
+            )
+            assert (
+                asyncio.run(backend.reap(timedelta(microseconds=1), scope=scope))
+                == DockerReapResult()
+            )
+        finally:
+            for id in containers:
+                subprocess.run(["docker", "rm", "-f", id], capture_output=True, timeout=60)
+            if network:
+                subprocess.run(
+                    ["docker", "network", "rm", network], capture_output=True, timeout=60
+                )
 
 
 class TestTheGuestFamilyAgainstARealDaemon:

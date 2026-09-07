@@ -88,6 +88,7 @@ backend = DockerSandboxBackend(DockerSandboxConfig())
 | `stat_file` / `read_file` | the `FILES_OUT` pull surface — stat from the tar entry header of `docker cp`, read from the same stream; extended metadata limited to a 64 KiB prefix and 32 headers, with a larger copy retried when needed; symlinks and other non-regular entries refused on the header type, every parent component refused unless it is a real directory, a body over the caller's cap refused rather than truncated |
 | `dispose(key)` | `rm -f` on every kind's container the key names, with the proxy and network of an allowlisted one |
 | `dispose_scope(scope, thread)` | delete every container for a conversation — **by label, read back from docker**, not from process memory |
+| `reap(older_than, *, scope=None)` | an operator's age-based cleanup across scopes, optionally narrowed to one scope; returns `DockerReapResult` with workload, proxy and network removal counts and any failures |
 | `isolation` | `container`, unconditionally |
 | `declarations.egress_modes` | `{closed}`, or `{closed, allowlist}` when `egress_proxy_image` is set |
 | `declarations.capabilities` | `{EXEC, FILES_IN, FILES_OUT, FILES_DELETE, HOST_TOOLS}` |
@@ -99,6 +100,35 @@ Container names are derived from the key and kind rather than remembered, so `ac
 No bind mounts, no host paths, and never the Docker socket cross into a sandbox — files go in and out only through `docker cp`. The hardening flags `--security-opt no-new-privileges` and `--pids-limit` go on every container; `--cap-drop ALL`, `--memory` and `--cpus` are opt-in through the config.
 
 `stop` is never used. A container whose init process ignores `SIGTERM` takes ten seconds to stop and a fraction of a second to remove, and there is nothing in a sandbox worth waiting for.
+
+## Explicit age-based cleanup
+
+A killed host cannot run its cleanup. `reap` lets an operator find eligible Docker resources through the engine's labels and creation times, without the original conversation keys or process registry. **This API does not provide automatic recovery:** nothing schedules or runs it independently of the application. An independent runner and its lifecycle policy are separate design work in [#1008](https://github.com/sokolaidev/maf-extensions/issues/1008).
+
+```python
+import asyncio
+from datetime import timedelta
+
+from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
+
+backend = DockerSandboxBackend(DockerSandboxConfig())
+result = asyncio.run(backend.reap(timedelta(hours=24)))
+print(result.disposed, result.proxies_removed, result.networks_removed)
+for failure in result.failures:
+    print(failure)
+```
+
+The positive `older_than` duration is an explicit maximum-lifetime policy for this sweep. **Age means creation time, not idleness or proof the host died: calling this API permits terminating active sandboxes older than that lifetime.** An expired workload takes its proxy and network with it even if they were rebuilt more recently. Without a workload, the proxy's age decides; a network alone uses its own age. A workload exactly at the cutoff is retained; an orphan group applies the same strict comparison to the resource whose age decides. Hosts requiring long-lived active sandboxes to be protected must not use creation age as orphan detection; a lease or activity scheme belongs to #1008. `scope="my-app"` narrows the same operator action to that scope; omitting it covers all scopes on the configured engine. This is separate from a conversation's `dispose_scope` authority.
+
+Only names from this Docker backend with all four sandbox identity labels qualify. The inventory includes stopped containers, orphaned proxies and networks whose containers are already gone. Every removal addresses the inspected resource ID, so recreating a name does not redirect it to the replacement; a network with attached containers is never forced away. Inventory failures prevent all deletion. Removal failures are returned individually, including infrastructure failures, and a later reap can retry the surviving resources. The counts include only successful removals, with proxies separate from sandboxes.
+
+The ordinary egress drain runs before removing a proxy this backend instance can attribute. A fresh operator process has no such attribution, so it cannot report those proxies' decisions; archive their logs first if you need them. This is the same attribution limit as a scope purge.
+
+To inspect the labelled containers before maintenance, Docker also exposes their creation times directly:
+
+```bash
+docker ps -a --no-trunc --filter 'name=^maf-sandbox-docker-' --filter label=maf-sandbox.scope --filter label=maf-sandbox.thread --filter label=maf-sandbox.agent --filter label=maf-sandbox.kind --format '{{.ID}} {{.Names}} {{.CreatedAt}}'
+```
 
 ## Upgrading to 0.10
 
