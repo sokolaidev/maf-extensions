@@ -16,6 +16,7 @@ files need. `sys.path[0]` is the script's directory, which is what lets `agent.p
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -90,6 +91,17 @@ def diagram_sandbox_spec(image: str | None = None) -> SandboxSpec:
     the sample is a warm-reuse demonstration.  A kind that makes this claim owes the probe that
     falsifies it; this one is covered by the suite's own end-of-call assertions.
     """
+    # Feature-detected rather than passed outright, because this sample straddles a core
+    # release: `confined_to_guest_call_path` arrives with the cleanup ladder, and the sample
+    # builds against the *published* core its README names. Raising that floor is what the
+    # samples' own pull request does, once the core carrying it is on the index.
+    # `dict[str, Any]`, because the whole point is that the field may not exist on the core
+    # this sample is checked against, and a precisely-typed mapping cannot express that.
+    earns_the_warmth: dict[str, Any] = (
+        {"confined_to_guest_call_path": True}
+        if any(f.name == "confined_to_guest_call_path" for f in dataclasses.fields(SandboxSpec))
+        else {}
+    )
     return SandboxSpec(
         kind=DIAGRAM_KIND,
         image=image,
@@ -98,7 +110,7 @@ def diagram_sandbox_spec(image: str | None = None) -> SandboxSpec:
         requires=frozenset({Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT}),
         outputs_named_at_call_time=True,
         files_out=_FILES_OUT_LIMITS,
-        confined_to_guest_call_path=True,
+        **earns_the_warmth,
     )
 
 
