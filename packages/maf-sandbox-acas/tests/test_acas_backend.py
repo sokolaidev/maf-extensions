@@ -23,6 +23,7 @@ from maf_sandbox import (
     SandboxOsFamilyNotSupported,
     SandboxRouter,
     SandboxSpec,
+    ScopePurge,
 )
 
 from maf_sandbox_acas import (
@@ -1584,6 +1585,53 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert client.deleted == []
         assert backend._undeleted == {(key.scope, key.thread_id, key.agent_dir): {"sbx-1"}}
 
+        client.delete_fails = False
+        asyncio.run(backend.dispose(key, kind="codeact"))
+        assert client.deleted == ["sbx-1"]
+        assert not backend._undeleted
+        assert not backend._undeleted_kinds
+
+    def test_a_refused_create_retains_its_kind_after_a_concurrent_disposal(self):
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        from maf_sandbox_acas._backend import _Deletion
+
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+        key = self._key()
+        original = backend._delete
+        entered, release = asyncio.Event(), asyncio.Event()
+        attempts = 0
+
+        async def delete(group_client, sandbox_id):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                entered.set()
+                await release.wait()
+                return _Deletion(False, DisposalFailure("refused", "delete refused"))
+            return _Deletion(True)
+
+        backend._delete = delete
+
+        async def scenario():
+            acquire = asyncio.create_task(
+                backend.acquire(key, _spec_requiring(Capability.EXEC, Capability.FILES_OUT))
+            )
+            await entered.wait()
+            assert await backend.dispose(key) is None
+            assert not backend._undeleted_kinds
+            release.set()
+            with pytest.raises(SandboxCapabilityNotSupported):
+                await acquire
+            backend._delete = original
+            assert await backend.dispose(key, kind="codeact") is None
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+        assert client.deleted == ["sbx-1"]
+        assert not backend._undeleted
+        assert not backend._undeleted_kinds
+
     def test_a_refused_reuse_keeps_the_sandbox_for_the_key_to_dispose(self):
         """The other half of the split: a warm sandbox predates this acquire, so it belongs to
         the key's own disposal rather than to the acquire that was refused."""
@@ -1862,6 +1910,64 @@ class TestExecArgv:
 
 
 class TestNarrowedDisposal:
+    @pytest.mark.parametrize("operation", ["kind", "whole", "scope"])
+    @pytest.mark.parametrize("retained", [False, True])
+    @pytest.mark.parametrize("new_ledger", [False, True])
+    def test_concurrent_failure_restores_kind_for_a_narrowed_retry(
+        self, operation, retained, new_ledger
+    ):
+        from maf_sandbox_acas._backend import _Deletion
+
+        client = _FakeGroupClient()
+        backend = _backend_with(client)
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent")
+        prefix = (key.scope, key.thread_id, key.agent_dir)
+        if retained:
+            backend._undeleted[prefix] = {"selected"}
+            backend._undeleted_kinds[prefix] = {"selected": "a"}
+        else:
+            backend._registry[(*prefix, "a")] = _Held("selected")
+        original = backend._delete
+        entered, release = asyncio.Event(), asyncio.Event()
+        attempts = 0
+        failure = DisposalFailure("refused", "delete refused")
+
+        async def delete(group_client, sandbox_id):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                entered.set()
+                await release.wait()
+                return _Deletion(False, failure)
+            return _Deletion(attempts == 2, None if attempts == 2 else failure)
+
+        backend._delete = delete
+
+        async def scenario():
+            cleanup = (
+                backend.dispose_scope(key.scope, key.thread_id)
+                if operation == "scope"
+                else backend.dispose(key, kind="a" if operation == "kind" else None)
+            )
+            first = asyncio.create_task(cleanup)
+            await entered.wait()
+            assert await backend.dispose(key, kind="a") is None
+            assert attempts == 2
+            assert prefix not in backend._undeleted_kinds
+            if new_ledger:
+                backend._registry[(*prefix, "b")] = _Held("sibling")
+                assert await backend.dispose(key, kind="b") is not None
+            release.set()
+            result = await first
+            assert (result.undisposed if isinstance(result, ScopePurge) else result) is not None
+            backend._delete = original
+            assert await backend.dispose(key, kind="a") is None
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+        assert client.deleted == ["selected"]
+        assert backend._undeleted == ({prefix: {"sibling"}} if new_ledger else {})
+        assert backend._undeleted_kinds == ({prefix: {"sibling": "b"}} if new_ledger else {})
+
     @pytest.mark.parametrize(
         "kind,expected", [("a", ["selected"]), (None, ["selected", "sibling"])]
     )

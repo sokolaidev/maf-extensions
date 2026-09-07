@@ -937,23 +937,22 @@ class AcasSandboxBackend:
             )
         except SandboxCapabilityNotSupported:
             self._registry.pop(registry_key, None)
-            await self._release_the_refused(gc, key, sc.sandbox_id)
+            await self._release_the_refused(gc, key, sc.sandbox_id, kind=spec.kind)
             raise
         return created
 
-    async def _release_the_refused(self, gc: Any, key: SandboxKey, sandbox_id: str) -> None:
-        """Delete a sandbox this acquire created and then refused; remember it if that fails.
-
-        An acquire that raises is handed to nobody, and the framework's per-call cleanup
-        disposes only what it was handed — so without this the microVM runs on, billable and
-        unusable, until the auto-delete timer or the conversation's purge reaches it.  The
-        caller has already dropped it from the registry.
-        """
+    async def _release_the_refused(
+        self, gc: Any, key: SandboxKey, sandbox_id: str, *, kind: str
+    ) -> None:
+        """Delete a refused fresh sandbox, retaining its kind for retries if deletion fails."""
         prefix = (key.scope, key.thread_id, key.agent_dir)
         # Before the await, the way `dispose` records it: the registry no longer holds this id
         # and there is no listing to fall back on, so a delete that fails is retried only here.
         self._undeleted[prefix] = self._undeleted.get(prefix, set()) | {sandbox_id}
+        self._undeleted_kinds.setdefault(prefix, {})[sandbox_id] = kind
         if (await self._delete(gc, sandbox_id)).failure is not None:
+            self._undeleted[prefix] = self._undeleted.get(prefix, set()) | {sandbox_id}
+            self._undeleted_kinds.setdefault(prefix, {})[sandbox_id] = kind
             return
         logger.info(
             "sandbox released: id=%s thread=%s agent=%s",
@@ -968,6 +967,10 @@ class AcasSandboxBackend:
             self._undeleted[prefix] = left
         else:
             self._undeleted.pop(prefix, None)
+        attributed = self._undeleted_kinds.get(prefix, {})
+        attributed.pop(sandbox_id, None)
+        if not attributed:
+            self._undeleted_kinds.pop(prefix, None)
 
     async def _refuse_or_warn_where_the_guest_is_not_root(
         self,
@@ -1222,6 +1225,7 @@ class AcasSandboxBackend:
         # already deleted drops out next attempt. Merged, not assigned: teardown is not
         # serialized.
         self._undeleted[prefix] = self._undeleted.get(prefix, set()) | set(wanted)
+        attempted_kinds = {name: attributed[name] for name in wanted if name in attributed}
         try:
             gc = self._group_client()
         except Exception as exc:  # noqa: BLE001 - disposal must never raise
@@ -1244,6 +1248,10 @@ class AcasSandboxBackend:
         # Read from the live map, not `wanted`, so an id another disposal recorded survives.
         # No await between the read and the write.
         still = set(undeleted)
+        attributed = self._undeleted_kinds.setdefault(prefix, {})
+        attributed.update(
+            {name: attempted_kinds[name] for name in still if name in attempted_kinds}
+        )
         left = (self._undeleted.get(prefix, set()) | still) - (set(wanted) - still)
         if left:
             self._undeleted[prefix] = left
@@ -1295,15 +1303,12 @@ class AcasSandboxBackend:
             self._registry.pop(k, None)
         for entry, sandbox_id in known:
             self._undeleted_kinds.setdefault(entry[:3], {})[sandbox_id] = entry[3]
+            self._undeleted.setdefault(entry[:3], set()).add(sandbox_id)
 
         try:
             gc = self._group_client()
         except Exception as exc:  # noqa: BLE001 - purge must never fail
             logger.warning("acas backend: could not reach the sandbox group: %s", exc)
-            # The registry entries are gone by now, so these ids live here or nowhere.
-            for key, sandbox_id in known:
-                prefix = (key[0], key[1], key[2])
-                self._undeleted[prefix] = self._undeleted.get(prefix, set()) | {sandbox_id}
             return ScopePurge(
                 0,
                 DisposalFailure(
@@ -1315,6 +1320,14 @@ class AcasSandboxBackend:
             p: set(names)
             for p, names in self._undeleted.items()
             if p[0] == scope and p[1] == thread_id
+        }
+        attempted_kinds = {
+            p: {
+                name: kind
+                for name, kind in self._undeleted_kinds.get(p, {}).items()
+                if name in names
+            }
+            for p, names in retained.items()
         }
         undisposed: list[DisposalFailure] = []
         ids = {sandbox_id for _, sandbox_id in known}
@@ -1345,17 +1358,15 @@ class AcasSandboxBackend:
         # Merge-only against the *live* map: a `dispose` for one of these keys can land
         # mid-sweep, and indexing what it removed would raise out of a method that never does.
         for prefix, before in retained.items():
-            left = self._undeleted.get(prefix, set()) - (before - undeleted)
+            still = before & undeleted
+            left = (self._undeleted.get(prefix, set()) | still) - (before - still)
             if left:
                 self._undeleted[prefix] = left
             else:
                 self._undeleted.pop(prefix, None)
-        # The listing does not say which key owns a failed id, so it is recorded against the
-        # registry keys this purge popped rather than lost.
-        for key, sandbox_id in known:
-            if sandbox_id in undeleted:
-                prefix = (key[0], key[1], key[2])
-                self._undeleted[prefix] = self._undeleted.get(prefix, set()) | {sandbox_id}
+            self._undeleted_kinds.setdefault(prefix, {}).update(
+                {name: kind for name, kind in attempted_kinds[prefix].items() if name in still}
+            )
         for prefix in list(self._undeleted_kinds):
             if prefix[:2] == (scope, thread_id):
                 attributed = self._undeleted_kinds[prefix]
