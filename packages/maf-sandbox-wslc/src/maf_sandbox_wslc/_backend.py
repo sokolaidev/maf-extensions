@@ -888,6 +888,7 @@ class WslcSandboxBackend:
             if kind is None or attributed.get(name) == kind
         )
         candidates = list(dict.fromkeys([*remembered, *retained]))
+        attempted_kinds = {name: attributed[name] for name in candidates if name in attributed}
         if candidates:
             # Before the first await: the registry no longer holds these, so a retry finds
             # them only here. Merged, not assigned — teardown for one key is not serialized.
@@ -914,6 +915,10 @@ class WslcSandboxBackend:
         # the live map, not the snapshot, with no await between read and write. A name does not
         # identify a generation, so a stale sweep can still subtract a newer record: #685.
         still = set(swept.undeleted)
+        attributed = self._undeleted_kinds.setdefault(prefix, {})
+        attributed.update(
+            {name: attempted_kinds[name] for name in still if name in attempted_kinds}
+        )
         if kind is not None:
             attributed.update(dict.fromkeys(still, kind))
         left = (self._undeleted.get(prefix, set()) | still) - (set(candidates) - still)
