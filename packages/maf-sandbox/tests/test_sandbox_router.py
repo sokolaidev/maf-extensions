@@ -2883,6 +2883,7 @@ class TestPolicyVocabularyExports:
 #: quietly neither.
 _PROTOCOL_MODULES = frozenset(
     {
+        "_cleanup",
         "_containment",
         "_effective_state",
         "_error_detail",

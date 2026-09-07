@@ -18,6 +18,7 @@ from enum import StrEnum
 from typing import Any, Literal, Protocol, runtime_checkable
 
 __all__ = [
+    "CLEANUP_RANK",
     "DEFAULT_BACKEND_DECLARATIONS",
     "DEFAULT_CAPABILITIES",
     "DEFAULT_SANDBOX_LIMITS",
@@ -27,6 +28,7 @@ __all__ = [
     "ISOLATION_SCOPE_RANK",
     "BackendDeclarations",
     "Capability",
+    "Cleanup",
     "DeclaredOutput",
     "DisposalCode",
     "DisposalFailure",
@@ -159,6 +161,49 @@ ISOLATION_SCOPE_RANK: Mapping[IsolationScope, int] = {
 }
 
 
+class Cleanup(StrEnum):
+    """How much of a sandbox is cleaned when a call ends — the rung the framework runs.
+
+    A different axis from :class:`IsolationScope`, which says which calls may *share* a sandbox
+    at once; this says what a call leaves for the next one.  At
+    :data:`IsolationScope.CALL` there is no next call, so the ladder is not consulted.
+
+    **A call leaves nothing behind by default.**  Removing the call's own directory covers what
+    this stack wrote and nothing else: a program writes ``work_dir``'s root, ``/tmp`` and its
+    home just as freely, and on a backend whose :meth:`Sandbox.exec` detaches, a daemon from a
+    run that exited cleanly is still running when the next call arrives.  So the weakest rung is
+    the one a workload has to *earn*, and silence resolves to :data:`DISPOSE`.
+
+    Ordered by :data:`CLEANUP_RANK`, weakest first, and resolved the way
+    :class:`IsolationScope` is — see :meth:`SandboxRouter.effective_cleanup`.  Nothing is ever
+    refused for it, because :data:`DISPOSE` is established by construction on every backend.
+    ``docs/sandbox/tool-call.md`` carries the decision.
+    """
+
+    #: Remove the call's own guest directory; the rest of the sandbox stays as the call left it.
+    #: Established only by :attr:`SandboxSpec.confined_to_guest_call_path` over a backend
+    #: declaring :data:`Capability.RECLAIM` — the kind claims every byte it writes lands under
+    #: its call path and nothing it starts outlives the call, and the backend can take that
+    #: directory.  Neither half alone establishes it.
+    RECLAIM = "reclaim"
+    #: Restore the sandbox to the state it had before any input reached it.  Established by a
+    #: backend declaring :data:`Capability.SNAPSHOT` and implementing :meth:`Sandbox.reset`.
+    #: What a call wrote and what it started both go, without paying for a create.
+    RESET = "reset"
+    #: Delete the sandbox; the conversation's next call creates one.  Established by
+    #: construction everywhere, which is what makes the resolution below total and what makes
+    #: this the honest default for a workload that claims nothing.
+    DISPOSE = "dispose"
+
+
+#: The order, weakest first, written down exactly once — every comparison of two rungs goes
+#: through it, and an exhaustiveness test asserts every member is ranked.  A host and a spec may
+#: raise, never lower, which is the same rule :attr:`SandboxSpec.min_isolation` follows.
+CLEANUP_RANK: Mapping[Cleanup, int] = {
+    rung: rank for rank, rung in enumerate((Cleanup.RECLAIM, Cleanup.RESET, Cleanup.DISPOSE))
+}
+
+
 class Egress(StrEnum):
     """A network posture on one axis, least-isolated to most: ``UNRESTRICTED``, ``ALLOWLIST``,
     ``CLOSED``.
@@ -207,10 +252,20 @@ class Capability(StrEnum):
     #: the protocol deleted before this, and a workload that never cleans up is not broken by
     #: a capability it does not require.
     FILES_DELETE = "files_delete"
-    #: Snapshot and restore a sandbox for reuse.
+    #: Snapshot and restore a sandbox for reuse. Also what establishes :data:`Cleanup.RESET`,
+    #: through :meth:`Sandbox.reset`.
     SNAPSHOT = "snapshot"
     #: A platform-attached identity scoped to the sandbox itself.
     ATTACHED_IDENTITY = "attached_identity"
+    #: Take a directory this stack created, which is what :data:`Cleanup.RECLAIM` runs.
+    #: :meth:`Sandbox.reclaim` stays mandatory on every backend — the member is implemented
+    #: whether or not this is declared — and what the declaration adds is whether the framework
+    #: may *resolve to* that rung, which a backend answers for itself. wslc withholds it:
+    #: its filesystem path check is answered inside the container, and an answer the guest can
+    #: give licenses a recursive delete no more than it licenses :meth:`Sandbox.remove`.
+    #: Absent from :data:`DEFAULT_CAPABILITIES` for the same reason silence resolves to
+    #: :data:`Cleanup.DISPOSE`: an undeclared backend is cleaned by the rung it certainly has.
+    RECLAIM = "reclaim"
 
 
 #: What every :class:`Sandbox` already obligates.
@@ -704,6 +759,25 @@ class SandboxSpec:
     to.  It buys that with a cold start per call, which is the whole of its cost and the reason
     it is not the default.  Like ``egress`` it is normalised on construction: a plain string
     serves exactly as the member does, and anything else raises here.
+
+    ``confined_to_guest_call_path`` is the kind's claim that **every byte this workload writes
+    lands under its guest call path, and nothing it starts outlives the call**.  It is what
+    establishes :data:`Cleanup.RECLAIM`, and a workload that does not make it is cleaned by
+    disposal — which is the default, and the reason this is the field that has to be set rather
+    than unset.  It is a claim about the *program*, so nothing here can check it: where a program
+    writes is not in the spec.  What proves it is a measurement,
+    :func:`~maf_sandbox.conformance.assert_nothing_left_behind`, which a kind that sets this owes
+    in its own suite on a backend that can diff.  Setting it falsely fails nothing loudly; it
+    quietly keeps a sandbox warm that should not be, which is why the default is ``False`` and
+    why a host that distrusts a kind raises ``min_cleanup`` rather than arguing with it.
+
+    ``min_cleanup`` is the weakest rung this workload accepts, and like ``min_isolation`` a spec
+    may **raise** the host's floor and never lower it.  ``None`` — the default — asks nothing,
+    which is not :data:`Cleanup.RECLAIM`: it declines to constrain the floor at all, leaving the
+    rung to what the spec and the backend between them *establish*, where ``Cleanup.RECLAIM``
+    would constrain it to the weakest rung there is.  Nothing is ever refused over this field,
+    because :data:`Cleanup.DISPOSE` is established everywhere, so raising it costs latency rather
+    than a refusal.  Normalised on construction like the two fields above it.
     """
 
     kind: str
@@ -736,6 +810,10 @@ class SandboxSpec:
     host_tools: HostToolAggregate | None = None
     # Appended after it, for that same reason.
     isolation_scope: IsolationScope = IsolationScope.CONVERSATION
+    # Appended after it, for that same reason.
+    confined_to_guest_call_path: bool = False
+    # Appended after it, for that same reason.
+    min_cleanup: Cleanup | None = None
 
     @property
     def identities(self) -> frozenset[Identity]:
@@ -754,6 +832,10 @@ class SandboxSpec:
         # not a member raises here rather than degrading to a shared sandbox somewhere later.
         object.__setattr__(self, "egress", Egress(str(self.egress)))
         object.__setattr__(self, "isolation_scope", IsolationScope(str(self.isolation_scope)))
+        # `None` is the absence of an opinion and stays absent; anything else is coerced, because
+        # the resolution below ranks it through `CLEANUP_RANK` and a bare string is not a key.
+        if self.min_cleanup is not None:
+            object.__setattr__(self, "min_cleanup", Cleanup(str(self.min_cleanup)))
         if self.egress_allow and self.egress is not Egress.ALLOWLIST:
             hosts = ", ".join(self.egress_allow)
             raise ValueError(
@@ -1078,6 +1160,46 @@ class Sandbox(Protocol):
         """
         ...
 
+    @property
+    def instance_id(self) -> str:
+        """The engine's own identifier for the sandbox now running — a container id, a sandbox id.
+
+        Stable for the life of the physical sandbox and **new after a** :meth:`reset`, which is
+        what makes it the thing the router recognises a sandbox by.  Neither of the two values
+        that look like they would do instead can: the wrapper object is fresh on every
+        ``acquire`` on every backend here, and the derived name folds the egress policy, so both
+        answer "the same sandbox?" wrongly in one direction.
+
+        A member rather than an optional read, because the router refuses to *adopt* a sandbox it
+        cannot identify and a silent fallback would make every backend look unrecognised — see
+        :meth:`SandboxBackend.acquire`.  Answer it from the engine rather than from anything the
+        guest can influence.
+        """
+        ...
+
+    async def reset(self, *, timeout: float) -> None:
+        """Return the sandbox to the state it had at ``acquire``, before the first input reached it.
+
+        Behind :data:`Capability.SNAPSHOT`, and what establishes :data:`Cleanup.RESET`.  A
+        backend declaring neither leaves this raising :class:`NotImplementedError`, and the
+        router never resolves to the rung that would call it.
+
+        **What must be gone afterwards is what a call could have left**: every path written since
+        the sandbox was created, and every process one of its calls started.  A restore that
+        brings back the disk and not the processes does not satisfy this, and a backend whose
+        engine can only do the former should declare no :data:`Capability.SNAPSHOT` and take the
+        disposal instead — the rung exists to be cheaper than a create, not to be a weaker one.
+
+        The sandbox stays addressable under the same key and kind.  :attr:`instance_id` changes,
+        because on a platform with no in-place restore this is a delete and a create from a
+        baseline, and a router that kept the old id would fail to notice it is holding a
+        different sandbox.
+
+        Raises on failure, unlike :meth:`SandboxBackend.dispose`: the caller escalates a failed
+        reset to a disposal, which it can only do if it is told.
+        """
+        raise NotImplementedError
+
 
 #: Why a disposal did not land, in a word a caller may branch on.
 #:
@@ -1280,11 +1402,23 @@ class SandboxBackend(Protocol):
         """
         ...
 
-    async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
-        """Delete every kind's sandbox for ``key``, if any. Best-effort: never raises.
+    async def dispose(
+        self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
+    ) -> DisposalFailure | None:
+        """Delete this key's sandboxes, if any. Best-effort: never raises.
 
-        Every kind's, because a key may own one sandbox per kind and this method takes no
-        kind: a caller releasing a key means all of it.
+        ``kind`` narrows it to one. ``None`` means every kind's, because a key may own one
+        sandbox per kind and a caller releasing the whole key means all of it — which is what
+        this method meant before the argument existed, so the default is the old behaviour.
+        Narrowing matters once a cleanup is *routine*: a conversation running two kinds would
+        otherwise have one kind's end-of-call disposal delete the other kind's warm sandbox.
+
+        ``instance_id`` is a guard rather than a selector. When given, delete only if the
+        sandbox you would delete is still that one, and report ``"refused"`` rather than
+        deleting a different sandbox that has since taken the name — the router hands it in so
+        a disposal decided against one instance cannot land on its replacement. A backend whose
+        engine cannot compare it may ignore it; the router's own ledger still holds, and the
+        window this closes is narrower than the one it already accepts.
 
         **Return a :class:`DisposalFailure` when a sandbox may still be there, or ``None``.**
         ``None`` is read as disposed, and a backend with no way to check returns it too — the

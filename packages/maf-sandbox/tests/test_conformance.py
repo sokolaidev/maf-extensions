@@ -262,6 +262,11 @@ class _Leaky:
             self.contents.pop(stored, None)
             self.links.pop(stored, None)
 
+    @property
+    def instance_id(self) -> str:
+        """One specimen, one instance — nothing here is ever reset or re-created."""
+        return "leaky"
+
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
         """A plain recursive removal. This specimen's leak is the pull surface, not this one."""
         del working_directory, timeout

@@ -22,6 +22,7 @@ import shlex
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 from ._outputs import SandboxTransferCapExceeded
 from ._protocol import (
@@ -167,6 +168,69 @@ class InProcessSandbox:
         self._outputs = outputs or {}
         self._raises = raises
         self._default_stdout = default_stdout
+        self._instance_id = uuid4().hex
+        #: Programs a call started that outlived it, as a backend whose ``exec`` detaches would
+        #: leave. Nothing here starts one; a test appends to it to make a sandbox that a
+        #: ``RECLAIM`` cannot honestly clean.
+        self.running: set[str] = set()
+        #: Every ``reset`` call, as the instance id it retired. A test asserts the rung ran.
+        self.resets: list[str] = []
+        #: What :meth:`reset` restores to — every path and every running program as they stood
+        #: before any input reached this sandbox. Taken here rather than on the first write,
+        #: because a baseline taken after a call has served preserves the residue the reset
+        #: exists to remove. Last in this constructor, so it sees every store above it.
+        self._baseline = self._snapshot()
+
+    def _snapshot(self) -> tuple[dict[str, bytes], set[str], set[str], set[str], set[str]]:
+        """Everything :meth:`reset` puts back, copied rather than aliased."""
+        return (
+            dict(self.contents),
+            set(self.symlinks),
+            set(self.non_regular),
+            set(self.directories),
+            set(self.running),
+        )
+
+    @property
+    def instance_id(self) -> str:
+        """This sandbox's identity, new after every :meth:`reset` as the protocol requires."""
+        return self._instance_id
+
+    async def reset(self, *, timeout: float) -> None:
+        """Restore the baseline: every path and every survivor go back to their pre-input state.
+
+        The in-process answer to :data:`~maf_sandbox.Cleanup.RESET`, so the ladder is testable
+        with no engine. ``timeout`` is accepted and unused — nothing here can be slow.
+        """
+        del timeout
+        self.resets.append(self._instance_id)
+        contents, symlinks, non_regular, directories, running = self._baseline
+        self.contents = dict(contents)
+        self.symlinks = set(symlinks)
+        self.non_regular = set(non_regular)
+        self.directories = set(directories)
+        self.running = set(running)
+        # New, because a reset is a delete and a create from a baseline on a platform with no
+        # in-place restore, and a router holding the old id would not notice the substitution.
+        self._instance_id = uuid4().hex
+
+    def changed_paths(self) -> frozenset[str]:
+        """Every path that differs from the baseline — this fake's half of the fingerprint.
+
+        What a real backend answers from its engine (``docker diff``), so
+        :func:`~maf_sandbox.conformance.assert_nothing_left_behind` runs here too.
+        """
+        contents, symlinks, non_regular, directories, _ = self._baseline
+        was = {**contents}, symlinks | non_regular | directories
+        now = {**self.contents}, self.symlinks | self.non_regular | self.directories
+        changed = {path for path in was[1] ^ now[1]}
+        changed |= {path for path in set(was[0]) ^ set(now[0])}
+        changed |= {path for path in set(was[0]) & set(now[0]) if was[0][path] != now[0][path]}
+        return frozenset(changed)
+
+    def running_programs(self) -> frozenset[str]:
+        """Every program still running — the fingerprint's other half."""
+        return frozenset(self.running)
 
     @property
     def files(self) -> Mapping[str, str]:
@@ -444,6 +508,9 @@ class InProcessSandboxBackend:
         self.keys: list[SandboxKey] = []
         self.specs: list[SandboxSpec] = []
         self.disposed: list[SandboxKey] = []
+        #: The ``kind`` each disposal narrowed to, ``None`` for a whole-key one. Parallel
+        #: to :attr:`disposed`, so a test reads the pair by index.
+        self.disposed_kinds: list[str | None] = []
         self.purged: list[tuple[str, str]] = []
         self.purge_count = 1
 
@@ -476,8 +543,11 @@ class InProcessSandboxBackend:
             self.sandboxes[(key, spec.kind)] = held
         return held
 
-    async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
+    async def dispose(
+        self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
+    ) -> DisposalFailure | None:
         self.disposed.append(key)
+        self.disposed_kinds.append(kind)
         if self.dispose_error is not None:
             raise self.dispose_error
         if self.dispose_failure is not None:
@@ -485,7 +555,25 @@ class InProcessSandboxBackend:
             # mapping here would hand the next acquire a fresh filesystem, so a test written
             # against a failing dispose would measure separation this fake had not given it.
             return self.dispose_failure
-        for held in [entry for entry in self.sandboxes if entry[0] == key]:
+        taking = [
+            entry
+            for entry in self.sandboxes
+            if entry[0] == key and (kind is None or entry[1] == kind)
+        ]
+        if instance_id is not None:
+            # The guard, not a selector: a disposal decided against one instance must not land
+            # on the replacement that has since taken its place under the same key.
+            standing = [
+                entry for entry in taking if self.sandboxes[entry].instance_id == instance_id
+            ]
+            if not standing:
+                return DisposalFailure(
+                    "refused",
+                    f"the sandbox for {key.scope}/{key.thread_id} is no longer instance "
+                    f"{instance_id}, so this disposal was not applied to its replacement",
+                )
+            taking = standing
+        for held in taking:
             del self.sandboxes[held]
         return None
 
