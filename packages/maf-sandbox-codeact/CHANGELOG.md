@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.14.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.13.1...maf-sandbox-codeact-v0.14.0) (2026-09-07)
+
+
+### Features
+
+* **codeact:** every collection is recorded and every host-tool call names its sandbox ([#959](https://github.com/sokolaidev/maf-extensions/issues/959)) ([a24038d](https://github.com/sokolaidev/maf-extensions/commit/a24038d8dcb3ebd475f485e52007cc0f11baee7f))
+
+
+### Fixes
+
+* require maf-sandbox 0.35.0 in the packages that use it ([#991](https://github.com/sokolaidev/maf-extensions/issues/991)) ([a0a063e](https://github.com/sokolaidev/maf-extensions/commit/a0a063e2a459d3dbe1599703d5d410410488d032))
+
 ## [0.13.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.13.0...maf-sandbox-codeact-v0.13.1) (2026-09-06)
 
 
