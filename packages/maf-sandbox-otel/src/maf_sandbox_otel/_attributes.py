@@ -83,6 +83,8 @@ SURFACE_IDENTITIES = f"{NAMESPACE}.surface.identities"
 SURFACE_UNDECLARED = f"{NAMESPACE}.surface.undeclared"
 SURFACE_INTEGRITY = f"{NAMESPACE}.surface.result_integrity"
 SURFACE_CALL_CAP = f"{NAMESPACE}.surface.call_cap"
+#: Every tool the registry was carrying when it sealed.  Host vocabulary, so it crosses unasked.
+SURFACE_NAMES = f"{NAMESPACE}.surface.names"
 #: What a guest *reached*, as distinct from what its spec allowed above.  The counts are what a
 #: query groups by; `EGRESS_TARGETS` is the list of `host:port` the decisions named, and it is
 #: guest-chosen on every refusal, so it crosses only under `record_sensitive_data`.
@@ -100,6 +102,10 @@ EGRESS_UNACCOUNTED = f"{NAMESPACE}.egress.unaccounted"
 EGRESS_UNREADABLE = f"{NAMESPACE}.egress.unreadable"
 EGRESS_DECISION = f"{NAMESPACE}.egress.decision"
 
+#: Which tool call a record came from, which `KEY` cannot say at `IsolationScope.CONVERSATION`.
+#: Not `CALL_ID` above: that is the key's own, and the two coincide only at
+#: `IsolationScope.CALL`.  Names nobody, so it crosses unhashed.
+CALL = f"{NAMESPACE}.call.id"
 TOOL = f"{NAMESPACE}.call.tool"
 FAILURE = f"{NAMESPACE}.call.failure"
 UNCLEAN = f"{NAMESPACE}.call.unclean"
