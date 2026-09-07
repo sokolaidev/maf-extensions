@@ -1861,6 +1861,53 @@ class TestExecArgv:
         assert shlex.split(client.calls[0]) == argv
 
 
+class TestNarrowedDisposal:
+    @pytest.mark.parametrize(
+        "kind,expected", [("a", ["selected"]), (None, ["selected", "sibling"])]
+    )
+    def test_only_the_requested_kinds_are_deleted(self, kind, expected):
+        client = _FakeGroupClient()
+        backend = _backend_with(client)
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent")
+        prefix = (key.scope, key.thread_id, key.agent_dir)
+        backend._registry[(*prefix, "a")] = _Held("selected")
+        backend._registry[(*prefix, "b")] = _Held("sibling")
+        assert asyncio.run(backend.dispose(key, kind=kind)) is None
+        assert client.deleted == expected
+        assert bool(backend._registry) is (kind is not None)
+
+    def test_narrowed_retries_preserve_kind_attribution(self):
+        backend = _backend_with(_ExplodingGroupClient())
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent")
+        prefix = (key.scope, key.thread_id, key.agent_dir)
+        backend._registry[(*prefix, "a")] = _Held("selected")
+        backend._registry[(*prefix, "b")] = _Held("sibling")
+        for kind in ("a", "b", "a"):
+            assert asyncio.run(backend.dispose(key, kind=kind)) is not None
+        client = _FakeGroupClient()
+        backend._group_client = lambda: client
+        assert asyncio.run(backend.dispose(key, kind="a")) is None
+        assert client.deleted == ["selected"]
+        assert backend._undeleted == {prefix: {"sibling"}}
+        assert asyncio.run(backend.dispose(key)) is None
+        assert client.deleted == ["selected", "sibling"]
+        assert not backend._undeleted
+        assert not backend._undeleted_kinds
+
+    def test_a_failed_scope_purge_keeps_the_registry_kinds_for_retry(self):
+        backend = _backend_with(_ExplodingGroupClient())
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent")
+        prefix = (key.scope, key.thread_id, key.agent_dir)
+        backend._registry[(*prefix, "a")] = _Held("selected")
+        backend._registry[(*prefix, "b")] = _Held("sibling")
+        asyncio.run(backend.dispose_scope(key.scope, key.thread_id))
+        client = _FakeGroupClient()
+        backend._group_client = lambda: client
+        assert asyncio.run(backend.dispose(key, kind="a")) is None
+        assert client.deleted == ["selected"]
+        assert backend._undeleted == {prefix: {"sibling"}}
+
+
 class TestDispose:
     def test_deletes_the_keyed_sandbox_and_forgets_it(self):
         client = _FakeGroupClient()

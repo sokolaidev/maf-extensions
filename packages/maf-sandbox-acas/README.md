@@ -47,7 +47,7 @@ router = SandboxRouter([backend])  # microVM isolation meets the router's defaul
 | | |
 |---|---|
 | `acquire(key, spec)` | get-or-create, keyed `(scope, thread, agent)`. A warm sandbox is resumed rather than replaced, so a fix-round loop does not pay a cold start per iteration. |
-| `dispose(key)` | delete one sandbox |
+| `dispose(key, *, kind=None)` | Deletes the selected kind, or every kind when omitted; retained failures keep their kind for retries; reaches sandboxes known to this process |
 | `dispose_scope(scope, thread)` | delete every sandbox for a conversation — **from the service, by label**, not from process memory |
 | `stat_file` / `read_file` / `list_dir` | the pull surface — reads confined to the call's `working_directory`, symlinks and directories refused, a size over the caller's cap refused rather than truncated. Regularity itself cannot be proven here — see below |
 | `isolation` | `microvm` — the router's default floor, so a host that configures nothing already permits this backend |

@@ -562,13 +562,7 @@ class _AcasSandbox:
             raise OSError(f"could not remove {path}: {type(refused).__name__}") from refused
 
     async def reset(self, *, timeout: float) -> None:
-        """Not offered: this backend declares no :data:`~maf_sandbox.Capability.SNAPSHOT`.
-
-        Spelled out rather than inherited, because the protocol member is what a caller and a
-        type checker read. The router never reaches it — it resolves to
-        :data:`~maf_sandbox.Cleanup.RESET` only for a backend that declares the capability — so
-        this raising is a statement rather than a failure path.
-        """
+        """Unsupported: this backend does not declare Capability.SNAPSHOT."""
         raise NotImplementedError(
             f"{type(self).__name__} does not snapshot, so it cannot be reset to its pre-input "
             "state. Its sandboxes are cleaned by a reclaim or a disposal."
@@ -741,6 +735,7 @@ class AcasSandboxBackend:
         #: which `acquire` resumes from and `dispose` pops, so a failed delete is retried and
         #: never served. An entry lives only while its delete keeps failing.
         self._undeleted: dict[tuple[str, str, str], set[str]] = {}
+        self._undeleted_kinds: dict[tuple[str, str, str], dict[str, str]] = {}
         # Group clients cached per event loop. An azure-core async client binds its transport
         # to the loop that created it, and this host runs some work on a dedicated background
         # loop, so one shared client would be a cross-loop hazard; one per call would leak a
@@ -1191,36 +1186,36 @@ class AcasSandboxBackend:
         return uid
 
     async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> DisposalFailure | None:
-        """Delete every kind's sandbox for ``key`` that this process knows of.
+        """Delete this key's sandboxes, narrowed to kind when given.
 
-        ``kind`` narrows the sweep to one workload's sandbox. ``None`` is every kind's, which is
-        what this method meant before the argument existed and is what a caller releasing the
-        whole key means. The framework passes a kind for its end-of-call disposal, so a
-        conversation running two kinds does not have one kind's cleanup take the other's warm
-        sandbox with it.
-
-        Never raises, and reports the reason a sandbox may still be there. Reaching the group
-        is part of the delete: a client this process cannot build has deleted nothing. Ids a
-        delete could not remove are kept for the next attempt, apart from the registry, which
-        :meth:`acquire` resumes from — a sandbox whose delete failed is retried, never served.
-        """
+        The registry and retained IDs cover only sandboxes known to this process.
+        Failed deletions are retained per kind for retries and reported without raising."""
         prefix = (key.scope, key.thread_id, key.agent_dir)
         mine = [
             k for k in list(self._registry) if k[:3] == prefix and (kind is None or k[3] == kind)
         ]
-        # `_undeleted` is key-wide, so a narrowed disposal takes only what the registry
-        # attributed to this kind: carrying the retained set would delete a sibling kind's
-        # sandbox through the retry fallback, which is exactly what narrowing exists to stop.
-        retained: list[str] = sorted(self._undeleted.get(prefix, ())) if kind is None else []
+        attributed = self._undeleted_kinds.setdefault(prefix, {})
+        remembered: list[str] = []
+        for entry in mine:
+            held = self._registry.pop(entry)
+            remembered.append(held.sandbox_id)
+            attributed[held.sandbox_id] = entry[3]
+        retained = sorted(
+            name
+            for name in self._undeleted.get(prefix, ())
+            if kind is None or attributed.get(name) == kind
+        )
         wanted = list(
             dict.fromkeys(
                 [
-                    *(h.sandbox_id for h in (self._registry.pop(k, None) for k in mine) if h),
+                    *remembered,
                     *retained,
                 ]
             )
         )
         if not wanted:
+            if not attributed:
+                self._undeleted_kinds.pop(prefix, None)
             return None
         # Before the first await: the registry no longer holds these and there is no listing
         # to fall back on, so a retry finds them only here. Over-retaining is safe — an id
@@ -1254,15 +1249,21 @@ class AcasSandboxBackend:
             self._undeleted[prefix] = left
         else:
             self._undeleted.pop(prefix, None)
+        for name in set(attributed) - left:
+            attributed.pop(name, None)
+        if not attributed:
+            self._undeleted_kinds.pop(prefix, None)
         reported = fold_disposal_failures(list(undeleted.values()))
         if reported is not None:
             return reported
-        if left:
+        outstanding = {name for name in left if kind is None or attributed.get(name) == kind}
+        if outstanding:
             # A disposal still in flight wrote these ahead of its own await. `None` would
             # clear the refusal on a delete nobody confirmed; `unknown` and a count, since
             # neither the outcome nor the ids are this attempt's to describe.
             return DisposalFailure(
-                "unknown", f"another disposal has not yet reported on {len(left)} sandbox(es)"
+                "unknown",
+                f"another disposal has not yet reported on {len(outstanding)} sandbox(es)",
             )
         return None
 
@@ -1292,6 +1293,8 @@ class AcasSandboxBackend:
         ]
         for k, _ in known:
             self._registry.pop(k, None)
+        for entry, sandbox_id in known:
+            self._undeleted_kinds.setdefault(entry[:3], {})[sandbox_id] = entry[3]
 
         try:
             gc = self._group_client()
@@ -1353,6 +1356,13 @@ class AcasSandboxBackend:
             if sandbox_id in undeleted:
                 prefix = (key[0], key[1], key[2])
                 self._undeleted[prefix] = self._undeleted.get(prefix, set()) | {sandbox_id}
+        for prefix in list(self._undeleted_kinds):
+            if prefix[:2] == (scope, thread_id):
+                attributed = self._undeleted_kinds[prefix]
+                for sandbox_id in set(attributed) - self._undeleted.get(prefix, set()):
+                    attributed.pop(sandbox_id, None)
+                if not attributed:
+                    self._undeleted_kinds.pop(prefix, None)
         return ScopePurge(count, fold_disposal_failures(undisposed))
 
     # -- internals ----------------------------------------------------------------
