@@ -13,6 +13,7 @@ where there is no SDK to read with.
 from __future__ import annotations
 
 import dataclasses
+from typing import Any
 
 import pytest
 from maf_sandbox import (
@@ -55,7 +56,9 @@ KEY = SandboxKey(scope="tenant-a", thread_id="thread-1", agent_dir="agent")
 #: today and the check falls back to the core this checkout builds — but a core cut before the
 #: field lands would put one in it that lacks the field. Detected off the class rather than
 #: compared by version, so neither ordering needs an edit here.
-CALL: dict[str, str] = (
+#: Typed `Any` rather than `str` because an unpack is checked against every parameter it
+#: could fill, and the event's other optional fields are not strings.
+CALL: dict[str, Any] = (
     {"call": "call-4b1e"}
     if "call" in {field.name for field in dataclasses.fields(ToolCallEnded)}
     else {}
