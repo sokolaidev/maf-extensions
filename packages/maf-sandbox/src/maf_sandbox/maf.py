@@ -77,6 +77,7 @@ from ._observer import (
     StoreFileRead,
     StoreReadOutcome,
     ToolCallEnded,
+    fed_from_store,
     record,
     recorded_call,
 )
@@ -1545,6 +1546,12 @@ class SandboxToolSession:
         call = _this_call(self)
         if key is not None and call is not None and not call.closed and key not in call.touched:
             call.touched.append(key)
+        # Only a read that answered with text, and on the seam's record rather than on `call`
+        # above, for the same reason the event's own `call` is read from there: a body that
+        # reached a second session was still fed by the outer call.
+        recording = RECORDED_CALL.get()
+        if outcome == "read" and recording is not None and not recording.closed:
+            recording.fed.append(ListedFile(name, integrity))
         record(
             observer,
             StoreFileRead(
@@ -2530,6 +2537,7 @@ def sandboxed_tool(
                             else type(raised_by_body).__name__,
                             unclean=0,
                             call=recording.id,
+                            fed=fed_from_store(recording),
                         ),
                         records,
                     )
@@ -2626,6 +2634,7 @@ def sandboxed_tool(
                                 failure=None if failed is None else type(failed).__name__,
                                 unclean=len(unclean),
                                 call=call.id,
+                                fed=fed_from_store(recording),
                             ),
                             records,
                         )

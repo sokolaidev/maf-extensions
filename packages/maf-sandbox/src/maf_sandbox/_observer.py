@@ -49,7 +49,7 @@ import inspect
 import logging
 from collections.abc import Callable
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
 
 from ._containment import CONTAINED, escapes_containment
@@ -60,10 +60,12 @@ from ._protocol import (
     Identity,
     Isolation,
     IsolationScope,
+    ListedFile,
     SandboxKey,
     SandboxSpec,
     SourceIntegrity,
     TransferLimits,
+    weakest_integrity,
 )
 
 __all__ = [
@@ -73,6 +75,7 @@ __all__ = [
     "EgressDecisionCode",
     "EgressObserved",
     "EgressReporter",
+    "FedFromStore",
     "HostToolCalled",
     "HostToolOutcome",
     "LandedOutput",
@@ -86,6 +89,7 @@ __all__ = [
     "StoreFileRead",
     "StoreReadOutcome",
     "ToolCallEnded",
+    "fed_from_store",
     "record",
     "refuse_an_unusable_observer",
 ]
@@ -93,7 +97,7 @@ __all__ = [
 
 @dataclass
 class RecordedCall:
-    """One tool call, as the sites that build events see it: an id, and whether it is still open.
+    """One tool call as the event sites see it: an id, whether it is open, and what has fed it.
 
     **Mutable, and that is the whole of it.**  A task starts from a copy of its parent's context,
     so a child the body left running keeps whatever :data:`RECORDED_CALL` held when it started —
@@ -105,6 +109,12 @@ class RecordedCall:
 
     id: str
     closed: bool = False
+    #: Every store read that fed this call text, in order, which :func:`fed_from_store` folds.
+    #: A read that answered ``absent`` or ``refused`` is not here: it fed nothing, and folding it
+    #: would report an integrity for bytes that never crossed.  Held as
+    #: :class:`~maf_sandbox.ListedFile` because that is what the fold is written over; the name
+    #: stays in the call, and only the count and the fold reach a record.
+    fed: list[ListedFile] = field(default_factory=list[ListedFile])
 
 
 #: The tool call whose records are being written here, or ``None`` outside one.
@@ -495,6 +505,33 @@ class OutputsCollected(SandboxEvent):
 
 
 @dataclass(frozen=True)
+class FedFromStore:
+    """What one call was fed out of the host's file store, folded into a single answer.
+
+    ``weakest`` is :func:`~maf_sandbox.weakest_integrity` over the reads that fed text, so
+    ``None`` — unestablished — beats every level, and ``reads`` is how many reads it folds
+    rather than how many distinct files: a call reading one file twice folds it twice.
+
+    **A call that read nothing carries no ``FedFromStore`` at all**, and that absence is the one
+    thing the fold cannot say for itself: ``weakest_integrity`` answers
+    :data:`~maf_sandbox.SourceIntegrity.TRUSTED` for an empty listing, which is honest about a
+    result deriving from no file and would read here as a call fed trusted content.
+    """
+
+    #: How many reads this folds, each of which fed the call text.  Never zero.
+    reads: int
+    #: The weakest level across them, and ``None`` where the host establishes nothing about one.
+    weakest: SourceIntegrity | None
+
+
+def fed_from_store(call: RecordedCall) -> FedFromStore | None:
+    """The fold across what ``call`` was fed, or ``None`` where it read nothing that fed it."""
+    if not call.fed:
+        return None
+    return FedFromStore(reads=len(call.fed), weakest=weakest_integrity(call.fed))
+
+
+@dataclass(frozen=True)
 class ToolCallEnded(SandboxEvent):
     """One sandboxed tool call, from the body's first line to the end of its reclaim.
 
@@ -523,6 +560,12 @@ class ToolCallEnded(SandboxEvent):
     what the body did; the reclaim's own trouble arrives as ``unclean`` and, where a disposal
     was asked for, as :class:`SandboxDisposed`.  ``unclean`` counts what a transport noted about
     the sandbox during the call — a stop that did not reach everything a program started.
+
+    ``fed`` folds what the call read out of the host's file store: the weakest level across the
+    reads that fed it text, and how many those were.  ``None`` where it read nothing, which is
+    not the fold answering unestablished — :class:`FedFromStore` carries why.  It describes the
+    call's **inputs** and never its result: a kind that reads a file and answers a fixed sentence
+    is fed exactly what one quoting the bytes back is.
     """
 
     tool: str
@@ -533,6 +576,8 @@ class ToolCallEnded(SandboxEvent):
     unclean: int
     #: This call's own id, which every event it emitted carries — see :data:`RECORDED_CALL`.
     call: str
+    #: What the store fed this call, folded, and ``None`` for one it fed nothing.
+    fed: FedFromStore | None = None
 
     def deliver_to(self, observer: SandboxObserver) -> None:
         observer.tool_call_ended(self)

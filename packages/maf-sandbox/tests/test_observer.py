@@ -31,6 +31,7 @@ from maf_sandbox import (
     EgressDecision,
     EgressObserved,
     EgressReporter,
+    FedFromStore,
     FileStoreProvenance,
     HostToolCalled,
     HostToolRegistry,
@@ -1926,6 +1927,163 @@ class TestTheCallIsRecorded:
 
         assert recorder.one(SandboxDisposed).outcome == "gone"
         assert recorder.one(ToolCallEnded).unclean == 1
+
+
+class TestTheCallRecordsWhatFedIt:
+    """`fed` folds the reads, so what a call was fed is one answer rather than a join.
+
+    Every read is already a `StoreFileRead`. What a recorder cannot do from those alone is
+    answer the question in the shape a decision is made in — *was this call fed anything the
+    host did not establish* — without knowing the ordering, the empty case and which outcomes
+    count. These pin all three.
+    """
+
+    def _fed(self, recorder: _Recorder, store: InMemoryStore, *listing: ListedFile):
+        def build(session: SandboxToolSession):
+            async def widget_run() -> str:
+                """Do a thing."""
+                for listed in listing:
+                    await session.read_file(store, listed)
+                return "done"
+
+            return widget_run
+
+        asyncio.run(_fn(_tool(_router(observer=recorder), build))())
+        return recorder.one(ToolCallEnded).fed
+
+    def test_the_fold_is_the_weakest_level_across_what_the_call_read(self):
+        fed = self._fed(
+            _Recorder(),
+            InMemoryStore({"trusted.txt": "1", "untrusted.txt": "2"}),
+            ListedFile("trusted.txt", SourceIntegrity.TRUSTED),
+            ListedFile("untrusted.txt", SourceIntegrity.UNTRUSTED),
+        )
+
+        assert fed == FedFromStore(reads=2, weakest=SourceIntegrity.UNTRUSTED)
+
+    def test_a_file_the_host_established_nothing_about_beats_every_level(self):
+        """`weakest_integrity`'s ordering, not a comparison written again here: unestablished
+        disqualifies a trusted claim exactly as untrusted does."""
+        fed = self._fed(
+            _Recorder(),
+            InMemoryStore({"trusted.txt": "1", "unknown.txt": "2"}),
+            ListedFile("trusted.txt", SourceIntegrity.TRUSTED),
+            ListedFile("unknown.txt"),
+        )
+
+        assert fed == FedFromStore(reads=2, weakest=None)
+
+    def test_one_file_read_twice_folds_twice(self):
+        """`reads` counts reads and not distinct files, because that is what the fold is over."""
+        listed = ListedFile("a.txt", SourceIntegrity.TRUSTED)
+
+        fed = self._fed(_Recorder(), InMemoryStore({"a.txt": "1"}), listed, listed)
+
+        assert fed == FedFromStore(reads=2, weakest=SourceIntegrity.TRUSTED)
+
+    def test_a_call_that_read_nothing_is_not_a_call_fed_trusted_content(self):
+        """The fold answers `TRUSTED` for an empty listing, which is honest about a result
+        deriving from no file and would read here as the opposite of what happened. So the
+        absence is its own answer."""
+        recorder = _Recorder()
+        router = _router(observer=recorder)
+
+        def build(session: SandboxToolSession):
+            async def widget_run() -> str:
+                """Do a thing."""
+                return "done"
+
+            return widget_run
+
+        asyncio.run(_fn(_tool(router, build))())
+
+        assert recorder.one(ToolCallEnded).fed is None
+
+    def test_a_read_that_fed_no_text_is_not_folded(self):
+        """A file listed and then removed answers `absent`: nothing crossed, so folding its
+        label would report an integrity for bytes that never moved."""
+        recorder = _Recorder()
+
+        assert self._fed(recorder, InMemoryStore({}), ListedFile("gone.txt")) is None
+        assert recorder.one(StoreFileRead).outcome == "absent"
+
+    def test_a_refused_read_is_not_folded_either(self):
+        """The other outcome that fed nothing, and the one that raises: the record's own check
+        fires before the store is asked."""
+        recorder = _Recorder()
+        tool = sandboxed_tool(
+            lambda session: _reads(session, InMemoryStore({"a.txt": "1"})),
+            router=_router(observer=recorder),
+            context=_context(),
+            agent_dir="agent-1",
+            spec=_SPEC,
+            name="widget_run",
+            logger=_LOG,
+            file_store_provenance=FileStoreProvenance(floor=SourceIntegrity.TRUSTED),
+        )[0]
+
+        with pytest.raises(ValueError, match="file_store_provenance_middleware"):
+            asyncio.run(_fn(tool)())
+
+        ended = recorder.one(ToolCallEnded)
+        assert (ended.failure, ended.fed) == ("ValueError", None)
+        assert recorder.one(StoreFileRead).outcome == "refused"
+
+    def test_a_second_session_reached_inside_one_call_feeds_that_call(self):
+        """The fold is the call's, not a session's: a body that builds a second session was
+        still fed by the call it is running inside, which is why the accumulator is on the
+        record the seam publishes rather than on the one keyed by owner."""
+        recorder = _Recorder()
+        router = _router(observer=recorder)
+        store = InMemoryStore({"a.txt": "1"}, integrity=SourceIntegrity.UNTRUSTED)
+
+        def build(session: SandboxToolSession):
+            async def widget_run() -> str:
+                """Do a thing."""
+                other = SandboxToolSession(
+                    router, _context(), "agent-2", _SPEC, name="other_run", logger=_LOG
+                )
+                await other.read_file(store, ListedFile("a.txt", SourceIntegrity.UNTRUSTED))
+                return "done"
+
+            return widget_run
+
+        asyncio.run(_fn(_tool(router, build))())
+
+        assert recorder.one(ToolCallEnded).fed == FedFromStore(
+            reads=1, weakest=SourceIntegrity.UNTRUSTED
+        )
+
+    def test_a_synchronous_body_folds_what_it_read_too(self):
+        """A body that awaits nothing gets its own wrapper, and can still reach the store by
+        running the read itself. Without the fold there it is the one class of tool whose
+        record says nothing fed it."""
+        recorder = _Recorder()
+        router = _router(observer=recorder)
+        store = InMemoryStore({"a.txt": "1"}, integrity=SourceIntegrity.TRUSTED)
+
+        def build(session: SandboxToolSession):
+            def widget_run() -> str:
+                """Do a thing without awaiting."""
+                asyncio.run(session.read_file(store, ListedFile("a.txt", SourceIntegrity.TRUSTED)))
+                return "done"
+
+            return widget_run
+
+        assert _fn(_tool(router, build))() == "done"
+
+        assert recorder.one(ToolCallEnded).fed == FedFromStore(
+            reads=1, weakest=SourceIntegrity.TRUSTED
+        )
+
+
+def _reads(session: SandboxToolSession, store: InMemoryStore):
+    async def widget_run() -> str:
+        """Do a thing."""
+        await session.read_file(store, ListedFile("a.txt", SourceIntegrity.TRUSTED))
+        return "done"
+
+    return widget_run
 
 
 # ---------------------------------------------------------------------------
