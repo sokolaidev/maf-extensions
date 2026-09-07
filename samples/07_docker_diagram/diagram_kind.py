@@ -16,7 +16,6 @@ files need. `sys.path[0]` is the script's directory, which is what lets `agent.p
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -84,24 +83,9 @@ def diagram_sandbox_spec(image: str | None = None) -> SandboxSpec:
     *something*, which is what keeps the attach-time refusals — no sink, or no ``FILES_OUT`` in
     ``requires`` — doing their job.  The declaration itself is built in the tool body.
 
-    ``confined_to_guest_call_path`` because it is true here and worth the saving: the body
-    writes the source and reads the image back under ``guest_call_path()`` and nowhere else,
-    and ``dot`` exits before the call returns rather than leaving anything running.  Without
-    the claim this workload would be cleaned by disposal — a fresh container per render — and
-    the sample is a warm-reuse demonstration.  A kind that makes this claim owes the probe that
-    falsifies it; this one is covered by the suite's own end-of-call assertions.
+    Confinement remains undeclared until a real-backend filesystem and process probe proves it.
+    On a core with the cleanup ladder, each render is cleaned by disposal.
     """
-    # Feature-detected rather than passed outright, because this sample straddles a core
-    # release: `confined_to_guest_call_path` arrives with the cleanup ladder, and the sample
-    # builds against the *published* core its README names. Raising that floor is what the
-    # samples' own pull request does, once the core carrying it is on the index.
-    # `dict[str, Any]`, because the whole point is that the field may not exist on the core
-    # this sample is checked against, and a precisely-typed mapping cannot express that.
-    earns_the_warmth: dict[str, Any] = (
-        {"confined_to_guest_call_path": True}
-        if any(f.name == "confined_to_guest_call_path" for f in dataclasses.fields(SandboxSpec))
-        else {}
-    )
     return SandboxSpec(
         kind=DIAGRAM_KIND,
         image=image,
@@ -110,7 +94,6 @@ def diagram_sandbox_spec(image: str | None = None) -> SandboxSpec:
         requires=frozenset({Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT}),
         outputs_named_at_call_time=True,
         files_out=_FILES_OUT_LIMITS,
-        **earns_the_warmth,
     )
 
 

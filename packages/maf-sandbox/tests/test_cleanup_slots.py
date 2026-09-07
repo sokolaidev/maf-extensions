@@ -1,17 +1,10 @@
-"""Who may be inside a sandbox at once, and who is allowed to give it back.
-
-Every test here reproduces a defect review found in the first cut of the ladder. The shapes are
-worth stating once, because each one passes under the bug for a different reason:
-
-- A pair-keyed release let a *waiter* hand back the holder's sandbox, so a third call walked
-  into a sandbox someone was still running in.
-- Deciding from the arriving spec alone meant a `RECLAIM` caller never registered at all, so an
-  exclusive holder could not see it and deleted the sandbox underneath it.
-"""
+"""Call-owned holds permit shared reclaim and exclude incompatible callers across loops."""
 
 from __future__ import annotations
 
 import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -53,9 +46,6 @@ class TestAHoldBelongsToTheCallThatTookIt:
                 slots.release(_KEY, _KIND, owner=OWNER)
 
             async def waiter() -> None:
-                # A second call queues behind the holder and is cancelled before it ever gets
-                # in. Its cleanup path is the holder's, so a release keyed on the pair rather
-                # than on the caller frees the holder's sandbox from here.
                 try:
                     await slots.take(_KEY, _KIND, owner=RIVAL, exclusive=True, timeout=5)
                 finally:
@@ -145,11 +135,7 @@ class TestSharedAndExclusiveHolds:
         assert _run(scenario()) is True
 
     def test_an_exclusive_hold_waits_for_a_reclaim_sibling(self):
-        """The mixed case: one spec resolves to RECLAIM and another to DISPOSE over one sandbox.
-
-        A caller that skipped the slot for being on RECLAIM was invisible here, and the
-        exclusive holder went straight in and deleted the sandbox underneath it.
-        """
+        """An exclusive hold waits until every shared owner leaves."""
         slots = ExclusiveSlots()
 
         async def scenario() -> bool:
@@ -222,3 +208,41 @@ class TestSharedAndExclusiveHolds:
             return slots.holds(_KEY, "kind-b", owner=OWNER)
 
         assert _run(scenario()) is True
+
+
+class TestHoldsAcrossEventLoops:
+    @pytest.mark.parametrize(
+        "first_exclusive,second_exclusive", [(True, True), (True, False), (False, True)]
+    )
+    def test_incompatible_call_waits_and_is_woken_on_its_own_loop(
+        self, first_exclusive, second_exclusive
+    ):
+        slots = ExclusiveSlots()
+        started = threading.Event()
+        _run(slots.take(_KEY, _KIND, owner=OWNER, exclusive=first_exclusive, timeout=1))
+
+        async def other_loop():
+            started.set()
+            await slots.take(_KEY, _KIND, owner=RIVAL, exclusive=second_exclusive, timeout=2)
+            slots.release(_KEY, _KIND, owner=RIVAL)
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            waiting = pool.submit(lambda: _run(other_loop()))
+            try:
+                assert started.wait(1)
+                with pytest.raises(TimeoutError):
+                    waiting.result(timeout=0.05)
+            finally:
+                slots.release(_KEY, _KIND, owner=OWNER)
+            waiting.result(timeout=1)
+        assert not slots._slots
+
+    def test_shared_calls_on_different_loops_can_overlap(self):
+        slots = ExclusiveSlots()
+        _run(slots.take(_KEY, _KIND, owner=OWNER, exclusive=False, timeout=1))
+        _run(slots.take(_KEY, _KIND, owner=RIVAL, exclusive=False, timeout=1))
+        assert slots.holds(_KEY, _KIND, owner=OWNER)
+        assert slots.holds(_KEY, _KIND, owner=RIVAL)
+        slots.release(_KEY, _KIND, owner=OWNER)
+        slots.release(_KEY, _KIND, owner=RIVAL)
+        assert not slots._slots

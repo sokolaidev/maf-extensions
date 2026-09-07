@@ -356,13 +356,7 @@ class NoIsolationBackend:
     def _remove(
         self, wanted: Callable[[SandboxKey], bool], kind: str | None = None
     ) -> tuple[int, list[str]]:
-        """Destroy the matching sandboxes, keeping the ones that would not go. Holds the lock.
-
-        Reporting a failed removal is only half of it: answering ``None`` the *second* time
-        clears the router's refusal over a directory that is still there.
-
-        ``kind`` narrows the sweep to one workload's; ``None`` takes every kind's.
-        """
+        """Destroy matching sandboxes under the lock, retaining failures for the next attempt."""
 
         def taken(ident: tuple[SandboxKey, str]) -> bool:
             return wanted(ident[0]) and (kind is None or ident[1] == kind)
@@ -383,15 +377,7 @@ class NoIsolationBackend:
         return removed, problems
 
     async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> DisposalFailure | None:
-        """Delete this key's sandboxes. Never raises; answers why one may still be there.
-
-        A backend that swallows the failure is read as having disposed, and the router then
-        serves the next call the files this one could not remove.
-
-        ``kind`` narrows it to one workload's sandbox, which is what the framework passes for
-        its end-of-call disposal so that a conversation running two kinds does not have one
-        kind's cleanup take the other's. ``None`` is every kind's, as it always was.
-        """
+        """Delete this key's sandboxes, narrowed to kind when given; report any failure."""
         async with self._lock:
             _, problems = self._remove(lambda k: k == key, kind)
         return _refused(problems)

@@ -192,11 +192,7 @@ class InProcessSandbox:
         )
 
     async def reset(self, *, timeout: float) -> None:
-        """Restore the baseline: every path and every survivor go back to their pre-input state.
-
-        The in-process answer to :data:`~maf_sandbox.Cleanup.RESET`, so the ladder is testable
-        with no engine. ``timeout`` is accepted and unused — nothing here can be slow.
-        """
+        """Restore the initial filesystem and process state; timeout is accepted but unused."""
         del timeout
         self.resets.append(len(self.resets))
         contents, symlinks, non_regular, directories, running = self._baseline
@@ -207,17 +203,17 @@ class InProcessSandbox:
         self.running = set(running)
 
     def changed_paths(self) -> frozenset[str]:
-        """Every path that differs from the baseline — this fake's half of the fingerprint.
-
-        What a real backend answers from its engine (``docker diff``), so
-        :func:`~maf_sandbox.conformance.assert_nothing_left_behind` runs here too.
-        """
+        """Return every path whose contents or entry kind differs from the initial state."""
         contents, symlinks, non_regular, directories, _ = self._baseline
-        was = {**contents}, symlinks | non_regular | directories
-        now = {**self.contents}, self.symlinks | self.non_regular | self.directories
-        changed = {path for path in was[1] ^ now[1]}
-        changed |= {path for path in set(was[0]) ^ set(now[0])}
-        changed |= {path for path in set(was[0]) & set(now[0]) if was[0][path] != now[0][path]}
+        changed = symlinks ^ self.symlinks
+        changed |= non_regular ^ self.non_regular
+        changed |= directories ^ self.directories
+        changed |= contents.keys() ^ self.contents.keys()
+        changed |= {
+            path
+            for path in contents.keys() & self.contents.keys()
+            if contents[path] != self.contents[path]
+        }
         return frozenset(changed)
 
     def running_programs(self) -> frozenset[str]:

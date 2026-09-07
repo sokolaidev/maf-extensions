@@ -162,23 +162,10 @@ ISOLATION_SCOPE_RANK: Mapping[IsolationScope, int] = {
 
 
 class Cleanup(StrEnum):
-    """How much of a sandbox is cleaned when a call ends — the rung the framework runs.
+    """Cleanup performed when a call ends, ordered weakest first by CLEANUP_RANK.
 
-    A different axis from :class:`IsolationScope`, which says which calls may *share* a sandbox
-    at once; this says what a call leaves for the next one.  At
-    :data:`IsolationScope.CALL` there is no next call, so the ladder is not consulted.
-
-    **A call leaves nothing behind by default.**  Removing the call's own directory covers what
-    this stack wrote and nothing else: a program writes ``work_dir``'s root, ``/tmp`` and its
-    home just as freely, and on a backend whose :meth:`Sandbox.exec` detaches, a daemon from a
-    run that exited cleanly is still running when the next call arrives.  So the weakest rung is
-    the one a workload has to *earn*, and silence resolves to :data:`DISPOSE`.
-
-    Ordered by :data:`CLEANUP_RANK`, weakest first, and resolved the way
-    :class:`IsolationScope` is — see :meth:`SandboxRouter.effective_cleanup`.  Nothing is ever
-    refused for it, because :data:`DISPOSE` is established by construction on every backend.
-    ``docs/sandbox/tool-call.md`` carries the decision.
-    """
+    Reuse requires workload/backend evidence; otherwise cleanup resolves to DISPOSE.
+    IsolationScope.CALL always disposes. See SandboxRouter.effective_cleanup."""
 
     #: Remove the call's own guest directory; the rest of the sandbox stays as the call left it.
     #: Established only by :attr:`SandboxSpec.confined_to_guest_call_path` over a backend
@@ -760,24 +747,14 @@ class SandboxSpec:
     it is not the default.  Like ``egress`` it is normalised on construction: a plain string
     serves exactly as the member does, and anything else raises here.
 
-    ``confined_to_guest_call_path`` is the kind's claim that **every byte this workload writes
-    lands under its guest call path, and nothing it starts outlives the call**.  It is what
-    establishes :data:`Cleanup.RECLAIM`, and a workload that does not make it is cleaned by
-    disposal — which is the default, and the reason this is the field that has to be set rather
-    than unset.  It is a claim about the *program*, so nothing here can check it: where a program
-    writes is not in the spec.  What proves it is a measurement,
-    :func:`~maf_sandbox.conformance.assert_nothing_left_behind`, which a kind that sets this owes
-    in its own suite on a backend that can diff.  Setting it falsely fails nothing loudly; it
-    quietly keeps a sandbox warm that should not be, which is why the default is ``False`` and
-    why a host that distrusts a kind raises ``min_cleanup`` rather than arguing with it.
+    ``confined_to_guest_call_path`` claims that every write stays under the guest call path
+    and no started process outlives the call. Together with Capability.RECLAIM, it permits
+    warm reuse. The default is False; a kind claiming confinement owes a real-backend
+    filesystem and process probe. The planned assert_nothing_left_behind probe is not yet
+    available.
 
-    ``min_cleanup`` is the weakest rung this workload accepts, and like ``min_isolation`` a spec
-    may **raise** the host's floor and never lower it.  ``None`` — the default — asks nothing,
-    which is not :data:`Cleanup.RECLAIM`: it declines to constrain the floor at all, leaving the
-    rung to what the spec and the backend between them *establish*, where ``Cleanup.RECLAIM``
-    would constrain it to the weakest rung there is.  Nothing is ever refused over this field,
-    because :data:`Cleanup.DISPOSE` is established everywhere, so raising it costs latency rather
-    than a refusal.  Normalised on construction like the two fields above it.
+    ``min_cleanup`` may raise the host's floor, never lower it. None adds no constraint.
+    DISPOSE is always available, so a stronger floor costs cleanup rather than refusing a spec.
     """
 
     kind: str
@@ -1161,24 +1138,11 @@ class Sandbox(Protocol):
         ...
 
     async def reset(self, *, timeout: float) -> None:
-        """Return the sandbox to the state it had at ``acquire``, before the first input reached it.
+        """Restore the initial filesystem and processes, before any call supplied input.
 
-        Behind :data:`Capability.SNAPSHOT`, and what establishes :data:`Cleanup.RESET`.  A
-        backend declaring neither leaves this raising :class:`NotImplementedError`, and the
-        router never resolves to the rung that would call it.
-
-        **What must be gone afterwards is what a call could have left**: every path written since
-        the sandbox was created, and every process one of its calls started.  A restore that
-        brings back the disk and not the processes does not satisfy this, and a backend whose
-        engine can only do the former should declare no :data:`Capability.SNAPSHOT` and take the
-        disposal instead — the rung exists to be cheaper than a create, not to be a weaker one.
-
-        The sandbox stays addressable under the same key and kind, whether the engine restores
-        it in place or replaces it with a create from a baseline.
-
-        Raises on failure, unlike :meth:`SandboxBackend.dispose`: the caller escalates a failed
-        reset to a disposal, which it can only do if it is told.
-        """
+        Requires Capability.SNAPSHOT; backends without it raise NotImplementedError. Restoring
+        only the filesystem is insufficient. The sandbox stays addressable under the same key
+        and kind. Raise on failure so cleanup can escalate to disposal."""
         raise NotImplementedError
 
 
@@ -1384,26 +1348,14 @@ class SandboxBackend(Protocol):
         ...
 
     async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> DisposalFailure | None:
-        """Delete this key's sandboxes, if any. Best-effort: never raises.
+        """Delete this key's sandboxes. Best-effort: return a failure instead of raising.
 
-        ``kind`` narrows it to one. ``None`` means every kind's, because a key may own one
-        sandbox per kind and a caller releasing the whole key means all of it — which is what
-        this method meant before the argument existed, so the default is the old behaviour.
-        Narrowing matters once a cleanup is *routine*: a conversation running two kinds would
-        otherwise have one kind's end-of-call disposal delete the other kind's warm sandbox.
+        kind narrows disposal to that workload; None takes every kind. Preserve attribution
+        when retaining failed deletions so retries cannot delete a sibling kind.
 
-        **Return a :class:`DisposalFailure` when a sandbox may still be there, or ``None``.**
-        ``None`` is read as disposed, and a backend with no way to check returns it too — the
-        conflation is with success, because refusing every key served by a backend that cannot
-        answer is the wrong direction to fail in.
-
-        The :data:`DisposalCode` is what a caller branches on and the only half kept stable;
-        ``detail`` is yours and reaches a log. Reach for ``"unknown"`` rather than guessing.
-
-        A record of what could not be deleted is retry bookkeeping, not a guard on
-        :meth:`acquire` — refusing to serve is the router's ledger. The three in this
-        repository each carry their own copy of it, so a change to one is owed to the others.
-        """
+        Return DisposalFailure when a sandbox may remain, or None when no failure is known.
+        Callers branch on its code; detail is for logs. Use unknown when the cause is uncertain.
+        Retry bookkeeping does not refuse acquire; that guard belongs to the router."""
         ...
 
     async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:

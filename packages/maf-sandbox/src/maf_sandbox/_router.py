@@ -627,6 +627,10 @@ class SandboxRouter:
             already did. Raised to :data:`~maf_sandbox.IsolationScope.CALL` it gives every
             workload this router serves a sandbox of its own per call, whatever the workload's
             own spec asks for, and refuses a backend that cannot create one.
+        min_cleanup: Weakest cleanup this host accepts. Defaults to :data:`Cleanup.RECLAIM`,
+            which permits reuse only when the workload and backend establish it. Without a
+            confinement claim or snapshot capability, cleanup still resolves to disposal.
+            A spec may raise this floor, never lower it.
         selected: Name of the backend to use. ``None`` picks the first registered one, which
             with a single backend is the whole selection story and stays correct when more
             arrive. A pin, and refused together with ``selection=Selection.PER_SPEC``:
@@ -1002,34 +1006,18 @@ class SandboxRouter:
         return max(self._min_cleanup, spec.min_cleanup, key=CLEANUP_RANK.__getitem__)
 
     def effective_cleanup(self, spec: SandboxSpec) -> Cleanup:
-        """Which rung a call on ``spec`` will end on, before one has run.
+        """Resolve cleanup from the serving backend, workload evidence and host/spec floors.
 
-        Public beside :meth:`effective_isolation_scope` so a host can read what every call will
-        cost — a create, a reset, or a directory removal — from :meth:`ensure_can_serve` rather
-        than from a latency graph.  It folds three things: the host's floor, the spec's, and
-        what the spec and the serving backend *establish* between them.
-
-        **It refuses nothing**, because :data:`~maf_sandbox.Cleanup.DISPOSE` is established by
-        construction everywhere, so every floor resolves to something serveable.  A spec no
-        backend can serve at all raises here for that reason instead, through the same
-        refusal :meth:`ensure_can_serve` runs — the cleanup is not what refuses it.
-
-        At :data:`~maf_sandbox.IsolationScope.CALL` the answer is
-        :data:`~maf_sandbox.Cleanup.DISPOSE` whatever the ladder says: the sandbox was created
-        for this call, so the delete is the cleanup rather than an escalation over one.
-        """
+        CALL scope always disposes. Other scopes choose the cheapest established rung meeting
+        both floors; DISPOSE is always available. An unservable spec raises the same refusal as
+        ensure_can_serve."""
         if self.effective_isolation_scope(spec) is IsolationScope.CALL:
             return Cleanup.DISPOSE
         backend = self._refuse_unless_backend_can_serve(spec)
         return self._cleanup_on(backend, spec)
 
     def _cleanup_on(self, backend: SandboxBackend, spec: SandboxSpec) -> Cleanup:
-        """The rung for this spec on this backend, once the backend is already chosen.
-
-        A capability this package does not recognise is dropped rather than refused: the
-        capability *match* is where an unreadable declaration is answered, and this runs after
-        it. What is left decides only which rungs exist, and an unknown name establishes none.
-        """
+        """Resolve cleanup on the chosen backend, ignoring unknown capabilities."""
         declared = _declared_set(
             backend, cast("object", _declarations(backend).capabilities), "capabilities"
         )
@@ -1653,39 +1641,24 @@ class SandboxRouter:
         *,
         owner: str,
         timeout: float = QUEUED_CALL_TIMEOUT,
-    ) -> None:
-        """Admit one call to this ``(key, kind)``, holding the sandbox as its rung demands.
+    ) -> Cleanup:
+        """Admit a call and return the cleanup rung its hold permits.
 
-        A workload cleaned by anything above :data:`~maf_sandbox.Cleanup.RECLAIM` gets the
-        sandbox to itself: the cleanup at the end removes or rewinds the whole thing, which
-        cannot happen under a sibling.  A ``RECLAIM`` workload takes a *shared* hold instead, so
-        such calls still run together — but they are visible to an exclusive one, which a caller
-        that skipped the slot would not be.  That matters because the rung is resolved from the
-        arriving spec while the sandbox is shared by ``(key, kind)``: two tools can attach one
-        kind with different ``min_cleanup`` and resolve differently over one sandbox.
-
-        Whoever calls this owes :meth:`finish_call` or :meth:`release_call`, exactly as a
-        per-call workload's caller owes ``dispose_call``.
-
-        Raises:
-            TimeoutError: the hold was not free within ``timeout``. Refusing beats waiting
-                behind a call that is never going to return.
-        """
+        RECLAIM takes a shared hold; stronger rungs take an exclusive one. The caller must retain
+        the returned rung for cleanup and eventually call finish_call or release_call. Raises
+        TimeoutError when incompatible owners outlast the bound."""
+        rung = self.effective_cleanup(spec)
         await self._slots.take(
             key,
             spec.kind,
             owner=owner,
-            exclusive=needs_exclusive_use(self.effective_cleanup(spec)),
+            exclusive=needs_exclusive_use(rung),
             timeout=timeout,
         )
+        return rung
 
     def release_call(self, key: SandboxKey, kind: str, *, owner: str) -> None:
-        """Give a held sandbox back without cleaning it.
-
-        For a call that took a hold and then never reached its cleanup — a refused acquire, a
-        body that raised first, a waiter that was cancelled before it ever got in. An owner
-        that holds nothing releases nothing, which is what makes the last of those safe.
-        """
+        """Release this call's hold without cleaning; an owner holding nothing releases nothing."""
         self._slots.release(key, kind, owner=owner)
 
     async def finish_call(
@@ -1699,23 +1672,11 @@ class SandboxRouter:
         unclean: str | None = None,
         timeout: float | None = None,
     ) -> str | None:
-        """Run this call's cleanup and give the sandbox back.
+        """Clean under the admitted rung and release its hold.
 
-        Returns why it did not land, or ``None``.
-
-        Only ever called by the one call that holds the sandbox, which is what makes the strong
-        rungs safe: there is no sibling to reset out from under and no count to reach nought.
-        A ``RECLAIM`` never reaches here — its removal is the call's own directory and runs
-        wherever the framework runs it.
-
-        ``timeout`` is the bound the *call* resolved — a tool's own ``reclaim_timeout``, or the
-        shortened grace a cancelled body gets — and it bounds the reset and the disposal exactly
-        as it already bounds a reclaim.  Falling back to the router's own when it is ``None``,
-        for a caller that has no per-call bound to pass.
-
-        Never raises.  This is a ``finally``'s work, and a failure that replaced the call's own
-        result with a message about cleanup would be the wrong thing to report.
-        """
+        Returns a failure reason or None; cancellation propagates. The caller must own an
+        exclusive hold. timeout bounds reset and disposal separately, defaulting to the router
+        policy; RECLAIM uses the framework's directory removal instead."""
         bound = self._reclaim.timeout if timeout is None else timeout
         try:
             return await self._run_the_rung(key, spec, rung, sandbox, unclean, bound)
@@ -1764,11 +1725,7 @@ class SandboxRouter:
         unclean: str | None,
         bound: float,
     ) -> str | None:
-        """The ladder's disposal: one kind's sandbox on the backend that served it.
-
-        Narrowed to the kind, because a conversation running two kinds would otherwise have one
-        kind's end-of-call disposal take the other kind's warm sandbox with it.
-        """
+        """Dispose this kind on its serving backend, preserving sibling kinds."""
         started = time.monotonic()
         try:
             async with asyncio.timeout(bound):

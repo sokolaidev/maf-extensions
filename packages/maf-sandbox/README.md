@@ -289,17 +289,21 @@ InProcessSandboxBackend(
 
 | Was | Is |
 | --- | --- |
-| `async def dispose(key) -> None` | `-> DisposalFailure \| None` — a code to branch on, and a detail to log |
+| `async def dispose(key) -> None` | `dispose(key, *, kind=None) -> DisposalFailure \| None` — a code to branch on, and a detail to log |
 | `async def dispose_scope(scope, thread) -> int` | `-> ScopePurge` — `.disposed` is the old count, `.undisposed` the failure |
 | `router.dispose_scope(...)` → `int` | → `ScopePurge` |
 | `purger.purge_scoped_thread(...)` → `int` | → `ScopePurge` |
 
+`kind` restricts deletion to that workload, including retained failures on retry; `None` deletes every kind. The example assumes the client accepts the same filter. Backends must also implement `reset(timeout=...)`, raising `NotImplementedError` when they do not declare `SNAPSHOT`.
+
 **The code is the contract; the detail is not.** `DisposalCode` is a closed set — `unreachable`, `timeout`, `refused`, `unlisted`, `unknown` — and it is what a caller acts on: retry an `unreachable`, raise the bound on a `timeout`, put a `refused` in front of a human, since it is a missing role far more often than anything transient. `detail` is the backend's own sentence, for a log, never to be parsed.
 
 ```python
-async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
+async def dispose(
+    self, key: SandboxKey, *, kind: str | None = None
+) -> DisposalFailure | None:
     try:
-        gone = await self._client.delete(key)
+        gone = await self._client.delete(key, kind=kind)
     except TransportError as exc:                     # never reached the service
         return DisposalFailure("unreachable", f"{key}: {exc}")
     return None if gone else DisposalFailure("refused", f"{key}: the service kept it")

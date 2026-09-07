@@ -51,6 +51,32 @@ _WORK = "/maf-sandbox/work"
 _AMPLE = 1024
 
 
+class TestFingerprint:
+    @pytest.mark.parametrize("before", ["contents", "symlinks", "non_regular", "directories"])
+    @pytest.mark.parametrize("after", ["contents", "symlinks", "non_regular", "directories"])
+    def test_entry_kind_changes_are_visible(self, before, after):
+        kinds = {
+            "contents": b"data",
+            "symlinks": EntryKind.SYMLINK,
+            "non_regular": EntryKind.OTHER,
+            "directories": EntryKind.DIRECTORY,
+        }
+        sandbox = InProcessSandbox(seed_files={"/entry": kinds[before]})
+        getattr(sandbox, before).clear()
+        if after == "contents":
+            sandbox.contents["/entry"] = b"data"
+        else:
+            getattr(sandbox, after).add("/entry")
+        assert sandbox.changed_paths() == (frozenset() if before == after else {"/entry"})
+        asyncio.run(sandbox.reset(timeout=1))
+        assert not sandbox.changed_paths()
+
+    def test_content_changes_are_visible(self):
+        sandbox = InProcessSandbox(seed_files={"/entry": b"before"})
+        sandbox.contents["/entry"] = b"after"
+        assert sandbox.changed_paths() == {"/entry"}
+
+
 class TestInProcessSandboxExec:
     def test_write_file_records_content_by_path(self):
         sandbox = InProcessSandbox()
