@@ -90,7 +90,7 @@ def _fn(tool):
 _BACKENDS: dict[InProcessSandbox, InProcessSandboxBackend] = {}
 
 
-def _call_directories(sandbox: InProcessSandbox) -> list[str]:
+def _guest_call_directories(sandbox: InProcessSandbox) -> list[str]:
     return [
         shlex.split(command)[2].rsplit("/", 1)[0]
         for command, _, _ in sandbox.commands
@@ -199,9 +199,9 @@ class TestTheCallWritesInsideItsOwnDirectory:
         sandbox = _Renderer()
         _render(sandbox, out_dir)
 
-        [call_directory] = _call_directories(sandbox)
-        assert call_directory.startswith(f"{_WORK_DIR}/")
-        assert call_directory.count("/") == _WORK_DIR.count("/") + 1
+        [guest_call_directory] = _guest_call_directories(sandbox)
+        assert guest_call_directory.startswith(f"{_WORK_DIR}/")
+        assert guest_call_directory.count("/") == _WORK_DIR.count("/") + 1
 
     def test_two_concurrent_calls_never_share_a_path(self, out_dir: Path):
         """Calls launched together still select different guest paths."""
@@ -219,10 +219,10 @@ class TestTheCallWritesInsideItsOwnDirectory:
         assert len(rendered) == 2
         assert rendered[0] != rendered[1]
 
-        first, second = _call_directories(sandbox)
-        assert first != second
-        assert not first.startswith(f"{second}/")
-        assert not second.startswith(f"{first}/")
+        guest_first, guest_second = _guest_call_directories(sandbox)
+        assert guest_first != guest_second
+        assert not guest_first.startswith(f"{guest_second}/")
+        assert not guest_second.startswith(f"{guest_first}/")
 
 
 class TestTheCallIsDisposed:
@@ -276,7 +276,7 @@ class TestTheArtifactLandsUnderTheNameTheSampleChose:
         sandbox = _Renderer()
         reply = _render(sandbox, out_dir)
 
-        [call_directory] = _call_directories(sandbox)
-        run_id = call_directory.rsplit("/", 1)[-1]
+        [guest_call_directory] = _guest_call_directories(sandbox)
+        run_id = guest_call_directory.rsplit("/", 1)[-1]
         assert "diagram.png" in reply
         assert run_id not in reply

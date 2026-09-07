@@ -2648,9 +2648,7 @@ class TestTheStrongRungsHonourTheCallsOwnBound:
         router = _router(backend)
         fn = _attach_with(_reclaiming_body, router, spec=self._SPEC, reclaim_timeout=0.01)[0]
         _call(fn, target="x")
-        # The delete never completes, so nothing reaches `disposed`: the tool's own bound cuts
-        # it off and the key is refused instead. Under the defect the router's 30s bound
-        # applied, the sleep finished well inside it, and the call came back clean.
+        # The tool's timeout must interrupt disposal and leave the key refused.
         assert backend.disposed == []
         assert router._unclean, (
             "a disposal past the tool's own reclaim_timeout was not reported as unclean, so "
