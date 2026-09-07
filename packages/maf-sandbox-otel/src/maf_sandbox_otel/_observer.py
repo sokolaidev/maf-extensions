@@ -269,8 +269,6 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             recorded[SURFACE_IDENTITIES] = sorted_values(surface.identities)
             recorded[SURFACE_UNDECLARED] = surface.has_undeclared
             recorded[SURFACE_CALL_CAP] = surface.max_host_tool_calls_per_run
-            # Which tools were callable, which the folds above do not answer: two registries
-            # with the same identities and ceilings can carry different tools.
             recorded[SURFACE_NAMES] = sorted_values(surface.names)
             if surface.result_integrity is not None:
                 recorded[SURFACE_INTEGRITY] = str(surface.result_integrity)
@@ -428,8 +426,7 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
                     HOST_TOOL_SOURCE: None if event.source is None else str(event.source),
                     HOST_TOOL_SINK: event.sink,
                     HOST_TOOL_IDENTITY: (None if event.identity is None else str(event.identity)),
-                    # Absent for a run a transport built outside the call it supervises: a
-                    # guest's callback is served on a task whose context is a copy.
+                    # Absent for a run built outside the call it supervises.
                     CALL_ATTRIBUTE: event.call,
                 }
             ),
@@ -499,11 +496,9 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             OUTPUTS_MAX_FILES: event.limits.max_files,
             OUTPUTS_MAX_BYTES_PER_FILE: event.limits.max_bytes_per_file,
             OUTPUTS_MAX_TOTAL_BYTES: event.limits.max_total_bytes,
-            # The key reaches the conversation and the call id reaches the folder a `per_call`
-            # sink landed in, so a record of a landing wants both halves. It is the collection's
-            # own rather than the key's, which carries one only for a per-call workload — and
-            # `CALL_ATTRIBUTE` is a third thing again: which call *collected*, read from the
-            # seam rather than from what the kind asked the sink to stamp.
+            # Three ids, not one: the key reaches the conversation, `CALL_ID` is what the kind
+            # asked the sink to stamp and names the folder, and `CALL_ATTRIBUTE` is which call
+            # collected.
             **without_none(
                 {
                     REFUSAL: event.refusal,
@@ -531,8 +526,7 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             TOOL: event.tool,
             KIND: event.kind,
             UNCLEAN: event.unclean,
-            # Never absent here, unlike everywhere else: this is the record a call's other
-            # records join to, so it is the one that cannot be missing the id they join on.
+            # Never absent: this is the record the others join to.
             CALL_ATTRIBUTE: event.call,
             **without_none({FAILURE: event.failure}),
         }
