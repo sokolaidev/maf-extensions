@@ -1546,9 +1546,8 @@ class SandboxToolSession:
         call = _this_call(self)
         if key is not None and call is not None and not call.closed and key not in call.touched:
             call.touched.append(key)
-        # Only a read that answered with text, and on the seam's record rather than on `call`
-        # above, for the same reason the event's own `call` is read from there: a body that
-        # reached a second session was still fed by the outer call.
+        # On the seam's record rather than on `call` above, for the reason the event's own
+        # `call` is: a body that reached a second session was still fed by the outer call.
         recording = RECORDED_CALL.get()
         if outcome == "read" and recording is not None and not recording.closed:
             recording.fed.append(ListedFile(name, integrity))

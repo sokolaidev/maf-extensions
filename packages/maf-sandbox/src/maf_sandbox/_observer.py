@@ -109,11 +109,8 @@ class RecordedCall:
 
     id: str
     closed: bool = False
-    #: Every store read that fed this call text, in order, which :func:`fed_from_store` folds.
-    #: A read that answered ``absent`` or ``refused`` is not here: it fed nothing, and folding it
-    #: would report an integrity for bytes that never crossed.  Held as
-    #: :class:`~maf_sandbox.ListedFile` because that is what the fold is written over; the name
-    #: stays in the call, and only the count and the fold reach a record.
+    #: The reads that fed this call text, which :func:`fed_from_store` folds.  A read that
+    #: answered ``absent`` or ``refused`` fed nothing and is not here.
     fed: list[ListedFile] = field(default_factory=list[ListedFile])
 
 
@@ -508,19 +505,14 @@ class OutputsCollected(SandboxEvent):
 class FedFromStore:
     """What one call was fed out of the host's file store, folded into a single answer.
 
-    ``weakest`` is :func:`~maf_sandbox.weakest_integrity` over the reads that fed text, so
-    ``None`` — unestablished — beats every level, and ``reads`` is how many reads it folds
-    rather than how many distinct files: a call reading one file twice folds it twice.
-
-    **A call that read nothing carries no ``FedFromStore`` at all**, and that absence is the one
-    thing the fold cannot say for itself: ``weakest_integrity`` answers
-    :data:`~maf_sandbox.SourceIntegrity.TRUSTED` for an empty listing, which is honest about a
-    result deriving from no file and would read here as a call fed trusted content.
+    A call that read nothing carries none of these rather than an empty fold:
+    :func:`~maf_sandbox.weakest_integrity` answers ``TRUSTED`` for an empty listing, which would
+    read here as a call fed trusted content.
     """
 
-    #: How many reads this folds, each of which fed the call text.  Never zero.
+    #: How many reads this folds — reads, not distinct files.  Never zero.
     reads: int
-    #: The weakest level across them, and ``None`` where the host establishes nothing about one.
+    #: The weakest level across them, ``None`` where the host establishes nothing about one.
     weakest: SourceIntegrity | None
 
 
@@ -561,11 +553,8 @@ class ToolCallEnded(SandboxEvent):
     was asked for, as :class:`SandboxDisposed`.  ``unclean`` counts what a transport noted about
     the sandbox during the call — a stop that did not reach everything a program started.
 
-    ``fed`` folds what the call read out of the host's file store: the weakest level across the
-    reads that fed it text, and how many those were.  ``None`` where it read nothing, which is
-    not the fold answering unestablished — :class:`FedFromStore` carries why.  It describes the
-    call's **inputs** and never its result: a kind that reads a file and answers a fixed sentence
-    is fed exactly what one quoting the bytes back is.
+    ``fed`` is what the store fed the call, and it describes that and never the result: a kind
+    reading a file and answering a fixed sentence is fed what one quoting the bytes is.
     """
 
     tool: str
