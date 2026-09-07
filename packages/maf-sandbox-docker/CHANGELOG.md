@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.15.2...maf-sandbox-docker-v0.16.0) (2026-09-07)
+
+
+### Features
+
+* a backend reports what its egress enforcement decided, so a record separates what a sandbox was allowed to reach from what it did ([#963](https://github.com/sokolaidev/maf-extensions/issues/963)) ([20b5f50](https://github.com/sokolaidev/maf-extensions/commit/20b5f5044076085525c2bb2a66bfa893dc1cbe55))
+
 ## [0.15.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.15.1...maf-sandbox-docker-v0.15.2) (2026-09-06)
 
 
