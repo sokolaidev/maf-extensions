@@ -114,6 +114,7 @@ from ._attributes import (
     SURFACE_CALL_CAP,
     SURFACE_IDENTITIES,
     SURFACE_INTEGRITY,
+    SURFACE_NAMES,
     SURFACE_UNDECLARED,
     TOOL,
     UNCLEAN,
@@ -121,6 +122,9 @@ from ._attributes import (
     instrumentation_version,
     sorted_values,
     without_none,
+)
+from ._attributes import (
+    CALL as CALL_ATTRIBUTE,
 )
 
 ACQUIRE = "sandbox.acquire"
@@ -242,6 +246,7 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
                     ISOLATION: None if event.isolation is None else str(event.isolation),
                     ISOLATION_SCOPE: str(event.isolation_scope),
                     REFUSAL: event.refusal,
+                    CALL_ATTRIBUTE: event.call,
                 }
             ),
             EGRESS_MODE: str(spec.egress),
@@ -259,11 +264,14 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             recorded[BACKEND_OBSERVES_EGRESS] = event.declarations.observes_egress
         surface = spec.host_tools
         if surface is not None:
-            # All four or none: an empty set beside a `False` would read as a surface that
+            # All five or none: an empty set beside a `False` would read as a surface that
             # carries no authority, which is not what no surface at all means.
             recorded[SURFACE_IDENTITIES] = sorted_values(surface.identities)
             recorded[SURFACE_UNDECLARED] = surface.has_undeclared
             recorded[SURFACE_CALL_CAP] = surface.max_host_tool_calls_per_run
+            # Which tools were callable, which the folds above do not answer: two registries
+            # with the same identities and ceilings can carry different tools.
+            recorded[SURFACE_NAMES] = sorted_values(surface.names)
             if surface.result_integrity is not None:
                 recorded[SURFACE_INTEGRITY] = str(surface.result_integrity)
 
@@ -287,7 +295,12 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             **self._redaction.key(event.key),
             BACKEND: event.backend,
             DISPOSAL_OUTCOME: event.outcome,
-            **without_none({DISPOSAL_CODE: None if failure is None else str(failure.code)}),
+            **without_none(
+                {
+                    DISPOSAL_CODE: None if failure is None else str(failure.code),
+                    CALL_ATTRIBUTE: event.call,
+                }
+            ),
             # The backend's own sentence, which is a log line rather than something to parse. It
             # names infrastructure — an endpoint, a container id — so it crosses with the rest of
             # the host's own vocabulary rather than by default.
@@ -317,7 +330,12 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             BACKEND: event.backend,
             DISPOSAL_OUTCOME: event.outcome,
             PURGE_DISPOSED: event.disposed,
-            **without_none({DISPOSAL_CODE: None if failure is None else str(failure.code)}),
+            **without_none(
+                {
+                    DISPOSAL_CODE: None if failure is None else str(failure.code),
+                    CALL_ATTRIBUTE: event.call,
+                }
+            ),
             **self._redaction.text(DISPOSAL_DETAIL, None if failure is None else failure.detail),
         }
         self._emit(PURGE, recorded, event.seconds, None if failure is None else str(failure.code))
@@ -410,6 +428,9 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
                     HOST_TOOL_SOURCE: None if event.source is None else str(event.source),
                     HOST_TOOL_SINK: event.sink,
                     HOST_TOOL_IDENTITY: (None if event.identity is None else str(event.identity)),
+                    # Absent for a run a transport built outside the call it supervises: a
+                    # guest's callback is served on a task whose context is a copy.
+                    CALL_ATTRIBUTE: event.call,
                 }
             ),
             # Sanitized for a transcript, and still not purely the host's: the refusals that fire
@@ -442,7 +463,10 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             STORE_CHARACTERS: event.characters,
             STORE_OUTCOME: event.outcome,
             **without_none(
-                {STORE_INTEGRITY: None if event.integrity is None else str(event.integrity)}
+                {
+                    STORE_INTEGRITY: None if event.integrity is None else str(event.integrity),
+                    CALL_ATTRIBUTE: event.call,
+                }
             ),
             **self._redaction.text(STORE_FILE, event.name),
         }
@@ -477,8 +501,16 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             OUTPUTS_MAX_TOTAL_BYTES: event.limits.max_total_bytes,
             # The key reaches the conversation and the call id reaches the folder a `per_call`
             # sink landed in, so a record of a landing wants both halves. It is the collection's
-            # own rather than the key's, which carries one only for a per-call workload.
-            **without_none({REFUSAL: event.refusal, CALL_ID: event.call_id}),
+            # own rather than the key's, which carries one only for a per-call workload — and
+            # `CALL_ATTRIBUTE` is a third thing again: which call *collected*, read from the
+            # seam rather than from what the kind asked the sink to stamp.
+            **without_none(
+                {
+                    REFUSAL: event.refusal,
+                    CALL_ID: event.call_id,
+                    CALL_ATTRIBUTE: event.call,
+                }
+            ),
             # An artifact name is written by the model, and the suite measures it as a channel
             # of its own — a few hundred bytes of chosen text per call.
             **self._redaction.texts(OUTPUTS_NAMES, (output.name for output in event.landed)),
@@ -499,6 +531,9 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             TOOL: event.tool,
             KIND: event.kind,
             UNCLEAN: event.unclean,
+            # Never absent here, unlike everywhere else: this is the record a call's other
+            # records join to, so it is the one that cannot be missing the id they join on.
+            CALL_ATTRIBUTE: event.call,
             **without_none({FAILURE: event.failure}),
         }
         self._emit(CALL, recorded, event.seconds, event.failure)
