@@ -64,6 +64,7 @@ from ._protocol import (
     SandboxSpec,
     SourceIntegrity,
     TransferLimits,
+    weakest_level,
 )
 
 __all__ = [
@@ -73,6 +74,7 @@ __all__ = [
     "EgressDecisionCode",
     "EgressObserved",
     "EgressReporter",
+    "FedFromStore",
     "HostToolCalled",
     "HostToolOutcome",
     "LandedOutput",
@@ -86,14 +88,37 @@ __all__ = [
     "StoreFileRead",
     "StoreReadOutcome",
     "ToolCallEnded",
+    "fed_with",
     "record",
     "refuse_an_unusable_observer",
 ]
 
 
+@dataclass(frozen=True)
+class FedFromStore:
+    """What one call was fed out of the host's file store, folded into a single answer.
+
+    A call that read nothing carries none of these rather than an empty fold:
+    :func:`~maf_sandbox.weakest_integrity` answers ``TRUSTED`` for an empty listing, which would
+    read here as a call fed trusted content.
+    """
+
+    #: How many reads this folds — reads, not distinct files.  Never zero.
+    reads: int
+    #: The weakest level across them, ``None`` where the host establishes nothing about one.
+    weakest: SourceIntegrity | None
+
+
+def fed_with(fed: FedFromStore | None, level: SourceIntegrity | None) -> FedFromStore:
+    """``fed`` extended by one read at ``level``, folded rather than accumulated."""
+    if fed is None:
+        return FedFromStore(reads=1, weakest=level)
+    return FedFromStore(reads=fed.reads + 1, weakest=weakest_level((fed.weakest, level)))
+
+
 @dataclass
 class RecordedCall:
-    """One tool call, as the sites that build events see it: an id, and whether it is still open.
+    """One tool call as the event sites see it: an id, whether it is open, and what has fed it.
 
     **Mutable, and that is the whole of it.**  A task starts from a copy of its parent's context,
     so a child the body left running keeps whatever :data:`RECORDED_CALL` held when it started —
@@ -105,6 +130,9 @@ class RecordedCall:
 
     id: str
     closed: bool = False
+    #: What has fed this call so far, folded by :func:`fed_with`.  A read that answered
+    #: ``absent`` or ``refused`` fed nothing and does not reach it.
+    fed: FedFromStore | None = None
 
 
 #: The tool call whose records are being written here, or ``None`` outside one.
@@ -523,6 +551,9 @@ class ToolCallEnded(SandboxEvent):
     what the body did; the reclaim's own trouble arrives as ``unclean`` and, where a disposal
     was asked for, as :class:`SandboxDisposed`.  ``unclean`` counts what a transport noted about
     the sandbox during the call — a stop that did not reach everything a program started.
+
+    ``fed`` is what the store fed the call, and it describes that and never the result: a kind
+    reading a file and answering a fixed sentence is fed what one quoting the bytes is.
     """
 
     tool: str
@@ -533,6 +564,8 @@ class ToolCallEnded(SandboxEvent):
     unclean: int
     #: This call's own id, which every event it emitted carries — see :data:`RECORDED_CALL`.
     call: str
+    #: What the store fed this call, folded, and ``None`` for one it fed nothing.
+    fed: FedFromStore | None = None
 
     def deliver_to(self, observer: SandboxObserver) -> None:
         observer.tool_call_ended(self)

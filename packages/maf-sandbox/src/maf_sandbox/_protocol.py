@@ -319,12 +319,17 @@ def weakest_integrity(files: Iterable[ListedFile]) -> SourceIntegrity | None:
     The ordering is :data:`INTEGRITY_RANK`, which this repository requires to be data with an
     exhaustiveness test rather than a comparison written by hand.
     """
+    return weakest_level(listed.integrity for listed in files)
+
+
+def weakest_level(levels: Iterable[SourceIntegrity | None]) -> SourceIntegrity | None:
+    """:func:`weakest_integrity` over the labels themselves, for a caller holding no listing."""
     weakest = SourceIntegrity.TRUSTED
-    for listed in files:
-        if listed.integrity is None:
+    for level in levels:
+        if level is None:
             return None
-        if INTEGRITY_RANK[listed.integrity] < INTEGRITY_RANK[weakest]:
-            weakest = listed.integrity
+        if INTEGRITY_RANK[level] < INTEGRITY_RANK[weakest]:
+            weakest = level
     return weakest
 
 
