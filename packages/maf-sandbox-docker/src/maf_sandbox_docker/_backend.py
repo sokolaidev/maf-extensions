@@ -194,10 +194,63 @@ _NAME_PREFIX = "maf-sandbox-docker-"
 _NET_SUFFIX = "-net"
 _PROXY_SUFFIX = "-proxy"
 
-#: The tar block size docker's `cp` stream begins with — one header carries name, size, an
-#: entry-type flag and a link target before any content byte, which is how this backend stats
-#: a path without a stat command.
+#: Metadata is bounded separately from the caller's file-body cap.
 _TAR_BLOCK = 512
+_TAR_HEADER_LIMIT = 64 * 1024
+
+
+def _tar_entry_prefix(data: bytes) -> tuple[tarfile.TarInfo | None, int]:
+    """Parse one entry, or name the prefix needed to finish its bounded metadata."""
+    offset = 0
+    for _ in range(32):
+        needed = offset + _TAR_BLOCK
+        if needed > _TAR_HEADER_LIMIT:
+            raise RuntimeError("docker tar headers exceed the 64 KiB metadata limit")
+        if len(data) < needed:
+            return None, needed
+        info = tar_header_from_block(data[offset:needed])
+        if info.size < 0:
+            raise RuntimeError("docker tar header declares a negative size")
+        if info.type == tarfile.GNUTYPE_SPARSE:
+            raise RuntimeError("docker sparse tar entries are unsupported")
+        if info.type not in (
+            tarfile.XHDTYPE,
+            tarfile.XGLTYPE,
+            tarfile.GNUTYPE_LONGNAME,
+            tarfile.GNUTYPE_LONGLINK,
+        ):
+            if offset == 0:
+                return info, needed
+            with tarfile.open(fileobj=io.BytesIO(data[:needed]), mode="r:") as archive:
+                entry = archive.next()
+            if entry is None or entry.size < 0 or entry.sparse is not None:
+                raise RuntimeError("docker returned an unsupported tar entry")
+            return entry, entry.offset_data
+        end = needed + info.size
+        offset = needed + ((info.size + _TAR_BLOCK - 1) // _TAR_BLOCK) * _TAR_BLOCK
+        if offset + _TAR_BLOCK > _TAR_HEADER_LIMIT:
+            raise RuntimeError("docker tar headers exceed the 64 KiB metadata limit")
+        if len(data) < offset:
+            return None, offset + _TAR_BLOCK
+        if info.type in (tarfile.XHDTYPE, tarfile.XGLTYPE):
+            # tarfile tolerates malformed trailing records; a partial stat must fail closed.
+            records = data[needed:end]
+            while records:
+                length, separator, _ = records.partition(b" ")
+                if not separator or not length.isdigit():
+                    raise RuntimeError("docker returned a malformed PAX record")
+                size = int(length)
+                record = records[len(length) + 1 : size]
+                if size > len(records) or not record.endswith(b"\n") or b"=" not in record:
+                    raise RuntimeError("docker returned a malformed PAX record")
+                if record.startswith(b"GNU.sparse."):
+                    raise RuntimeError("docker sparse tar entries are unsupported")
+                key, _, value = record[:-1].partition(b"=")
+                if key in (b"size", b"uid", b"gid") and not value.isdigit():
+                    raise RuntimeError("docker returned an invalid PAX size or owner")
+                records = records[size:]
+    raise RuntimeError("docker tar headers exceed the 32-header limit")
+
 
 #: How much of `/etc/passwd` the identity read will take off the wire: the header plus a
 #: body big enough for any real passwd file, so a host that answers keeps the whole file
@@ -214,7 +267,7 @@ _FILES_LIMITS = TransferLimits(
 )
 _LIMITS = SandboxLimits(files_in=_FILES_LIMITS, files_out=_FILES_LIMITS)
 
-# FILES_OUT from day one — the pull surface is native (stat from the first tar header, read from
+# FILES_OUT from day one — the pull surface is native (stat from the tar entry header, read from
 # the same stream). Never FILES_LIST: no engine-level enumeration primitive.
 #
 # HOST_TOOLS is the one member with no method behind it, so what it asserts is narrower than the
@@ -711,10 +764,9 @@ class _DockerSandbox:
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
         """Describe ``path``, or return ``None`` when nothing is there.
 
-        Reads only the first tar block of ``docker cp <name>:<guest path> -`` and kills the
-        transfer: the header carries the size and the entry type, so nothing after it moves,
-        and an output too large to serve costs one block rather than its whole self.  A missing
-        path is ``None``; a resolution outside ``working_directory`` raises before the
+        Reads the entry header of ``docker cp <name>:<guest path> -``, retrying extended
+        metadata within a 64 KiB prefix limit, and kills the transfer before the file body.
+        A missing path is ``None``; a resolution outside ``working_directory`` raises before the
         subprocess runs, and so does a path whose *parents* leave it — no byte of ``/etc``
         crosses when ``out -> /etc`` is statted through, but its type and size do, and that is
         metadata from outside the boundary.
@@ -812,6 +864,29 @@ class _DockerSandbox:
                 f"{f' — {removed.stderr.strip()}' if removed.stderr else ''}"
             )
 
+    async def _copy_entry(
+        self, guest: str, *, max_bytes: int = 0
+    ) -> tuple[_DockerResult, tarfile.TarInfo | None, int]:
+        """Retry an extended header within one deadline, parsing each copy independently."""
+        limit = _TAR_BLOCK + max_bytes
+        deadline = time.monotonic() + self._command_timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("docker tar read exceeded its deadline")
+            result = await self._run(
+                "cp", f"{self._name}:{guest}", "-", timeout=remaining, read_limit=limit
+            )
+            if len(result.stdout) < _TAR_BLOCK:
+                return result, None, _TAR_BLOCK
+            info, offset = _tar_entry_prefix(result.stdout)
+            needed = offset + (min(info.size, max_bytes) if info is not None else max_bytes)
+            if info is not None and (needed <= len(result.stdout) or len(result.stdout) < limit):
+                return result, info, offset
+            if len(result.stdout) < limit:
+                raise RuntimeError("docker returned incomplete tar metadata")
+            limit = needed
+
     async def _stat_guest(
         self, guest: str, rel: str, walked: dict[str, tuple[int, int]] | None = None
     ) -> SandboxEntry | None:
@@ -822,16 +897,13 @@ class _DockerSandbox:
         very check being made.  ``None`` means the engine said this path is not there; any
         other failure raises, since that answer is what ends the check.
         """
-        result = await self._run(
-            "cp", f"{self._name}:{guest}", "-", timeout=self._command_timeout, read_limit=_TAR_BLOCK
-        )
+        result, info, _ = await self._copy_entry(guest)
         if result.returncode != 0 and not result.stdout:
             if _reads_as_an_absent_path(result.stderr, guest):
                 return None
             raise RuntimeError(f"docker could not stat {rel}: {result.stderr.strip()}")
-        if len(result.stdout) < _TAR_BLOCK:
+        if info is None:
             raise RuntimeError(f"docker returned no tar header for {rel}")
-        info = tar_header_from_block(result.stdout[:_TAR_BLOCK])
         if walked is not None:
             # The same header answers ownership, so a check that wants both parses it once.
             walked[guest] = (info.uid, info.mode)
@@ -841,9 +913,8 @@ class _DockerSandbox:
         """Read the regular file at ``path``, refusing anything over ``max_bytes``.
 
         The same ``docker cp`` tar stream as :meth:`stat_file`, read only as far as it may
-        legitimately go: the header block gives the type and size, and the transfer is bounded
-        to header plus ``max_bytes`` before the child is killed, so a file larger than the cap
-        is **refused on its header without its body ever being buffered**.  A non-regular entry
+        legitimately go: extended metadata is capped at 64 KiB and the body at ``max_bytes``.
+        A file larger than the cap is refused on its declared size. A non-regular entry
         (a symlink tars as a link *entry*, not its target's bytes) is refused on the header
         type, and every parent, from the filesystem root down, is classified first.
 
@@ -853,29 +924,20 @@ class _DockerSandbox:
         guest = await confine_resolve_guest_read_path(
             lambda p: self._stat_guest(p, p), path, working_directory
         )
-        # Header + the most body the cap allows. A larger file is refused from the header alone,
-        # so the extra bytes are never read; a file within the cap is fully present in this bound.
-        result = await self._run(
-            "cp",
-            f"{self._name}:{guest}",
-            "-",
-            timeout=self._command_timeout,
-            read_limit=_TAR_BLOCK + max_bytes,
-        )
+        result, info, offset = await self._copy_entry(guest, max_bytes=max_bytes)
         if result.returncode != 0 and not result.stdout:
             if _reads_as_an_absent_path(result.stderr, guest):
                 raise FileNotFoundError(f"no such file: {path!r}")
             raise RuntimeError(f"docker could not read {path}: {result.stderr.strip()}")
-        if len(result.stdout) < _TAR_BLOCK:
+        if info is None:
             raise RuntimeError(f"docker returned no tar header for {path}")
-        info = tar_header_from_block(result.stdout[:_TAR_BLOCK])
         if not info.isreg():
             raise OSError(f"{path!r} is not a regular file and is refused")
         if info.size > max_bytes:
             raise SandboxTransferCapExceeded(
                 f"{path!r} is {info.size} bytes and the caller allowed {max_bytes}"
             )
-        body = result.stdout[_TAR_BLOCK : _TAR_BLOCK + info.size]
+        body = result.stdout[offset : offset + info.size]
         if len(body) < info.size:
             raise RuntimeError(
                 f"docker returned an incomplete body for {path!r}: "
@@ -1471,12 +1533,12 @@ class DockerSandboxBackend:
         if len(result.stdout) < _TAR_BLOCK:
             return None
         try:
-            info = tar_header_from_block(result.stdout[:_TAR_BLOCK])
-        except (tarfile.TarError, EOFError, ValueError):
+            info, offset = _tar_entry_prefix(result.stdout)
+        except (tarfile.TarError, EOFError, ValueError, RuntimeError):
             return None
-        if not info.isreg():
+        if info is None or not info.isreg():
             return None
-        body = result.stdout[_TAR_BLOCK : _TAR_BLOCK + info.size]
+        body = result.stdout[offset : offset + info.size]
         if len(body) < info.size:
             return None
         return body.decode("utf-8", errors="replace")
@@ -1503,12 +1565,12 @@ class DockerSandboxBackend:
         if len(result.stdout) < _TAR_BLOCK:
             return {}
         try:
-            info = tar_header_from_block(result.stdout[:_TAR_BLOCK])
-        except (tarfile.TarError, EOFError, ValueError):
+            info, offset = _tar_entry_prefix(result.stdout)
+        except (tarfile.TarError, EOFError, ValueError, RuntimeError):
             return {}
-        if not info.isreg():
+        if info is None or not info.isreg():
             return {}
-        body = result.stdout[_TAR_BLOCK : _TAR_BLOCK + info.size]
+        body = result.stdout[offset : offset + info.size]
         if len(body) < info.size:
             return {}
         groups: dict[str, int] = {}

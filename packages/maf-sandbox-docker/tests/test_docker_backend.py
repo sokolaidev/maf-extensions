@@ -17,7 +17,6 @@ import itertools
 import logging
 import sys
 import tarfile
-import time
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 
@@ -71,13 +70,15 @@ _NAME = _container_name(_KEY, _SPEC.kind)
 _WORK = "/maf-sandbox/work"
 
 
-def _tar_bytes(path: str, data: bytes) -> bytes:
+def _tar_bytes(path: str, data: bytes, *, pax_headers: dict[str, str] | None = None) -> bytes:
     """A one-entry tar as ``docker cp <name>:<path> -`` would stream it out."""
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w") as archive:
         entry = tarfile.TarInfo(path)
         entry.size = len(data)
         entry.mode = 0o644
+        if pax_headers is not None:
+            entry.pax_headers = pax_headers
         archive.addfile(entry, io.BytesIO(data))
     return buffer.getvalue()
 
@@ -1146,26 +1147,31 @@ class TestWhichPrincipalACommandCarries:
             asyncio.run(sandbox.reclaim(f"{_WORK}/x", working_directory=_WORK, timeout=30))
         assert len(fake.matching("exec")) == 2
 
-    def test_the_retry_gets_what_is_left_of_the_one_deadline(self):
-        """`reclaim(timeout=T)` promises completion within T, not 2T — two attempts each handed
-        the full timeout still succeed, just twice as late as the contract allows.
-        """
-        spent = 0.05
+    def test_the_retry_gets_what_is_left_of_the_one_deadline(self, monkeypatch: pytest.MonkeyPatch):
+        """Both removal attempts share one deadline."""
+        from types import SimpleNamespace
+
+        import maf_sandbox_docker._backend as docker_backend
+
+        now = 1000.0
+        spent = 0.25
         base = _machine(running=[_NAME], overrides={**_WORK_IS_A_DIRECTORY, **_CAPS_DROPPED})
 
-        def slow(args):
+        def refuse_as_root(args):
+            nonlocal now
             if args[:3] == ("exec", "--user", "0"):
-                time.sleep(spent)
+                now += spent
                 return _DockerResult(1, b"", "rm: Permission denied")
             return base(args)
 
-        backend, fake = _backend_with(slow)
+        backend, fake = _backend_with(refuse_as_root)
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        monkeypatch.setattr(docker_backend, "time", SimpleNamespace(monotonic=lambda: now))
         asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
 
         first, second = fake.matching("exec")
         assert first.timeout == 30
-        assert second.timeout is not None and second.timeout <= 30 - spent
+        assert second.timeout == 30 - spent
 
     def test_both_attempts_messages_reach_the_caller(self):
         """A failure that was nothing to do with ownership is retried too, so the second
@@ -1906,6 +1912,162 @@ class TestReadFile:
         sandbox = self._sandbox_streaming(_tar_bytes("out.png", payload))
         got = asyncio.run(sandbox.read_file("out.png", working_directory=_WORK, max_bytes=1000))
         assert got == payload
+
+    @pytest.mark.parametrize("path", ["café.txt", "a" * 120 + ".txt"])
+    @pytest.mark.parametrize("max_bytes", [7, 1000])
+    def test_a_pax_name_stats_and_reads_the_actual_entry(self, path: str, max_bytes: int):
+        payload = b"payload"
+        sandbox = self._sandbox_streaming(_tar_bytes(path, payload))
+        entry = asyncio.run(sandbox.stat_file(path, working_directory=_WORK))
+        assert entry is not None and entry.kind is EntryKind.FILE
+        assert entry.path == path and entry.size_bytes == len(payload)
+        assert (
+            asyncio.run(sandbox.read_file(path, working_directory=_WORK, max_bytes=max_bytes))
+            == payload
+        )
+
+    def test_a_pax_symlink_is_still_refused(self):
+        sandbox = self._sandbox_streaming(_symlink_tar("café.txt", "/etc/hostname"))
+        entry = asyncio.run(sandbox.stat_file("café.txt", working_directory=_WORK))
+        assert entry is not None and entry.kind is EntryKind.SYMLINK
+        with pytest.raises(OSError, match="not a regular file"):
+            asyncio.run(sandbox.read_file("café.txt", working_directory=_WORK, max_bytes=1000))
+
+    def test_a_pax_file_over_the_cap_is_refused(self):
+        sandbox = self._sandbox_streaming(_tar_bytes("café.txt", b"x" * 4000))
+        with pytest.raises(SandboxTransferCapExceeded):
+            asyncio.run(sandbox.read_file("café.txt", working_directory=_WORK, max_bytes=10))
+
+    def test_an_incomplete_pax_body_is_refused(self):
+        stream = _tar_bytes("café.txt", b"x" * 4000)[: 1536 + 1500]
+        sandbox = self._sandbox_streaming(stream, rc=1)
+        with pytest.raises(RuntimeError, match="incomplete body"):
+            asyncio.run(sandbox.read_file("café.txt", working_directory=_WORK, max_bytes=4000))
+
+    @pytest.mark.parametrize("length", [512, 700, 1024, 1300])
+    def test_incomplete_pax_metadata_is_refused(self, length: int):
+        sandbox = self._sandbox_streaming(_tar_bytes("café.txt", b"x")[:length], rc=1)
+        with pytest.raises(RuntimeError, match="incomplete tar metadata"):
+            asyncio.run(sandbox.stat_file("café.txt", working_directory=_WORK))
+
+    def test_an_oversized_pax_header_is_refused_before_its_body_is_read(self):
+        header = tarfile.TarInfo("pax")
+        header.type = tarfile.XHDTYPE
+        header.size = 65536
+        sandbox = self._sandbox_streaming(header.tobuf())
+        with pytest.raises(RuntimeError, match="metadata limit"):
+            asyncio.run(sandbox.stat_file("out.txt", working_directory=_WORK))
+
+    def test_malformed_pax_records_are_refused(self):
+        stream = bytearray(_tar_bytes("café.txt", b"x"))
+        stream[512:514] = b"0 "
+        sandbox = self._sandbox_streaming(bytes(stream))
+        with pytest.raises(RuntimeError, match="malformed PAX"):
+            asyncio.run(sandbox.stat_file("café.txt", working_directory=_WORK))
+
+    @pytest.mark.parametrize("field", ["size", "uid", "gid"])
+    def test_an_invalid_pax_number_is_refused(self, field: str):
+        sandbox = self._sandbox_streaming(_tar_bytes("out", b"x", pax_headers={field: "bad"}))
+        with pytest.raises(RuntimeError, match="invalid PAX"):
+            asyncio.run(sandbox.stat_file("out", working_directory=_WORK))
+
+    def test_a_pax_size_overrides_the_ustar_size(self):
+        stream = _tar_bytes("out", b"payload", pax_headers={"size": "7"})
+        header = tarfile.TarInfo("out")
+        header.size = 1
+        stream = stream[:1024] + header.tobuf() + stream[1536:]
+        sandbox = self._sandbox_streaming(stream)
+        entry = asyncio.run(sandbox.stat_file("out", working_directory=_WORK))
+        assert entry is not None and entry.size_bytes == 7
+        assert (
+            asyncio.run(sandbox.read_file("out", working_directory=_WORK, max_bytes=7))
+            == b"payload"
+        )
+        with pytest.raises(SandboxTransferCapExceeded):
+            asyncio.run(sandbox.read_file("out", working_directory=_WORK, max_bytes=6))
+
+    def test_pax_ownership_reaches_the_ancestor_walk(self):
+        sandbox = self._sandbox_streaming(_tar_bytes("out", b"", pax_headers={"uid": "123"}))
+        walked = {}
+        asyncio.run(sandbox._stat_guest(f"{_WORK}/out", "out", walked))
+        assert walked[f"{_WORK}/out"] == (123, 0o644)
+
+    def test_pax_identity_files_are_resolved(self):
+        backend, _ = _backend_with(
+            _machine(
+                overrides={
+                    ("cp", f"{_NAME}:/etc/passwd"): _DockerResult(
+                        0,
+                        _tar_bytes(
+                            "passwd", b"app:x:123:456::/:/bin/sh\n", pax_headers={"mtime": "1.5"}
+                        ),
+                        "",
+                    ),
+                    ("cp", f"{_NAME}:/etc/group"): _DockerResult(
+                        0, _tar_bytes("group", b"app:x:456:\n", pax_headers={"mtime": "1.5"}), ""
+                    ),
+                }
+            )
+        )
+        assert asyncio.run(backend._passwd_entry(_NAME)) == "app:x:123:456::/:/bin/sh\n"
+        assert asyncio.run(backend._group_entry(_NAME)) == {"app": 456}
+
+    def test_a_retry_uses_only_the_new_stream(self):
+        streams = iter([_tar_bytes("café.txt", b"old"), _tar_bytes("out", b"new")])
+        base = _machine(running=[_NAME], overrides=_WORK_IS_A_DIRECTORY)
+
+        def changing(args):
+            if args[:2] == _cp(f"{_WORK}/out"):
+                return _DockerResult(0, next(streams), "")
+            return base(args)
+
+        backend, _ = _backend_with(changing)
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert asyncio.run(sandbox.read_file("out", working_directory=_WORK, max_bytes=3)) == b"new"
+
+    def test_a_pax_stat_never_reads_the_file_body(self):
+        stream = _tar_bytes("café.txt", b"x" * 100000)
+        sandbox, fake = TestStatFile()._sandbox_streaming(stream)
+        asyncio.run(sandbox.stat_file("café.txt", working_directory=_WORK))
+        calls = fake.matching(*_cp(f"{_WORK}/café.txt"))
+        assert [call.read_limit for call in calls] == [512, 1536]
+        assert calls[0].timeout is not None and calls[1].timeout is not None
+        assert calls[1].timeout <= calls[0].timeout
+
+    def test_a_pax_directory_in_the_parent_walk_is_served(self):
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            _cp(f"{_WORK}/café"): _DockerResult(0, _directory_tar("café"), ""),
+            _cp(f"{_WORK}/café/out"): _DockerResult(0, _tar_bytes("out", b"ok"), ""),
+        }
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert (
+            asyncio.run(sandbox.read_file("café/out", working_directory=_WORK, max_bytes=2))
+            == b"ok"
+        )
+
+    def test_gnu_long_names_are_read(self):
+        path = "a" * 120
+        header = tarfile.TarInfo(path)
+        header.size = 2
+        sandbox = self._sandbox_streaming(header.tobuf(format=tarfile.GNU_FORMAT) + b"ok")
+        assert asyncio.run(sandbox.read_file(path, working_directory=_WORK, max_bytes=2)) == b"ok"
+
+    def test_a_chain_of_metadata_headers_is_bounded(self):
+        header = tarfile.TarInfo("pax")
+        header.type = tarfile.XGLTYPE
+        stream = header.tobuf() * 32 + _tar_bytes("out", b"ok")
+        sandbox = self._sandbox_streaming(stream)
+        with pytest.raises(RuntimeError, match="32-header limit"):
+            asyncio.run(sandbox.stat_file("out", working_directory=_WORK))
+
+    def test_sparse_pax_metadata_is_refused(self):
+        sandbox = self._sandbox_streaming(
+            _tar_bytes("out", b"x", pax_headers={"GNU.sparse.map": "0,1"})
+        )
+        with pytest.raises(RuntimeError, match="sparse"):
+            asyncio.run(sandbox.stat_file("out", working_directory=_WORK))
 
     @pytest.mark.parametrize("rc", [0, 1])
     @pytest.mark.parametrize("received", [0, 1500])
