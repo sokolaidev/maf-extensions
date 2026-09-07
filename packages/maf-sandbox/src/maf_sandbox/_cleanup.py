@@ -24,7 +24,8 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import weakref
+import time
+from dataclasses import dataclass, field
 
 from ._protocol import CLEANUP_RANK, Capability, Cleanup, SandboxKey, SandboxSpec
 
@@ -32,7 +33,7 @@ __all__ = [
     "QUEUED_CALL_TIMEOUT",
     "ExclusiveSlots",
     "established_cleanup",
-    "needs_a_slot",
+    "needs_exclusive_use",
     "resolve_cleanup",
 ]
 
@@ -78,93 +79,174 @@ def resolve_cleanup(established: frozenset[Cleanup], floor: Cleanup) -> Cleanup:
     return min(above, key=CLEANUP_RANK.__getitem__)
 
 
-def needs_a_slot(rung: Cleanup) -> bool:
+def needs_exclusive_use(rung: Cleanup) -> bool:
     """Whether a call ending on ``rung`` must hold the sandbox to itself.
 
     The whole of the concurrency rule, written once: everything above ``RECLAIM`` removes the
-    sandbox or rewinds it, which cannot happen under a sibling.
+    sandbox or rewinds it, which cannot happen under a sibling.  A ``RECLAIM`` call still takes
+    a *shared* hold — see :class:`ExclusiveSlots` for why it cannot simply skip the slot.
     """
     return CLEANUP_RANK[rung] > CLEANUP_RANK[Cleanup.RECLAIM]
 
 
+@dataclass
+class _Slot:
+    """Who is inside one ``(key, kind)`` right now. Plain data; the guard outside protects it."""
+
+    #: Owners holding it shared — ``RECLAIM`` calls, which may run together.
+    shared: set[str] = field(default_factory=set[str])
+    #: The owner holding it exclusively, if any. Never set while ``shared`` is non-empty.
+    exclusive: str | None = None
+    #: One per waiting call, each on the loop that registered it.
+    waiters: list[tuple[asyncio.AbstractEventLoop, asyncio.Future[None]]] = field(
+        default_factory=list[tuple[asyncio.AbstractEventLoop, "asyncio.Future[None]"]]
+    )
+
+
 class ExclusiveSlots:
-    """One lock per ``(key, kind)``, held for a whole call, taken only above ``RECLAIM``.
+    """Who may be inside a sandbox: shared for ``RECLAIM``, exclusive for anything above it.
 
-    **Per running event loop**, because an :class:`asyncio.Lock` binds to the loop that first
-    waits on it and this router serves more than one.  The shape is the one
-    :class:`~maf_sandbox.SandboxRouter` already uses for its disposal locks: a weak-keyed table
-    of loops, each holding a weak-valued table of locks, so a lock lives exactly as long as
-    something is holding or waiting on it and a contended lock never keeps its loop alive.
+    **Every caller takes a hold, and that is what makes the exclusion real.**  Letting a
+    ``RECLAIM`` call skip the slot outright looks equivalent and is not: the rung is resolved
+    from the *arriving spec*, while the sandbox is shared by ``(key, kind)``.  Two tools can
+    attach the same kind with the same confinement claim and different ``min_cleanup``, so one
+    resolves to ``RECLAIM`` and the other to ``DISPOSE`` over one sandbox — and a caller that
+    skipped the slot is invisible to the one holding it, whichever order they arrive in.  A
+    shared hold costs a caller nothing while no exclusive one is outstanding, and it is what
+    lets a disposal wait for a sibling it would otherwise never have seen.
 
-    Two calls in *different* loops therefore do not exclude each other, which is the same bound
-    the router's disposal locks carry and the same bound the isolation scope answers: a host that
-    serves one conversation from more than one loop or process raises ``min_isolation_scope`` to
-    :data:`~maf_sandbox.IsolationScope.CALL`, where every call has a sandbox of its own and there
-    is nothing to share.
+    **A hold belongs to the call that took it**, named by an opaque ``owner`` the caller
+    supplies.  Release is by owner rather than by pair, because a waiter that was cancelled or
+    timed out reaches the same cleanup path a holder does: the call that entered and the call
+    still queueing behind it name one ``(key, kind)``, so a release keyed on the pair alone
+    hands the holder's sandbox to a third call while the holder is still running in it.
+
+    The owner is the *call*, not the task, and that distinction is load-bearing in the other
+    direction: a tool body may spawn a task that acquires, and the ``finally`` that gives the
+    sandbox back runs in the body's own task.  Keyed by task, that release would find itself a
+    stranger and leak the hold.
+
+    **Per running event loop**, because a waiter's future belongs to the loop that awaits it and
+    this router serves more than one.  Two calls in different loops therefore do not exclude
+    each other, which is the same bound the router's disposal locks carry and the same bound the
+    isolation scope answers: a host that serves one conversation from more than one loop or
+    process raises ``min_isolation_scope`` to :data:`~maf_sandbox.IsolationScope.CALL`, where
+    every call has a sandbox of its own and there is nothing to share.
     """
 
     def __init__(self) -> None:
-        self._loops: weakref.WeakKeyDictionary[
-            asyncio.AbstractEventLoop,
-            weakref.WeakValueDictionary[tuple[SandboxKey, str], asyncio.Lock],
-        ] = weakref.WeakKeyDictionary()
-        # Guards the two tables only, never held across an await.
+        # Guards the table only, never held across an await.
         self._guard = threading.Lock()
-        # Strong references to the locks a caller is currently holding, so a weak-valued entry
-        # is not collected while its holder is between `take` and `release` — which would let a
-        # second call build a fresh lock and walk straight into the sandbox.
-        self._held: dict[tuple[asyncio.AbstractEventLoop, SandboxKey, str], asyncio.Lock] = {}
+        self._slots: dict[tuple[asyncio.AbstractEventLoop, SandboxKey, str], _Slot] = {}
 
-    def _lock_for(self, key: SandboxKey, kind: str) -> asyncio.Lock:
-        loop = asyncio.get_running_loop()
-        with self._guard:
-            per_loop: weakref.WeakValueDictionary[tuple[SandboxKey, str], asyncio.Lock] | None = (
-                self._loops.get(loop)
-            )
-            if per_loop is None:
-                per_loop = weakref.WeakValueDictionary[tuple[SandboxKey, str], asyncio.Lock]()
-                self._loops[loop] = per_loop
-            lock = per_loop.get((key, kind))
-            if lock is None:
-                lock = asyncio.Lock()
-                per_loop[(key, kind)] = lock
-            return lock
+    def _at(self, key: SandboxKey, kind: str) -> tuple[asyncio.AbstractEventLoop, SandboxKey, str]:
+        return (asyncio.get_running_loop(), key, kind)
 
-    async def take(self, key: SandboxKey, kind: str, *, timeout: float) -> None:
-        """Hold this sandbox for the calling task, waiting out a sibling that has it.
+    async def take(
+        self, key: SandboxKey, kind: str, *, owner: str, exclusive: bool, timeout: float
+    ) -> None:
+        """Hold this sandbox for the calling task, waiting out whoever is incompatible with it.
 
         Raises:
-            TimeoutError: a sibling held it for longer than ``timeout``. Refusing beats waiting
-                for ever behind a call that is never going to return.
+            TimeoutError: the hold was not free within ``timeout``. Refusing beats waiting for
+                ever behind a call that is never going to return.
         """
-        lock = self._lock_for(key, kind)
+        at = self._at(key, kind)
         loop = asyncio.get_running_loop()
-        try:
-            async with asyncio.timeout(timeout):
-                await lock.acquire()
-        except TimeoutError:
-            raise TimeoutError(
-                f"another call is using the sandbox for {key.scope}/{key.thread_id}/"
-                f"{key.agent_dir} and did not finish within {timeout:g}s. A workload cleaned by "
-                "anything stronger than a reclaim runs one call at a time in its sandbox, "
-                "because a reset or a delete cannot run under a sibling."
-            ) from None
-        with self._guard:
-            self._held[(loop, key, kind)] = lock
+        deadline = time.monotonic() + timeout
+        while True:
+            with self._guard:
+                slot = self._slots.setdefault(at, _Slot())
+                free = (
+                    slot.exclusive is None and not slot.shared
+                    if exclusive
+                    else slot.exclusive is None
+                )
+                if free:
+                    if exclusive:
+                        slot.exclusive = owner
+                    else:
+                        slot.shared.add(owner)
+                    return
+                waiter: asyncio.Future[None] = loop.create_future()
+                slot.waiters.append((loop, waiter))
+            remaining = deadline - time.monotonic()
+            try:
+                if remaining <= 0:
+                    raise TimeoutError
+                await asyncio.wait_for(waiter, remaining)
+            except TimeoutError:
+                self._forget_waiter(at, waiter)
+                raise TimeoutError(
+                    f"another call is using the sandbox for {key.scope}/{key.thread_id}/"
+                    f"{key.agent_dir} and did not finish within {timeout:g}s. A workload cleaned "
+                    "by anything stronger than a reclaim runs one call at a time in its sandbox, "
+                    "because a reset or a delete cannot run under a sibling."
+                ) from None
+            except BaseException:
+                # Cancellation, most often. The waiter never held anything, so there is nothing
+                # to give back — only the registration to take back, so a later holder's release
+                # does not try to wake a future nobody is awaiting.
+                self._forget_waiter(at, waiter)
+                raise
 
-    def release(self, key: SandboxKey, kind: str) -> None:
-        """Give the sandbox back. A pair this task does not hold is ignored, not an error."""
-        loop = asyncio.get_running_loop()
+    def _forget_waiter(
+        self, at: tuple[asyncio.AbstractEventLoop, SandboxKey, str], waiter: object
+    ) -> None:
+        """Drop one abandoned waiter, and the slot with it when nothing is left in it."""
         with self._guard:
-            lock = self._held.pop((loop, key, kind), None)
-        if lock is not None and lock.locked():
-            lock.release()
+            slot = self._slots.get(at)
+            if slot is None:
+                return
+            slot.waiters = [held for held in slot.waiters if held[1] is not waiter]
+            self._drop_if_idle(at, slot)
 
-    def holds(self, key: SandboxKey, kind: str) -> bool:
-        """Whether this loop is holding the pair. For tests and diagnostics."""
+    def release(self, key: SandboxKey, kind: str, *, owner: str) -> None:
+        """Give back what ``owner`` holds. An owner holding nothing releases nothing.
+
+        That last sentence is the guard rather than a convenience: a cancelled or timed-out
+        waiter reaches here through the same cleanup path a holder does.
+        """
+        at = self._at(key, kind)
+        with self._guard:
+            slot = self._slots.get(at)
+            if slot is None:
+                return
+            if slot.exclusive == owner:
+                slot.exclusive = None
+            elif owner in slot.shared:
+                slot.shared.discard(owner)
+            else:
+                # Never held it. Waking its waiters would be harmless; freeing the holder's
+                # sandbox would not, and that is what a pair-keyed release used to do.
+                return
+            waiters = slot.waiters
+            slot.waiters = []
+            self._drop_if_idle(at, slot)
+        for loop, waiter in waiters:
+            # Through the waiter's own loop: the router serves more than one, and resolving a
+            # future from a foreign loop is undefined rather than merely unfair.
+            loop.call_soon_threadsafe(_resolve, waiter)
+
+    def _drop_if_idle(
+        self, at: tuple[asyncio.AbstractEventLoop, SandboxKey, str], slot: _Slot
+    ) -> None:
+        """Forget a slot nobody holds or wants. Call under the guard."""
+        if slot.exclusive is None and not slot.shared and not slot.waiters:
+            self._slots.pop(at, None)
+
+    def holds(self, key: SandboxKey, kind: str, *, owner: str) -> bool:
+        """Whether ``owner`` holds this pair, either way. For tests and diagnostics."""
         try:
-            loop = asyncio.get_running_loop()
+            at = self._at(key, kind)
         except RuntimeError:
             return False
         with self._guard:
-            return (loop, key, kind) in self._held
+            slot = self._slots.get(at)
+            return slot is not None and (slot.exclusive == owner or owner in slot.shared)
+
+
+def _resolve(waiter: asyncio.Future[None]) -> None:
+    """Complete a waiter unless its own call already gave up on it."""
+    if not waiter.done():
+        waiter.set_result(None)

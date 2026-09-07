@@ -2795,6 +2795,34 @@ class TestDispose:
         asyncio.run(backend.dispose(_KEY))
         assert fake.matching("rm", "-f") != []
 
+    def test_a_narrowed_disposal_asks_the_engine_for_that_kind_only(self):
+        """The registry filter is not the sweep. `_purge` deletes whatever the *label query*
+        returns, so without the kind label a `dispose(key, kind=...)` still removed every kind's
+        container under the key — and the per-kind end-of-call cleanup means the sibling can be
+        running when that happens."""
+        backend, fake = _backend_with(_machine(running=[_NAME]))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        fake.mark()
+        asyncio.run(backend.dispose(_KEY, kind=_SPEC.kind))
+        listings = [c for c in fake.calls[fake._marked :] if "ps" in c.args or "ls" in c.args]
+        assert listings, [c.args for c in fake.calls[fake._marked :]]
+        assert any(f"label=maf-sandbox.kind={_SPEC.kind}" in call.args for call in listings), [
+            call.args for call in listings
+        ]
+
+    def test_a_whole_key_disposal_still_asks_for_every_kind(self):
+        """`kind=None` is what this method always meant, and it must keep meaning it."""
+        backend, fake = _backend_with(_machine(running=[_NAME]))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        fake.mark()
+        asyncio.run(backend.dispose(_KEY))
+        listings = [c for c in fake.calls[fake._marked :] if "ps" in c.args or "ls" in c.args]
+        assert listings
+        assert not any(
+            any(str(arg).startswith("label=maf-sandbox.kind=") for arg in call.args)
+            for call in listings
+        )
+
     def test_never_raises_when_removal_fails(self):
         overrides = {("rm",): _DockerResult(1, b"", "daemon error")}
         backend, _ = _backend_with(_machine(overrides=overrides))

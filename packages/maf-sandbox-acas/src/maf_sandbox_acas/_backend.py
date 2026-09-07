@@ -1199,9 +1199,6 @@ class AcasSandboxBackend:
         conversation running two kinds does not have one kind's cleanup take the other's warm
         sandbox with it.
 
-        Every kind's, because the key may own one sandbox per kind and this method takes no
-        kind — a caller releasing a key means all of it.
-
         Never raises, and reports the reason a sandbox may still be there. Reaching the group
         is part of the delete: a client this process cannot build has deleted nothing. Ids a
         delete could not remove are kept for the next attempt, apart from the registry, which
@@ -1211,11 +1208,15 @@ class AcasSandboxBackend:
         mine = [
             k for k in list(self._registry) if k[:3] == prefix and (kind is None or k[3] == kind)
         ]
+        # `_undeleted` is key-wide, so a narrowed disposal takes only what the registry
+        # attributed to this kind: carrying the retained set would delete a sibling kind's
+        # sandbox through the retry fallback, which is exactly what narrowing exists to stop.
+        retained: list[str] = sorted(self._undeleted.get(prefix, ())) if kind is None else []
         wanted = list(
             dict.fromkeys(
                 [
                     *(h.sandbox_id for h in (self._registry.pop(k, None) for k in mine) if h),
-                    *sorted(self._undeleted.get(prefix, ())),
+                    *retained,
                 ]
             )
         )

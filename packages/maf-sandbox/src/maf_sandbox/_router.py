@@ -26,7 +26,7 @@ from ._cleanup import (
     QUEUED_CALL_TIMEOUT,
     ExclusiveSlots,
     established_cleanup,
-    needs_a_slot,
+    needs_exclusive_use,
     resolve_cleanup,
 )
 from ._containment import CONTAINED, escapes_containment
@@ -1647,33 +1647,46 @@ class SandboxRouter:
         return sandbox
 
     async def enter_call(
-        self, key: SandboxKey, spec: SandboxSpec, *, timeout: float = QUEUED_CALL_TIMEOUT
+        self,
+        key: SandboxKey,
+        spec: SandboxSpec,
+        *,
+        owner: str,
+        timeout: float = QUEUED_CALL_TIMEOUT,
     ) -> None:
-        """Admit one call to this ``(key, kind)``, holding the sandbox where the rung demands it.
+        """Admit one call to this ``(key, kind)``, holding the sandbox as its rung demands.
 
         A workload cleaned by anything above :data:`~maf_sandbox.Cleanup.RECLAIM` gets the
         sandbox to itself: the cleanup at the end removes or rewinds the whole thing, which
-        cannot happen under a sibling.  On ``RECLAIM`` this does nothing at all, and calls share
-        the sandbox exactly as they always have.
+        cannot happen under a sibling.  A ``RECLAIM`` workload takes a *shared* hold instead, so
+        such calls still run together — but they are visible to an exclusive one, which a caller
+        that skipped the slot would not be.  That matters because the rung is resolved from the
+        arriving spec while the sandbox is shared by ``(key, kind)``: two tools can attach one
+        kind with different ``min_cleanup`` and resolve differently over one sandbox.
 
-        Whoever calls this owes :meth:`finish_call`, exactly as a per-call workload's caller
-        owes ``dispose_call``.
+        Whoever calls this owes :meth:`finish_call` or :meth:`release_call`, exactly as a
+        per-call workload's caller owes ``dispose_call``.
 
         Raises:
-            TimeoutError: a sibling held the sandbox for longer than ``timeout``. Refusing beats
-                waiting behind a call that is never going to return.
+            TimeoutError: the hold was not free within ``timeout``. Refusing beats waiting
+                behind a call that is never going to return.
         """
-        if not needs_a_slot(self.effective_cleanup(spec)):
-            return
-        await self._slots.take(key, spec.kind, timeout=timeout)
+        await self._slots.take(
+            key,
+            spec.kind,
+            owner=owner,
+            exclusive=needs_exclusive_use(self.effective_cleanup(spec)),
+            timeout=timeout,
+        )
 
-    def release_call(self, key: SandboxKey, kind: str) -> None:
+    def release_call(self, key: SandboxKey, kind: str, *, owner: str) -> None:
         """Give a held sandbox back without cleaning it.
 
-        For a call that took the slot and then never reached its cleanup — a refused acquire, a
-        body that raised first. On ``RECLAIM`` nothing was taken and this does nothing.
+        For a call that took a hold and then never reached its cleanup — a refused acquire, a
+        body that raised first, a waiter that was cancelled before it ever got in. An owner
+        that holds nothing releases nothing, which is what makes the last of those safe.
         """
-        self._slots.release(key, kind)
+        self._slots.release(key, kind, owner=owner)
 
     async def finish_call(
         self,
@@ -1682,7 +1695,9 @@ class SandboxRouter:
         *,
         rung: Cleanup,
         sandbox: Sandbox | None,
+        owner: str,
         unclean: str | None = None,
+        timeout: float | None = None,
     ) -> str | None:
         """Run this call's cleanup and give the sandbox back.
 
@@ -1693,13 +1708,19 @@ class SandboxRouter:
         A ``RECLAIM`` never reaches here — its removal is the call's own directory and runs
         wherever the framework runs it.
 
+        ``timeout`` is the bound the *call* resolved — a tool's own ``reclaim_timeout``, or the
+        shortened grace a cancelled body gets — and it bounds the reset and the disposal exactly
+        as it already bounds a reclaim.  Falling back to the router's own when it is ``None``,
+        for a caller that has no per-call bound to pass.
+
         Never raises.  This is a ``finally``'s work, and a failure that replaced the call's own
         result with a message about cleanup would be the wrong thing to report.
         """
+        bound = self._reclaim.timeout if timeout is None else timeout
         try:
-            return await self._run_the_rung(key, spec, rung, sandbox, unclean)
+            return await self._run_the_rung(key, spec, rung, sandbox, unclean, bound)
         finally:
-            self._slots.release(key, spec.kind)
+            self._slots.release(key, spec.kind, owner=owner)
 
     async def _run_the_rung(
         self,
@@ -1708,6 +1729,7 @@ class SandboxRouter:
         rung: Cleanup,
         sandbox: Sandbox | None,
         unclean: str | None,
+        bound: float,
     ) -> str | None:
         """The rung itself, with a reset that failed escalating to the disposal below it."""
         backend = self.backend_for(spec)
@@ -1717,8 +1739,8 @@ class SandboxRouter:
             # Not over an unclean note: a reset restores the filesystem, and the note says a
             # program the call started may still be running. Only a delete answers that.
             try:
-                async with asyncio.timeout(self._reclaim.timeout):
-                    await sandbox.reset(timeout=self._reclaim.timeout)
+                async with asyncio.timeout(bound):
+                    await sandbox.reset(timeout=bound)
             except (asyncio.CancelledError, GeneratorExit):
                 raise
             except Exception as unreset:  # noqa: BLE001 — escalates rather than propagates
@@ -1732,10 +1754,15 @@ class SandboxRouter:
                 )
             else:
                 return None
-        return await self._dispose_the_kind(key, spec, backend, unclean)
+        return await self._dispose_the_kind(key, spec, backend, unclean, bound)
 
     async def _dispose_the_kind(
-        self, key: SandboxKey, spec: SandboxSpec, backend: SandboxBackend, unclean: str | None
+        self,
+        key: SandboxKey,
+        spec: SandboxSpec,
+        backend: SandboxBackend,
+        unclean: str | None,
+        bound: float,
     ) -> str | None:
         """The ladder's disposal: one kind's sandbox on the backend that served it.
 
@@ -1744,10 +1771,10 @@ class SandboxRouter:
         """
         started = time.monotonic()
         try:
-            async with asyncio.timeout(self._reclaim.timeout):
+            async with asyncio.timeout(bound):
                 reported = await backend.dispose(key, kind=spec.kind)
         except TimeoutError:
-            reported = f"the delete did not finish within {self._reclaim.timeout:g}s"
+            reported = f"the delete did not finish within {bound:g}s"
         except (asyncio.CancelledError, GeneratorExit):
             self._record_an_interrupted_disposal(key, backend, started, asyncio.CancelledError())
             raise

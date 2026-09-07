@@ -892,7 +892,11 @@ class WslcSandboxBackend:
             k for k in list(self._registry) if k[:3] == prefix and (kind is None or k[3] == kind)
         ]
         remembered = [self._registry.pop(k) for k in mine]
-        candidates = list(dict.fromkeys([*remembered, *sorted(self._undeleted.get(prefix, ()))]))
+        # Only this kind's leftovers when the sweep is narrowed: `_undeleted` is key-wide, so
+        # carrying all of it would hand a sibling kind's undeleted container to a disposal that
+        # was asked for one kind and delete it through the fallback the query no longer names.
+        retained: list[str] = sorted(self._undeleted.get(prefix, ())) if kind is None else []
+        candidates = list(dict.fromkeys([*remembered, *retained]))
         if candidates:
             # Before the first await: the registry no longer holds these, so a retry finds
             # them only here. Merged, not assigned — teardown for one key is not serialized.
@@ -901,12 +905,19 @@ class WslcSandboxBackend:
         # own proxy on the way to rebuilding it. Every container the labels reach belongs to
         # this key by construction, so all of them are attributable — including one served
         # under an egress configuration this backend no longer runs.
+        # The kind label too when one is asked for. Narrowing the registry above is not
+        # enough on its own: `_purge` deletes whatever the *query* returns, so without this a
+        # `dispose(key, kind="a")` still removed kind B's container and its proxy — and the
+        # per-kind end-of-call cleanup means B can be running when A's routine disposal fires.
+        wanted = [
+            (_LABEL_SCOPE, key.scope),
+            (_LABEL_THREAD, key.thread_id),
+            (_LABEL_AGENT, key.agent_dir),
+        ]
+        if kind is not None:
+            wanted.append((_LABEL_KIND, _label_value(kind)))
         swept = await self._purge(
-            [
-                (_LABEL_SCOPE, key.scope),
-                (_LABEL_THREAD, key.thread_id),
-                (_LABEL_AGENT, key.agent_dir),
-            ],
+            wanted,
             fallback=candidates,
             thread_id=key.thread_id,
             drain_key=lambda _name: key,

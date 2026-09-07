@@ -2632,6 +2632,90 @@ class _PerKeyBackend(InProcessSandboxBackend):
         return self.per_key.setdefault(key, InProcessSandbox())
 
 
+class TestTheStrongRungsHonourTheCallsOwnBound:
+    """A tool's `reclaim_timeout`, and the shortened grace a cancelled body gets, bound the
+    reset and the disposal exactly as they already bound a reclaim.
+
+    They used to read the router's own timeout instead, so an override was ignored on every
+    rung above RECLAIM — which is the ordinary path on a workload that claims nothing.
+    """
+
+    _SPEC = dataclasses.replace(_SPEC, confined_to_guest_call_path=False)
+
+    def test_an_explicit_reclaim_timeout_bounds_the_disposal(self):
+        class _Slow(InProcessSandboxBackend):
+            async def dispose(self, key, *, kind=None):
+                await asyncio.sleep(0.3)
+                return await super().dispose(key, kind=kind)
+
+        backend = _Slow()
+        router = _router(backend)
+        fn = _attach_with(_reclaiming_body, router, spec=self._SPEC, reclaim_timeout=0.01)[0]
+        _call(fn, target="x")
+        # The delete never completes, so nothing reaches `disposed`: the tool's own bound cuts
+        # it off and the key is refused instead. Under the defect the router's 30s bound
+        # applied, the sleep finished well inside it, and the call came back clean.
+        assert backend.disposed == []
+        assert router._unclean, (
+            "a disposal past the tool's own reclaim_timeout was not reported as unclean, so "
+            "the override never reached the rung"
+        )
+
+    def test_the_routers_bound_still_applies_when_a_tool_states_none(self):
+        backend = InProcessSandboxBackend()
+        router = _router(backend)
+        fn = _attach_with(_reclaiming_body, router, spec=self._SPEC)[0]
+        _call(fn, target="x")
+        assert backend.disposed
+        assert not router._unclean
+
+
+class TestAHeldSandboxIsGivenBackHoweverTheCleanupEnds:
+    """A hold left outstanding makes every later call on that sandbox wait out the queue bound
+    for an owner that has already gone, and marking the key unclean does not release it."""
+
+    _OTHER = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-9")
+    _SPEC = dataclasses.replace(_SPEC, confined_to_guest_call_path=False)
+
+    def _build(self, session: SandboxToolSession):
+        async def widget_run(target: str) -> str:
+            mine = session.key()
+            assert not isinstance(mine, str)
+            path = session.guest_call_path()
+            for key in (mine, TestAHeldSandboxIsGivenBackHoweverTheCleanupEnds._OTHER):
+                assert not isinstance(await session.acquire(key), str)
+            return path
+
+        return widget_run
+
+    def test_a_cancellation_during_the_first_disposal_still_frees_the_second(self):
+        cancelling = {"first": True}
+
+        class _CancelsOnce(InProcessSandboxBackend):
+            async def dispose(self, key, *, kind=None):
+                if cancelling["first"]:
+                    cancelling["first"] = False
+                    raise asyncio.CancelledError
+                return await super().dispose(key, kind=kind)
+
+        backend = _CancelsOnce(sandbox_per_key=True)
+        router = _router(backend)
+        fn = _attach_with(self._build, router, spec=self._SPEC)[0]
+
+        async def scenario() -> bool:
+            with pytest.raises(asyncio.CancelledError):
+                await fn(target="x")
+            # Both holds have to be back, including the key whose cleanup never ran.
+            return router._slots.holds(self._OTHER, self._SPEC.kind, owner="ignored") or bool(
+                router._slots._slots
+            )
+
+        assert asyncio.run(scenario()) is False, (
+            "a hold survived the cancelled cleanup, so later calls on that sandbox would wait "
+            "out the queue bound for an owner that has already gone"
+        )
+
+
 class TestACallThatReachesTwoSandboxes:
     """`acquire` takes a key, so one call can hold two — and wrote its name into both."""
 

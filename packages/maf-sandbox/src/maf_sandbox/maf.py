@@ -1706,7 +1706,7 @@ class SandboxToolSession:
             # the wait must still leave the `finally` something to retire.
             call.entered.add((key, self._spec.kind))
             try:
-                await self._router.enter_call(key, self._spec)
+                await self._router.enter_call(key, self._spec, owner=call.id)
             except TimeoutError as exc:
                 self._logger.warning(f"{self._log_prefix}: %s", exc)
                 return _SANDBOX_BUSY
@@ -1937,7 +1937,7 @@ def _give_back_the_sandbox(call: _SandboxToolCall, *, router: SandboxRouter) -> 
     sandbox wait out the queue bound for nothing.
     """
     for key, kind in tuple(call.entered):
-        router.release_call(key, kind)
+        router.release_call(key, kind, owner=call.id)
     call.entered.clear()
 
 
@@ -1984,6 +1984,48 @@ async def _reclaim_the_call(
     prefix = _prefixed(tool)
     path = f"{spec.work_dir}/{call.id}" if call.named else spec.work_dir
     acquired = tuple(call.acquired.items())
+    try:
+        await _clean_each_sandbox(
+            call,
+            acquired=acquired,
+            router=router,
+            spec=spec,
+            tool=tool,
+            prefix=prefix,
+            path=path,
+            logger=logger,
+            on_failure=on_failure,
+            timeout=timeout,
+            unclean=unclean,
+        )
+    finally:
+        # However the loop ended — a return, a cancellation during the second key's disposal,
+        # a backend that raised — every hold this call still owns goes back. A hold left
+        # outstanding makes every later call on that sandbox wait out the queue bound for an
+        # owner that has already gone, and marking the key unclean does not release it.
+        _give_back_the_sandbox(call, router=router)
+
+
+async def _clean_each_sandbox(
+    call: _SandboxToolCall,
+    *,
+    acquired: tuple[tuple[SandboxKey, list[Sandbox]], ...],
+    router: SandboxRouter,
+    spec: SandboxSpec,
+    tool: str,
+    prefix: str,
+    path: str,
+    logger: logging.Logger,
+    on_failure: Callable[[ReclaimFailure], Awaitable[None]] | None,
+    timeout: float,
+    unclean: Sequence[tuple[object, str]],
+) -> None:
+    """The per-sandbox half of :func:`_reclaim_the_call`, split so one ``finally`` covers it.
+
+    Every path out of here — including a cancellation part-way through a call that reached two
+    keys — has to give back the holds the call still owns, and a ``finally`` around the loop is
+    the only shape that does.
+    """
     for index, (key, sandboxes) in enumerate(acquired):
         if key.call_id:
             try:
@@ -2050,7 +2092,12 @@ async def _reclaim_the_call(
                     spec,
                     rung=rung,
                     sandbox=sandboxes[-1],
+                    owner=call.id,
                     unclean="; ".join(noted) or None,
+                    # The call's own bound, not the router's: a tool's `reclaim_timeout`
+                    # override and the shortened grace a cancelled body gets have to reach the
+                    # reset and the disposal exactly as they already reach a reclaim.
+                    timeout=timeout,
                 )
             except (asyncio.CancelledError, GeneratorExit):
                 _refuse_not_yet_reclaimed(router, acquired, index)
@@ -2136,8 +2183,6 @@ async def _reclaim_the_call(
             # must not reacquire a sandbox still holding this call's data.
             _refuse_not_yet_reclaimed(router, acquired, index + 1)
             raise
-    # Last: a pair whose cleanup ran gave its sandbox back there, and this covers the rest.
-    _give_back_the_sandbox(call, router=router)
 
 
 #: The one substitution a committed sentence may carry, and the reason there is exactly one.
