@@ -179,11 +179,7 @@ def _router(*backends, **kwargs):
 
 
 def _pulling_backend():
-    """A backend with the pull surface, for the specs that declare outputs.
-
-    The fake defaults to what every `Sandbox` already owes, so a spec requiring `FILES_OUT`
-    would be refused by the capability match before any of the sink rules below were reached.
-    """
+    """Add pull capabilities that the fake does not declare by default."""
     return InProcessSandboxBackend(
         declarations=dataclasses.replace(FAKE_BACKEND_DECLARATIONS, capabilities=_PULLS)
     )
@@ -2707,6 +2703,76 @@ class TestAHeldSandboxIsGivenBackHoweverTheCleanupEnds:
 
 
 class TestCleanupAdmission:
+    @pytest.mark.parametrize("scope", list(IsolationScope))
+    @pytest.mark.parametrize("selection", list(Selection))
+    def test_declarations_changed_after_attach_return_a_sanitized_refusal(
+        self, scope, selection, caplog
+    ):
+        class _Changed(InProcessSandboxBackend):
+            changed = False
+
+            @property
+            def declarations(self):
+                declared = super().declarations
+                return (
+                    dataclasses.replace(declared, capabilities=frozenset())
+                    if self.changed
+                    else declared
+                )
+
+        backend = _Changed(
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS, isolation_scopes=frozenset(IsolationScope)
+            )
+        )
+        router = _router(backend, selection=selection)
+        spec = dataclasses.replace(_SPEC, isolation_scope=scope)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                answer = await session.acquire(session.key())
+                assert isinstance(answer, str)
+                return answer
+
+            return widget_run
+
+        tool = _attach_with(build, router, spec=spec)[0]
+        backend.changed = True
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            answer = _call(tool, target="x")
+        assert answer == _maf._SANDBOX_REFUSED
+        assert "workload refused before it ran" in caplog.text
+        assert not backend.keys and not router._slots._slots
+
+    @pytest.mark.parametrize("also_value_error", [False, True])
+    def test_admission_refusal_details_stay_in_the_log(self, also_value_error, caplog):
+        class _ValueErrorRefusal(SandboxCapabilityNotSupported, ValueError):
+            pass
+
+        refusal = _ValueErrorRefusal if also_value_error else SandboxCapabilityNotSupported
+
+        class _RefusesAdmission(SandboxRouter):
+            async def enter_call(self, key, spec, *, owner, timeout=1):
+                raise refusal("provider diagnostic: sensitive-detail")
+
+        backend = InProcessSandboxBackend()
+        router = _RefusesAdmission([backend], min_isolation=Isolation.NONE)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                answer = await session.acquire(session.key())
+                assert isinstance(answer, str)
+                return answer
+
+            return widget_run
+
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            answer = _call(_attach_with(build, router)[0], target="x")
+        assert answer == _maf._SANDBOX_REFUSED
+        assert "sensitive-detail" not in answer
+        assert "sensitive-detail" in caplog.text
+        assert not backend.keys and not router._slots._slots
+
     @pytest.mark.parametrize("scope", list(IsolationScope))
     def test_concurrent_first_acquires_share_admission_through_late_cleanup(self, scope):
         creating, release_create, release_second = asyncio.Event(), asyncio.Event(), asyncio.Event()

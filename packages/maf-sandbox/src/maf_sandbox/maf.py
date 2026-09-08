@@ -1641,29 +1641,11 @@ class SandboxToolSession:
     async def acquire(self, key: SandboxKey) -> Sandbox | str:
         """A running sandbox for ``key``, or the message to return when there is none.
 
-        The ladder is this method's whole point, and the line it draws is a security one
-        rather than a stylistic one:
-
-        - a **refusal** — any member of ``_router``'s ``ATTACH_REFUSALS`` — gets a fixed
-          sentence of its own, saying the workload was refused rather than that the sandbox is
-          unavailable. Its *text* is not surfaced: those classes are public and ``acquire``
-          forwards what a backend raises, so a message may carry an SDK response, and nothing
-          about the type says who composed it. What the caller gains is the distinction
-          between a refusal and an outage, which is what decides whether retrying is pointless.
-          **It is caught first**, and the order is the boundary rather than a style: these
-          classes are subclassable, and one inheriting :class:`ValueError` as well would take
-          the verbatim branch below and carry whatever it holds into the transcript;
-        - a **missing SDK** is a host-side install problem, actionable and carrying no
-          account detail;
-        - **no backend** is a configuration state, likewise safe to name;
-        - a :class:`ValueError` is a message this stack authored (image resolution raises
-          them), so it is surfaced verbatim — that is what makes it actionable for whoever is
-          enabling the feature;
-        - anything else is a provider or transport failure whose text can carry endpoint,
-          subscription and tenant ids.  Tool results are persisted into the transcript, so
-          that detail goes to the log — with :func:`~maf_sandbox.error_detail`, because
-          ``str()`` on such an error is often just ``Operation returned an invalid status``
-          — and the model gets a fixed sentence saying only that the run degraded.
+        Admission and backend refusals return a fixed message; their details stay in the log.
+        Refusals take precedence over ValueError, including subclasses of both. Missing SDKs
+        and backends have dedicated messages; stack-authored ValueError text is returned
+        verbatim. Other provider failures are logged with error_detail and return a fixed
+        unavailable message, since tool results are persisted in the transcript.
 
         Raises:
             RuntimeError: the call has closed, or a call-scoped key has no matching open call.
@@ -1722,16 +1704,15 @@ class SandboxToolSession:
         if call is not None:
             try:
                 admission = await self._admit(key, call)
+            except ATTACH_REFUSALS as exc:
+                return self._refused(exc)
             except TimeoutError as exc:
                 self._logger.warning(f"{self._log_prefix}: %s", exc)
                 return _SANDBOX_BUSY
         try:
             sandbox = await self._router.acquire(key, self._spec, _admission=admission)
         except ATTACH_REFUSALS as exc:
-            self._logger.warning(
-                f"{self._log_prefix}: workload refused before it ran: %s", error_detail(exc)
-            )
-            return _SANDBOX_REFUSED
+            return self._refused(exc)
         except ImportError as exc:
             # The backend's SDK is not installed. Actionable, and carries no account detail.
             self._logger.warning(f"{self._log_prefix}: sandbox SDK unavailable: %s", exc)
@@ -1786,6 +1767,12 @@ class SandboxToolSession:
                     "the sandbox will be cleaned before its hold is released."
                 )
         return sandbox
+
+    def _refused(self, exc: Exception) -> str:
+        self._logger.warning(
+            f"{self._log_prefix}: workload refused before it ran: %s", error_detail(exc)
+        )
+        return _SANDBOX_REFUSED
 
     async def _admit(self, key: SandboxKey, call: _SandboxToolCall) -> CallAdmission:
         """Share one admission without allowing a late waiter to retire another acquire's hold."""
