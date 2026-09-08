@@ -14,7 +14,10 @@ import json
 import os
 import shutil
 import subprocess
+import sys
+import time
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from maf_sandbox import Egress, Isolation, OsFamily, SandboxKey, SandboxRouter, SandboxSpec
@@ -33,7 +36,8 @@ try:
 except ImportError:
     assert_reclaim_conformance = None
 
-from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
+from maf_sandbox_wslc import WslcReapResult, WslcSandboxBackend, WslcSandboxConfig
+from maf_sandbox_wslc._backend import _container_name
 
 _IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_IMAGE")
 _PROXY_IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_PROXY_IMAGE")
@@ -73,6 +77,263 @@ def _names_on_the_machine(name: str) -> list[str]:
     ).stdout
     rows = json.loads(listing) if listing.strip() else []
     return [row["Name"] for row in rows if row.get("Name") == name]
+
+
+@pytest.mark.parametrize(
+    ("allowlist", "leftover"),
+    [(False, "workload"), (True, "workload"), (True, "proxy-network"), (True, "network")],
+)
+def test_reap_after_creator_process_exits(allowlist, leftover):
+    assert _IMAGE is not None
+    if allowlist and not _PROXY_IMAGE:
+        pytest.skip("needs MAF_SANDBOX_WSLC_E2E_PROXY_IMAGE for infrastructure cleanup")
+    scope = f"e2e-reap-{uuid.uuid4()}"
+    backend = WslcSandboxBackend(
+        WslcSandboxConfig(egress_proxy_image=_PROXY_IMAGE if allowlist else None)
+    )
+    spec = SandboxSpec(
+        kind="e2e",
+        image=_IMAGE,
+        egress=Egress.ALLOWLIST if allowlist else Egress.CLOSED,
+        egress_allow=("mcr.microsoft.com",) if allowlist else (),
+    )
+    names = [
+        _container_name(
+            SandboxKey(
+                scope=scope + "-other" if agent == "unrelated" else scope,
+                thread_id="thread-1",
+                agent_dir=agent,
+            ),
+            spec.kind,
+            backend._egress_id(spec),
+        )
+        for agent in ("old", "running", "fresh", "unrelated")
+    ]
+    creator = """
+import asyncio, json, os, sys
+from maf_sandbox import Egress, SandboxKey, SandboxSpec
+from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
+async def main():
+    backend = WslcSandboxBackend(WslcSandboxConfig(egress_proxy_image=sys.argv[3] or None))
+    names = []
+    for agent in ('old', 'running', 'fresh', 'unrelated'):
+        sandbox = await backend.acquire(
+            SandboxKey(scope=sys.argv[1] + '-other' if agent == 'unrelated' else sys.argv[1],
+                       thread_id='thread-1', agent_dir=agent),
+            SandboxSpec(kind='e2e', image=sys.argv[2],
+                        egress=Egress.ALLOWLIST if sys.argv[3] else Egress.CLOSED,
+                        egress_allow=('mcr.microsoft.com',) if sys.argv[3] else ()))
+        names.append(sandbox.container_name)
+    print(json.dumps(names), flush=True)
+    os._exit(0)
+asyncio.run(main())
+"""
+    cleaner = """
+import asyncio, json, sys
+from dataclasses import asdict
+from datetime import timedelta
+from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
+backend = WslcSandboxBackend(WslcSandboxConfig())
+assert not backend._registry
+print(json.dumps(asdict(asyncio.run(backend.reap(timedelta(seconds=30), scope=sys.argv[1])))))
+"""
+
+    def command(*args):
+        return subprocess.run(
+            ["wslc", *args], capture_output=True, text=True, check=True, timeout=60
+        ).stdout
+
+    def inspect(name):
+        response = subprocess.run(
+            ["wslc", "container", "inspect", name],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if response.returncode:
+            assert response.returncode == 1 and json.loads(response.stdout) == []
+            return None
+        return json.loads(response.stdout)[0]
+
+    try:
+        started = datetime.now(UTC)
+        created = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                creator,
+                scope,
+                _IMAGE,
+                (_PROXY_IMAGE or "") if allowlist else "",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=240,
+        )
+        assert json.loads(created.stdout) == names
+        old, running, fresh, unrelated = names
+        command("container", "stop", unrelated)
+        stop_requested_at = datetime.now(UTC)
+        command("container", "stop", old)
+        metadata = inspect(old)
+        assert metadata is not None
+        assert metadata["State"]["Running"] is False
+        assert metadata["State"]["Status"] == "exited"
+        created_at = datetime.fromisoformat(metadata["Created"])
+        stopped_at = datetime.fromisoformat(metadata["State"]["FinishedAt"])
+        # WSLC lifecycle timestamps and the operator can read different host/VM clocks.
+        skew = timedelta(seconds=10)
+        assert started - skew <= created_at <= stopped_at <= datetime.now(UTC) + skew
+        listing = json.loads(
+            command("container", "list", "-a", "--format", "json", "--filter", f"name={old}")
+        )
+        listed = next(row for row in listing if row["Name"] == old)
+        assert listed["CreatedAt"] == int(created_at.timestamp())
+        # The state-change event and inspected process exit have separate timestamps.
+        listed_stop = datetime.fromtimestamp(listed["StateChangedAt"], UTC)
+        assert stop_requested_at - skew <= listed_stop <= datetime.now(UTC) + skew
+        print(
+            json.dumps(
+                {
+                    "leftover": leftover,
+                    "allowlist": allowlist,
+                    "created": metadata["Created"],
+                    "finished": metadata["State"]["FinishedAt"],
+                    "operator_now": datetime.now(UTC).isoformat(),
+                    "listed_created": listed["CreatedAt"],
+                    "listed_state_changed": listed["StateChangedAt"],
+                }
+            )
+        )
+        if allowlist:
+            network = json.loads(command("network", "inspect", old + "-net"))[0]
+            assert network["Internal"] is True
+            requested_at = datetime.fromisoformat(
+                network["Labels"]["maf-sandbox.network-created-at"]
+            )
+            assert started <= requested_at <= datetime.now(UTC)
+        if leftover != "workload":
+            command("container", "remove", old)
+        if leftover == "network":
+            command("container", "remove", "-f", old + "-proxy")
+        expires_at = stopped_at + timedelta(seconds=30)
+        time.sleep(max(0, (expires_at - datetime.now(UTC)).total_seconds()) + 1)
+        command("container", "stop", fresh)
+        cleaned = subprocess.run(
+            [sys.executable, "-c", cleaner, scope],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=180,
+        )
+        result = json.loads(cleaned.stdout)
+        assert result == {
+            "disposed": int(leftover == "workload"),
+            "proxies_removed": int(allowlist and leftover != "network"),
+            "networks_removed": int(allowlist),
+            "failures": [],
+        }
+        assert inspect(old) is None
+        running_metadata = inspect(running)
+        assert running_metadata is not None and running_metadata["State"]["Running"] is True
+        assert inspect(fresh) is not None
+        assert inspect(unrelated) is not None
+        if allowlist:
+            assert inspect(old + "-proxy") is None
+            for retained in (running, fresh, unrelated):
+                assert inspect(retained + "-proxy") is not None
+                assert json.loads(command("network", "inspect", retained + "-net"))
+            absent = subprocess.run(
+                ["wslc", "network", "inspect", old + "-net"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            assert absent.returncode == 1 and json.loads(absent.stdout) == []
+        repeated = subprocess.run(
+            [sys.executable, "-c", cleaner, scope],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=180,
+        )
+        assert json.loads(repeated.stdout) == {
+            "disposed": 0,
+            "proxies_removed": 0,
+            "networks_removed": 0,
+            "failures": [],
+        }
+    finally:
+
+        async def cleanup():
+            for name in names:
+                await backend._remove(name + "-proxy")
+                await backend._remove(name)
+                await backend._remove_network(name + "-net")
+
+        asyncio.run(cleanup())
+
+
+@pytest.mark.skipif(not _PROXY_IMAGE, reason="needs MAF_SANDBOX_WSLC_E2E_PROXY_IMAGE")
+@pytest.mark.parametrize("stage", ["inspect", "remove"])
+def test_reap_continues_after_a_real_proxy_disappears(stage, monkeypatch):
+    scope = f"e2e-reap-{uuid.uuid4()}"
+    backend = WslcSandboxBackend(WslcSandboxConfig(egress_proxy_image=_PROXY_IMAGE))
+
+    async def scenario():
+        try:
+            sandbox = await backend.acquire(
+                _key(scope),
+                SandboxSpec(
+                    kind="e2e",
+                    image=_IMAGE,
+                    egress=Egress.ALLOWLIST,
+                    egress_allow=("mcr.microsoft.com",),
+                ),
+            )
+            name = sandbox.container_name
+            command = backend._wslc
+            stopped = await command("container", "stop", name)
+            assert stopped.returncode == 0
+            metadata = await command("container", "inspect", name)
+            finished = datetime.fromisoformat(
+                json.loads(metadata.stdout_text)[0]["State"]["FinishedAt"]
+            )
+            wait = (finished + timedelta(seconds=1) - datetime.now(UTC)).total_seconds()
+            assert wait < 15, "WSL and Windows clocks must be within the probe's wait budget"
+            await asyncio.sleep(max(0, wait) + 1)
+            proxy = await command("container", "inspect", name + "-proxy")
+            proxy_id = json.loads(proxy.stdout_text)[0]["Id"]
+            reads = 0
+            removed = False
+
+            async def disappear(*args, **kwargs):
+                nonlocal reads, removed
+                if args == ("container", "inspect", proxy_id):
+                    reads += 1
+                trigger = args[:2] == ("container", stage) and args[-1] == proxy_id
+                if trigger and not removed and (stage == "remove" or reads == 2):
+                    response = await command("container", "remove", "-f", proxy_id)
+                    assert response.returncode == 0
+                    removed = True
+                return await command(*args, **kwargs)
+
+            monkeypatch.setattr(backend, "_wslc", disappear)
+            assert name in backend._acquired
+            result = await backend.reap(timedelta(seconds=1), scope=scope)
+            assert removed
+            assert result == WslcReapResult(1, 0, 1)
+            assert name not in backend._acquired
+            assert _names_on_the_machine(name) == []
+            assert _names_on_the_machine(name + "-proxy") == []
+            assert not _network_present(name + "-net")
+        finally:
+            await backend.dispose_scope(scope, "thread-1")
+
+    asyncio.run(scenario())
 
 
 class TestALiveContainer:
