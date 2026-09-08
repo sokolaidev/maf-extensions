@@ -82,6 +82,9 @@ def diagram_sandbox_spec(image: str | None = None) -> SandboxSpec:
     directory, whose name is allocated per call.  It still declares that this workload lands
     *something*, which is what keeps the attach-time refusals — no sink, or no ``FILES_OUT`` in
     ``requires`` — doing their job.  The declaration itself is built in the tool body.
+
+    Confinement remains undeclared until a real-backend filesystem and process probe proves it.
+    On a core with the cleanup ladder, each render is cleaned by disposal.
     """
     return SandboxSpec(
         kind=DIAGRAM_KIND,

@@ -101,6 +101,10 @@ class _Guest:
     async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
         del path, working_directory, recursive
 
+    async def reset(self, *, timeout: float) -> None:
+        """No snapshot here — this guest measures a transport, not a lifecycle."""
+        raise NotImplementedError
+
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
         """Drop ``directory`` and everything under it from :attr:`files`.
 

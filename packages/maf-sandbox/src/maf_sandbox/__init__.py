@@ -149,6 +149,7 @@ from ._outputs import (
     validate_artifact_name,
 )
 from ._protocol import (
+    CLEANUP_RANK,
     DEFAULT_BACKEND_DECLARATIONS,
     DEFAULT_CAPABILITIES,
     DEFAULT_SANDBOX_LIMITS,
@@ -159,6 +160,7 @@ from ._protocol import (
     BackendDeclarations,
     CallerContext,
     Capability,
+    Cleanup,
     DeclaredOutput,
     DisposalCode,
     DisposalFailure,
@@ -242,6 +244,7 @@ __all__ = [
     "FLOW_DECLARED_KEY",
     "INTEGRITY_RANK",
     "ISOLATION_RANK",
+    "CLEANUP_RANK",
     "ISOLATION_SCOPE_RANK",
     "MAX_ARTIFACT_NAME_BYTES",
     "MAX_ECHOED_NAME_CHARACTERS",
@@ -270,6 +273,7 @@ __all__ = [
     "HostToolRun",
     "Identity",
     "Isolation",
+    "Cleanup",
     "IsolationScope",
     "ListedFile",
     "OsFamily",

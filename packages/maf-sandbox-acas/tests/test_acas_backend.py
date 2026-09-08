@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import posixpath
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from maf_sandbox import (
@@ -23,6 +25,7 @@ from maf_sandbox import (
     SandboxOsFamilyNotSupported,
     SandboxRouter,
     SandboxSpec,
+    ScopePurge,
 )
 
 from maf_sandbox_acas import (
@@ -1584,6 +1587,53 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert client.deleted == []
         assert backend._undeleted == {(key.scope, key.thread_id, key.agent_dir): {"sbx-1"}}
 
+        client.delete_fails = False
+        asyncio.run(backend.dispose(key, kind="codeact"))
+        assert client.deleted == ["sbx-1"]
+        assert not backend._undeleted
+        assert not backend._undeleted_kinds
+
+    def test_a_refused_create_retains_its_kind_after_a_concurrent_disposal(self):
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        from maf_sandbox_acas._backend import _Deletion
+
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+        key = self._key()
+        original = backend._delete
+        entered, release = asyncio.Event(), asyncio.Event()
+        attempts = 0
+
+        async def delete(group_client, sandbox_id):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                entered.set()
+                await release.wait()
+                return _Deletion(False, DisposalFailure("refused", "delete refused"))
+            return _Deletion(True)
+
+        backend._delete = delete
+
+        async def scenario():
+            acquire = asyncio.create_task(
+                backend.acquire(key, _spec_requiring(Capability.EXEC, Capability.FILES_OUT))
+            )
+            await entered.wait()
+            assert await backend.dispose(key) is None
+            assert not backend._undeleted_kinds
+            release.set()
+            with pytest.raises(SandboxCapabilityNotSupported):
+                await acquire
+            backend._delete = original
+            assert await backend.dispose(key, kind="codeact") is None
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+        assert client.deleted == ["sbx-1"]
+        assert not backend._undeleted
+        assert not backend._undeleted_kinds
+
     def test_a_refused_reuse_keeps_the_sandbox_for_the_key_to_dispose(self):
         """The other half of the split: a warm sandbox predates this acquire, so it belongs to
         the key's own disposal rather than to the acquire that was refused."""
@@ -1859,6 +1909,274 @@ class TestExecArgv:
         )
 
         assert shlex.split(client.calls[0]) == argv
+
+
+class TestNarrowedDisposal:
+    @pytest.mark.parametrize("first", ["kind", "scope", "refused"])
+    @pytest.mark.parametrize("second", ["kind", "scope"])
+    @pytest.mark.parametrize("outcome", ["failure", "cancel", "unreachable"])
+    def test_cross_loop_success_preserves_a_newer_retry(self, first, second, outcome, monkeypatch):
+        from maf_sandbox_acas._backend import _Deletion
+
+        client = _FakeGroupClient()
+        backend = _backend_with(client)
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent")
+        prefix = (key.scope, key.thread_id, key.agent_dir)
+        if first != "refused":
+            backend._registry[(*prefix, "a")] = _Held("selected")
+        entered, progressed = threading.Event(), threading.Event()
+        failure = DisposalFailure("refused", "delete refused")
+        attempts = 0
+
+        class _Guard:
+            def __init__(self):
+                self.lock = threading.Lock()
+
+            def __enter__(self):
+                if not self.lock.acquire(blocking=False):
+                    progressed.set()
+                    assert self.lock.acquire(timeout=5)
+
+            def __exit__(self, *args):
+                self.lock.release()
+
+        class _Ledger(dict):
+            armed = True
+
+            def pop(self, at, default=None):
+                if self.armed and at == prefix:
+                    self.armed = False
+                    entered.set()
+                    assert progressed.wait(5)
+                return super().pop(at, default)
+
+        monkeypatch.setattr(backend, "_disposal_guard", _Guard(), raising=False)
+        backend._undeleted = _Ledger()
+        original = backend._delete
+
+        async def delete(group_client, sandbox_id):
+            nonlocal attempts
+            attempts += 1
+            assert sandbox_id == "selected"
+            if attempts == 1:
+                return _Deletion(True)
+            if outcome == "cancel":
+                raise asyncio.CancelledError
+            return _Deletion(False, failure)
+
+        def unavailable():
+            raise RuntimeError("group unavailable")
+
+        monkeypatch.setattr(backend, "_delete", delete)
+
+        async def cleanup(operation):
+            if operation == "refused":
+                return await backend._release_the_refused(client, key, "selected", kind="a")
+            if operation == "scope":
+                return await backend.dispose_scope(key.scope, key.thread_id)
+            return await backend.dispose(key, kind="a")
+
+        def newer_loop():
+            assert entered.wait(5)
+            backend._registry[(*prefix, "a")] = _Held("selected")
+            try:
+                with monkeypatch.context() as pending:
+                    if outcome == "unreachable":
+                        pending.setattr(backend, "_group_client", unavailable)
+                    if outcome == "cancel":
+                        with pytest.raises(asyncio.CancelledError):
+                            asyncio.run(cleanup(second))
+                    else:
+                        result = asyncio.run(cleanup(second))
+                        assert (
+                            result.undisposed if isinstance(result, ScopePurge) else result
+                        ) is not None
+            finally:
+                progressed.set()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            newer = pool.submit(newer_loop)
+            asyncio.run(cleanup(first))
+            newer.result(timeout=5)
+
+        assert backend._undeleted == {prefix: {"selected"}}
+        assert backend._undeleted_kinds == {prefix: {"selected": "a"}}
+        monkeypatch.setattr(backend, "_delete", original)
+        assert asyncio.run(backend.dispose(key, kind="a")) is None
+        assert client.deleted == ["selected"]
+        assert not backend._undeleted and not backend._undeleted_kinds
+        assert not backend._disposal_tokens
+
+    @pytest.mark.parametrize("first", ["kind", "whole", "scope", "refused"])
+    @pytest.mark.parametrize("second", ["kind", "scope"])
+    @pytest.mark.parametrize("outcome", ["failure", "cancel", "unreachable"])
+    def test_stale_success_preserves_a_newer_retry(self, first, second, outcome, monkeypatch):
+        from maf_sandbox_acas._backend import _Deletion
+
+        client = _FakeGroupClient()
+        backend = _backend_with(client)
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent")
+        prefix = (key.scope, key.thread_id, key.agent_dir)
+        if first != "refused":
+            backend._registry[(*prefix, "a")] = _Held("selected")
+        original = backend._delete
+        entered, release = asyncio.Event(), asyncio.Event()
+        attempts = 0
+        failure = DisposalFailure("refused", "delete refused")
+
+        async def delete(group_client, sandbox_id):
+            nonlocal attempts
+            attempts += 1
+            assert sandbox_id == "selected"
+            if attempts == 1:
+                entered.set()
+                await release.wait()
+                return _Deletion(True)
+            if outcome == "cancel":
+                raise asyncio.CancelledError
+            return _Deletion(False, failure)
+
+        def unavailable():
+            raise RuntimeError("group unavailable")
+
+        async def cleanup(operation):
+            if operation == "refused":
+                return await backend._release_the_refused(client, key, "selected", kind="a")
+            if operation == "scope":
+                return await backend.dispose_scope(key.scope, key.thread_id)
+            return await backend.dispose(key, kind="a" if operation == "kind" else None)
+
+        monkeypatch.setattr(backend, "_delete", delete)
+
+        async def scenario():
+            older = asyncio.create_task(cleanup(first))
+            await entered.wait()
+            with monkeypatch.context() as pending:
+                if outcome == "unreachable":
+                    pending.setattr(backend, "_group_client", unavailable)
+                if outcome == "cancel":
+                    with pytest.raises(asyncio.CancelledError):
+                        await cleanup(second)
+                else:
+                    result = await cleanup(second)
+                    assert (
+                        result.undisposed if isinstance(result, ScopePurge) else result
+                    ) is not None
+            release.set()
+            await older
+            assert older.done()
+            assert backend._undeleted == {prefix: {"selected"}}
+            assert backend._undeleted_kinds == {prefix: {"selected": "a"}}
+            monkeypatch.setattr(backend, "_delete", original)
+            assert await backend.dispose(key, kind="a") is None
+            assert client.deleted == ["selected"]
+            assert not backend._undeleted and not backend._undeleted_kinds
+            assert not getattr(backend, "_disposal_tokens", {})
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+
+    @pytest.mark.parametrize("operation", ["kind", "whole", "scope"])
+    @pytest.mark.parametrize("retained", [False, True])
+    @pytest.mark.parametrize("new_ledger", [False, True])
+    def test_concurrent_failure_restores_kind_for_a_narrowed_retry(
+        self, operation, retained, new_ledger
+    ):
+        from maf_sandbox_acas._backend import _Deletion
+
+        client = _FakeGroupClient()
+        backend = _backend_with(client)
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent")
+        prefix = (key.scope, key.thread_id, key.agent_dir)
+        if retained:
+            backend._undeleted[prefix] = {"selected"}
+            backend._undeleted_kinds[prefix] = {"selected": "a"}
+        else:
+            backend._registry[(*prefix, "a")] = _Held("selected")
+        original = backend._delete
+        entered, release = asyncio.Event(), asyncio.Event()
+        attempts = 0
+        failure = DisposalFailure("refused", "delete refused")
+
+        async def delete(group_client, sandbox_id):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                entered.set()
+                await release.wait()
+                return _Deletion(False, failure)
+            return _Deletion(attempts == 2, None if attempts == 2 else failure)
+
+        backend._delete = delete
+
+        async def scenario():
+            cleanup = (
+                backend.dispose_scope(key.scope, key.thread_id)
+                if operation == "scope"
+                else backend.dispose(key, kind="a" if operation == "kind" else None)
+            )
+            first = asyncio.create_task(cleanup)
+            await entered.wait()
+            assert await backend.dispose(key, kind="a") is None
+            assert attempts == 2
+            assert prefix not in backend._undeleted_kinds
+            if new_ledger:
+                backend._registry[(*prefix, "b")] = _Held("sibling")
+                assert await backend.dispose(key, kind="b") is not None
+            release.set()
+            result = await first
+            assert (result.undisposed if isinstance(result, ScopePurge) else result) is not None
+            backend._delete = original
+            assert await backend.dispose(key, kind="a") is None
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+        assert client.deleted == ["selected"]
+        assert backend._undeleted == ({prefix: {"sibling"}} if new_ledger else {})
+        assert backend._undeleted_kinds == ({prefix: {"sibling": "b"}} if new_ledger else {})
+
+    @pytest.mark.parametrize(
+        "kind,expected", [("a", ["selected"]), (None, ["selected", "sibling"])]
+    )
+    def test_only_the_requested_kinds_are_deleted(self, kind, expected):
+        client = _FakeGroupClient()
+        backend = _backend_with(client)
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent")
+        prefix = (key.scope, key.thread_id, key.agent_dir)
+        backend._registry[(*prefix, "a")] = _Held("selected")
+        backend._registry[(*prefix, "b")] = _Held("sibling")
+        assert asyncio.run(backend.dispose(key, kind=kind)) is None
+        assert client.deleted == expected
+        assert bool(backend._registry) is (kind is not None)
+
+    def test_narrowed_retries_preserve_kind_attribution(self):
+        backend = _backend_with(_ExplodingGroupClient())
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent")
+        prefix = (key.scope, key.thread_id, key.agent_dir)
+        backend._registry[(*prefix, "a")] = _Held("selected")
+        backend._registry[(*prefix, "b")] = _Held("sibling")
+        for kind in ("a", "b", "a"):
+            assert asyncio.run(backend.dispose(key, kind=kind)) is not None
+        client = _FakeGroupClient()
+        backend._group_client = lambda: client
+        assert asyncio.run(backend.dispose(key, kind="a")) is None
+        assert client.deleted == ["selected"]
+        assert backend._undeleted == {prefix: {"sibling"}}
+        assert asyncio.run(backend.dispose(key)) is None
+        assert client.deleted == ["selected", "sibling"]
+        assert not backend._undeleted
+        assert not backend._undeleted_kinds
+
+    def test_a_failed_scope_purge_keeps_the_registry_kinds_for_retry(self):
+        backend = _backend_with(_ExplodingGroupClient())
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent")
+        prefix = (key.scope, key.thread_id, key.agent_dir)
+        backend._registry[(*prefix, "a")] = _Held("selected")
+        backend._registry[(*prefix, "b")] = _Held("sibling")
+        asyncio.run(backend.dispose_scope(key.scope, key.thread_id))
+        client = _FakeGroupClient()
+        backend._group_client = lambda: client
+        assert asyncio.run(backend.dispose(key, kind="a")) is None
+        assert client.deleted == ["selected"]
+        assert backend._undeleted == {prefix: {"sibling"}}
 
 
 class TestDispose:

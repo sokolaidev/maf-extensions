@@ -28,6 +28,7 @@ from maf_sandbox import (
     BackendDeclarations,
     CallerContext,
     Capability,
+    Cleanup,
     DeclaredOutput,
     DisposalFailure,
     Egress,
@@ -90,13 +91,20 @@ from maf_sandbox.testing import (
     InProcessSandboxBackend,
 )
 
+# The suite's workload writes only through `guest_call_path()` — see `_reclaiming_body` — so
+# the confinement claim is true of it, and stating it is what puts these tests on the
+# `Cleanup.RECLAIM` rung they were written for. A spec that claims nothing is cleaned by
+# disposal, which is the shipped default and has its own tests rather than these.
 _SPEC = SandboxSpec(
     kind="test",
     egress=Egress.ALLOWLIST,
     egress_allow=("example.invalid",),
     work_dir="/maf-sandbox/work",
+    confined_to_guest_call_path=True,
 )
-_NO_EGRESS_SPEC = SandboxSpec(kind="test", work_dir="/maf-sandbox/work")
+_NO_EGRESS_SPEC = SandboxSpec(
+    kind="test", work_dir="/maf-sandbox/work", confined_to_guest_call_path=True
+)
 
 #: A spec that opens no channel the framework cannot establish — no file store, no network, no
 #: host tools.  `DEFAULT_CAPABILITIES` holds `FILES_IN`, so a spec saying nothing about
@@ -171,11 +179,7 @@ def _router(*backends, **kwargs):
 
 
 def _pulling_backend():
-    """A backend with the pull surface, for the specs that declare outputs.
-
-    The fake defaults to what every `Sandbox` already owes, so a spec requiring `FILES_OUT`
-    would be refused by the capability match before any of the sink rules below were reached.
-    """
+    """Add pull capabilities that the fake does not declare by default."""
     return InProcessSandboxBackend(
         declarations=dataclasses.replace(FAKE_BACKEND_DECLARATIONS, capabilities=_PULLS)
     )
@@ -1596,11 +1600,7 @@ _ROUTED_CALL_SPEC = dataclasses.replace(_CALL_SCOPED_SPEC, requires=_PULLS)
 
 
 class TestARoutedCallDeleteReachesOnlyTheBackendThatServed:
-    """A call-scoped delete is aimed by the spec this glue forwards, not swept.
-
-    Without it a per-spec router asks every backend serving the scope, and at call scope the
-    key names a sandbox of each one's own.
-    """
+    """Call-scoped cleanup reaches only the backend retained by the admission."""
 
     def test_the_finally_deletes_only_where_the_spec_routed(self):
         weak, strong = _routed_pair()
@@ -2136,7 +2136,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
 
     def test_sandboxed_tool_uses_router_reclaim_timeout_when_not_passed(self, caplog):
         class _HangsOnDispose(InProcessSandboxBackend):
-            async def dispose(self, key):
+            async def dispose(self, key, *, kind=None):
                 await asyncio.Event().wait()
 
         backend = _HangsOnDispose(_RefusesToRemove())
@@ -2153,7 +2153,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
 
     def test_sandboxed_tool_explicit_reclaim_timeout_overrides_router(self, caplog):
         class _HangsOnDispose(InProcessSandboxBackend):
-            async def dispose(self, key):
+            async def dispose(self, key, *, kind=None):
                 await asyncio.Event().wait()
 
         backend = _HangsOnDispose(_RefusesToRemove())
@@ -2231,7 +2231,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
 
     def test_a_disposal_that_never_returns_is_bounded_and_counts_as_failed(self, caplog):
         class _HangsOnDispose(InProcessSandboxBackend):
-            async def dispose(self, key):
+            async def dispose(self, key, *, kind=None):
                 await asyncio.Event().wait()
 
         backend = _HangsOnDispose(_RefusesToRemove())
@@ -2311,7 +2311,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
 
     def test_a_cancellation_during_the_disposal_still_refuses_the_key(self, caplog):
         class _CancelsOnDispose(InProcessSandboxBackend):
-            async def dispose(self, key):
+            async def dispose(self, key, *, kind=None):
                 raise asyncio.CancelledError()
 
         backend = _CancelsOnDispose(_RefusesToRemove())
@@ -2625,6 +2625,781 @@ class _PerKeyBackend(InProcessSandboxBackend):
         return self.per_key.setdefault(key, InProcessSandbox())
 
 
+class TestTheStrongRungsHonourTheCallsOwnBound:
+    """RESET and DISPOSE use the call's cleanup bound, including cancellation grace."""
+
+    _SPEC = dataclasses.replace(_SPEC, confined_to_guest_call_path=False)
+
+    def test_an_explicit_reclaim_timeout_bounds_the_disposal(self):
+        class _Slow(InProcessSandboxBackend):
+            async def dispose(self, key, *, kind=None):
+                await asyncio.sleep(0.3)
+                return await super().dispose(key, kind=kind)
+
+        backend = _Slow()
+        router = _router(backend)
+        fn = _attach_with(_reclaiming_body, router, spec=self._SPEC, reclaim_timeout=0.01)[0]
+        _call(fn, target="x")
+        # The tool's timeout must interrupt disposal and leave the key refused.
+        assert backend.disposed == []
+        assert router._unclean, (
+            "a disposal past the tool's own reclaim_timeout was not reported as unclean, so "
+            "the override never reached the rung"
+        )
+
+    def test_the_routers_bound_still_applies_when_a_tool_states_none(self):
+        backend = InProcessSandboxBackend()
+        router = _router(backend)
+        fn = _attach_with(_reclaiming_body, router, spec=self._SPEC)[0]
+        _call(fn, target="x")
+        assert backend.disposed
+        assert not router._unclean
+
+
+class TestAHeldSandboxIsGivenBackHoweverTheCleanupEnds:
+    """A hold left outstanding makes every later call on that sandbox wait out the queue bound
+    for an owner that has already gone, and marking the key unclean does not release it."""
+
+    _OTHER = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-9")
+    _SPEC = dataclasses.replace(_SPEC, confined_to_guest_call_path=False)
+
+    def _build(self, session: SandboxToolSession):
+        async def widget_run(target: str) -> str:
+            mine = session.key()
+            assert not isinstance(mine, str)
+            path = session.guest_call_path()
+            for key in (mine, TestAHeldSandboxIsGivenBackHoweverTheCleanupEnds._OTHER):
+                assert not isinstance(await session.acquire(key), str)
+            return path
+
+        return widget_run
+
+    def test_a_cancellation_during_the_first_disposal_still_frees_the_second(self):
+        cancelling = {"first": True}
+
+        class _CancelsOnce(InProcessSandboxBackend):
+            async def dispose(self, key, *, kind=None):
+                if cancelling["first"]:
+                    cancelling["first"] = False
+                    raise asyncio.CancelledError
+                return await super().dispose(key, kind=kind)
+
+        backend = _CancelsOnce(sandbox_per_key=True)
+        router = _router(backend)
+        fn = _attach_with(self._build, router, spec=self._SPEC)[0]
+
+        async def scenario() -> bool:
+            with pytest.raises(asyncio.CancelledError):
+                await fn(target="x")
+            # Both holds have to be back, including the key whose cleanup never ran.
+            return router._slots.holds(self._OTHER, self._SPEC.kind, owner="ignored") or bool(
+                router._slots._slots
+            )
+
+        assert asyncio.run(scenario()) is False, (
+            "a hold survived the cancelled cleanup, so later calls on that sandbox would wait "
+            "out the queue bound for an owner that has already gone"
+        )
+
+
+class TestCleanupAdmission:
+    @pytest.mark.parametrize("seam", ["routing", "declarations"])
+    @pytest.mark.parametrize(
+        "failure,expected",
+        [
+            (ImportError("provider diagnostic"), _maf._SDK_NOT_INSTALLED),
+            (NoSandboxBackend("provider diagnostic"), _maf._NO_BACKEND_CONFIGURED),
+            (ValueError("No disk image configured"), "Error: No disk image configured"),
+            (RuntimeError("provider diagnostic"), _maf._SANDBOX_UNAVAILABLE),
+            (SandboxUnclean("provider diagnostic"), _maf._SANDBOX_UNCLEAN),
+        ],
+    )
+    def test_admission_uses_the_acquisition_error_mapping(self, seam, failure, expected, caplog):
+        class _Backend(InProcessSandboxBackend):
+            armed = False
+
+            @property
+            def declarations(self):
+                if self.armed and seam == "declarations":
+                    raise failure
+                return super().declarations
+
+        class _Router(SandboxRouter):
+            async def enter_call(self, key, spec, *, owner, timeout=1):
+                if seam == "routing":
+                    raise failure
+                return await super().enter_call(key, spec, owner=owner, timeout=timeout)
+
+        backend = _Backend()
+        router = _Router([backend], min_isolation=Isolation.NONE)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                answer = await session.acquire(session.key())
+                assert isinstance(answer, str)
+                return answer
+
+            return widget_run
+
+        tool = _attach_with(build, router)[0]
+        backend.armed = True
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            answer = _call(tool, target="x")
+        assert answer == expected
+        assert str(failure) in caplog.text
+        assert "provider diagnostic" not in answer
+        assert not backend.keys and not router._slots._slots
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            RuntimeError,
+            ValueError,
+            ImportError,
+            SandboxCapabilityNotSupported,
+            asyncio.CancelledError,
+        ],
+    )
+    def test_call_scoped_late_failure_disposes_the_created_sandbox(self, failure):
+        entered, release = asyncio.Event(), asyncio.Event()
+        tasks = []
+
+        class _LateFailure(InProcessSandboxBackend):
+            async def acquire(self, key, spec):
+                entered.set()
+                await release.wait()
+                await super().acquire(key, spec)
+                raise failure("create failed after registration")
+
+        backend = _LateFailure(
+            sandbox_per_key=True,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS, isolation_scopes=frozenset(IsolationScope)
+            ),
+        )
+        router = _router(backend)
+        spec = dataclasses.replace(_SPEC, isolation_scope=IsolationScope.CALL)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                tasks.append(asyncio.create_task(session.acquire(session.key())))
+                await entered.wait()
+                return "done"
+
+            return widget_run
+
+        async def scenario():
+            assert await _fn(_attach_with(build, router, spec=spec)[0])(target="x") == "done"
+            assert not backend.sandboxes
+            release.set()
+            result = (await asyncio.gather(*tasks, return_exceptions=True))[0]
+            assert isinstance(
+                result, asyncio.CancelledError if failure is asyncio.CancelledError else str
+            )
+            assert not backend.sandboxes
+            assert len(backend.disposed) == 2
+            assert not router._slots._slots
+
+        asyncio.run(scenario())
+
+    @pytest.mark.parametrize("scope", list(IsolationScope))
+    @pytest.mark.parametrize("selection", list(Selection))
+    def test_declarations_changed_after_attach_return_a_sanitized_refusal(
+        self, scope, selection, caplog
+    ):
+        class _Changed(InProcessSandboxBackend):
+            changed = False
+
+            @property
+            def declarations(self):
+                declared = super().declarations
+                return (
+                    dataclasses.replace(declared, capabilities=frozenset())
+                    if self.changed
+                    else declared
+                )
+
+        backend = _Changed(
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS, isolation_scopes=frozenset(IsolationScope)
+            )
+        )
+        router = _router(backend, selection=selection)
+        spec = dataclasses.replace(_SPEC, isolation_scope=scope)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                answer = await session.acquire(session.key())
+                assert isinstance(answer, str)
+                return answer
+
+            return widget_run
+
+        tool = _attach_with(build, router, spec=spec)[0]
+        backend.changed = True
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            answer = _call(tool, target="x")
+        assert answer == _maf._SANDBOX_REFUSED
+        assert "workload refused before it ran" in caplog.text
+        assert not backend.keys and not router._slots._slots
+
+    @pytest.mark.parametrize("also_value_error", [False, True])
+    def test_admission_refusal_details_stay_in_the_log(self, also_value_error, caplog):
+        class _ValueErrorRefusal(SandboxCapabilityNotSupported, ValueError):
+            pass
+
+        refusal = _ValueErrorRefusal if also_value_error else SandboxCapabilityNotSupported
+
+        class _RefusesAdmission(SandboxRouter):
+            async def enter_call(self, key, spec, *, owner, timeout=1):
+                raise refusal("provider diagnostic: sensitive-detail")
+
+        backend = InProcessSandboxBackend()
+        router = _RefusesAdmission([backend], min_isolation=Isolation.NONE)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                answer = await session.acquire(session.key())
+                assert isinstance(answer, str)
+                return answer
+
+            return widget_run
+
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            answer = _call(_attach_with(build, router)[0], target="x")
+        assert answer == _maf._SANDBOX_REFUSED
+        assert "sensitive-detail" not in answer
+        assert "sensitive-detail" in caplog.text
+        assert not backend.keys and not router._slots._slots
+
+    @pytest.mark.parametrize("scope", list(IsolationScope))
+    def test_concurrent_first_acquires_share_admission_through_late_cleanup(self, scope):
+        creating, release_create, release_second = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        tasks = []
+
+        class _Late(InProcessSandboxBackend):
+            async def acquire(self, key, spec):
+                sandbox = await super().acquire(key, spec)
+                creating.set()
+                await release_create.wait()
+                return sandbox
+
+        class _Admission(SandboxRouter):
+            attempts = 0
+
+            async def enter_call(self, key, spec, *, owner, timeout=1):
+                self.attempts += 1
+                attempt = self.attempts
+                await asyncio.sleep(0)
+                admission = await super().enter_call(key, spec, owner=owner, timeout=timeout)
+                if attempt == 2:
+                    await release_second.wait()
+                return admission
+
+        backend = _Late(
+            sandbox_per_key=True,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS, isolation_scopes=frozenset(IsolationScope)
+            ),
+        )
+        router = _Admission([backend], min_isolation=Isolation.NONE)
+        spec = dataclasses.replace(_SPEC, min_cleanup=Cleanup.DISPOSE, isolation_scope=scope)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                tasks.extend(asyncio.create_task(session.acquire(session.key())) for _ in range(2))
+                await creating.wait()
+                return "done"
+
+            return widget_run
+
+        async def scenario():
+            assert await _fn(_attach_with(build, router, spec=spec)[0])(target="x") == "done"
+            release_second.set()
+            await asyncio.sleep(0)
+            release_create.set()
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            assert all(isinstance(result, RuntimeError) for result in results), results
+            assert not backend.sandboxes
+            assert not router._slots._slots
+            assert router.attempts == 1
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+
+    def test_cancelling_an_admission_waiter_does_not_cancel_the_shared_admission(self):
+        entering, release = asyncio.Event(), asyncio.Event()
+
+        class _Admission(SandboxRouter):
+            attempts = 0
+
+            async def enter_call(self, key, spec, *, owner, timeout=1):
+                self.attempts += 1
+                entering.set()
+                await release.wait()
+                return await super().enter_call(key, spec, owner=owner, timeout=timeout)
+
+        backend = InProcessSandboxBackend(sandbox_per_key=True)
+        router = _Admission([backend], min_isolation=Isolation.NONE)
+        spec = dataclasses.replace(_SPEC, min_cleanup=Cleanup.DISPOSE)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                first = asyncio.create_task(session.acquire(session.key()))
+                await entering.wait()
+                second = asyncio.create_task(session.acquire(session.key()))
+                await asyncio.sleep(0)
+                second.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await second
+                release.set()
+                assert await first is backend.sandbox
+                return "done"
+
+            return widget_run
+
+        assert _call(_attach_with(build, router, spec=spec)[0], target="x") == "done"
+        assert router.attempts == 1
+        assert len(backend.disposed) == 1
+        assert not router._slots._slots
+
+    @pytest.mark.parametrize("rung", [Cleanup.RESET, Cleanup.DISPOSE])
+    @pytest.mark.parametrize("keep", [False, True])
+    def test_cancelled_cleanup_retains_targets_for_every_remaining_key(self, rung, keep):
+        class _CancelsReset(InProcessSandbox):
+            async def reset(self, *, timeout):
+                raise asyncio.CancelledError
+
+        class _CancelsDisposal(InProcessSandboxBackend):
+            cancel = True
+
+            async def dispose(self, key, *, kind=None):
+                if self.cancel:
+                    raise asyncio.CancelledError
+                return await super().dispose(key, kind=kind)
+
+        backend = _CancelsDisposal(
+            _CancelsReset(),
+            sandbox_per_key=True,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                capabilities=FAKE_BACKEND_DECLARATIONS.capabilities | {Capability.SNAPSHOT},
+            ),
+        )
+        other = InProcessSandboxBackend(name="other", sandbox_per_key=True)
+        router = _router(
+            backend,
+            other,
+            reclaim=ReclaimConfig(
+                failed_reclaim_policy=FailedReclaimPolicy.KEEP
+                if keep
+                else FailedReclaimPolicy.DISPOSE
+            ),
+        )
+        keys = [_KEY, dataclasses.replace(_KEY, agent_dir="second")]
+        spec = dataclasses.replace(_SPEC, min_cleanup=rung)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                for key in keys:
+                    assert not isinstance(await session.acquire(key), str)
+                return "done"
+
+            return widget_run
+
+        async def scenario():
+            for key in keys:
+                await backend.acquire(key, spec)
+                await other.acquire(key, spec)
+                await backend.acquire(key, dataclasses.replace(spec, kind="sibling"))
+            with pytest.raises(asyncio.CancelledError):
+                await _fn(_attach_with(build, router, spec=spec)[0])(target="x")
+            assert bool(router._unclean) is not keep
+            assert not router._slots._slots
+            if keep:
+                for key in keys:
+                    assert await router.acquire(key, spec) is backend.sandboxes[(key, spec.kind)]
+                return
+            backend.cancel = False
+            for key in keys:
+                assert await router.dispose_unclean(key, timeout=1)
+                assert (key, spec.kind) not in backend.sandboxes
+                assert (key, "sibling") in backend.sandboxes
+                assert (key, spec.kind) in other.sandboxes
+            assert backend.disposed_kinds == [spec.kind, spec.kind]
+            assert not other.disposed
+
+        asyncio.run(scenario())
+
+    @pytest.mark.parametrize("scope", list(IsolationScope))
+    def test_reacquire_keeps_the_admitted_backend_when_preferences_change(self, scope):
+        class _Preferred(InProcessSandboxBackend):
+            ready = False
+
+            @property
+            def declarations(self):
+                declared = super().declarations
+                return (
+                    declared
+                    if self.ready
+                    else dataclasses.replace(declared, capabilities=frozenset())
+                )
+
+        declarations = dataclasses.replace(
+            FAKE_BACKEND_DECLARATIONS, isolation_scopes=frozenset(IsolationScope)
+        )
+        preferred = _Preferred(name="preferred", declarations=declarations)
+        serving = InProcessSandboxBackend(name="serving", declarations=declarations)
+        router = _router(preferred, serving, selection=Selection.PER_SPEC)
+        spec = dataclasses.replace(_SPEC, isolation_scope=scope, min_cleanup=Cleanup.DISPOSE)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                assert await session.acquire(session.key()) is serving.sandbox
+                preferred.ready = True
+                assert await session.acquire(session.key()) is serving.sandbox
+                return "done"
+
+            return widget_run
+
+        assert _call(_attach_with(build, router, spec=spec)[0], target="x") == "done"
+        assert len(serving.keys) == 2
+        assert len(serving.disposed) == 1
+        assert not preferred.keys and not preferred.disposed
+
+    @pytest.mark.parametrize("scope", list(IsolationScope))
+    def test_late_acquire_cleans_its_serving_backend_after_declarations_change(self, scope):
+        entered, release = asyncio.Event(), asyncio.Event()
+        tasks = []
+
+        class _Late(InProcessSandboxBackend):
+            changed = False
+
+            @property
+            def declarations(self):
+                declared = super().declarations
+                return (
+                    dataclasses.replace(declared, capabilities=frozenset())
+                    if self.changed
+                    else declared
+                )
+
+            async def acquire(self, key, spec):
+                sandbox = await super().acquire(key, spec)
+                entered.set()
+                await release.wait()
+                self.changed = True
+                return sandbox
+
+        declarations = dataclasses.replace(
+            FAKE_BACKEND_DECLARATIONS, isolation_scopes=frozenset(IsolationScope)
+        )
+        first = _Late(name="first", declarations=declarations)
+        second = InProcessSandboxBackend(name="second", declarations=declarations)
+        router = _router(first, second, selection=Selection.PER_SPEC)
+        spec = dataclasses.replace(_SPEC, isolation_scope=scope, min_cleanup=Cleanup.DISPOSE)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                tasks.append(asyncio.create_task(session.acquire(session.key())))
+                await entered.wait()
+                return "done"
+
+            return widget_run
+
+        fn = _fn(_attach_with(build, router, spec=spec)[0])
+
+        async def scenario():
+            assert await fn(target="x") == "done"
+            release.set()
+            with pytest.raises(RuntimeError, match="came back after"):
+                await tasks[0]
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+        assert len(first.disposed) == (2 if scope is IsolationScope.CALL else 1)
+        assert not second.keys and not second.disposed
+        assert not router._slots._slots
+
+    @pytest.mark.parametrize("change", ["unreadable", "unservable", "rerouted"])
+    @pytest.mark.parametrize("cleanup", ["reset", "failed-reset", "dispose", "call"])
+    def test_cleanup_retains_the_serving_backend(self, change, cleanup):
+        class _Snapshot(InProcessSandbox):
+            attempts = 0
+
+            async def reset(self, *, timeout):
+                self.attempts += 1
+                if cleanup == "failed-reset":
+                    raise RuntimeError("snapshot unavailable")
+                await super().reset(timeout=timeout)
+
+        class _Changing(InProcessSandboxBackend):
+            changed = False
+            reads_after_use = 0
+
+            @property
+            def declarations(self):
+                if not self.changed:
+                    return super().declarations
+                self.reads_after_use += 1
+                if change == "unreadable":
+                    raise RuntimeError("declarations unavailable")
+                return dataclasses.replace(super().declarations, capabilities=frozenset())
+
+        declarations = dataclasses.replace(
+            FAKE_BACKEND_DECLARATIONS,
+            capabilities=FAKE_BACKEND_DECLARATIONS.capabilities | {Capability.SNAPSHOT},
+            isolation_scopes=frozenset(IsolationScope),
+        )
+        sandbox = _Snapshot()
+        first = _Changing(sandbox, name="first", declarations=declarations)
+        second = InProcessSandboxBackend(name="second", declarations=declarations)
+        router = _router(
+            first, *([second] if change == "rerouted" else []), selection=Selection.PER_SPEC
+        )
+        spec = dataclasses.replace(
+            _SPEC,
+            min_cleanup=Cleanup.RESET if "reset" in cleanup else Cleanup.DISPOSE,
+            isolation_scope=IsolationScope.CALL
+            if cleanup == "call"
+            else IsolationScope.CONVERSATION,
+        )
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                acquired = await session.acquire(session.key())
+                assert acquired is sandbox
+                sandbox.contents["/tmp/left"] = "data"
+                first.changed = True
+                return "done"
+
+            return widget_run
+
+        fn = _fn(_attach_with(build, router, spec=spec)[0])
+        assert asyncio.run(fn(target="x")) == "done"
+        assert sandbox.attempts == ("reset" in cleanup)
+        assert len(first.disposed) == (cleanup != "reset")
+        if cleanup == "reset":
+            assert not sandbox.contents
+        assert not second.keys and not second.disposed
+        assert first.reads_after_use == 0
+        assert not router._slots._slots
+
+    @pytest.mark.parametrize(
+        "reset_fails,dispose_fails", [(False, False), (True, False), (True, True)]
+    )
+    def test_reset_handles_an_unclean_process_note(self, reset_fails, dispose_fails):
+        class _Snapshot(InProcessSandbox):
+            attempts = 0
+
+            async def reset(self, *, timeout):
+                self.attempts += 1
+                if reset_fails:
+                    raise RuntimeError("snapshot unavailable")
+                await super().reset(timeout=timeout)
+
+        sandbox = _Snapshot()
+        backend = InProcessSandboxBackend(
+            sandbox,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                capabilities=FAKE_BACKEND_DECLARATIONS.capabilities | {Capability.SNAPSHOT},
+            ),
+            dispose_failure=DisposalFailure("refused", "delete refused") if dispose_fails else None,
+        )
+        router = _router(backend)
+        reported = []
+
+        async def on_failure(failure):
+            reported.append(failure)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                assert await session.acquire(session.key()) is sandbox
+                sandbox.running.add("child")
+                sandbox.contents["/tmp/left"] = "data"
+                note_unclean(sandbox, "a child process may still be running")
+                return "done"
+
+            return widget_run
+
+        fn = _fn(
+            _attach_with(
+                build,
+                router,
+                spec=dataclasses.replace(_SPEC, min_cleanup=Cleanup.RESET),
+                on_reclaim_failure=on_failure,
+            )[0]
+        )
+        assert asyncio.run(fn(target="x")) == "done"
+        assert sandbox.attempts == 1
+        assert len(backend.disposed) == reset_fails
+        assert bool(reported) == dispose_fails
+        assert bool(router._unclean) == dispose_fails
+        if not reset_fails:
+            assert not sandbox.contents and not sandbox.running
+        if dispose_fails:
+            assert "child process" in reported[0].reason
+        assert not router._slots._slots
+
+    def test_a_timed_out_call_retries_admission_before_acquiring(self):
+        class _ShortQueue(SandboxRouter):
+            async def enter_call(self, key, spec, *, owner, timeout=0.01):
+                return await super().enter_call(key, spec, owner=owner, timeout=timeout)
+
+        backend = InProcessSandboxBackend()
+        router = _ShortQueue([backend], min_isolation=Isolation.NONE)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                key = session.key()
+                for _ in range(2):
+                    answer = await session.acquire(key)
+                    assert isinstance(answer, str) and "another call is using" in answer
+                return "busy"
+
+            return widget_run
+
+        fn = _fn(_attach_with(build, router)[0])
+
+        async def scenario():
+            await router._slots.take(_KEY, _SPEC.kind, owner="other", exclusive=True, timeout=1)
+            try:
+                assert await fn(target="x") == "busy"
+                assert router._slots.holds(_KEY, _SPEC.kind, owner="other")
+            finally:
+                router.release_call(_KEY, _SPEC.kind, owner="other")
+
+        asyncio.run(scenario())
+        assert not backend.keys
+
+    def test_cleanup_uses_the_admitted_rung_without_reading_declarations_again(self):
+        class _UnreadableAfterUse(InProcessSandboxBackend):
+            unreadable = False
+
+            @property
+            def declarations(self):
+                if self.unreadable:
+                    raise RuntimeError("declarations unavailable")
+                return super().declarations
+
+        backend = _UnreadableAfterUse()
+        router = _router(backend)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                key = session.key()
+                sandbox = await session.acquire(key)
+                guest_path = session.guest_call_path()
+                await sandbox.write_file(
+                    f"{guest_path}/x", "data", working_directory=_SPEC.work_dir
+                )
+                backend.unreadable = True
+                return "done"
+
+            return widget_run
+
+        fn = _fn(_attach_with(build, router)[0])
+        assert asyncio.run(fn(target="x")) == "done"
+        assert len(backend.sandbox.reclaims) == 1
+        assert not backend.disposed
+        assert not router._slots._slots
+
+    @pytest.mark.parametrize("rung", list(Cleanup))
+    def test_each_rung_runs_after_the_body(self, rung):
+        backend = InProcessSandboxBackend(
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                capabilities=FAKE_BACKEND_DECLARATIONS.capabilities | {Capability.SNAPSHOT},
+            )
+        )
+        spec = dataclasses.replace(_SPEC, min_cleanup=rung)
+        fn = _fn(_reclaiming(backend, spec=spec))
+        asyncio.run(fn(target="x"))
+        assert len(backend.sandbox.reclaims) == (rung is Cleanup.RECLAIM)
+        assert len(backend.sandbox.resets) == (rung is Cleanup.RESET)
+        assert len(backend.disposed) == (rung is Cleanup.DISPOSE)
+
+    @pytest.mark.parametrize("reacquire", [False, True])
+    def test_an_acquire_finishing_after_close_keeps_exclusion_until_disposed(self, reacquire):
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        tasks = []
+
+        class _BlockedAcquire(InProcessSandboxBackend):
+            attempts = 0
+
+            async def acquire(self, key, spec):
+                self.attempts += 1
+                if reacquire and self.attempts == 1:
+                    return await super().acquire(key, spec)
+                entered.set()
+                await release.wait()
+                return await super().acquire(key, spec)
+
+        backend = _BlockedAcquire(sandbox_per_key=True)
+        router = _router(backend)
+        spec = dataclasses.replace(_SPEC, confined_to_guest_call_path=False)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                if reacquire:
+                    assert not isinstance(await session.acquire(session.key()), str)
+                tasks.append(asyncio.create_task(session.acquire(session.key())))
+                await entered.wait()
+                return "done"
+
+            return widget_run
+
+        fn = _fn(_attach_with(build, router, spec=spec)[0])
+
+        async def scenario():
+            assert await fn(target="x") == "done"
+            with pytest.raises(TimeoutError):
+                await router.enter_call(_KEY, spec, owner="rival", timeout=0.01)
+            release.set()
+            with pytest.raises(RuntimeError, match="came back after"):
+                await tasks[0]
+            assert len(backend.disposed) == 1
+            assert not backend.sandboxes
+            await router.enter_call(_KEY, spec, owner="rival", timeout=0.1)
+            router.release_call(_KEY, spec.kind, owner="rival")
+            assert not router._slots._slots
+
+        asyncio.run(scenario())
+
+    def test_a_call_closed_while_waiting_is_refused_before_backend_acquire(self):
+        waiting = asyncio.Event()
+        tasks = []
+
+        class _Admission(SandboxRouter):
+            async def enter_call(self, key, spec, *, owner, timeout=1):
+                waiting.set()
+                return await super().enter_call(key, spec, owner=owner, timeout=timeout)
+
+        backend = InProcessSandboxBackend()
+        router = _Admission([backend], min_isolation=Isolation.NONE)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                tasks.append(asyncio.create_task(session.acquire(session.key())))
+                await waiting.wait()
+                return "done"
+
+            return widget_run
+
+        fn = _fn(_attach_with(build, router)[0])
+
+        async def scenario():
+            await router._slots.take(_KEY, _SPEC.kind, owner="other", exclusive=True, timeout=1)
+            assert await fn(target="x") == "done"
+            router.release_call(_KEY, _SPEC.kind, owner="other")
+            with pytest.raises(RuntimeError, match="no open tool call"):
+                await tasks[0]
+            assert not router._slots._slots
+            assert not backend.keys
+
+        asyncio.run(scenario())
+
+
 class TestACallThatReachesTwoSandboxes:
     """`acquire` takes a key, so one call can hold two — and wrote its name into both."""
 
@@ -2717,7 +3492,7 @@ class TestACallThatReachesTwoSandboxes:
         already refuses before its first await."""
 
         class _CancelsOnDispose(_PerKeyBackend):
-            async def dispose(self, key: SandboxKey) -> None:
+            async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> None:
                 raise asyncio.CancelledError()
 
         def build(session: SandboxToolSession):
@@ -2788,8 +3563,7 @@ class TestACallThatReachesTwoSandboxes:
 
 
 class TestAStragglerDuringTheRemoval:
-    """The removal walks what `acquire` writes into, and a task the body left running can reach
-    both. Closing the record stops the write; the walk holds a copy in case anything else does."""
+    """A closed call cannot acquire while its cleanup walks the recorded sandboxes."""
 
     _LATER = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-3")
 
@@ -2829,13 +3603,11 @@ class TestAStragglerDuringTheRemoval:
 
         async def scenario() -> str:
             answered = await _fn(_reclaiming(backend, build))(target="x")
-            # A closed call still serves `acquire` — it just records nothing, so there is
-            # nothing for the removal to trip over.
-            assert await started[0]
+            with pytest.raises(RuntimeError, match="no open tool call"):
+                await started[0]
+            assert self._LATER not in backend.keys
             return answered
 
-        # Without the guard this is `RuntimeError: dictionary changed size during iteration`,
-        # raised out of the `finally` in place of the body's answer.
         assert asyncio.run(scenario()) == "done"
 
 

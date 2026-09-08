@@ -243,6 +243,14 @@ class NoIsolationSandbox:
             "removal with, and the paths it would delete are the host's own."
         )
 
+    async def reset(self, *, timeout: float) -> None:
+        """Not offered: this backend declares no ``Capability.SNAPSHOT``, so the router never
+        resolves to the rung that would call it. Its sandboxes are cleaned by a reclaim, which
+        it does implement, or by a disposal."""
+        raise NotImplementedError(
+            "the in-process backend does not snapshot, so it cannot be reset to its pre-input state"
+        )
+
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
         """Remove ``directory`` for real, unlike :meth:`remove` above.
 
@@ -345,15 +353,17 @@ class NoIsolationBackend:
                 self._sandboxes[ident] = sandbox
             return sandbox
 
-    def _remove(self, wanted: Callable[[SandboxKey], bool]) -> tuple[int, list[str]]:
-        """Destroy the matching sandboxes, keeping the ones that would not go. Holds the lock.
+    def _remove(
+        self, wanted: Callable[[SandboxKey], bool], kind: str | None = None
+    ) -> tuple[int, list[str]]:
+        """Destroy matching sandboxes under the lock, retaining failures for the next attempt."""
 
-        Reporting a failed removal is only half of it: answering ``None`` the *second* time
-        clears the router's refusal over a directory that is still there.
-        """
-        doomed = [(i, self._sandboxes.pop(i)) for i in list(self._sandboxes) if wanted(i[0])]
-        doomed += [(i, s) for i, s in self._undeleted if wanted(i[0])]
-        self._undeleted = [(i, s) for i, s in self._undeleted if not wanted(i[0])]
+        def taken(ident: tuple[SandboxKey, str]) -> bool:
+            return wanted(ident[0]) and (kind is None or ident[1] == kind)
+
+        doomed = [(i, self._sandboxes.pop(i)) for i in list(self._sandboxes) if taken(i)]
+        doomed += [(i, s) for i, s in self._undeleted if taken(i)]
+        self._undeleted = [(i, s) for i, s in self._undeleted if not taken(i)]
 
         removed = 0
         problems: list[str] = []
@@ -366,14 +376,10 @@ class NoIsolationBackend:
                 problems.append(problem)
         return removed, problems
 
-    async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
-        """Delete this key's sandboxes. Never raises; answers why one may still be there.
-
-        A backend that swallows the failure is read as having disposed, and the router then
-        serves the next call the files this one could not remove.
-        """
+    async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> DisposalFailure | None:
+        """Delete this key's sandboxes, narrowed to kind when given; report any failure."""
         async with self._lock:
-            _, problems = self._remove(lambda k: k == key)
+            _, problems = self._remove(lambda k: k == key, kind)
         return _refused(problems)
 
     async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:

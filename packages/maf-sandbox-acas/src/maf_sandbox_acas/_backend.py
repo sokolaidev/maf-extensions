@@ -15,6 +15,7 @@ import asyncio
 import logging
 import posixpath
 import shlex
+import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
@@ -561,6 +562,12 @@ class _AcasSandbox:
             # and this one is raised at a caller rather than logged.
             raise OSError(f"could not remove {path}: {type(refused).__name__}") from refused
 
+    async def reset(self, *, timeout: float) -> None:
+        """Unsupported: this backend does not declare Capability.SNAPSHOT."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support reset; dispose its sandbox instead."
+        )
+
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
         """Remove ``directory`` through the data plane's ``delete_file``, which acts as the
         host rather than as the image's ``USER`` — so a file the file plane wrote as root is
@@ -728,6 +735,9 @@ class AcasSandboxBackend:
         #: which `acquire` resumes from and `dispose` pops, so a failed delete is retried and
         #: never served. An entry lives only while its delete keeps failing.
         self._undeleted: dict[tuple[str, str, str], set[str]] = {}
+        self._undeleted_kinds: dict[tuple[str, str, str], dict[str, str]] = {}
+        self._disposal_tokens: dict[tuple[str, str, str], dict[str, object]] = {}
+        self._disposal_guard = threading.Lock()
         # Group clients cached per event loop. An azure-core async client binds its transport
         # to the loop that created it, and this host runs some work on a dedicated background
         # loop, so one shared client would be a cross-loop hazard; one per call would leak a
@@ -929,23 +939,60 @@ class AcasSandboxBackend:
             )
         except SandboxCapabilityNotSupported:
             self._registry.pop(registry_key, None)
-            await self._release_the_refused(gc, key, sc.sandbox_id)
+            await self._release_the_refused(gc, key, sc.sandbox_id, kind=spec.kind)
             raise
         return created
 
-    async def _release_the_refused(self, gc: Any, key: SandboxKey, sandbox_id: str) -> None:
-        """Delete a sandbox this acquire created and then refused; remember it if that fails.
+    def _retain_disposals(
+        self, prefix: tuple[str, str, str], names: Sequence[str], kinds: Mapping[str, str]
+    ) -> dict[str, object]:
+        """Reserve retry records while holding the disposal guard."""
+        if not names:
+            return {}
+        tokens = {name: object() for name in names}
+        self._disposal_tokens.setdefault(prefix, {}).update(tokens)
+        self._undeleted.setdefault(prefix, set()).update(names)
+        self._undeleted_kinds.setdefault(prefix, {}).update(kinds)
+        return tokens
 
-        An acquire that raises is handed to nobody, and the framework's per-call cleanup
-        disposes only what it was handed — so without this the microVM runs on, billable and
-        unusable, until the auto-delete timer or the conversation's purge reaches it.  The
-        caller has already dropped it from the registry.
-        """
+    def _finish_disposals(
+        self,
+        prefix: tuple[str, str, str],
+        attempted: Mapping[str, object],
+        failed: Sequence[str],
+        kinds: Mapping[str, str],
+    ) -> None:
+        """Reconcile this attempt while holding the disposal guard."""
+        self._retain_disposals(prefix, failed, {n: kinds[n] for n in failed if n in kinds})
+        tokens = self._disposal_tokens.get(prefix, {})
+        names = self._undeleted.get(prefix, set())
+        attributed = self._undeleted_kinds.get(prefix, {})
+        for name, token in attempted.items():
+            if tokens.get(name) is token:
+                tokens.pop(name)
+                names.discard(name)
+                attributed.pop(name, None)
+        if not tokens:
+            self._disposal_tokens.pop(prefix, None)
+        if not names:
+            self._undeleted.pop(prefix, None)
+        if not attributed:
+            self._undeleted_kinds.pop(prefix, None)
+
+    async def _release_the_refused(
+        self, gc: Any, key: SandboxKey, sandbox_id: str, *, kind: str
+    ) -> None:
+        """Delete a refused fresh sandbox, retaining its kind for retries if deletion fails."""
         prefix = (key.scope, key.thread_id, key.agent_dir)
-        # Before the await, the way `dispose` records it: the registry no longer holds this id
-        # and there is no listing to fall back on, so a delete that fails is retried only here.
-        self._undeleted[prefix] = self._undeleted.get(prefix, set()) | {sandbox_id}
-        if (await self._delete(gc, sandbox_id)).failure is not None:
+        kinds = {sandbox_id: kind}
+        with self._disposal_guard:
+            attempted = self._retain_disposals(prefix, [sandbox_id], kinds)
+        deletion = await self._delete(gc, sandbox_id)
+        with self._disposal_guard:
+            self._finish_disposals(
+                prefix, attempted, [sandbox_id] if deletion.failure is not None else [], kinds
+            )
+        if deletion.failure is not None:
             return
         logger.info(
             "sandbox released: id=%s thread=%s agent=%s",
@@ -953,13 +1000,6 @@ class AcasSandboxBackend:
             key.thread_id,
             key.agent_dir,
         )
-        # Read from the live map, not from what this call wrote: a disposal running beside it
-        # may have recorded ids of its own.
-        left = self._undeleted.get(prefix, set()) - {sandbox_id}
-        if left:
-            self._undeleted[prefix] = left
-        else:
-            self._undeleted.pop(prefix, None)
 
     async def _refuse_or_warn_where_the_guest_is_not_root(
         self,
@@ -1177,34 +1217,43 @@ class AcasSandboxBackend:
         self._guest_uids[identity] = uid
         return uid
 
-    async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
-        """Delete every kind's sandbox for ``key`` that this process knows of.
+    async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> DisposalFailure | None:
+        """Delete this key's sandboxes, narrowed to kind when given.
 
-        Every kind's, because the key may own one sandbox per kind and this method takes no
-        kind — a caller releasing a key means all of it.
-
-        Never raises, and reports the reason a sandbox may still be there. Reaching the group
-        is part of the delete: a client this process cannot build has deleted nothing. Ids a
-        delete could not remove are kept for the next attempt, apart from the registry, which
-        :meth:`acquire` resumes from — a sandbox whose delete failed is retried, never served.
-        """
+        The registry and retained IDs cover only sandboxes known to this process.
+        Failed deletions are retained per kind for retries and reported without raising."""
         prefix = (key.scope, key.thread_id, key.agent_dir)
-        mine = [k for k in list(self._registry) if k[:3] == prefix]
-        wanted = list(
-            dict.fromkeys(
-                [
-                    *(h.sandbox_id for h in (self._registry.pop(k, None) for k in mine) if h),
-                    *sorted(self._undeleted.get(prefix, ())),
-                ]
+        with self._disposal_guard:
+            mine = [
+                k
+                for k in list(self._registry)
+                if k[:3] == prefix and (kind is None or k[3] == kind)
+            ]
+            attributed = self._undeleted_kinds.setdefault(prefix, {})
+            remembered: list[str] = []
+            for entry in mine:
+                held = self._registry.pop(entry)
+                remembered.append(held.sandbox_id)
+                attributed[held.sandbox_id] = entry[3]
+            retained = sorted(
+                name
+                for name in self._undeleted.get(prefix, ())
+                if kind is None or attributed.get(name) == kind
             )
-        )
-        if not wanted:
-            return None
-        # Before the first await: the registry no longer holds these and there is no listing
-        # to fall back on, so a retry finds them only here. Over-retaining is safe — an id
-        # already deleted drops out next attempt. Merged, not assigned: teardown is not
-        # serialized.
-        self._undeleted[prefix] = self._undeleted.get(prefix, set()) | set(wanted)
+            wanted = list(
+                dict.fromkeys(
+                    [
+                        *remembered,
+                        *retained,
+                    ]
+                )
+            )
+            if not wanted:
+                if not attributed:
+                    self._undeleted_kinds.pop(prefix, None)
+                return None
+            attempted_kinds = {name: attributed[name] for name in wanted if name in attributed}
+            attempted = self._retain_disposals(prefix, wanted, attempted_kinds)
         try:
             gc = self._group_client()
         except Exception as exc:  # noqa: BLE001 - disposal must never raise
@@ -1224,61 +1273,61 @@ class AcasSandboxBackend:
                 )
             if deletion.failure is not None:
                 undeleted[sandbox_id] = deletion.failure
-        # Read from the live map, not `wanted`, so an id another disposal recorded survives.
-        # No await between the read and the write.
-        still = set(undeleted)
-        left = (self._undeleted.get(prefix, set()) | still) - (set(wanted) - still)
-        if left:
-            self._undeleted[prefix] = left
-        else:
-            self._undeleted.pop(prefix, None)
+        with self._disposal_guard:
+            self._finish_disposals(prefix, attempted, list(undeleted), attempted_kinds)
+            left = self._undeleted.get(prefix, set())
+            attributed = self._undeleted_kinds.get(prefix, {})
+            outstanding = {name for name in left if kind is None or attributed.get(name) == kind}
         reported = fold_disposal_failures(list(undeleted.values()))
         if reported is not None:
             return reported
-        if left:
-            # A disposal still in flight wrote these ahead of its own await. `None` would
-            # clear the refusal on a delete nobody confirmed; `unknown` and a count, since
-            # neither the outcome nor the ids are this attempt's to describe.
+        if outstanding:
+            # Pending attempts cannot yet certify cleanup.
             return DisposalFailure(
-                "unknown", f"another disposal has not yet reported on {len(left)} sandbox(es)"
+                "unknown",
+                f"another disposal has not yet reported on {len(outstanding)} sandbox(es)",
             )
         return None
 
     async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
-        """Delete every sandbox labelled ``(scope, thread_id)``: how many, and what stayed.
+        """Delete sandboxes labelled ``(scope, thread_id)`` and report what stayed.
 
-        The registry is consulted first but is **not** the source of truth: it only knows
-        what this process created, so a conversation delete served by another replica — or
-        by this one after a redeploy — would otherwise leave the sandbox running until the
-        auto-delete timer fires.  Labels close that gap by making the service itself, not
-        this process's memory, the durable record of which sandboxes belong to a thread.
-
-        Registry entries are dropped up front whether or not the delete succeeds: a stale
-        entry pointing at a sandbox that may already be gone is worse than no entry, since
-        the next acquire would try to resume it.  An id a previous :meth:`dispose` could not
-        delete is swept here too, and stops being owed a retry once this takes it away.
-
-        A listing that failed is reported, not just logged.  The registry still names what this
-        process created, so those are deleted — but a purge that could not read the labels
-        cannot claim to have reached a sandbox another replica created, which is the very gap
-        the labels exist to close.
+        Labels reach sandboxes created elsewhere; registry and retry records cover failed
+        listings, which are still reported. Registry entries are dropped before deletion.
         """
-        known = [
-            (k, entry.sandbox_id)
-            for k, entry in list(self._registry.items())
-            if k[0] == scope and k[1] == thread_id
-        ]
-        for k, _ in known:
-            self._registry.pop(k, None)
+        with self._disposal_guard:
+            known = [
+                (k, entry.sandbox_id)
+                for k, entry in list(self._registry.items())
+                if k[0] == scope and k[1] == thread_id
+            ]
+            for k, _ in known:
+                self._registry.pop(k, None)
+            for entry, sandbox_id in known:
+                self._undeleted_kinds.setdefault(entry[:3], {})[sandbox_id] = entry[3]
+                self._undeleted.setdefault(entry[:3], set()).add(sandbox_id)
 
+            retained = {
+                p: set(names)
+                for p, names in self._undeleted.items()
+                if p[0] == scope and p[1] == thread_id
+            }
+            attempted_kinds = {
+                p: {
+                    name: kind
+                    for name, kind in self._undeleted_kinds.get(p, {}).items()
+                    if name in names
+                }
+                for p, names in retained.items()
+            }
+            attempted = {
+                prefix: self._retain_disposals(prefix, list(names), attempted_kinds[prefix])
+                for prefix, names in retained.items()
+            }
         try:
             gc = self._group_client()
         except Exception as exc:  # noqa: BLE001 - purge must never fail
             logger.warning("acas backend: could not reach the sandbox group: %s", exc)
-            # The registry entries are gone by now, so these ids live here or nowhere.
-            for key, sandbox_id in known:
-                prefix = (key[0], key[1], key[2])
-                self._undeleted[prefix] = self._undeleted.get(prefix, set()) | {sandbox_id}
             return ScopePurge(
                 0,
                 DisposalFailure(
@@ -1286,11 +1335,6 @@ class AcasSandboxBackend:
                 ),
             )
 
-        retained = {
-            p: set(names)
-            for p, names in self._undeleted.items()
-            if p[0] == scope and p[1] == thread_id
-        }
         undisposed: list[DisposalFailure] = []
         ids = {sandbox_id for _, sandbox_id in known}
         ids.update(sandbox_id for names in retained.values() for sandbox_id in names)
@@ -1317,20 +1361,11 @@ class AcasSandboxBackend:
             if deletion.failure is not None:
                 undeleted.add(sandbox_id)
                 undisposed.append(deletion.failure)
-        # Merge-only against the *live* map: a `dispose` for one of these keys can land
-        # mid-sweep, and indexing what it removed would raise out of a method that never does.
-        for prefix, before in retained.items():
-            left = self._undeleted.get(prefix, set()) - (before - undeleted)
-            if left:
-                self._undeleted[prefix] = left
-            else:
-                self._undeleted.pop(prefix, None)
-        # The listing does not say which key owns a failed id, so it is recorded against the
-        # registry keys this purge popped rather than lost.
-        for key, sandbox_id in known:
-            if sandbox_id in undeleted:
-                prefix = (key[0], key[1], key[2])
-                self._undeleted[prefix] = self._undeleted.get(prefix, set()) | {sandbox_id}
+        with self._disposal_guard:
+            for prefix, tokens in attempted.items():
+                self._finish_disposals(
+                    prefix, tokens, list(tokens.keys() & undeleted), attempted_kinds[prefix]
+                )
         return ScopePurge(count, fold_disposal_failures(undisposed))
 
     # -- internals ----------------------------------------------------------------

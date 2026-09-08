@@ -17,7 +17,9 @@ import itertools
 import logging
 import sys
 import tarfile
+import threading
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 import pytest
@@ -36,6 +38,7 @@ from maf_sandbox import (
     SandboxRouter,
     SandboxSpec,
     SandboxTransferCapExceeded,
+    ScopePurge,
 )
 
 from maf_sandbox_docker import BACKEND_NAME, DockerSandboxBackend, DockerSandboxConfig
@@ -49,6 +52,7 @@ from maf_sandbox_docker._backend import (
     _egress_decisions,
     _network_name,
     _proxy_name,
+    _Sweep,
 )
 
 #: What `network inspect` prints for a network this backend built: an internal bridge whose
@@ -2768,6 +2772,201 @@ class TestTheGuestIdentityIsReadFromTheContainer:
 # ---------------------------------------------------------------------------
 
 
+class TestNarrowedDisposal:
+    @pytest.mark.parametrize("first", ["kind", "scope"])
+    @pytest.mark.parametrize("second", ["kind", "scope"])
+    @pytest.mark.parametrize("outcome", ["failure", "cancel"])
+    def test_cross_loop_success_preserves_a_newer_retry(self, first, second, outcome, monkeypatch):
+        backend, fake = _backend_with(
+            _machine(overrides={("ps",): _DockerResult(1, b"", "listing unavailable")})
+        )
+        key = _KEY
+        prefix = (key.scope, key.thread_id, key.agent_dir)
+        backend._registry[(*prefix, "a")] = "selected"
+        entered, progressed = threading.Event(), threading.Event()
+        failure = DisposalFailure("refused", "delete refused")
+        attempts = 0
+
+        class _Guard:
+            def __init__(self):
+                self.lock = threading.Lock()
+
+            def __enter__(self):
+                if not self.lock.acquire(blocking=False):
+                    progressed.set()
+                    assert self.lock.acquire(timeout=5)
+
+            def __exit__(self, *args):
+                self.lock.release()
+
+        class _Ledger(dict):
+            armed = True
+
+            def pop(self, at, default=None):
+                if self.armed and at == prefix:
+                    self.armed = False
+                    entered.set()
+                    assert progressed.wait(5)
+                return super().pop(at, default)
+
+        monkeypatch.setattr(backend, "_disposal_guard", _Guard(), raising=False)
+        backend._undeleted = _Ledger()
+        original = backend._purge
+
+        async def purge(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return _Sweep(1)
+            if outcome == "cancel":
+                raise asyncio.CancelledError
+            return _Sweep(0, {"selected": failure})
+
+        monkeypatch.setattr(backend, "_purge", purge)
+
+        async def cleanup(operation):
+            if operation == "scope":
+                return await backend.dispose_scope(key.scope, key.thread_id)
+            return await backend.dispose(key, kind="a")
+
+        def newer_loop():
+            assert entered.wait(5)
+            backend._registry[(*prefix, "a")] = "selected"
+            try:
+                if outcome == "cancel":
+                    with pytest.raises(asyncio.CancelledError):
+                        asyncio.run(cleanup(second))
+                else:
+                    result = asyncio.run(cleanup(second))
+                    assert (
+                        result.undisposed if isinstance(result, ScopePurge) else result
+                    ) is not None
+            finally:
+                progressed.set()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            newer = pool.submit(newer_loop)
+            asyncio.run(cleanup(first))
+            newer.result(timeout=5)
+
+        assert backend._undeleted == {prefix: {"selected"}}
+        assert backend._undeleted_kinds == {prefix: {"selected": "a"}}
+        monkeypatch.setattr(backend, "_purge", original)
+        asyncio.run(backend.dispose(key, kind="a"))
+        removed = [call.args[-1] for call in fake.calls if call.args[:2] == ("rm", "-f")]
+        assert removed == ["selected", "selected-proxy"]
+        assert not backend._undeleted and not backend._undeleted_kinds
+        assert not backend._disposal_tokens
+
+    @pytest.mark.parametrize("kind", ["a", None])
+    @pytest.mark.parametrize("new_ledger", [False, True])
+    def test_concurrent_failure_restores_kind_for_a_narrowed_retry(self, kind, new_ledger):
+        from maf_sandbox_docker._backend import _Sweep
+
+        backend, fake = _backend_with(
+            _machine(overrides={("ps",): _DockerResult(1, b"", "listing unavailable")})
+        )
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        backend._registry[(*prefix, "a")] = "selected"
+        original = backend._purge
+        entered, release = asyncio.Event(), asyncio.Event()
+        attempts = 0
+        failure = DisposalFailure("refused", "remove refused")
+
+        async def sweep(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                entered.set()
+                await release.wait()
+                return _Sweep(0, {"selected": failure})
+            if attempts == 2:
+                return _Sweep(1)
+            return _Sweep(0, {"sibling": failure})
+
+        backend._purge = sweep
+
+        async def scenario():
+            first = asyncio.create_task(backend.dispose(_KEY, kind=kind))
+            await entered.wait()
+            assert await backend.dispose(_KEY, kind="a") is None
+            assert prefix not in backend._undeleted_kinds
+            if new_ledger:
+                backend._registry[(*prefix, "b")] = "sibling"
+                assert await backend.dispose(_KEY, kind="b") is not None
+            release.set()
+            assert await first is not None
+            backend._purge = original
+            await backend.dispose(_KEY, kind="a")
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+        removed = [
+            call.args[-1]
+            for call in fake.calls
+            if call.args[:2] == ("rm", "-f") and not call.args[-1].endswith("-proxy")
+        ]
+        assert removed == ["selected"]
+        assert backend._undeleted == ({prefix: {"sibling"}} if new_ledger else {})
+        assert backend._undeleted_kinds == ({prefix: {"sibling": "b"}} if new_ledger else {})
+
+    @pytest.mark.parametrize("kind", ["bicep", "x" * 100, "unsafe=kind", "sha256-" + "a" * 48])
+    @pytest.mark.parametrize("whole_key", [False, True])
+    def test_label_sweep_preserves_siblings_and_matches_creation(self, kind, whole_key):
+        from maf_sandbox_docker._backend import _sandbox_labels
+
+        selected = _sandbox_labels(_KEY, SandboxSpec(kind=kind))["maf-sandbox.kind"]
+        sibling = _sandbox_labels(_KEY, SandboxSpec(kind="sibling"))["maf-sandbox.kind"]
+        labels = {"selected": selected, "sibling": sibling}
+
+        def respond(args):
+            if args[:1] == ("ps",):
+                filters = [value for value in args if value.startswith("label=maf-sandbox.kind=")]
+                names = [
+                    name
+                    for name, value in labels.items()
+                    if not filters or filters == [f"label=maf-sandbox.kind={value}"]
+                ]
+                payload = ("\n".join(names) + "\n").encode()
+                return _DockerResult(0, payload, "")
+            return _DockerResult(0, b"", "")
+
+        backend, fake = _backend_with(respond)
+        assert not backend._registry
+        asyncio.run(backend.dispose(_KEY, kind=None if whole_key else kind))
+        removed = [
+            call.args[-1]
+            for call in fake.calls
+            if call.args[:2] == ("rm", "-f") and not call.args[-1].endswith("-proxy")
+        ]
+        assert set(removed) == ({"selected", "sibling"} if whole_key else {"selected"})
+
+    def test_failed_narrowed_disposal_keeps_its_own_retry_candidates(self):
+        overrides = {
+            ("ps",): _DockerResult(1, b"", "listing unavailable"),
+            ("rm", "-f"): _DockerResult(1, b"", "remove refused"),
+        }
+        backend, fake = _backend_with(_machine(overrides=overrides))
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        backend._registry[(*prefix, "a")] = "selected"
+        backend._registry[(*prefix, "b")] = "sibling"
+        assert asyncio.run(backend.dispose(_KEY, kind="a")) is not None
+        assert asyncio.run(backend.dispose(_KEY, kind="a")) is not None
+        removed = [
+            call.args[-1]
+            for call in fake.calls
+            if call.args[:2] == ("rm", "-f") and not call.args[-1].endswith("-proxy")
+        ]
+        assert removed == ["selected", "selected"]
+        assert backend._registry[(*prefix, "b")] == "sibling"
+        asyncio.run(backend.dispose(_KEY))
+        removed = [
+            call.args[-1]
+            for call in fake.calls
+            if call.args[:2] == ("rm", "-f") and not call.args[-1].endswith("-proxy")
+        ]
+        assert set(removed[-2:]) == {"selected", "sibling"}
+
+
 class TestDispose:
     @pytest.mark.parametrize("silent", [True, False])
     def test_an_absent_container_does_not_count_as_a_removal(self, silent):
@@ -2794,6 +2993,31 @@ class TestDispose:
         asyncio.run(backend.acquire(_KEY, _SPEC))
         asyncio.run(backend.dispose(_KEY))
         assert fake.matching("rm", "-f") != []
+
+    def test_a_narrowed_disposal_asks_the_engine_for_that_kind_only(self):
+        """The engine query must include the kind, even when the registry knows the container."""
+        backend, fake = _backend_with(_machine(running=[_NAME]))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        fake.mark()
+        asyncio.run(backend.dispose(_KEY, kind=_SPEC.kind))
+        listings = [c for c in fake.calls[fake._marked :] if "ps" in c.args or "ls" in c.args]
+        assert listings, [c.args for c in fake.calls[fake._marked :]]
+        assert any(f"label=maf-sandbox.kind={_SPEC.kind}" in call.args for call in listings), [
+            call.args for call in listings
+        ]
+
+    def test_a_whole_key_disposal_still_asks_for_every_kind(self):
+        """`kind=None` is what this method always meant, and it must keep meaning it."""
+        backend, fake = _backend_with(_machine(running=[_NAME]))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        fake.mark()
+        asyncio.run(backend.dispose(_KEY))
+        listings = [c for c in fake.calls[fake._marked :] if "ps" in c.args or "ls" in c.args]
+        assert listings
+        assert not any(
+            any(str(arg).startswith("label=maf-sandbox.kind=") for arg in call.args)
+            for call in listings
+        )
 
     def test_never_raises_when_removal_fails(self):
         overrides = {("rm",): _DockerResult(1, b"", "daemon error")}
@@ -2898,33 +3122,6 @@ class TestDispose:
         assert reported is not None, "and the key stays refused until someone reports on it"
         assert reported.code == "unknown", "the other attempt's outcome is not ours to name"
 
-    def test_a_purge_does_not_subtract_a_record_written_beside_it(self):
-        """A scope purge takes nothing away from the retry record: the container it removed
-        and one recorded beside it carry the same name, so subtracting one drops the other."""
-        listing = asyncio.Event()
-        release = asyncio.Event()
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
-
-        async def slow_listing(*args: str, **kwargs: object) -> _DockerResult:
-            if args[:1] == ("ps",):
-                listing.set()
-                await release.wait()
-            return _DockerResult(0, b"", "")
-
-        backend, _ = _backend_with(_machine())
-        backend._docker = slow_listing  # type: ignore[method-assign]  # noqa: SLF001
-        backend._undeleted[prefix] = {_NAME}  # noqa: SLF001
-
-        async def drive() -> None:
-            purge = asyncio.create_task(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
-            await listing.wait()
-            backend._undeleted[prefix] = {_NAME}  # the newer generation  # noqa: SLF001
-            release.set()
-            assert (await purge).undisposed is None, "the purge itself has to land"
-
-        asyncio.run(drive())
-        assert backend._undeleted == {prefix: {_NAME}}, "the newer record was subtracted"  # noqa: SLF001
-
     def test_a_container_a_failed_removal_left_behind_is_still_served_here(self):
         """Pins what the retry record does rather than what its name suggests: it is disposal
         bookkeeping, and `acquire` still reuses the container, because the name comes from the
@@ -2941,6 +3138,131 @@ class TestDispose:
 
 
 class TestDisposeScope:
+    @pytest.mark.parametrize("retained", [False, True])
+    @pytest.mark.parametrize("partial", [False, True])
+    @pytest.mark.parametrize("unlisted", [False, True])
+    def test_scope_purge_retires_confirmed_records(self, retained, partial, unlisted, monkeypatch):
+        backend, _ = _backend_with(_machine())
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        backend._registry[(*prefix, "a")] = "selected"
+        backend._registry[(*prefix, "b")] = "sibling"
+        failure = DisposalFailure("unknown", "engine unavailable")
+        result = _Sweep(0, {"selected": failure, "sibling": failure})
+
+        async def sweep(*args, **kwargs):
+            return result
+
+        monkeypatch.setattr(backend, "_purge", sweep)
+        if retained:
+            assert asyncio.run(backend.dispose(_KEY)) is not None
+        result = _Sweep(
+            1 if partial else 2,
+            {"sibling": failure} if partial else {},
+            DisposalFailure("unlisted", "listing unavailable") if unlisted else None,
+        )
+        answer = asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+        assert answer.disposed == (1 if partial else 2)
+        assert (answer.undisposed is not None) is (partial or unlisted)
+        assert backend._undeleted == ({prefix: {"sibling"}} if partial else {})
+        assert backend._undeleted_kinds == ({prefix: {"sibling": "b"}} if partial else {})
+        result = _Sweep(1)
+        assert asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id)).undisposed is None
+        assert not backend._undeleted and not backend._undeleted_kinds
+        assert not getattr(backend, "_disposal_tokens", {})
+
+    @pytest.mark.parametrize("first_scope", [False, True])
+    @pytest.mark.parametrize("second_scope", [False, True])
+    @pytest.mark.parametrize("failure_first", [False, True])
+    def test_overlapping_disposals_preserve_the_newer_failure(
+        self, first_scope, second_scope, failure_first, monkeypatch
+    ):
+        backend, _ = _backend_with(_machine())
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        backend._registry[(*prefix, "a")] = "selected"
+        backend._registry[(*prefix, "b")] = "sibling"
+        first_started, second_started = asyncio.Event(), asyncio.Event()
+        first_release, second_release = asyncio.Event(), asyncio.Event()
+        sweeps = 0
+        failure = DisposalFailure("unknown", "engine unavailable")
+
+        async def sweep(*args, **kwargs):
+            nonlocal sweeps
+            sweeps += 1
+            if sweeps == 1:
+                first_started.set()
+                await first_release.wait()
+                return _Sweep(2)
+            if sweeps == 2:
+                second_started.set()
+                await second_release.wait()
+                return _Sweep(0, {"selected": failure})
+            return _Sweep(1)
+
+        monkeypatch.setattr(backend, "_purge", sweep)
+
+        async def dispose(scope):
+            if scope:
+                return await backend.dispose_scope(_KEY.scope, _KEY.thread_id)
+            return await backend.dispose(_KEY)
+
+        async def scenario():
+            first = asyncio.create_task(dispose(first_scope))
+            await first_started.wait()
+            backend._registry[(*prefix, "a")] = "selected"
+            second = asyncio.create_task(dispose(second_scope))
+            await second_started.wait()
+            if failure_first:
+                second_release.set()
+                await second
+                first_release.set()
+                await first
+            else:
+                first_release.set()
+                await first
+                second_release.set()
+                await second
+            assert backend._undeleted == {prefix: {"selected"}}
+            assert backend._undeleted_kinds == {prefix: {"selected": "a"}}
+            assert await backend.dispose(_KEY, kind="a") is None
+            assert not backend._undeleted and not backend._undeleted_kinds
+            assert not getattr(backend, "_disposal_tokens", {})
+
+        asyncio.run(scenario())
+
+    @pytest.mark.parametrize("cancel", [False, True])
+    def test_failed_scope_purge_retains_kinds_for_a_narrowed_retry(self, cancel, monkeypatch):
+        failed = _DockerResult(1, b"", "engine unavailable")
+        backend, fake = _backend_with(_machine(overrides={("ps",): failed, ("rm", "-f"): failed}))
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        backend._registry[(*prefix, "a")] = "selected"
+        backend._registry[(*prefix, "b")] = "sibling"
+        original = backend._docker
+
+        async def interrupted(*args, **kwargs):
+            if args[:1] == ("ps",):
+                raise asyncio.CancelledError
+            return await original(*args, **kwargs)
+
+        if cancel:
+            monkeypatch.setattr(backend, "_docker", interrupted)
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+            monkeypatch.setattr(backend, "_docker", original)
+        else:
+            assert (
+                asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id)).undisposed
+                is not None
+            )
+        fake.calls.clear()
+        assert asyncio.run(backend.dispose(_KEY, kind="a")) is not None
+        removed = [
+            c.args[-1]
+            for c in fake.calls
+            if c.args[:2] == ("rm", "-f") and not c.args[-1].endswith("-proxy")
+        ]
+        assert removed == ["selected"]
+        assert backend._undeleted_kinds[prefix] == {"selected": "a", "sibling": "b"}
+
     def test_an_acquire_that_raises_after_the_run_still_leaves_a_disposable_name(self):
         """The container is running once `run` returns, so every awaited call after it is one
         the acquire can raise on with a container already there.

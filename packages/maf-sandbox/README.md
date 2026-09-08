@@ -65,7 +65,7 @@ It refuses rather than degrades — under `Selection.FIXED`, where the backend i
 
 Under `Selection.PER_SPEC` a host has asked for that promotion, so routing does pass over a below-floor backend and serve on one that clears the floor. **The floor itself is never crossed** — every candidate is checked against it, so nothing below it can serve — but the passed-over backend would otherwise go unmentioned, which is the *misconfiguration* half of the paragraph above rather than the safety half. The per-spec refusal names it only when no candidate serves at all, since a successful route discards the refusals it passed over — so the router says it once, at construction, with a `logger.warning` naming each registered backend below the floor. It warns rather than refuses because a registration that includes a weaker backend is the arrangement this mode exists to serve, and it does **not** advise unregistering it: `dispose` and `dispose_scope` reach every registered backend, so a host that changed which one serves would strand whatever the old one still holds.
 
-**2. The capability match.** A backend declares `declarations.capabilities` (a `frozenset[Capability]`: `EXEC`, `RUN_CODE`, `HOST_TOOLS`, `FILES_IN`, `FILES_OUT`, `FILES_LIST`, `FILES_DELETE`, `SNAPSHOT`, `ATTACHED_IDENTITY`) — what it can actually do — and a spec declares `requires`, what its workload cannot run without. `ensure_can_serve(spec)` raises `SandboxCapabilityNotSupported` when the backend is missing something the spec requires — and where the router selects per spec, that check is also what *chooses*, so it raises only once every registered backend has refused, naming each. Unlike the floor, silence here is a functionality claim rather than a safety one: an unstated `capabilities` reads as exactly `DEFAULT_CAPABILITIES = {EXEC, FILES_IN}` — what this package's own `Sandbox` protocol already obligates, so a backend written before `Capability` existed does not have to start lying to keep working.
+**2. The capability match.** A backend declares `declarations.capabilities` (a `frozenset[Capability]`: `EXEC`, `RUN_CODE`, `HOST_TOOLS`, `FILES_IN`, `FILES_OUT`, `FILES_LIST`, `FILES_DELETE`, `SNAPSHOT`, `RECLAIM`, `ATTACHED_IDENTITY`) — what it can actually do — and a spec declares `requires`, what its workload cannot run without. `ensure_can_serve(spec)` raises `SandboxCapabilityNotSupported` when the backend is missing something the spec requires — and where the router selects per spec, that check is also what *chooses*, so it raises only once every registered backend has refused, naming each. Unlike the floor, silence here is a functionality claim rather than a safety one: an unstated `capabilities` reads as exactly `DEFAULT_CAPABILITIES = {EXEC, FILES_IN}` — what this package's own `Sandbox` protocol already obligates, so a backend written before `Capability` existed does not have to start lying to keep working.
 
 **3. The egress rule**, unchanged in substance. `egress_allow` was a contract nothing checked, so a backend that reads it and one that ignores it have the same type, the same methods and the same passing tests — each one declares an `Egress` level instead: `allowlist` (deny by default, allow the named hosts), `closed` (all or nothing), or `unrestricted` (cannot confine egress at all). `ensure_can_serve(spec)` refuses the last one. Here silence is *not* read charitably: an undeclared `egress` is treated as `unrestricted` and refused, because a backend written before the property existed cannot have been enforcing an allowlist it never read.
 
@@ -289,17 +289,21 @@ InProcessSandboxBackend(
 
 | Was | Is |
 | --- | --- |
-| `async def dispose(key) -> None` | `-> DisposalFailure \| None` — a code to branch on, and a detail to log |
+| `async def dispose(key) -> None` | `dispose(key, *, kind=None) -> DisposalFailure \| None` — a code to branch on, and a detail to log |
 | `async def dispose_scope(scope, thread) -> int` | `-> ScopePurge` — `.disposed` is the old count, `.undisposed` the failure |
 | `router.dispose_scope(...)` → `int` | → `ScopePurge` |
 | `purger.purge_scoped_thread(...)` → `int` | → `ScopePurge` |
 
+`kind` restricts deletion to that workload, including retained failures on retry; `None` deletes every kind. The example assumes the client accepts the same filter. Backends must also implement `reset(timeout=...)`, raising `NotImplementedError` when they do not declare `SNAPSHOT`.
+
 **The code is the contract; the detail is not.** `DisposalCode` is a closed set — `unreachable`, `timeout`, `refused`, `unlisted`, `unknown` — and it is what a caller acts on: retry an `unreachable`, raise the bound on a `timeout`, put a `refused` in front of a human, since it is a missing role far more often than anything transient. `detail` is the backend's own sentence, for a log, never to be parsed.
 
 ```python
-async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
+async def dispose(
+    self, key: SandboxKey, *, kind: str | None = None
+) -> DisposalFailure | None:
     try:
-        gone = await self._client.delete(key)
+        gone = await self._client.delete(key, kind=kind)
     except TransportError as exc:                     # never reached the service
         return DisposalFailure("unreachable", f"{key}: {exc}")
     return None if gone else DisposalFailure("refused", f"{key}: the service kept it")

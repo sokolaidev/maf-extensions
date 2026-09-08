@@ -94,6 +94,7 @@ from ._outputs import (
 from ._protocol import (
     CallerContext,
     Capability,
+    Cleanup,
     DisposalFailure,
     Egress,
     IsolationScope,
@@ -117,6 +118,7 @@ from ._reclaim import (
 from ._refusals import echoed_name
 from ._router import (
     ATTACH_REFUSALS,
+    CallAdmission,
     NoSandboxBackend,
     SandboxRouter,
     SandboxUnclean,
@@ -184,6 +186,12 @@ _SANDBOX_UNCLEAN = (
     "that could not be removed, or a program that may still be running — and it could not be "
     "disposed. Nothing runs in it until it is."
 )
+#: Distinct from `_SANDBOX_UNCLEAN`, because the two ask different things of the reader. That
+#: Busy is retryable: another call still owns an incompatible hold.
+_SANDBOX_BUSY = (
+    "Error: another call is using the sandbox for this conversation and did not finish in "
+    "time, so this call was not admitted to it. Retrying is reasonable."
+)
 
 #: What the removal gets when the body was cancelled, instead of the full ``reclaim_timeout``.
 #:
@@ -230,6 +238,16 @@ class _SandboxToolCall:
     #: returned before acquiring anything — still names the key its other events carry.
     touched: list[SandboxKey] = field(default_factory=list[SandboxKey])
     closed: bool = False
+    #: Each admitted pair retains its serving backend and permitted cleanup rung.
+    entered: dict[tuple[SandboxKey, str], CallAdmission] = field(
+        default_factory=dict[tuple[SandboxKey, str], CallAdmission]
+    )
+    admission_locks: dict[tuple[SandboxKey, str], asyncio.Lock] = field(
+        default_factory=dict[tuple[SandboxKey, str], asyncio.Lock]
+    )
+    #: Conversation acquires retain their hold until a late result has been cleaned.
+    acquiring: dict[SandboxKey, int] = field(default_factory=dict[SandboxKey, int])
+    retire: Callable[[SandboxKey], Awaitable[None]] | None = None
 
 
 #: The call a tool body is running inside, or ``None`` outside one.
@@ -1231,6 +1249,10 @@ def labelled_result_item(text: str, integrity: SourceIntegrity) -> Content:
     return Content.from_text(text, additional_properties={"security_label": label.to_dict()})
 
 
+class _CallClosed(RuntimeError):
+    """Admission outlived its tool call."""
+
+
 class SandboxToolSession:
     """Everything a sandbox workload's tool body needs, minus anything the model supplies.
 
@@ -1623,40 +1645,37 @@ class SandboxToolSession:
     async def acquire(self, key: SandboxKey) -> Sandbox | str:
         """A running sandbox for ``key``, or the message to return when there is none.
 
-        The ladder is this method's whole point, and the line it draws is a security one
-        rather than a stylistic one:
-
-        - a **refusal** — any member of ``_router``'s ``ATTACH_REFUSALS`` — gets a fixed
-          sentence of its own, saying the workload was refused rather than that the sandbox is
-          unavailable. Its *text* is not surfaced: those classes are public and ``acquire``
-          forwards what a backend raises, so a message may carry an SDK response, and nothing
-          about the type says who composed it. What the caller gains is the distinction
-          between a refusal and an outage, which is what decides whether retrying is pointless.
-          **It is caught first**, and the order is the boundary rather than a style: these
-          classes are subclassable, and one inheriting :class:`ValueError` as well would take
-          the verbatim branch below and carry whatever it holds into the transcript;
-        - a **missing SDK** is a host-side install problem, actionable and carrying no
-          account detail;
-        - **no backend** is a configuration state, likewise safe to name;
-        - a :class:`ValueError` is a message this stack authored (image resolution raises
-          them), so it is surfaced verbatim — that is what makes it actionable for whoever is
-          enabling the feature;
-        - anything else is a provider or transport failure whose text can carry endpoint,
-          subscription and tenant ids.  Tool results are persisted into the transcript, so
-          that detail goes to the log — with :func:`~maf_sandbox.error_detail`, because
-          ``str()`` on such an error is often just ``Operation returned an invalid status``
-          — and the model gets a fixed sentence saying only that the run degraded.
+        Admission and backend refusals return a fixed message; their details stay in the log.
+        Refusals take precedence over ValueError, including subclasses of both. Missing SDKs
+        and backends have dedicated messages; stack-authored ValueError text is returned
+        verbatim. Other provider failures are logged with error_detail and return a fixed
+        unavailable message, since tool results are persisted in the transcript.
 
         Raises:
-            RuntimeError: given a key naming a call while no tool call of this session is
-                open — after one returned, from a context that never had one, or naming a
-                different call than the one running. The wiring mistake :meth:`guest_call_path`
-                refuses for the same reason: nothing would delete what it created. Raised again
-                when the call ends *during* the acquire, in which case the sandbox that came back
-                is disposed before the refusal.
+            RuntimeError: the call has closed, or a call-scoped key has no matching open call.
+                A sandbox returned after closure is cleaned before its result is refused.
         """
         call = _this_call(self)
-        if key.call_id and (call is None or call.closed):
+        if call is not None and call.closed:
+            raise RuntimeError(
+                f"{self._name}: acquire() has no open tool call; this one has returned"
+            )
+        tracked = call is not None and not key.call_id
+        if tracked and call is not None:
+            call.acquiring[key] = call.acquiring.get(key, 0) + 1
+        try:
+            return await self._acquire(key, call)
+        finally:
+            if tracked and call is not None:
+                call.acquiring[key] -= 1
+                if not call.acquiring[key]:
+                    del call.acquiring[key]
+                    if call.closed and call.retire is not None:
+                        await call.retire(key)
+
+    async def _acquire(self, key: SandboxKey, call: _SandboxToolCall | None) -> Sandbox | str:
+        """Acquire under the call's admission and record every sandbox that needs cleanup."""
+        if key.call_id and call is None:
             raise RuntimeError(
                 f"{self._name}: acquire() was given a key naming a call, with no open tool call "
                 "to record it against — this one has returned, or the caller never had one. The "
@@ -1676,22 +1695,25 @@ class SandboxToolSession:
             call.touched.append(key)
         per_call = self._router.effective_isolation_scope(self._spec) is IsolationScope.CALL
         if key.call_id and call is not None and per_call:
-            # Recorded before the create rather than after it: a cancellation landing inside the
-            # backend's own acquire can leave a sandbox it already made, and a map written
-            # afterwards would hand the cleanup nothing to delete.
-            #
-            # Only at this scope, and that is the load-bearing half. The cleanup reads the scope
-            # off the key, and a backend's `dispose` sweeps a key's whole (scope, thread, agent) —
-            # so registering a call-naming key under a conversation-scoped workload would have the
-            # `finally` delete the conversation's own sandbox over an acquire the router refused.
+            # Record before creating, but only for keys this workload is allowed to dispose.
             call.acquired.setdefault(key, [])
+        admission = None
+        acquiring = late_disposed = False
         try:
-            sandbox = await self._router.acquire(key, self._spec)
+            if call is not None:
+                try:
+                    admission = await self._admit(key, call)
+                except ATTACH_REFUSALS:
+                    raise
+                except TimeoutError as exc:
+                    self._logger.warning(f"{self._log_prefix}: %s", exc)
+                    return _SANDBOX_BUSY
+            acquiring = True
+            sandbox = await self._router.acquire(key, self._spec, _admission=admission)
+        except _CallClosed:
+            raise
         except ATTACH_REFUSALS as exc:
-            self._logger.warning(
-                f"{self._log_prefix}: workload refused before it ran: %s", error_detail(exc)
-            )
-            return _SANDBOX_REFUSED
+            return self._refused(exc)
         except ImportError as exc:
             # The backend's SDK is not installed. Actionable, and carries no account detail.
             self._logger.warning(f"{self._log_prefix}: sandbox SDK unavailable: %s", exc)
@@ -1715,14 +1737,14 @@ class SandboxToolSession:
             # tenant ids, so it goes to the log and never into the model's context.
             self._logger.warning(f"{self._log_prefix}: sandbox unavailable: %s", error_detail(exc))
             return _SANDBOX_UNAVAILABLE
+        finally:
+            if acquiring and key.call_id and call is not None and call.closed:
+                # Even a failed create can leave a registered sandbox after the call's cleanup.
+                late_disposed = await self._router.dispose_call(
+                    key, timeout=self._router.reclaim.timeout, spec=self._spec, _admission=admission
+                )
         if key.call_id and call is not None and call.closed:
-            # The call ended while the backend was still creating. Its cleanup has already run the
-            # delete for this key, so what came back is a sandbox nothing is left to remove: take
-            # it here, and refuse rather than hand a task something it cannot have cleaned up.
-            landed = await self._router.dispose_call(
-                key, timeout=self._router.reclaim.timeout, spec=self._spec
-            )
-            if landed:
+            if late_disposed:
                 fate = "It has been disposed and the result refused."
             else:
                 self._logger.warning(
@@ -1738,14 +1760,41 @@ class SandboxToolSession:
                 f"it created is past the cleanup that would have deleted it. {fate} A task "
                 "outliving the call needs a key of its own."
             )
-        if call is not None and not call.closed:
-            # Recorded on the way through rather than re-derived in the `finally`, where a
-            # second `acquire` could fail on its own and report a reclaim failure for it. Not
-            # once the call is closed: the removal is already walking this, and a task the body
-            # left running would otherwise add to it mid-walk — and nothing would reclaim what
-            # it wrote anyway.
+        if call is not None:
             call.acquired.setdefault(key, []).append(sandbox)
+            if call.closed:
+                raise RuntimeError(
+                    f"{self._name}: acquire() came back after its tool call had ended; "
+                    "the sandbox will be cleaned before its hold is released."
+                )
         return sandbox
+
+    def _refused(self, exc: Exception) -> str:
+        self._logger.warning(
+            f"{self._log_prefix}: workload refused before it ran: %s", error_detail(exc)
+        )
+        return _SANDBOX_REFUSED
+
+    async def _admit(self, key: SandboxKey, call: _SandboxToolCall) -> CallAdmission:
+        """Share one admission without allowing a late waiter to retire another acquire's hold."""
+        at = (key, self._spec.kind)
+        lock = call.admission_locks.setdefault(at, asyncio.Lock())
+        async with lock:
+            if call.closed:
+                raise _CallClosed(
+                    f"{self._name}: acquire() has no open tool call; this one has returned"
+                )
+            admission = call.entered.get(at)
+            if admission is not None:
+                return admission
+            admission = await self._router.enter_call(key, self._spec, owner=call.id)
+            if call.closed:
+                self._router.release_call(key, self._spec.kind, owner=call.id)
+                raise _CallClosed(
+                    f"{self._name}: acquire() has no open tool call; this one has returned"
+                )
+            call.entered[at] = admission
+            return admission
 
 
 async def _dispose_the_unclean(
@@ -1795,30 +1844,28 @@ async def _dispose_the_unclean(
 
 
 def _refuse_not_yet_reclaimed(
-    router: SandboxRouter, acquired: Sequence[tuple[SandboxKey, object]], start: int
+    router: SandboxRouter,
+    acquired: Sequence[tuple[SandboxKey, object]],
+    start: int,
+    *,
+    call: _SandboxToolCall,
+    kind: str,
 ) -> None:
-    """Refuse every key from ``start`` on, so the next call is not served a sandbox this one did
-    not finish reclaiming.
-
-    Called synchronously while a cancellation is propagating out of the cleanup, where awaiting a
-    disposal is not reliable. A no-op when the host opted down with ``FailedReclaimPolicy.KEEP``:
-    it asked to keep the data, so refusing the key would contradict that.
-    """
+    """Retain the unclean targets cancellation left unfinished, unless the host chose KEEP."""
     if router.reclaim.failed_reclaim_policy is FailedReclaimPolicy.KEEP:
         return
     for key, _ in acquired[start:]:
+        admission = call.entered.get((key, kind))
         if key.call_id:
-            # Nothing to refuse: the ledger closes a key against its *next* acquire, and a
-            # call-scoped key has none — the entry would be read by nobody and cleared by
-            # nothing. What is left is a sandbox no later call can address.
+            # A call-scoped key has no next acquire to refuse.
             continue
         router.mark_unclean(
             key,
-            # `unknown`, not a guess: the cleanup stopped before anything could observe the
-            # sandbox, so nothing here knows whether a delete would have landed.
             DisposalFailure(
                 "unknown", "the tool call's cleanup was cancelled before it could dispose"
             ),
+            backend=None if admission is None else admission.backend,
+            kind=kind,
         )
 
 
@@ -1857,6 +1904,7 @@ async def _dispose_the_call_sandbox(
     *,
     router: SandboxRouter,
     spec: SandboxSpec,
+    admission: CallAdmission,
     prefix: str,
     logger: logging.Logger,
     timeout: float,
@@ -1867,12 +1915,10 @@ async def _dispose_the_call_sandbox(
     that a stop did not reach everything is answered by the same delete.  Nothing is marked
     unclean: that refuses a key's next acquire, and this key has none.
 
-    ``spec`` is passed on rather than dropped because it is what names the backend to ask on a
-    router that selects per spec — the delete is aimed at the one that served this call, not
-    swept across every backend registered.
+    The admission identifies the backend that served the call.
     """
     try:
-        landed = await router.dispose_call(key, timeout=timeout, spec=spec)
+        landed = await router.dispose_call(key, timeout=timeout, spec=spec, _admission=admission)
     except (asyncio.CancelledError, GeneratorExit):
         logger.warning(
             f"{prefix}: the call's sandbox was not disposed — the call was cancelled during the "
@@ -1880,6 +1926,17 @@ async def _dispose_the_call_sandbox(
         )
         raise
     return None if landed else "the delete did not land"
+
+
+def _give_back_the_sandbox(
+    call: _SandboxToolCall, *, router: SandboxRouter, only_key: SandboxKey | None = None
+) -> None:
+    """Release this call's remaining holds, except while an acquire is still in flight."""
+    for key, kind in tuple(call.entered):
+        if key in call.acquiring or (only_key is not None and key != only_key):
+            continue
+        router.release_call(key, kind, owner=call.id)
+        call.entered.pop((key, kind), None)
 
 
 async def _reclaim_the_call(
@@ -1892,6 +1949,7 @@ async def _reclaim_the_call(
     on_failure: Callable[[ReclaimFailure], Awaitable[None]] | None,
     timeout: float,
     unclean: Sequence[tuple[object, str]],
+    only_key: SandboxKey | None = None,
 ) -> None:
     """Remove what one tool call owns, and act on a sandbox it could not leave clean.
 
@@ -1901,11 +1959,10 @@ async def _reclaim_the_call(
     ``FailedReclaimPolicy`` does not loosen it. A sandbox is unclean when the removal did not
     happen, or when
     ``unclean`` carries a transport's note that a stop did not reach everything the program
-    started.  At :data:`~maf_sandbox.IsolationScope.CONVERSATION` either of those leaves the
-    residue readable by every later call, so the framework disposes the sandbox — unless the
-    host opted down — and only then tells the host.  At ``CALL`` the delete above was already
-    the cleanup, and a leak it could not take is one no later call can address: nothing is
-    escalated, nothing is opted down from, and the host is told what did not happen.
+    started. RESET restores both filesystem and process state; failed reset escalates to
+    disposal. RECLAIM cannot clear a surviving process, so an unclean note escalates it to
+    disposal unless the host opted down. At CALL scope, disposal is the cleanup itself and
+    cannot be opted out of; the host is told about any sandbox that remains.
     ``timeout`` bounds the removal, the disposal and the report separately, so one sandbox
     can cost up to three times it.
 
@@ -1918,18 +1975,63 @@ async def _reclaim_the_call(
     """
     if not call.acquired:
         # Nothing was acquired, so nothing was written and nothing ran — there is nothing
-        # there, and no round trip is worth spending to prove it.
+        # there, and no round trip is worth spending to prove it. The gate is still retired:
+        # a call that entered and was then refused holds the count open otherwise.
+        _give_back_the_sandbox(call, router=router, only_key=only_key)
         return
     prefix = _prefixed(tool)
     path = f"{spec.work_dir}/{call.id}" if call.named else spec.work_dir
-    acquired = tuple(call.acquired.items())
+    acquired = tuple(
+        (key, sandboxes)
+        for key, sandboxes in call.acquired.items()
+        if key not in call.acquiring and (only_key is None or key == only_key)
+    )
+    for key, _ in acquired:
+        call.acquired.pop(key)
+    try:
+        await _clean_each_sandbox(
+            call,
+            acquired=acquired,
+            router=router,
+            spec=spec,
+            tool=tool,
+            prefix=prefix,
+            path=path,
+            logger=logger,
+            on_failure=on_failure,
+            timeout=timeout,
+            unclean=unclean,
+        )
+    finally:
+        _give_back_the_sandbox(call, router=router, only_key=only_key)
+
+
+async def _clean_each_sandbox(
+    call: _SandboxToolCall,
+    *,
+    acquired: tuple[tuple[SandboxKey, list[Sandbox]], ...],
+    router: SandboxRouter,
+    spec: SandboxSpec,
+    tool: str,
+    prefix: str,
+    path: str,
+    logger: logging.Logger,
+    on_failure: Callable[[ReclaimFailure], Awaitable[None]] | None,
+    timeout: float,
+    unclean: Sequence[tuple[object, str]],
+) -> None:
+    """Clean each acquired sandbox while the caller retains its admission holds."""
     for index, (key, sandboxes) in enumerate(acquired):
+        admission = call.entered.get((key, spec.kind))
         if key.call_id:
+            if admission is None or not admission.served:
+                continue
             try:
                 undisposed = await _dispose_the_call_sandbox(
                     key,
                     router=router,
                     spec=spec,
+                    admission=admission,
                     prefix=prefix,
                     logger=logger,
                     timeout=timeout,
@@ -1965,11 +2067,53 @@ async def _reclaim_the_call(
                         timeout=timeout,
                     )
             except (asyncio.CancelledError, GeneratorExit):
-                _refuse_not_yet_reclaimed(router, acquired, index)
+                _refuse_not_yet_reclaimed(router, acquired, index, call=call, kind=spec.kind)
                 raise
             continue
         reasons: list[str] = []
-        if call.named:
+        assert admission is not None
+        rung = admission.rung
+        if rung is not Cleanup.RECLAIM:
+            noted = [
+                reason for owner, reason in unclean if any(owner is held for held in sandboxes)
+            ]
+            if noted:
+                logger.warning(
+                    f"{prefix}: the sandbox is not clean after this call: %s", "; ".join(noted)
+                )
+            try:
+                left = await router.finish_call(
+                    key,
+                    spec,
+                    admission=admission,
+                    sandbox=sandboxes[-1],
+                    owner=call.id,
+                    unclean="; ".join(noted) or None,
+                    timeout=timeout,
+                )
+            except (asyncio.CancelledError, GeneratorExit):
+                _refuse_not_yet_reclaimed(router, acquired, index, call=call, kind=spec.kind)
+                logger.warning(
+                    f"{prefix}: the sandbox was not cleaned: the call was cancelled during the %s",
+                    str(rung),
+                )
+                raise
+            call.entered.pop((key, spec.kind), None)
+            if left is None:
+                continue
+            # The router has already disposed and already marked the key, so the escalation
+            # below would be a second disposal over the same sandbox. Only the report is owed.
+            logger.warning(f"{prefix}: the sandbox was not cleaned: %s", left)
+            if on_failure is not None:
+                await _tell_the_host(
+                    on_failure,
+                    ReclaimFailure(tool=tool, key=key, path=path, reason=left, disposal="failed"),
+                    prefix=prefix,
+                    logger=logger,
+                    timeout=timeout,
+                )
+            continue
+        if call.named and rung is Cleanup.RECLAIM:
             try:
                 # By name, against the working directory — not as one composed string. A
                 # ``work_dir`` the protocol accepts may not be POSIX-shaped, and a composed path
@@ -1985,7 +2129,7 @@ async def _reclaim_the_call(
                 # any the loop has not yet reached was reclaimed, so refuse them all — otherwise the
                 # next call reacquires one still holding the last call's data. The leak still has to
                 # be visible, so the line is written before the cancellation goes on.
-                _refuse_not_yet_reclaimed(router, acquired, index)
+                _refuse_not_yet_reclaimed(router, acquired, index, call=call, kind=spec.kind)
                 logger.warning(
                     f"{prefix}: %s was not reclaimed: the call was cancelled during the removal",
                     path,
@@ -2009,6 +2153,8 @@ async def _reclaim_the_call(
         if not reasons:
             continue
         try:
+            if router.reclaim.failed_reclaim_policy is not FailedReclaimPolicy.KEEP:
+                router.mark_unclean(key, backend=admission.backend, kind=spec.kind)
             disposal = await _dispose_the_unclean(
                 router, key, prefix=prefix, logger=logger, timeout=timeout
             )
@@ -2029,7 +2175,7 @@ async def _reclaim_the_call(
             # a landed disposal cleared it clean — so mark only the keys the loop has not reached,
             # never re-refusing one just disposed. Same reason as the removal handler: the next call
             # must not reacquire a sandbox still holding this call's data.
-            _refuse_not_yet_reclaimed(router, acquired, index + 1)
+            _refuse_not_yet_reclaimed(router, acquired, index + 1, call=call, kind=spec.kind)
             raise
 
 
@@ -2604,6 +2750,21 @@ def sandboxed_tool(
             bound = effective_timeout
             if isinstance(failed, (asyncio.CancelledError, GeneratorExit)):
                 bound = min(effective_timeout, _CANCELLED_CALL_GRACE)
+
+            async def retire(key: SandboxKey) -> None:
+                await _reclaim_the_call(
+                    call,
+                    router=router,
+                    spec=spec,
+                    tool=name,
+                    logger=records,
+                    on_failure=effective_on_failure,
+                    timeout=bound,
+                    unclean=unclean,
+                    only_key=key,
+                )
+
+            call.retire = retire
             try:
                 # Still published, unlike `_CALL` above: a call-scoped sandbox is disposed on
                 # the way out, and that disposal is this call's rather than the framework's.

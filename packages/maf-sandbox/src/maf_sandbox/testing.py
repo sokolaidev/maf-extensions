@@ -25,7 +25,9 @@ from typing import TYPE_CHECKING
 
 from ._outputs import SandboxTransferCapExceeded
 from ._protocol import (
+    DEFAULT_CAPABILITIES,
     BackendDeclarations,
+    Capability,
     DisposalFailure,
     Egress,
     EntryKind,
@@ -167,6 +169,56 @@ class InProcessSandbox:
         self._outputs = outputs or {}
         self._raises = raises
         self._default_stdout = default_stdout
+        #: Programs a call started that outlived it, as a backend whose ``exec`` detaches would
+        #: leave. Nothing here starts one; a test appends to it to make a sandbox that a
+        #: ``RECLAIM`` cannot honestly clean.
+        self.running: set[str] = set()
+        #: One entry per ``reset`` call, so a test can assert the rung ran.
+        self.resets: list[int] = []
+        #: What :meth:`reset` restores to — every path and every running program as they stood
+        #: before any input reached this sandbox. Taken here rather than on the first write,
+        #: because a baseline taken after a call has served preserves the residue the reset
+        #: exists to remove. Last in this constructor, so it sees every store above it.
+        self._baseline = self._snapshot()
+
+    def _snapshot(self) -> tuple[dict[str, bytes], set[str], set[str], set[str], set[str]]:
+        """Everything :meth:`reset` puts back, copied rather than aliased."""
+        return (
+            dict(self.contents),
+            set(self.symlinks),
+            set(self.non_regular),
+            set(self.directories),
+            set(self.running),
+        )
+
+    async def reset(self, *, timeout: float) -> None:
+        """Restore the initial filesystem and process state; timeout is accepted but unused."""
+        del timeout
+        self.resets.append(len(self.resets))
+        contents, symlinks, non_regular, directories, running = self._baseline
+        self.contents = dict(contents)
+        self.symlinks = set(symlinks)
+        self.non_regular = set(non_regular)
+        self.directories = set(directories)
+        self.running = set(running)
+
+    def changed_paths(self) -> frozenset[str]:
+        """Return every path whose contents or entry kind differs from the initial state."""
+        contents, symlinks, non_regular, directories, _ = self._baseline
+        changed = symlinks ^ self.symlinks
+        changed |= non_regular ^ self.non_regular
+        changed |= directories ^ self.directories
+        changed |= contents.keys() ^ self.contents.keys()
+        changed |= {
+            path
+            for path in contents.keys() & self.contents.keys()
+            if contents[path] != self.contents[path]
+        }
+        return frozenset(changed)
+
+    def running_programs(self) -> frozenset[str]:
+        """Every program still running — the fingerprint's other half."""
+        return frozenset(self.running)
 
     @property
     def files(self) -> Mapping[str, str]:
@@ -342,12 +394,11 @@ class InProcessSandbox:
         return tuple(entries)
 
 
-#: What :class:`InProcessSandboxBackend` declares unless a test says otherwise.  One field
-#: departs from :data:`~maf_sandbox.DEFAULT_BACKEND_DECLARATIONS`: ``egress_modes`` is stated,
-#: because the router's silence rule there refuses every spec, and an offline suite that has to
-#: opt out of the attach refusal in every test is measuring the fake rather than the workload.
+#: Defaults for offline workloads: permit attach through explicit egress modes and establish
+#: the RECLAIM rung through the fake's directory removal. Other fields keep the router defaults.
 FAKE_BACKEND_DECLARATIONS = BackendDeclarations(
-    egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED})
+    capabilities=DEFAULT_CAPABILITIES | {Capability.RECLAIM},
+    egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED}),
 )
 
 
@@ -365,23 +416,14 @@ class InProcessSandboxBackend:
         isolation: Returned by the :attr:`isolation` property — configurable because the
             router's minimum-isolation floor is exercised against fakes claiming every
             :class:`~maf_sandbox.Isolation` rung, not only ``NONE``.
-        declarations: Returned by the :attr:`declarations` property. Defaults to
-            :data:`FAKE_BACKEND_DECLARATIONS`, which differs from
-            :data:`~maf_sandbox.DEFAULT_BACKEND_DECLARATIONS` in one field: ``egress_modes`` is
-            ``{ALLOWLIST, CLOSED}`` so a workload under test attaches as it would against a
-            proxy-capable live backend, rather than every offline test becoming a test of the
-            attach refusal. A test of that refusal passes a narrower set (``frozenset()`` for
-            "enforces nothing", ``{UNRESTRICTED}`` for the no-confinement backend). The other
-            four fields keep the router's own silence rules, so leaving them unset and stating
-            them explicitly serve one spec identically — which is why ``capabilities`` still
-            defaults to :data:`~maf_sandbox.DEFAULT_CAPABILITIES` even though this sandbox
-            genuinely implements the pull surface: a test that wants it asks for it.
+        declarations: Defaults to :data:`FAKE_BACKEND_DECLARATIONS`: capabilities are
+            :data:`~maf_sandbox.DEFAULT_CAPABILITIES` plus ``RECLAIM``, and ``egress_modes``
+            is ``{ALLOWLIST, CLOSED}``. Other fields keep
+            :data:`~maf_sandbox.DEFAULT_BACKEND_DECLARATIONS`; pull capabilities remain opt-in.
 
-            **Override with** ``dataclasses.replace(FAKE_BACKEND_DECLARATIONS, ...)``, never
-            with a bare :class:`~maf_sandbox.BackendDeclarations`: constructing one resets
-            ``egress_modes`` to the router's silence rule, which enforces nothing, and every
-            attach then fails with :class:`~maf_sandbox.SandboxEgressNotEnforced` about a field
-            the test never named.
+            Override with ``dataclasses.replace(FAKE_BACKEND_DECLARATIONS, ...)``. A bare
+            :class:`~maf_sandbox.BackendDeclarations` resets egress enforcement to empty,
+            so attach fails with :class:`~maf_sandbox.SandboxEgressNotEnforced`.
         acquire_error: When set, ``acquire`` raises this instead of returning the sandbox —
             for exercising a kind's "sandbox unavailable" degrade path.
         dispose_error: When set, ``dispose`` records the key and then raises this — for
@@ -444,6 +486,9 @@ class InProcessSandboxBackend:
         self.keys: list[SandboxKey] = []
         self.specs: list[SandboxSpec] = []
         self.disposed: list[SandboxKey] = []
+        #: The ``kind`` each disposal narrowed to, ``None`` for a whole-key one. Parallel
+        #: to :attr:`disposed`, so a test reads the pair by index.
+        self.disposed_kinds: list[str | None] = []
         self.purged: list[tuple[str, str]] = []
         self.purge_count = 1
 
@@ -476,8 +521,9 @@ class InProcessSandboxBackend:
             self.sandboxes[(key, spec.kind)] = held
         return held
 
-    async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
+    async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> DisposalFailure | None:
         self.disposed.append(key)
+        self.disposed_kinds.append(kind)
         if self.dispose_error is not None:
             raise self.dispose_error
         if self.dispose_failure is not None:
@@ -485,7 +531,12 @@ class InProcessSandboxBackend:
             # mapping here would hand the next acquire a fresh filesystem, so a test written
             # against a failing dispose would measure separation this fake had not given it.
             return self.dispose_failure
-        for held in [entry for entry in self.sandboxes if entry[0] == key]:
+        taking = [
+            entry
+            for entry in self.sandboxes
+            if entry[0] == key and (kind is None or entry[1] == kind)
+        ]
+        for held in taking:
             del self.sandboxes[held]
         return None
 

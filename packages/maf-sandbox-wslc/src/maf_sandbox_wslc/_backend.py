@@ -27,6 +27,7 @@ import logging
 import posixpath
 import re
 import tarfile
+import threading
 import time
 import weakref
 from collections.abc import Callable, Mapping, Sequence
@@ -571,6 +572,12 @@ class _WslcSandbox:
             "workload already requires it, or declare a backend whose engine answers that check."
         )
 
+    async def reset(self, *, timeout: float) -> None:
+        """Unsupported: this backend does not declare Capability.SNAPSHOT."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support reset; dispose its sandbox instead."
+        )
+
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
         """Remove ``directory`` with ``rm -rf`` over :meth:`_exec`, as ``--user 0``.
 
@@ -639,12 +646,11 @@ class WslcSandboxBackend:
         # fails, never the truth. Holds the last name acquired per key and kind, which is
         # enough to reclaim them.
         self._registry: dict[tuple[str, str, str, str], str] = {}
-        #: Workload containers a removal could not take away, by key prefix. Retry
-        #: bookkeeping only: it does **not** keep one from being served, since the name comes
-        #: from the key and `acquire` asks the engine. Refusing to serve is the router's
-        #: ledger. A `dispose` clears an entry once the removal lands; a scope purge never
-        #: does, because a name is not a generation and it cannot tell the two apart.
+        # Retry records do not refuse serving; the router owns that decision.
         self._undeleted: dict[tuple[str, str, str], set[str]] = {}
+        self._undeleted_kinds: dict[tuple[str, str, str], dict[str, str]] = {}
+        self._disposal_tokens: dict[tuple[str, str, str], dict[str, object]] = {}
+        self._disposal_guard = threading.Lock()
         #: Container name -> the key prefix it was acquired under, for every name this
         #: process created. What lets a purge key an `EgressObserved` on a container the
         #: registry no longer names. Pruned as names are removed.
@@ -859,56 +865,101 @@ class WslcSandboxBackend:
                 self._acquired[name] = (key.scope, key.thread_id, key.agent_dir)
             return _WslcSandbox(self._wslc, name, self._config.command_timeout_seconds)
 
-    async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
-        """Delete every container for ``key`` — every kind, closed or allowlisted — with
-        proxies and networks.
+    def _retain_disposals(
+        self, prefix: tuple[str, str, str], names: Sequence[str], kinds: Mapping[str, str]
+    ) -> dict[str, object]:
+        """Reserve retry records while holding the disposal guard."""
+        if not names:
+            return {}
+        tokens = {name: object() for name in names}
+        self._disposal_tokens.setdefault(prefix, {}).update(tokens)
+        self._undeleted.setdefault(prefix, set()).update(names)
+        self._undeleted_kinds.setdefault(prefix, {}).update(kinds)
+        return tokens
 
-        By label, so it reaches a sandbox created under an egress configuration this backend no
-        longer runs; the registry name is the fallback for when the listing itself fails. Never
-        raises: a removal that failed comes back as the reason, so the router can refuse a key
-        whose data is still sitting in a container.
-        """
+    def _finish_disposals(
+        self,
+        prefix: tuple[str, str, str],
+        attempted: Mapping[str, object],
+        failed: Sequence[str],
+        kinds: Mapping[str, str],
+    ) -> None:
+        """Reconcile this attempt while holding the disposal guard."""
+        self._retain_disposals(prefix, failed, {n: kinds[n] for n in failed if n in kinds})
+        tokens = self._disposal_tokens.get(prefix, {})
+        names = self._undeleted.get(prefix, set())
+        attributed = self._undeleted_kinds.get(prefix, {})
+        for name, token in attempted.items():
+            if tokens.get(name) is token:
+                tokens.pop(name)
+                names.discard(name)
+                attributed.pop(name, None)
+        if not tokens:
+            self._disposal_tokens.pop(prefix, None)
+        if not names:
+            self._undeleted.pop(prefix, None)
+        if not attributed:
+            self._undeleted_kinds.pop(prefix, None)
+
+    async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> DisposalFailure | None:
+        """Delete this key's sandboxes, narrowed to kind when given.
+
+        Labels reach unregistered containers; retained names cover a failed listing.
+        Failed deletions are retained per kind for retries and reported without raising."""
         prefix = (key.scope, key.thread_id, key.agent_dir)
-        mine = [k for k in list(self._registry) if k[:3] == prefix]
-        remembered = [self._registry.pop(k) for k in mine]
-        candidates = list(dict.fromkeys([*remembered, *sorted(self._undeleted.get(prefix, ()))]))
-        if candidates:
-            # Before the first await: the registry no longer holds these, so a retry finds
-            # them only here. Merged, not assigned — teardown for one key is not serialized.
-            self._undeleted[prefix] = self._undeleted.get(prefix, set()) | set(candidates)
+        with self._disposal_guard:
+            mine = [
+                k
+                for k in list(self._registry)
+                if k[:3] == prefix and (kind is None or k[3] == kind)
+            ]
+            attributed = self._undeleted_kinds.setdefault(prefix, {})
+            remembered: list[str] = []
+            for entry in mine:
+                name = self._registry.pop(entry)
+                remembered.append(name)
+                attributed[name] = entry[3]
+            retained = sorted(
+                name
+                for name in self._undeleted.get(prefix, ())
+                if kind is None or attributed.get(name) == kind
+            )
+            candidates = list(dict.fromkeys([*remembered, *retained]))
+            attempted_kinds = {name: attributed[name] for name in candidates if name in attributed}
+            attempted = self._retain_disposals(prefix, candidates, attempted_kinds)
         # The last window, and only the last: every acquire before this one already drained its
         # own proxy on the way to rebuilding it. Every container the labels reach belongs to
         # this key by construction, so all of them are attributable — including one served
         # under an egress configuration this backend no longer runs.
+        wanted = [
+            (_LABEL_SCOPE, key.scope),
+            (_LABEL_THREAD, key.thread_id),
+            (_LABEL_AGENT, key.agent_dir),
+        ]
+        if kind is not None:
+            wanted.append((_LABEL_KIND, kind))
         swept = await self._purge(
-            [
-                (_LABEL_SCOPE, key.scope),
-                (_LABEL_THREAD, key.thread_id),
-                (_LABEL_AGENT, key.agent_dir),
-            ],
+            wanted,
             fallback=candidates,
             thread_id=key.thread_id,
             drain_key=lambda _name: key,
         )
-        # Only on a normal return, so a cancelled sweep keeps the whole set; over-retaining is
-        # the safe direction, since a container already gone drops out next attempt. Read from
-        # the live map, not the snapshot, with no await between read and write. A name does not
-        # identify a generation, so a stale sweep can still subtract a newer record: #685.
-        still = set(swept.undeleted)
-        left = (self._undeleted.get(prefix, set()) | still) - (set(candidates) - still)
-        if left:
-            self._undeleted[prefix] = left
-        else:
-            self._undeleted.pop(prefix, None)
+        failed_kinds = dict(attempted_kinds)
+        if kind is not None:
+            failed_kinds.update(dict.fromkeys(swept.undeleted, kind))
+        with self._disposal_guard:
+            self._finish_disposals(prefix, attempted, list(swept.undeleted), failed_kinds)
+            left = self._undeleted.get(prefix, set())
+            attributed = self._undeleted_kinds.get(prefix, {})
+            outstanding = {name for name in left if kind is None or attributed.get(name) == kind}
         reported = swept.reason
         if reported is not None:
             return reported
-        if left:
-            # A disposal still in flight wrote these ahead of its own await. `None` would
-            # clear the refusal on a delete nobody confirmed; `unknown` and a count, since
-            # neither the outcome nor the names are this attempt's to describe.
+        if outstanding:
+            # Pending attempts cannot yet certify cleanup.
             return DisposalFailure(
-                "unknown", f"another disposal has not yet reported on {len(left)} container(s)"
+                "unknown",
+                f"another disposal has not yet reported on {len(outstanding)} container(s)",
             )
         return None
 
@@ -920,24 +971,38 @@ class WslcSandboxBackend:
         fails, and its entries are dropped either way: an entry pointing at a container that may
         already be gone is worse than no entry.
         """
-        mine = [k for k in list(self._registry) if k[0] == scope and k[1] == thread_id]
-        # What makes a purge's proxies attributable at all: `EgressObserved` needs a key and a
-        # purge is addressed by a conversation, so the agent dir has to come from somewhere.
-        # Every name this process acquired under this conversation, not only the ones the
-        # registry still points at — a replaced egress identity and a name a failed delete
-        # retained are both reached by the sweep below. A container another replica created is
-        # not in here and cannot be drained; that is the gap `observes_egress` does not close.
-        attributable = {
-            name: SandboxKey(scope=prefix[0], thread_id=prefix[1], agent_dir=prefix[2])
-            for name, prefix in self._acquired.items()
-            if prefix[0] == scope and prefix[1] == thread_id
-        }
-        remembered = [self._registry.pop(k) for k in mine]
-        retained = {
-            p: set(names)
-            for p, names in self._undeleted.items()
-            if p[0] == scope and p[1] == thread_id
-        }
+        with self._disposal_guard:
+            mine = [k for k in list(self._registry) if k[0] == scope and k[1] == thread_id]
+            # Only locally acquired names carry an agent key for egress attribution.
+            attributable = {
+                name: SandboxKey(scope=prefix[0], thread_id=prefix[1], agent_dir=prefix[2])
+                for name, prefix in self._acquired.items()
+                if prefix[0] == scope and prefix[1] == thread_id
+            }
+            remembered: list[str] = []
+            for entry in mine:
+                name = self._registry.pop(entry)
+                prefix = entry[:3]
+                remembered.append(name)
+                self._undeleted.setdefault(prefix, set()).add(name)
+                self._undeleted_kinds.setdefault(prefix, {})[name] = entry[3]
+            retained = {
+                p: set(names)
+                for p, names in self._undeleted.items()
+                if p[0] == scope and p[1] == thread_id
+            }
+            attempted_kinds = {
+                prefix: {
+                    name: kind
+                    for name, kind in self._undeleted_kinds.get(prefix, {}).items()
+                    if name in names
+                }
+                for prefix, names in retained.items()
+            }
+            attempted = {
+                prefix: self._retain_disposals(prefix, list(names), attempted_kinds[prefix])
+                for prefix, names in retained.items()
+            }
         swept = await self._purge(
             [(_LABEL_SCOPE, scope), (_LABEL_THREAD, thread_id)],
             fallback=list(
@@ -948,8 +1013,14 @@ class WslcSandboxBackend:
             thread_id=thread_id,
             drain_key=attributable.get,
         )
-        # Nothing is subtracted here: the container this sweep removed and one recorded since
-        # carry the same name, so taking one away drops the other.
+        with self._disposal_guard:
+            for prefix, tokens in attempted.items():
+                self._finish_disposals(
+                    prefix,
+                    tokens,
+                    list(retained[prefix] & swept.undeleted.keys()),
+                    attempted_kinds[prefix],
+                )
         return ScopePurge(swept.count, swept.reason)
 
     async def _purge(

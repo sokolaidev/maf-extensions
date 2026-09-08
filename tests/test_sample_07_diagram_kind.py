@@ -1,14 +1,14 @@
 """Sample 07's kind, driven against the in-process backend with no container and no model.
 
-What the sample claims in prose its live run cannot show — the reclaim is visible only in the
-fake's own store. Async tests follow the repo convention: a synchronous `def test_*` driving
-one `asyncio.run`, no pytest-asyncio.
+These tests check path selection, artifact delivery and disposal through a simulated renderer.
+They do not prove confinement of real Graphviz processes.
 """
 
 from __future__ import annotations
 
 import asyncio
 import dataclasses
+import shlex
 import struct
 import sys
 import zlib
@@ -87,6 +87,17 @@ def _fn(tool):
     return getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
 
 
+_BACKENDS: dict[InProcessSandbox, InProcessSandboxBackend] = {}
+
+
+def _guest_call_directories(sandbox: InProcessSandbox) -> list[str]:
+    return [
+        shlex.split(command)[2].rsplit("/", 1)[0]
+        for command, _, _ in sandbox.commands
+        if command.startswith("dot ")
+    ]
+
+
 def _tools(
     sandbox: InProcessSandbox,
     out_dir: Path,
@@ -102,9 +113,11 @@ def _tools(
     backend = InProcessSandboxBackend(
         sandbox,
         declarations=dataclasses.replace(
-            FAKE_BACKEND_DECLARATIONS, capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
+            FAKE_BACKEND_DECLARATIONS,
+            capabilities=DEFAULT_CAPABILITIES | {Capability.FILES_OUT},
         ),
     )
+    _BACKENDS[sandbox] = backend
     router = SandboxRouter([backend], min_isolation=Isolation.NONE)
     return make_diagram_tools(
         router,
@@ -186,20 +199,12 @@ class TestTheCallWritesInsideItsOwnDirectory:
         sandbox = _Renderer()
         _render(sandbox, out_dir)
 
-        # Read before the reclaim removed them: the fake records every reclaimed directory, and
-        # that directory is what the two files were written under.
-        assert len(sandbox.reclaims) == 1
-        call_directory, working_directory, _ = sandbox.reclaims[0]
-        assert working_directory == _WORK_DIR
-        assert call_directory.startswith(f"{_WORK_DIR}/")
-        assert call_directory.count("/") == _WORK_DIR.count("/") + 1
+        [guest_call_directory] = _guest_call_directories(sandbox)
+        assert guest_call_directory.startswith(f"{_WORK_DIR}/")
+        assert guest_call_directory.count("/") == _WORK_DIR.count("/") + 1
 
     def test_two_concurrent_calls_never_share_a_path(self, out_dir: Path):
-        """The claim the missing lock rests on, in the shape the lock guarded.
-
-        One attached tool, both calls in flight at once. Sequential calls through separate
-        tools would have passed against the locked version too, and prove nothing about it.
-        """
+        """Calls launched together still select different guest paths."""
         sandbox = _Renderer()
         tools = _tools(sandbox, out_dir)
         assert len(tools) == 1, tools
@@ -210,35 +215,27 @@ class TestTheCallWritesInsideItsOwnDirectory:
 
         asyncio.run(both())
 
-        # The argv is the kind's own choice; the reclaims below are the framework's, and would
-        # differ even from a kind that wrote both renders to one fixed path.
         rendered = [command for command, _, _ in sandbox.commands if command.startswith("dot ")]
         assert len(rendered) == 2
         assert rendered[0] != rendered[1]
 
-        first, second = (directory for directory, _, _ in sandbox.reclaims)
-        assert first != second
-        assert not first.startswith(f"{second}/")
-        assert not second.startswith(f"{first}/")
+        guest_first, guest_second = _guest_call_directories(sandbox)
+        assert guest_first != guest_second
+        assert not guest_first.startswith(f"{guest_second}/")
+        assert not guest_second.startswith(f"{guest_first}/")
 
 
-class TestNothingSurvivesTheCall:
-    def test_the_work_directory_is_empty_afterwards(self, out_dir: Path):
-        """Nothing the call wrote outlives it — which only the fake's store can show."""
+class TestTheCallIsDisposed:
+    def test_unproved_confinement_is_not_declared(self):
+        assert diagram_sandbox_spec().confined_to_guest_call_path is False
+
+    def test_the_backend_is_asked_to_dispose_the_kind(self, out_dir: Path):
         sandbox = _Renderer()
         _render(sandbox, out_dir)
-
-        assert [path for path in sandbox.contents if path.startswith(f"{_WORK_DIR}/")] == []
-
-    def test_the_reclaim_is_the_call_directory_and_not_the_work_directory(self, out_dir: Path):
-        """A reclaim of `work_dir` itself is what the library refuses, and it is the mistake a
-        kind makes when it writes at fixed paths and tries to tidy up after itself."""
-        sandbox = _Renderer()
-        _render(sandbox, out_dir)
-
-        # Both halves, because "nothing was reclaimed" satisfies the second on its own — which
-        # is exactly what a kind that writes at fixed paths does.
-        assert [directory for directory, _, _ in sandbox.reclaims] not in ([], [_WORK_DIR])
+        backend = _BACKENDS[sandbox]
+        assert len(backend.disposed) == 1
+        assert backend.disposed_kinds == [diagram_sandbox_spec().kind]
+        assert not sandbox.reclaims
 
 
 class TestTheArtifactLandsUnderTheNameTheSampleChose:
@@ -279,7 +276,7 @@ class TestTheArtifactLandsUnderTheNameTheSampleChose:
         sandbox = _Renderer()
         reply = _render(sandbox, out_dir)
 
-        call_directory, _, _ = sandbox.reclaims[0]
-        run_id = call_directory.rsplit("/", 1)[-1]
+        [guest_call_directory] = _guest_call_directories(sandbox)
+        run_id = guest_call_directory.rsplit("/", 1)[-1]
         assert "diagram.png" in reply
         assert run_id not in reply

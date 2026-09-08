@@ -18,6 +18,7 @@ from enum import StrEnum
 from typing import Any, Literal, Protocol, runtime_checkable
 
 __all__ = [
+    "CLEANUP_RANK",
     "DEFAULT_BACKEND_DECLARATIONS",
     "DEFAULT_CAPABILITIES",
     "DEFAULT_SANDBOX_LIMITS",
@@ -27,6 +28,7 @@ __all__ = [
     "ISOLATION_SCOPE_RANK",
     "BackendDeclarations",
     "Capability",
+    "Cleanup",
     "DeclaredOutput",
     "DisposalCode",
     "DisposalFailure",
@@ -159,6 +161,36 @@ ISOLATION_SCOPE_RANK: Mapping[IsolationScope, int] = {
 }
 
 
+class Cleanup(StrEnum):
+    """Cleanup performed when a call ends, ordered weakest first by CLEANUP_RANK.
+
+    Reuse requires workload/backend evidence; otherwise cleanup resolves to DISPOSE.
+    IsolationScope.CALL always disposes. See SandboxRouter.effective_cleanup."""
+
+    #: Remove the call's own guest directory; the rest of the sandbox stays as the call left it.
+    #: Established only by :attr:`SandboxSpec.confined_to_guest_call_path` over a backend
+    #: declaring :data:`Capability.RECLAIM` — the kind claims every byte it writes lands under
+    #: its call path and nothing it starts outlives the call, and the backend can take that
+    #: directory.  Neither half alone establishes it.
+    RECLAIM = "reclaim"
+    #: Restore the sandbox to the state it had before any input reached it.  Established by a
+    #: backend declaring :data:`Capability.SNAPSHOT` and implementing :meth:`Sandbox.reset`.
+    #: What a call wrote and what it started both go, without paying for a create.
+    RESET = "reset"
+    #: Delete the sandbox; the conversation's next call creates one.  Established by
+    #: construction everywhere, which is what makes the resolution below total and what makes
+    #: this the honest default for a workload that claims nothing.
+    DISPOSE = "dispose"
+
+
+#: The order, weakest first, written down exactly once — every comparison of two rungs goes
+#: through it, and an exhaustiveness test asserts every member is ranked.  A host and a spec may
+#: raise, never lower, which is the same rule :attr:`SandboxSpec.min_isolation` follows.
+CLEANUP_RANK: Mapping[Cleanup, int] = {
+    rung: rank for rank, rung in enumerate((Cleanup.RECLAIM, Cleanup.RESET, Cleanup.DISPOSE))
+}
+
+
 class Egress(StrEnum):
     """A network posture on one axis, least-isolated to most: ``UNRESTRICTED``, ``ALLOWLIST``,
     ``CLOSED``.
@@ -207,10 +239,15 @@ class Capability(StrEnum):
     #: the protocol deleted before this, and a workload that never cleans up is not broken by
     #: a capability it does not require.
     FILES_DELETE = "files_delete"
-    #: Snapshot and restore a sandbox for reuse.
+    #: Snapshot and restore a sandbox for reuse. Also what establishes :data:`Cleanup.RESET`,
+    #: through :meth:`Sandbox.reset`.
     SNAPSHOT = "snapshot"
     #: A platform-attached identity scoped to the sandbox itself.
     ATTACHED_IDENTITY = "attached_identity"
+    #: Backend evidence for :data:`Cleanup.RECLAIM`; forbidden in :attr:`SandboxSpec.requires`.
+    #: Reuse also requires workload confinement. Without this declaration, cleanup resolves
+    #: to RESET where SNAPSHOT is available, otherwise DISPOSE.
+    RECLAIM = "reclaim"
 
 
 #: What every :class:`Sandbox` already obligates.
@@ -704,6 +741,15 @@ class SandboxSpec:
     to.  It buys that with a cold start per call, which is the whole of its cost and the reason
     it is not the default.  Like ``egress`` it is normalised on construction: a plain string
     serves exactly as the member does, and anything else raises here.
+
+    ``confined_to_guest_call_path`` claims that every write stays under the guest call path
+    and no started process outlives the call. Together with Capability.RECLAIM, it permits
+    warm reuse. The default is False; a kind claiming confinement owes a real-backend
+    filesystem and process probe. The planned assert_nothing_left_behind probe is not yet
+    available.
+
+    ``min_cleanup`` may raise the host's floor, never lower it. None adds no constraint.
+    DISPOSE is always available, so a stronger floor costs cleanup rather than refusing a spec.
     """
 
     kind: str
@@ -736,6 +782,10 @@ class SandboxSpec:
     host_tools: HostToolAggregate | None = None
     # Appended after it, for that same reason.
     isolation_scope: IsolationScope = IsolationScope.CONVERSATION
+    # Appended after it, for that same reason.
+    confined_to_guest_call_path: bool = False
+    # Appended after it, for that same reason.
+    min_cleanup: Cleanup | None = None
 
     @property
     def identities(self) -> frozenset[Identity]:
@@ -754,12 +804,21 @@ class SandboxSpec:
         # not a member raises here rather than degrading to a shared sandbox somewhere later.
         object.__setattr__(self, "egress", Egress(str(self.egress)))
         object.__setattr__(self, "isolation_scope", IsolationScope(str(self.isolation_scope)))
+        # `None` is the absence of an opinion and stays absent; anything else is coerced, because
+        # the resolution below ranks it through `CLEANUP_RANK` and a bare string is not a key.
+        if self.min_cleanup is not None:
+            object.__setattr__(self, "min_cleanup", Cleanup(str(self.min_cleanup)))
         if self.egress_allow and self.egress is not Egress.ALLOWLIST:
             hosts = ", ".join(self.egress_allow)
             raise ValueError(
                 f"egress_allow names hosts ({hosts}) but egress is {str(self.egress)!r}: a host "
                 f"list is the payload of an {str(Egress.ALLOWLIST)!r} run and has no meaning "
                 "without it. Set egress=Egress.ALLOWLIST, or drop the hosts."
+            )
+        if Capability.RECLAIM in self.requires:
+            raise ValueError(
+                "Capability.RECLAIM belongs in backend declarations; "
+                "remove it from SandboxSpec.requires."
             )
         if self.host_tools is None:
             return
@@ -1078,6 +1137,14 @@ class Sandbox(Protocol):
         """
         ...
 
+    async def reset(self, *, timeout: float) -> None:
+        """Restore the initial filesystem and processes, before any call supplied input.
+
+        Requires Capability.SNAPSHOT; backends without it raise NotImplementedError. Restoring
+        only the filesystem is insufficient. The sandbox stays addressable under the same key
+        and kind. Raise on failure so cleanup can escalate to disposal."""
+        raise NotImplementedError
+
 
 #: Why a disposal did not land, in a word a caller may branch on.
 #:
@@ -1280,24 +1347,15 @@ class SandboxBackend(Protocol):
         """
         ...
 
-    async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
-        """Delete every kind's sandbox for ``key``, if any. Best-effort: never raises.
+    async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> DisposalFailure | None:
+        """Delete this key's sandboxes. Best-effort: return a failure instead of raising.
 
-        Every kind's, because a key may own one sandbox per kind and this method takes no
-        kind: a caller releasing a key means all of it.
+        kind narrows disposal to that workload; None takes every kind. Preserve attribution
+        when retaining failed deletions so retries cannot delete a sibling kind.
 
-        **Return a :class:`DisposalFailure` when a sandbox may still be there, or ``None``.**
-        ``None`` is read as disposed, and a backend with no way to check returns it too — the
-        conflation is with success, because refusing every key served by a backend that cannot
-        answer is the wrong direction to fail in.
-
-        The :data:`DisposalCode` is what a caller branches on and the only half kept stable;
-        ``detail`` is yours and reaches a log. Reach for ``"unknown"`` rather than guessing.
-
-        A record of what could not be deleted is retry bookkeeping, not a guard on
-        :meth:`acquire` — refusing to serve is the router's ledger. The three in this
-        repository each carry their own copy of it, so a change to one is owed to the others.
-        """
+        Return DisposalFailure when a sandbox may remain, or None when no failure is known.
+        Callers branch on its code; detail is for logs. Use unknown when the cause is uncertain.
+        Retry bookkeeping does not refuse acquire; that guard belongs to the router."""
         ...
 
     async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
