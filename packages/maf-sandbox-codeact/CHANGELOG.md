@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.14.0...maf-sandbox-codeact-v0.14.1) (2026-09-08)
+
+
+### Fixes
+
+* require maf-sandbox 0.36.0 in the dependents, and admit the 0.36 line ([#1018](https://github.com/sokolaidev/maf-extensions/issues/1018)) ([d58e1ac](https://github.com/sokolaidev/maf-extensions/commit/d58e1ac02d0372e356cf00dbce5fe59c38b35324))
+
 ## [0.14.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.13.1...maf-sandbox-codeact-v0.14.0) (2026-09-07)
 
 
