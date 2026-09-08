@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.17.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.16.0...maf-sandbox-docker-v0.17.0) (2026-09-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** a call leaves nothing behind by default ([#999](https://github.com/sokolaidev/maf-extensions/issues/999))
+
+### Features
+
+* **docker:** reap expired sandboxes and their infrastructure by age ([#1012](https://github.com/sokolaidev/maf-extensions/issues/1012)) ([95c4716](https://github.com/sokolaidev/maf-extensions/commit/95c4716680dacec3f57171d9e3b22025cd4941e1))
+* **sandbox:** a call leaves nothing behind by default ([#999](https://github.com/sokolaidev/maf-extensions/issues/999)) ([e0ad6b9](https://github.com/sokolaidev/maf-extensions/commit/e0ad6b9c0a8516477d9f7b99afdb7724cd72677c))
+
+
+### Fixes
+
+* **docker:** read files with extended tar headers ([#1007](https://github.com/sokolaidev/maf-extensions/issues/1007)) ([40b3430](https://github.com/sokolaidev/maf-extensions/commit/40b34304253b0b0f3a0a84a44df216a3b1057f36))
+* **docker:** reject incomplete file transfers ([#1002](https://github.com/sokolaidev/maf-extensions/issues/1002)) ([28b7ee9](https://github.com/sokolaidev/maf-extensions/commit/28b7ee9ed716865601b9add44798450c71a41965))
+* require maf-sandbox 0.36.0 in the dependents, and admit the 0.36 line ([#1018](https://github.com/sokolaidev/maf-extensions/issues/1018)) ([d58e1ac](https://github.com/sokolaidev/maf-extensions/commit/d58e1ac02d0372e356cf00dbce5fe59c38b35324))
+
 ## [0.16.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.15.2...maf-sandbox-docker-v0.16.0) (2026-09-07)
 
 
