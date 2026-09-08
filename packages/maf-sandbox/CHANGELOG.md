@@ -2,6 +2,18 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.36.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.35.0...maf-sandbox-v0.36.0) (2026-09-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** a call leaves nothing behind by default ([#999](https://github.com/sokolaidev/maf-extensions/issues/999))
+
+### Features
+
+* **sandbox:** a call leaves nothing behind by default ([#999](https://github.com/sokolaidev/maf-extensions/issues/999)) ([e0ad6b9](https://github.com/sokolaidev/maf-extensions/commit/e0ad6b9c0a8516477d9f7b99afdb7724cd72677c))
+* **sandbox:** fold what a call read into one answer, so a host can tell what the call was fed ([#993](https://github.com/sokolaidev/maf-extensions/issues/993)) ([bda28ed](https://github.com/sokolaidev/maf-extensions/commit/bda28edc5154fd248e035fbde7fc78ece4e96734))
+
 ## [0.35.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.34.0...maf-sandbox-v0.35.0) (2026-09-07)
 
 
