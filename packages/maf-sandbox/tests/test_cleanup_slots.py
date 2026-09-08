@@ -246,3 +246,59 @@ class TestHoldsAcrossEventLoops:
         slots.release(_KEY, _KIND, owner=OWNER)
         slots.release(_KEY, _KIND, owner=RIVAL)
         assert not slots._slots
+
+
+class TestQueuedOwnersDoNotGetBypassed:
+    def test_shared_arrivals_wait_behind_a_queued_exclusive_owner(self):
+        slots = ExclusiveSlots()
+
+        async def scenario():
+            await slots.take(_KEY, _KIND, owner=OWNER, exclusive=False, timeout=1)
+            exclusive = asyncio.create_task(
+                slots.take(_KEY, _KIND, owner=RIVAL, exclusive=True, timeout=1)
+            )
+            await asyncio.sleep(0)
+            shared = asyncio.create_task(
+                slots.take(_KEY, _KIND, owner="later", exclusive=False, timeout=1)
+            )
+            await asyncio.sleep(0)
+            assert not shared.done()
+            slots.release(_KEY, _KIND, owner=OWNER)
+            # The queue still applies before a notified waiter resumes.
+            with pytest.raises(TimeoutError):
+                await slots.take(_KEY, _KIND, owner="newcomer", exclusive=False, timeout=0.01)
+            await exclusive
+            assert not shared.done()
+            slots.release(_KEY, _KIND, owner=RIVAL)
+            await shared
+            slots.release(_KEY, _KIND, owner="later")
+
+        _run(scenario())
+        assert not slots._slots
+
+    @pytest.mark.parametrize("cancel", [False, True])
+    def test_abandoned_exclusive_waiter_unblocks_shared_arrivals(self, cancel):
+        slots = ExclusiveSlots()
+
+        async def scenario():
+            await slots.take(_KEY, _KIND, owner=OWNER, exclusive=False, timeout=1)
+            exclusive = asyncio.create_task(
+                slots.take(_KEY, _KIND, owner=RIVAL, exclusive=True, timeout=0.03)
+            )
+            await asyncio.sleep(0)
+            shared = asyncio.create_task(
+                slots.take(_KEY, _KIND, owner="later", exclusive=False, timeout=1)
+            )
+            await asyncio.sleep(0)
+            assert not shared.done()
+            if cancel:
+                exclusive.cancel()
+            with pytest.raises(asyncio.CancelledError if cancel else TimeoutError):
+                await exclusive
+            await shared
+            assert slots.holds(_KEY, _KIND, owner=OWNER)
+            slots.release(_KEY, _KIND, owner=OWNER)
+            slots.release(_KEY, _KIND, owner="later")
+
+        _run(scenario())
+        assert not slots._slots

@@ -46,6 +46,13 @@ def needs_exclusive_use(rung: Cleanup) -> bool:
 
 
 @dataclass
+class _Waiter:
+    loop: asyncio.AbstractEventLoop
+    future: asyncio.Future[None]
+    exclusive: bool
+
+
+@dataclass
 class _Slot:
     """Who is inside one ``(key, kind)`` right now. Plain data; the guard outside protects it."""
 
@@ -54,9 +61,7 @@ class _Slot:
     #: The owner holding it exclusively, if any. Never set while ``shared`` is non-empty.
     exclusive: str | None = None
     #: One per waiting call, each on the loop that registered it.
-    waiters: list[tuple[asyncio.AbstractEventLoop, asyncio.Future[None]]] = field(
-        default_factory=list[tuple[asyncio.AbstractEventLoop, "asyncio.Future[None]"]]
-    )
+    waiters: list[_Waiter] = field(default_factory=list[_Waiter])
 
 
 class ExclusiveSlots:
@@ -78,29 +83,37 @@ class ExclusiveSlots:
         at = (key, kind)
         loop = asyncio.get_running_loop()
         deadline = time.monotonic() + timeout
+        queued: _Waiter | None = None
         while True:
             with self._guard:
                 slot = self._slots.setdefault(at, _Slot())
+                ahead = slot.waiters[: slot.waiters.index(queued)] if queued else slot.waiters
                 free = (
-                    slot.exclusive is None and not slot.shared
+                    slot.exclusive is None and not slot.shared and not ahead
                     if exclusive
-                    else slot.exclusive is None
+                    else slot.exclusive is None and not any(one.exclusive for one in ahead)
                 )
                 if free or slot.exclusive == owner or (not exclusive and owner in slot.shared):
+                    if queued is not None:
+                        slot.waiters.remove(queued)
                     if exclusive:
                         slot.exclusive = owner
                     else:
                         slot.shared.add(owner)
                     return
                 waiter: asyncio.Future[None] = loop.create_future()
-                slot.waiters.append((loop, waiter))
+                if queued is None:
+                    queued = _Waiter(loop, waiter, exclusive)
+                    slot.waiters.append(queued)
+                else:
+                    queued.future = waiter
             remaining = deadline - time.monotonic()
             try:
                 if remaining <= 0:
                     raise TimeoutError
                 await asyncio.wait_for(waiter, remaining)
             except TimeoutError:
-                self._forget_waiter(at, waiter)
+                self._forget_waiter(at, queued)
                 raise TimeoutError(
                     f"another call is using the sandbox for {key.scope}/{key.thread_id}/"
                     f"{key.agent_dir} and did not finish within {timeout:g}s. A workload cleaned "
@@ -108,17 +121,19 @@ class ExclusiveSlots:
                     "because a reset or a delete cannot run under a sibling."
                 ) from None
             except BaseException:
-                self._forget_waiter(at, waiter)
+                self._forget_waiter(at, queued)
                 raise
 
-    def _forget_waiter(self, at: tuple[SandboxKey, str], waiter: object) -> None:
+    def _forget_waiter(self, at: tuple[SandboxKey, str], waiter: _Waiter) -> None:
         """Drop one abandoned waiter, and the slot with it when nothing is left in it."""
         with self._guard:
             slot = self._slots.get(at)
             if slot is None:
                 return
-            slot.waiters = [held for held in slot.waiters if held[1] is not waiter]
+            slot.waiters = [held for held in slot.waiters if held is not waiter]
+            waiters = list(slot.waiters)
             self._drop_if_idle(at, slot)
+        self._wake(waiters)
 
     def release(self, key: SandboxKey, kind: str, *, owner: str) -> None:
         """Release only this owner's hold; a cancelled or timed-out waiter releases nothing."""
@@ -133,13 +148,14 @@ class ExclusiveSlots:
                 slot.shared.discard(owner)
             else:
                 return
-            waiters = slot.waiters
-            slot.waiters = []
+            waiters = list(slot.waiters)
             self._drop_if_idle(at, slot)
-        for loop, waiter in waiters:
-            # Through the waiter's own loop: the router serves more than one, and resolving a
-            # future from a foreign loop is undefined rather than merely unfair.
-            loop.call_soon_threadsafe(_resolve, waiter)
+        self._wake(waiters)
+
+    @staticmethod
+    def _wake(waiters: list[_Waiter]) -> None:
+        for waiter in waiters:
+            waiter.loop.call_soon_threadsafe(_resolve, waiter.future)
 
     def _drop_if_idle(self, at: tuple[SandboxKey, str], slot: _Slot) -> None:
         """Forget a slot nobody holds or wants. Call under the guard."""
