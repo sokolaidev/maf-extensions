@@ -1023,13 +1023,10 @@ class DockerSandboxBackend:
         # (scope, thread_id, agent_dir, kind) -> name: a purge fallback for when the listing
         # fails, never the truth. Holds the last name acquired per key and kind.
         self._registry: dict[tuple[str, str, str, str], str] = {}
-        #: Workload containers a removal could not take away, by key prefix. Retry
-        #: bookkeeping only: it does **not** keep one from being served, since the name comes
-        #: from the key and `acquire` asks the engine. Refusing to serve is the router's
-        #: ledger. A `dispose` clears an entry once the removal lands; a scope purge never
-        #: does, because a name is not a generation and it cannot tell the two apart.
+        # Retry records do not refuse serving; the router owns that decision.
         self._undeleted: dict[tuple[str, str, str], set[str]] = {}
         self._undeleted_kinds: dict[tuple[str, str, str], dict[str, str]] = {}
+        self._disposal_tokens: dict[tuple[str, str, str], dict[str, object]] = {}
         #: Container name -> the key prefix it was acquired under, for every name this
         #: process created. What lets a purge key an `EgressObserved` on a container the
         #: registry no longer names. Pruned as names are removed.
@@ -1664,6 +1661,42 @@ class DockerSandboxBackend:
         for cached in [key for key in self._facts if key[0] == container]:
             del self._facts[cached]
 
+    def _retain_disposals(
+        self, prefix: tuple[str, str, str], names: Sequence[str], kinds: Mapping[str, str]
+    ) -> dict[str, object]:
+        """Tokenize retry records so older completions cannot erase newer attempts."""
+        if not names:
+            return {}
+        tokens = {name: object() for name in names}
+        self._disposal_tokens.setdefault(prefix, {}).update(tokens)
+        self._undeleted.setdefault(prefix, set()).update(names)
+        self._undeleted_kinds.setdefault(prefix, {}).update(kinds)
+        return tokens
+
+    def _finish_disposals(
+        self,
+        prefix: tuple[str, str, str],
+        attempted: Mapping[str, object],
+        failed: Sequence[str],
+        kinds: Mapping[str, str],
+    ) -> None:
+        """Retain failures and retire only the successful attempt's own records."""
+        self._retain_disposals(prefix, failed, {n: kinds[n] for n in failed if n in kinds})
+        tokens = self._disposal_tokens.get(prefix, {})
+        names = self._undeleted.get(prefix, set())
+        attributed = self._undeleted_kinds.get(prefix, {})
+        for name, token in attempted.items():
+            if tokens.get(name) is token:
+                tokens.pop(name)
+                names.discard(name)
+                attributed.pop(name, None)
+        if not tokens:
+            self._disposal_tokens.pop(prefix, None)
+        if not names:
+            self._undeleted.pop(prefix, None)
+        if not attributed:
+            self._undeleted_kinds.pop(prefix, None)
+
     async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> DisposalFailure | None:
         """Delete this key's sandboxes, narrowed to kind when given.
 
@@ -1686,10 +1719,7 @@ class DockerSandboxBackend:
         )
         candidates = list(dict.fromkeys([*remembered, *retained]))
         attempted_kinds = {name: attributed[name] for name in candidates if name in attributed}
-        if candidates:
-            # Before the first await: the registry no longer holds these, so a retry finds
-            # them only here. Merged, not assigned — teardown for one key is not serialized.
-            self._undeleted[prefix] = self._undeleted.get(prefix, set()) | set(candidates)
+        attempted = self._retain_disposals(prefix, candidates, attempted_kinds)
         # The last window, and only the last: every acquire before this one already drained its
         # own proxy on the way to rebuilding it. Every container the labels reach belongs to
         # this key by construction, so all of them are attributable — including one served
@@ -1707,26 +1737,12 @@ class DockerSandboxBackend:
             thread_id=key.thread_id,
             drain_key=lambda _name: key,
         )
-        # Only on a normal return, so a cancelled sweep keeps the whole set; over-retaining is
-        # the safe direction, since a container already gone drops out next attempt. Read from
-        # the live map, not the snapshot, with no await between read and write. A name does not
-        # identify a generation, so a stale sweep can still subtract a newer record: #685.
-        still = set(swept.undeleted)
-        attributed = self._undeleted_kinds.setdefault(prefix, {})
-        attributed.update(
-            {name: attempted_kinds[name] for name in still if name in attempted_kinds}
-        )
+        failed_kinds = dict(attempted_kinds)
         if kind is not None:
-            attributed.update(dict.fromkeys(still, kind))
-        left = (self._undeleted.get(prefix, set()) | still) - (set(candidates) - still)
-        if left:
-            self._undeleted[prefix] = left
-        else:
-            self._undeleted.pop(prefix, None)
-        for name in set(attributed) - left:
-            attributed.pop(name, None)
-        if not attributed:
-            self._undeleted_kinds.pop(prefix, None)
+            failed_kinds.update(dict.fromkeys(swept.undeleted, kind))
+        self._finish_disposals(prefix, attempted, list(swept.undeleted), failed_kinds)
+        left = self._undeleted.get(prefix, set())
+        attributed = self._undeleted_kinds.get(prefix, {})
         reported = swept.reason
         if reported is not None:
             return reported
@@ -1772,6 +1788,18 @@ class DockerSandboxBackend:
             for p, names in self._undeleted.items()
             if p[0] == scope and p[1] == thread_id
         }
+        attempted_kinds = {
+            prefix: {
+                name: kind
+                for name, kind in self._undeleted_kinds.get(prefix, {}).items()
+                if name in names
+            }
+            for prefix, names in retained.items()
+        }
+        attempted = {
+            prefix: self._retain_disposals(prefix, list(names), attempted_kinds[prefix])
+            for prefix, names in retained.items()
+        }
         swept = await self._purge(
             [(_LABEL_SCOPE, scope), (_LABEL_THREAD, thread_id)],
             fallback=list(
@@ -1782,8 +1810,13 @@ class DockerSandboxBackend:
             thread_id=thread_id,
             drain_key=attributable.get,
         )
-        # Nothing is subtracted here: the container this sweep removed and one recorded since
-        # carry the same name, so taking one away drops the other.
+        for prefix, tokens in attempted.items():
+            self._finish_disposals(
+                prefix,
+                tokens,
+                list(retained[prefix] & swept.undeleted.keys()),
+                attempted_kinds[prefix],
+            )
         return ScopePurge(swept.count, swept.reason)
 
     async def reap(self, older_than: timedelta, *, scope: str | None = None) -> DockerReapResult:
