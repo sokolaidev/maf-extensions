@@ -49,6 +49,7 @@ from maf_sandbox_wslc._backend import (
     _egress_decisions,
     _network_name,
     _proxy_name,
+    _Sweep,
     _WslcResult,
 )
 
@@ -1227,33 +1228,6 @@ class TestDispose:
         assert reported is not None, "and the key stays refused until someone reports on it"
         assert reported.code == "unknown", "the other attempt's outcome is not ours to name"
 
-    def test_a_purge_does_not_subtract_a_record_written_beside_it(self):
-        """A scope purge takes nothing away from the retry record: the container it removed
-        and one recorded beside it carry the same name, so subtracting one drops the other."""
-        listing = asyncio.Event()
-        release = asyncio.Event()
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
-
-        async def slow_listing(*args: str, **kwargs: object) -> _WslcResult:
-            if args[:2] == ("container", "list"):
-                listing.set()
-                await release.wait()
-            return _WslcResult(0, b"", b"")
-
-        backend, _ = _backend_with(_machine())
-        backend._wslc = slow_listing  # type: ignore[method-assign]  # noqa: SLF001
-        backend._undeleted[prefix] = {_NAME}  # noqa: SLF001
-
-        async def drive() -> None:
-            purge = asyncio.create_task(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
-            await listing.wait()
-            backend._undeleted[prefix] = {_NAME}  # the newer generation  # noqa: SLF001
-            release.set()
-            assert (await purge).undisposed is None, "the purge itself has to land"
-
-        asyncio.run(drive())
-        assert backend._undeleted == {prefix: {_NAME}}, "the newer record was subtracted"  # noqa: SLF001
-
     def test_a_container_a_failed_removal_left_behind_is_still_served_here(self):
         """Pins what the retry record does rather than what its name suggests: it is disposal
         bookkeeping, and `acquire` still reuses the container, because the name comes from the
@@ -1270,6 +1244,97 @@ class TestDispose:
 
 
 class TestDisposeScope:
+    @pytest.mark.parametrize("retained", [False, True])
+    @pytest.mark.parametrize("partial", [False, True])
+    @pytest.mark.parametrize("unlisted", [False, True])
+    def test_scope_purge_retires_confirmed_records(self, retained, partial, unlisted, monkeypatch):
+        backend, _ = _backend_with(_machine())
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        backend._registry[(*prefix, "a")] = "selected"
+        backend._registry[(*prefix, "b")] = "sibling"
+        failure = DisposalFailure("unknown", "engine unavailable")
+        result = _Sweep(0, {"selected": failure, "sibling": failure})
+
+        async def sweep(*args, **kwargs):
+            return result
+
+        monkeypatch.setattr(backend, "_purge", sweep)
+        if retained:
+            assert asyncio.run(backend.dispose(_KEY)) is not None
+        result = _Sweep(
+            1 if partial else 2,
+            {"sibling": failure} if partial else {},
+            DisposalFailure("unlisted", "listing unavailable") if unlisted else None,
+        )
+        answer = asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+        assert answer.disposed == (1 if partial else 2)
+        assert (answer.undisposed is not None) is (partial or unlisted)
+        assert backend._undeleted == ({prefix: {"sibling"}} if partial else {})
+        assert backend._undeleted_kinds == ({prefix: {"sibling": "b"}} if partial else {})
+        result = _Sweep(1)
+        assert asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id)).undisposed is None
+        assert not backend._undeleted and not backend._undeleted_kinds
+        assert not getattr(backend, "_disposal_tokens", {})
+
+    @pytest.mark.parametrize("first_scope", [False, True])
+    @pytest.mark.parametrize("second_scope", [False, True])
+    @pytest.mark.parametrize("failure_first", [False, True])
+    def test_overlapping_disposals_preserve_the_newer_failure(
+        self, first_scope, second_scope, failure_first, monkeypatch
+    ):
+        backend, _ = _backend_with(_machine())
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        backend._registry[(*prefix, "a")] = "selected"
+        backend._registry[(*prefix, "b")] = "sibling"
+        first_started, second_started = asyncio.Event(), asyncio.Event()
+        first_release, second_release = asyncio.Event(), asyncio.Event()
+        sweeps = 0
+        failure = DisposalFailure("unknown", "engine unavailable")
+
+        async def sweep(*args, **kwargs):
+            nonlocal sweeps
+            sweeps += 1
+            if sweeps == 1:
+                first_started.set()
+                await first_release.wait()
+                return _Sweep(2)
+            if sweeps == 2:
+                second_started.set()
+                await second_release.wait()
+                return _Sweep(0, {"selected": failure})
+            return _Sweep(1)
+
+        monkeypatch.setattr(backend, "_purge", sweep)
+
+        async def dispose(scope):
+            if scope:
+                return await backend.dispose_scope(_KEY.scope, _KEY.thread_id)
+            return await backend.dispose(_KEY)
+
+        async def scenario():
+            first = asyncio.create_task(dispose(first_scope))
+            await first_started.wait()
+            backend._registry[(*prefix, "a")] = "selected"
+            second = asyncio.create_task(dispose(second_scope))
+            await second_started.wait()
+            if failure_first:
+                second_release.set()
+                await second
+                first_release.set()
+                await first
+            else:
+                first_release.set()
+                await first
+                second_release.set()
+                await second
+            assert backend._undeleted == {prefix: {"selected"}}
+            assert backend._undeleted_kinds == {prefix: {"selected": "a"}}
+            assert await backend.dispose(_KEY, kind="a") is None
+            assert not backend._undeleted and not backend._undeleted_kinds
+            assert not getattr(backend, "_disposal_tokens", {})
+
+        asyncio.run(scenario())
+
     @pytest.mark.parametrize("cancel", [False, True])
     def test_failed_scope_purge_retains_kinds_for_a_narrowed_retry(self, cancel, monkeypatch):
         failed = _WslcResult(1, b"", b"WSLC_E_SERVICE_UNAVAILABLE")
