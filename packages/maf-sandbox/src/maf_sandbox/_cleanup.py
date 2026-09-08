@@ -87,6 +87,7 @@ class ExclusiveSlots:
         while True:
             with self._guard:
                 slot = self._slots.setdefault(at, _Slot())
+                slot.waiters = [one for one in slot.waiters if not one.loop.is_closed()]
                 ahead = slot.waiters[: slot.waiters.index(queued)] if queued else slot.waiters
                 free = (
                     slot.exclusive is None and not slot.shared and not ahead
@@ -131,9 +132,8 @@ class ExclusiveSlots:
             if slot is None:
                 return
             slot.waiters = [held for held in slot.waiters if held is not waiter]
-            waiters = list(slot.waiters)
             self._drop_if_idle(at, slot)
-        self._wake(waiters)
+        self._wake(at)
 
     def release(self, key: SandboxKey, kind: str, *, owner: str) -> None:
         """Release only this owner's hold; a cancelled or timed-out waiter releases nothing."""
@@ -148,18 +148,28 @@ class ExclusiveSlots:
                 slot.shared.discard(owner)
             else:
                 return
-            waiters = list(slot.waiters)
             self._drop_if_idle(at, slot)
-        self._wake(waiters)
+        self._wake(at)
 
-    @staticmethod
-    def _wake(waiters: list[_Waiter]) -> None:
-        for waiter in waiters:
-            try:
-                waiter.loop.call_soon_threadsafe(_resolve, waiter.future)
-            except RuntimeError:
-                if not waiter.loop.is_closed():
-                    raise
+    def _wake(self, at: tuple[SandboxKey, str]) -> None:
+        while True:
+            with self._guard:
+                slot = self._slots.get(at)
+                if slot is None:
+                    return
+                slot.waiters = [one for one in slot.waiters if not one.loop.is_closed()]
+                waiters = list(slot.waiters)
+                self._drop_if_idle(at, slot)
+            closed = False
+            for waiter in waiters:
+                try:
+                    waiter.loop.call_soon_threadsafe(_resolve, waiter.future)
+                except RuntimeError:
+                    if not waiter.loop.is_closed():
+                        raise
+                    closed = True
+            if not closed:
+                return
 
     def _drop_if_idle(self, at: tuple[SandboxKey, str], slot: _Slot) -> None:
         """Forget a slot nobody holds or wants. Call under the guard."""

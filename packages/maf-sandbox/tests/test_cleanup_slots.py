@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from maf_sandbox import Cleanup, SandboxKey
-from maf_sandbox._cleanup import ExclusiveSlots, _Waiter, needs_exclusive_use
+from maf_sandbox._cleanup import ExclusiveSlots, _Slot, _Waiter, needs_exclusive_use
 
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-1")
 _KIND = "test"
@@ -305,6 +305,36 @@ class TestQueuedOwnersDoNotGetBypassed:
 
 
 class TestWaiterLoopShutdown:
+    @pytest.mark.parametrize(
+        "phase", ["before_release", "during_notification", "after_notification"]
+    )
+    def test_a_closed_loop_cannot_strand_an_exclusive_waiter(self, phase, monkeypatch):
+        slots = ExclusiveSlots()
+        loop = asyncio.new_event_loop()
+        waiter = _Waiter(loop, loop.create_future(), True)
+        _run(slots.take(_KEY, _KIND, owner=OWNER, exclusive=True, timeout=1))
+        slots._slots[(_KEY, _KIND)].waiters.append(waiter)
+        notify = loop.call_soon_threadsafe
+
+        def close_during_notification(*args):
+            loop.close()
+            return notify(*args)
+
+        try:
+            if phase == "before_release":
+                loop.close()
+            elif phase == "during_notification":
+                monkeypatch.setattr(loop, "call_soon_threadsafe", close_during_notification)
+            slots.release(_KEY, _KIND, owner=OWNER)
+            if phase == "after_notification":
+                loop.close()
+            _run(slots.take(_KEY, _KIND, owner=RIVAL, exclusive=True, timeout=0.1))
+            slots.release(_KEY, _KIND, owner=RIVAL)
+            assert not slots._slots
+        finally:
+            if not loop.is_closed():
+                loop.close()
+
     def test_abandoned_loop_does_not_interrupt_notifications_to_live_waiters(self, monkeypatch):
         slots = ExclusiveSlots()
         abandoned_loop, live_loop = asyncio.new_event_loop(), asyncio.new_event_loop()
@@ -350,6 +380,8 @@ class TestWaiterLoopShutdown:
             waiter = _Waiter(loop, loop.create_future(), True)
             monkeypatch.setattr(loop, "call_soon_threadsafe", fail)
             with pytest.raises(RuntimeError, match="unexpected notification failure"):
-                ExclusiveSlots._wake([waiter])
+                slots = ExclusiveSlots()
+                slots._slots[(_KEY, _KIND)] = _Slot(waiters=[waiter])
+                slots._wake((_KEY, _KIND))
         finally:
             loop.close()
