@@ -2140,7 +2140,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
 
     def test_sandboxed_tool_uses_router_reclaim_timeout_when_not_passed(self, caplog):
         class _HangsOnDispose(InProcessSandboxBackend):
-            async def dispose(self, key):
+            async def dispose(self, key, *, kind=None):
                 await asyncio.Event().wait()
 
         backend = _HangsOnDispose(_RefusesToRemove())
@@ -2157,7 +2157,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
 
     def test_sandboxed_tool_explicit_reclaim_timeout_overrides_router(self, caplog):
         class _HangsOnDispose(InProcessSandboxBackend):
-            async def dispose(self, key):
+            async def dispose(self, key, *, kind=None):
                 await asyncio.Event().wait()
 
         backend = _HangsOnDispose(_RefusesToRemove())
@@ -2235,7 +2235,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
 
     def test_a_disposal_that_never_returns_is_bounded_and_counts_as_failed(self, caplog):
         class _HangsOnDispose(InProcessSandboxBackend):
-            async def dispose(self, key):
+            async def dispose(self, key, *, kind=None):
                 await asyncio.Event().wait()
 
         backend = _HangsOnDispose(_RefusesToRemove())
@@ -2315,7 +2315,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
 
     def test_a_cancellation_during_the_disposal_still_refuses_the_key(self, caplog):
         class _CancelsOnDispose(InProcessSandboxBackend):
-            async def dispose(self, key):
+            async def dispose(self, key, *, kind=None):
                 raise asyncio.CancelledError()
 
         backend = _CancelsOnDispose(_RefusesToRemove())
@@ -2707,6 +2707,74 @@ class TestAHeldSandboxIsGivenBackHoweverTheCleanupEnds:
 
 
 class TestCleanupAdmission:
+    @pytest.mark.parametrize("rung", [Cleanup.RESET, Cleanup.DISPOSE])
+    @pytest.mark.parametrize("keep", [False, True])
+    def test_cancelled_cleanup_retains_targets_for_every_remaining_key(self, rung, keep):
+        class _CancelsReset(InProcessSandbox):
+            async def reset(self, *, timeout):
+                raise asyncio.CancelledError
+
+        class _CancelsDisposal(InProcessSandboxBackend):
+            cancel = True
+
+            async def dispose(self, key, *, kind=None):
+                if self.cancel:
+                    raise asyncio.CancelledError
+                return await super().dispose(key, kind=kind)
+
+        backend = _CancelsDisposal(
+            _CancelsReset(),
+            sandbox_per_key=True,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                capabilities=FAKE_BACKEND_DECLARATIONS.capabilities | {Capability.SNAPSHOT},
+            ),
+        )
+        other = InProcessSandboxBackend(name="other", sandbox_per_key=True)
+        router = _router(
+            backend,
+            other,
+            reclaim=ReclaimConfig(
+                failed_reclaim_policy=FailedReclaimPolicy.KEEP
+                if keep
+                else FailedReclaimPolicy.DISPOSE
+            ),
+        )
+        keys = [_KEY, dataclasses.replace(_KEY, agent_dir="second")]
+        spec = dataclasses.replace(_SPEC, min_cleanup=rung)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                for key in keys:
+                    assert not isinstance(await session.acquire(key), str)
+                return "done"
+
+            return widget_run
+
+        async def scenario():
+            for key in keys:
+                await backend.acquire(key, spec)
+                await other.acquire(key, spec)
+                await backend.acquire(key, dataclasses.replace(spec, kind="sibling"))
+            with pytest.raises(asyncio.CancelledError):
+                await _fn(_attach_with(build, router, spec=spec)[0])(target="x")
+            assert bool(router._unclean) is not keep
+            assert not router._slots._slots
+            if keep:
+                for key in keys:
+                    assert await router.acquire(key, spec) is backend.sandboxes[(key, spec.kind)]
+                return
+            backend.cancel = False
+            for key in keys:
+                assert await router.dispose_unclean(key, timeout=1)
+                assert (key, spec.kind) not in backend.sandboxes
+                assert (key, "sibling") in backend.sandboxes
+                assert (key, spec.kind) in other.sandboxes
+            assert backend.disposed_kinds == [spec.kind, spec.kind]
+            assert not other.disposed
+
+        asyncio.run(scenario())
+
     @pytest.mark.parametrize("scope", list(IsolationScope))
     def test_reacquire_keeps_the_admitted_backend_when_preferences_change(self, scope):
         class _Preferred(InProcessSandboxBackend):
@@ -3169,7 +3237,7 @@ class TestACallThatReachesTwoSandboxes:
         already refuses before its first await."""
 
         class _CancelsOnDispose(_PerKeyBackend):
-            async def dispose(self, key: SandboxKey) -> None:
+            async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> None:
                 raise asyncio.CancelledError()
 
         def build(session: SandboxToolSession):

@@ -1839,30 +1839,28 @@ async def _dispose_the_unclean(
 
 
 def _refuse_not_yet_reclaimed(
-    router: SandboxRouter, acquired: Sequence[tuple[SandboxKey, object]], start: int
+    router: SandboxRouter,
+    acquired: Sequence[tuple[SandboxKey, object]],
+    start: int,
+    *,
+    call: _SandboxToolCall,
+    kind: str,
 ) -> None:
-    """Refuse every key from ``start`` on, so the next call is not served a sandbox this one did
-    not finish reclaiming.
-
-    Called synchronously while a cancellation is propagating out of the cleanup, where awaiting a
-    disposal is not reliable. A no-op when the host opted down with ``FailedReclaimPolicy.KEEP``:
-    it asked to keep the data, so refusing the key would contradict that.
-    """
+    """Retain the unclean targets cancellation left unfinished, unless the host chose KEEP."""
     if router.reclaim.failed_reclaim_policy is FailedReclaimPolicy.KEEP:
         return
     for key, _ in acquired[start:]:
+        admission = call.entered.get((key, kind))
         if key.call_id:
-            # Nothing to refuse: the ledger closes a key against its *next* acquire, and a
-            # call-scoped key has none — the entry would be read by nobody and cleared by
-            # nothing. What is left is a sandbox no later call can address.
+            # A call-scoped key has no next acquire to refuse.
             continue
         router.mark_unclean(
             key,
-            # `unknown`, not a guess: the cleanup stopped before anything could observe the
-            # sandbox, so nothing here knows whether a delete would have landed.
             DisposalFailure(
                 "unknown", "the tool call's cleanup was cancelled before it could dispose"
             ),
+            backend=None if admission is None else admission.backend,
+            kind=kind,
         )
 
 
@@ -2064,7 +2062,7 @@ async def _clean_each_sandbox(
                         timeout=timeout,
                     )
             except (asyncio.CancelledError, GeneratorExit):
-                _refuse_not_yet_reclaimed(router, acquired, index)
+                _refuse_not_yet_reclaimed(router, acquired, index, call=call, kind=spec.kind)
                 raise
             continue
         reasons: list[str] = []
@@ -2089,7 +2087,7 @@ async def _clean_each_sandbox(
                     timeout=timeout,
                 )
             except (asyncio.CancelledError, GeneratorExit):
-                _refuse_not_yet_reclaimed(router, acquired, index)
+                _refuse_not_yet_reclaimed(router, acquired, index, call=call, kind=spec.kind)
                 logger.warning(
                     f"{prefix}: the sandbox was not cleaned: the call was cancelled during the %s",
                     str(rung),
@@ -2126,7 +2124,7 @@ async def _clean_each_sandbox(
                 # any the loop has not yet reached was reclaimed, so refuse them all — otherwise the
                 # next call reacquires one still holding the last call's data. The leak still has to
                 # be visible, so the line is written before the cancellation goes on.
-                _refuse_not_yet_reclaimed(router, acquired, index)
+                _refuse_not_yet_reclaimed(router, acquired, index, call=call, kind=spec.kind)
                 logger.warning(
                     f"{prefix}: %s was not reclaimed: the call was cancelled during the removal",
                     path,
@@ -2150,6 +2148,8 @@ async def _clean_each_sandbox(
         if not reasons:
             continue
         try:
+            if router.reclaim.failed_reclaim_policy is not FailedReclaimPolicy.KEEP:
+                router.mark_unclean(key, backend=admission.backend, kind=spec.kind)
             disposal = await _dispose_the_unclean(
                 router, key, prefix=prefix, logger=logger, timeout=timeout
             )
@@ -2170,7 +2170,7 @@ async def _clean_each_sandbox(
             # a landed disposal cleared it clean — so mark only the keys the loop has not reached,
             # never re-refusing one just disposed. Same reason as the removal handler: the next call
             # must not reacquire a sandbox still holding this call's data.
-            _refuse_not_yet_reclaimed(router, acquired, index + 1)
+            _refuse_not_yet_reclaimed(router, acquired, index + 1, call=call, kind=spec.kind)
             raise
 
 
