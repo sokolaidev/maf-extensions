@@ -1677,16 +1677,30 @@ class SandboxRouter:
         RECLAIM takes a shared hold; stronger rungs take an exclusive one. The caller must retain
         the admission for acquire and cleanup, then call finish_call or release_call.
         Raises TimeoutError when incompatible owners outlast the bound."""
-        backend = self._refuse_unless_backend_can_serve(spec)
-        rung = self._cleanup_on(backend, spec)
-        await self._slots.take(
-            key,
-            spec.kind,
-            owner=owner,
-            exclusive=needs_exclusive_use(rung),
-            timeout=timeout,
-        )
-        return CallAdmission(backend, rung)
+        deadline = time.monotonic() + timeout
+        while True:
+            backend = self._refuse_unless_backend_can_serve(spec)
+            rung = self._cleanup_on(backend, spec)
+            exclusive = needs_exclusive_use(rung)
+            await self._slots.take(
+                key,
+                spec.kind,
+                owner=owner,
+                exclusive=exclusive,
+                timeout=max(0, deadline - time.monotonic()),
+            )
+            try:
+                self._refuse_host_denials(spec)
+                self._refuse_unless_this_backend_can_serve(backend, spec)
+                current = self._cleanup_on(backend, spec)
+                if needs_exclusive_use(current) == exclusive:
+                    return CallAdmission(backend, current)
+            except BaseException:
+                self._slots.release(key, spec.kind, owner=owner)
+                raise
+            self._slots.release(key, spec.kind, owner=owner)
+            if time.monotonic() >= deadline:
+                raise TimeoutError("cleanup requirements changed while waiting for admission")
 
     def release_call(self, key: SandboxKey, kind: str, *, owner: str) -> None:
         """Release this call's hold without cleaning; an owner holding nothing releases nothing."""

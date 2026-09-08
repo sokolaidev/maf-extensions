@@ -1,5 +1,6 @@
 """Cleanup must earn reuse, respect both policy floors, and dispose at call scope."""
 
+import asyncio
 import dataclasses
 
 import pytest
@@ -11,6 +12,7 @@ from maf_sandbox import (
     IsolationScope,
     SandboxCapabilityDenied,
     SandboxCapabilityNotSupported,
+    SandboxKey,
     SandboxRouter,
     SandboxScopeNotEnforced,
     SandboxSpec,
@@ -145,3 +147,78 @@ def test_call_cleanup_preserves_serving_refusals(at_host, reason, refusal):
     with pytest.raises(refusal) as actual:
         router.effective_cleanup(spec)
     assert str(actual.value) == str(expected.value)
+
+
+@pytest.mark.parametrize("before,after", [(a, b) for a in Cleanup for b in Cleanup if a != b])
+def test_admission_rechecks_cleanup_evidence_after_waiting(before, after, monkeypatch):
+    backend = InProcessSandboxBackend()
+    key = SandboxKey(scope="s", thread_id="t", agent_dir="a")
+    spec = SandboxSpec(kind="test", confined_to_guest_call_path=True)
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+
+    def declare(rung):
+        caps = FAKE_BACKEND_DECLARATIONS.capabilities - {Capability.RECLAIM}
+        if rung is Cleanup.RECLAIM:
+            caps |= {Capability.RECLAIM}
+        elif rung is Cleanup.RESET:
+            caps |= {Capability.SNAPSHOT}
+        monkeypatch.setattr(
+            backend,
+            "_declarations",
+            dataclasses.replace(FAKE_BACKEND_DECLARATIONS, capabilities=caps),
+        )
+
+    async def scenario():
+        declare(before)
+        await router._slots.take(key, spec.kind, owner="blocker", exclusive=True, timeout=1)
+        queued = asyncio.create_task(router.enter_call(key, spec, owner="call", timeout=1))
+        await asyncio.sleep(0)
+        assert not queued.done()
+        declare(after)
+        router.release_call(key, spec.kind, owner="blocker")
+        admission = await queued
+        assert admission.rung is after
+        assert (router._slots._slots[(key, spec.kind)].exclusive == "call") is (
+            after is not Cleanup.RECLAIM
+        )
+        router.release_call(key, spec.kind, owner="call")
+        assert not router._slots._slots
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_upgraded_admission_waits_for_a_shared_owner(cancel, monkeypatch):
+    backend = InProcessSandboxBackend()
+    key = SandboxKey(scope="s", thread_id="t", agent_dir="a")
+    spec = SandboxSpec(kind="test", confined_to_guest_call_path=True)
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+
+    async def scenario():
+        await router._slots.take(key, spec.kind, owner="blocker", exclusive=True, timeout=1)
+        queued = asyncio.create_task(router.enter_call(key, spec, owner="call", timeout=1))
+        await asyncio.sleep(0)
+        monkeypatch.setattr(
+            backend,
+            "_declarations",
+            dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                capabilities=FAKE_BACKEND_DECLARATIONS.capabilities - {Capability.RECLAIM},
+            ),
+        )
+        router.release_call(key, spec.kind, owner="blocker")
+        await router._slots.take(key, spec.kind, owner="sibling", exclusive=False, timeout=1)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not queued.done()
+        if cancel:
+            queued.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await queued
+        router.release_call(key, spec.kind, owner="sibling")
+        if not cancel:
+            assert (await queued).rung is Cleanup.DISPOSE
+            router.release_call(key, spec.kind, owner="call")
+        assert not router._slots._slots
+
+    asyncio.run(scenario())
