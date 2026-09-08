@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.18.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.17.0...maf-sandbox-wslc-v0.18.0) (2026-09-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** a call leaves nothing behind by default ([#999](https://github.com/sokolaidev/maf-extensions/issues/999))
+
+### Features
+
+* **sandbox:** a call leaves nothing behind by default ([#999](https://github.com/sokolaidev/maf-extensions/issues/999)) ([e0ad6b9](https://github.com/sokolaidev/maf-extensions/commit/e0ad6b9c0a8516477d9f7b99afdb7724cd72677c))
+* **wslc:** cleanup stopped sandboxes and orphaned infrastructure ([#1015](https://github.com/sokolaidev/maf-extensions/issues/1015)) ([2501bef](https://github.com/sokolaidev/maf-extensions/commit/2501bef9d8d5a8cd0cbd8235653fcf2f5ec6535e))
+
+
+### Fixes
+
+* require maf-sandbox 0.36.0 in the dependents, and admit the 0.36 line ([#1018](https://github.com/sokolaidev/maf-extensions/issues/1018)) ([d58e1ac](https://github.com/sokolaidev/maf-extensions/commit/d58e1ac02d0372e356cf00dbce5fe59c38b35324))
+
 ## [0.17.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.16.1...maf-sandbox-wslc-v0.17.0) (2026-09-07)
 
 
