@@ -18,6 +18,7 @@ from maf_sandbox import (
     SandboxRouter,
     SandboxSpec,
     SandboxUnclean,
+    ScopePurge,
 )
 from maf_sandbox._router import CallAdmission
 from maf_sandbox.testing import (
@@ -277,3 +278,84 @@ def test_acquire_reads_refusal_atomically_while_another_loop_clears_it(reason, m
         cleared.result(timeout=2)
     assert _KEY not in router._unclean
     assert asyncio.run(router.acquire(_KEY, SandboxSpec(kind="test"))) is backend.sandbox
+
+
+@pytest.mark.parametrize(
+    ("failure", "failed_first"),
+    [
+        ("failure", False),
+        ("failure", True),
+        ("raise", False),
+        ("raise", True),
+        ("cancel", False),
+        ("timeout", False),
+    ],
+)
+def test_partial_scope_purge_retries_only_the_backend_that_failed(failure, failed_first):
+    class _PurgeBackend(_Backend):
+        purge_failure = None
+
+        async def dispose_scope(self, scope, thread_id):
+            if self.purge_failure == "cancel":
+                raise asyncio.CancelledError
+            if self.purge_failure == "timeout":
+                await asyncio.Event().wait()
+            if self.purge_failure == "raise":
+                raise RuntimeError("delete refused")
+            if self.purge_failure == "failure":
+                return ScopePurge(0, DisposalFailure("refused", "delete refused"))
+            return await super().dispose_scope(scope, thread_id)
+
+    good, bad = _PurgeBackend("good"), _PurgeBackend("bad")
+    bad.purge_failure = failure
+    router = SandboxRouter(
+        [bad, good] if failed_first else [good, bad], min_isolation=Isolation.NONE
+    )
+
+    async def scenario():
+        for backend in (good, bad):
+            for kind in ("a", "b"):
+                await backend.acquire(_KEY, SandboxSpec(kind=kind))
+                router.mark_unclean(_KEY, backend=backend, kind=kind)
+        if failure in ("cancel", "timeout"):
+            with pytest.raises(asyncio.CancelledError if failure == "cancel" else TimeoutError):
+                await asyncio.wait_for(router.dispose_scope(_KEY.scope, _KEY.thread_id), 0.01)
+        else:
+            assert (await router.dispose_scope(_KEY.scope, _KEY.thread_id)).undisposed is not None
+        replacement = await good.acquire(_KEY, SandboxSpec(kind="a"))
+        with pytest.raises(SandboxUnclean):
+            await router.acquire(_KEY, SandboxSpec(kind="a"))
+        assert await router.dispose_unclean(_KEY, timeout=1)
+        assert not good.attempts
+        assert bad.attempts == ["a", "b"]
+        assert good.sandboxes[(_KEY, "a")] is replacement
+        assert _KEY not in router._unclean
+
+    asyncio.run(scenario())
+
+
+def test_scope_purge_preserves_a_newer_target_on_a_successful_backend():
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class _PurgeBackend(_Backend):
+        async def dispose_scope(self, scope, thread_id):
+            entered.set()
+            await release.wait()
+            return await super().dispose_scope(scope, thread_id)
+
+    backend = _PurgeBackend("first")
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+
+    async def scenario():
+        router.mark_unclean(_KEY, backend=backend, kind="a")
+        purging = asyncio.create_task(router.dispose_scope(_KEY.scope, _KEY.thread_id))
+        await entered.wait()
+        router.mark_unclean(_KEY, backend=backend, kind="a")
+        release.set()
+        assert (await purging).undisposed is None
+        with pytest.raises(SandboxUnclean):
+            await router.acquire(_KEY, SandboxSpec(kind="a"))
+        assert await router.dispose_unclean(_KEY, timeout=1)
+        assert backend.attempts == ["a"]
+
+    asyncio.run(scenario())

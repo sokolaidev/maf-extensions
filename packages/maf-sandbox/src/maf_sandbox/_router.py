@@ -2137,18 +2137,10 @@ class SandboxRouter:
             disposal.undisposed = purge.undisposed
 
     async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
-        """Delete every sandbox for ``(scope, thread_id)``, returning how many, and what stayed.
+        """Purge this conversation on every backend, reporting counts and failures.
 
-        Every registered backend is asked, not only the selected one: a conversation may have
-        been served while a different backend was configured, and a sandbox nobody reclaims
-        is a sandbox somebody pays for.
-
-        A backend refuses by returning a reason as much as by raising, the same reading
-        :meth:`_dispose_each` takes and for the same reason. Only a purge that landed reopens
-        the conversation's refused keys: the one that did not is precisely the one whose
-        sandboxes still hold the data those keys were refused over.
-
-        Each backend's answer reaches the observer as a :class:`~maf_sandbox.ScopeDisposed`.
+        Successful backends retire their pending targets; failed or newer targets keep keys
+        refused. Each backend's answer reaches the observer as a ScopeDisposed event.
         """
         total = 0
         with self._unclean_guard:
@@ -2193,8 +2185,10 @@ class SandboxRouter:
                         thread_id,
                         purged.undisposed,
                     )
+            if answered is None:
+                for key, targets in pending.items():
+                    self._forget_pending(
+                        key, [target for target in targets if target.backend is backend]
+                    )
             self._record_purge(scope, thread_id, backend, disposed, answered, started)
-        if not undisposed:
-            for key, targets in pending.items():
-                self._forget_pending(key, targets)
         return ScopePurge(total, fold_disposal_failures(undisposed))
