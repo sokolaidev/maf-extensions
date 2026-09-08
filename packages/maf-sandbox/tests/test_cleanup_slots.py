@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from maf_sandbox import Cleanup, SandboxKey
-from maf_sandbox._cleanup import ExclusiveSlots, needs_exclusive_use
+from maf_sandbox._cleanup import ExclusiveSlots, _Waiter, needs_exclusive_use
 
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-1")
 _KIND = "test"
@@ -302,3 +302,54 @@ class TestQueuedOwnersDoNotGetBypassed:
 
         _run(scenario())
         assert not slots._slots
+
+
+class TestWaiterLoopShutdown:
+    def test_abandoned_loop_does_not_interrupt_notifications_to_live_waiters(self, monkeypatch):
+        slots = ExclusiveSlots()
+        abandoned_loop, live_loop = asyncio.new_event_loop(), asyncio.new_event_loop()
+        _run(slots.take(_KEY, _KIND, owner=OWNER, exclusive=True, timeout=1))
+        abandoned = abandoned_loop.create_task(
+            slots.take(_KEY, _KIND, owner="abandoned", exclusive=True, timeout=5)
+        )
+        live = live_loop.create_task(
+            slots.take(_KEY, _KIND, owner="live", exclusive=True, timeout=5)
+        )
+        wake = slots._wake
+
+        def close_after_snapshot(waiters):
+            monkeypatch.setattr(slots, "_wake", wake)
+            abandoned.cancel()
+            abandoned_loop.run_until_complete(asyncio.gather(abandoned, return_exceptions=True))
+            abandoned_loop.close()
+            wake(waiters)
+
+        try:
+            abandoned_loop.run_until_complete(asyncio.sleep(0))
+            live_loop.run_until_complete(asyncio.sleep(0))
+            monkeypatch.setattr(slots, "_wake", close_after_snapshot)
+            slots.release(_KEY, _KIND, owner=OWNER)
+            live_loop.run_until_complete(live)
+            assert slots.holds(_KEY, _KIND, owner="live")
+            slots.release(_KEY, _KIND, owner="live")
+            assert not slots._slots
+        finally:
+            for loop, task in ((abandoned_loop, abandoned), (live_loop, live)):
+                if not loop.is_closed():
+                    task.cancel()
+                    loop.run_until_complete(asyncio.gather(task, return_exceptions=True))
+                    loop.close()
+
+    def test_unexpected_notification_errors_still_propagate(self, monkeypatch):
+        loop = asyncio.new_event_loop()
+
+        def fail(*args):
+            raise RuntimeError("unexpected notification failure")
+
+        try:
+            waiter = _Waiter(loop, loop.create_future(), True)
+            monkeypatch.setattr(loop, "call_soon_threadsafe", fail)
+            with pytest.raises(RuntimeError, match="unexpected notification failure"):
+                ExclusiveSlots._wake([waiter])
+        finally:
+            loop.close()

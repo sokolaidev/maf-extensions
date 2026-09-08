@@ -155,7 +155,11 @@ class ExclusiveSlots:
     @staticmethod
     def _wake(waiters: list[_Waiter]) -> None:
         for waiter in waiters:
-            waiter.loop.call_soon_threadsafe(_resolve, waiter.future)
+            try:
+                waiter.loop.call_soon_threadsafe(_resolve, waiter.future)
+            except RuntimeError:
+                if not waiter.loop.is_closed():
+                    raise
 
     def _drop_if_idle(self, at: tuple[SandboxKey, str], slot: _Slot) -> None:
         """Forget a slot nobody holds or wants. Call under the guard."""
