@@ -2769,6 +2769,26 @@ class TestTheGuestIdentityIsReadFromTheContainer:
 
 
 class TestDispose:
+    @pytest.mark.parametrize("silent", [True, False])
+    def test_an_absent_container_does_not_count_as_a_removal(self, silent):
+        absent = (
+            _DockerResult(0, b"", "")
+            if silent
+            else _DockerResult(1, b"", f"Error: No such container: {_NAME}")
+        )
+        backend, _ = _backend_with(_machine(overrides={("rm",): absent}))
+        removal = asyncio.run(backend._remove(_NAME))
+        assert not removal.removed
+        assert removal.failure is None
+
+    def test_scope_purge_does_not_count_a_silent_already_absent_removal(self):
+        backend, _ = _backend_with(
+            _machine(running=[_NAME], overrides={("rm",): _DockerResult(0, b"", "")})
+        )
+        result = asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+        assert result.disposed == 0
+        assert result.undisposed is None
+
     def test_removes_the_container_by_name(self):
         backend, fake = _backend_with(_machine(running=[_NAME]))
         asyncio.run(backend.acquire(_KEY, _SPEC))

@@ -32,12 +32,13 @@ This package imports no host application and no agent framework.
 
 from __future__ import annotations
 
-from ._backend import BACKEND_NAME, DockerSandboxBackend
+from ._backend import BACKEND_NAME, DockerReapResult, DockerSandboxBackend
 from ._config import DockerSandboxConfig
 from ._proxy import build_context as proxy_build_context
 
 __all__ = [
     "BACKEND_NAME",
+    "DockerReapResult",
     "DockerSandboxBackend",
     "DockerSandboxConfig",
     "MafSandboxDockerExperimentalWarning",
