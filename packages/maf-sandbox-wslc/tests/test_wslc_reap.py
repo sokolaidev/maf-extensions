@@ -334,6 +334,7 @@ def test_removal_failures_are_reported_and_can_be_retried(resource, exception):
             if exception:
                 raise OSError("engine unreachable")
             return _WslcResult(1, b"", b"permission denied")
+        return None
 
     engine.before = fail
     result = asyncio.run(_backend(engine).reap(_PERIOD))
@@ -396,6 +397,7 @@ def test_new_cli_json_lines_and_truncated_network_listing_ids():
                 else:
                     rows.append({"ID": row["Id"][:12], "Name": row["Name"]})
             return _WslcResult(0, "\n".join(json.dumps(row) for row in rows).encode(), b"")
+        return None
 
     engine.before = listing
     backend = _backend(engine)
