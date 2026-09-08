@@ -366,6 +366,68 @@ def test_proxy_failure_is_reported_and_preserves_network():
     assert engine.resources["network"]
 
 
+@pytest.mark.parametrize(
+    ("resource", "identity", "suffix"),
+    [("container", "b" * 64, "-proxy"), ("network", _NAME + "-net", "-net")],
+)
+@pytest.mark.parametrize(
+    ("operation", "failure", "code"),
+    [
+        ("inspect", OSError, "unreachable"),
+        ("inspect", "malformed", "unlisted"),
+        ("remove", OSError, "unreachable"),
+        ("remove", TimeoutError, "timeout"),
+    ],
+)
+def test_late_infrastructure_failure_names_the_current_resource(
+    resource, identity, suffix, operation, failure, code
+):
+    engine = _Engine([_container(), _proxy()], [_network()])
+
+    def fail(args):
+        if (
+            "a" * 64 not in engine.resources["container"]
+            and args[:2] == (resource, operation)
+            and args[-1] == identity
+        ):
+            if failure == "malformed":
+                return _WslcResult(0, b"not json", b"")
+            raise failure("command failed")
+        return None
+
+    engine.before = fail
+    result = asyncio.run(_backend(engine).reap(_PERIOD))
+    assert result.disposed == 1
+    assert result.proxies_removed == int(resource == "network")
+    assert result.networks_removed == 0
+    assert len(result.failures) == 1
+    assert result.failures[0].code == code
+    assert result.failures[0].detail.startswith(_NAME + suffix + ": ")
+    assert engine.resources["network"]
+    assert ("b" * 64 in engine.resources["container"]) is (resource == "container")
+
+
+def test_early_failure_names_the_new_groups_anchor():
+    name = "maf-sandbox-wslc-111111111111"
+    engine = _Engine([_container(), _container(name=name, id="d" * 64)])
+
+    def fail(args):
+        if "a" * 64 not in engine.resources["container"] and args == (
+            "container",
+            "inspect",
+            "d" * 64,
+        ):
+            raise OSError("command failed")
+        return None
+
+    engine.before = fail
+    result = asyncio.run(_backend(engine).reap(_PERIOD))
+    assert result.disposed == 1
+    assert len(result.failures) == 1
+    assert result.failures[0].detail.startswith(name + ": ")
+    assert "d" * 64 in engine.resources["container"]
+
+
 def test_egress_drain_uses_inspected_proxy_id_after_workload_removal(monkeypatch):
     engine = _Engine([_container(), _proxy()], [_network()])
     backend = _backend(engine)
@@ -501,6 +563,7 @@ def test_revalidation_failure_is_unlisted(failure):
     result = asyncio.run(_backend(engine).reap(_PERIOD))
     assert len(result.failures) == 1
     assert result.failures[0].code == "unlisted"
+    assert result.failures[0].detail.startswith(_NAME + ": ")
     assert not engine.removals
 
 

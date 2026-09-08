@@ -290,6 +290,7 @@ async def reap(
     disposed = proxies = networks = 0
     for group in eligible:
         anchor = group[0]
+        target = anchor
         try:
             current = await sweep.refresh(anchor)
             if current == "changed":
@@ -331,5 +332,5 @@ async def reap(
                 else:
                     disposed += 1
         except Exception as exc:  # noqa: BLE001 - preserve this group and continue independent groups
-            sweep.failed(anchor.name, exc)
+            sweep.failed(target.name, exc)
     return WslcReapResult(disposed, proxies, networks, tuple(sweep.failures))
