@@ -2703,6 +2703,53 @@ class TestAHeldSandboxIsGivenBackHoweverTheCleanupEnds:
 
 
 class TestCleanupAdmission:
+    @pytest.mark.parametrize("seam", ["routing", "declarations"])
+    @pytest.mark.parametrize(
+        "failure,expected",
+        [
+            (ImportError("provider diagnostic"), _maf._SDK_NOT_INSTALLED),
+            (NoSandboxBackend("provider diagnostic"), _maf._NO_BACKEND_CONFIGURED),
+            (ValueError("No disk image configured"), "Error: No disk image configured"),
+            (RuntimeError("provider diagnostic"), _maf._SANDBOX_UNAVAILABLE),
+            (SandboxUnclean("provider diagnostic"), _maf._SANDBOX_UNCLEAN),
+        ],
+    )
+    def test_admission_uses_the_acquisition_error_mapping(self, seam, failure, expected, caplog):
+        class _Backend(InProcessSandboxBackend):
+            armed = False
+
+            @property
+            def declarations(self):
+                if self.armed and seam == "declarations":
+                    raise failure
+                return super().declarations
+
+        class _Router(SandboxRouter):
+            async def enter_call(self, key, spec, *, owner, timeout=1):
+                if seam == "routing":
+                    raise failure
+                return await super().enter_call(key, spec, owner=owner, timeout=timeout)
+
+        backend = _Backend()
+        router = _Router([backend], min_isolation=Isolation.NONE)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                answer = await session.acquire(session.key())
+                assert isinstance(answer, str)
+                return answer
+
+            return widget_run
+
+        tool = _attach_with(build, router)[0]
+        backend.armed = True
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            answer = _call(tool, target="x")
+        assert answer == expected
+        assert str(failure) in caplog.text
+        assert "provider diagnostic" not in answer
+        assert not backend.keys and not router._slots._slots
+
     @pytest.mark.parametrize(
         "failure",
         [

@@ -1249,6 +1249,10 @@ def labelled_result_item(text: str, integrity: SourceIntegrity) -> Content:
     return Content.from_text(text, additional_properties={"security_label": label.to_dict()})
 
 
+class _CallClosed(RuntimeError):
+    """Admission outlived its tool call."""
+
+
 class SandboxToolSession:
     """Everything a sandbox workload's tool body needs, minus anything the model supplies.
 
@@ -1691,27 +1695,23 @@ class SandboxToolSession:
             call.touched.append(key)
         per_call = self._router.effective_isolation_scope(self._spec) is IsolationScope.CALL
         if key.call_id and call is not None and per_call:
-            # Recorded before the create rather than after it: a cancellation landing inside the
-            # backend's own acquire can leave a sandbox it already made, and a map written
-            # afterwards would hand the cleanup nothing to delete.
-            #
-            # Only at this scope, and that is the load-bearing half. The cleanup reads the scope
-            # off the key, and a backend's `dispose` sweeps a key's whole (scope, thread, agent) —
-            # so registering a call-naming key under a conversation-scoped workload would have the
-            # `finally` delete the conversation's own sandbox over an acquire the router refused.
+            # Record before creating, but only for keys this workload is allowed to dispose.
             call.acquired.setdefault(key, [])
         admission = None
-        if call is not None:
-            try:
-                admission = await self._admit(key, call)
-            except ATTACH_REFUSALS as exc:
-                return self._refused(exc)
-            except TimeoutError as exc:
-                self._logger.warning(f"{self._log_prefix}: %s", exc)
-                return _SANDBOX_BUSY
-        late_disposed = False
+        acquiring = late_disposed = False
         try:
+            if call is not None:
+                try:
+                    admission = await self._admit(key, call)
+                except ATTACH_REFUSALS:
+                    raise
+                except TimeoutError as exc:
+                    self._logger.warning(f"{self._log_prefix}: %s", exc)
+                    return _SANDBOX_BUSY
+            acquiring = True
             sandbox = await self._router.acquire(key, self._spec, _admission=admission)
+        except _CallClosed:
+            raise
         except ATTACH_REFUSALS as exc:
             return self._refused(exc)
         except ImportError as exc:
@@ -1738,7 +1738,7 @@ class SandboxToolSession:
             self._logger.warning(f"{self._log_prefix}: sandbox unavailable: %s", error_detail(exc))
             return _SANDBOX_UNAVAILABLE
         finally:
-            if key.call_id and call is not None and call.closed:
+            if acquiring and key.call_id and call is not None and call.closed:
                 # Even a failed create can leave a registered sandbox after the call's cleanup.
                 late_disposed = await self._router.dispose_call(
                     key, timeout=self._router.reclaim.timeout, spec=self._spec, _admission=admission
@@ -1781,7 +1781,7 @@ class SandboxToolSession:
         lock = call.admission_locks.setdefault(at, asyncio.Lock())
         async with lock:
             if call.closed:
-                raise RuntimeError(
+                raise _CallClosed(
                     f"{self._name}: acquire() has no open tool call; this one has returned"
                 )
             admission = call.entered.get(at)
@@ -1790,7 +1790,7 @@ class SandboxToolSession:
             admission = await self._router.enter_call(key, self._spec, owner=call.id)
             if call.closed:
                 self._router.release_call(key, self._spec.kind, owner=call.id)
-                raise RuntimeError(
+                raise _CallClosed(
                     f"{self._name}: acquire() has no open tool call; this one has returned"
                 )
             call.entered[at] = admission
