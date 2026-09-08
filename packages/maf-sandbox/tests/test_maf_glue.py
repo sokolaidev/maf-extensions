@@ -2707,6 +2707,96 @@ class TestAHeldSandboxIsGivenBackHoweverTheCleanupEnds:
 
 
 class TestCleanupAdmission:
+    @pytest.mark.parametrize("scope", list(IsolationScope))
+    def test_concurrent_first_acquires_share_admission_through_late_cleanup(self, scope):
+        creating, release_create, release_second = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        tasks = []
+
+        class _Late(InProcessSandboxBackend):
+            async def acquire(self, key, spec):
+                sandbox = await super().acquire(key, spec)
+                creating.set()
+                await release_create.wait()
+                return sandbox
+
+        class _Admission(SandboxRouter):
+            attempts = 0
+
+            async def enter_call(self, key, spec, *, owner, timeout=1):
+                self.attempts += 1
+                attempt = self.attempts
+                await asyncio.sleep(0)
+                admission = await super().enter_call(key, spec, owner=owner, timeout=timeout)
+                if attempt == 2:
+                    await release_second.wait()
+                return admission
+
+        backend = _Late(
+            sandbox_per_key=True,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS, isolation_scopes=frozenset(IsolationScope)
+            ),
+        )
+        router = _Admission([backend], min_isolation=Isolation.NONE)
+        spec = dataclasses.replace(_SPEC, min_cleanup=Cleanup.DISPOSE, isolation_scope=scope)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                tasks.extend(asyncio.create_task(session.acquire(session.key())) for _ in range(2))
+                await creating.wait()
+                return "done"
+
+            return widget_run
+
+        async def scenario():
+            assert await _fn(_attach_with(build, router, spec=spec)[0])(target="x") == "done"
+            release_second.set()
+            await asyncio.sleep(0)
+            release_create.set()
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            assert all(isinstance(result, RuntimeError) for result in results), results
+            assert not backend.sandboxes
+            assert not router._slots._slots
+            assert router.attempts == 1
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+
+    def test_cancelling_an_admission_waiter_does_not_cancel_the_shared_admission(self):
+        entering, release = asyncio.Event(), asyncio.Event()
+
+        class _Admission(SandboxRouter):
+            attempts = 0
+
+            async def enter_call(self, key, spec, *, owner, timeout=1):
+                self.attempts += 1
+                entering.set()
+                await release.wait()
+                return await super().enter_call(key, spec, owner=owner, timeout=timeout)
+
+        backend = InProcessSandboxBackend(sandbox_per_key=True)
+        router = _Admission([backend], min_isolation=Isolation.NONE)
+        spec = dataclasses.replace(_SPEC, min_cleanup=Cleanup.DISPOSE)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                first = asyncio.create_task(session.acquire(session.key()))
+                await entering.wait()
+                second = asyncio.create_task(session.acquire(session.key()))
+                await asyncio.sleep(0)
+                second.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await second
+                release.set()
+                assert await first is backend.sandbox
+                return "done"
+
+            return widget_run
+
+        assert _call(_attach_with(build, router, spec=spec)[0], target="x") == "done"
+        assert router.attempts == 1
+        assert len(backend.disposed) == 1
+        assert not router._slots._slots
+
     @pytest.mark.parametrize("rung", [Cleanup.RESET, Cleanup.DISPOSE])
     @pytest.mark.parametrize("keep", [False, True])
     def test_cancelled_cleanup_retains_targets_for_every_remaining_key(self, rung, keep):

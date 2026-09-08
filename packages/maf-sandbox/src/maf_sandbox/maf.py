@@ -242,6 +242,9 @@ class _SandboxToolCall:
     entered: dict[tuple[SandboxKey, str], CallAdmission] = field(
         default_factory=dict[tuple[SandboxKey, str], CallAdmission]
     )
+    admission_locks: dict[tuple[SandboxKey, str], asyncio.Lock] = field(
+        default_factory=dict[tuple[SandboxKey, str], asyncio.Lock]
+    )
     #: Conversation acquires retain their hold until a late result has been cleaned.
     acquiring: dict[SandboxKey, int] = field(default_factory=dict[SandboxKey, int])
     retire: Callable[[SandboxKey], Awaitable[None]] | None = None
@@ -1715,20 +1718,13 @@ class SandboxToolSession:
             # so registering a call-naming key under a conversation-scoped workload would have the
             # `finally` delete the conversation's own sandbox over an acquire the router refused.
             call.acquired.setdefault(key, [])
-        if call is not None and (key, self._spec.kind) not in call.entered:
+        admission = None
+        if call is not None:
             try:
-                admission = await self._router.enter_call(key, self._spec, owner=call.id)
+                admission = await self._admit(key, call)
             except TimeoutError as exc:
                 self._logger.warning(f"{self._log_prefix}: %s", exc)
                 return _SANDBOX_BUSY
-            call.entered[(key, self._spec.kind)] = admission
-            if call.closed:
-                self._router.release_call(key, self._spec.kind, owner=call.id)
-                call.entered.pop((key, self._spec.kind), None)
-                raise RuntimeError(
-                    f"{self._name}: acquire() has no open tool call; this one has returned"
-                )
-        admission = None if call is None else call.entered[(key, self._spec.kind)]
         try:
             sandbox = await self._router.acquire(key, self._spec, _admission=admission)
         except ATTACH_REFUSALS as exc:
@@ -1790,6 +1786,27 @@ class SandboxToolSession:
                     "the sandbox will be cleaned before its hold is released."
                 )
         return sandbox
+
+    async def _admit(self, key: SandboxKey, call: _SandboxToolCall) -> CallAdmission:
+        """Share one admission without allowing a late waiter to retire another acquire's hold."""
+        at = (key, self._spec.kind)
+        lock = call.admission_locks.setdefault(at, asyncio.Lock())
+        async with lock:
+            if call.closed:
+                raise RuntimeError(
+                    f"{self._name}: acquire() has no open tool call; this one has returned"
+                )
+            admission = call.entered.get(at)
+            if admission is not None:
+                return admission
+            admission = await self._router.enter_call(key, self._spec, owner=call.id)
+            if call.closed:
+                self._router.release_call(key, self._spec.kind, owner=call.id)
+                raise RuntimeError(
+                    f"{self._name}: acquire() has no open tool call; this one has returned"
+                )
+            call.entered[at] = admission
+            return admission
 
 
 async def _dispose_the_unclean(
