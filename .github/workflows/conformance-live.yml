@@ -30,8 +30,9 @@ permissions:
   contents: read
 
 # Its own group, and never cancelled mid-run: teardown reaches the service by label and a
-# cancelled run would leave whatever it was holding to the auto-delete timer — at most two of the
-# four, never all of them, since they are acquired over the run rather than at once (#325's rule,
+# cancelled run leaves whatever it was holding to the configured lifecycle policy and the
+# independent operator sweep — at most two of the four, never all of them, since they are
+# acquired over the run rather than at once (#325's rule,
 # restated). A scheduled run may overlap a post-release verify-live run in the same sandbox
 # group; scopes are per-run (`e2e-<uuid>`), and dispose_scope selects on `(scope, thread)`
 # labels, so neither run can sweep the other's sandboxes.

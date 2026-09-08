@@ -23,8 +23,8 @@ __all__ = ["SandboxPurger"]
 class SandboxPurger:
     """Deletes a thread's sandboxes on conversation delete.
 
-    Without it a deleted conversation's sandboxes stay billable until the auto-delete timer
-    fires — and that timer is measured in minutes per sandbox, per agent, per conversation.
+    Cleanup after host death depends on a configured platform lifecycle policy or an independent
+    operator sweep; this participant runs only when the host calls it.
     """
 
     def __init__(self, router: SandboxRouter) -> None:
@@ -33,12 +33,8 @@ class SandboxPurger:
     async def purge_scoped_thread(self, scope: str, thread_id: str) -> ScopePurge:
         """Delete every sandbox for ``(scope, thread_id)``; returns how many, and what stayed.
 
-        Errors are swallowed by the router: purge must not fail a delete, and the backends'
-        auto-delete timers remain as the fallback.  :attr:`~maf_sandbox.ScopePurge.undisposed`
-        is how a host hears that the delete it just served did not land: the sandboxes of a
-        conversation a user deleted are the ones least acceptable to leave running, and a count
-        cannot say it — zero reads the same whether there was nothing to delete or nothing
-        worked.
+        The router reports backend failures in :attr:`~maf_sandbox.ScopePurge.undisposed` so the
+        host can arrange retries; a zero count alone does not establish complete cleanup.
         """
         purge = await self._router.dispose_scope(scope, thread_id)
         if purge.disposed:
