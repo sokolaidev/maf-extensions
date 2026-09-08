@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import posixpath
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from maf_sandbox import (
@@ -1910,6 +1912,101 @@ class TestExecArgv:
 
 
 class TestNarrowedDisposal:
+    @pytest.mark.parametrize("first", ["kind", "scope", "refused"])
+    @pytest.mark.parametrize("second", ["kind", "scope"])
+    @pytest.mark.parametrize("outcome", ["failure", "cancel", "unreachable"])
+    def test_cross_loop_success_preserves_a_newer_retry(self, first, second, outcome, monkeypatch):
+        from maf_sandbox_acas._backend import _Deletion
+
+        client = _FakeGroupClient()
+        backend = _backend_with(client)
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent")
+        prefix = (key.scope, key.thread_id, key.agent_dir)
+        if first != "refused":
+            backend._registry[(*prefix, "a")] = _Held("selected")
+        entered, progressed = threading.Event(), threading.Event()
+        failure = DisposalFailure("refused", "delete refused")
+        attempts = 0
+
+        class _Guard:
+            def __init__(self):
+                self.lock = threading.Lock()
+
+            def __enter__(self):
+                if not self.lock.acquire(blocking=False):
+                    progressed.set()
+                    assert self.lock.acquire(timeout=5)
+
+            def __exit__(self, *args):
+                self.lock.release()
+
+        class _Ledger(dict):
+            armed = True
+
+            def pop(self, at, default=None):
+                if self.armed and at == prefix:
+                    self.armed = False
+                    entered.set()
+                    assert progressed.wait(5)
+                return super().pop(at, default)
+
+        monkeypatch.setattr(backend, "_disposal_guard", _Guard(), raising=False)
+        backend._undeleted = _Ledger()
+        original = backend._delete
+
+        async def delete(group_client, sandbox_id):
+            nonlocal attempts
+            attempts += 1
+            assert sandbox_id == "selected"
+            if attempts == 1:
+                return _Deletion(True)
+            if outcome == "cancel":
+                raise asyncio.CancelledError
+            return _Deletion(False, failure)
+
+        def unavailable():
+            raise RuntimeError("group unavailable")
+
+        monkeypatch.setattr(backend, "_delete", delete)
+
+        async def cleanup(operation):
+            if operation == "refused":
+                return await backend._release_the_refused(client, key, "selected", kind="a")
+            if operation == "scope":
+                return await backend.dispose_scope(key.scope, key.thread_id)
+            return await backend.dispose(key, kind="a")
+
+        def newer_loop():
+            assert entered.wait(5)
+            backend._registry[(*prefix, "a")] = _Held("selected")
+            try:
+                with monkeypatch.context() as pending:
+                    if outcome == "unreachable":
+                        pending.setattr(backend, "_group_client", unavailable)
+                    if outcome == "cancel":
+                        with pytest.raises(asyncio.CancelledError):
+                            asyncio.run(cleanup(second))
+                    else:
+                        result = asyncio.run(cleanup(second))
+                        assert (
+                            result.undisposed if isinstance(result, ScopePurge) else result
+                        ) is not None
+            finally:
+                progressed.set()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            newer = pool.submit(newer_loop)
+            asyncio.run(cleanup(first))
+            newer.result(timeout=5)
+
+        assert backend._undeleted == {prefix: {"selected"}}
+        assert backend._undeleted_kinds == {prefix: {"selected": "a"}}
+        monkeypatch.setattr(backend, "_delete", original)
+        assert asyncio.run(backend.dispose(key, kind="a")) is None
+        assert client.deleted == ["selected"]
+        assert not backend._undeleted and not backend._undeleted_kinds
+        assert not backend._disposal_tokens
+
     @pytest.mark.parametrize("first", ["kind", "whole", "scope", "refused"])
     @pytest.mark.parametrize("second", ["kind", "scope"])
     @pytest.mark.parametrize("outcome", ["failure", "cancel", "unreachable"])
@@ -1967,6 +2064,7 @@ class TestNarrowedDisposal:
                     ) is not None
             release.set()
             await older
+            assert older.done()
             assert backend._undeleted == {prefix: {"selected"}}
             assert backend._undeleted_kinds == {prefix: {"selected": "a"}}
             monkeypatch.setattr(backend, "_delete", original)

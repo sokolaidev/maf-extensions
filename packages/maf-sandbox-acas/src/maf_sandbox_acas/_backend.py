@@ -15,6 +15,7 @@ import asyncio
 import logging
 import posixpath
 import shlex
+import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
@@ -736,6 +737,7 @@ class AcasSandboxBackend:
         self._undeleted: dict[tuple[str, str, str], set[str]] = {}
         self._undeleted_kinds: dict[tuple[str, str, str], dict[str, str]] = {}
         self._disposal_tokens: dict[tuple[str, str, str], dict[str, object]] = {}
+        self._disposal_guard = threading.Lock()
         # Group clients cached per event loop. An azure-core async client binds its transport
         # to the loop that created it, and this host runs some work on a dedicated background
         # loop, so one shared client would be a cross-loop hazard; one per call would leak a
@@ -944,7 +946,7 @@ class AcasSandboxBackend:
     def _retain_disposals(
         self, prefix: tuple[str, str, str], names: Sequence[str], kinds: Mapping[str, str]
     ) -> dict[str, object]:
-        """Tokenize retry records so older completions cannot erase newer attempts."""
+        """Reserve retry records while holding the disposal guard."""
         if not names:
             return {}
         tokens = {name: object() for name in names}
@@ -960,7 +962,7 @@ class AcasSandboxBackend:
         failed: Sequence[str],
         kinds: Mapping[str, str],
     ) -> None:
-        """Retain failures and retire only the successful attempt's own records."""
+        """Reconcile this attempt while holding the disposal guard."""
         self._retain_disposals(prefix, failed, {n: kinds[n] for n in failed if n in kinds})
         tokens = self._disposal_tokens.get(prefix, {})
         names = self._undeleted.get(prefix, set())
@@ -983,11 +985,13 @@ class AcasSandboxBackend:
         """Delete a refused fresh sandbox, retaining its kind for retries if deletion fails."""
         prefix = (key.scope, key.thread_id, key.agent_dir)
         kinds = {sandbox_id: kind}
-        attempted = self._retain_disposals(prefix, [sandbox_id], kinds)
+        with self._disposal_guard:
+            attempted = self._retain_disposals(prefix, [sandbox_id], kinds)
         deletion = await self._delete(gc, sandbox_id)
-        self._finish_disposals(
-            prefix, attempted, [sandbox_id] if deletion.failure is not None else [], kinds
-        )
+        with self._disposal_guard:
+            self._finish_disposals(
+                prefix, attempted, [sandbox_id] if deletion.failure is not None else [], kinds
+            )
         if deletion.failure is not None:
             return
         logger.info(
@@ -1219,34 +1223,37 @@ class AcasSandboxBackend:
         The registry and retained IDs cover only sandboxes known to this process.
         Failed deletions are retained per kind for retries and reported without raising."""
         prefix = (key.scope, key.thread_id, key.agent_dir)
-        mine = [
-            k for k in list(self._registry) if k[:3] == prefix and (kind is None or k[3] == kind)
-        ]
-        attributed = self._undeleted_kinds.setdefault(prefix, {})
-        remembered: list[str] = []
-        for entry in mine:
-            held = self._registry.pop(entry)
-            remembered.append(held.sandbox_id)
-            attributed[held.sandbox_id] = entry[3]
-        retained = sorted(
-            name
-            for name in self._undeleted.get(prefix, ())
-            if kind is None or attributed.get(name) == kind
-        )
-        wanted = list(
-            dict.fromkeys(
-                [
-                    *remembered,
-                    *retained,
-                ]
+        with self._disposal_guard:
+            mine = [
+                k
+                for k in list(self._registry)
+                if k[:3] == prefix and (kind is None or k[3] == kind)
+            ]
+            attributed = self._undeleted_kinds.setdefault(prefix, {})
+            remembered: list[str] = []
+            for entry in mine:
+                held = self._registry.pop(entry)
+                remembered.append(held.sandbox_id)
+                attributed[held.sandbox_id] = entry[3]
+            retained = sorted(
+                name
+                for name in self._undeleted.get(prefix, ())
+                if kind is None or attributed.get(name) == kind
             )
-        )
-        if not wanted:
-            if not attributed:
-                self._undeleted_kinds.pop(prefix, None)
-            return None
-        attempted_kinds = {name: attributed[name] for name in wanted if name in attributed}
-        attempted = self._retain_disposals(prefix, wanted, attempted_kinds)
+            wanted = list(
+                dict.fromkeys(
+                    [
+                        *remembered,
+                        *retained,
+                    ]
+                )
+            )
+            if not wanted:
+                if not attributed:
+                    self._undeleted_kinds.pop(prefix, None)
+                return None
+            attempted_kinds = {name: attributed[name] for name in wanted if name in attributed}
+            attempted = self._retain_disposals(prefix, wanted, attempted_kinds)
         try:
             gc = self._group_client()
         except Exception as exc:  # noqa: BLE001 - disposal must never raise
@@ -1266,17 +1273,16 @@ class AcasSandboxBackend:
                 )
             if deletion.failure is not None:
                 undeleted[sandbox_id] = deletion.failure
-        self._finish_disposals(prefix, attempted, list(undeleted), attempted_kinds)
-        left = self._undeleted.get(prefix, set())
-        attributed = self._undeleted_kinds.get(prefix, {})
+        with self._disposal_guard:
+            self._finish_disposals(prefix, attempted, list(undeleted), attempted_kinds)
+            left = self._undeleted.get(prefix, set())
+            attributed = self._undeleted_kinds.get(prefix, {})
+            outstanding = {name for name in left if kind is None or attributed.get(name) == kind}
         reported = fold_disposal_failures(list(undeleted.values()))
         if reported is not None:
             return reported
-        outstanding = {name for name in left if kind is None or attributed.get(name) == kind}
         if outstanding:
-            # A disposal still in flight wrote these ahead of its own await. `None` would
-            # clear the refusal on a delete nobody confirmed; `unknown` and a count, since
-            # neither the outcome nor the ids are this attempt's to describe.
+            # Pending attempts cannot yet certify cleanup.
             return DisposalFailure(
                 "unknown",
                 f"another disposal has not yet reported on {len(outstanding)} sandbox(es)",
@@ -1289,34 +1295,35 @@ class AcasSandboxBackend:
         Labels reach sandboxes created elsewhere; registry and retry records cover failed
         listings, which are still reported. Registry entries are dropped before deletion.
         """
-        known = [
-            (k, entry.sandbox_id)
-            for k, entry in list(self._registry.items())
-            if k[0] == scope and k[1] == thread_id
-        ]
-        for k, _ in known:
-            self._registry.pop(k, None)
-        for entry, sandbox_id in known:
-            self._undeleted_kinds.setdefault(entry[:3], {})[sandbox_id] = entry[3]
-            self._undeleted.setdefault(entry[:3], set()).add(sandbox_id)
+        with self._disposal_guard:
+            known = [
+                (k, entry.sandbox_id)
+                for k, entry in list(self._registry.items())
+                if k[0] == scope and k[1] == thread_id
+            ]
+            for k, _ in known:
+                self._registry.pop(k, None)
+            for entry, sandbox_id in known:
+                self._undeleted_kinds.setdefault(entry[:3], {})[sandbox_id] = entry[3]
+                self._undeleted.setdefault(entry[:3], set()).add(sandbox_id)
 
-        retained = {
-            p: set(names)
-            for p, names in self._undeleted.items()
-            if p[0] == scope and p[1] == thread_id
-        }
-        attempted_kinds = {
-            p: {
-                name: kind
-                for name, kind in self._undeleted_kinds.get(p, {}).items()
-                if name in names
+            retained = {
+                p: set(names)
+                for p, names in self._undeleted.items()
+                if p[0] == scope and p[1] == thread_id
             }
-            for p, names in retained.items()
-        }
-        attempted = {
-            prefix: self._retain_disposals(prefix, list(names), attempted_kinds[prefix])
-            for prefix, names in retained.items()
-        }
+            attempted_kinds = {
+                p: {
+                    name: kind
+                    for name, kind in self._undeleted_kinds.get(p, {}).items()
+                    if name in names
+                }
+                for p, names in retained.items()
+            }
+            attempted = {
+                prefix: self._retain_disposals(prefix, list(names), attempted_kinds[prefix])
+                for prefix, names in retained.items()
+            }
         try:
             gc = self._group_client()
         except Exception as exc:  # noqa: BLE001 - purge must never fail
@@ -1354,10 +1361,11 @@ class AcasSandboxBackend:
             if deletion.failure is not None:
                 undeleted.add(sandbox_id)
                 undisposed.append(deletion.failure)
-        for prefix, tokens in attempted.items():
-            self._finish_disposals(
-                prefix, tokens, list(tokens.keys() & undeleted), attempted_kinds[prefix]
-            )
+        with self._disposal_guard:
+            for prefix, tokens in attempted.items():
+                self._finish_disposals(
+                    prefix, tokens, list(tokens.keys() & undeleted), attempted_kinds[prefix]
+                )
         return ScopePurge(count, fold_disposal_failures(undisposed))
 
     # -- internals ----------------------------------------------------------------
