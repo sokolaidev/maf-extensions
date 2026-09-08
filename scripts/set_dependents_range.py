@@ -20,8 +20,8 @@ a patch changes nothing.
 
 **The samples' floor moves only under `--samples`**, which switches the file set rather than
 adding to it. Merged with the packages' hunk it takes the whole suite unsatisfiable whenever
-the core reaches the index first (0.33.0, 0.34.0); the release workflow passes no flag, so what
-it opens cannot carry a sample.
+the core reaches the index first (0.33.0, 0.34.0); the release workflow's range step passes no
+flag, and its samples step opens a separate pull request.
 
 `--print-title` prints the subject for what the same arguments would change, so the workflow
 does not derive the rule a second time.

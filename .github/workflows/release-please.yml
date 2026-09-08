@@ -91,6 +91,13 @@ jobs:
           # than rebuilt here: a second implementation of the rule is how a pull request comes
           # to advertise one thing while its commit does another.
           title="$(python3 scripts/set_dependents_range.py --print-title "$VERSION")"
+          branch="chore/maf-sandbox-range-${VERSION}"
+          # Skip only when the proposal is already open; a branch left behind by a create that
+          # failed after the push is rebuilt below rather than stranding the change forever.
+          if [ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
+            echo "a PR for ${branch} is already open; leaving it" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           # Fails if a dependent's constraint has drifted from the shape it edits by pattern —
           # a release step that quietly does nothing is worse than one that stops. Runs on the
           # runner's own python3: the script is stdlib-only, and the range lives in pyproject
@@ -104,13 +111,6 @@ jobs:
             echo "the range changed but --print-title named nothing; refusing to commit an" \
                  "unlabelled release-type change" >&2
             exit 1
-          fi
-          branch="chore/maf-sandbox-range-${VERSION}"
-          # Skip only when the proposal is already open; a branch left behind by a create that
-          # failed after the push is rebuilt below rather than stranding the change forever.
-          if [ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
-            echo "a PR for ${branch} is already open; leaving it" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
           fi
           git push origin --delete "$branch" 2>/dev/null || true
           git config user.name "github-actions[bot]"
@@ -139,7 +139,7 @@ jobs:
 
           **The floor moves with it, in every dependent a minor behind.** Together the two leave each dependent on one core minor: the suite is released as a set rather than carrying several core lines, which is the maintenance choice behind this. It is not evidence that a package's code needs @VERSION@ — decline a hunk for a package you want left on an older core, and be aware that its consumers then cannot install it beside a sibling that did move.
 
-          **Nothing under `samples/` is in this pull request**, deliberately: merged with the packages' hunk it takes the whole suite unsatisfiable whenever the core reached the index first (0.33.0, 0.34.0). Run `scripts/set_dependents_range.py --samples @VERSION@` as a `chore:` once every dependent has published; `tests/test_sample_metadata.py` reds if it is forgotten for two releases.
+          **Nothing under `samples/` is in this pull request**, deliberately: merged with the packages' hunk it takes the whole suite unsatisfiable whenever the core reached the index first (0.33.0, 0.34.0). The release workflow opens a separate `chore:` pull request for the samples; merge that one only after every dependent that should admit @VERSION@ has published.
 
           **To decline a floor without losing its ceiling**, edit that line back to the floor it had and leave the new upper bound alone — the two now live in one hunk, so dropping the hunk wholesale would give up the widening too. Retitle it feat:/breaking if adopting the version is more than a patch for a dependent; the title says fix: so the bot does not choose the bump.
 
@@ -149,6 +149,62 @@ jobs:
           gh pr create --base main --head "$branch" \
             --title "$title" \
             --body-file "${RUNNER_TEMP}/range-body.md"
+          echo "opened ${branch}" >> "$GITHUB_STEP_SUMMARY"
+
+      # Samples declare only a maf-sandbox floor, not a package range. They move in their own
+      # proposal so the packages can publish first and make the resolved sample environments
+      # satisfiable against the core that just released.
+      - name: Propose the samples' floor
+        if: >-
+          steps.release.outputs.releases_created == 'true'
+          && contains(steps.release.outputs.paths_released, '"packages/maf-sandbox"')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs['packages/maf-sandbox--version'] }}
+        run: |
+          set -euo pipefail
+          # The previous proposal may have left the checkout on its branch. Start this one from
+          # the release commit so the samples pull request carries only samples.
+          git switch --detach "$GITHUB_SHA"
+          title="$(python3 scripts/set_dependents_range.py --print-title --samples "$VERSION")"
+          branch="chore/maf-sandbox-samples-${VERSION}"
+          if [ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
+            echo "a PR for ${branch} is already open; leaving it" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python3 scripts/set_dependents_range.py --samples "$VERSION"
+          if git diff --quiet; then
+            echo "every sample's floor already covers maf-sandbox ${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ -z "$title" ]; then
+            echo "the samples changed but --print-title named nothing; refusing to commit an" \
+                 "unlabelled chore" >&2
+            exit 1
+          fi
+          git push origin --delete "$branch" 2>/dev/null || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "$title"
+          git push -u origin "$branch"
+          cat > "${RUNNER_TEMP}/samples-body.md" <<'BODY'
+          Automated by the release workflow when maf-sandbox @VERSION@ was released. It moves only the floors in `samples/*/agent.py` to the @MINOR@ core minor; nothing under `packages/` is part of this pull request.
+
+          **Wait for the dependent releases before merging this.** The samples resolve their backend and kind packages from PyPI. Until the dependents that should admit @VERSION@ have published, this pull request can ask for the new core beside packages whose published ceilings still exclude it.
+
+          **This is deliberately separate from the range pull request.** Putting the sample floors beside the package range made the suite unsatisfiable when the core reached PyPI before its dependents. The range pull request opens the packages' ceilings and releases those packages; this one follows with the documentation samples.
+
+          **If this pull request is already green, still check the release order.** A green run means the current index could satisfy the samples at check time, not that every intended dependent Release PR has published.
+          BODY
+          sed -i "s|@VERSION@|${VERSION}|g" "${RUNNER_TEMP}/samples-body.md"
+          major="${VERSION%%.*}"
+          rest="${VERSION#*.}"
+          minor="${rest%%.*}"
+          sed -i "s|@MINOR@|${major}.${minor}|g" "${RUNNER_TEMP}/samples-body.md"
+          gh pr create --base main --head "$branch" \
+            --title "$title" \
+            --body-file "${RUNNER_TEMP}/samples-body.md"
           echo "opened ${branch}" >> "$GITHUB_STEP_SUMMARY"
 
       # Every run ends here, red or green. A merged Release PR still labelled
