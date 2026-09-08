@@ -138,6 +138,23 @@ def test_successfully_installed_policy_is_retained():
     assert group.installed == group.requested_delete == []
 
 
+def test_apply_follows_preview_order_across_inventory_orders():
+    for sandbox_ids in (("z-last", "a-first", "m-middle"), ("m-middle", "z-last", "a-first")):
+        group = _Group(*(_sandbox(sandbox_id) for sandbox_id in sandbox_ids))
+        group.set_errors["m-middle"] = RuntimeError("invalid policy")
+        group.set_errors["z-last"] = RuntimeError("invalid policy")
+        preview = _run(group)
+
+        result = _run(group, apply=True)
+
+        assert preview.candidates == result.candidates == ["a-first", "m-middle", "z-last"]
+        assert [sandbox_id for sandbox_id, _ in group.installed] == preview.candidates
+        assert result.installed == result.verified == ["a-first"]
+        assert result.deleted == group.requested_delete == ["m-middle", "z-last"]
+        assert "m-middle" in result.failures[0]
+        assert "z-last" in result.failures[1]
+
+
 def test_fresh_sandbox_is_protected_as_configuration_in_progress():
     group = _Group(_sandbox("fresh", created_at=_FRESH))
 

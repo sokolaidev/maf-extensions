@@ -287,7 +287,8 @@ async def recover_lifecycle_policies(
     if not apply:
         return result
 
-    for sandbox_id, created in candidates.items():
+    for sandbox_id in result.candidates:
+        created = candidates[sandbox_id]
         try:
             sandbox = await _get_sandbox(client, sandbox_id)
         except Exception as exc:  # noqa: BLE001
@@ -401,14 +402,20 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--stopped-for-hours",
         type=_positive_hours,
-        default=timedelta(days=1),
-        help="delete candidates stopped continuously this long if policy install fails",
+        default=timedelta(hours=24),
+        help=(
+            "delete candidates stopped continuously this long if policy install fails "
+            "(default: 24 hours)"
+        ),
     )
     parser.add_argument(
         "--max-age-hours",
         type=_positive_hours,
-        default=timedelta(days=7),
-        help="delete candidates this old even if still active when policy install fails",
+        default=timedelta(hours=168),
+        help=(
+            "delete candidates this old even if still active when policy install fails "
+            "(default: 168 hours)"
+        ),
     )
     parser.add_argument(
         "--no-max-age",
