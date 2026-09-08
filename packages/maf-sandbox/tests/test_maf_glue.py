@@ -2703,6 +2703,58 @@ class TestAHeldSandboxIsGivenBackHoweverTheCleanupEnds:
 
 
 class TestCleanupAdmission:
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            RuntimeError,
+            ValueError,
+            ImportError,
+            SandboxCapabilityNotSupported,
+            asyncio.CancelledError,
+        ],
+    )
+    def test_call_scoped_late_failure_disposes_the_created_sandbox(self, failure):
+        entered, release = asyncio.Event(), asyncio.Event()
+        tasks = []
+
+        class _LateFailure(InProcessSandboxBackend):
+            async def acquire(self, key, spec):
+                entered.set()
+                await release.wait()
+                await super().acquire(key, spec)
+                raise failure("create failed after registration")
+
+        backend = _LateFailure(
+            sandbox_per_key=True,
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS, isolation_scopes=frozenset(IsolationScope)
+            ),
+        )
+        router = _router(backend)
+        spec = dataclasses.replace(_SPEC, isolation_scope=IsolationScope.CALL)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                tasks.append(asyncio.create_task(session.acquire(session.key())))
+                await entered.wait()
+                return "done"
+
+            return widget_run
+
+        async def scenario():
+            assert await _fn(_attach_with(build, router, spec=spec)[0])(target="x") == "done"
+            assert not backend.sandboxes
+            release.set()
+            result = (await asyncio.gather(*tasks, return_exceptions=True))[0]
+            assert isinstance(
+                result, asyncio.CancelledError if failure is asyncio.CancelledError else str
+            )
+            assert not backend.sandboxes
+            assert len(backend.disposed) == 2
+            assert not router._slots._slots
+
+        asyncio.run(scenario())
+
     @pytest.mark.parametrize("scope", list(IsolationScope))
     @pytest.mark.parametrize("selection", list(Selection))
     def test_declarations_changed_after_attach_return_a_sanitized_refusal(

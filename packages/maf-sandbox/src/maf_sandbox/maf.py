@@ -1709,6 +1709,7 @@ class SandboxToolSession:
             except TimeoutError as exc:
                 self._logger.warning(f"{self._log_prefix}: %s", exc)
                 return _SANDBOX_BUSY
+        late_disposed = False
         try:
             sandbox = await self._router.acquire(key, self._spec, _admission=admission)
         except ATTACH_REFUSALS as exc:
@@ -1736,14 +1737,14 @@ class SandboxToolSession:
             # tenant ids, so it goes to the log and never into the model's context.
             self._logger.warning(f"{self._log_prefix}: sandbox unavailable: %s", error_detail(exc))
             return _SANDBOX_UNAVAILABLE
+        finally:
+            if key.call_id and call is not None and call.closed:
+                # Even a failed create can leave a registered sandbox after the call's cleanup.
+                late_disposed = await self._router.dispose_call(
+                    key, timeout=self._router.reclaim.timeout, spec=self._spec, _admission=admission
+                )
         if key.call_id and call is not None and call.closed:
-            # The call ended while the backend was still creating. Its cleanup has already run the
-            # delete for this key, so what came back is a sandbox nothing is left to remove: take
-            # it here, and refuse rather than hand a task something it cannot have cleaned up.
-            landed = await self._router.dispose_call(
-                key, timeout=self._router.reclaim.timeout, spec=self._spec, _admission=admission
-            )
-            if landed:
+            if late_disposed:
                 fate = "It has been disposed and the result refused."
             else:
                 self._logger.warning(
