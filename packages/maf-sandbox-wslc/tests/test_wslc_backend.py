@@ -1270,6 +1270,42 @@ class TestDispose:
 
 
 class TestDisposeScope:
+    @pytest.mark.parametrize("cancel", [False, True])
+    def test_failed_scope_purge_retains_kinds_for_a_narrowed_retry(self, cancel, monkeypatch):
+        failed = _WslcResult(1, b"", b"WSLC_E_SERVICE_UNAVAILABLE")
+        backend, fake = _backend_with(
+            _machine(overrides={("container", "list"): failed, ("container", "remove"): failed})
+        )
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        backend._registry[(*prefix, "a")] = "selected"
+        backend._registry[(*prefix, "b")] = "sibling"
+        original = backend._wslc
+
+        async def interrupted(*args, **kwargs):
+            if args[:2] == ("container", "list"):
+                raise asyncio.CancelledError
+            return await original(*args, **kwargs)
+
+        if cancel:
+            monkeypatch.setattr(backend, "_wslc", interrupted)
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+            monkeypatch.setattr(backend, "_wslc", original)
+        else:
+            assert (
+                asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id)).undisposed
+                is not None
+            )
+        fake.calls.clear()
+        assert asyncio.run(backend.dispose(_KEY, kind="a")) is not None
+        removed = [
+            c.args[-1]
+            for c in fake.calls
+            if c.args[:2] == ("container", "remove") and not c.args[-1].endswith("-proxy")
+        ]
+        assert removed == ["selected"]
+        assert backend._undeleted_kinds[prefix] == {"selected": "a", "sibling": "b"}
+
     def test_a_dispose_landing_mid_purge_neither_crashes_nor_is_clobbered(self):
         """Teardown for one key is not serialized, so the purge reconciles against the live
         record: it must not index a prefix a `dispose` removed, nor drop a name it added."""
