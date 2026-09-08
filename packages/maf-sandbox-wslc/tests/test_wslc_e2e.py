@@ -17,7 +17,7 @@ import subprocess
 import sys
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from maf_sandbox import Egress, Isolation, OsFamily, SandboxKey, SandboxRouter, SandboxSpec
@@ -79,8 +79,11 @@ def _names_on_the_machine(name: str) -> list[str]:
     return [row["Name"] for row in rows if row.get("Name") == name]
 
 
-@pytest.mark.parametrize("allowlist", [False, True])
-def test_reap_after_creator_process_exits(allowlist):
+@pytest.mark.parametrize(
+    ("allowlist", "leftover"),
+    [(False, "workload"), (True, "workload"), (True, "proxy-network"), (True, "network")],
+)
+def test_reap_after_creator_process_exits(allowlist, leftover):
     assert _IMAGE is not None
     if allowlist and not _PROXY_IMAGE:
         pytest.skip("needs MAF_SANDBOX_WSLC_E2E_PROXY_IMAGE for infrastructure cleanup")
@@ -96,11 +99,15 @@ def test_reap_after_creator_process_exits(allowlist):
     )
     names = [
         _container_name(
-            SandboxKey(scope=scope, thread_id="thread-1", agent_dir=agent),
+            SandboxKey(
+                scope=scope + "-other" if agent == "unrelated" else scope,
+                thread_id="thread-1",
+                agent_dir=agent,
+            ),
             spec.kind,
             backend._egress_id(spec),
         )
-        for agent in ("old", "running", "fresh")
+        for agent in ("old", "running", "fresh", "unrelated")
     ]
     creator = """
 import asyncio, json, os, sys
@@ -109,9 +116,10 @@ from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
 async def main():
     backend = WslcSandboxBackend(WslcSandboxConfig(egress_proxy_image=sys.argv[3] or None))
     names = []
-    for agent in ('old', 'running', 'fresh'):
+    for agent in ('old', 'running', 'fresh', 'unrelated'):
         sandbox = await backend.acquire(
-            SandboxKey(scope=sys.argv[1], thread_id='thread-1', agent_dir=agent),
+            SandboxKey(scope=sys.argv[1] + '-other' if agent == 'unrelated' else sys.argv[1],
+                       thread_id='thread-1', agent_dir=agent),
             SandboxSpec(kind='e2e', image=sys.argv[2],
                         egress=Egress.ALLOWLIST if sys.argv[3] else Egress.CLOSED,
                         egress_allow=('mcr.microsoft.com',) if sys.argv[3] else ()))
@@ -127,7 +135,7 @@ from datetime import timedelta
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
 backend = WslcSandboxBackend(WslcSandboxConfig())
 assert not backend._registry
-print(json.dumps(asdict(asyncio.run(backend.reap(timedelta(seconds=15), scope=sys.argv[1])))))
+print(json.dumps(asdict(asyncio.run(backend.reap(timedelta(seconds=30), scope=sys.argv[1])))))
 """
 
     def command(*args):
@@ -165,7 +173,8 @@ print(json.dumps(asdict(asyncio.run(backend.reap(timedelta(seconds=15), scope=sy
             timeout=240,
         )
         assert json.loads(created.stdout) == names
-        old, running, fresh = names
+        old, running, fresh, unrelated = names
+        command("container", "stop", unrelated)
         command("container", "stop", old)
         metadata = inspect(old)
         assert metadata is not None
@@ -173,12 +182,41 @@ print(json.dumps(asdict(asyncio.run(backend.reap(timedelta(seconds=15), scope=sy
         assert metadata["State"]["Status"] == "exited"
         created_at = datetime.fromisoformat(metadata["Created"])
         stopped_at = datetime.fromisoformat(metadata["State"]["FinishedAt"])
-        assert started <= created_at <= stopped_at <= datetime.now(UTC)
+        # WSLC lifecycle timestamps and the operator can read different host/VM clocks.
+        skew = timedelta(seconds=10)
+        assert started - skew <= created_at <= stopped_at <= datetime.now(UTC) + skew
+        listing = json.loads(
+            command("container", "list", "-a", "--format", "json", "--filter", f"name={old}")
+        )
+        listed = next(row for row in listing if row["Name"] == old)
+        assert listed["CreatedAt"] == int(created_at.timestamp())
+        assert listed["StateChangedAt"] == int(stopped_at.timestamp())
+        print(
+            json.dumps(
+                {
+                    "leftover": leftover,
+                    "allowlist": allowlist,
+                    "created": metadata["Created"],
+                    "finished": metadata["State"]["FinishedAt"],
+                    "operator_now": datetime.now(UTC).isoformat(),
+                    "listed_created": listed["CreatedAt"],
+                    "listed_state_changed": listed["StateChangedAt"],
+                }
+            )
+        )
         if allowlist:
             network = json.loads(command("network", "inspect", old + "-net"))[0]
             assert network["Internal"] is True
-            assert network["Labels"]["maf-sandbox.network-created-at"]
-        time.sleep(16)
+            requested_at = datetime.fromisoformat(
+                network["Labels"]["maf-sandbox.network-created-at"]
+            )
+            assert started <= requested_at <= datetime.now(UTC)
+        if leftover != "workload":
+            command("container", "remove", old)
+        if leftover == "network":
+            command("container", "remove", "-f", old + "-proxy")
+        expires_at = stopped_at + timedelta(seconds=30)
+        time.sleep(max(0, (expires_at - datetime.now(UTC)).total_seconds()) + 1)
         command("container", "stop", fresh)
         cleaned = subprocess.run(
             [sys.executable, "-c", cleaner, scope],
@@ -189,8 +227,8 @@ print(json.dumps(asdict(asyncio.run(backend.reap(timedelta(seconds=15), scope=sy
         )
         result = json.loads(cleaned.stdout)
         assert result == {
-            "disposed": 1,
-            "proxies_removed": int(allowlist),
+            "disposed": int(leftover == "workload"),
+            "proxies_removed": int(allowlist and leftover != "network"),
             "networks_removed": int(allowlist),
             "failures": [],
         }
@@ -198,9 +236,12 @@ print(json.dumps(asdict(asyncio.run(backend.reap(timedelta(seconds=15), scope=sy
         running_metadata = inspect(running)
         assert running_metadata is not None and running_metadata["State"]["Running"] is True
         assert inspect(fresh) is not None
+        assert inspect(unrelated) is not None
         if allowlist:
             assert inspect(old + "-proxy") is None
-            assert inspect(running + "-proxy") is not None
+            for retained in (running, fresh, unrelated):
+                assert inspect(retained + "-proxy") is not None
+                assert json.loads(command("network", "inspect", retained + "-net"))
             absent = subprocess.run(
                 ["wslc", "network", "inspect", old + "-net"],
                 capture_output=True,
@@ -209,6 +250,19 @@ print(json.dumps(asdict(asyncio.run(backend.reap(timedelta(seconds=15), scope=sy
                 check=False,
             )
             assert absent.returncode == 1 and json.loads(absent.stdout) == []
+        repeated = subprocess.run(
+            [sys.executable, "-c", cleaner, scope],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=180,
+        )
+        assert json.loads(repeated.stdout) == {
+            "disposed": 0,
+            "proxies_removed": 0,
+            "networks_removed": 0,
+            "failures": [],
+        }
     finally:
 
         async def cleanup():

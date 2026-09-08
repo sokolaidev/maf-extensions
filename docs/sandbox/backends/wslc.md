@@ -59,7 +59,7 @@ The operator pauses and drains acquisitions and restarts in the selected scopes 
 | Decision | State | Tracking |
 |---|---|---|
 | The backend, `EXEC` and `FILES_IN`, both egress modes, label purge | shipped | — |
-| Operator retention for stopped workloads and orphan infrastructure | implemented with offline coverage; separate-process live verification pending | [#1010](https://github.com/sokolaidev/maf-extensions/issues/1010) (open) |
+| Operator retention for stopped workloads and orphan infrastructure | implemented — separate-process workload and partial-infrastructure cleanup verified on WSLC 2.9.4.0 | [#1010](https://github.com/sokolaidev/maf-extensions/issues/1010) (closed) by [#1015](https://github.com/sokolaidev/maf-extensions/pull/1015) (merged) |
 | `egress_modes = {CLOSED}`, or `{CLOSED, ALLOWLIST}` with a proxy image; a mode outside the set is refused rather than degraded | shipped | [#530](https://github.com/sokolaidev/maf-extensions/pull/530) (merged) under [#265](https://github.com/sokolaidev/maf-extensions/issues/265) (closed) |
 | `observes_egress = True` with a proxy image: the proxy's own `ALLOW`/`DENY` lines are drained before every removal that would take them, and become `EgressObserved` keyed to the sandbox | shipped | [#948](https://github.com/sokolaidev/maf-extensions/issues/948) (closed) by [#963](https://github.com/sokolaidev/maf-extensions/pull/963) (merged) |
 | `run_code` implemented as a refusal, `RUN_CODE` undeclared | shipped — the capability set is still `{EXEC, FILES_IN}` | [#531](https://github.com/sokolaidev/maf-extensions/pull/531) (merged) |
