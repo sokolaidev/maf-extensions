@@ -574,8 +574,7 @@ class _WslcSandbox:
     async def reset(self, *, timeout: float) -> None:
         """Unsupported: this backend does not declare Capability.SNAPSHOT."""
         raise NotImplementedError(
-            f"{type(self).__name__} does not snapshot, so it cannot be reset to its pre-input "
-            "state. Its sandboxes are cleaned by a reclaim or a disposal."
+            f"{type(self).__name__} does not support reset; dispose its sandbox instead."
         )
 
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
