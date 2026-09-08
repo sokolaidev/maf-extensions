@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-otel-v0.2.0...maf-sandbox-otel-v0.3.0) (2026-09-08)
+
+
+### Features
+
+* **otel:** a record names the call it came from, and an acquire names the tools that were callable ([#988](https://github.com/sokolaidev/maf-extensions/issues/988)) ([2e185d5](https://github.com/sokolaidev/maf-extensions/commit/2e185d5a6d7c9f3f98b8380f7790944c2f7a95db))
+
+
+### Fixes
+
+* require maf-sandbox 0.36.0 in the dependents, and admit the 0.36 line ([#1018](https://github.com/sokolaidev/maf-extensions/issues/1018)) ([d58e1ac](https://github.com/sokolaidev/maf-extensions/commit/d58e1ac02d0372e356cf00dbce5fe59c38b35324))
+
 ## [0.2.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-otel-v0.1.1...maf-sandbox-otel-v0.2.0) (2026-09-07)
 
 
