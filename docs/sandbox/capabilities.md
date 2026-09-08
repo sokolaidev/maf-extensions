@@ -4,7 +4,7 @@
 
 ## The vocabulary
 
-`Capability` is a `StrEnum` with nine members. It is the second of the two axes — [`policy-isolation.md`](policy-isolation.md) holds the first — and it answers a different question: not *how strong is the boundary*, but *what is behind it*. Where the axis sits in the stack is [`architecture.md`](architecture.md); what a kind does with it is [`kinds/README.md`](kinds/README.md); how each backend implements it is [`backends/README.md`](backends/README.md).
+`Capability` is a `StrEnum` with ten members. It is the second of the two axes — [`policy-isolation.md`](policy-isolation.md) holds the first — and it answers a different question: not *how strong is the boundary*, but *what is behind it*. Where the axis sits in the stack is [`architecture.md`](architecture.md); what a kind does with it is [`kinds/README.md`](kinds/README.md); how each backend implements it is [`backends/README.md`](backends/README.md).
 
 | Member | What it gates | Declared today by |
 |---|---|---|
@@ -19,7 +19,7 @@
 | `RECLAIM` | Take a directory this stack created, which is what the `RECLAIM` cleanup rung runs — `Sandbox.reclaim`, which stays mandatory whether or not this is declared | nobody yet |
 | `ATTACHED_IDENTITY` | A platform-attached identity scoped to the sandbox itself | nobody |
 
-`InProcessSandboxBackend` declares whatever a test claims, defaulting to the set below.
+`InProcessSandboxBackend` defaults to `DEFAULT_CAPABILITIES | {Capability.RECLAIM}`; tests can override its declarations. The router’s default for an unstated capability set remains:
 
 ```python
 DEFAULT_CAPABILITIES: frozenset[Capability] = frozenset({Capability.EXEC, Capability.FILES_IN})

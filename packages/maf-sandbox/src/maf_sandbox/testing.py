@@ -394,14 +394,9 @@ class InProcessSandbox:
         return tuple(entries)
 
 
-#: What :class:`InProcessSandboxBackend` declares unless a test says otherwise.  One field
-#: departs from :data:`~maf_sandbox.DEFAULT_BACKEND_DECLARATIONS`: ``egress_modes`` is stated,
-#: because the router's silence rule there refuses every spec, and an offline suite that has to
-#: opt out of the attach refusal in every test is measuring the fake rather than the workload.
+#: Defaults for offline workloads: permit attach through explicit egress modes and establish
+#: the RECLAIM rung through the fake's directory removal. Other fields keep the router defaults.
 FAKE_BACKEND_DECLARATIONS = BackendDeclarations(
-    # `RECLAIM` beside the defaults, because this fake really does implement `reclaim` and a
-    # backend that does not declare it establishes no `Cleanup.RECLAIM` — every workload on it
-    # would be cleaned by disposal, which is the right default and the wrong fake.
     capabilities=DEFAULT_CAPABILITIES | {Capability.RECLAIM},
     egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED}),
 )
@@ -421,23 +416,14 @@ class InProcessSandboxBackend:
         isolation: Returned by the :attr:`isolation` property — configurable because the
             router's minimum-isolation floor is exercised against fakes claiming every
             :class:`~maf_sandbox.Isolation` rung, not only ``NONE``.
-        declarations: Returned by the :attr:`declarations` property. Defaults to
-            :data:`FAKE_BACKEND_DECLARATIONS`, which differs from
-            :data:`~maf_sandbox.DEFAULT_BACKEND_DECLARATIONS` in one field: ``egress_modes`` is
-            ``{ALLOWLIST, CLOSED}`` so a workload under test attaches as it would against a
-            proxy-capable live backend, rather than every offline test becoming a test of the
-            attach refusal. A test of that refusal passes a narrower set (``frozenset()`` for
-            "enforces nothing", ``{UNRESTRICTED}`` for the no-confinement backend). The other
-            four fields keep the router's own silence rules, so leaving them unset and stating
-            them explicitly serve one spec identically — which is why ``capabilities`` still
-            defaults to :data:`~maf_sandbox.DEFAULT_CAPABILITIES` even though this sandbox
-            genuinely implements the pull surface: a test that wants it asks for it.
+        declarations: Defaults to :data:`FAKE_BACKEND_DECLARATIONS`: capabilities are
+            :data:`~maf_sandbox.DEFAULT_CAPABILITIES` plus ``RECLAIM``, and ``egress_modes``
+            is ``{ALLOWLIST, CLOSED}``. Other fields keep
+            :data:`~maf_sandbox.DEFAULT_BACKEND_DECLARATIONS`; pull capabilities remain opt-in.
 
-            **Override with** ``dataclasses.replace(FAKE_BACKEND_DECLARATIONS, ...)``, never
-            with a bare :class:`~maf_sandbox.BackendDeclarations`: constructing one resets
-            ``egress_modes`` to the router's silence rule, which enforces nothing, and every
-            attach then fails with :class:`~maf_sandbox.SandboxEgressNotEnforced` about a field
-            the test never named.
+            Override with ``dataclasses.replace(FAKE_BACKEND_DECLARATIONS, ...)``. A bare
+            :class:`~maf_sandbox.BackendDeclarations` resets egress enforcement to empty,
+            so attach fails with :class:`~maf_sandbox.SandboxEgressNotEnforced`.
         acquire_error: When set, ``acquire`` raises this instead of returning the sandbox —
             for exercising a kind's "sandbox unavailable" degrade path.
         dispose_error: When set, ``dispose`` records the key and then raises this — for

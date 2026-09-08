@@ -4,12 +4,12 @@
 
 ## What it declares
 
-`name` and `isolation` are constructor arguments of their own. The four below them are **fields of one `declarations` object**, and there is one argument for all four — `declarations=`, taking a `BackendDeclarations`. State one field with `dataclasses.replace(FAKE_BACKEND_DECLARATIONS, ...)`; a bare `BackendDeclarations` resets the other three to the router's own silence rules, and on `egress_modes` that enforces nothing and refuses every attach.
+`name` and `isolation` are constructor arguments; the declarations below share one `declarations=` argument. Override individual fields with `dataclasses.replace(FAKE_BACKEND_DECLARATIONS, ...)`. A bare `BackendDeclarations` restores the router’s defaults, including empty `egress_modes`, which refuses every attach.
 
 | Declaration | Default | Set by |
 |---|---|---|
 | `isolation` | `Isolation.NONE` | `isolation=` |
-| `capabilities` | `DEFAULT_CAPABILITIES` — `{EXEC, FILES_IN}` | a field of `declarations=` |
+| `capabilities` | `DEFAULT_CAPABILITIES` plus `RECLAIM` — `{EXEC, FILES_IN, RECLAIM}` | a field of `declarations=` |
 | `egress_modes` | `{Egress.ALLOWLIST, Egress.CLOSED}` | a field of `declarations=` |
 | `limits` | `DEFAULT_SANDBOX_LIMITS` | a field of `declarations=` |
 | `os_families` | `frozenset()` | a field of `declarations=` |
@@ -18,11 +18,11 @@
 
 `egress_modes` defaults to `{ALLOWLIST, CLOSED}` rather than to silence so a workload under test **attaches** as it would against a proxy-capable live backend: the default `CLOSED` spec and an `ALLOWLIST` spec both resolve, instead of every offline test becoming a test of the attach refusal. A test *of* the refusal states a narrower set in that field — `frozenset()` for a backend that enforces nothing, `{UNRESTRICTED}` for the no-confinement shape — which is what the no-isolation backend in [`samples/09_inprocess_bicep`](../../../samples/09_inprocess_bicep) now declares, honestly, and it is served only by a workload that asked to run open.
 
-`capabilities` still defaults to `DEFAULT_CAPABILITIES` even though the sandbox genuinely implements the pull surface: widening the default would change what a bare `InProcessSandboxBackend()` attaches against for every existing caller that never asked for `FILES_OUT` or `FILES_LIST`. A test that wants the pull surface states that field. `os_families` defaults to `frozenset()` — exactly what the router reads from a backend that declares nothing, so a test written before the axis existed is unaffected and one exercising it states a family. `FAKE_BACKEND_DECLARATIONS` is the whole default object, and `egress_modes` is the one field it departs from `DEFAULT_BACKEND_DECLARATIONS` on.
+`FAKE_BACKEND_DECLARATIONS` differs from `DEFAULT_BACKEND_DECLARATIONS` in two fields: `capabilities` adds `RECLAIM` for the fake’s directory removal, and `egress_modes` permits offline workloads to attach. Pull capabilities such as `FILES_OUT` and `FILES_LIST` remain explicit opt-ins. Other fields retain the router’s defaults.
 
 ## Overridable declarations are what make it a policy fixture
 
-Every one of the six is a constructor argument, and that is not a convenience — it is the feature. The router's minimum-isolation floor is exercised against fakes claiming *every* rung on the ladder, not only `NONE`; `selected=` is exercised against several registered backends distinguished by `name`; the capability match, the egress resolution, the guest-family match and the transfer-limit match each need a backend that declares the thing under test. No other backend can be made to declare a rung it does not have, and none should be able to. See [`../policy-isolation.md`](../policy-isolation.md).
+These declarations are configurable so the fake can exercise each router policy. The router's minimum-isolation floor is exercised against fakes claiming *every* rung on the ladder, not only `NONE`; `selected=` is exercised against several registered backends distinguished by `name`; the capability match, the egress resolution, the guest-family match and the transfer-limit match each need a backend that declares the thing under test. No other backend can be made to declare a rung it does not have, and none should be able to. See [`../policy-isolation.md`](../policy-isolation.md).
 
 ## What it records, and the degrade path
 
