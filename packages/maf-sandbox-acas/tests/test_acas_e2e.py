@@ -45,10 +45,14 @@ build a second transport against the same sandbox.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import logging
 import os
+import sys
 import uuid
 from collections.abc import Coroutine
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -84,6 +88,15 @@ except ImportError:
     assert_reclaim_conformance = None
 
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
+
+_ROOT = Path(__file__).resolve().parents[1]
+_RECOVERY_SPEC = importlib.util.spec_from_file_location(
+    "recover_lifecycle_policy", _ROOT / "scripts" / "recover_lifecycle_policy.py"
+)
+assert _RECOVERY_SPEC and _RECOVERY_SPEC.loader
+recovery = importlib.util.module_from_spec(_RECOVERY_SPEC)
+sys.modules[_RECOVERY_SPEC.name] = recovery
+_RECOVERY_SPEC.loader.exec_module(recovery)
 
 _ENDPOINT = os.environ.get("ACAS_SANDBOX_ENDPOINT")
 #: A bare `repository:tag` in the configured registry, as the samples pass. Read from the
@@ -758,6 +771,40 @@ class TestWhetherThisBackendCouldServeHostTools:
 _PREBUILT = os.environ.get("MAF_SANDBOX_ACAS_E2E_PREBUILT", "python-3.13")
 
 
+class _ScopedRecoveryClient:
+    """Limit the live recovery probe to the sandbox it created."""
+
+    def __init__(self, client: Any, *, scope: str, thread_id: str) -> None:
+        self._client = client
+        self._labels = {"scope": scope, "thread": thread_id}
+
+    def list_sandboxes(self):
+        return self._client.list_sandboxes(labels=self._labels)
+
+    def get_sandbox(self, sandbox_id: str):
+        return self._client.get_sandbox(sandbox_id)
+
+    def get_sandbox_client(self, sandbox_id: str):
+        return self._client.get_sandbox_client(sandbox_id)
+
+
+async def _create_labelled_sandbox_without_lifecycle(
+    backend: AcasSandboxBackend, key: SandboxKey, spec: SandboxSpec
+) -> str:
+    from maf_sandbox_acas._backend import _sandbox_labels
+    from maf_sandbox_acas._images import resolve_prebuilt_image_name
+
+    group = backend._group_client()
+    disk = await resolve_prebuilt_image_name(group, spec.image or "")
+    poller = await group.begin_create_sandbox(
+        disk=disk,
+        labels=_sandbox_labels(key, spec),
+        egress_policy=backend._egress_policy(spec),
+    )
+    created = await poller.result()
+    return created.sandbox_id
+
+
 class TestBootingAnImageTheServiceProvides:
     """A bare name reaches the catalogue, and the sandbox it boots is usable (#412).
 
@@ -817,6 +864,42 @@ class TestBootingAnImageTheServiceProvides:
         )
         assert result.exit_code == 0, result.stderr
         assert result.stdout.strip() == "booted"
+
+
+class TestMissingLifecycleRecovery:
+    """The recovery script's live claim: a labelled sandbox missing auto-delete can be repaired."""
+
+    def test_recovery_installs_and_verifies_auto_delete(self, loop):
+        backend = AcasSandboxBackend(_config())
+        scope = f"e2e-recovery-{uuid.uuid4()}"
+        key = _key(scope)
+        spec = SandboxSpec(kind="e2e-recovery", image=_PREBUILT)
+
+        async def scenario():
+            sandbox_id = await _create_labelled_sandbox_without_lifecycle(backend, key, spec)
+            try:
+                group = _ScopedRecoveryClient(
+                    backend._group_client(), scope=scope, thread_id="thread-1"
+                )
+                result = await recovery.recover_lifecycle_policies(
+                    group,
+                    policy=recovery.RecoveryPolicy(
+                        fresh_for=timedelta(seconds=1),
+                        stopped_for=timedelta(days=1),
+                        max_age=None,
+                    ),
+                    apply=True,
+                    now=datetime.now(UTC) + timedelta(minutes=10),
+                )
+                assert result.installed == result.verified == [sandbox_id]
+                assert result.deleted == result.failures == []
+            finally:
+                await backend.dispose_scope(scope, "thread-1")
+
+        try:
+            loop.run_until_complete(scenario())
+        finally:
+            loop.run_until_complete(backend.aclose())
 
     def test_the_python_image_carries_the_interpreter_codeact_names(self, prebuilt: _Live):
         """Why this namespace is worth reaching: it retires #302's import prerequisite.

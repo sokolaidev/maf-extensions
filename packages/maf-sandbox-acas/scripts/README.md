@@ -29,3 +29,13 @@ uv run --package maf-sandbox-acas python packages/maf-sandbox-acas/scripts/impor
 ### Authentication
 
 The script itself authenticates with `DefaultAzureCredential`, so an `az login` session is enough for the one-off run. Reaching the *registry* is separate: the sandbox group pulls the image, so `--identity` must name a managed identity that (a) can pull from that registry and (b) is attached to the sandbox group — a host's infrastructure-as-code for the group usually provisions one and exposes its resource id as an output. The pull role is `Container Registry Repository Reader` on a registry in *RBAC + ABAC* permissions mode, or `AcrPull` on a classic-mode one. Without `--identity`, a private registry answers the pull with a 403 and the create-disk-image operation fails.
+
+## `recover_lifecycle_policy.py`
+
+Finds backend-owned sandboxes whose effective lifecycle metadata does not show auto-delete, then installs the backend lifecycle policy or deletes expired candidates. It uses the service inventory and the backend's labels (`scope`, `thread`, `agent`, `kind`), not the process registry, so it can run after the host process that created a sandbox is gone. Preview is the default.
+
+```bash
+uv run --package maf-sandbox-acas python packages/maf-sandbox-acas/scripts/recover_lifecycle_policy.py --endpoint https://management.<region>.azuredevcompute.io --subscription <sub-id> --resource-group <sandbox-group-rg> --group <sandbox-group-name>
+```
+
+Pass `--apply` to change the group. Sandboxes newer than `--fresh-for-minutes` are retained as configuration-in-progress, sandboxes that already report auto-delete are retained, and unrelated sandboxes are ignored. For older backend-owned candidates, the script installs `--auto-suspend-seconds` and `--auto-delete-seconds` and re-reads the sandbox to verify that auto-delete is now visible. If installation or verification fails, it deletes only candidates that are expired by `--stopped-for-hours` or by `--max-age-hours`; use `--no-max-age` to keep active sandboxes from being deleted solely by creation age.
