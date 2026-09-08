@@ -1761,7 +1761,13 @@ class DockerSandboxBackend:
             for name, prefix in self._acquired.items()
             if prefix[0] == scope and prefix[1] == thread_id
         }
-        remembered = [self._registry.pop(k) for k in mine]
+        remembered: list[str] = []
+        for entry in mine:
+            name = self._registry.pop(entry)
+            prefix = entry[:3]
+            remembered.append(name)
+            self._undeleted.setdefault(prefix, set()).add(name)
+            self._undeleted_kinds.setdefault(prefix, {})[name] = entry[3]
         retained = {
             p: set(names)
             for p, names in self._undeleted.items()

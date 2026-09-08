@@ -3076,6 +3076,40 @@ class TestDispose:
 
 
 class TestDisposeScope:
+    @pytest.mark.parametrize("cancel", [False, True])
+    def test_failed_scope_purge_retains_kinds_for_a_narrowed_retry(self, cancel, monkeypatch):
+        failed = _DockerResult(1, b"", "engine unavailable")
+        backend, fake = _backend_with(_machine(overrides={("ps",): failed, ("rm", "-f"): failed}))
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        backend._registry[(*prefix, "a")] = "selected"
+        backend._registry[(*prefix, "b")] = "sibling"
+        original = backend._docker
+
+        async def interrupted(*args, **kwargs):
+            if args[:1] == ("ps",):
+                raise asyncio.CancelledError
+            return await original(*args, **kwargs)
+
+        if cancel:
+            monkeypatch.setattr(backend, "_docker", interrupted)
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+            monkeypatch.setattr(backend, "_docker", original)
+        else:
+            assert (
+                asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id)).undisposed
+                is not None
+            )
+        fake.calls.clear()
+        assert asyncio.run(backend.dispose(_KEY, kind="a")) is not None
+        removed = [
+            c.args[-1]
+            for c in fake.calls
+            if c.args[:2] == ("rm", "-f") and not c.args[-1].endswith("-proxy")
+        ]
+        assert removed == ["selected"]
+        assert backend._undeleted_kinds[prefix] == {"selected": "a", "sibling": "b"}
+
     def test_an_acquire_that_raises_after_the_run_still_leaves_a_disposable_name(self):
         """The container is running once `run` returns, so every awaited call after it is one
         the acquire can raise on with a container already there.
