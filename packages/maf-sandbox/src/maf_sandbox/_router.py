@@ -1450,25 +1450,18 @@ class SandboxRouter:
         return lock
 
     async def _refuse_a_key_closed_during_the_create(
-        self, key: SandboxKey, backend: SandboxBackend
+        self, key: SandboxKey, backend: SandboxBackend, *, kind: str
     ) -> None:
-        """Dispose what this acquire just created, then raise the refusal it walked into.
-
-        Under the key's disposal lock, so it cannot overlap the disposal whose mark sent it
-        here: two deletes for one key at once are what that lock exists to prevent, and this
-        one would otherwise be the exception.  On the backend that just served the create,
-        directly, rather than through :meth:`dispose` — which would take the same lock again,
-        clear the ledger entry this refusal quotes, and under
-        :data:`Selection.PER_SPEC` sweep backends that never saw this key.
-        """
+        """Dispose the refused acquire's kind without clearing other pending cleanup targets."""
         started = time.monotonic()
         async with self._disposal_lock(key):
             try:
-                undisposed = await backend.dispose(key)
+                undisposed = await backend.dispose(key, kind=kind)
             except Exception as failed:  # noqa: BLE001 — the refusal must reach the caller
                 undisposed = str(failed)
             except BaseException as interrupted:
                 self._record_an_interrupted_disposal(key, backend, started, interrupted)
+                self.mark_unclean(key, backend=backend, kind=kind)
                 raise
         self._record_disposal(
             key,
@@ -1476,7 +1469,11 @@ class SandboxRouter:
             None if undisposed is None else _coded(_recorded_name(backend), undisposed),
             started,
         )
-        reported = self._unclean.get(key)
+        if undisposed is not None:
+            self.mark_unclean(
+                key, _coded(_recorded_name(backend), undisposed), backend=backend, kind=kind
+            )
+        _, reported = self._unclean_state(key)
         if undisposed is None:
             outcome = "The sandbox just created has been disposed"
         else:
@@ -1587,10 +1584,10 @@ class SandboxRouter:
         """
         if not self._candidates:
             raise NoSandboxBackend("no sandbox backend is configured")
-        if key in self._unclean:
+        refused, reported = self._unclean_state(key)
+        if refused:
             # The code only: a detail can carry an endpoint or a raw response body, and this
             # message reaches hosts that do not sanitize. The detail is in the log beside it.
-            reported = self._unclean[key]
             because = f" ({reported.code})" if reported is not None else ""
             raise SandboxUnclean(
                 f"the sandbox for {key.scope}/{key.thread_id}/{key.agent_dir} was left unclean — "
@@ -1628,26 +1625,24 @@ class SandboxRouter:
         if admission is not None:
             admission.served = True
         sandbox = await served.acquire(key, spec)
-        if key in self._unclean:
+        if self._unclean_state(key)[0]:
             # Read again after the create: the check above is only as fresh as the moment
             # before the await, and a disposal that begins during it closes the key without
             # this call ever seeing the mark. One that began earlier is caught above, since a
             # disposal marks the key before its own first await.
-            await self._refuse_a_key_closed_during_the_create(key, served)
+            await self._refuse_a_key_closed_during_the_create(key, served, kind=spec.kind)
         try:
             _refuse_a_sandbox_that_cannot_be_reclaimed(sandbox)
         except TypeError:
-            # The sandbox already exists, and this backend can never clean it — the rule in
-            # `docs/sandbox/tool-call.md` § Cleanup. Disposed on this backend alone: its other
-            # sandboxes for the key are equally unreclaimable, and no other backend's are
-            # touched. Its own failure is logged, never allowed to replace the refusal.
+            # A refused sandbox still owes cleanup; sibling kinds may be reclaimable.
             started = time.monotonic()
             try:
-                reported = await served.dispose(key)
+                reported = await served.dispose(key, kind=spec.kind)
             except Exception as undisposed:  # noqa: BLE001 — the refusal must reach the caller
                 reported = str(undisposed)
             except BaseException as interrupted:
                 self._record_an_interrupted_disposal(key, served, started, interrupted)
+                self.mark_unclean(key, backend=served, kind=spec.kind)
                 raise
             self._record_disposal(
                 key,
@@ -1980,8 +1975,10 @@ class SandboxRouter:
         # The opt-down is from closing the key, not from the bound: this still runs after a
         # tool call's body. So the bound wraps both paths; only the ledger writes differ.
         refuse = self._reclaim.failed_reclaim_policy is not FailedReclaimPolicy.KEEP
-        if refuse and key not in self._unclean:
-            self.mark_unclean(key)
+        if refuse:
+            with self._unclean_guard:
+                if key not in self._unclean:
+                    self._mark_unclean(key, None, backend=None, kind=None)
         try:
             async with asyncio.timeout(timeout):
                 # Inside the bound: waiting on another disposal for this key is still the
@@ -2003,7 +2000,7 @@ class SandboxRouter:
                             )
                             and landed
                         )
-                    return landed and key not in self._unclean
+                    return landed and not self._unclean_state(key)[0]
         except TimeoutError:
             logger.warning(
                 "sandbox router: disposing %s/%s/%s did not finish within %ss",
@@ -2054,11 +2051,26 @@ class SandboxRouter:
         if not self._may_be_refused(key):
             return
         with self._unclean_guard:
-            targets = self._pending_disposals.setdefault(key, {})
-            for serving in self._backends if backend is None else [backend]:
-                targets[(id(serving), kind)] = _PendingDisposal(serving, kind)
-            if self._unclean.get(key) is None:
-                self._unclean[key] = None if reason is None else fold_disposal_failures([reason])
+            self._mark_unclean(key, reason, backend=backend, kind=kind)
+
+    def _mark_unclean(
+        self,
+        key: SandboxKey,
+        reason: DisposalFailure | None,
+        *,
+        backend: SandboxBackend | None,
+        kind: str | None,
+    ) -> None:
+        """Record targets and a reason while holding the ledger guard."""
+        targets = self._pending_disposals.setdefault(key, {})
+        for serving in self._backends if backend is None else [backend]:
+            targets[(id(serving), kind)] = _PendingDisposal(serving, kind)
+        if self._unclean.get(key) is None:
+            self._unclean[key] = None if reason is None else fold_disposal_failures([reason])
+
+    def _unclean_state(self, key: SandboxKey) -> tuple[bool, DisposalFailure | None]:
+        with self._unclean_guard:
+            return key in self._unclean, self._unclean.get(key)
 
     def _pending_for(
         self,

@@ -2,6 +2,8 @@
 
 import asyncio
 import dataclasses
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -176,3 +178,102 @@ def test_keep_does_not_refuse_after_strong_cleanup_fails(rung, failure):
         assert await router.acquire(_KEY, SandboxSpec(kind="dirty")) is backend.sandbox
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("refusal", ["mark", "reclaim"])
+@pytest.mark.parametrize("failure", [None, "failure", "cancel"])
+def test_refused_create_cleans_only_its_kind_and_retains_failed_targets(
+    refusal, failure, monkeypatch
+):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class _Late(_Backend):
+        async def acquire(self, key, spec):
+            sandbox = await super().acquire(key, spec)
+            if spec.kind == "late":
+                entered.set()
+                await release.wait()
+                if refusal == "reclaim":
+                    monkeypatch.setattr(sandbox, "reclaim", None)
+            return sandbox
+
+    backend = _Late("first", failure)
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+
+    async def scenario():
+        for kind in ("dirty", "sibling"):
+            await backend.acquire(_KEY, SandboxSpec(kind=kind))
+        creating = asyncio.create_task(router.acquire(_KEY, SandboxSpec(kind="late")))
+        await entered.wait()
+        if refusal == "mark":
+            router.mark_unclean(_KEY, backend=backend, kind="dirty")
+        release.set()
+        expected = SandboxUnclean if refusal == "mark" else TypeError
+        with pytest.raises(asyncio.CancelledError if failure == "cancel" else expected):
+            await creating
+        assert backend.attempts == ["late"]
+        assert (_KEY, "dirty") in backend.sandboxes
+        assert (_KEY, "sibling") in backend.sandboxes
+        assert ((_KEY, "late") in backend.sandboxes) is bool(failure)
+        if failure or refusal == "mark":
+            backend.failure = None
+            assert await router.dispose_unclean(_KEY, timeout=1)
+            assert (_KEY, "late") not in backend.sandboxes
+            assert (_KEY, "sibling") in backend.sandboxes
+            assert backend.attempts == [
+                "late",
+                *(["dirty"] if refusal == "mark" else []),
+                *(["late"] if failure else []),
+            ]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("reason", [None, DisposalFailure("refused", "delete refused")])
+def test_acquire_reads_refusal_atomically_while_another_loop_clears_it(reason, monkeypatch):
+    backend = _Backend("first")
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+    start, progressed = threading.Event(), threading.Event()
+
+    class _Guard:
+        def __init__(self):
+            self.lock = threading.Lock()
+
+        def __enter__(self):
+            if not self.lock.acquire(blocking=False):
+                progressed.set()
+                self.lock.acquire()
+
+        def __exit__(self, *args):
+            self.lock.release()
+
+    class _Ledger(dict):
+        armed = True
+
+        def __contains__(self, key):
+            present = super().__contains__(key)
+            if self.armed:
+                self.armed = False
+                start.set()
+                assert progressed.wait(2)
+            return present
+
+    router.mark_unclean(_KEY, reason)
+    monkeypatch.setattr(router, "_unclean_guard", _Guard())
+    router._unclean = _Ledger(router._unclean)
+
+    def clear_from_another_loop():
+        assert start.wait(2)
+        try:
+            asyncio.run(router.dispose(_KEY))
+        finally:
+            progressed.set()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        cleared = pool.submit(clear_from_another_loop)
+        with pytest.raises(SandboxUnclean) as refusal:
+            asyncio.run(router.acquire(_KEY, SandboxSpec(kind="test")))
+        assert refusal.value.code == (None if reason is None else reason.code)
+        cleared.result(timeout=2)
+    assert _KEY not in router._unclean
+    assert asyncio.run(router.acquire(_KEY, SandboxSpec(kind="test"))) is backend.sandbox
