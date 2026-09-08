@@ -33,10 +33,12 @@ from __future__ import annotations
 from ._backend import BACKEND_NAME, WslcSandboxBackend
 from ._config import WslcSandboxConfig
 from ._proxy import build_context as proxy_build_context
+from ._reap import WslcReapResult
 
 __all__ = [
     "BACKEND_NAME",
     "MafSandboxWslcExperimentalWarning",
+    "WslcReapResult",
     "WslcSandboxBackend",
     "WslcSandboxConfig",
     "proxy_build_context",

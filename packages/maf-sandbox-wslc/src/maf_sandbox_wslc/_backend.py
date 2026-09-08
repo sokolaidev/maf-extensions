@@ -32,6 +32,7 @@ import time
 import weakref
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import TYPE_CHECKING, Protocol, cast
 
@@ -66,6 +67,7 @@ from maf_sandbox.paths import (
 
 from ._config import WslcSandboxConfig
 from ._proxy import build_context
+from ._reap import NETWORK_CREATED_LABEL, WslcReapResult, reap
 
 logger = logging.getLogger(__name__)
 
@@ -735,7 +737,9 @@ class WslcSandboxBackend:
         """
         self._acquired.pop(workload, None)
 
-    async def _drain_the_proxy(self, name: str, key: SandboxKey) -> None:
+    async def _drain_the_proxy(
+        self, name: str, key: SandboxKey, *, proxy_id: str | None = None
+    ) -> None:
         """Report what this sandbox's proxy decided, before the container holding it goes.
 
         **This is called on the acquire path, not only at disposal, and that is the whole
@@ -751,7 +755,7 @@ class WslcSandboxBackend:
         report = self._egress_report
         if report is None:
             return
-        proxy = _proxy_name(name)
+        proxy = proxy_id if proxy_id is not None else _proxy_name(name)
         started = time.monotonic()
         # Stopped before it is read, not merely before it is removed. Every caller here is
         # about to take the proxy away, and a guest sharing this conversation can open a
@@ -1022,6 +1026,38 @@ class WslcSandboxBackend:
                     attempted_kinds[prefix],
                 )
         return ScopePurge(swept.count, swept.reason)
+
+    async def reap(self, stopped_for: timedelta, *, scope: str | None = None) -> WslcReapResult:
+        """Remove retained stopped workloads and orphan infrastructure, without a registry.
+
+        Pause acquisitions in the selected scopes while sweeping: WSLC network removal is
+        name-based and cannot atomically check identity or retention. See the README for the
+        distinct age policy for infrastructure with no workload and for legacy network limits.
+        """
+
+        async def command(*args: str) -> _WslcResult:
+            return await self._wslc(*args, timeout=self._config.command_timeout_seconds)
+
+        async def drain(workload: str, proxy_id: str) -> None:
+            attribution = self._acquired.get(workload)
+            if attribution is not None:
+                key = SandboxKey(
+                    scope=attribution[0], thread_id=attribution[1], agent_dir=attribution[2]
+                )
+                await self._drain_the_proxy(workload, key, proxy_id=proxy_id)
+
+        def forget(workload: str) -> None:
+            attribution = self._acquired.get(workload)
+            if attribution is not None:
+                self._forget_attribution(workload, attribution[1])
+
+        return await reap(
+            command,
+            stopped_for,
+            None if scope is None else _label_value(scope),
+            drain=drain,
+            forget=forget,
+        )
 
     async def _purge(
         self,
@@ -1301,6 +1337,7 @@ class WslcSandboxBackend:
     async def _ensure_network(self, net: str, key: SandboxKey, spec: SandboxSpec) -> None:
         """Create the sandbox's internal network, adopting one already there."""
         args = ["network", "create", "--internal"]
+        args += ["--label", f"{NETWORK_CREATED_LABEL}={datetime.now(UTC).isoformat()}"]
         for label, value in _sandbox_labels(key, spec).items():
             args += ["-l", f"{label}={value}"]
         args.append(net)

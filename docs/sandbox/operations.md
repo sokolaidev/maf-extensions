@@ -20,6 +20,10 @@ Retention cleanup supplements conversation purge and [per-call cleanup](tool-cal
 
 Retention cleanup requires no conversation IDs. The example below authorizes deletion after a sandbox has been continuously stopped for over one day. Creation age does not establish inactivity, and a host crash alone does not make a running sandbox eligible. ACAS can also install service-side auto-suspend and auto-delete policies, but suspension alone preserves state, and a failed auto-delete configuration supplies no confirmed deletion timer. Docker and WSLC have no equivalent automatic deletion policy supplied by this suite.
 
+## WSLC maintenance
+
+The WSLC backend provides `reap(stopped_for, *, scope=None)` for an independent operator process on the Windows account's engine. Workloads are retained while running and expire using the last stopped timestamp; orphan infrastructure uses the separate age rules documented in the [backend](backends/wslc.md#operator-retention). The operator pauses and drains acquisitions, restarts and other resource mutations in the selected scopes before each sweep, because WSLC's name-based network deletion has no atomic identity or retention precondition. Schedule that maintenance window through Windows Task Scheduler or a runner connected to the engine, prevent overlapping sweeps, and monitor failures. The helper neither persists router inventory nor starts a service.
+
 ## An ACAS cleanup example
 
 [`scripts/cleanup_acas_sandboxes.py`](../../scripts/cleanup_acas_sandboxes.py) is a standalone operator program with its dependencies declared in PEP 723 metadata. It uses the Azure CLI login and four environment variables: `ACAS_SANDBOX_ENDPOINT`, `ACAS_SANDBOX_SUBSCRIPTION_ID`, `ACAS_SANDBOX_RESOURCE_GROUP`, and `ACAS_SANDBOX_GROUP`. All four are required; there is no subscription-wide discovery or default group.
@@ -62,4 +66,5 @@ The workflow becomes scheduled when it reaches the repository's default branch. 
 | --- | --- | --- |
 | Infrastructure owns post-crash cleanup scheduling; an ACAS operator example manages the live verification group after one day continuously stopped | implemented — script and hourly workflow; scheduling starts on the default branch, and the first Actions execution remains unverified | [#1008](https://github.com/sokolaidev/maf-extensions/issues/1008) (closed) by [#1014](https://github.com/sokolaidev/maf-extensions/pull/1014) (merged) |
 | Docker cleanup by maximum creation age | implemented — backend primitive with an operator-selected lifetime, separate from the ACAS stopped-retention example | [#1009](https://github.com/sokolaidev/maf-extensions/issues/1009) (closed) by [#1012](https://github.com/sokolaidev/maf-extensions/pull/1012) (merged) |
-| WSLC cleanup and ACAS recovery for missing lifecycle policies | open — distinct from the group-wide operator example | [#1010](https://github.com/sokolaidev/maf-extensions/issues/1010) (open), [#1011](https://github.com/sokolaidev/maf-extensions/issues/1011) (open) |
+| WSLC stopped retention and orphan infrastructure cleanup | implemented with offline coverage; separate-process live verification pending | [#1010](https://github.com/sokolaidev/maf-extensions/issues/1010) (open) |
+| ACAS recovery for missing lifecycle policies | open — distinct from the group-wide operator example | [#1011](https://github.com/sokolaidev/maf-extensions/issues/1011) (open) |

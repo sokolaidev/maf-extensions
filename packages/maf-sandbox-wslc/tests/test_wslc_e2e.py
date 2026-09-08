@@ -14,7 +14,10 @@ import json
 import os
 import shutil
 import subprocess
+import sys
+import time
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from maf_sandbox import Egress, Isolation, OsFamily, SandboxKey, SandboxRouter, SandboxSpec
@@ -34,6 +37,7 @@ except ImportError:
     assert_reclaim_conformance = None
 
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
+from maf_sandbox_wslc._backend import _container_name
 
 _IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_IMAGE")
 _PROXY_IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_PROXY_IMAGE")
@@ -73,6 +77,147 @@ def _names_on_the_machine(name: str) -> list[str]:
     ).stdout
     rows = json.loads(listing) if listing.strip() else []
     return [row["Name"] for row in rows if row.get("Name") == name]
+
+
+@pytest.mark.parametrize("allowlist", [False, True])
+def test_reap_after_creator_process_exits(allowlist):
+    assert _IMAGE is not None
+    if allowlist and not _PROXY_IMAGE:
+        pytest.skip("needs MAF_SANDBOX_WSLC_E2E_PROXY_IMAGE for infrastructure cleanup")
+    scope = f"e2e-reap-{uuid.uuid4()}"
+    backend = WslcSandboxBackend(
+        WslcSandboxConfig(egress_proxy_image=_PROXY_IMAGE if allowlist else None)
+    )
+    spec = SandboxSpec(
+        kind="e2e",
+        image=_IMAGE,
+        egress=Egress.ALLOWLIST if allowlist else Egress.CLOSED,
+        egress_allow=("mcr.microsoft.com",) if allowlist else (),
+    )
+    names = [
+        _container_name(
+            SandboxKey(scope=scope, thread_id="thread-1", agent_dir=agent),
+            spec.kind,
+            backend._egress_id(spec),
+        )
+        for agent in ("old", "running", "fresh")
+    ]
+    creator = """
+import asyncio, json, os, sys
+from maf_sandbox import Egress, SandboxKey, SandboxSpec
+from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
+async def main():
+    backend = WslcSandboxBackend(WslcSandboxConfig(egress_proxy_image=sys.argv[3] or None))
+    names = []
+    for agent in ('old', 'running', 'fresh'):
+        sandbox = await backend.acquire(
+            SandboxKey(scope=sys.argv[1], thread_id='thread-1', agent_dir=agent),
+            SandboxSpec(kind='e2e', image=sys.argv[2],
+                        egress=Egress.ALLOWLIST if sys.argv[3] else Egress.CLOSED,
+                        egress_allow=('mcr.microsoft.com',) if sys.argv[3] else ()))
+        names.append(sandbox.container_name)
+    print(json.dumps(names), flush=True)
+    os._exit(0)
+asyncio.run(main())
+"""
+    cleaner = """
+import asyncio, json, sys
+from dataclasses import asdict
+from datetime import timedelta
+from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
+backend = WslcSandboxBackend(WslcSandboxConfig())
+assert not backend._registry
+print(json.dumps(asdict(asyncio.run(backend.reap(timedelta(seconds=15), scope=sys.argv[1])))))
+"""
+
+    def command(*args):
+        return subprocess.run(
+            ["wslc", *args], capture_output=True, text=True, check=True, timeout=60
+        ).stdout
+
+    def inspect(name):
+        response = subprocess.run(
+            ["wslc", "container", "inspect", name],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if response.returncode:
+            assert response.returncode == 1 and json.loads(response.stdout) == []
+            return None
+        return json.loads(response.stdout)[0]
+
+    try:
+        started = datetime.now(UTC)
+        created = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                creator,
+                scope,
+                _IMAGE,
+                (_PROXY_IMAGE or "") if allowlist else "",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=240,
+        )
+        assert json.loads(created.stdout) == names
+        old, running, fresh = names
+        command("container", "stop", old)
+        metadata = inspect(old)
+        assert metadata is not None
+        assert metadata["State"]["Running"] is False
+        assert metadata["State"]["Status"] == "exited"
+        created_at = datetime.fromisoformat(metadata["Created"])
+        stopped_at = datetime.fromisoformat(metadata["State"]["FinishedAt"])
+        assert started <= created_at <= stopped_at <= datetime.now(UTC)
+        if allowlist:
+            network = json.loads(command("network", "inspect", old + "-net"))[0]
+            assert network["Internal"] is True
+            assert network["Labels"]["maf-sandbox.network-created-at"]
+        time.sleep(16)
+        command("container", "stop", fresh)
+        cleaned = subprocess.run(
+            [sys.executable, "-c", cleaner, scope],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=180,
+        )
+        result = json.loads(cleaned.stdout)
+        assert result == {
+            "disposed": 1,
+            "proxies_removed": int(allowlist),
+            "networks_removed": int(allowlist),
+            "failures": [],
+        }
+        assert inspect(old) is None
+        running_metadata = inspect(running)
+        assert running_metadata is not None and running_metadata["State"]["Running"] is True
+        assert inspect(fresh) is not None
+        if allowlist:
+            assert inspect(old + "-proxy") is None
+            assert inspect(running + "-proxy") is not None
+            absent = subprocess.run(
+                ["wslc", "network", "inspect", old + "-net"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            assert absent.returncode == 1 and json.loads(absent.stdout) == []
+    finally:
+
+        async def cleanup():
+            for name in names:
+                await backend._remove(name + "-proxy")
+                await backend._remove(name)
+                await backend._remove_network(name + "-net")
+
+        asyncio.run(cleanup())
 
 
 class TestALiveContainer:
