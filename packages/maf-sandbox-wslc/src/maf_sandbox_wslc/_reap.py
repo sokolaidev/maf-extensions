@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol, cast
 
-from maf_sandbox import DisposalFailure, error_detail
+from maf_sandbox import DisposalCode, DisposalFailure, error_detail
 
 NETWORK_CREATED_LABEL = "maf-sandbox.network-created-at"
 _IDENTITY_LABELS = tuple(f"maf-sandbox.{part}" for part in ("scope", "thread", "agent", "kind"))
@@ -53,6 +53,12 @@ class _Target:
     @property
     def workload(self) -> str:
         return self.name.removesuffix("-proxy").removesuffix("-net")
+
+
+class _CommandFailure(Exception):
+    def __init__(self, code: DisposalCode, detail: str) -> None:
+        super().__init__(detail)
+        self.code: DisposalCode = code
 
 
 def _objects(payload: str) -> list[dict[str, object]]:
@@ -124,12 +130,23 @@ def _expired(anchor: _Target, cutoff: datetime) -> bool:
 
 class _Sweep:
     def __init__(self, command: Command, scope: str | None) -> None:
-        self.command = command
+        self._command = command
         self.scope = scope
         self.failures: list[DisposalFailure] = []
 
     def failed(self, target: str, exc: Exception) -> None:
-        self.failures.append(DisposalFailure("unreachable", f"{target}: {error_detail(exc)}"))
+        code: DisposalCode = "unlisted"
+        if isinstance(exc, _CommandFailure):
+            code = exc.code
+        self.failures.append(DisposalFailure(code, f"{target}: {error_detail(exc)}"))
+
+    async def command(self, *args: str) -> CommandResult:
+        try:
+            return await self._command(*args)
+        except TimeoutError as exc:
+            raise _CommandFailure("timeout", error_detail(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - distinguish execution from metadata failures
+            raise _CommandFailure("unreachable", error_detail(exc)) from exc
 
     async def inspect(self, resource: _Resource, identity: str) -> dict[str, object] | None:
         result = await self.command(resource, "inspect", identity)
@@ -199,33 +216,37 @@ class _Sweep:
             and name.removeprefix("/") == target.name
         )
 
-    async def refresh(self, target: _Target) -> _Target | None:
+    async def refresh(self, target: _Target) -> _Target | Literal["absent", "changed"]:
         identity = target.name if target.resource == "network" else target.id
         data = await self.inspect(target.resource, identity)
-        if data is None or not self.matches(target, data):
-            return None
+        if data is None:
+            return "absent"
+        if not self.matches(target, data):
+            return "changed"
         current = _Target(target.id, target.name, target.resource, data)
         if not _owned(current, self.scope) or _labels(data) != _labels(target.data):
-            return None
+            return "changed"
         return current
 
-    async def remove(self, target: _Target, *, proxy: bool = False) -> bool:
+    async def remove(
+        self, target: _Target, *, proxy: bool = False
+    ) -> Literal["removed", "absent", "failed"]:
         args = [target.resource, "remove"]
         if proxy:
             args.append("-f")
         args.append(target.name if target.resource == "network" else target.id)
         result = await self.command(*args)
         if result.returncode == 0:
-            return True
+            return "removed"
         # Missing-resource diagnostics vary by CLI version and locale; inspect to confirm absence.
         if await self.inspect(target.resource, args[-1]) is None:
-            return False
+            return "absent"
         self.failures.append(
             DisposalFailure(
                 "refused", f"{target.name}: {result.stderr_text.strip() or result.returncode}"
             )
         )
-        return False
+        return "failed"
 
 
 async def reap(
@@ -271,7 +292,11 @@ async def reap(
         anchor = group[0]
         try:
             current = await sweep.refresh(anchor)
-            if current is None or not _expired(current, cutoff):
+            if current == "changed":
+                continue
+            if current == "absent" and not anchor.name.endswith("-proxy"):
+                continue
+            if isinstance(current, _Target) and not _expired(current, cutoff):
                 continue
             # A workload absent from the inventory may have appeared since the proxy/network did.
             if anchor.name != anchor.workload:
@@ -279,20 +304,27 @@ async def reap(
                     continue
             for target in group:
                 current = await sweep.refresh(target)
-                if current is None:
+                is_proxy = target.name.endswith("-proxy")
+                if current == "changed" or (current == "absent" and not is_proxy):
                     break
                 if target.name != target.workload:
                     if await sweep.inspect("container", target.workload) is not None:
                         break
-                elif not _expired(current, cutoff):
+                elif isinstance(current, _Target) and not _expired(current, cutoff):
                     break
-                is_proxy = target.name.endswith("-proxy")
-                if is_proxy:
-                    await drain(target.workload, target.id)
-                if not await sweep.remove(target, proxy=is_proxy):
+                if current == "absent":
+                    outcome = "absent"
+                else:
+                    if is_proxy:
+                        await drain(target.workload, target.id)
+                    outcome = await sweep.remove(target, proxy=is_proxy)
+                if outcome == "failed":
                     break
+                if outcome == "absent":
+                    if not is_proxy or await sweep.inspect("container", target.name) is not None:
+                        break
                 if is_proxy:
-                    proxies += 1
+                    proxies += int(outcome == "removed")
                     forget(target.workload)
                 elif target.resource == "network":
                     networks += 1

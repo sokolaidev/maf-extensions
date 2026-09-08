@@ -36,7 +36,7 @@ try:
 except ImportError:
     assert_reclaim_conformance = None
 
-from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
+from maf_sandbox_wslc import WslcReapResult, WslcSandboxBackend, WslcSandboxConfig
 from maf_sandbox_wslc._backend import _container_name
 
 _IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_IMAGE")
@@ -175,6 +175,7 @@ print(json.dumps(asdict(asyncio.run(backend.reap(timedelta(seconds=30), scope=sy
         assert json.loads(created.stdout) == names
         old, running, fresh, unrelated = names
         command("container", "stop", unrelated)
+        stop_requested_at = datetime.now(UTC)
         command("container", "stop", old)
         metadata = inspect(old)
         assert metadata is not None
@@ -190,7 +191,9 @@ print(json.dumps(asdict(asyncio.run(backend.reap(timedelta(seconds=30), scope=sy
         )
         listed = next(row for row in listing if row["Name"] == old)
         assert listed["CreatedAt"] == int(created_at.timestamp())
-        assert listed["StateChangedAt"] == int(stopped_at.timestamp())
+        # The state-change event and inspected process exit have separate timestamps.
+        listed_stop = datetime.fromtimestamp(listed["StateChangedAt"], UTC)
+        assert stop_requested_at - skew <= listed_stop <= datetime.now(UTC) + skew
         print(
             json.dumps(
                 {
@@ -272,6 +275,65 @@ print(json.dumps(asdict(asyncio.run(backend.reap(timedelta(seconds=30), scope=sy
                 await backend._remove_network(name + "-net")
 
         asyncio.run(cleanup())
+
+
+@pytest.mark.skipif(not _PROXY_IMAGE, reason="needs MAF_SANDBOX_WSLC_E2E_PROXY_IMAGE")
+@pytest.mark.parametrize("stage", ["inspect", "remove"])
+def test_reap_continues_after_a_real_proxy_disappears(stage, monkeypatch):
+    scope = f"e2e-reap-{uuid.uuid4()}"
+    backend = WslcSandboxBackend(WslcSandboxConfig(egress_proxy_image=_PROXY_IMAGE))
+
+    async def scenario():
+        try:
+            sandbox = await backend.acquire(
+                _key(scope),
+                SandboxSpec(
+                    kind="e2e",
+                    image=_IMAGE,
+                    egress=Egress.ALLOWLIST,
+                    egress_allow=("mcr.microsoft.com",),
+                ),
+            )
+            name = sandbox.container_name
+            command = backend._wslc
+            stopped = await command("container", "stop", name)
+            assert stopped.returncode == 0
+            metadata = await command("container", "inspect", name)
+            finished = datetime.fromisoformat(
+                json.loads(metadata.stdout_text)[0]["State"]["FinishedAt"]
+            )
+            wait = (finished + timedelta(seconds=1) - datetime.now(UTC)).total_seconds()
+            assert wait < 15, "WSL and Windows clocks must be within the probe's wait budget"
+            await asyncio.sleep(max(0, wait) + 1)
+            proxy = await command("container", "inspect", name + "-proxy")
+            proxy_id = json.loads(proxy.stdout_text)[0]["Id"]
+            reads = 0
+            removed = False
+
+            async def disappear(*args, **kwargs):
+                nonlocal reads, removed
+                if args == ("container", "inspect", proxy_id):
+                    reads += 1
+                trigger = args[:2] == ("container", stage) and args[-1] == proxy_id
+                if trigger and not removed and (stage == "remove" or reads == 2):
+                    response = await command("container", "remove", "-f", proxy_id)
+                    assert response.returncode == 0
+                    removed = True
+                return await command(*args, **kwargs)
+
+            monkeypatch.setattr(backend, "_wslc", disappear)
+            assert name in backend._acquired
+            result = await backend.reap(timedelta(seconds=1), scope=scope)
+            assert removed
+            assert result == WslcReapResult(1, 0, 1)
+            assert name not in backend._acquired
+            assert _names_on_the_machine(name) == []
+            assert _names_on_the_machine(name + "-proxy") == []
+            assert not _network_present(name + "-net")
+        finally:
+            await backend.dispose_scope(scope, "thread-1")
+
+    asyncio.run(scenario())
 
 
 class TestALiveContainer:

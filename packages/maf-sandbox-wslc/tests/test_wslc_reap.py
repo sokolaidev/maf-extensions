@@ -150,6 +150,7 @@ def test_missing_or_malformed_stop_time_retains_group_and_reports_failure(timest
     engine = _Engine([_container(finished=timestamp), _proxy()], [_network()])
     result = asyncio.run(_backend(engine).reap(_PERIOD))
     assert len(result.failures) == 1
+    assert result.failures[0].code == "unlisted"
     assert not engine.removals
 
 
@@ -196,7 +197,9 @@ def test_young_orphan_proxy_protects_older_network():
 
 def test_legacy_network_alone_has_no_age_but_workload_can_authorize_its_cleanup():
     engine = _Engine([], [_network(created=None)])
-    assert len(asyncio.run(_backend(engine).reap(_PERIOD)).failures) == 1
+    result = asyncio.run(_backend(engine).reap(_PERIOD))
+    assert len(result.failures) == 1
+    assert result.failures[0].code == "unlisted"
     assert not engine.removals
     engine.resources["container"]["a" * 64] = _container()
     assert asyncio.run(_backend(engine).reap(_PERIOD)) == WslcReapResult(1, 0, 1)
@@ -325,20 +328,28 @@ def test_replaced_network_name_is_retained():
 
 
 @pytest.mark.parametrize("resource", ["container", "network"])
-@pytest.mark.parametrize("exception", [False, True])
+@pytest.mark.parametrize("exception", [None, OSError, TimeoutError])
 def test_removal_failures_are_reported_and_can_be_retried(resource, exception):
     engine = _Engine([_container()] if resource == "container" else [], [_network()])
 
     def fail(args):
         if args[:2] == (resource, "remove"):
-            if exception:
-                raise OSError("engine unreachable")
+            if exception is not None:
+                raise exception("command failed")
             return _WslcResult(1, b"", b"permission denied")
         return None
 
     engine.before = fail
     result = asyncio.run(_backend(engine).reap(_PERIOD))
     assert len(result.failures) == 1
+    expected = (
+        "refused"
+        if exception is None
+        else "timeout"
+        if exception is TimeoutError
+        else "unreachable"
+    )
+    assert result.failures[0].code == expected
     assert result.disposed == result.networks_removed == 0
     engine.before = lambda args: None
     assert not asyncio.run(_backend(engine).reap(_PERIOD)).failures
@@ -441,3 +452,90 @@ def test_bad_group_does_not_prevent_cleanup_of_independent_workloads():
     assert result.disposed == 1
     assert len(result.failures) == 1
     assert "a" * 64 in engine.resources["container"]
+
+
+@pytest.mark.parametrize("resource", ["container", "network"])
+@pytest.mark.parametrize("operation", ["list", "inspect"])
+@pytest.mark.parametrize("failure", ["response", "malformed", OSError, TimeoutError])
+def test_inventory_failure_codes_preserve_the_source(resource, operation, failure):
+    engine = _Engine([_container()], [_network()])
+
+    def fail(args):
+        if args[:2] == (resource, operation):
+            if failure in (OSError, TimeoutError):
+                raise failure("command failed")
+            if failure == "response":
+                return _WslcResult(1, b"", b"query refused")
+            return _WslcResult(0, b"not json", b"")
+        return None
+
+    engine.before = fail
+    result = asyncio.run(_backend(engine).reap(_PERIOD))
+    expected = (
+        "unreachable"
+        if failure is OSError
+        else "timeout"
+        if failure is TimeoutError
+        else "unlisted"
+    )
+    assert {item.code for item in result.failures} == {expected}
+    assert not engine.removals
+
+
+@pytest.mark.parametrize("failure", ["response", "metadata"])
+def test_revalidation_failure_is_unlisted(failure):
+    engine = _Engine([_container()], [_network()])
+    reads = 0
+
+    def fail(args):
+        nonlocal reads
+        if args == ("container", "inspect", "a" * 64):
+            reads += 1
+            if reads == 2:
+                if failure == "response":
+                    return _WslcResult(1, b"", b"query refused")
+                engine.resources["container"]["a" * 64]["State"]["FinishedAt"] = "bad"
+        return None
+
+    engine.before = fail
+    result = asyncio.run(_backend(engine).reap(_PERIOD))
+    assert len(result.failures) == 1
+    assert result.failures[0].code == "unlisted"
+    assert not engine.removals
+
+
+@pytest.mark.parametrize(
+    ("workload", "stage"),
+    [(True, "target"), (True, "remove"), (False, "anchor"), (False, "target"), (False, "remove")],
+)
+@pytest.mark.parametrize("replace", [False, True])
+def test_proxy_absence_forgets_attribution_and_continues_unless_replaced(workload, stage, replace):
+    engine = _Engine(
+        [_container(), _proxy()] if workload else [_proxy()], [_network(created=_FRESH)]
+    )
+    backend = _backend(engine)
+    backend._acquired[_NAME] = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+    reads = 0
+
+    def disappear(args):
+        nonlocal reads
+        if args == ("container", "inspect", "b" * 64):
+            reads += 1
+            trigger = reads == (2 if workload or stage == "anchor" else 3)
+        else:
+            trigger = args == ("container", "remove", "-f", "b" * 64)
+        if trigger and ((stage == "remove") == (args[1] == "remove")):
+            engine.resources["container"].pop("b" * 64, None)
+            if replace:
+                replacement = _proxy(created=_FRESH)
+                replacement["Id"] = "d" * 64
+                engine.resources["container"]["d" * 64] = replacement
+        return None
+
+    engine.before = disappear
+    result = asyncio.run(backend.reap(_PERIOD))
+    assert result == WslcReapResult(int(workload), 0, int(not replace))
+    assert (_NAME in backend._acquired) is replace
+    assert bool(engine.resources["network"]) is replace
+    if replace:
+        assert "d" * 64 in engine.resources["container"]
