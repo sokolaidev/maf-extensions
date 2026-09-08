@@ -1910,6 +1910,73 @@ class TestExecArgv:
 
 
 class TestNarrowedDisposal:
+    @pytest.mark.parametrize("first", ["kind", "whole", "scope", "refused"])
+    @pytest.mark.parametrize("second", ["kind", "scope"])
+    @pytest.mark.parametrize("outcome", ["failure", "cancel", "unreachable"])
+    def test_stale_success_preserves_a_newer_retry(self, first, second, outcome, monkeypatch):
+        from maf_sandbox_acas._backend import _Deletion
+
+        client = _FakeGroupClient()
+        backend = _backend_with(client)
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent")
+        prefix = (key.scope, key.thread_id, key.agent_dir)
+        if first != "refused":
+            backend._registry[(*prefix, "a")] = _Held("selected")
+        original = backend._delete
+        entered, release = asyncio.Event(), asyncio.Event()
+        attempts = 0
+        failure = DisposalFailure("refused", "delete refused")
+
+        async def delete(group_client, sandbox_id):
+            nonlocal attempts
+            attempts += 1
+            assert sandbox_id == "selected"
+            if attempts == 1:
+                entered.set()
+                await release.wait()
+                return _Deletion(True)
+            if outcome == "cancel":
+                raise asyncio.CancelledError
+            return _Deletion(False, failure)
+
+        def unavailable():
+            raise RuntimeError("group unavailable")
+
+        async def cleanup(operation):
+            if operation == "refused":
+                return await backend._release_the_refused(client, key, "selected", kind="a")
+            if operation == "scope":
+                return await backend.dispose_scope(key.scope, key.thread_id)
+            return await backend.dispose(key, kind="a" if operation == "kind" else None)
+
+        monkeypatch.setattr(backend, "_delete", delete)
+
+        async def scenario():
+            older = asyncio.create_task(cleanup(first))
+            await entered.wait()
+            with monkeypatch.context() as pending:
+                if outcome == "unreachable":
+                    pending.setattr(backend, "_group_client", unavailable)
+                if outcome == "cancel":
+                    with pytest.raises(asyncio.CancelledError):
+                        await cleanup(second)
+                else:
+                    result = await cleanup(second)
+                    assert (
+                        result.undisposed if isinstance(result, ScopePurge) else result
+                    ) is not None
+            release.set()
+            await older
+            assert backend._undeleted == {prefix: {"selected"}}
+            assert backend._undeleted_kinds == {prefix: {"selected": "a"}}
+            monkeypatch.setattr(backend, "_delete", original)
+            assert await backend.dispose(key, kind="a") is None
+            assert client.deleted == ["selected"]
+            assert not backend._undeleted and not backend._undeleted_kinds
+            assert not getattr(backend, "_disposal_tokens", {})
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+
     @pytest.mark.parametrize("operation", ["kind", "whole", "scope"])
     @pytest.mark.parametrize("retained", [False, True])
     @pytest.mark.parametrize("new_ledger", [False, True])
