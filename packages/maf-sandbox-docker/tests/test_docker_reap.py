@@ -38,6 +38,7 @@ class _Engine:
         self.failures: dict[tuple[str, ...], _DockerResult | Exception] = {}
         self.before_network_list = lambda: None
         self.before_remove = lambda: None
+        self.silent_absence = False
 
     async def __call__(self, *args: str, **kwargs: object) -> _DockerResult:
         self.calls.append(args)
@@ -64,7 +65,10 @@ class _Engine:
         if args[:2] == ("rm", "-f") or args[:2] == ("network", "rm"):
             self.before_remove()
             if self.resources.pop(args[-1], None) is None:
+                if args[0] == "rm" and self.silent_absence:
+                    return _DockerResult(0, b"", "")
                 return _DockerResult(1, b"", f"No such container: {args[-1]}")
+            return _DockerResult(0, args[-1].encode() + b"\n", "")
         return _DockerResult(0, b"", "")
 
     @property
@@ -151,6 +155,18 @@ def test_nonpositive_ages_are_refused_before_any_engine_call(duration):
     with pytest.raises(ValueError, match="positive"):
         asyncio.run(_backend(engine).reap(duration))
     assert engine.calls == []
+
+
+@pytest.mark.parametrize(
+    "duration",
+    [timedelta.max, _NOW - datetime.min.replace(tzinfo=UTC) + timedelta(microseconds=1)],
+)
+def test_a_lifetime_beyond_the_datetime_range_retains_every_resource(duration):
+    ancient = _resource(1)
+    ancient["Created"] = datetime.min.replace(tzinfo=UTC).isoformat()
+    engine = _Engine(ancient, _resource(2, suffix="-proxy"), _resource(3, suffix="-net"))
+    assert asyncio.run(_backend(engine).reap(duration)) == DockerReapResult()
+    assert engine.removals == []
 
 
 def test_scope_is_encoded_and_rechecked_on_both_resource_types():
@@ -240,6 +256,54 @@ def test_a_topology_replaced_between_inventories_survives(suffix):
     assert engine.removals == []
 
 
+@pytest.mark.parametrize("workload_present", [True, False])
+def test_a_topology_replaced_after_revalidation_survives(workload_present):
+    suffixes = ("", "-proxy", "-net") if workload_present else ("-proxy", "-net")
+    old = [_resource(i, suffix=s) for i, s in enumerate(suffixes, 1)]
+    replacement = [
+        _resource(i, suffix=s, age=timedelta(0)) for i, s in enumerate(("", "-proxy", "-net"), 4)
+    ]
+    engine = _Engine(*old)
+
+    def replace():
+        assert any(c[1:4] == ("inspect", "--format", "{{.Id}}") for c in engine.calls)
+        engine.resources = {r["Id"]: r for r in replacement}
+
+    engine.before_remove = replace
+    assert asyncio.run(_backend(engine).reap(timedelta(days=1))) == DockerReapResult()
+    assert engine.resources == {r["Id"]: r for r in replacement}
+    assert len(engine.removals) == 1
+    assert engine.removals[0][-1] in {r["Id"] for r in old}
+
+
+@pytest.mark.parametrize("suffix", ["", "-proxy"])
+@pytest.mark.parametrize("silent_absence", [True, False])
+def test_a_captured_replacement_network_survives_losing_the_old_anchor(suffix, silent_absence):
+    anchor = _resource(1, suffix=suffix)
+    old_network = _resource(2, suffix="-net")
+    replacement = [
+        _resource(i, suffix=s, age=timedelta(0)) for i, s in enumerate(("", "-proxy", "-net"), 3)
+    ]
+    network = replacement[-1]
+    engine = _Engine(anchor, old_network)
+    engine.silent_absence = silent_absence
+
+    def replace_network():
+        engine.resources.pop(old_network["Id"])
+        engine.resources[network["Id"]] = network
+
+    def replace_containers():
+        assert ("network", "inspect", "--format", "{{json .}}", network["Id"]) in engine.calls
+        assert ("container", "inspect", "--format", "{{.Id}}", anchor["Id"]) in engine.calls
+        engine.resources = {r["Id"]: r for r in replacement}
+
+    engine.before_network_list = replace_network
+    engine.before_remove = replace_containers
+    assert asyncio.run(_backend(engine).reap(timedelta(days=1))) == DockerReapResult()
+    assert engine.resources == {r["Id"]: r for r in replacement}
+    assert engine.removals == [("rm", "-f", anchor["Id"])]
+
+
 @pytest.mark.parametrize(
     "failure",
     [_DockerResult(1, b"", "daemon down"), _DockerResult(0, b"wrong", ""), TimeoutError("hung")],
@@ -258,7 +322,13 @@ def test_an_unreadable_age_anchor_prevents_all_deletion(failure):
 
 
 def test_failed_removals_are_reported_for_each_resource_and_do_not_stop_the_reap():
-    engine = _Engine(_resource(1), _resource(2, suffix="-proxy"), _resource(3, suffix="-net"))
+    other_network = _resource(4, suffix="-net")
+    other_key = SandboxKey(scope="other-scope", thread_id="thread", agent_dir="agent")
+    other_network["Name"] = _container_name(other_key, _SPEC.kind) + "-net"
+    other_network["Labels"] = _sandbox_labels(other_key, _SPEC)
+    engine = _Engine(
+        _resource(1), _resource(2, suffix="-proxy"), _resource(3, suffix="-net"), other_network
+    )
     engine.failures[("rm", "-f", f"{1:064x}")] = _DockerResult(1, b"", "permission denied")
     engine.failures[("network", "rm")] = _DockerResult(1, b"", "active endpoints")
     result = asyncio.run(_backend(engine).reap(timedelta(days=1)))
@@ -266,6 +336,40 @@ def test_failed_removals_are_reported_for_each_resource_and_do_not_stop_the_reap
     assert result.proxies_removed == 1
     assert len(result.failures) == 2
     assert all(f.code == "refused" for f in result.failures)
+    assert ("network", "rm", f"{3:064x}") not in engine.removals
+    assert ("network", "rm", other_network["Id"]) in engine.removals
+
+
+@pytest.mark.parametrize("proxy_listed_first", [True, False])
+def test_a_failed_young_proxy_keeps_the_workload_age_for_a_fresh_retry(proxy_listed_first):
+    workload = _resource(1)
+    proxy = _resource(2, suffix="-proxy", age=timedelta(0))
+    network = _resource(3, suffix="-net", age=timedelta(0))
+    containers = (proxy, workload) if proxy_listed_first else (workload, proxy)
+    engine = _Engine(*containers, network)
+    engine.failures[("rm", "-f", proxy["Id"])] = _DockerResult(1, b"", "permission denied")
+
+    result = asyncio.run(_backend(engine).reap(timedelta(days=1)))
+    assert result.disposed == result.proxies_removed == result.networks_removed == 0
+    assert len(result.failures) == 1
+    assert result.failures[0].code == "refused"
+    assert engine.resources == {r["Id"]: r for r in (*containers, network)}
+    engine.failures.clear()
+    assert asyncio.run(_backend(engine).reap(timedelta(days=1))) == DockerReapResult(1, 1, 1)
+    assert engine.resources == {}
+
+
+def test_a_failed_young_network_uses_its_own_age_on_a_fresh_sweep():
+    network = _resource(3, suffix="-net", age=timedelta(0))
+    engine = _Engine(_resource(1), _resource(2, suffix="-proxy", age=timedelta(0)), network)
+    engine.failures[("network", "rm")] = _DockerResult(1, b"", "active endpoints")
+    result = asyncio.run(_backend(engine).reap(timedelta(days=1)))
+    assert result.disposed == result.proxies_removed == 1
+    assert result.networks_removed == 0
+    assert result.failures[0].code == "refused"
+    engine.failures.clear()
+    assert asyncio.run(_backend(engine).reap(timedelta(days=1))) == DockerReapResult()
+    assert engine.resources == {network["Id"]: network}
 
 
 @pytest.mark.parametrize("outcome", ["removed", "absent", "refused"])

@@ -1757,11 +1757,15 @@ class DockerSandboxBackend:
         takes its proxy and network with it, whatever their ages. Without a workload, the
         proxy's age decides; a network alone uses its own age. A group whose age anchor
         disappears during inventory is skipped. Inventory failures prevent deletion;
-        removal failures are returned. No background timer is installed.
+        removal failures are returned. A failed or already-absent container removal leaves
+        the rest of its group untouched. No background timer is installed.
         """
         if older_than <= timedelta(0):
             raise ValueError("older_than must be a positive timedelta")
-        cutoff = datetime.now(UTC) - older_than
+        try:
+            cutoff = datetime.now(UTC) - older_than
+        except OverflowError:
+            cutoff = datetime.min.replace(tzinfo=UTC)
         targets: list[_ReapTarget] = []
         failures: list[DisposalFailure] = []
         for resource in ("container", "network"):
@@ -1806,8 +1810,12 @@ class DockerSandboxBackend:
         if failures:
             return DockerReapResult(failures=tuple(failures))
         disposed = proxies = networks = 0
-        for target in targets:
-            if target.workload not in expired:
+        blocked: set[str] = set()
+        # A failed proxy removal must leave the workload's age available for a retry.
+        for target in sorted(
+            targets, key=lambda t: (t.resource == "network", not t.name.endswith(_PROXY_SUFFIX))
+        ):
+            if target.workload not in expired or target.workload in blocked:
                 continue
             if target.resource == "network":
                 # No force: a concurrently acquired container keeps its attached network.
@@ -1838,6 +1846,8 @@ class DockerSandboxBackend:
             removal = await self._remove(target.id)
             if is_proxy and prefix is not None and removal.failure is None:
                 self._forget_attribution(target.workload, prefix[1])
+            if not removal.removed:
+                blocked.add(target.workload)
             if removal.failure is not None:
                 failures.append(removal.failure)
             elif removal.removed:
@@ -2553,7 +2563,8 @@ class DockerSandboxBackend:
                 removed=False, failure=DisposalFailure("unreachable", f"{target}: {exc}")
             )
         if result.returncode == 0:
-            return _Removal(removed=True)
+            # Force-removing an absent container can succeed without printing a target.
+            return _Removal(removed=result.stdout.strip() == target.encode())
         if _reads_as_absent(result.stderr, target):
             return _Removal(removed=False)
         logger.warning(
