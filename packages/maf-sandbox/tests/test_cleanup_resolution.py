@@ -21,6 +21,19 @@ from maf_sandbox._cleanup import established_cleanup, resolve_cleanup
 from maf_sandbox.testing import FAKE_BACKEND_DECLARATIONS, InProcessSandboxBackend
 
 
+@pytest.mark.parametrize(
+    "requires",
+    [
+        frozenset({Capability.RECLAIM}),
+        frozenset({Capability.EXEC, Capability.RECLAIM}),
+        frozenset({"reclaim"}),
+    ],
+)
+def test_reclaim_is_rejected_as_a_workload_requirement(requires):
+    with pytest.raises(ValueError, match="RECLAIM.*backend declarations.*requires"):
+        SandboxSpec(kind="test", requires=requires)
+
+
 @pytest.mark.parametrize("confined", [False, True])
 @pytest.mark.parametrize("reclaim", [False, True])
 @pytest.mark.parametrize("snapshot", [False, True])

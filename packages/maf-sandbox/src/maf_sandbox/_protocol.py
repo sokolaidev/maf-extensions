@@ -244,14 +244,9 @@ class Capability(StrEnum):
     SNAPSHOT = "snapshot"
     #: A platform-attached identity scoped to the sandbox itself.
     ATTACHED_IDENTITY = "attached_identity"
-    #: Take a directory this stack created, which is what :data:`Cleanup.RECLAIM` runs.
-    #: :meth:`Sandbox.reclaim` stays mandatory on every backend — the member is implemented
-    #: whether or not this is declared — and what the declaration adds is whether the framework
-    #: may *resolve to* that rung, which a backend answers for itself. wslc withholds it:
-    #: its filesystem path check is answered inside the container, and an answer the guest can
-    #: give licenses a recursive delete no more than it licenses :meth:`Sandbox.remove`.
-    #: Absent from :data:`DEFAULT_CAPABILITIES` for the same reason silence resolves to
-    #: :data:`Cleanup.DISPOSE`: an undeclared backend is cleaned by the rung it certainly has.
+    #: Backend evidence for :data:`Cleanup.RECLAIM`; forbidden in :attr:`SandboxSpec.requires`.
+    #: Reuse also requires workload confinement. Without this declaration, cleanup resolves
+    #: to RESET where SNAPSHOT is available, otherwise DISPOSE.
     RECLAIM = "reclaim"
 
 
@@ -819,6 +814,11 @@ class SandboxSpec:
                 f"egress_allow names hosts ({hosts}) but egress is {str(self.egress)!r}: a host "
                 f"list is the payload of an {str(Egress.ALLOWLIST)!r} run and has no meaning "
                 "without it. Set egress=Egress.ALLOWLIST, or drop the hosts."
+            )
+        if Capability.RECLAIM in self.requires:
+            raise ValueError(
+                "Capability.RECLAIM belongs in backend declarations; "
+                "remove it from SandboxSpec.requires."
             )
         if self.host_tools is None:
             return
