@@ -12,7 +12,8 @@ line rather than several.
 
 The samples used to ride the same edit (#343) and now move only under `--samples`, because
 merged with the packages' hunk they take the whole set unsatisfiable whenever the core reaches
-the index first (0.33.0, 0.34.0).
+the index first (0.33.0, 0.34.0). The release workflow opens that samples edit as a separate
+pull request.
 """
 
 from __future__ import annotations

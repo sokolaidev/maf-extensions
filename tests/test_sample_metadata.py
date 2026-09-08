@@ -272,9 +272,9 @@ class TestTheDeclaredCoreFloor:
 
         Not slack. The core's version in `pyproject.toml` moves when the Release PR merges;
         the wheel reaches PyPI later, because the publish run is held at "Approve and run".
-        The range pull request that moves the samples is opened by that same merge — before
-        the upload, which is why its own body says to check the version published before
-        merging it. So between the Release PR merging and that one merging, the samples still
+        The samples pull request is opened by that same merge — before the upload, which is
+        why its own body says to check the dependent releases before merging it. So between the
+        Release PR merging and that one merging, the samples still
         name the release before this one, and they must: AGENTS.md forbids a floor naming a
         version that does not exist.
 
