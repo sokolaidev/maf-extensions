@@ -17,8 +17,10 @@ import json
 import logging
 import sys
 import tarfile
+import threading
 import time
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 import pytest
@@ -37,6 +39,7 @@ from maf_sandbox import (
     SandboxOsFamilyNotSupported,
     SandboxRouter,
     SandboxSpec,
+    ScopePurge,
 )
 
 from maf_sandbox_wslc import BACKEND_NAME, WslcSandboxBackend, WslcSandboxConfig
@@ -979,6 +982,93 @@ class TestStatGuestTarHeader:
 
 
 class TestNarrowedDisposal:
+    @pytest.mark.parametrize("first", ["kind", "scope"])
+    @pytest.mark.parametrize("second", ["kind", "scope"])
+    @pytest.mark.parametrize("outcome", ["failure", "cancel"])
+    def test_cross_loop_success_preserves_a_newer_retry(self, first, second, outcome, monkeypatch):
+        backend, fake = _backend_with(
+            _machine(overrides={("container", "list"): _WslcResult(1, b"", b"listing unavailable")})
+        )
+        key = _KEY
+        prefix = (key.scope, key.thread_id, key.agent_dir)
+        backend._registry[(*prefix, "a")] = "selected"
+        entered, progressed = threading.Event(), threading.Event()
+        failure = DisposalFailure("refused", "delete refused")
+        attempts = 0
+
+        class _Guard:
+            def __init__(self):
+                self.lock = threading.Lock()
+
+            def __enter__(self):
+                if not self.lock.acquire(blocking=False):
+                    progressed.set()
+                    assert self.lock.acquire(timeout=5)
+
+            def __exit__(self, *args):
+                self.lock.release()
+
+        class _Ledger(dict):
+            armed = True
+
+            def pop(self, at, default=None):
+                if self.armed and at == prefix:
+                    self.armed = False
+                    entered.set()
+                    assert progressed.wait(5)
+                return super().pop(at, default)
+
+        monkeypatch.setattr(backend, "_disposal_guard", _Guard(), raising=False)
+        backend._undeleted = _Ledger()
+        original = backend._purge
+
+        async def purge(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return _Sweep(1)
+            if outcome == "cancel":
+                raise asyncio.CancelledError
+            return _Sweep(0, {"selected": failure})
+
+        monkeypatch.setattr(backend, "_purge", purge)
+
+        async def cleanup(operation):
+            if operation == "scope":
+                return await backend.dispose_scope(key.scope, key.thread_id)
+            return await backend.dispose(key, kind="a")
+
+        def newer_loop():
+            assert entered.wait(5)
+            backend._registry[(*prefix, "a")] = "selected"
+            try:
+                if outcome == "cancel":
+                    with pytest.raises(asyncio.CancelledError):
+                        asyncio.run(cleanup(second))
+                else:
+                    result = asyncio.run(cleanup(second))
+                    assert (
+                        result.undisposed if isinstance(result, ScopePurge) else result
+                    ) is not None
+            finally:
+                progressed.set()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            newer = pool.submit(newer_loop)
+            asyncio.run(cleanup(first))
+            newer.result(timeout=5)
+
+        assert backend._undeleted == {prefix: {"selected"}}
+        assert backend._undeleted_kinds == {prefix: {"selected": "a"}}
+        monkeypatch.setattr(backend, "_purge", original)
+        asyncio.run(backend.dispose(key, kind="a"))
+        removed = [
+            call.args[-1] for call in fake.calls if call.args[:3] == ("container", "remove", "-f")
+        ]
+        assert removed == ["selected"]
+        assert not backend._undeleted and not backend._undeleted_kinds
+        assert not backend._disposal_tokens
+
     @pytest.mark.parametrize("kind", ["a", None])
     @pytest.mark.parametrize("new_ledger", [False, True])
     def test_concurrent_failure_restores_kind_for_a_narrowed_retry(self, kind, new_ledger):
