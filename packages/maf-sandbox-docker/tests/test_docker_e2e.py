@@ -1405,6 +1405,40 @@ class TestAllowlistEgress:
     def _config(self) -> DockerSandboxConfig:
         return DockerSandboxConfig(egress_proxy_image=_PROXY_IMAGE)
 
+    @pytest.mark.parametrize("orphan", [False, True])
+    def test_a_fresh_backend_reports_proxy_decisions_with_lossless_attribution(self, orphan):
+        key = SandboxKey(
+            scope=f"e2e-{uuid.uuid4()} / \u2603",
+            thread_id="thread / 1",
+            agent_dir="agent" * 30,
+        )
+        creator = DockerSandboxBackend(self._config())
+        reader = DockerSandboxBackend(self._config())
+        events = []
+        reader.observe_egress(events.append)
+
+        async def scenario():
+            try:
+                sandbox = await creator.acquire(
+                    key, _spec(egress=Egress.ALLOWLIST, egress_allow=("example.com",))
+                )
+                result = await sandbox.exec(
+                    ["curl", "-I", "--max-time", "10", "https://blocked.invalid"],
+                    working_directory="/",
+                    timeout=20,
+                )
+                assert result.exit_code != 0
+                if orphan:
+                    assert (await creator._remove(sandbox.container_name)).removed
+                assert (await reader.dispose_scope(key.scope, key.thread_id)).undisposed is None
+                assert [event.key for event in events] == [key]
+                assert [d.host for event in events for d in event.decisions] == ["blocked.invalid"]
+                assert events[0].unreadable is None
+            finally:
+                await creator.dispose_scope(key.scope, key.thread_id)
+
+        asyncio.run(scenario())
+
     def _curl_status(self, sandbox, url: str) -> tuple[int, str]:
         result = asyncio.run(
             sandbox.exec(

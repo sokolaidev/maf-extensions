@@ -28,6 +28,7 @@ The plain constructor declares nothing too — it is the one field no input to i
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import io
 import json
@@ -115,6 +116,7 @@ _LABEL_KIND = "maf-sandbox.kind"
 _LABEL_PREFIX = "maf-sandbox.label."
 #: Marks the egress proxy so a purge can tell it from the sandboxes it counts.
 _LABEL_ROLE = "maf-sandbox.role"
+_LABEL_KEY = "maf-sandbox.key.v1"
 
 _LABEL_VALUE_MAX = 63
 _LABEL_VALUE_SAFE = re.compile(r"[A-Za-z0-9._-]+")
@@ -342,6 +344,45 @@ def _sandbox_labels(key: SandboxKey, spec: SandboxSpec) -> dict[str, str]:
         _LABEL_KIND: _label_value(spec.kind),
         **{f"{_LABEL_PREFIX}{k}": _label_value(v) for k, v in spec.labels.items()},
     }
+
+
+def _key_label(key: SandboxKey) -> str:
+    """Encode arbitrary key strings as one ASCII label value."""
+    return base64.urlsafe_b64encode(
+        json.dumps(
+            [key.scope, key.thread_id, key.agent_dir, key.call_id], ensure_ascii=True
+        ).encode()
+    ).decode("ascii")
+
+
+def _key_from_labels(labels: object) -> SandboxKey | None:
+    """Recover a key only when its lossless values agree with the ownership selectors."""
+    if not isinstance(labels, dict):
+        return None
+    owned = cast(dict[str, object], labels)
+    selectors = (_LABEL_SCOPE, _LABEL_THREAD, _LABEL_AGENT)
+    encoded = owned.get(_LABEL_KEY)
+    if _LABEL_KEY in owned:
+        if not isinstance(encoded, str):
+            return None
+        try:
+            values: object = json.loads(base64.b64decode(encoded, altchars=b"-_", validate=True))
+        except (ValueError, UnicodeError):
+            return None
+        if not isinstance(values, list) or len(cast(list[object], values)) != 4:
+            return None
+        parts = cast(list[object], values)
+    else:
+        # Only unchanged legacy selectors can round-trip; a digest is not a key.
+        parts = [owned.get(label) for label in selectors] + [""]
+    if not all(isinstance(part, str) for part in parts):
+        return None
+    strings = cast(list[str], parts)
+    if any(_label_value(part) != owned.get(label) for label, part in zip(selectors, strings)):
+        return None
+    return SandboxKey(
+        scope=strings[0], thread_id=strings[1], agent_dir=strings[2], call_id=strings[3]
+    )
 
 
 def _container_name(key: SandboxKey, kind: str, egress_id: str = "") -> str:
@@ -1041,10 +1082,6 @@ class DockerSandboxBackend:
         self._undeleted_kinds: dict[tuple[str, str, str], dict[str, str]] = {}
         self._disposal_tokens: dict[tuple[str, str, str], dict[str, object]] = {}
         self._disposal_guard = threading.Lock()
-        #: Container name -> the key prefix it was acquired under, for every name this
-        #: process created. What lets a purge key an `EgressObserved` on a container the
-        #: registry no longer names. Pruned as names are removed.
-        self._acquired: dict[str, tuple[str, str, str]] = {}
         # Get-or-create serialised per (running loop, key, kind), for the same reason wslc does
         # it: a create names no container until it returns, so two acquires racing one key would
         # each build a network, a proxy and a sandbox. Per loop because an asyncio.Lock binds to
@@ -1146,19 +1183,35 @@ class DockerSandboxBackend:
             return None
         return f"the proxy could not be stopped: {result.stderr.strip() or result.returncode}"
 
-    def _forget_attribution(self, workload: str, thread_id: str) -> None:
-        """Drop ``workload``'s proxy attribution, unless a live sandbox has taken the name back.
-
-        Called wherever a proxy is confirmed gone, so that ``_acquired`` means what a drain
-        reads it as: this process believes a proxy exists here.
-
-        **It does not survive a teardown overlapping a reacquire.**  A name is derived from its
-        key, thread id included, so nothing in the entry distinguishes one generation of that
-        name from the next: a removal resuming after a reacquire has stored its attribution
-        deletes the newer entry, and that proxy's later purge cannot key its drain.  Closing
-        that needs a generation token the remover captures, which is #972.
-        """
-        self._acquired.pop(workload, None)
+    async def _drain_attributed_proxy(
+        self, name: str, proxy_id: str | None = None
+    ) -> EgressObserved | None:
+        """Read attribution and decisions from the same engine instance, across host processes."""
+        if self._egress_report is None:
+            return
+        try:
+            data = await self._inspect_disposal_target(proxy_id or _proxy_name(name))
+            if data is None:
+                return
+            metadata = data.get("Config")
+            labels = data.get("Labels")
+            if labels is None and isinstance(metadata, dict):
+                labels = cast(dict[str, object], metadata).get("Labels")
+            if (
+                not isinstance(labels, dict)
+                or cast(dict[str, object], labels).get(_LABEL_ROLE) != "proxy"
+            ):
+                return
+            key = _key_from_labels(cast(object, labels))
+            instance = data.get("Id")
+            if key is None or not isinstance(instance, str) or not instance:
+                return
+            if proxy_id is not None and instance != proxy_id:
+                return
+        except Exception as exc:  # noqa: BLE001 - attribution must not block cleanup
+            logger.warning("could not attribute proxy %s: %s", name, error_detail(exc))
+            return
+        return await self._drain_the_proxy(name, key, proxy_id=instance)
 
     async def _drain_the_proxy(
         self, name: str, key: SandboxKey, *, proxy_id: str | None = None
@@ -1215,11 +1268,8 @@ class DockerSandboxBackend:
                 truncated = truncated or capped
             elif not _reads_as_absent(result.stderr, target):
                 unreadable = result.stderr.strip() or f"docker logs exited {result.returncode}"
-            elif name in self._acquired:
-                # Absent, and this process made its proxy: the window it held is gone rather
-                # than never having existed. A name nothing acquired stays silent, which is
-                # the ordinary first acquire.
-                unreadable = "the proxy is gone, so whatever it decided went with it"
+            elif proxy_id is not None:
+                unreadable = "the inspected proxy disappeared before its log could be read"
         unreadable = " / ".join(part for part in (unquiesced, unreadable) if part) or None
         # `truncated` alone is worth an event: a capped read whose first line was already
         # incomplete yields no decision and still says the window was not seen whole.
@@ -1393,15 +1443,6 @@ class DockerSandboxBackend:
             # is running by now, and a name the registry never saw is one the disposal fallback
             # cannot reach when a label listing fails.
             self._registry[(key.scope, key.thread_id, key.agent_dir, spec.kind)] = name
-            # Beside the registry rather than in it: the registry is keyed on the kind and
-            # a name folds the egress identity too, so serving one key and kind under a
-            # second allowlist replaces the entry and leaves the first container with no
-            # key anyone can supply. A drain needs one, so every name keeps its own.
-            if egress_id:
-                # Only a sandbox that *has* a proxy: this map is what a later drain keys
-                # on, and a closed sandbox has no record to attribute — listing one would
-                # make every closed teardown report a proxy that was never there.
-                self._acquired[name] = (key.scope, key.thread_id, key.agent_dir)
             try:
                 inspected = await self._docker(
                     "inspect", "-f", "{{.Id}}", name, timeout=self._config.command_timeout_seconds
@@ -1812,7 +1853,6 @@ class DockerSandboxBackend:
             if proxy_removal.failure is not None:
                 return proxy_removal.failure
             self._report_proxy_drain(event)
-            self._forget_attribution(name, key.thread_id)
         self._forget_facts(name)
         removal = await self._remove(instance_id)
         if removal.failure is None:
@@ -1911,12 +1951,6 @@ class DockerSandboxBackend:
         """
         with self._disposal_guard:
             mine = [k for k in list(self._registry) if k[0] == scope and k[1] == thread_id]
-            # Only locally acquired names carry an agent key for egress attribution.
-            attributable = {
-                name: SandboxKey(scope=prefix[0], thread_id=prefix[1], agent_dir=prefix[2])
-                for name, prefix in self._acquired.items()
-                if prefix[0] == scope and prefix[1] == thread_id
-            }
             remembered: list[str] = []
             for entry in mine:
                 name = self._registry.pop(entry)
@@ -1949,7 +1983,6 @@ class DockerSandboxBackend:
                 )
             ),
             thread_id=thread_id,
-            drain_key=attributable.get,
         )
         with self._disposal_guard:
             for prefix, tokens in attempted.items():
@@ -2047,19 +2080,13 @@ class DockerSandboxBackend:
                 continue
 
             is_proxy = target.name.endswith(_PROXY_SUFFIX)
-            prefix = self._acquired.get(target.workload)
             event = None
-            if is_proxy and prefix is not None:
-                event = await self._drain_the_proxy(
-                    target.workload,
-                    SandboxKey(scope=prefix[0], thread_id=prefix[1], agent_dir=prefix[2]),
-                    proxy_id=target.id,
-                )
+            if is_proxy:
+                event = await self._drain_attributed_proxy(target.workload, target.id)
             self._forget_facts(target.name)
             removal = await self._remove(target.id)
-            if is_proxy and prefix is not None and removal.failure is None:
+            if is_proxy and removal.failure is None:
                 self._report_proxy_drain(event)
-                self._forget_attribution(target.workload, prefix[1])
             if not removal.removed:
                 blocked.add(target.workload)
             if removal.failure is not None:
@@ -2165,21 +2192,14 @@ class DockerSandboxBackend:
         stranded = [n for n in fallback if n not in listed_set]
         names = [*listed, *stranded]
 
-        # Every proxy this sweep is about to remove, drained first and keyed to the sandbox it
-        # belonged to. Over the *listed* names rather than the remembered ones: `_container_name`
-        # folds the egress identity, so one key and kind served under two allowlists has two
-        # containers and the registry kept only the later — the earlier one's proxy is reached
-        # here or nowhere. `drain_key` answers `None` for a name this process cannot attribute,
-        # which is a container another replica created, and that window is lost with it.
         drained: dict[str, EgressObserved | None] = {}
-        if drain_key is not None:
-            # Normalised to the workload the proxy belongs to, because a sweep can return a
-            # proxy whose workload went separately — filtering those out would delete exactly
-            # the record this exists to read. `dict.fromkeys` keeps the usual pair to one drain.
-            for workload in dict.fromkeys(n.removesuffix(_PROXY_SUFFIX) for n in names):
-                attributed = drain_key(workload)
-                if attributed is not None:
-                    drained[workload] = await self._drain_the_proxy(workload, attributed)
+        # Include orphan proxies and deduplicate each workload/proxy pair.
+        for workload in dict.fromkeys(n.removesuffix(_PROXY_SUFFIX) for n in names):
+            attributed = drain_key(workload) if drain_key is not None else None
+            if attributed is not None:
+                drained[workload] = await self._drain_the_proxy(workload, attributed)
+            else:
+                drained[workload] = await self._drain_attributed_proxy(workload)
 
         count = 0
         undeleted: dict[str, DisposalFailure] = {}
@@ -2198,7 +2218,6 @@ class DockerSandboxBackend:
                 # its proxy stays, and that proxy is still deciding. `failure is None` covers
                 # removed and already-absent alike, which are the same thing to a later drain.
                 self._report_proxy_drain(drained.pop(target.removesuffix(_PROXY_SUFFIX), None))
-                self._forget_attribution(target.removesuffix(_PROXY_SUFFIX), thread_id)
             if removal.removed and not target.endswith(_PROXY_SUFFIX):
                 logger.info("sandbox released: container=%s thread=%s (purge)", target, thread_id)
                 count += 1
@@ -2214,10 +2233,8 @@ class DockerSandboxBackend:
         }
         for workload in (n for n in names if not n.endswith(_PROXY_SUFFIX)):
             if _proxy_name(workload) not in listed_set:
-                # The same rule as above: attribution goes when the proxy does.
                 if (await self._remove(_proxy_name(workload))).failure is None:
                     self._report_proxy_drain(drained.pop(workload, None))
-                    self._forget_attribution(workload, thread_id)
             networks.add(_network_name(workload))
         for net in networks:
             await self._remove_network(net)
@@ -2648,7 +2665,6 @@ class DockerSandboxBackend:
         event = await self._drain_the_proxy(name, key)
         if (await self._remove(_proxy_name(name))).failure is None:
             self._report_proxy_drain(event)
-            self._forget_attribution(name, key.thread_id)
         await self._remove_network(net)
         if removal.failure is not None:
             raise RuntimeError(
@@ -2680,17 +2696,14 @@ class DockerSandboxBackend:
         # proxy is rebuilt per acquire, so this is where a warm conversation's decisions are
         # picked up, one call at a time.
         event = await self._drain_the_proxy(name, key)
-        # Forgotten with the removal, so a replacement that fails to come up leaves no
-        # entry claiming a proxy is there: the retry's drain then reports nothing rather
-        # than a window it already read.
         if (await self._remove(proxy)).failure is None:
             self._report_proxy_drain(event)
-            self._forget_attribution(name, key.thread_id)
 
         args = ["run", "-d", "--name", proxy, "--network", _network_name(name)]
         args += ["-e", f"{_ALLOW_ENV}={','.join(map(str, spec.egress_allow))}"]
         for label, value in _sandbox_labels(key, spec).items():
             args += ["--label", f"{label}={value}"]
+        args += ["--label", f"{_LABEL_KEY}={_key_label(key)}"]
         args += ["--label", f"{_LABEL_ROLE}=proxy", proxy_image]
 
         result = await self._docker(*args, timeout=self._config.command_timeout_seconds)

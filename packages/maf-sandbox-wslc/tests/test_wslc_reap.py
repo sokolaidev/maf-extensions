@@ -431,8 +431,8 @@ def test_early_failure_names_the_new_groups_anchor():
 def test_egress_drain_uses_inspected_proxy_id_after_workload_removal(monkeypatch):
     engine = _Engine([_container(), _proxy()], [_network()])
     backend = _backend(engine)
-    backend._acquired[_NAME] = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
     drains = []
+    backend.observe_egress(lambda event: None)
 
     async def drain(name, key, *, proxy_id):
         assert "a" * 64 not in engine.resources["container"]
@@ -441,14 +441,12 @@ def test_egress_drain_uses_inspected_proxy_id_after_workload_removal(monkeypatch
     monkeypatch.setattr(backend, "_drain_the_proxy", drain)
     assert asyncio.run(backend.reap(_PERIOD)) == WslcReapResult(1, 1, 1)
     assert drains == [(_NAME, _KEY, "b" * 64)]
-    assert not backend._acquired
 
 
 @pytest.mark.parametrize("failure", ["refused", "exception", "cancelled"])
 def test_reap_reports_only_after_proxy_removal_succeeds(failure):
     engine = _Engine([_container(), _proxy()], [_network()])
     backend = _backend(engine)
-    backend._acquired[_NAME] = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
     events = []
     backend.observe_egress(events.append)
     failed = True
@@ -475,12 +473,12 @@ def test_reap_reports_only_after_proxy_removal_succeeds(failure):
     else:
         assert asyncio.run(backend.reap(_PERIOD)).failures
     assert events == []
-    assert _NAME in backend._acquired
+    assert "b" * 64 in engine.resources["container"]
     failed = False
     assert asyncio.run(backend.reap(_PERIOD)).proxies_removed == 1
     assert len(events) == 1
     assert events[0].decisions[0].host == "example.com"
-    assert not backend._acquired
+    assert "b" * 64 not in engine.resources["container"]
 
 
 def test_network_creation_writes_a_persistent_timestamp(monkeypatch):
@@ -611,12 +609,11 @@ def test_revalidation_failure_is_unlisted(failure):
     [(True, "target"), (True, "remove"), (False, "anchor"), (False, "target"), (False, "remove")],
 )
 @pytest.mark.parametrize("replace", [False, True])
-def test_proxy_absence_forgets_attribution_and_continues_unless_replaced(workload, stage, replace):
+def test_proxy_absence_continues_unless_replaced(workload, stage, replace):
     engine = _Engine(
         [_container(), _proxy()] if workload else [_proxy()], [_network(created=_FRESH)]
     )
     backend = _backend(engine)
-    backend._acquired[_NAME] = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
     reads = 0
 
     def disappear(args):
@@ -637,7 +634,6 @@ def test_proxy_absence_forgets_attribution_and_continues_unless_replaced(workloa
     engine.before = disappear
     result = asyncio.run(backend.reap(_PERIOD))
     assert result == WslcReapResult(int(workload), 0, int(not replace))
-    assert (_NAME in backend._acquired) is replace
     assert bool(engine.resources["network"]) is replace
     if replace:
         assert "d" * 64 in engine.resources["container"]
