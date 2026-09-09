@@ -161,7 +161,7 @@ print(f"Disposed {reclaimed.disposed} sandbox(es).")   # the count arrives after
 
 **Dispose one kind while retaining the others.** `await router.dispose_kind(key, "codeact", timeout=30)` deletes only that kind's sandboxes across every registered backend, including backends that no longer serve new calls. It returns `True` when every backend reports success, or `False` on failure or timeout; logs and `SandboxDisposed` events carry the individual failures. The finite positive timeout covers the per-key disposal lock wait and the whole sweep, and cancellation propagates. Coordinate active calls before disposal, as with `dispose(key)`.
 
-Like `dispose`, this host cleanup creates no refusal on failure. Success clears only the pending targets for that kind; another kind's target or a whole-key target keeps the key refused. For failed framework cleanup, `dispose_unclean(key, timeout=...)` retries the recorded backend/kind targets and reopens the key only once all land. It takes no kind filter: `mark_unclean(key, kind="codeact")` records that narrower cleanup request while keeping refusal at the whole key. See [cleanup operations](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/operations.md#host-disposal).
+Like `dispose`, this host cleanup creates no refusal on failure. Success clears only the pending targets for that kind; another kind's target or a whole-key target keeps the key refused. For instance cleanup, pass `instance_id=sandbox.instance_id` to `dispose_kind`: it deletes only that engine instance on its serving backend. Failed instance cleanup refuses the key unless the host chose `FailedReclaimPolicy.KEEP`. `dispose_unclean(key, timeout=...)` retries the recorded backend/kind/instance targets; optional `kind` and `instance_id` selectors narrow the retry. The key reopens only once every target lands, and an older attempt cannot erase a newer failure. See [cleanup operations](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/operations.md#host-disposal).
 
 A workload whose artifact names are not knowable when its tool is built passes the same `DeclaredOutput` type to `collect_outputs(outputs=...)` instead. That is refused unless the spec sets `outputs_named_at_call_time`: without the flag, the tool was attached with no sink required of it and no outbound cap agreed, and collecting there would land artifacts behind both checks.
 
@@ -187,22 +187,24 @@ It costs round trips — several backend calls per host-tool call, plus polling,
 
 ## A result the model may read half of
 
-A sandbox result is rarely uniformly derived: a compiler's diagnostics quote a template the model wrote, while the sentence naming what to do about them is a constant the package ships. Under one label a kind has to choose — claim `trusted` over the guest's text, or declare honestly and watch MAF's information-flow module hide the whole result behind a variable reference. So a tool body may answer with a **list of items** instead of one string, and MAF labels and hides each item separately: the standing guidance stays readable while everything the call produced is hidden.
+A body returns a string or a list of unlabelled `Content` items. To keep a standing sentence readable beside diagnostics, commit it with `sandboxed_tool(..., standing_guidance=(RECOVERY_ROUTE,))` and return it last on every path:
 
 ```python
 from agent_framework import Content
-from maf_sandbox import SourceIntegrity
-from maf_sandbox.maf import labelled_result_item
 
 return [
-    labelled_result_item(RECOVERY_ROUTE, SourceIntegrity.TRUSTED),
     Content.from_text(rendered_diagnostics),
+    Content.from_text(RECOVERY_ROUTE),
 ]
 ```
 
-**Label as little as you can, and never every item.** A per-item label replaces the item's *whole* label, confidentiality included, and this package has no confidentiality value to put there — those are the host's vocabulary, carried verbatim. An item left unlabelled takes the call's own label instead, and the result's combined label is the most restrictive across every item, so one unlabelled item is what keeps the host's classification. `sandboxed_tool` refuses a result whose every item carries a label, because nothing in it is left to carry the call's; `labelled_result_item` refuses `SourceIntegrity.UNTRUSTED` for the same reason from the other side, since the untrusted item is the one holding what the call produced. `str` stays valid and stays the common case.
+The wrapper checks the trailing text against the commitment and rebuilds those items as trusted/public guidance. Its text, count, order and placement are fixed; only `{call_id}` may interpolate. Missing guidance, guidance without a derived item before it, and any label supplied by the body are refused. `labelled_result_item` has been removed: replace it with `Content.from_text` and commit the sentence at attach.
 
-What may carry `TRUSTED` is narrow — text whose value **and whose presence** are independent of everything the call touched, which in practice means standing guidance emitted on every return path. A count, an exit status, a size, or a line emitted only on failure all fail that test however they are split out. [`docs/sandbox/information-flow.md`](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/information-flow.md) carries the rule and the measurements behind it.
+**The file fold can weaken a call's result.** A host enables this by setting the attached tool's `additional_properties["confidentiality"]` to its classification, alongside a valid `source_integrity` declaration. The wrapper stamps every derived item with the weaker of that declaration and the files the call actually read through `SandboxToolSession.read_file`, copying confidentiality verbatim. An untrusted or unestablished read demotes a trusted declaration; a trusted read never promotes an untrusted one. A call that read nothing keeps its declaration, and failed or absent reads do not count. Strings become one stamped item, including returned error sentences. The declaration itself is never changed, so concurrent calls keep separate answers.
+
+Without both valid declarations, derived items remain unlabelled and take the framework's source declaration, input join, or defaults as applicable. `max_allowed_confidentiality` is an outbound cap and does not enable this feature. Guidance keeps its committed label regardless of the file fold. Both shipped kinds declare untrusted, so this never promotes their diagnostics or changes which guidance remains readable. The runtime check also applies to a kind using `nothing_survives_from=(SourceChannel.FILE_STORE,)` to justify a trusted declaration: reading weak content still demotes that call when the host has enabled stamping.
+
+Only text whose value and presence are independent of unestablished sources qualifies as standing guidance. Counts, exit statuses and conditional advice remain derived items. See [information flow](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/information-flow.md#how-core-labels-a-call) for the ownership model and decision table, [writing a kind](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/kinds/writing-a-kind.md) for a complete factory and body, and [host configuration](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/hosts.md#classify-derived-tool-results) for the distinction between result confidentiality and outbound caps.
 
 ## Recording what the sandbox did
 
@@ -314,21 +316,21 @@ InProcessSandboxBackend(
 
 | Was | Is |
 | --- | --- |
-| `async def dispose(key) -> None` | `dispose(key, *, kind=None) -> DisposalFailure \| None` — a code to branch on, and a detail to log |
+| `async def dispose(key) -> None` | `dispose(key, *, kind=None, instance_id=None) -> DisposalFailure \| None` — a code to branch on, and a detail to log |
 | `async def dispose_scope(scope, thread) -> int` | `-> ScopePurge` — `.disposed` is the old count, `.undisposed` the failure |
 | `router.dispose_scope(...)` → `int` | → `ScopePurge` |
 | `purger.purge_scoped_thread(...)` → `int` | → `ScopePurge` |
 
-`kind` restricts deletion to that workload, including retained failures on retry; `None` deletes every kind. The example assumes the client accepts the same filter. Backends must also implement `reset(timeout=...)`, raising `NotImplementedError` when they do not declare `SNAPSHOT`.
+`kind` restricts deletion to that workload, including retained failures on retry; `None` deletes every kind. `instance_id` selects one physical sandbox within the key and optional kind. The example assumes the client accepts both selectors, verifies engine ownership and treats an absent ID as a no-op without selecting a replacement. Backends must also implement `reset(timeout=...)`, raising `NotImplementedError` when they do not declare `SNAPSHOT`.
 
 **The code is the contract; the detail is not.** `DisposalCode` is a closed set — `unreachable`, `timeout`, `refused`, `unlisted`, `unknown` — and it is what a caller acts on: retry an `unreachable`, raise the bound on a `timeout`, put a `refused` in front of a human, since it is a missing role far more often than anything transient. `detail` is the backend's own sentence, for a log, never to be parsed.
 
 ```python
 async def dispose(
-    self, key: SandboxKey, *, kind: str | None = None
+    self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
 ) -> DisposalFailure | None:
     try:
-        gone = await self._client.delete(key, kind=kind)
+        gone = await self._client.delete(key, kind=kind, instance_id=instance_id)
     except TransportError as exc:                     # never reached the service
         return DisposalFailure("unreachable", f"{key}: {exc}")
     return None if gone else DisposalFailure("refused", f"{key}: the service kept it")

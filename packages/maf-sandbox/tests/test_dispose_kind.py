@@ -117,10 +117,10 @@ def test_interrupted_delete_is_observed_and_releases_the_lock(cancel, caplog):
     release = asyncio.Event()
 
     class _Blocking(InProcessSandboxBackend):
-        async def dispose(self, key, *, kind=None):
+        async def dispose(self, key, *, kind=None, instance_id=None):
             entered.set()
             await release.wait()
-            return await super().dispose(key, kind=kind)
+            return await super().dispose(key, kind=kind, instance_id=instance_id)
 
     backend = _Blocking()
     recorder = _Recorder()
@@ -148,6 +148,26 @@ def test_interrupted_delete_is_observed_and_releases_the_lock(cancel, caplog):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("by", [asyncio.CancelledError, GeneratorExit])
+def test_instance_disposal_reports_the_actual_interruption(by):
+    interrupted = by()
+    backend = InProcessSandboxBackend(dispose_error=interrupted, sandbox_per_key=True)
+    recorder = _Recorder()
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE, observer=recorder)
+
+    async def scenario():
+        sandbox = await backend.acquire(_KEY, _SPEC)
+        with pytest.raises(by) as raised:
+            await router.dispose_kind(_KEY, _SPEC.kind, instance_id=sandbox.instance_id, timeout=1)
+        assert raised.value is interrupted
+        assert len(recorder.events) == 1
+        failure = recorder.events[0].failure
+        assert failure is not None and failure.code == "unknown"
+        assert failure.detail == f"in-process: the disposal was interrupted by {by.__name__}"
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("other", ["dispose", "dispose_unclean", "dispose_kind"])
 @pytest.mark.parametrize("kind_first", [False, True])
 def test_disposals_share_the_per_key_lock_and_the_wait_is_bounded(other, kind_first):
@@ -156,7 +176,7 @@ def test_disposals_share_the_per_key_lock_and_the_wait_is_bounded(other, kind_fi
     attempts = []
 
     class _Blocking(InProcessSandboxBackend):
-        async def dispose(self, key, *, kind=None):
+        async def dispose(self, key, *, kind=None, instance_id=None):
             attempts.append((key, kind))
             if key == _KEY and len(attempts) == 1:
                 entered.set()
@@ -232,7 +252,7 @@ def test_failed_sweep_retains_pending_targets():
 
 def test_success_does_not_clear_a_newer_mark_for_the_same_kind():
     class _MarkedDuringDelete(InProcessSandboxBackend):
-        async def dispose(self, key, *, kind=None):
+        async def dispose(self, key, *, kind=None, instance_id=None):
             router.mark_unclean(key, backend=self, kind=kind)
             return None
 

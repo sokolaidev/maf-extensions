@@ -123,12 +123,16 @@ def _label_value(raw: str) -> str:
 
 def _sandbox_labels(key: SandboxKey, spec: SandboxSpec) -> dict[str, str]:
     """The labels a sandbox is created with — the same ones `dispose_scope` selects on."""
+    reserved = {_LABEL_SCOPE, _LABEL_THREAD, _LABEL_AGENT, _LABEL_KIND}
+    collisions = reserved.intersection(spec.labels)
+    if collisions:
+        raise ValueError(f"reserved sandbox labels: {', '.join(sorted(collisions))}")
     return {
+        **{k: _label_value(v) for k, v in spec.labels.items()},
         _LABEL_SCOPE: _label_value(key.scope),
         _LABEL_THREAD: _label_value(key.thread_id),
         _LABEL_AGENT: _label_value(key.agent_dir),
         _LABEL_KIND: _label_value(spec.kind),
-        **{k: _label_value(v) for k, v in spec.labels.items()},
     }
 
 
@@ -865,6 +869,7 @@ class AcasSandboxBackend:
                 probe serves the writing capabilities but refuses deletion; a successful
                 probe does not establish that the guest is root.
         """
+        _sandbox_labels(key, spec)
         async with self._acquire_lock((key.scope, key.thread_id, key.agent_dir, spec.kind)):
             return await self._get_or_create(key, spec)
 
@@ -1177,17 +1182,21 @@ class AcasSandboxBackend:
                 )
         return held.removal
 
-    async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> DisposalFailure | None:
+    async def dispose(
+        self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
+    ) -> DisposalFailure | None:
         """Delete this key's sandboxes, narrowed to kind when given.
 
-        The registry and retained IDs cover only sandboxes known to this process.
+        Service labels discover ownership; retained IDs cover a failed sweep listing.
         Failed deletions are retained per kind for retries and reported without raising."""
         prefix = (key.scope, key.thread_id, key.agent_dir)
         with self._disposal_guard:
             mine = [
                 k
                 for k in list(self._registry)
-                if k[:3] == prefix and (kind is None or k[3] == kind)
+                if k[:3] == prefix
+                and (kind is None or k[3] == kind)
+                and (instance_id is None or self._registry[k].sandbox_id == instance_id)
             ]
             attributed = self._undeleted_kinds.setdefault(prefix, {})
             remembered: list[str] = []
@@ -1198,7 +1207,8 @@ class AcasSandboxBackend:
             retained = sorted(
                 name
                 for name in self._undeleted.get(prefix, ())
-                if kind is None or attributed.get(name) == kind
+                if (kind is None or attributed.get(name) == kind)
+                and (instance_id is None or name == instance_id)
             )
             wanted = list(
                 dict.fromkeys(
@@ -1208,10 +1218,6 @@ class AcasSandboxBackend:
                     ]
                 )
             )
-            if not wanted:
-                if not attributed:
-                    self._undeleted_kinds.pop(prefix, None)
-                return None
             attempted_kinds = {name: attributed[name] for name in wanted if name in attributed}
             attempted = self._retain_disposals(prefix, wanted, attempted_kinds)
         try:
@@ -1220,6 +1226,41 @@ class AcasSandboxBackend:
             logger.warning("acas backend: could not reach the sandbox group: %s", error_detail(exc))
             return DisposalFailure(
                 "unreachable", f"could not reach the sandbox group: {error_detail(exc)}"
+            )
+        labels = {
+            _LABEL_SCOPE: _label_value(key.scope),
+            _LABEL_THREAD: _label_value(key.thread_id),
+            _LABEL_AGENT: _label_value(key.agent_dir),
+        }
+        if kind is not None:
+            labels[_LABEL_KIND] = _label_value(kind)
+        listed: list[str] | None = []
+        try:
+            async for sandbox in gc.list_sandboxes(labels=labels):
+                sandbox_id = getattr(sandbox, "id", None)
+                if not isinstance(sandbox_id, str) or not sandbox_id:
+                    raise ValueError("the service returned no sandbox ID")
+                if instance_id is None or sandbox_id == instance_id:
+                    listed.append(sandbox_id)
+        except Exception as exc:  # noqa: BLE001 - a failed listing is never an empty inventory
+            logger.warning(
+                "acas backend: could not discover disposal targets: %s", error_detail(exc)
+            )
+            listed = None
+        if instance_id is not None:
+            # A local record cannot prove current engine ownership of a supplied ID.
+            if listed is None:
+                return DisposalFailure("unlisted", "could not verify sandbox ownership")
+            wanted = listed
+        elif listed is not None:
+            wanted = list(dict.fromkeys([*wanted, *listed]))
+        with self._disposal_guard:
+            if kind is not None:
+                attempted_kinds.update(dict.fromkeys(wanted, kind))
+            attempted.update(
+                self._retain_disposals(
+                    prefix, [name for name in wanted if name not in attempted], attempted_kinds
+                )
             )
         undeleted: dict[str, DisposalFailure] = {}
         for sandbox_id in wanted:
@@ -1237,8 +1278,22 @@ class AcasSandboxBackend:
             self._finish_disposals(prefix, attempted, list(undeleted), attempted_kinds)
             left = self._undeleted.get(prefix, set())
             attributed = self._undeleted_kinds.get(prefix, {})
-            outstanding = {name for name in left if kind is None or attributed.get(name) == kind}
-        reported = fold_disposal_failures(list(undeleted.values()))
+            outstanding = {
+                name
+                for name in left
+                if (kind is None or attributed.get(name) == kind)
+                and (instance_id is None or name == instance_id)
+            }
+        reported = fold_disposal_failures(
+            [
+                *undeleted.values(),
+                *(
+                    []
+                    if listed is not None
+                    else [DisposalFailure("unlisted", "sandbox sweep may be partial")]
+                ),
+            ]
+        )
         if reported is not None:
             return reported
         if outstanding:
@@ -1374,7 +1429,8 @@ class AcasSandboxBackend:
         from azure.core.exceptions import ResourceNotFoundError, ServiceRequestError
 
         try:
-            await group_client.get_sandbox_client(sandbox_id).begin_delete()
+            poller = await group_client.get_sandbox_client(sandbox_id).begin_delete()
+            await poller.result()
             return _Deletion(deleted=True)
         except ResourceNotFoundError:
             return _Deletion(deleted=False)

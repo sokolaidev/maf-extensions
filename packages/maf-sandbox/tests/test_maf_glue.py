@@ -74,7 +74,6 @@ from maf_sandbox.maf import (
     argument_provenance_middleware,
     file_store_provenance_middleware,
     hidden_content_candidates,
-    labelled_result_item,
     list_all_files,
     list_no_files,
     make_caller_context,
@@ -2163,7 +2162,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
 
     def test_sandboxed_tool_uses_router_reclaim_timeout_when_not_passed(self, caplog):
         class _HangsOnDispose(InProcessSandboxBackend):
-            async def dispose(self, key, *, kind=None):
+            async def dispose(self, key, *, kind=None, instance_id=None):
                 await asyncio.Event().wait()
 
         backend = _HangsOnDispose(_RefusesToRemove())
@@ -2180,7 +2179,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
 
     def test_sandboxed_tool_explicit_reclaim_timeout_overrides_router(self, caplog):
         class _HangsOnDispose(InProcessSandboxBackend):
-            async def dispose(self, key, *, kind=None):
+            async def dispose(self, key, *, kind=None, instance_id=None):
                 await asyncio.Event().wait()
 
         backend = _HangsOnDispose(_RefusesToRemove())
@@ -2260,7 +2259,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
 
     def test_a_disposal_that_never_returns_is_bounded_and_counts_as_failed(self, caplog):
         class _HangsOnDispose(InProcessSandboxBackend):
-            async def dispose(self, key, *, kind=None):
+            async def dispose(self, key, *, kind=None, instance_id=None):
                 await asyncio.Event().wait()
 
         backend = _HangsOnDispose(_RefusesToRemove())
@@ -2340,7 +2339,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
 
     def test_a_cancellation_during_the_disposal_still_refuses_the_key(self, caplog):
         class _CancelsOnDispose(InProcessSandboxBackend):
-            async def dispose(self, key, *, kind=None):
+            async def dispose(self, key, *, kind=None, instance_id=None):
                 raise asyncio.CancelledError()
 
         backend = _CancelsOnDispose(_RefusesToRemove())
@@ -2661,9 +2660,9 @@ class TestTheStrongRungsHonourTheCallsOwnBound:
 
     def test_an_explicit_reclaim_timeout_bounds_the_disposal(self):
         class _Slow(InProcessSandboxBackend):
-            async def dispose(self, key, *, kind=None):
+            async def dispose(self, key, *, kind=None, instance_id=None):
                 await asyncio.sleep(0.3)
-                return await super().dispose(key, kind=kind)
+                return await super().dispose(key, kind=kind, instance_id=instance_id)
 
         backend = _Slow()
         router = _router(backend)
@@ -2692,6 +2691,40 @@ class TestAHeldSandboxIsGivenBackHoweverTheCleanupEnds:
     _OTHER = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-9")
     _SPEC = dataclasses.replace(_SPEC, confined_to_guest_call_path=False)
 
+    def test_cancelled_disposal_retries_only_unfinished_instances(self):
+        first, second = InProcessSandbox(), InProcessSandbox()
+        queue = iter((first, second))
+
+        class _TwoInstances(InProcessSandboxBackend):
+            async def acquire(self, key, spec):
+                return next(queue)
+
+            async def dispose(self, key, *, kind=None, instance_id=None):
+                if instance_id == second.instance_id:
+                    raise asyncio.CancelledError
+                return await super().dispose(key, kind=kind, instance_id=instance_id)
+
+        backend = _TwoInstances()
+        router = _router(backend, warm=False)
+        spec = dataclasses.replace(_SPEC, min_cleanup=Cleanup.DISPOSE)
+        for sandbox in (first, second):
+            router._remember_instance(_KEY, spec.kind, backend, sandbox)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                session.guest_call_path()
+                key = session.key()
+                await session.acquire(key)
+                await session.acquire(key)
+                return target
+
+            return widget_run
+
+        with pytest.raises(asyncio.CancelledError):
+            _call(_attach_with(build, router, spec=spec)[0], target="done")
+        assert backend.disposed_instances == [first.instance_id]
+        assert [target.instance_id for target in router._pending_for(_KEY)] == [second.instance_id]
+
     def _build(self, session: SandboxToolSession):
         async def widget_run(target: str) -> str:
             mine = session.key()
@@ -2707,11 +2740,11 @@ class TestAHeldSandboxIsGivenBackHoweverTheCleanupEnds:
         cancelling = {"first": True}
 
         class _CancelsOnce(InProcessSandboxBackend):
-            async def dispose(self, key, *, kind=None):
+            async def dispose(self, key, *, kind=None, instance_id=None):
                 if cancelling["first"]:
                     cancelling["first"] = False
                     raise asyncio.CancelledError
-                return await super().dispose(key, kind=kind)
+                return await super().dispose(key, kind=kind, instance_id=instance_id)
 
         backend = _CancelsOnce(sandbox_per_key=True)
         router = _router(backend)
@@ -3001,10 +3034,10 @@ class TestCleanupAdmission:
         class _CancelsDisposal(InProcessSandboxBackend):
             cancel = True
 
-            async def dispose(self, key, *, kind=None):
+            async def dispose(self, key, *, kind=None, instance_id=None):
                 if self.cancel:
                     raise asyncio.CancelledError
-                return await super().dispose(key, kind=kind)
+                return await super().dispose(key, kind=kind, instance_id=instance_id)
 
         backend = _CancelsDisposal(
             _CancelsReset(),
@@ -3434,6 +3467,45 @@ class TestACallThatReachesTwoSandboxes:
 
     _OTHER = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-2")
 
+    @pytest.mark.parametrize("rung", [Cleanup.RECLAIM, Cleanup.DISPOSE])
+    def test_same_key_instances_receive_only_their_own_cleanup(self, rung):
+        first, second = InProcessSandbox(), InProcessSandbox()
+
+        class _TwoInstances(InProcessSandboxBackend):
+            async def acquire(self, key, spec):
+                return first if not self.keys else second
+
+        backend = _TwoInstances()
+        router = _router(backend, warm=False)
+        spec = dataclasses.replace(_SPEC, min_cleanup=rung)
+        for sandbox in (first, second):
+            router._remember_instance(_KEY, spec.kind, backend, sandbox)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                session.guest_call_path()
+                key = session.key()
+                assert not isinstance(key, str)
+                a = await session.acquire(key)
+                assert a is first
+                backend.keys.append(key)
+                b = await session.acquire(key)
+                assert b is second
+                note_unclean(a, "the process did not stop")
+                return target
+
+            return widget_run
+
+        assert _call(_attach_with(build, router, spec=spec)[0], target="done") == "done"
+        assert backend.disposed_instances == (
+            [first.instance_id]
+            if rung is Cleanup.RECLAIM
+            else [first.instance_id, second.instance_id]
+        )
+        if rung is Cleanup.RECLAIM:
+            assert len(first.reclaims) == len(second.reclaims) == 1
+        assert not router._unclean
+
     def _build(self, session: SandboxToolSession):
         async def widget_run(target: str) -> str:
             """Write the call's name into two sandboxes."""
@@ -3521,7 +3593,9 @@ class TestACallThatReachesTwoSandboxes:
         already refuses before its first await."""
 
         class _CancelsOnDispose(_PerKeyBackend):
-            async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> None:
+            async def dispose(
+                self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
+            ) -> None:
                 raise asyncio.CancelledError()
 
         def build(session: SandboxToolSession):
@@ -4001,7 +4075,7 @@ class TestSessionReadFile:
         `security_label` holds a whole label. Writing only `integrity` into it does not leave
         confidentiality unstated — the framework fills it with `public` on the way back in, so a
         forwarded item would classify the store's bytes public: the exact claim omitting the
-        field looks like it avoids. `labelled_result_item` refuses `untrusted` for this reason;
+        field looks like it avoids. Only the wrapper may stamp a result label;
         the carrier has to obey it too, two functions away.
         """
         from agent_framework.security import ContentLabel
@@ -5346,7 +5420,7 @@ class TestArgumentProvenanceMiddleware:
 
 
 # ---------------------------------------------------------------------------
-# labelled_result_item — a result that is items rather than one string
+# Results split into derived items and committed guidance
 # ---------------------------------------------------------------------------
 
 
@@ -5383,81 +5457,53 @@ def _text(text):
     return Content.from_text(text)
 
 
-class TestALabelledResultItem:
-    """The one item a kind may label, and the one label it may carry."""
-
-    def test_it_carries_the_frameworks_own_serialization_of_the_label(self):
-        """A dict literal here would be a second copy of the framework's key and value names."""
-        item = labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED)
-        assert item.additional_properties == {
-            "security_label": {"integrity": "trusted", "confidentiality": "public"}
-        }
-
-    def test_the_text_is_the_items_own(self):
-        assert labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED).text == _GUIDANCE
-
-    def test_the_string_spelling_of_the_level_is_accepted(self):
-        """`SourceIntegrity` is a `StrEnum`, and a caller reading a declaration back has a str."""
-        assert labelled_result_item(_GUIDANCE, cast(Any, "trusted")).text == _GUIDANCE
-
-    def test_untrusted_is_refused_and_the_message_names_the_route(self):
-        with pytest.raises(ValueError, match="Leave the item unlabelled"):
-            labelled_result_item("EXIT=1", SourceIntegrity.UNTRUSTED)
-
-    def test_the_route_it_names_is_spelled_as_the_enum(self):
-        """The message is where a kind author is sent to fix this, so it is where the spelling
-        to reach for has to appear. `sandboxed_tool` takes a `str`, and a `StrEnum` satisfies
-        that, so nothing in the signature can point at `SourceIntegrity` on its own."""
-        with pytest.raises(ValueError) as refused:
-            labelled_result_item("EXIT=1", SourceIntegrity.UNTRUSTED)
-
-        assert "sandboxed_tool(source_integrity=SourceIntegrity.UNTRUSTED)" in str(refused.value)
-
-    def test_a_level_that_is_neither_is_refused(self):
-        with pytest.raises(ValueError, match="withheld"):
-            labelled_result_item("EXIT=1", cast(Any, "withheld"))
-
-
 class TestAResultThatIsItems:
-    """A body may answer with a list, and one shape of list is refused."""
+    """Bodies supply unlabelled items; the wrapper stamps only committed guidance."""
 
     def _tool(self, build, **kw):
         return _attach_with(build, _router(InProcessSandboxBackend()), **kw)[0]
 
-    def test_the_list_reaches_maf_untouched(self):
-        guidance = labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED)
-        derived = _text("EXIT=1")
-        assert _call(self._tool(_items(guidance, derived)), target="x") == [guidance, derived]
+    @pytest.mark.parametrize("build", [_items, _sync_items])
+    def test_guidance_is_stamped_without_mutating_the_bodys_items(self, build):
+        guidance, derived = _text(_GUIDANCE), _text("EXIT=1")
+        tool = self._tool(build(derived, guidance), standing_guidance=(_GUIDANCE,))
+        result = asyncio.run(tool.invoke(arguments={"target": "x"}))
+        assert _texts(result) == ["EXIT=1", _GUIDANCE]
+        assert result[1].additional_properties["security_label"] == {
+            "integrity": "trusted",
+            "confidentiality": "public",
+        }
+        assert "security_label" not in derived.additional_properties
+        assert "security_label" not in guidance.additional_properties
+        assert "security_label" not in result[0].additional_properties
 
-    def test_a_synchronous_body_may_answer_with_items_too(self):
-        guidance = labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED)
-        derived = _text("EXIT=1")
-        assert _fn(self._tool(_sync_items(guidance, derived)))(target="x") == [guidance, derived]
+    @pytest.mark.parametrize("build", [_items, _sync_items])
+    @pytest.mark.parametrize("committed", [(), (_GUIDANCE,)])
+    def test_a_body_cannot_supply_a_label_even_without_a_commitment(self, build, committed):
+        labelled = _text("SECRET=hunter2")
+        labelled.additional_properties["security_label"] = {"integrity": "trusted"}
+        tool = self._tool(build(labelled, _text(_GUIDANCE)), standing_guidance=committed)
+        with pytest.raises(ValueError, match="supplied by the body") as refused:
+            asyncio.run(tool.invoke(arguments={"target": "x"}))
+        assert "hunter2" not in str(refused.value)
 
     def test_a_string_is_still_the_common_case(self):
         backend = InProcessSandboxBackend(InProcessSandbox(default_stdout="ok"))
         assert _call(_attach_with(_body, _router(backend))[0], target="x") == "ok"
 
-    def test_a_result_whose_every_item_is_labelled_is_refused(self):
-        build = _items(
-            labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED),
-            labelled_result_item("also standing", SourceIntegrity.TRUSTED),
-        )
-        with pytest.raises(ValueError, match="carries the call's confidentiality"):
-            _call(self._tool(build), target="x")
-
-    def test_a_synchronous_body_is_held_to_the_same_shape(self):
-        """The body that gets no reclaim wrapper is held to it as much as the one that does."""
-        build = _sync_items(labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED))
-        with pytest.raises(ValueError, match="carries the call's confidentiality"):
-            _fn(self._tool(build))(target="x")
-
     def test_an_empty_list_is_refused(self):
         with pytest.raises(ValueError, match=r"the text '\[\]'"):
             _call(self._tool(_items()), target="x")
 
+    @pytest.mark.parametrize("committed", [(_GUIDANCE,), (_GUIDANCE, "Read the diagnostics.")])
+    def test_guidance_alone_cannot_replace_the_calls_confidentiality(self, committed):
+        tool = self._tool(
+            _items(*(_text(sentence) for sentence in committed)), standing_guidance=committed
+        )
+        with pytest.raises(ValueError, match="carries the call's confidentiality"):
+            _call(tool, target="x")
+
     def test_the_call_is_still_reclaimed_when_the_shape_is_refused(self):
-        """The refusal is raised inside the `try`, so the `finally` still takes the call's path."""
         backend = InProcessSandboxBackend()
 
         def build(session: SandboxToolSession):
@@ -5467,104 +5513,59 @@ class TestAResultThatIsItems:
                 assert not isinstance(key, str)
                 assert not isinstance(await session.acquire(key), str)
                 session.guest_call_path()
-                return [labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED)]
+                return []
 
             return widget_run
 
-        with pytest.raises(ValueError, match="carries the call's confidentiality"):
+        with pytest.raises(ValueError, match="nonempty"):
             _call(_attach_with(build, _router(backend))[0], target="x")
         assert len(_reclaimed(backend.sandbox)) == 1
 
+    def test_guidance_is_rebuilt_without_any_other_fields_the_body_supplied(self):
+        guidance = _text(_GUIDANCE)
+        guidance.uri = "https://example.invalid/SECRET"
+        guidance.additional_properties["guest"] = "SECRET"
+        tool = self._tool(_items(_text("EXIT=1"), guidance), standing_guidance=(_GUIDANCE,))
+        result = _call(tool, target="x")
+        assert result[-1].uri is None
+        assert "SECRET" not in str(result[-1].to_dict())
+
 
 class TestWhatASplitResultDoesToTheCallsLabel:
-    """Why the refusal above exists, measured against the framework rather than reasoned.
+    """The real middleware preserves confidentiality while leaving guidance readable."""
 
-    A result's confidentiality comes from the tool's declaration, or from the middleware's own
-    default. A per-item label replaces the *whole* label, so an item labelled for integrity
-    alone names `public` — and the call's classification survives only because an unlabelled
-    item is still in the fold.
-    """
-
-    def _run(self, answer, *, declarations):
+    @pytest.mark.parametrize("source", [None, "untrusted"])
+    @pytest.mark.parametrize("declare_confidentiality", [False, True])
+    def test_guidance_stays_visible_and_the_derived_half_keeps_its_classification(
+        self, source, declare_confidentiality
+    ):
         from agent_framework import FunctionInvocationContext
-        from agent_framework.security import LabelTrackingFunctionMiddleware
+        from agent_framework.security import ConfidentialityLabel, LabelTrackingFunctionMiddleware
 
+        declarations = {"confidentiality": "private"} if declare_confidentiality else {}
+        if source is not None:
+            declarations["source_integrity"] = source
         tool = _attach_with(
-            _items(*answer), _router(InProcessSandboxBackend()), declarations=declarations
+            _items(_text("EXIT=1"), _text(_GUIDANCE)),
+            _router(InProcessSandboxBackend()),
+            declarations=declarations,
+            standing_guidance=(_GUIDANCE,),
         )[0]
-        middleware = LabelTrackingFunctionMiddleware()
+        middleware = LabelTrackingFunctionMiddleware(
+            default_confidentiality=ConfidentialityLabel.PRIVATE
+        )
         context = FunctionInvocationContext(function=tool, arguments={"target": "x"})
 
         async def call_next() -> None:
             context.result = await tool.invoke(arguments=context.arguments)
 
         asyncio.run(middleware.process(context, call_next))
-        seen = [
-            "hidden" if (item.additional_properties or {}).get("_variable_reference") else item.text
-            for item in context.result
-        ]
-        return context.metadata["result_label"], seen, middleware.get_context_label()
-
-    def test_the_guidance_stays_visible_and_the_derived_half_is_hidden(self):
-        label, seen, conversation = self._run(
-            (labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED), _text("EXIT=1")),
-            declarations={"confidentiality": "private"},
-        )
-        assert seen == [_GUIDANCE, "hidden"]
-        assert str(label.integrity) == "untrusted"
-        assert str(conversation.integrity) == "trusted", "hidden content does not taint"
-
-    def test_the_unlabelled_item_keeps_the_calls_confidentiality(self):
-        label, _, conversation = self._run(
-            (labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED), _text("EXIT=1")),
-            declarations={"confidentiality": "private"},
-        )
-        assert str(label.confidentiality) == "private"
-        assert str(conversation.confidentiality) == "private"
-
-    def test_a_declared_untrusted_tool_still_shows_its_trusted_item(self):
-        """Tier 1 is read per item and ahead of tier 2, so declaring costs no per-item label.
-
-        A tool declaring `untrusted` still shows a `trusted` item in its result: the guidance
-        stays visible, the derived half stays hidden, and the call's own label is `untrusted`.
-        """
-        label, seen, conversation = self._run(
-            (labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED), _text("EXIT=1")),
-            declarations={"source_integrity": "untrusted", "confidentiality": "private"},
-        )
-
-        assert seen == [_GUIDANCE, "hidden"]
-        assert str(label.integrity) == "untrusted"
-        assert str(label.confidentiality) == "private"
-        assert str(conversation.integrity) == "trusted", "hidden content does not taint"
-
-    def test_a_fully_labelled_result_would_lose_it(self):
-        """The counterfactual the refusal closes, built by hand because the factory refuses it."""
-        from agent_framework import Content, FunctionInvocationContext, FunctionTool
-        from agent_framework.security import LabelTrackingFunctionMiddleware
-
-        async def body() -> Any:
-            return [
-                labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED),
-                Content.from_text(
-                    "EXIT=1",
-                    additional_properties={
-                        "security_label": {"integrity": "untrusted", "confidentiality": "public"}
-                    },
-                ),
-            ]
-
-        tool = FunctionTool(
-            name="probe", func=body, additional_properties={"confidentiality": "private"}
-        )
-        middleware = LabelTrackingFunctionMiddleware()
-        context = FunctionInvocationContext(function=tool, arguments={})
-
-        async def call_next() -> None:
-            context.result = await tool.invoke(arguments={})
-
-        asyncio.run(middleware.process(context, call_next))
-        assert str(context.metadata["result_label"].confidentiality) == "public"
+        assert context.result[0].additional_properties.get("_variable_reference")
+        assert context.result[1].text == _GUIDANCE
+        assert str(context.metadata["result_label"].integrity) == "untrusted"
+        assert str(context.metadata["result_label"].confidentiality) == "private"
+        assert str(middleware.get_context_label().confidentiality) == "private"
+        assert str(middleware.get_context_label().integrity) == "trusted"
 
 
 class TestMakeFileStoreSink:
@@ -6030,30 +6031,28 @@ def _answering(answer):
 
 
 class TestGuidanceIsCommittedWhereAReviewerCanSeeIt:
-    """Rule 5's test is about a sentence's value *and* its presence, and a body can execute
-    neither: `labelled_result_item` sees one string at one call with nothing to compare it to.
-    Committing the sentences at attach is what gives the wrapper something to check."""
+    """The wrapper stamps guidance only where its value and position match the commitment."""
 
     def _attach(self, answer, **kw):
         return _attach_with(_answering(answer), _router(InProcessSandboxBackend()), **kw)[0]
 
     def test_a_tool_that_commits_nothing_is_unchanged(self):
         """The whole rule is inert until a kind opts in, so no shipped tool changes shape."""
-        tool = self._attach([_text("x"), labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED)])
+        tool = self._attach([_text("x"), _text(_GUIDANCE)])
 
         assert "x" in _texts(asyncio.run(tool.invoke(arguments={"target": "t"})))
 
-    def test_a_labelled_item_matching_the_commitment_passes(self):
+    def test_a_text_item_matching_the_commitment_passes(self):
         tool = self._attach(
-            [_text("EXIT=1"), labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED)],
+            [_text("EXIT=1"), _text(_GUIDANCE)],
             standing_guidance=(_GUIDANCE,),
         )
 
         assert "EXIT=1" in _texts(asyncio.run(tool.invoke(arguments={"target": "t"})))
 
-    def test_a_labelled_item_the_tool_never_committed_to_is_refused(self):
+    def test_a_suffix_the_tool_never_committed_to_is_refused(self):
         tool = self._attach(
-            [_text("EXIT=1"), labelled_result_item("SECRET=hunter2", SourceIntegrity.TRUSTED)],
+            [_text("EXIT=1"), _text("SECRET=hunter2")],
             standing_guidance=(_GUIDANCE,),
         )
 
@@ -6064,7 +6063,7 @@ class TestGuidanceIsCommittedWhereAReviewerCanSeeIt:
         """The refusal reaches the model through a path that labels nothing, so a refusal
         quoting the item would carry the very text it refused back out unlabelled."""
         tool = self._attach(
-            [_text("EXIT=1"), labelled_result_item("SECRET=hunter2", SourceIntegrity.TRUSTED)],
+            [_text("EXIT=1"), _text("SECRET=hunter2")],
             standing_guidance=(_GUIDANCE,),
         )
 
@@ -6072,14 +6071,24 @@ class TestGuidanceIsCommittedWhereAReviewerCanSeeIt:
             asyncio.run(tool.invoke(arguments={"target": "t"}))
 
         assert "hunter2" not in str(raised.value)
-        assert "labelled item(s)" in str(raised.value), "counts stand in for the text"
+        assert "committed sentences" in str(raised.value), "counts stand in for the text"
 
-    def test_a_committed_sentence_missing_from_this_result_is_refused(self):
+    @pytest.mark.parametrize(
+        ("committed", "returned"),
+        [
+            ((_GUIDANCE,), ("EXIT=1",)),
+            ((_GUIDANCE, "Read the diagnostics."), ("EXIT=1",)),
+            ((_GUIDANCE, "Read the diagnostics."), ("EXIT=1", "Read the diagnostics.")),
+            ((_GUIDANCE, "Read the diagnostics."), (_GUIDANCE,)),
+        ],
+        ids=["no-guidance", "short-result", "partial-suffix", "truncated-guidance"],
+    )
+    def test_a_committed_sentence_missing_from_this_result_is_refused(self, committed, returned):
         """The presence half: a sentence emitted on the paths that suit and dropped on the ones
         that do not is a bit about which path ran."""
-        tool = self._attach([_text("EXIT=1")], standing_guidance=(_GUIDANCE,))
+        tool = self._attach([_text(text) for text in returned], standing_guidance=committed)
 
-        with pytest.raises(ValueError, match="must be the last"):
+        with pytest.raises(ValueError, match="committed sentences must be the last"):
             asyncio.run(tool.invoke(arguments={"target": "t"}))
 
     def test_a_string_answer_is_refused_once_anything_is_committed(self):
@@ -6116,7 +6125,7 @@ class TestTheOneSubstitutionACommittedSentenceMayCarry:
                 folder = session.guest_call_path().rsplit("/", 1)[-1]
                 seen.append(folder)
                 sentence = _FOLDER_GUIDANCE.format(call_id=folder)
-                return [_text("EXIT=1"), labelled_result_item(sentence, SourceIntegrity.TRUSTED)]
+                return [_text("EXIT=1"), _text(sentence)]
 
             return widget_run
 
@@ -6134,9 +6143,7 @@ class TestTheOneSubstitutionACommittedSentenceMayCarry:
         tool = self._attach(
             [
                 _text("EXIT=1"),
-                labelled_result_item(
-                    _FOLDER_GUIDANCE.format(call_id=stale), SourceIntegrity.TRUSTED
-                ),
+                _text(_FOLDER_GUIDANCE.format(call_id=stale)),
             ],
             standing_guidance=(_FOLDER_GUIDANCE,),
         )
@@ -6168,7 +6175,7 @@ class TestTheOneSubstitutionACommittedSentenceMayCarry:
 
     def test_a_constant_sentence_is_still_fine_on_a_synchronous_body(self):
         tools = _attach_with(
-            _sync_items(_text("x"), labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED)),
+            _sync_items(_text("x"), _text(_GUIDANCE)),
             _router(InProcessSandboxBackend()),
             standing_guidance=(_GUIDANCE,),
         )
@@ -6183,28 +6190,22 @@ class TestTheCommittedSentencesAreASequence:
     def _attach(self, answer, **kw):
         return _attach_with(_answering(answer), _router(InProcessSandboxBackend()), **kw)[0]
 
-    def test_one_committed_sentence_emitted_twice_is_refused(self):
-        """The duplication channel: both shapes carry every committed sentence, so membership
-        alone accepts each, and the number of trusted items is what varies."""
+    def test_a_duplicate_in_the_derived_half_gets_no_trusted_label(self):
         tool = self._attach(
-            [
-                _text("EXIT=1"),
-                labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED),
-                labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED),
-            ],
+            [_text("EXIT=1"), _text(_GUIDANCE), _text(_GUIDANCE)],
             standing_guidance=(_GUIDANCE,),
         )
-
-        with pytest.raises(ValueError, match="must be the last"):
-            asyncio.run(tool.invoke(arguments={"target": "t"}))
+        result = asyncio.run(tool.invoke(arguments={"target": "t"}))
+        assert "security_label" not in result[1].additional_properties
+        assert result[2].additional_properties["security_label"]["integrity"] == "trusted"
 
     def test_two_committed_sentences_out_of_order_are_refused(self):
         second = "Declare every file your program writes."
         tool = self._attach(
             [
                 _text("EXIT=1"),
-                labelled_result_item(second, SourceIntegrity.TRUSTED),
-                labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED),
+                _text(second),
+                _text(_GUIDANCE),
             ],
             standing_guidance=(_GUIDANCE, second),
         )
@@ -6217,8 +6218,8 @@ class TestTheCommittedSentencesAreASequence:
         tool = self._attach(
             [
                 _text("EXIT=1"),
-                labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED),
-                labelled_result_item(second, SourceIntegrity.TRUSTED),
+                _text(_GUIDANCE),
+                _text(second),
             ],
             standing_guidance=(_GUIDANCE, second),
         )
@@ -6231,7 +6232,7 @@ class TestTheCommittedSentencesAreASequence:
         `[guidance, derived]` on one path and `[derived, guidance]` on another shows which ran
         even where the derived half is hidden."""
         tool = self._attach(
-            [labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED), _text("EXIT=1")],
+            [_text(_GUIDANCE), _text("EXIT=1")],
             standing_guidance=(_GUIDANCE,),
         )
 
@@ -6242,7 +6243,7 @@ class TestTheCommittedSentencesAreASequence:
         """Last because that is where the one shipped kind puts it: a result reads as its answer,
         then the standing sentence about it."""
         tool = self._attach(
-            [_text("EXIT=1"), labelled_result_item(_GUIDANCE, SourceIntegrity.TRUSTED)],
+            [_text("EXIT=1"), _text(_GUIDANCE)],
             standing_guidance=(_GUIDANCE,),
         )
 
@@ -6260,7 +6261,7 @@ class TestTheCommittedSentencesAreASequence:
         )
         tool = self._attach([_text("EXIT=1"), blank], standing_guidance=(_GUIDANCE,))
 
-        with pytest.raises(ValueError, match="carries a label and no text"):
+        with pytest.raises(ValueError, match="supplied by the body"):
             asyncio.run(tool.invoke(arguments={"target": "t"}))
 
 
@@ -6309,10 +6310,7 @@ class TestADoubledBraceIsUndoubled:
             _answering(
                 [
                     _text("EXIT=1"),
-                    labelled_result_item(
-                        "Write your answer into {output} rather than printing it.",
-                        SourceIntegrity.TRUSTED,
-                    ),
+                    _text("Write your answer into {output} rather than printing it."),
                 ]
             ),
             _router(InProcessSandboxBackend()),

@@ -1,10 +1,10 @@
-"""Author, validate, fix — two turns against one warm sandbox.
+"""Author, validate, fix — two turns with per-call sandbox disposal.
 
 Every other sample runs one turn against a file that was already there. Here the store starts
 **empty**: turn 1 writes `main.bicep` from a written brief and validates what it wrote, turn 2
 repairs what the compiler reported, and the program compiles the file itself at both ends.
-`acquire` is get-or-create precisely so a model can iterate like this, and until now nothing
-showed the second turn arriving to find its sandbox still there.
+The session and host file store carry the work between calls; each sandbox is disposed
+when its call ends.
 
 The brief is what makes the diagnostics predictable without scripting them. It asks for a
 parameter that a later change will use, and for no `sku` yet because the tier is undecided —
@@ -158,13 +158,7 @@ def containers() -> list[str]:
 
 
 def counted(ids: list[str]) -> str:
-    """A count and the ids behind it, because the count alone is the weaker claim.
-
-    "One container exists at this instant" is not "the same container served both turns". A
-    backend that force-removes a sandbox — an exec timeout does exactly that — leaves the next
-    `acquire` to create a fresh one, and every checkpoint still reads 1. Printing the id makes
-    the sample measure what #304 asked to see.
-    """
+    """Report remaining containers and their ids for cleanup diagnostics."""
     return f"{len(ids)} ({', '.join(ids) or 'none'})"
 
 
@@ -221,8 +215,7 @@ def suppressed(source: str) -> list[str]:
 def validations(reply: object, name: str) -> int:
     """How many times ``reply`` called ``name`` and got a compile back.
 
-    The container count cannot answer this: a turn that never validates leaves the previous
-    turn's container standing, so the count still reads 1 while no second `acquire` happened.
+    An empty container count is equally consistent with completed disposal and no validation.
 
     Counting *requests* would not answer it either. `bicep_validate` refuses without touching the
     sandbox when no conversation is bound, when a name has the wrong suffix, and when a name is not
@@ -297,11 +290,9 @@ async def run() -> int:
         print("No sandbox backend: bicep_validate was not attached.", file=sys.stderr)
         return 2
 
-    # Every count below is "containers for this thread", so one left by a run that was killed
-    # before disposing makes all four read 2 and the footer read 1 left behind — honest, and
-    # unreadable. This is also the program's first call to Docker: the guard above attaches a
-    # tool whenever a backend is *registered*, which probes nothing, so an unreachable engine
-    # surfaces here and is answered here.
+    # Every count below is "containers for this thread", so leftovers from an earlier run
+    # would contaminate the cleanup measurements. Tool attachment only checks registration;
+    # this first Docker query detects an unreachable engine.
     try:
         stale = containers()
     except (OSError, subprocess.CalledProcessError) as exc:
@@ -409,9 +400,6 @@ async def run() -> int:
             session=session,
         )
         print(quoted(second.text))
-        # Printed before the container count, because it is what gives that count its meaning: a
-        # turn that never reached the sandbox would leave turn 1's container standing and
-        # still read 1.
         print(
             f"\n{MEASURED}validations that reached the sandbox in turn 2: "
             f"{validations(second, BICEP_TOOL)}"
@@ -420,9 +408,7 @@ async def run() -> int:
 
         # A model that says "it validates clean now" is still narrating. Compile the file it
         # left behind, from here rather than from the conversation, and let that be the verdict
-        # everything below is read off. This is the **fourth** `acquire` on the same key, which
-        # is why the container count is printed again: turn 2 finding the sandbox warm was not
-        # a one-off.
+        # everything below is read off.
         print("== What the compiler says about the file the model left ==\n")
         verdict = result_text(
             await bicep_validate.invoke(arguments={"files": [BICEP_FILE]}, skip_parsing=True)
@@ -460,14 +446,16 @@ async def run() -> int:
             f"{MEASURED}faults introduced:  {len(introduced)} — {'; '.join(introduced) or 'none'}\n"
         )
     finally:
-        disposed = (await router.dispose_scope(SCOPE, THREAD_ID)).disposed
+        purge = await router.dispose_scope(SCOPE, THREAD_ID)
         if credential is not None:
             await credential.close()
 
     print(
-        f"{MEASURED}Disposed {disposed} sandbox(es) after 2 turns and a check. "
+        f"{MEASURED}Disposed {purge.disposed} sandbox(es) after 2 turns and a check. "
         f"Containers left: {len(containers())}."
     )
+    if purge.undisposed is not None:
+        print(f"{MEASURED}Not fully disposed: {purge.undisposed}")
     return 0
 
 

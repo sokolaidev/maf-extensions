@@ -12,7 +12,7 @@ It is **not** re-exported from the package's ``__init__``, on purpose: ``import 
 has to stay cheap and MAF-free for a backend, a workload's own test suite, or anything else
 that only speaks the protocol.  Reach it by name — ``from maf_sandbox.maf import ...``.
 
-Ten things live here, and each of them had begun to exist twice before it did:
+The host-facing conveniences live here:
 
 - :func:`make_caller_context` — how a host says who is calling and which files they own.
 - :func:`sandboxed_tool` — the shape every sandbox workload's tool has: attach nothing when
@@ -24,8 +24,6 @@ Ten things live here, and each of them had begun to exist twice before it did:
 - :func:`list_all_files` and :func:`list_no_files` — the listing a caller context is built
   from, walked from ``list_children`` or declared empty. They are here rather than in core
   because the walk reads ``FileStoreEntry.type``, which the framework owns.
-- :func:`labelled_result_item` — one item of a result a kind splits, carrying its own
-  integrity label. Here because the item is an ``agent_framework`` ``Content``.
 - :func:`argument_provenance_middleware`, :func:`positions_holding_hidden_content` and
   :func:`hidden_content_candidates` — which of a call's arguments the host's information-flow
   middleware rewrote, so a refusal names a position rather than quoting content the framework
@@ -58,6 +56,7 @@ import threading
 import time
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextvars import ContextVar
+from copy import copy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
@@ -72,6 +71,7 @@ from ._error_detail import error_detail
 from ._file_provenance import FILE_STORE_WRITE_TOOLS, PATH_ARGUMENT, FileStoreProvenance
 from ._observer import (
     RECORDED_CALL,
+    FedFromStore,
     RecordedCall,
     SandboxObserver,
     StoreFileRead,
@@ -153,7 +153,6 @@ __all__ = [
     "file_store_provenance_middleware",
     "SandboxPurger",
     "SandboxToolSession",
-    "labelled_result_item",
     "list_all_files",
     "list_no_files",
     "make_caller_context",
@@ -1194,59 +1193,9 @@ def sandbox_tool_declarations(
 
 #: Where :meth:`SandboxToolSession.read_file` records what the host knows about a file's bytes.
 #:
-#: A private key rather than the framework's ``security_label``, and the difference is not
-#: cosmetic. ``security_label`` holds a whole ``ContentLabel``, and a partial one is not partial:
-#: ``ContentLabel.from_dict({"integrity": "untrusted"})`` answers ``confidentiality=public``, so
-#: writing integrity alone classifies everything the store holds as public the moment anything
-#: parses it back. It is the same reason :func:`labelled_result_item` refuses ``untrusted``, and
-#: it keeps an item that merely came out of the store from consuming :func:`sandboxed_tool`'s
-#: rule that not every item may carry a label. This key means *what the host recorded about the
-#: source* and nothing about confidentiality, so an item carrying it makes no claim MAF acts on.
-#: A kind that wants to say something about a result item uses :func:`labelled_result_item`.
+#: This records source integrity alone. The framework's ``security_label`` replaces both
+#: axes, defaulting confidentiality to public, so only the result wrapper may mint one.
 SOURCE_INTEGRITY_PROPERTY = "maf_sandbox_source_integrity"
-
-
-def labelled_result_item(text: str, integrity: SourceIntegrity) -> Content:
-    """One item of a split tool result, carrying its own integrity label.
-
-    A kind whose result mixes standing guidance with something the call produced answers with
-    a list of these rather than one string.  MAF's information-flow module reads a per-item
-    label ahead of the tool's own declaration and hides each item separately, so the guidance
-    stays readable while the derived half is replaced by a reference the model can still pass
-    on.  `docs/sandbox/information-flow.md` carries what may be labelled and why.
-
-    **Label only what carries nothing from the call.**  A per-item label is the item's *whole*
-    label, confidentiality included, and this library has no confidentiality value to give —
-    those are the host's.  An item left unlabelled takes the call's own label instead, which
-    is where its confidentiality comes from, so :func:`sandboxed_tool` refuses a result whose
-    every item carries one.
-
-    Args:
-        text: The item's text.
-        integrity: :data:`~maf_sandbox.SourceIntegrity.TRUSTED`, and only that — see below.
-
-    Raises:
-        ValueError: for :data:`~maf_sandbox.SourceIntegrity.UNTRUSTED`, which an item is
-            given by leaving it unlabelled rather than by writing it here.
-    """
-    if SourceIntegrity(str(integrity)) is not SourceIntegrity.TRUSTED:
-        raise ValueError(
-            f"labelled_result_item: {str(integrity)!r} is not a label an item may carry here. "
-            "A per-item label replaces the item's whole label, and one written for integrity "
-            "alone arrives `public` — a claim about content the call produced, in a vocabulary "
-            "that is the host's and not this library's. Leave the item unlabelled instead: it "
-            "then takes the call's own label, which is untrusted unless the tool declared "
-            "otherwise. Where the input-label join might answer trusted, say so for the whole "
-            "tool with sandboxed_tool(source_integrity=SourceIntegrity.UNTRUSTED)."
-        )
-
-    # `ContentLabel.to_dict` rather than a dict literal: the key names and the value spellings
-    # are the framework's serialization, and a literal here would be a second copy of them.
-    from agent_framework import Content
-    from agent_framework.security import ContentLabel, IntegrityLabel
-
-    label = ContentLabel(integrity=IntegrityLabel(str(integrity)))
-    return Content.from_text(text, additional_properties={"security_label": label.to_dict()})
 
 
 class _CallClosed(RuntimeError):
@@ -1804,6 +1753,8 @@ async def _dispose_the_unclean(
     prefix: str,
     logger: logging.Logger,
     timeout: float,
+    kind: str,
+    instance_id: str,
 ) -> DisposalOutcome:
     """Dispose a sandbox the call could not leave clean, unless the host opted down.
 
@@ -1820,7 +1771,9 @@ async def _dispose_the_unclean(
         )
         return "kept"
     try:
-        landed = await router.dispose_unclean(key, timeout=timeout)
+        landed = await router.dispose_unclean(
+            key, kind=kind, instance_id=instance_id, timeout=timeout
+        )
     except (asyncio.CancelledError, GeneratorExit) as stopped:
         logger.warning(
             f"{prefix}: the sandbox could not be disposed: %s during the disposal; the router "
@@ -1845,7 +1798,7 @@ async def _dispose_the_unclean(
 
 def _refuse_not_yet_reclaimed(
     router: SandboxRouter,
-    acquired: Sequence[tuple[SandboxKey, object]],
+    acquired: Sequence[tuple[SandboxKey, list[Sandbox]]],
     start: int,
     *,
     call: _SandboxToolCall,
@@ -1854,19 +1807,19 @@ def _refuse_not_yet_reclaimed(
     """Retain the unclean targets cancellation left unfinished, unless the host chose KEEP."""
     if router.reclaim.failed_reclaim_policy is FailedReclaimPolicy.KEEP:
         return
-    for key, _ in acquired[start:]:
+    for key, sandboxes in acquired[start:]:
         admission = call.entered.get((key, kind))
         if key.call_id:
             # A call-scoped key has no next acquire to refuse.
             continue
-        router.mark_unclean(
-            key,
-            DisposalFailure(
-                "unknown", "the tool call's cleanup was cancelled before it could dispose"
-            ),
-            backend=None if admission is None else admission.backend,
-            kind=kind,
-        )
+        for sandbox in sandboxes:
+            router.mark_unclean(
+                key,
+                DisposalFailure("unknown", "the tool call's cleanup was cancelled"),
+                backend=None if admission is None else admission.backend,
+                kind=kind,
+                instance_id=sandbox.instance_id,
+            )
 
 
 async def _tell_the_host(
@@ -2021,6 +1974,17 @@ async def _clean_each_sandbox(
     unclean: Sequence[tuple[object, str]],
 ) -> None:
     """Clean each acquired sandbox while the caller retains its admission holds."""
+    grouped: list[tuple[SandboxKey, list[Sandbox]]] = []
+    for key, sandboxes in acquired:
+        admission = call.entered.get((key, spec.kind))
+        if admission is None or admission.rung is not Cleanup.RECLAIM or key.call_id:
+            grouped.append((key, sandboxes))
+            continue
+        instances: dict[str, list[Sandbox]] = {}
+        for sandbox in sandboxes:
+            instances.setdefault(sandbox.instance_id, []).append(sandbox)
+        grouped.extend((key, wrappers) for wrappers in instances.values())
+    acquired = tuple(grouped)
     for index, (key, sandboxes) in enumerate(acquired):
         admission = call.entered.get((key, spec.kind))
         if key.call_id:
@@ -2087,12 +2051,13 @@ async def _clean_each_sandbox(
                     spec,
                     admission=admission,
                     sandbox=sandboxes[-1],
+                    sandboxes=sandboxes,
                     owner=call.id,
                     unclean="; ".join(noted) or None,
                     timeout=timeout,
                 )
             except (asyncio.CancelledError, GeneratorExit):
-                _refuse_not_yet_reclaimed(router, acquired, index, call=call, kind=spec.kind)
+                _refuse_not_yet_reclaimed(router, acquired, index + 1, call=call, kind=spec.kind)
                 logger.warning(
                     f"{prefix}: the sandbox was not cleaned: the call was cancelled during the %s",
                     str(rung),
@@ -2154,9 +2119,20 @@ async def _clean_each_sandbox(
             continue
         try:
             if router.reclaim.failed_reclaim_policy is not FailedReclaimPolicy.KEEP:
-                router.mark_unclean(key, backend=admission.backend, kind=spec.kind)
+                router.mark_unclean(
+                    key,
+                    backend=admission.backend,
+                    kind=spec.kind,
+                    instance_id=sandboxes[-1].instance_id,
+                )
             disposal = await _dispose_the_unclean(
-                router, key, prefix=prefix, logger=logger, timeout=timeout
+                router,
+                key,
+                prefix=prefix,
+                logger=logger,
+                timeout=timeout,
+                kind=spec.kind,
+                instance_id=sandboxes[-1].instance_id,
             )
             if on_failure is None:
                 continue
@@ -2282,96 +2258,103 @@ def _needs_call_id(committed: tuple[str, ...]) -> bool:
     return any(CALL_ID_PLACEHOLDER in _guidance_placeholders(s) for s in committed)
 
 
-def _refuse_a_result_that_departs_from_its_guidance(
-    result: object, *, tool: str, committed: tuple[str, ...], call_id: str | None
-) -> None:
-    """Hold a result's labelled items to the sentences ``committed`` at attach, in order.
+def _result_label(
+    declarations: Mapping[str, Any], fed: FedFromStore | None
+) -> dict[str, Any] | None:
+    """Weaken an explicit declaration, preserving the host's confidentiality verbatim."""
+    from agent_framework.security import ConfidentialityLabel, ContentLabel, IntegrityLabel
 
-    Rule 5 in ``docs/sandbox/kinds/README.md`` is what this executes, and owns the reasoning.
+    integrity = declarations.get("source_integrity")
+    confidentiality = declarations.get("confidentiality")
+    if integrity is None or confidentiality is None:
+        return None
+    try:
+        declared = IntegrityLabel(integrity)
+        classified = ConfidentialityLabel(confidentiality)
+    except (TypeError, ValueError):
+        # The framework falls back to host defaults for invalid declarations; we cannot know them.
+        return None
+    if fed is not None and fed.weakest is not SourceIntegrity.TRUSTED:
+        declared = IntegrityLabel.UNTRUSTED
+    return ContentLabel(integrity=declared, confidentiality=classified).to_dict()
 
-    **The refusal must never quote the item.**  A raise here skips the label-tracking
-    middleware's own labelling step, so MAF answers with an *unlabelled* error result — and the
-    mistake being caught is a kind labelling guest text as trusted.  Name positions and counts.
+
+def _label_tool_result(
+    result: object,
+    *,
+    tool: str,
+    committed: tuple[str, ...],
+    call_id: str | None,
+    declarations: Mapping[str, Any],
+    fed: FedFromStore | None,
+) -> str | list[Content]:
+    """Stamp committed guidance and weaken derived items without accepting a body's labels.
+
+    Refusals name positions, never content: the framework returns raised errors unlabelled.
     """
-    if not committed:
-        return
+    from agent_framework import Content
+    from agent_framework.security import ContentLabel
+
     if isinstance(result, str):
+        if committed:
+            raise ValueError(
+                f"{tool}: this tool commits to standing guidance and its body answered with a "
+                "string. Answer with the committed sentences as the last items on every path."
+            )
+        label = _result_label(declarations, fed)
+        if label is None:
+            return result
+        return [Content.from_text(result, additional_properties={"security_label": label})]
+    if not isinstance(result, list) or not result:
         raise ValueError(
-            f"{tool}: this tool commits to standing guidance and its body answered with a "
-            "string, so the committed sentences reached no item. A string on one return path "
-            "beside a split result on another is itself a bit about which path ran. Answer "
-            "with the items on every path, refusals included."
+            f"{tool}: the tool body must return a string or a nonempty list of Content items. "
+            "MAF renders an empty list as the text '[]'."
         )
-    if not isinstance(result, list):
-        return
-    # Formatted whether or not anything interpolates: `str.format` is what undoubles `{{`, and
-    # the attach-time refusal tells a caller to double a literal brace.
+    items: list[Content] = []
+    for position, item in enumerate(cast("list[object]", result)):
+        if not isinstance(item, Content):
+            raise ValueError(f"{tool}: item {position} is not a Content item.")
+        if "security_label" in (item.additional_properties or {}):
+            raise ValueError(
+                f"{tool}: item {position} carries a security label supplied by the body. "
+                "Return unlabelled items and commit standing_guidance at attach; only the "
+                "wrapper may label a result."
+            )
+        items.append(item)
+    derived_count = len(items) - len(committed)
     substitution = {CALL_ID_PLACEHOLDER: call_id} if call_id is not None else {}
     rendered = [sentence.format(**substitution) for sentence in committed]
-    items = cast("list[Any]", result)
-    labelled_at: list[int] = []
-    labelled: list[str] = []
-    for position, item in enumerate(items):
-        properties = cast("dict[str, Any]", getattr(item, "additional_properties", None) or {})
-        if "security_label" not in properties:
-            continue
-        text = getattr(item, "text", None)
-        if not isinstance(text, str):
-            raise ValueError(
-                f"{tool}: item {position} of this result carries a label and no text, so there "
-                "is nothing to hold to what this tool committed to."
-            )
-        labelled_at.append(position)
-        labelled.append(text)
-    # The guidance is the *suffix*, and that is the third thing the body could otherwise vary.
-    # Comparing the labelled texts alone leaves their placement among the unlabelled items
-    # free — `[guidance, derived]` and `[derived, guidance]` reduce to the same sequence — and
-    # the framework preserves list order, so a reader sees which one ran even where the derived
-    # half is hidden. Last is the canonical place because it is where the one shipped kind puts
-    # it: a result reads as its answer, then the standing sentence about it.
-    expected_at = list(range(len(items) - len(committed), len(items)))
-    if labelled != rendered or labelled_at != expected_at:
-        # The text is never repeated here: this refusal returns to the model through a path
-        # that labels nothing.
-        raise ValueError(
-            f"{tool}: this result carries {len(labelled)} labelled item(s) and this tool "
-            f"committed to {len(rendered)}. They must be the last {len(rendered)} item(s), in "
-            "the committed order, each carrying the sentence committed at its position. A "
-            "sentence not committed, one missing, one repeated, two out of order, or guidance "
-            "placed anywhere but last is a bit about which path ran, which is what a standing "
-            "sentence may not be."
-        )
-
-
-def _refuse_a_result_that_carries_no_call_label(result: object, *, tool: str) -> None:
-    """Refuse a list of items in which nothing is left to carry the call's own label.
-
-    A per-item label replaces the whole label rather than its integrity alone, so a result
-    made only of labelled items has replaced the call's confidentiality with whatever those
-    items named — ``public``, for every item this package can build. One unlabelled item is
-    what keeps the call's confidentiality in the fold, and an empty list is the same absence
-    written differently: the framework renders it to the model as the text ``[]``.
-    """
-    if not isinstance(result, list):
-        return
-    items = cast("list[Any]", result)
-    if not items:
-        raise ValueError(
-            f"{tool}: the tool body returned an empty list. MAF renders that to the model as "
-            "the text '[]'. Return the string the model should read, or the items it should."
-        )
-    if any(
-        "security_label" not in (getattr(item, "additional_properties", None) or {})
-        for item in items
+    if derived_count < 0 or any(
+        item.type != "text" or item.text != sentence
+        for item, sentence in zip(items[derived_count:], rendered, strict=True)
     ):
-        return
-    raise ValueError(
-        f"{tool}: every item of this result carries its own security label, so nothing in it "
-        "carries the call's confidentiality. A per-item label replaces the whole label, and "
-        "one this package builds names no confidentiality, so such a result is `public` "
-        "however the tool or the host classified it. Leave the items that derive from the "
-        "call unlabelled — the framework labels those from the call itself."
-    )
+        raise ValueError(
+            f"{tool}: the {len(rendered)} committed sentences must be the last "
+            f"{len(rendered)} item(s), in the committed order, each carrying only its "
+            "committed text."
+        )
+    if derived_count == 0:
+        raise ValueError(
+            f"{tool}: this result needs a derived item that carries the call's confidentiality "
+            "before its standing guidance."
+        )
+    label = _result_label(declarations, fed)
+    labelled: list[Content] = []
+    for item in items[:derived_count]:
+        # A kind may reuse Content objects across calls, and MAF mutates their properties too.
+        derived = copy(item)
+        derived.additional_properties = dict(item.additional_properties or {})
+        if label is not None:
+            derived.additional_properties["security_label"] = dict(label)
+        labelled.append(derived)
+    for sentence in rendered:
+        # Rebuild from the commitment so no other fields on the body's item become trusted.
+        labelled.append(
+            Content.from_text(
+                sentence, additional_properties={"security_label": ContentLabel().to_dict()}
+            )
+        )
+    return labelled
 
 
 def sandboxed_tool(
@@ -2422,7 +2405,7 @@ def sandboxed_tool(
        an explicit ``source_integrity="trusted"`` is refused over a ``spec`` that opens a
        channel nothing establishes *as trusted* — see :func:`sandbox_tool_declarations`, which
        owns the rule and the escape.  That last one reads a verbatim ``declarations=`` mapping
-       too, for the one key: the mapping is otherwise untouched, but a check the derivation
+       too, for that key at attach: a check the derivation
        alone holds is walked past by the hand-built mapping, which is exactly what a kind
        outside this repository writes.  No escape is read beside such a mapping.
     7. **Reclaim what the call owned**, for an ``async`` body — a synchronous one cannot
@@ -2436,12 +2419,12 @@ def sandboxed_tool(
        A ``spec`` whose ``work_dir`` is the guest root is refused, because a path one
        component from the root is one this cannot remove — and only for such a body, since a
        synchronous one is not held to a rule it cannot break.
-    8. **A result is one string, or a list of items each carrying its own label.**  The list
-       is passed on untouched — see :func:`labelled_result_item` for what may be labelled —
-       with one refusal: a list in which *every* item is labelled has nothing left to carry
-       the call's own confidentiality, and so has neither the tool's classification nor the
-       host's.  Both bodies are held to it, the synchronous one through a wrapper that reads
-       the result's shape and does nothing else.
+    8. **The wrapper owns result labels.** A body returns one string or unlabelled items,
+       ending with its committed guidance. The wrapper stamps those sentences trusted/public.
+       With valid ``source_integrity`` and host-set ``confidentiality`` declarations, it also
+       stamps every derived item, weakening integrity when this call read an untrusted or
+       unestablished file. A string becomes one item. Without both declarations, derived items
+       retain the framework's fallback. Neither the declaration nor another call is changed.
 
     ``build`` is a callback rather than a decorated function because the session does not
     exist until the attach gate has passed, and the tool body needs it in its closure.  Two
@@ -2470,10 +2453,11 @@ def sandboxed_tool(
         approval_mode: MAF's per-tool approval setting.
         declarations: ``additional_properties`` to write verbatim, for a workload that wants
             full control. Defaults to :func:`sandbox_tool_declarations` over ``spec``.
-            Refused together with ``output_sink``. Written verbatim, and *read* for one key:
-            a ``source_integrity`` of ``"trusted"`` is held to the same spec check the
-            derivation applies. Nothing else in the mapping is inspected, nothing is derived
-            into it, and no keyword is honoured beside it.
+            Refused together with ``output_sink``. A ``source_integrity`` of ``"trusted"`` is
+            held to the same spec check the derivation applies. The result wrapper reads the
+            attached tool's ``source_integrity`` and ``confidentiality`` on each return; the
+            host may set its classification on that tool before use. No declaration keyword
+            is honoured beside this mapping.
         source_integrity: A :class:`~maf_sandbox.SourceIntegrity`, passed to
             :func:`sandbox_tool_declarations`; ignored when
             ``declarations`` is given. ``None`` is the default and declares no integrity at
@@ -2501,16 +2485,13 @@ def sandboxed_tool(
             cleared by a keyword. The channels this workload opens and derives nothing from —
             read that function before reaching for it, since declaring ``"untrusted"`` costs
             the model's sight of the result and nothing else.
-        standing_guidance: The sentences this tool's result may carry a ``trusted`` label on,
-            committed here so rule 5's test is checked rather than left to the body. Every
-            labelled item's text must be the committed sentence **at its position** — same
-            order, same count — and a bare ``str`` answer is refused once anything is committed,
-            since a string on one return path beside a split result on another is itself a bit
-            about which path ran. A sentence may interpolate ``{call_id}`` and nothing else,
-            rendered from the call rather than by the body, and one that does is refused on a
-            body that awaits nothing, which runs inside no call. Each is rendered once here, so
-            a sentence that cannot format is refused at attach rather than at every call. Empty
-            leaves the check off entirely.
+        standing_guidance: Sentences the wrapper stamps ``trusted/public``. Return them as
+            unlabelled text items at the end, in this order, after at least one derived item.
+            A missing or changed sentence, a bare string, or a body-supplied label is refused.
+            Only ``{call_id}`` may interpolate; the wrapper renders it from this call and
+            rebuilds the guidance without other fields from the body's items. A malformed or
+            empty sentence, or a call-id sentence on a synchronous body, is refused at attach.
+            Empty commits no guidance; body-supplied labels are still refused.
         on_reclaim_failure: Called with a :class:`~maf_sandbox.ReclaimFailure` when the call
             left its sandbox unclean — its guest path could not be removed, or a program it
             stopped may have left something running — **after** the framework has acted on it.
@@ -2550,7 +2531,7 @@ def sandboxed_tool(
             "than the one the host chose. Drop declarations= and pass "
             "outbound_max_confidentiality, or write the cap into the mapping yourself."
         )
-    # The one key read out of a verbatim mapping, and raw: FIDES acts on exactly this spelling
+    # The attach check reads this key raw: FIDES acts on exactly this spelling
     # (`IntegrityLabel(value)`, anything else logged and dropped), so an unrecognised value is
     # not a claim to refuse — and the mapping's vocabulary is the host's, not this package's.
     if declarations is not None and declarations.get("source_integrity") == SourceIntegrity.TRUSTED:
@@ -2638,10 +2619,8 @@ def sandboxed_tool(
     # mistake in a kind, and finding it at attach costs a reviewer nothing.
     committed = _committed_guidance(standing_guidance, tool=name, awaits=_awaits(body))
     if not _awaits(body):
-        # `acquire` is a coroutine, so a body that awaits nothing can hold no sandbox and owns
-        # nothing to reclaim, and this wrapper reads the result's shape and does nothing else.
-        # It stays synchronous so MAF still runs the body off the event loop the way it runs
-        # any synchronous tool.
+        # Keep the wrapper synchronous so MAF runs the body and result labelling off
+        # the event loop, as it does for other synchronous tools.
         @functools.wraps(body)
         def checked(*args: Any, **kwargs: Any) -> Any:
             # No `_SandboxToolCall` — there is nothing to reclaim — so the id is minted here.
@@ -2657,11 +2636,14 @@ def sandboxed_tool(
                 except BaseException as raised:
                     raised_by_body = raised
                     raise
-                _refuse_a_result_that_carries_no_call_label(result, tool=name)
-                _refuse_a_result_that_departs_from_its_guidance(
-                    result, tool=name, committed=committed, call_id=None
+                return _label_tool_result(
+                    result,
+                    tool=name,
+                    committed=committed,
+                    call_id=None,
+                    declarations=attached.additional_properties or {},
+                    fed=recording.fed,
                 )
-                return result
             finally:
                 recording.closed = True
                 RECORDED_CALL.reset(recorded)
@@ -2687,7 +2669,8 @@ def sandboxed_tool(
                         records,
                     )
 
-        return [decorate(checked)]
+        attached = decorate(checked)
+        return [attached]
     if not [part for part in posixpath.normpath(spec.work_dir).split("/") if part]:
         # Here rather than with the spec refusals above, because it constrains only a tool that
         # can reclaim: a body that never receives the wrapper cannot leave a path behind, and
@@ -2727,16 +2710,16 @@ def sandboxed_tool(
             except BaseException as raised:
                 raised_by_body = raised
                 raise
-            _refuse_a_result_that_carries_no_call_label(result, tool=name)
             # Gated, because `_call_name` is also what tells the reclaim a directory is named
             # after this call: a tool with no `{call_id}` sentence must not gain one here.
-            _refuse_a_result_that_departs_from_its_guidance(
+            return _label_tool_result(
                 result,
                 tool=name,
                 committed=committed,
                 call_id=_call_name(call) if _needs_call_id(committed) else None,
+                declarations=attached.additional_properties or {},
+                fed=recording.fed,
             )
-            return result
         finally:
             _CALL.reset(token)
             close_unclean_notes(notes)
@@ -2805,7 +2788,8 @@ def sandboxed_tool(
                     recording.closed = True
                     RECORDED_CALL.reset(recorded)
 
-    return [decorate(reclaiming)]
+    attached = decorate(reclaiming)
+    return [attached]
 
 
 def _landed_in_store(artifact: Artifact, destination: str) -> str:

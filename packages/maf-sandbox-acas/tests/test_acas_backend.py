@@ -76,14 +76,20 @@ class _FakePager:
         return _gen()
 
 
+class _CompletedDeletion:
+    async def result(self) -> None:
+        return None
+
+
 class _FakeSandboxClient:
     def __init__(self, sandbox_id: str) -> None:
         self.sandbox_id = sandbox_id
         self.deleted = False
         self.resumed = False
 
-    async def begin_delete(self) -> None:
+    async def begin_delete(self) -> _CompletedDeletion:
         self.deleted = True
+        return _CompletedDeletion()
 
     async def ensure_running(self, timeout: float | None = None) -> None:
         """The resume path `acquire` takes when it finds a registered sandbox."""
@@ -744,11 +750,12 @@ class _GuestSandboxClient(_FakeSandboxClient):
             if entry == path or entry.startswith(path + "/"):
                 del self.files[entry]
 
-    async def begin_delete(self) -> None:
-        await super().begin_delete()
+    async def begin_delete(self) -> _CompletedDeletion:
+        poller = await super().begin_delete()
         if self._owner.delete_fails:
             raise RuntimeError("the principal may not delete this sandbox")
         self._owner.deleted.append(self.sandbox_id)
+        return poller
 
     async def set_lifecycle_policy(self, policy) -> None:
         return None
@@ -764,6 +771,9 @@ class _GuestSandboxClient(_FakeSandboxClient):
 
 class _GuestGroupClient:
     """Hands out sandboxes that answer the probe, on the create path and the reuse path alike."""
+
+    def list_sandboxes(self, *, labels=None):
+        return _FakePager([])
 
     def __init__(self, answer, delete_fails: bool = False) -> None:
         self._answer = answer
