@@ -1148,7 +1148,7 @@ class SandboxRouter:
         against this host's posture, not about what a backend could do, so routing has nothing
         to offer them: there is no next backend to try.
         """
-        denied_capabilities = spec.requires & self._denied_capabilities
+        denied_capabilities = spec.required_capabilities & self._denied_capabilities
         if denied_capabilities:
             raise SandboxCapabilityDenied(
                 f"the {spec.kind!r} workload requires "
@@ -1193,7 +1193,7 @@ class SandboxRouter:
         capabilities = _declared_set(
             backend, cast("object", declarations.capabilities), "capabilities"
         )
-        missing = spec.requires - capabilities
+        missing = spec.required_capabilities - capabilities
         if missing:
             raise SandboxCapabilityNotSupported(
                 f"sandbox backend {backend.name!r} does not support "
@@ -1349,7 +1349,7 @@ class SandboxRouter:
         """
         if not self._candidates:
             return None
-        if spec.requires & self._denied_capabilities:
+        if spec.required_capabilities & self._denied_capabilities:
             return None
         if spec.identities & self._denied_identities:
             return None

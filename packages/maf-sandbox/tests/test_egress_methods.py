@@ -75,7 +75,8 @@ class TestMethodVocabulary:
     def test_scoping_derives_an_opt_in_requirement(self):
         original = DEFAULT_CAPABILITIES
         scoped = spec(EgressRule("example.com", ("GET",)))
-        assert scoped.requires == original | {Capability.EGRESS_METHODS}
+        assert scoped.requires == original
+        assert scoped.required_capabilities == original | {Capability.EGRESS_METHODS}
         assert Capability.EGRESS_METHODS not in original
         with pytest.raises(dataclasses.FrozenInstanceError):
             scoped.egress_allow[0].methods = ("POST",)  # type: ignore[union-attr,misc]
@@ -110,6 +111,47 @@ class TestMethodVocabulary:
 
 
 class TestMethodRouting:
+    @pytest.mark.parametrize("entries", [("example.com",), (EgressRule("example.com"),), ()])
+    @pytest.mark.parametrize("selection", [Selection.FIXED, Selection.PER_SPEC])
+    def test_removing_method_scope_serves_an_ordinary_backend(
+        self, entries: tuple[str | EgressRule, ...], selection: Selection
+    ):
+        provider = InProcessSandboxBackend()
+        router = SandboxRouter(
+            [provider],
+            min_isolation=Isolation.NONE,
+            selection=selection,
+            denied_capabilities={Capability.EGRESS_METHODS},
+        )
+        scoped = spec(EgressRule("example.com", ("GET",)))
+        unscoped = dataclasses.replace(scoped, egress_allow=entries)
+        router.ensure_can_serve(unscoped)
+        assert router.backend_for(unscoped) is provider
+        asyncio.run(router.acquire(KEY, unscoped))
+        assert KEY in provider.keys
+        with pytest.raises(SandboxCapabilityDenied):
+            router.ensure_can_serve(scoped)
+        assert router.backend_for(scoped) is None
+
+    def test_replacement_preserves_explicit_requirements_until_the_caller_changes_them(self):
+        explicit = DEFAULT_CAPABILITIES | {Capability.EGRESS_METHODS, Capability.HOST_TOOLS}
+        scoped = dataclasses.replace(spec(EgressRule("example.com", ("GET",))), requires=explicit)
+        unscoped = dataclasses.replace(scoped, egress_allow=("example.com",))
+        assert unscoped.requires == unscoped.required_capabilities == explicit
+        provider = InProcessSandboxBackend()
+        router = SandboxRouter([provider], min_isolation=Isolation.NONE)
+        with pytest.raises(SandboxCapabilityNotSupported, match="egress_methods"):
+            router.ensure_can_serve(unscoped)
+        revised = dataclasses.replace(unscoped, requires=DEFAULT_CAPABILITIES)
+        router.ensure_can_serve(revised)
+
+    def test_replacement_cannot_drop_enforcement_while_method_scope_remains(self):
+        router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE)
+        scoped = spec(EgressRule("example.com", ("GET",)))
+        revised = dataclasses.replace(scoped, image="new-image", requires=frozenset())
+        with pytest.raises(SandboxCapabilityNotSupported, match="egress_methods"):
+            router.ensure_can_serve(revised)
+
     def test_a_non_declarer_refuses_before_acquire(self):
         provider = InProcessSandboxBackend()
         router = SandboxRouter([provider], min_isolation=Isolation.NONE)
@@ -189,6 +231,11 @@ class TestMethodRecording:
         )
         state = EffectiveState.of(event)
         assert state is not None
+        assert Capability.EGRESS_METHODS in state.requires
+        unscoped = dataclasses.replace(scoped, egress_allow=("example.com",))
+        unscoped_state = EffectiveState.of(dataclasses.replace(event, spec=unscoped))
+        assert unscoped_state is not None
+        assert Capability.EGRESS_METHODS not in unscoped_state.requires
         assert json.loads(json.dumps(state.as_dict()))["egress_allow"] == [
             "other.example",
             {"host": "example.com", "methods": ["GET", "get"]},

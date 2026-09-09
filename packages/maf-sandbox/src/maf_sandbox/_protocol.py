@@ -736,7 +736,8 @@ class SandboxSpec:
     before this axis existed serving exactly as it did.  It says nothing about what is
     installed in the guest; :class:`OsFamily` carries why.
 
-    ``requires`` names the capabilities the workload cannot run without, and ``min_isolation``
+    ``requires`` names the workload's explicit capabilities; ``required_capabilities`` also
+    includes requirements derived from its current policy. ``min_isolation`` names
     the weakest boundary it accepts anywhere.  A spec may **raise** the host's floor and never
     lower it, and ``None`` means no opinion — which is not :data:`Isolation.NONE`, however
     alike the two now read.  ``None`` declines to constrain the floor at all; ``Isolation.NONE``
@@ -824,6 +825,13 @@ class SandboxSpec:
     min_cleanup: Cleanup | None = None
 
     @property
+    def required_capabilities(self) -> frozenset[Capability]:
+        """Explicit requirements plus capabilities needed to enforce the current policy."""
+        if any(isinstance(entry, EgressRule) for entry in self.egress_allow):
+            return self.requires | {Capability.EGRESS_METHODS}
+        return self.requires
+
+    @property
     def identities(self) -> frozenset[Identity]:
         """Whose authority this workload's host tools exercise — the surface's own, or none.
 
@@ -870,8 +878,6 @@ class SandboxSpec:
                 entries[folded] = entry
                 methods_by_host[folded] = methods
         object.__setattr__(self, "egress_allow", tuple(entries.values()))
-        if any(isinstance(entry, EgressRule) for entry in self.egress_allow):
-            object.__setattr__(self, "requires", self.requires | {Capability.EGRESS_METHODS})
         if Capability.RECLAIM in self.requires:
             raise ValueError(
                 "Capability.RECLAIM belongs in backend declarations; "
@@ -1307,7 +1313,7 @@ class BackendDeclarations:
     give a reader two places to look.
     """
 
-    #: What the backend can do, matched against a spec's ``requires``.  Silence is read
+    #: What the backend can do, matched against a spec's ``required_capabilities``. Silence is read
     #: charitably: a backend that never heard of the vocabulary still does what
     #: :class:`Sandbox` obligates.
     capabilities: frozenset[Capability] = DEFAULT_CAPABILITIES

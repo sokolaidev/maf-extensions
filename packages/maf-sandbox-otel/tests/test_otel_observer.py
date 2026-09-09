@@ -269,6 +269,12 @@ class TestTheAcquireRecordCarriesThePosture:
         recorded = build()
         recorded.observer.sandbox_acquired(an_acquire(spec=spec))
         assert recorded.attributes()[f"{NAMESPACE}.egress.allow"] == ("api.example (GET)",)
+        assert "egress_methods" in recorded.attributes()[f"{NAMESPACE}.sandbox.capabilities"]
+        recorded = build()
+        recorded.observer.sandbox_acquired(
+            an_acquire(spec=dataclasses.replace(spec, egress_allow=("api.example",)))
+        )
+        assert "egress_methods" not in recorded.attributes()[f"{NAMESPACE}.sandbox.capabilities"]
 
     def test_the_egress_mode_and_its_allowlist_are_recorded(self):
         recorded = build()

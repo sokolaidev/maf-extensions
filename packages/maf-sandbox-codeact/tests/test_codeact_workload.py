@@ -670,7 +670,7 @@ class TestCodeactSandboxSpec:
         rule = EgressRule("api.example", ("GET",))
         spec = codeact_sandbox_spec(egress_allow=(rule,))
         assert spec.egress_allow == (rule,)
-        assert Capability.EGRESS_METHODS in spec.requires
+        assert Capability.EGRESS_METHODS in spec.required_capabilities
 
     @pytest.mark.parametrize("host", ["", "a b", "a,b", "https://api.example"])
     def test_method_rule_hosts_receive_the_same_validation(self, host):

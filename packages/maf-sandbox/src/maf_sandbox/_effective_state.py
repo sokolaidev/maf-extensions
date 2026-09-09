@@ -130,7 +130,7 @@ class EffectiveState:
             isolation_scope=event.isolation_scope,
             egress=spec.egress,
             egress_allow=tuple(spec.egress_allow),
-            requires=frozenset(spec.requires),
+            requires=frozenset(spec.required_capabilities),
             image=spec.image,
             work_dir=spec.work_dir,
             declared_outputs=tuple(declared.path for declared in spec.declared_outputs),
