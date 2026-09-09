@@ -553,22 +553,25 @@ class _AcasSandbox:
         delete. Parent checks are not held; a redirected command still runs as the guest.
         """
         async with asyncio.timeout(self._read_timeout):
-            guest = await confine_resolve_guest_delete_path(
-                self._unconfined_stat, path, working_directory
-            )
-            planted = await self._stat_guest(guest, posixpath.normpath(path))
-            if planted is None:
-                return
-            if planted.kind is EntryKind.DIRECTORY and not recursive:
-                raise OSError(f"refusing to remove a directory without recursive: {path}")
             try:
+                guest = await confine_resolve_guest_delete_path(
+                    self._unconfined_stat, path, working_directory
+                )
+                planted = await self._stat_guest(guest, posixpath.normpath(path))
+                if planted is None:
+                    return
+                if planted.kind is EntryKind.DIRECTORY and not recursive:
+                    raise OSError(f"refusing to remove a directory without recursive: {path}")
                 answered = await self.exec(
                     ["rm", "-rf" if recursive else "-f", "--", guest],
                     working_directory="/",
                     timeout=self._read_timeout,
                 )
                 if answered.exit_code != 0:
-                    raise OSError(f"could not remove {path}: guest rm exited {answered.exit_code}")
+                    raise OSError(
+                        f"could not remove {path}: guest rm exited {answered.exit_code}"
+                        f"{f' — {answered.stderr.strip()}' if answered.stderr else ''}"
+                    )
                 if await self.stat_file(guest, working_directory=working_directory) is not None:
                     raise OSError(
                         f"could not remove {path}: the file plane still reports the entry"

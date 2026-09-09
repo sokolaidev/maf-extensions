@@ -1199,7 +1199,7 @@ class TestAnImageWhoseGuestIsNotRoot:
 
         assert caplog.records == []
 
-    def test_a_failed_command_is_not_read_as_an_removal(self):
+    def test_a_failed_command_is_not_read_as_a_removal(self):
         client = _GuestGroupClient(_GuestAnswer(stdout="", stderr="not found", exit_code=127))
         backend = _backend_with(client)
 
@@ -1560,7 +1560,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert "restart of this process" not in message, message
         assert backend._guest_removals == {}, "something was remembered after all"
 
-    def test_a_cold_acquire_cannot_demote_an_removal_another_cold_acquire_measured(self):
+    def test_a_cold_acquire_cannot_demote_a_removal_another_cold_acquire_measured(self):
         """The race on the path a create actually takes, which the two direct-call race tests
         below do not reach.
 
@@ -1618,7 +1618,7 @@ class TestAnImageWhoseGuestIsNotRoot:
             "the fresh probe did not correct the memo, so the next acquire repeats the mistake"
         )
 
-    def test_a_dropped_probe_does_not_displace_an_removal_another_one_measured(self):
+    def test_a_dropped_probe_does_not_displace_a_removal_another_one_measured(self):
         """A second probe of an already-measured sandbox drops, and answers what was measured.
 
         Driven by calling the probe directly on the entry a real acquire filled, which is the
@@ -4079,11 +4079,39 @@ class TestRemove:
         assert failure.value.__cause__ is client.exec_raises
         assert client.deletes == []
 
-    def test_a_failed_command_is_reported_even_if_the_entry_disappeared(self):
+    @pytest.mark.parametrize("failure_kind", ["service", "transport"])
+    @pytest.mark.parametrize("failed_path", ["/maf-sandbox", f"{_WORK_DIR}/real.txt"])
+    def test_preflight_provider_failures_arrive_as_oserror(
+        self, monkeypatch, failure_kind, failed_path
+    ):
+        from azure.core.exceptions import HttpResponseError, ServiceRequestError
+
         client = _GuestRemovalClient()
-        client.answer = _GuestAnswer(exit_code=1)
-        with pytest.raises(OSError, match="exited 1"):
+        original = client._dp_get
+        provider_failure = (
+            HttpResponseError("stat refused")
+            if failure_kind == "service"
+            else ServiceRequestError("stat connection failed")
+        )
+
+        async def stat(path, *, params):
+            if params["path"] == failed_path:
+                raise provider_failure
+            return await original(path, params=params)
+
+        monkeypatch.setattr(client, "_dp_get", stat)
+        with pytest.raises(OSError) as failure:
             asyncio.run(_sandbox(client).remove("real.txt", working_directory=_WORK_DIR))
+        assert failure.value.__cause__ is provider_failure
+        assert client.commands == client.deletes == []
+
+    @pytest.mark.parametrize("diagnostic", ["", "Permission denied\n", "rm: not found\n"])
+    def test_a_failed_command_is_reported_even_if_the_entry_disappeared(self, diagnostic):
+        client = _GuestRemovalClient()
+        client.answer = _GuestAnswer(exit_code=1, stderr=diagnostic)
+        with pytest.raises(OSError, match="exited 1") as failure:
+            asyncio.run(_sandbox(client).remove("real.txt", working_directory=_WORK_DIR))
+        assert diagnostic.strip() in str(failure.value)
         assert client.deletes == []
 
     def test_a_successful_command_that_leaves_the_entry_is_refused(self):
