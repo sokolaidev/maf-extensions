@@ -521,7 +521,7 @@ class TestTheProposalBodySurvivesTheShell:
     it writes. A test that only checked syntax would have passed on the exact bug it was for.
     """
 
-    _EXPECTED = (
+    _RANGE_EXPECTED = (
         # The phrase that broke it. Quotes are the failure mode, so this is the assertion.
         'held at "Approve and run", the same as a Release PR\'s',
         "**Check that it actually published before merging this.**",
@@ -529,23 +529,53 @@ class TestTheProposalBodySurvivesTheShell:
         "**The floor moves with it, in every dependent a minor behind.**",
         "**It deliberately does not reach the minor after",
         "**Nothing under `samples/` is in this pull request**",
+        "The release workflow opens a separate `chore:` pull request for the samples",
         "**To decline a floor without losing its ceiling**",
         "**Then merge it, and let the dependent releases it cuts publish.**",
     )
+    _SAMPLES_EXPECTED = (
+        "It moves only the floors in `samples/*/agent.py` to the 1.2 core minor",
+        "**Wait for the dependent releases before merging this.**",
+        "**This is deliberately separate from the range pull request.**",
+        "**If this pull request is already green, still check the release order.**",
+    )
 
-    def _body_fragment(self) -> str:
+    def _body_fragment(self, step: str, body_file: str) -> str:
         """Just the heredoc through the substitution — no git, gh or python3 to stand up."""
-        lines = run_block(RELEASE_WORKFLOW, "Propose the dependents' range").splitlines()
-        start = next((i for i, line in enumerate(lines) if line.startswith("cat > ")), None)
-        end = next((i for i, line in enumerate(lines) if line.startswith("sed -i ")), None)
+        lines = run_block(RELEASE_WORKFLOW, step).splitlines()
+        start = next(
+            (
+                i
+                for i, line in enumerate(lines)
+                if line.startswith(f'cat > "${{RUNNER_TEMP}}/{body_file}"')
+            ),
+            None,
+        )
+        end = next(
+            (
+                i
+                for i, line in enumerate(lines[start or 0 :], start or 0)
+                if line.startswith("gh pr create")
+            ),
+            None,
+        )
         assert start is not None and end is not None, (
             "the step no longer builds the body in a file — if it has gone back to a shell "
             "variable, the prose is being parsed by bash again, which is the bug this is for"
         )
         assert start < end, "the substitution must follow the heredoc that needs it"
-        return "\n".join(lines[start : end + 1])
+        return "\n".join(lines[start:end])
 
-    def test_the_body_is_written_intact(self, tmp_path: Path):
+    @pytest.mark.parametrize(
+        ("step", "body_file", "expected"),
+        [
+            ("Propose the dependents' range", "range-body.md", _RANGE_EXPECTED),
+            ("Propose the samples' floor", "samples-body.md", _SAMPLES_EXPECTED),
+        ],
+    )
+    def test_the_body_is_written_intact(
+        self, tmp_path: Path, step: str, body_file: str, expected: tuple[str, ...]
+    ):
         if shutil.which("bash") is None:
             pytest.skip("no bash on PATH; the release runner is ubuntu-latest")
         script = (
@@ -555,8 +585,8 @@ class TestTheProposalBodySurvivesTheShell:
             # Windows checkout may resolve `bash` to one that cannot read `C:/...`, and the
             # test would then fail on the path instead of testing the body.
             "RUNNER_TEMP=.\n"
-            f"{self._body_fragment()}\n"
-            'cat "$RUNNER_TEMP/range-body.md"\n'
+            f"{self._body_fragment(step, body_file)}\n"
+            f'cat "$RUNNER_TEMP/{body_file}"\n'
         )
         # Through stdin rather than a path: a Windows checkout would otherwise hand a
         # drive-lettered path to a shell that does not read one, and skip for the wrong reason.
@@ -573,12 +603,20 @@ class TestTheProposalBodySurvivesTheShell:
             f"the body fragment did not survive bash (exit {result.returncode}): "
             f"{result.stderr.decode('utf-8', 'replace').strip()}"
         )
-        for phrase in self._EXPECTED:
+        for phrase in expected:
             assert phrase in stdout, f"the body lost {phrase!r}"
         assert "1.2.3" in stdout, "the version was never substituted"
         assert "@VERSION@" not in stdout, "a placeholder reached the pull request body"
+        assert "@MINOR@" not in stdout, "a placeholder reached the pull request body"
 
-    def test_the_heredoc_does_not_expand(self):
+    @pytest.mark.parametrize(
+        ("step", "body_file"),
+        [
+            ("Propose the dependents' range", "range-body.md"),
+            ("Propose the samples' floor", "samples-body.md"),
+        ],
+    )
+    def test_the_heredoc_does_not_expand(self, step: str, body_file: str):
         """Quoting the delimiter is what makes the prose inert, and it has to stay quoted.
 
         The test above would pass on an unquoted heredoc too, because nothing in today's body
@@ -586,11 +624,34 @@ class TestTheProposalBodySurvivesTheShell:
         `${VERSION}` in backticks everywhere else, and a backtick in an unquoted heredoc is
         command substitution — the same failure again, with a different character.
         """
-        fragment = self._body_fragment()
+        fragment = self._body_fragment(step, body_file)
         assert re.search(r"<<'\w+'", fragment), (
             "the body heredoc must quote its delimiter (`<<'BODY'`) so nothing in the prose "
             "is expanded; the version is substituted afterwards instead"
         )
+
+
+class TestTheReleaseWorkflowProposesSeparateSamplesFloor:
+    """The release workflow opens the samples bump beside the package range bump."""
+
+    def test_the_samples_step_runs_on_the_same_core_release_condition(self):
+        assert condition_after(
+            RELEASE_WORKFLOW, "- name: Propose the samples' floor"
+        ) == condition_after(RELEASE_WORKFLOW, "- name: Propose the dependents' range")
+
+    def test_the_samples_step_uses_the_samples_mode(self):
+        block = run_block(RELEASE_WORKFLOW, "Propose the samples' floor")
+        assert 'scripts/set_dependents_range.py --print-title --samples "$VERSION"' in block
+        assert 'scripts/set_dependents_range.py --samples "$VERSION"' in block
+        assert 'branch="chore/maf-sandbox-samples-${VERSION}"' in block
+
+    def test_the_samples_step_starts_from_the_release_commit(self):
+        block = run_block(RELEASE_WORKFLOW, "Propose the samples' floor")
+        assert 'git switch --detach "$GITHUB_SHA"' in block
+
+    def test_the_range_step_does_not_move_samples(self):
+        block = run_block(RELEASE_WORKFLOW, "Propose the dependents' range")
+        assert 'scripts/set_dependents_range.py --samples "$VERSION"' not in block
 
 
 class TestTheConstraintCommentsDoNotNameAVersion:

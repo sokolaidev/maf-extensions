@@ -404,7 +404,8 @@ def main(argv: list[str]) -> int:
         print(
             f"{failures} of {len(every)} sample(s) do not work against the core their own block "
             "names. Either the floor is wrong or the sample is — and after a core release "
-            "`python scripts/set_dependents_range.py <released-version>` moves every floor.",
+            "`python scripts/set_dependents_range.py --samples <released-version>` moves every "
+            "floor.",
             file=sys.stderr,
         )
     if failures or refusals:
