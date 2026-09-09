@@ -820,12 +820,24 @@ class TestAcquireCreatesClosed:
         assert args[args.index("--memory") + 1] == "512m"
         assert args[args.index("--cpus") + 1] == "1.5"
 
-    def test_no_bind_mount_or_socket_ever_crosses(self):
-        backend, fake = _backend_with(_machine())
-        asyncio.run(backend.acquire(_KEY, _SPEC))
-        args = fake.only("run").args
-        assert "-v" not in args and "--volume" not in args
-        assert not any("docker.sock" in a for a in args)
+    @pytest.mark.parametrize("allowlisting", [False, True])
+    def test_no_mount_or_socket_ever_crosses(self, allowlisting: bool):
+        """The pull surface requires rootfs paths, including on allowlisted workloads."""
+        config = _ALLOW_CONFIG if allowlisting else DockerSandboxConfig()
+        spec = _ALLOW_SPEC if allowlisting else _SPEC
+        backend, fake = _backend_with(_machine(), config=config)
+        asyncio.run(backend.acquire(_KEY, spec))
+        runs = fake.matching("run")
+        assert len(runs) == (2 if allowlisting else 1)
+        for run in runs:
+            assert not any(a.startswith("-v") for a in run.args)
+            assert not {a.partition("=")[0] for a in run.args} & {
+                "--volume",
+                "--volumes-from",
+                "--mount",
+                "--tmpfs",
+            }
+            assert not any("docker.sock" in a for a in run.args)
 
     def test_labels_carry_the_key_and_the_specs_own_labels(self):
         spec = SandboxSpec(kind="bicep", image="bicep-sandbox:local", labels={"team": "infra"})
