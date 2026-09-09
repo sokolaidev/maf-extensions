@@ -865,6 +865,20 @@ class TestBootingAnImageTheServiceProvides:
         assert result.exit_code == 0, result.stderr
         assert result.stdout.strip() == "booted"
 
+    def test_the_python_image_carries_the_interpreter_codeact_names(self, prebuilt: _Live):
+        """Why this namespace is worth reaching: it retires #302's import prerequisite.
+
+        Skipped rather than failed when the suite is pointed at some other prebuilt name — the
+        interpreter is a property of `python-3.13`, not of the namespace.
+        """
+        if not _PREBUILT.startswith("python-"):
+            pytest.skip(f"{_PREBUILT} is not one of the Python images")
+        result = prebuilt.run(
+            prebuilt.sandbox.exec("python3 --version", working_directory="/", timeout=_EXEC_TIMEOUT)
+        )
+        assert result.exit_code == 0, result.stderr
+        assert result.stdout.strip().startswith("Python 3."), result.stdout
+
 
 class TestMissingLifecycleRecovery:
     """The recovery script's live claim: a labelled sandbox missing auto-delete can be repaired."""
@@ -891,8 +905,11 @@ class TestMissingLifecycleRecovery:
                     apply=True,
                     now=datetime.now(UTC) + timedelta(minutes=10),
                 )
-                assert result.installed == result.verified == [sandbox_id]
-                assert result.deleted == result.failures == []
+                assert result.failures == [], result
+                assert result.already_absent == [], result
+                assert result.installed == [sandbox_id], result
+                assert result.verified == [sandbox_id], result
+                assert result.deleted == [], result
             finally:
                 await backend.dispose_scope(scope, "thread-1")
 
@@ -900,20 +917,6 @@ class TestMissingLifecycleRecovery:
             loop.run_until_complete(scenario())
         finally:
             loop.run_until_complete(backend.aclose())
-
-    def test_the_python_image_carries_the_interpreter_codeact_names(self, prebuilt: _Live):
-        """Why this namespace is worth reaching: it retires #302's import prerequisite.
-
-        Skipped rather than failed when the suite is pointed at some other prebuilt name — the
-        interpreter is a property of `python-3.13`, not of the namespace.
-        """
-        if not _PREBUILT.startswith("python-"):
-            pytest.skip(f"{_PREBUILT} is not one of the Python images")
-        result = prebuilt.run(
-            prebuilt.sandbox.exec("python3 --version", working_directory="/", timeout=_EXEC_TIMEOUT)
-        )
-        assert result.exit_code == 0, result.stderr
-        assert result.stdout.strip().startswith("Python 3."), result.stdout
 
 
 # ---------------------------------------------------------------------------

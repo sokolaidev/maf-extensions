@@ -22,6 +22,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 _BACKEND_LABELS = ("scope", "thread", "agent", "kind")
+_VERIFY_ATTEMPTS = 7
+_VERIFY_INTERVAL_SECONDS = 5.0
 
 
 def _string_list() -> list[str]:
@@ -144,6 +146,7 @@ def _lifecycle_policy(sandbox: Any) -> Any:
     return (
         _field(
             sandbox,
+            "lifecycle",
             "lifecycle_policy",
             "lifecyclePolicy",
             "effective_lifecycle_policy",
@@ -213,6 +216,15 @@ async def _install_policy(client: Any, sandbox_id: str, policy: RecoveryPolicy) 
 
 async def _get_sandbox(client: Any, sandbox_id: str) -> Any:
     return await _maybe_await(client.get_sandbox(sandbox_id))
+
+
+async def _verify_policy(client: Any, sandbox_id: str) -> bool:
+    for attempt in range(_VERIFY_ATTEMPTS):
+        if attempt:
+            await asyncio.sleep(_VERIFY_INTERVAL_SECONDS)
+        if _auto_delete_enabled(await _get_sandbox(client, sandbox_id)):
+            return True
+    return False
 
 
 async def _list_sandboxes(client: Any) -> list[Any]:
@@ -329,7 +341,7 @@ async def recover_lifecycle_policies(
 
         result.installed.append(sandbox_id)
         try:
-            refreshed = await _get_sandbox(client, sandbox_id)
+            verified = await _verify_policy(client, sandbox_id)
         except Exception as exc:  # noqa: BLE001
             if _not_found(exc):
                 result.already_absent.append(sandbox_id)
@@ -339,10 +351,13 @@ async def recover_lifecycle_policies(
             )
             result.retained.append(sandbox_id)
             continue
-        if _auto_delete_enabled(refreshed):
+        if verified:
             result.verified.append(sandbox_id)
             continue
-        result.failures.append(f"Lifecycle policy for {sandbox_id!r} still lacks auto-delete")
+        result.failures.append(
+            f"Lifecycle policy for {sandbox_id!r} still lacks auto-delete "
+            f"after {_VERIFY_ATTEMPTS} reads"
+        )
         if expiry is None:
             result.retained.append(sandbox_id)
             continue
