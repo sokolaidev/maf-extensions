@@ -215,7 +215,7 @@ If the kind produces artifacts, extend its spec with `DeclaredOutput`, require `
 
 ## Migrate an existing kind
 
-Replace `labelled_result_item(text)` with `Content.from_text(text)`, and commit eligible guidance in `sandboxed_tool(standing_guidance=(...))`. Remove all body-written `security_label` properties, including labels on derived content. Route every normal return through the same suffix construction. Keep the justified source declaration; changing to wrapper-owned labels does not make a workload trusted.
+Replace `labelled_result_item(text, SourceIntegrity.TRUSTED)` with `Content.from_text(text)`, and commit eligible guidance in `sandboxed_tool(standing_guidance=(...))`. Remove all body-written `security_label` properties, including labels on derived content. Route every normal return through the same suffix construction. Keep the justified source declaration; changing to wrapper-owned labels does not make a workload trusted.
 
 Expose `file_store_provenance` if the host needs reads checked against the current record, and forward it to `sandboxed_tool`. Leave result confidentiality to host wiring. A package adopting this contract needs core 0.37 or later; move both ends of its bounded dependency range, for example `maf-sandbox>=0.37.0,<0.38` for the 0.37 line.
 

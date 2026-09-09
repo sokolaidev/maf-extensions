@@ -519,8 +519,8 @@ def make_codeact_tools(
         # kind's to answer for. It does not reach the withheld route's per-item `trusted`,
         # which is tier 1 and read first — `information-flow.md` carries both.
         source_integrity=SourceIntegrity.UNTRUSTED,
-        # Committed where a reviewer sees it, so the per-item `trusted` this kind writes on
-        # the withheld route stops being a claim only its body executes.
+        # The wrapper validates and stamps this suffix so the body cannot choose which
+        # returned items become trusted.
         standing_guidance=_standing_guidance(
             withhold=withhold_guest_output,
             lands_per_call=output_sink is not None and output_sink.per_call,
