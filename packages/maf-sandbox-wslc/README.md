@@ -54,7 +54,7 @@ config = WslcSandboxConfig(egress_proxy_image="maf-egress-proxy:local")
 | | |
 |---|---|
 | `acquire(key, spec)` | get-or-create, keyed `(scope, thread, agent)`. A running container is reused, a stopped one started, a missing one created — router-managed calls dispose it at cleanup, so the next call creates fresh |
-| `write_file(path, content, *, working_directory)` | a confined one-entry tar on stdin to `cp - <container>:/`, which creates the parent directories from the entry name |
+| `write_file(path, content, *, working_directory)` | a confined tar on stdin to `cp - <container>:/`, with guest-owned file and missing-directory entries |
 | `dispose(key, *, kind=None)` | Deletes the selected kind, or every kind when omitted; retained failures keep their kind for retries; includes proxies and networks |
 | `dispose_scope(scope, thread)` | delete every container for a conversation — **by label, read back from wslc**, not from process memory |
 | `reap(stopped_for, *, scope=None)` | operator retention for stopped workloads and orphan infrastructure; returns `WslcReapResult` with workload, proxy and network removal counts and failures |
@@ -74,6 +74,12 @@ config = WslcSandboxConfig(egress_proxy_image="maf-egress-proxy:local")
 Container names are derived from the key rather than remembered, so `acquire` and `dispose` agree on one without a registry to keep in sync. Labels are the durable record `dispose(key, kind=...)` and `dispose_scope` select on, and their values are digested when they are long or carry a separator — the same mapping on both sides, because transforming one and not the other makes a purge quietly select nothing.
 
 `stop` is never used to tear a sandbox down. A container whose init process ignores `SIGTERM` takes ten seconds to stop and under a quarter of a second to remove, and there is nothing in a sandbox worth waiting for. The one place it is used is the *egress proxy*, and only where a host registered an observer: its record has to be closed before it is read, or a request answered between the read and the removal reaches nobody. That pays the same ten-second worst case, on the proxy alone, on an acquire that is already collecting records.
+
+## Write ownership
+
+Files and newly created directories at or below `working_directory` belong to the image's user. Each acquire reads `Config.User` through `wslc container inspect`: an empty user means `0:0`, and a numeric `uid:gid` is used directly. A named user or omitted group uses bounded `id -u` and `id -g` replies from the guest, so those images need a working `id`; an unresolved identity refuses `write_file`. Existing directories keep their ownership and modes, including setgid and sticky bits. Ancestors above `working_directory` receive no guest-owned tar entry. Ownership stamping lets the guest modify inputs and create outputs; the copy still acts with host authority, so it does not close the path-check or concurrent-redirection residual.
+
+To verify non-root writes locally, set `MAF_SANDBOX_WSLC_E2E_IMAGE` to a runnable root image and `MAF_SANDBOX_WSLC_E2E_NONROOT_IMAGE` to a non-root image without `/maf-sandbox/work`. Build the guest-owned fixture with `wslc image build -t maf-sandbox-wslc-guest-owned:ci packages/maf-sandbox-wslc/tests/fixtures/guest-owned`, set `MAF_SANDBOX_WSLC_E2E_GUEST_OWNED_IMAGE=maf-sandbox-wslc-guest-owned:ci`, then run `uv run pytest packages/maf-sandbox-wslc/tests/test_wslc_e2e.py -k 'GuestThatIsNotRoot or guest_owned_work_dir' -q`. The tests check input modification, output and directory creation, preservation of an existing directory's metadata, and the shared reach probe with a writable non-root working directory. Containers are disposed after each test.
 
 ## Operator retention
 
