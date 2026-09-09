@@ -172,6 +172,43 @@ def _tool(
     return tools[0]
 
 
+def test_integrity_admission_skips_a_refused_file_and_compiles_the_rest(monkeypatch):
+    from functools import partial
+
+    from maf_sandbox import FileStoreProvenance, SourceIntegrity
+    from maf_sandbox.maf import file_store_provenance_middleware, sandboxed_tool
+
+    record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+    file_store_provenance_middleware(record)
+    record.record("weak.bicep")
+    monkeypatch.setattr(
+        _tool_module,
+        "sandboxed_tool",
+        partial(
+            sandboxed_tool,
+            file_store_provenance=record,
+            requires_file_integrity=SourceIntegrity.TRUSTED,
+        ),
+    )
+    backend = _fake_backend()
+    tool = _tool(
+        InMemoryStore(
+            {"weak.bicep": "param secret string", "trusted.bicep": "param x string"},
+            integrity=SourceIntegrity.TRUSTED,
+        ),
+        backend,
+    )
+
+    out = _run(tool, ["weak.bicep", "trusted.bicep"])
+
+    assert "'weak.bicep' does not meet the required file integrity (trusted)" in out
+    assert "secret" not in out
+    assert {_store_part(path) for path in _written(backend)} == {"trusted.bicep"}
+    commands = [command for command, _, _ in _commands(backend)]
+    assert any("trusted.bicep" in command for command in commands)
+    assert all("weak.bicep" not in command for command in commands)
+
+
 def _store_part(sandbox_path: str) -> str:
     """Strip `<work dir>/<per-call dir>/` off a sandbox path, leaving the store path."""
     from maf_sandbox_bicep._tool import _WORK_DIR

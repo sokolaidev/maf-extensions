@@ -1942,6 +1942,58 @@ class TestTheCallIsRecorded:
 class TestTheCallRecordsWhatFedIt:
     """`fed` folds the reads: the ordering, the empty case and which outcomes count."""
 
+    @pytest.mark.parametrize("integrity", [None, SourceIntegrity.UNTRUSTED])
+    @pytest.mark.parametrize("read_trusted_first", [False, True])
+    def test_integrity_admission_records_the_refusal_without_feeding_the_call(
+        self, integrity, read_trusted_first
+    ):
+        recorder = _Recorder()
+        store = InMemoryStore({"trusted.txt": "allowed", "weak.txt": "withheld"})
+
+        def build(session: SandboxToolSession):
+            async def widget_run() -> str:
+                """Read only files the host admits."""
+                if read_trusted_first:
+                    await session.read_file(
+                        store, ListedFile("trusted.txt", SourceIntegrity.TRUSTED)
+                    )
+                item = await session.read_file(store, ListedFile("weak.txt", integrity))
+                assert isinstance(item, str)
+                return item
+
+            return widget_run
+
+        tool = sandboxed_tool(
+            build,
+            router=_router(observer=recorder),
+            context=_context(),
+            agent_dir="agent-1",
+            spec=_SPEC,
+            name="widget_run",
+            requires_file_integrity=SourceIntegrity.TRUSTED,
+        )[0]
+        answer = asyncio.run(_fn(tool)())
+
+        assert isinstance(answer, str) and "required file integrity" in answer
+        assert "withheld" not in answer
+        ended = recorder.one(ToolCallEnded)
+        assert ended.failure is None
+        assert ended.keys == (_KEY,)
+        assert ended.fed == (
+            FedFromStore(reads=1, weakest=SourceIntegrity.TRUSTED) if read_trusted_first else None
+        )
+        reads = recorder.only(StoreFileRead)
+        assert len(reads) == (2 if read_trusted_first else 1)
+        refused = reads[-1]
+        assert (refused.name, refused.integrity, refused.characters, refused.outcome) == (
+            "weak.txt",
+            integrity,
+            0,
+            "refused",
+        )
+        assert refused.call == ended.call
+        assert refused.key == _KEY
+
     def _fed(self, recorder: _Recorder, store: InMemoryStore, *listing: ListedFile):
         def build(session: SandboxToolSession):
             async def widget_run() -> str:

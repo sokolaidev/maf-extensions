@@ -431,8 +431,8 @@ class HostToolCalled(SandboxEvent):
 
 
 #: What became of one store read.  ``"read"`` is text crossing, empty text included;
-#: ``"absent"`` is the store answering that there is no such file; ``"refused"`` is no answer
-#: at all — it raised, or a cancel took the read away.
+#: ``"absent"`` is the store answering that there is no such file; ``"refused"`` is no content
+#: fed to the workload — it raised, was cancelled, or failed integrity admission.
 StoreReadOutcome = Literal["read", "absent", "refused"]
 
 
@@ -441,7 +441,8 @@ class StoreFileRead(SandboxEvent):
     """One file a call read out of the host's store, and what the read said it was worth.
 
     ``integrity`` is what :meth:`~maf_sandbox.maf.SandboxToolSession.read_file` answered with
-    after folding the listing's label with the host's record across the read — ``None`` where
+    after folding the listing's label with the host's record across the read, including a fold
+    refused by integrity admission — ``None`` where
     nothing is established, which is not a synonym for untrusted.  ``name`` is the *host's*
     listing key, never the model's spelling of it.
 
@@ -452,10 +453,10 @@ class StoreFileRead(SandboxEvent):
     ``outcome`` is what became of the read, and it is three values rather than a flag because
     the three are genuinely different facts: ``"read"`` means text crossed — possibly empty
     text, which is why a length cannot stand in for this — ``"absent"`` means the store
-    answered that there is no such file, and ``"refused"`` means it did not answer at all,
-    because it raised or a cancel took the read away. A record that could not tell an empty
-    file from a missing one could not answer whether anything crossed the boundary, which is
-    the question it exists for.
+    answered that there is no such file, and ``"refused"`` means no content reached the workload,
+    because it raised, was cancelled, or failed integrity admission. A record that could not tell
+    an empty file from a missing one could not answer whether anything crossed the boundary,
+    which is the question it exists for.
     """
 
     key: SandboxKey | None

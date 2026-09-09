@@ -92,6 +92,7 @@ from ._outputs import (
     spec_lands_artifacts,
 )
 from ._protocol import (
+    INTEGRITY_RANK,
     CallerContext,
     Capability,
     Cleanup,
@@ -1257,6 +1258,7 @@ class SandboxToolSession:
         logger: logging.Logger,
         output_sink: OutputSink | None = None,
         file_store_provenance: FileStoreProvenance | None = None,
+        requires_file_integrity: SourceIntegrity | None = None,
     ) -> None:
         self._router = router
         self._context = context
@@ -1266,6 +1268,11 @@ class SandboxToolSession:
         self._logger = logger
         self._output_sink = output_sink
         self._file_store_provenance = file_store_provenance
+        self._requires_file_integrity = (
+            None
+            if requires_file_integrity is None
+            else SourceIntegrity(str(requires_file_integrity))
+        )
         self._log_prefix = _prefixed(name)
 
     @property
@@ -1427,6 +1434,10 @@ class SandboxToolSession:
         the word ``None`` into a sandbox is not an answer.  A failure to read answers with the
         sentence a caller returns, for the reason the listing does.
 
+        ``requires_file_integrity`` on the session refuses content below that level after the
+        fold. Unestablished integrity is below every level, so requiring ``trusted`` over an
+        unestablished store refuses every file. ``None`` disables this admission check.
+
         **The label is checked across the read, not taken from the listing.**  A listing's
         label is as old as the listing, and MAF runs tool calls concurrently, so the record is
         sampled either side of ``store.read`` through
@@ -1490,6 +1501,13 @@ class SandboxToolSession:
         except BaseException:
             self._record_read(listed.name, None, 0, outcome="refused")
             raise
+        required = self._requires_file_integrity
+        if required is not None and (
+            integrity is None or INTEGRITY_RANK[integrity] < INTEGRITY_RANK[required]
+        ):
+            self._record_read(listed.name, integrity, 0, outcome="refused")
+            shown = named if named is not None else echoed_name(listed.name, at=at, hidden=hidden)
+            return f"Error: {shown} does not meet the required file integrity ({required})"
         self._record_read(listed.name, integrity, len(text), outcome="read")
         properties: dict[str, Any] = {}
         if integrity is not None:
@@ -2376,6 +2394,7 @@ def sandboxed_tool(
     on_reclaim_failure: Callable[[ReclaimFailure], Awaitable[None]] | None = None,
     reclaim_timeout: float | None = None,
     file_store_provenance: FileStoreProvenance | None = None,
+    requires_file_integrity: SourceIntegrity | None = None,
     logger: logging.Logger | None = None,
 ) -> list[Any]:
     """Return the one-tool list for a sandbox workload, or ``[]`` when no sandbox is available.
@@ -2476,6 +2495,11 @@ def sandboxed_tool(
             :meth:`SandboxToolSession.read_file` folds it around the read rather than trusting a
             label as old as the listing. Pass the **same** record the listing callable folds.
             Left unset, the listing's label stands.
+        requires_file_integrity: The weakest integrity admitted by
+            :meth:`SandboxToolSession.read_file`, after folding. ``None`` (the default) accepts
+            every readable file. Unestablished integrity is below every level, so requiring
+            ``trusted`` refuses every file in a store whose integrity is unestablished. This
+            checks reads independently of result declarations and confidentiality labels.
         also_carries_out: Passed to :func:`sandbox_tool_declarations`; ignored when
             ``declarations`` is given. For a workload carrying something out through a channel
             the spec cannot show — a wired host-tool registry, say — so the confidentiality
@@ -2590,6 +2614,7 @@ def sandboxed_tool(
         logger=records,
         output_sink=output_sink,
         file_store_provenance=file_store_provenance,
+        requires_file_integrity=requires_file_integrity,
     )
     properties = (
         dict(declarations)
