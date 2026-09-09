@@ -157,6 +157,10 @@ async with router.scope(scope, thread_id) as reclaimed:
 print(f"Disposed {reclaimed.disposed} sandbox(es).")   # the count arrives after the block
 ```
 
+**Dispose one kind while retaining the others.** `await router.dispose_kind(key, "codeact", timeout=30)` deletes only that kind's sandboxes across every registered backend, including backends that no longer serve new calls. It returns `True` when every backend reports success, or `False` on failure or timeout; logs and `SandboxDisposed` events carry the individual failures. The finite positive timeout covers the per-key disposal lock wait and the whole sweep, and cancellation propagates. Coordinate active calls before disposal, as with `dispose(key)`.
+
+Like `dispose`, this host cleanup creates no refusal on failure. Success clears only the pending targets for that kind; another kind's target or a whole-key target keeps the key refused. For failed framework cleanup, `dispose_unclean(key, timeout=...)` retries the recorded backend/kind targets and reopens the key only once all land. It takes no kind filter: `mark_unclean(key, kind="codeact")` records that narrower cleanup request while keeping refusal at the whole key. See [cleanup operations](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/operations.md#host-disposal).
+
 A workload whose artifact names are not knowable when its tool is built passes the same `DeclaredOutput` type to `collect_outputs(outputs=...)` instead. That is refused unless the spec sets `outputs_named_at_call_time`: without the flag, the tool was attached with no sink required of it and no outbound cap agreed, and collecting there would land artifacts behind both checks.
 
 [`samples/08_docker_codeact_files`](https://github.com/sokolaidev/maf-extensions/tree/main/samples/08_docker_codeact_files) is all of the above as a runnable program, against a real engine.
