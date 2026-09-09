@@ -188,29 +188,24 @@ def test_admission_rechecks_cleanup_evidence_after_waiting(before, after, monkey
         await asyncio.sleep(0)
         assert not queued.done()
         declare(after)
-        router.release_call(key, spec.kind, owner="blocker")
+        await router.release_call(key, spec.kind, owner="blocker")
         admission = await queued
         assert admission.rung is after
-        assert (router._slots._slots[(key, spec.kind)].exclusive == "call") is (
-            after is not Cleanup.RECLAIM
-        )
-        router.release_call(key, spec.kind, owner="call")
+        assert router._slots._slots[(key, spec.kind)].exclusive is None
+        await router.release_call(key, spec.kind, owner="call")
         assert not router._slots._slots
 
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("cancel", [False, True])
-def test_upgraded_admission_waits_for_a_shared_owner(cancel, monkeypatch):
+def test_upgraded_cleanup_still_admits_an_ordinary_shared_body(monkeypatch):
     backend = InProcessSandboxBackend()
     key = SandboxKey(scope="s", thread_id="t", agent_dir="a")
     spec = SandboxSpec(kind="test", confined_to_guest_call_path=True)
     router = SandboxRouter([backend], min_isolation=Isolation.NONE)
 
     async def scenario():
-        await router._slots.take(key, spec.kind, owner="blocker", exclusive=True, timeout=1)
-        queued = asyncio.create_task(router.enter_call(key, spec, owner="call", timeout=1))
-        await asyncio.sleep(0)
+        await router.enter_call(key, spec, owner="first")
         monkeypatch.setattr(
             backend,
             "_declarations",
@@ -219,19 +214,9 @@ def test_upgraded_admission_waits_for_a_shared_owner(cancel, monkeypatch):
                 capabilities=FAKE_BACKEND_DECLARATIONS.capabilities - {Capability.RECLAIM},
             ),
         )
-        router.release_call(key, spec.kind, owner="blocker")
-        await router._slots.take(key, spec.kind, owner="sibling", exclusive=False, timeout=1)
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        assert not queued.done()
-        if cancel:
-            queued.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await queued
-        router.release_call(key, spec.kind, owner="sibling")
-        if not cancel:
-            assert (await queued).rung is Cleanup.DISPOSE
-            router.release_call(key, spec.kind, owner="call")
+        assert (await router.enter_call(key, spec, owner="second")).rung is Cleanup.DISPOSE
+        await router.release_call(key, spec.kind, owner="first")
+        await router.release_call(key, spec.kind, owner="second")
         assert not router._slots._slots
 
     asyncio.run(scenario())

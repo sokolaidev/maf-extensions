@@ -8,8 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from maf_sandbox import Cleanup, SandboxKey
-from maf_sandbox._cleanup import ExclusiveSlots, _Slot, _Waiter, needs_exclusive_use
+from maf_sandbox import SandboxKey
+from maf_sandbox._cleanup import ExclusiveSlots, _Slot, _Waiter
 
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-1")
 _KIND = "test"
@@ -20,13 +20,6 @@ RIVAL = "call-2"
 
 def _run(coro):
     return asyncio.run(coro)
-
-
-class TestWhichRungsExclude:
-    def test_reclaim_shares_and_everything_above_it_excludes(self):
-        assert needs_exclusive_use(Cleanup.RECLAIM) is False
-        assert needs_exclusive_use(Cleanup.RESET) is True
-        assert needs_exclusive_use(Cleanup.DISPOSE) is True
 
 
 class TestAHoldBelongsToTheCallThatTookIt:

@@ -145,6 +145,7 @@ def test_finish_cleans_each_engine_instance_once_with_fresh_wrappers():
     router = _router(engine)
 
     async def scenario():
+        await router.enter_call(KEY, SPEC, owner="call")
         a = await router.acquire(KEY, SPEC)
         b = await router.acquire(KEY, replace(SPEC, image="other"))
         engine.attempts.clear()

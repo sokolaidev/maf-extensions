@@ -57,10 +57,11 @@ import time
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from copy import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
+from ._cleanup import PendingCleanup
 from ._containment import CONTAINED, escapes_containment
 from ._effective_state import (
     EffectiveState,
@@ -109,7 +110,6 @@ from ._protocol import (
 )
 from ._purger import SandboxPurger
 from ._reclaim import (
-    DisposalOutcome,
     FailedReclaimPolicy,
     ReclaimFailure,
     close_unclean_notes,
@@ -1756,62 +1756,12 @@ class SandboxToolSession:
                 return admission
             admission = await self._router.enter_call(key, self._spec, owner=call.id)
             if call.closed:
-                self._router.release_call(key, self._spec.kind, owner=call.id)
+                await self._router.release_call(key, self._spec.kind, owner=call.id)
                 raise _CallClosed(
                     f"{self._name}: acquire() has no open tool call; this one has returned"
                 )
             call.entered[at] = admission
             return admission
-
-
-async def _dispose_the_unclean(
-    router: SandboxRouter,
-    key: SandboxKey,
-    *,
-    prefix: str,
-    logger: logging.Logger,
-    timeout: float,
-    kind: str,
-    instance_id: str,
-) -> DisposalOutcome:
-    """Dispose a sandbox the call could not leave clean, unless the host opted down.
-
-    Before the host is told, not after: the guarantee is the framework's, and it must not
-    wait on a callback's time budget. Cancellation passes through with the key recorded on
-    the router first, so the next call is refused rather than served the leftovers.
-    """
-    if router.reclaim.failed_reclaim_policy is FailedReclaimPolicy.KEEP:
-        # Every record here carries an argument, so the prefix's doubled `%` interpolates.
-        logger.warning(
-            f"{prefix}: the sandbox for %s is kept with the data in it — this host opted down "
-            "with FailedReclaimPolicy.KEEP",
-            key.thread_id,
-        )
-        return "kept"
-    try:
-        landed = await router.dispose_unclean(
-            key, kind=kind, instance_id=instance_id, timeout=timeout
-        )
-    except (asyncio.CancelledError, GeneratorExit) as stopped:
-        logger.warning(
-            f"{prefix}: the sandbox could not be disposed: %s during the disposal; the router "
-            "refuses it until a disposal lands",
-            type(stopped).__name__,
-        )
-        raise
-    if landed:
-        logger.warning(
-            f"{prefix}: the sandbox for %s was disposed, so the conversation's next call "
-            "starts cold",
-            key.thread_id,
-        )
-        return "disposed"
-    logger.warning(
-        f"{prefix}: the sandbox for %s could not be disposed; the router refuses it until a "
-        "disposal lands",
-        key.thread_id,
-    )
-    return "failed"
 
 
 def _refuse_not_yet_reclaimed(
@@ -1899,15 +1849,25 @@ async def _dispose_the_call_sandbox(
     return None if landed else "the delete did not land"
 
 
-def _give_back_the_sandbox(
+async def _give_back_the_sandbox(
     call: _SandboxToolCall, *, router: SandboxRouter, only_key: SandboxKey | None = None
 ) -> None:
     """Release this call's remaining holds, except while an acquire is still in flight."""
+    interrupted: BaseException | None = None
     for key, kind in tuple(call.entered):
-        if key in call.acquiring or (only_key is not None and key != only_key):
+        if only_key is not None and key != only_key:
             continue
-        router.release_call(key, kind, owner=call.id)
-        call.entered.pop((key, kind), None)
+        if key in call.acquiring:
+            router.drain_call(key, kind, owner=call.id)
+            continue
+        try:
+            await router.release_call(key, kind, owner=call.id, interrupted=interrupted is not None)
+        except (asyncio.CancelledError, GeneratorExit) as stopped:
+            interrupted = stopped
+        finally:
+            call.entered.pop((key, kind), None)
+    if interrupted is not None:
+        raise interrupted
 
 
 async def _reclaim_the_call(
@@ -1934,8 +1894,8 @@ async def _reclaim_the_call(
     disposal. RECLAIM cannot clear a surviving process, so an unclean note escalates it to
     disposal unless the host opted down. At CALL scope, disposal is the cleanup itself and
     cannot be opted out of; the host is told about any sandbox that remains.
-    ``timeout`` bounds the removal, the disposal and the report separately, so one sandbox
-    can cost up to three times it.
+    ``timeout`` bounds each removal, reset, disposal and report separately. Waiting for sibling
+    calls to finish uses the router's queued-call bound.
 
     Raises only what the caller asked for. A failed removal, a failed disposal, and a host
     callback that fails with them, are logged and swallowed: this runs in
@@ -1948,7 +1908,7 @@ async def _reclaim_the_call(
         # Nothing was acquired, so nothing was written and nothing ran — there is nothing
         # there, and no round trip is worth spending to prove it. The gate is still retired:
         # a call that entered and was then refused holds the count open otherwise.
-        _give_back_the_sandbox(call, router=router, only_key=only_key)
+        await _give_back_the_sandbox(call, router=router, only_key=only_key)
         return
     prefix = _prefixed(tool)
     path = f"{spec.work_dir}/{call.id}" if call.named else spec.work_dir
@@ -1972,9 +1932,10 @@ async def _reclaim_the_call(
             on_failure=on_failure,
             timeout=timeout,
             unclean=unclean,
+            only_key=only_key,
         )
     finally:
-        _give_back_the_sandbox(call, router=router, only_key=only_key)
+        await _give_back_the_sandbox(call, router=router, only_key=only_key)
 
 
 async def _clean_each_sandbox(
@@ -1990,23 +1951,16 @@ async def _clean_each_sandbox(
     on_failure: Callable[[ReclaimFailure], Awaitable[None]] | None,
     timeout: float,
     unclean: Sequence[tuple[object, str]],
+    only_key: SandboxKey | None = None,
 ) -> None:
-    """Clean each acquired sandbox while the caller retains its admission holds."""
-    grouped: list[tuple[SandboxKey, list[Sandbox]]] = []
-    for key, sandboxes in acquired:
-        admission = call.entered.get((key, spec.kind))
-        if admission is None or admission.rung is not Cleanup.RECLAIM or key.call_id:
-            grouped.append((key, sandboxes))
-            continue
-        instances: dict[str, list[Sandbox]] = {}
-        for sandbox in sandboxes:
-            instances.setdefault(sandbox.instance_id, []).append(sandbox)
-        grouped.extend((key, wrappers) for wrappers in instances.values())
-    acquired = tuple(grouped)
+    """Reclaim call directories, then leave every admission before waiting for instance cleanup."""
+    reports: list[tuple[PendingCleanup | None, ReclaimFailure]] = []
     for index, (key, sandboxes) in enumerate(acquired):
         admission = call.entered.get((key, spec.kind))
+        if admission is None:
+            continue
         if key.call_id:
-            if admission is None or not admission.served:
+            if not admission.served:
                 continue
             try:
                 undisposed = await _dispose_the_call_sandbox(
@@ -2018,159 +1972,110 @@ async def _clean_each_sandbox(
                     logger=logger,
                     timeout=timeout,
                 )
-                if undisposed is None:
-                    # The sandbox went, and every note about it went with it.
-                    continue
-                logger.warning(f"{prefix}: the call's sandbox was not disposed: %s", undisposed)
-                left = [
-                    undisposed,
-                    *(
-                        reason
-                        for owner, reason in unclean
-                        if any(owner is held for held in sandboxes)
-                    ),
-                ]
-                if len(left) > 1:
-                    # It is still there, so a stop that did not reach everything the program
-                    # started is still true of it — and a host told only that data was left
-                    # would not know something may still be running in it.
-                    logger.warning(
-                        f"{prefix}: the sandbox that was not disposed is not clean either: %s",
-                        "; ".join(left[1:]),
-                    )
-                if on_failure is not None:
-                    await _tell_the_host(
-                        on_failure,
+            except (asyncio.CancelledError, GeneratorExit):
+                _refuse_not_yet_reclaimed(router, acquired, index, call=call, kind=spec.kind)
+                raise
+            if undisposed is not None:
+                noted = [reason for owner, reason in unclean if any(owner is s for s in sandboxes)]
+                reason = "; ".join([undisposed, *noted])
+                logger.warning(f"{prefix}: the call's sandbox was not disposed: %s", reason)
+                reports.append(
+                    (
+                        None,
                         ReclaimFailure(
-                            tool=tool, key=key, path=path, reason="; ".join(left), disposal="failed"
+                            tool=tool,
+                            key=key,
+                            path=path,
+                            reason=reason,
+                            disposal="failed",
                         ),
-                        prefix=prefix,
-                        logger=logger,
-                        timeout=timeout,
                     )
-            except (asyncio.CancelledError, GeneratorExit):
-                _refuse_not_yet_reclaimed(router, acquired, index, call=call, kind=spec.kind)
-                raise
-            continue
-        reasons: list[str] = []
-        assert admission is not None
-        rung = admission.rung
-        if rung is not Cleanup.RECLAIM:
-            noted = [
-                reason for owner, reason in unclean if any(owner is held for held in sandboxes)
-            ]
-            if noted:
-                logger.warning(
-                    f"{prefix}: the sandbox is not clean after this call: %s", "; ".join(noted)
-                )
-            try:
-                left = await router.finish_call(
-                    key,
-                    spec,
-                    admission=admission,
-                    sandbox=sandboxes[-1],
-                    sandboxes=sandboxes,
-                    owner=call.id,
-                    unclean="; ".join(noted) or None,
-                    timeout=timeout,
-                )
-            except (asyncio.CancelledError, GeneratorExit):
-                _refuse_not_yet_reclaimed(router, acquired, index + 1, call=call, kind=spec.kind)
-                logger.warning(
-                    f"{prefix}: the sandbox was not cleaned: the call was cancelled during the %s",
-                    str(rung),
-                )
-                raise
-            call.entered.pop((key, spec.kind), None)
-            if left is None:
-                continue
-            # The router has already disposed and already marked the key, so the escalation
-            # below would be a second disposal over the same sandbox. Only the report is owed.
-            logger.warning(f"{prefix}: the sandbox was not cleaned: %s", left)
-            if on_failure is not None:
-                await _tell_the_host(
-                    on_failure,
-                    ReclaimFailure(tool=tool, key=key, path=path, reason=left, disposal="failed"),
-                    prefix=prefix,
-                    logger=logger,
-                    timeout=timeout,
                 )
             continue
-        if call.named and rung is Cleanup.RECLAIM:
-            try:
-                # By name, against the working directory — not as one composed string. A
-                # ``work_dir`` the protocol accepts may not be POSIX-shaped, and a composed path
-                # would carry its separators into a grammar that refuses them, failing every
-                # call on such a spec. Through the live wrapper: the guest path is the same
-                # whichever acquire returned it, and the newest is the one still connected.
-                reason = await reclaim_guest_path(
-                    sandboxes[-1], call.id, working_directory=spec.work_dir, timeout=timeout
-                )
-            except (asyncio.CancelledError, GeneratorExit):
-                # The caller's deadline has passed, and containing this would have the call return
-                # the body's answer past a bound the host thought it had. Neither this sandbox nor
-                # any the loop has not yet reached was reclaimed, so refuse them all — otherwise the
-                # next call reacquires one still holding the last call's data. The leak still has to
-                # be visible, so the line is written before the cancellation goes on.
-                _refuse_not_yet_reclaimed(router, acquired, index, call=call, kind=spec.kind)
-                logger.warning(
-                    f"{prefix}: %s was not reclaimed: the call was cancelled during the removal",
-                    path,
-                )
-                raise
-            if reason is not None:
-                # Logged whether or not a host is listening: a callback that swallows it would
-                # take the record with it.
-                logger.warning(f"{prefix}: %s was not reclaimed: %s", path, reason)
-                reasons.append(reason)
-        # Only this sandbox's notes, matched by identity against every wrapper acquired for the
-        # key: a call may acquire more than one, and a stop that did not take sandbox A's program
-        # tree must not dispose a clean sibling B. Every wrapper, not the last: a note names the
-        # one that ran the stop, which a reacquire may have replaced in the map.
-        noted = [reason for owner, reason in unclean if any(owner is held for held in sandboxes)]
-        if noted:
-            logger.warning(
-                f"{prefix}: the sandbox is not clean after this call: %s", "; ".join(noted)
-            )
-            reasons.extend(noted)
-        if not reasons:
-            continue
-        try:
-            if router.reclaim.failed_reclaim_policy is not FailedReclaimPolicy.KEEP:
-                router.mark_unclean(
-                    key,
-                    backend=admission.backend,
-                    kind=spec.kind,
-                    instance_id=sandboxes[-1].instance_id,
-                )
-            disposal = await _dispose_the_unclean(
-                router,
+        instances: dict[str, list[Sandbox]] = {}
+        for sandbox in sandboxes:
+            instances.setdefault(sandbox.instance_id, []).append(sandbox)
+        for wrappers in instances.values():
+            sandbox = wrappers[-1]
+            reasons = [reason for owner, reason in unclean if any(owner is s for s in wrappers)]
+            if admission.rung is Cleanup.RECLAIM and call.named:
+                try:
+                    reason = await reclaim_guest_path(
+                        sandbox, call.id, working_directory=spec.work_dir, timeout=timeout
+                    )
+                except (asyncio.CancelledError, GeneratorExit):
+                    _refuse_not_yet_reclaimed(router, acquired, index, call=call, kind=spec.kind)
+                    logger.warning(
+                        f"{prefix}: %s was not reclaimed: "
+                        "the call was cancelled during the removal",
+                        path,
+                    )
+                    raise
+                if reason is not None:
+                    logger.warning(f"{prefix}: %s was not reclaimed: %s", path, reason)
+                    reasons.insert(0, reason)
+            reason = "; ".join(reasons)
+            if reason:
+                logger.warning(f"{prefix}: the sandbox is not clean after this call: %s", reason)
+            if admission.rung is Cleanup.RECLAIM:
+                if not reason:
+                    continue
+                if router.reclaim.failed_reclaim_policy is FailedReclaimPolicy.KEEP:
+                    logger.warning(f"{prefix}: the sandbox is kept with the data in it")
+                    reports.append(
+                        (
+                            None,
+                            ReclaimFailure(
+                                tool=tool,
+                                key=key,
+                                path=path,
+                                reason=reason,
+                                disposal="kept",
+                            ),
+                        )
+                    )
+                    continue
+                rung = Cleanup.DISPOSE
+            else:
+                rung = admission.rung
+            pending = router.queue_cleanup(
                 key,
-                prefix=prefix,
-                logger=logger,
+                spec,
+                admission=admission,
+                sandbox=sandbox,
+                owner=call.id,
+                rung=rung,
+                unclean=reason or None,
                 timeout=timeout,
-                kind=spec.kind,
-                instance_id=sandboxes[-1].instance_id,
             )
-            if on_failure is None:
+            reports.append(
+                (
+                    pending,
+                    ReclaimFailure(
+                        tool=tool,
+                        key=key,
+                        path=path,
+                        reason=reason,
+                        disposal="disposed" if admission.rung is Cleanup.RECLAIM else "failed",
+                    ),
+                )
+            )
+    await _give_back_the_sandbox(call, router=router, only_key=only_key)
+    for pending, report in reports:
+        if pending is not None:
+            failure = await router.wait_cleanup(pending)
+            if failure is None and report.disposal != "disposed":
                 continue
-            await _tell_the_host(
-                on_failure,
-                ReclaimFailure(
-                    tool=tool, key=key, path=path, reason="; ".join(reasons), disposal=disposal
-                ),
-                prefix=prefix,
-                logger=logger,
-                timeout=timeout,
-            )
-        except (asyncio.CancelledError, GeneratorExit):
-            # Cancellation during the disposal or the host callback, not the removal above. This
-            # key is already accounted for — dispose_unclean refuses it before its first await, and
-            # a landed disposal cleared it clean — so mark only the keys the loop has not reached,
-            # never re-refusing one just disposed. Same reason as the removal handler: the next call
-            # must not reacquire a sandbox still holding this call's data.
-            _refuse_not_yet_reclaimed(router, acquired, index + 1, call=call, kind=spec.kind)
-            raise
+            if failure is not None:
+                reason = (
+                    f"{report.reason}; {failure}"
+                    if report.reason and report.reason not in failure
+                    else failure
+                )
+                report = replace(report, reason=reason, disposal="failed")
+                logger.warning(f"{prefix}: the sandbox could not be disposed or reset: %s", failure)
+        if on_failure is not None:
+            await _tell_the_host(on_failure, report, prefix=prefix, logger=logger, timeout=timeout)
 
 
 #: The one substitution a committed sentence may carry, and the reason there is exactly one.

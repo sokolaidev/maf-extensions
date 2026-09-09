@@ -20,7 +20,6 @@ from maf_sandbox import (
     SandboxSpec,
     SandboxUnclean,
 )
-from maf_sandbox._cleanup import QUEUED_CALL_TIMEOUT
 from maf_sandbox.maf import sandboxed_tool
 from maf_sandbox.testing import (
     FAKE_BACKEND_DECLARATIONS,
@@ -145,22 +144,13 @@ def test_an_unclaimed_spec_disposes_by_default_and_next_call_gets_a_fresh_sandbo
 
 @pytest.mark.parametrize("rung", list(Cleanup))
 @pytest.mark.parametrize("expire", [False, True])
-def test_two_tool_calls_share_or_wait_for_cleanup(rung, expire, monkeypatch):
+def test_concurrent_bodies_drain_before_cleanup_and_block_a_third(rung, expire, monkeypatch):
     backend = InProcessSandboxBackend(sandbox_per_key=True, declarations=_DECLARATIONS)
     router = SandboxRouter([backend], min_isolation=Isolation.NONE)
     spec = dataclasses.replace(_SPEC, min_cleanup=rung)
     first_entered, second_entered = asyncio.Event(), asyncio.Event()
-    release_first, queued = asyncio.Event(), asyncio.Event()
-    served, guest_paths, bounds = {}, {}, []
-    take = router._slots.take
-
-    async def observe_admission(key, kind, *, owner, exclusive, timeout):
-        if first_entered.is_set():
-            bounds.append(timeout)
-            queued.set()
-        await take(key, kind, owner=owner, exclusive=exclusive, timeout=0.05 if expire else 2)
-
-    monkeypatch.setattr(router._slots, "take", observe_admission)
+    release_first = asyncio.Event()
+    served, guest_paths = {}, {}
 
     async def use(sandbox, guest_path, target):
         served[target], guest_paths[target] = sandbox, guest_path
@@ -169,45 +159,50 @@ def test_two_tool_calls_share_or_wait_for_cleanup(rung, expire, monkeypatch):
             await release_first.wait()
             assert sandbox.contents[f"{guest_path}/payload"] == b"first"
         else:
-            if rung is not Cleanup.RECLAIM:
-                assert f"{guest_paths['first']}/payload" not in sandbox.contents
+            assert sandbox.contents[f"{guest_paths['first']}/payload"] == b"first"
             second_entered.set()
 
     async def scenario():
         run = _tool(router, spec, use)
         first = asyncio.create_task(run(target="first"))
         await first_entered.wait()
-        resets = list(backend.sandbox.resets)
+        resets = len(backend.sandbox.resets)
+        third = None
         second = asyncio.create_task(run(target="second"))
-        try:
-            await queued.wait()
-            assert QUEUED_CALL_TIMEOUT - 1 < bounds[0] <= QUEUED_CALL_TIMEOUT
-            if rung is Cleanup.RECLAIM:
-                await second_entered.wait()
-                assert await second == guest_paths["second"]
-                assert not first.done()
-                assert served["first"] is served["second"]
-                assert f"{guest_paths['second']}/payload" not in served["first"].contents
-            elif expire:
-                assert "another call is using" in await second
-                assert not second_entered.is_set()
-                assert len(backend.keys) == 1
-                assert not backend.disposed and backend.sandbox.resets == resets
-            else:
-                assert not second_entered.is_set()
-                assert not second.done()
-                assert len(backend.keys) == 1
-        finally:
-            release_first.set()
-            assert await first == guest_paths["first"]
-        if not expire or rung is Cleanup.RECLAIM:
+        await second_entered.wait()
+        assert served["first"] is served["second"]
+        if rung is Cleanup.RECLAIM:
             assert await second == guest_paths["second"]
-            assert second_entered.is_set()
-            assert (served["first"] is served["second"]) is (rung is not Cleanup.DISPOSE)
+            assert f"{guest_paths['second']}/payload" not in served["first"].contents
         else:
-            assert await run(target="second") == guest_paths["second"]
-            assert second_entered.is_set()
-        assert guest_paths["first"] != guest_paths["second"]
+            assert router._slots._slots[(_KEY, spec.kind)].state == "draining"
+            assert not second.done()
+            assert len(backend.sandbox.resets) == resets
+            assert not backend.disposed
+            third = asyncio.create_task(
+                router.enter_call(
+                    _KEY,
+                    spec,
+                    owner="third",
+                    timeout=0.01 if expire else 2,
+                )
+            )
+            if expire:
+                with pytest.raises(TimeoutError):
+                    await third
+            else:
+                await asyncio.sleep(0)
+                assert not third.done()
+        release_first.set()
+        assert await first == guest_paths["first"]
+        assert await second == guest_paths["second"]
+        if rung is not Cleanup.RECLAIM and not expire:
+            assert third is not None
+            await third
+            await router.release_call(_KEY, spec.kind, owner="third")
+        assert len(backend.sandbox.resets) == resets + (rung is Cleanup.RESET)
+        assert len(backend.disposed) == (rung is Cleanup.DISPOSE)
+        assert not router._slots._slots
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))
 
@@ -264,3 +259,75 @@ def test_failed_reset_escalates_and_failed_disposal_obeys_host_policy(
                         await router.acquire(_KEY, dataclasses.replace(spec, kind=kind))
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+
+
+@pytest.mark.parametrize("policy", list(FailedReclaimPolicy))
+@pytest.mark.parametrize("delete_fails", [False, True])
+def test_failed_reclaim_waits_for_running_sibling_and_reports_after_cleanup(policy, delete_fails):
+    class _RefusesOne(InProcessSandbox):
+        refused_path = None
+
+        async def reclaim(self, directory, *, working_directory, timeout):
+            if directory == self.refused_path:
+                raise PermissionError("call directory remains")
+            await super().reclaim(directory, working_directory=working_directory, timeout=timeout)
+
+    heard = []
+    backend = InProcessSandboxBackend(
+        _RefusesOne(), sandbox_per_key=True, declarations=_DECLARATIONS
+    )
+
+    async def report(failure):
+        heard.append(failure)
+        if policy is FailedReclaimPolicy.DISPOSE:
+            assert len(backend.disposed) == 1
+
+    router = SandboxRouter(
+        [backend],
+        min_isolation=Isolation.NONE,
+        reclaim=ReclaimConfig(failed_reclaim_policy=policy, on_failure=report),
+    )
+    entered, leaving, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def use(sandbox, guest_path, target):
+        if target == "first":
+            entered.set()
+            await release.wait()
+            assert sandbox.contents[f"{guest_path}/payload"] == b"first"
+        else:
+            sandbox.refused_path = guest_path
+            if delete_fails:
+                backend.dispose_failure = DisposalFailure("refused", "delete refused")
+            leaving.set()
+
+    async def scenario():
+        run = _tool(router, _SPEC, use)
+        first = asyncio.create_task(run(target="first"))
+        await entered.wait()
+        second = asyncio.create_task(run(target="second"))
+        await leaving.wait()
+        assert not backend.disposed
+        if policy is FailedReclaimPolicy.DISPOSE:
+            assert not heard and not second.done()
+            with pytest.raises(TimeoutError):
+                await router.enter_call(_KEY, _SPEC, owner="third", timeout=0.01)
+        else:
+            await second
+            assert heard[0].disposal == "kept"
+        release.set()
+        await asyncio.gather(first, second)
+        assert len(heard) == 1
+        expected = (
+            "kept"
+            if policy is FailedReclaimPolicy.KEEP
+            else "failed"
+            if delete_fails
+            else "disposed"
+        )
+        assert heard[0].disposal == expected
+        assert bool(router._pending_for(_KEY)) == (
+            delete_fails and policy is FailedReclaimPolicy.DISPOSE
+        )
+        assert not router._slots._slots
+
+    asyncio.run(asyncio.wait_for(scenario(), 3))

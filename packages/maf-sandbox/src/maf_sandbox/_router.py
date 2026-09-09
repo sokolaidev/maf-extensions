@@ -26,8 +26,8 @@ from typing import cast
 from ._cleanup import (
     QUEUED_CALL_TIMEOUT,
     ExclusiveSlots,
+    PendingCleanup,
     established_cleanup,
-    needs_exclusive_use,
     resolve_cleanup,
 )
 from ._containment import CONTAINED, escapes_containment
@@ -776,8 +776,7 @@ class SandboxRouter:
         # DISPOSE, so silence here still leaves nothing behind. Raising it is how a host
         # overrides a kind's claim without arguing with the kind.
         self._min_cleanup = Cleanup(str(min_cleanup))
-        # A sandbox cleaned by anything above RECLAIM serves one call at a time, so the call
-        # running the cleanup is the only call there — see `ExclusiveSlots`.
+        # Admission closes before cleanup can remove a running sibling's sandbox.
         self._slots = ExclusiveSlots()
         self._adoptions = ExclusiveSlots()
         self._seen: dict[tuple[SandboxKey, str, int], set[str]] = {}
@@ -1824,40 +1823,96 @@ class SandboxRouter:
         *,
         owner: str,
         timeout: float = QUEUED_CALL_TIMEOUT,
+        exclusive: bool = False,
     ) -> CallAdmission:
         """Admit a call and retain the backend and cleanup rung its hold permits.
 
-        RECLAIM takes a shared hold; stronger rungs take an exclusive one. The caller must retain
-        the admission for acquire and cleanup, then call finish_call or release_call.
-        Raises TimeoutError when incompatible owners outlast the bound."""
-        deadline = time.monotonic() + timeout
-        while True:
-            backend = self._refuse_unless_backend_can_serve(spec)
-            rung = self._cleanup_on(backend, spec)
-            exclusive = needs_exclusive_use(rung)
-            await self._slots.take(
-                key,
-                spec.kind,
-                owner=owner,
-                exclusive=exclusive,
-                timeout=max(0, deadline - time.monotonic()),
-            )
-            try:
-                self._refuse_host_denials(spec)
-                self._refuse_unless_this_backend_can_serve(backend, spec)
-                current = self._cleanup_on(backend, spec)
-                if needs_exclusive_use(current) == exclusive:
-                    return CallAdmission(backend, current)
-            except BaseException:
-                self._slots.release(key, spec.kind, owner=owner)
-                raise
-            self._slots.release(key, spec.kind, owner=owner)
-            if time.monotonic() >= deadline:
-                raise TimeoutError("cleanup requirements changed while waiting for admission")
+        Ordinary bodies overlap until cleanup starts draining the entry. Retain the admission
+        for acquire and cleanup, then await finish_call or release_call. Explicit exclusive use
+        excludes every sibling; waiting is bounded by timeout."""
+        backend = self._refuse_unless_backend_can_serve(spec)
+        await self._slots.take(key, spec.kind, owner=owner, exclusive=exclusive, timeout=timeout)
+        try:
+            self._refuse_host_denials(spec)
+            self._refuse_unless_this_backend_can_serve(backend, spec)
+            return CallAdmission(backend, self._cleanup_on(backend, spec))
+        except BaseException:
+            await self.release_call(key, spec.kind, owner=owner)
+            raise
 
-    def release_call(self, key: SandboxKey, kind: str, *, owner: str) -> None:
-        """Release this call's hold without cleaning; an owner holding nothing releases nothing."""
-        self._slots.release(key, kind, owner=owner)
+    def queue_cleanup(
+        self,
+        key: SandboxKey,
+        spec: SandboxSpec,
+        *,
+        admission: CallAdmission,
+        sandbox: Sandbox,
+        owner: str,
+        rung: Cleanup,
+        unclean: str | None = None,
+        timeout: float | None = None,
+    ) -> PendingCleanup:
+        """Record whole-instance cleanup before releasing a call's admission."""
+        if rung is Cleanup.RECLAIM:
+            raise ValueError("call-directory reclaim runs before leaving the call")
+        return self._slots.queue(
+            key,
+            spec.kind,
+            owner=owner,
+            cleanup=PendingCleanup(
+                admission.backend,
+                spec,
+                sandbox,
+                sandbox.instance_id,
+                rung,
+                self._reclaim.timeout if timeout is None else timeout,
+                unclean,
+            ),
+        )
+
+    def drain_call(self, key: SandboxKey, kind: str, *, owner: str) -> None:
+        """Block entrants while a finished call waits for its last acquire to return."""
+        self._slots.drain(key, kind, owner=owner)
+
+    async def release_call(
+        self, key: SandboxKey, kind: str, *, owner: str, interrupted: bool = False
+    ) -> None:
+        """Leave the call and execute pending cleanup if this was the last active owner."""
+        pending = self._slots.release(key, kind, owner=owner)
+        if not pending:
+            return
+        try:
+            for one in () if interrupted else pending:
+                failure = await self._run_the_rung(
+                    key, one.spec, one.backend, one.rung, one.sandbox, one.unclean, one.timeout
+                )
+                self._slots.complete(one, failure)
+        except (asyncio.CancelledError, GeneratorExit):
+            logger.warning("sandbox router: cleanup was cancelled during the disposal or reset")
+            raise
+        finally:
+            # Cancellation must transfer every unfinished target before reopening admission.
+            for one in pending:
+                if one.done:
+                    continue
+                failure = "the tool call's cleanup was interrupted"
+                if self._reclaim.failed_reclaim_policy is not FailedReclaimPolicy.KEEP:
+                    self.mark_unclean(
+                        key,
+                        DisposalFailure("unknown", failure),
+                        backend=one.backend,
+                        kind=kind,
+                        instance_id=_instance_id(one.sandbox) or one.instance_id,
+                    )
+                self._slots.complete(one, failure)
+            self._slots.cleaned(key, kind)
+
+    async def wait_cleanup(self, cleanup: PendingCleanup) -> str | None:
+        """Await the folded instance result without cancelling another call's cleanup."""
+        try:
+            return await self._slots.wait(cleanup, timeout=QUEUED_CALL_TIMEOUT)
+        except TimeoutError:
+            return "cleanup is still pending after waiting for active sibling calls"
 
     async def finish_call(
         self,
@@ -1873,36 +1928,32 @@ class SandboxRouter:
     ) -> str | None:
         """Clean under the admitted rung and release its hold.
 
-        Returns a failure reason or None; cancellation propagates. The caller must own an
-        exclusive hold. timeout bounds reset and disposal separately, defaulting to the router
-        policy; RECLAIM uses the framework's directory removal instead."""
-        bound = self._reclaim.timeout if timeout is None else timeout
+        Returns a failure reason or None; cancellation propagates. The caller must own a
+        hold. timeout bounds reset and disposal separately, defaulting to the router policy;
+        RECLAIM uses the framework's directory removal instead. Cleanup waits for siblings."""
+        pending: list[PendingCleanup] = []
         try:
             held = {
                 one.instance_id: one for one in sandboxes or (() if sandbox is None else (sandbox,))
             }
-            failures: list[str] = []
-            remaining = list(held.items())
-            for index, (_, one) in enumerate(remaining):
-                try:
-                    failure = await self._run_the_rung(
-                        key, spec, admission.backend, admission.rung, one, unclean, bound
+            if admission.rung is not Cleanup.RECLAIM:
+                for one in held.values():
+                    pending.append(
+                        self.queue_cleanup(
+                            key,
+                            spec,
+                            admission=admission,
+                            sandbox=one,
+                            owner=owner,
+                            rung=admission.rung,
+                            unclean=unclean,
+                            timeout=timeout,
+                        )
                     )
-                except (asyncio.CancelledError, GeneratorExit):
-                    if self._reclaim.failed_reclaim_policy is not FailedReclaimPolicy.KEEP:
-                        for instance_id, unfinished in remaining[index:]:
-                            self.mark_unclean(
-                                key,
-                                backend=admission.backend,
-                                kind=spec.kind,
-                                instance_id=_instance_id(unfinished) or instance_id,
-                            )
-                    raise
-                if failure is not None:
-                    failures.append(failure)
-            return "; ".join(failures) or None
         finally:
-            self._slots.release(key, spec.kind, owner=owner)
+            await self.release_call(key, spec.kind, owner=owner)
+        failures = [await self.wait_cleanup(one) for one in pending]
+        return "; ".join(one for one in failures if one is not None) or None
 
     async def _run_the_rung(
         self,
