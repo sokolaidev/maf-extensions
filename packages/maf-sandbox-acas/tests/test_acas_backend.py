@@ -880,6 +880,28 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert client.deleted == ["sbx-1", "sbx-2"]
         assert backend._registry == {}
 
+    def test_a_warm_unprobed_sandbox_does_not_name_another_sandbox_hint_as_an_obstacle(self):
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(RuntimeError("transport dropped"))
+        backend = _backend_with(client)
+        execing = _spec_requiring(Capability.EXEC)
+        asyncio.run(backend.acquire(self._key(), execing))
+        client._answer = _guest_removing(False)
+        asyncio.run(backend.acquire(self._key("other"), execing))
+
+        client._answer = RuntimeError("transport dropped")
+        deleting = _spec_requiring(Capability.FILES_DELETE)
+        with pytest.raises(SandboxCapabilityNotSupported) as refusal:
+            asyncio.run(backend.acquire(self._key(), deleting))
+        assert "next acquire probes this warm sandbox again" in str(refusal.value)
+        assert "expires in" not in str(refusal.value)
+
+        client._answer = _guest_removing(True)
+        assert asyncio.run(backend.acquire(self._key(), deleting)).sandbox_id == "sbx-1"
+        assert client.create_calls == 2
+        assert len(client.probes) == 4
+
     @pytest.mark.parametrize(
         "answer", [RuntimeError("transport dropped"), _GuestAnswer(exit_code=127)]
     )

@@ -1096,10 +1096,13 @@ class AcasSandboxBackend:
                     "Serve this workload on an image whose guest can run rm and whose "
                     "file plane confirms the removal — a root USER alone does not prove it"
                 )
-            if sandbox is not None and not freshly_created and held is not None and held.probed:
+            if sandbox is not None and not freshly_created:
                 recovery = (
                     "This warm sandbox retains its own verdict. Dispose it before acquiring "
                     "from a repaired image; repointing a reference cannot change a running guest."
+                    if held is not None and held.probed
+                    else "No cached refusal blocks a retry; the next acquire probes this warm "
+                    "sandbox again."
                 )
             else:
                 hint = self._guest_removals.get(identity)
