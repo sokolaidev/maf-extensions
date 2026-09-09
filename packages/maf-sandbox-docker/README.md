@@ -109,6 +109,23 @@ No bind mounts, no host paths, and never the Docker socket cross into a sandbox 
 
 Give the image a numeric `uid:gid`, readable account files, or an `id` it can run. Unresolved identities are retried on the next acquire, including after an unreadable `Config.User`; the container remains registered for retry or explicit disposal. Workloads requiring neither writing capability still run with a warning and root-owned inputs, which the guest may be unable to modify or reclaim. Commands whose result is stdout remain usable.
 
+## Proving a kind's confinement claim
+
+Docker declares `RECLAIM` over its existing acquire-time reach check. Warm reuse additionally requires the kind to declare `confined_to_guest_call_path=True`; workloads that make no claim still use disposal. In a kind's tests, run its real call and cleanup through the shared probe on a fresh acquired sandbox:
+
+```python
+from maf_sandbox.conformance import assert_nothing_left_behind
+from maf_sandbox_docker.conformance import DockerFingerprintSubject
+
+subject = DockerFingerprintSubject(sandbox, observer_image="trusted-python-observer:local")
+results = await assert_nothing_left_behind(subject, call_and_cleanup)
+assert all(result.passed for result in results)
+```
+
+The observer image is host-trusted tooling, available locally with Python 3.12+ as `python`; the helper pins its image ID. On Linux it combines rootfs changes with mounted-file contents, metadata, and process birth identities read through a separate observer container. This covers `/dev/shm`, which `docker cp` cannot observe. The observer has no network, a read-only filesystem, and only `SYS_PTRACE` for the kernel namespace read. It is removed on every exit path. The subject refuses dirty baselines, writable declared mounts, shared PID namespaces, privileged workloads, unreadable measurements, and exceeded limits. Non-Linux engines explicitly skip; asserting `passed` prevents treating a skip as proof. See the [backend guide](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/backends/docker.md#measuring-a-confinement-claim) for the trust boundary and measurement limits.
+
+Run the live observer suite with `MAF_SANDBOX_DOCKER_E2E_IMAGE` naming a Linux workload image and `MAF_SANDBOX_DOCKER_OBSERVER_IMAGE` naming the trusted Python image. The same tests run on rootful and rootless engines. This adapter needs the core 0.37 line; the Docker release must follow that core's publication.
+
 ## Explicit age-based cleanup
 
 A killed host cannot run its cleanup. `reap` lets an operator find eligible Docker resources through the engine's labels and creation times, without the original conversation keys or process registry. **This API does not provide automatic recovery:** nothing schedules or runs it independently of the application. Cleanup ownership, lifecycle guidance and a reference operator deployment belong to [#1008](https://github.com/sokolaidev/maf-extensions/issues/1008); it evaluates infrastructure-managed scheduling against a suite-owned runner.

@@ -58,7 +58,6 @@ from maf_sandbox import (
     OsFamily,
     Sandbox,
     SandboxBackend,
-    SandboxCapabilityNotSupported,
     SandboxEntry,
     SandboxKey,
     SandboxLimits,
@@ -70,6 +69,7 @@ from maf_sandbox import (
     error_detail,
     fold_disposal_failures,
 )
+from maf_sandbox.guest_access import refuse_capabilities_the_guest_cannot_back
 from maf_sandbox.paths import (
     confine_resolve_guest_delete_path,
     confine_resolve_guest_path,
@@ -294,6 +294,7 @@ _CAPABILITIES = frozenset(
         Capability.FILES_OUT,
         Capability.FILES_DELETE,
         Capability.HOST_TOOLS,
+        Capability.RECLAIM,
     }
 )
 
@@ -1391,18 +1392,15 @@ class DockerSandboxBackend:
                 # make every closed teardown report a proxy that was never there.
                 self._acquired[name] = (key.scope, key.thread_id, key.agent_dir)
             facts = await self._container_facts(name, spec)
-            if not facts.identity_resolved:
-                refused = spec.requires & {Capability.FILES_OUT, Capability.HOST_TOOLS}
-                if refused:
-                    raise SandboxCapabilityNotSupported(
-                        f"sandbox backend {BACKEND_NAME!r} cannot serve "
-                        f"{', '.join(sorted(refused))} to the {spec.kind!r} workload: "
-                        f"container {name!r}'s user could not be resolved, so files would "
-                        "be root-owned and the guest may be unable to write outputs or "
-                        "host-tool markers or empty its call directory. Give the image a "
-                        "numeric uid:gid in Config.User, a readable /etc/passwd, or an `id` "
-                        "it can run. Unresolved identities are retried on the next acquire."
-                    )
+            refuse_capabilities_the_guest_cannot_back(
+                spec,
+                files_land_as_guest=facts.identity_resolved,
+                backend_name=BACKEND_NAME,
+                detail=(
+                    "Give the image a numeric uid:gid in Config.User, a readable /etc/passwd, "
+                    "or an `id` it can run. Unresolved identities are retried on the next acquire."
+                ),
+            )
             return _DockerSandbox(
                 self._docker,
                 name,
@@ -2148,18 +2146,14 @@ class DockerSandboxBackend:
     async def _read_bounded(
         process: asyncio.subprocess.Process, read_limit: int, timeout: float | None
     ) -> _DockerResult:
-        """Read at most ``read_limit`` stdout bytes, then kill and reap — the cp read path.
+        """Read at most ``read_limit`` stdout bytes, killing the child only at the cap.
 
-        stderr is read only after the child is killed, so a pipe that fills cannot deadlock the
-        bounded stdout read against it — and it is short in every case that matters (``docker
-        cp`` writes its error there and nothing else).  A returncode of ``None`` after the kill
-        is normal for a file larger than ``read_limit`` and means nothing to the caller, which
-        decides on the tar header it now holds.
+        Reading and normal exit share one deadline. EOF below the cap preserves the exit status;
+        timeout/cancellation cleanup has a separate budget to kill and drain paused pipes.
         """
         assert process.stdout is not None and process.stderr is not None
         # Bound to locals so the narrowing survives into the closure below.
         out_stream = process.stdout
-        err_stream = process.stderr
 
         async def _pull_head() -> bytes:
             chunks: list[bytes] = []
@@ -2173,24 +2167,18 @@ class DockerSandboxBackend:
             return b"".join(chunks)
 
         try:
-            stdout = await asyncio.wait_for(_pull_head(), timeout=timeout)
+            async with asyncio.timeout(timeout):
+                stdout = await _pull_head()
+                if len(stdout) == read_limit:
+                    with contextlib.suppress(Exception):
+                        process.kill()
+                _, stderr = await process.communicate()
         except BaseException:
             with contextlib.suppress(Exception):
                 process.kill()
             with contextlib.suppress(Exception):
-                await process.wait()
+                await asyncio.wait_for(process.communicate(), timeout=timeout)
             raise
-        with contextlib.suppress(Exception):
-            process.kill()
-        try:
-            stderr = await asyncio.wait_for(err_stream.read(), timeout=timeout)
-        except Exception:
-            # Best-effort diagnostics only. `Exception`, not `BaseException`: this branch
-            # swallows rather than re-raising (unlike the stdout read above, which cleans up and
-            # re-raises), so it must let `CancelledError` and `KeyboardInterrupt` through.
-            stderr = b""
-        with contextlib.suppress(Exception):
-            await process.wait()
         return _DockerResult(
             process.returncode or 0, stdout, stderr.decode("utf-8", errors="replace")
         )

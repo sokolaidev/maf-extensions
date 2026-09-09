@@ -75,6 +75,67 @@ _NAME = _container_name(_KEY, _SPEC.kind)
 _WORK = "/maf-sandbox/work"
 
 
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_bounded_read_preserves_exit_status_after_stdout_closes(exit_code):
+    async def scenario():
+        backend = DockerSandboxBackend(DockerSandboxConfig(docker_path=sys.executable))
+        result = await backend._docker(
+            "-c",
+            "import os, time; os.write(1, b'ok'); os.close(1); time.sleep(0.1); "
+            f"os.write(2, b'detail'); os._exit({exit_code})",
+            read_limit=100,
+            timeout=5,
+        )
+        assert result.stdout == b"ok"
+        assert result.stderr == "detail"
+        assert result.returncode == exit_code
+
+    asyncio.run(scenario())
+
+
+def test_bounded_read_and_exit_share_one_timeout():
+    async def scenario():
+        backend = DockerSandboxBackend(DockerSandboxConfig(docker_path=sys.executable))
+        with pytest.raises(TimeoutError):
+            await backend._docker(
+                "-c",
+                "import os, time; time.sleep(0.6); os.write(1, b'ok'); os.close(1); "
+                "time.sleep(0.6)",
+                read_limit=100,
+                timeout=1,
+            )
+
+    asyncio.run(scenario())
+
+
+def test_bounded_read_drains_a_full_pipe_before_waiting_for_exit():
+    async def scenario():
+        backend = DockerSandboxBackend(DockerSandboxConfig(docker_path=sys.executable))
+        result = await asyncio.wait_for(
+            backend._docker(
+                "-c", "import os; os.write(1, b'x' * 1000000)", read_limit=1, timeout=5
+            ),
+            timeout=10,
+        )
+        assert result.stdout == b"x"
+
+    asyncio.run(scenario())
+
+
+def test_bounded_read_timeout_drains_a_full_error_pipe():
+    async def scenario():
+        backend = DockerSandboxBackend(DockerSandboxConfig(docker_path=sys.executable))
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(
+                backend._docker(
+                    "-c", "import os; os.write(2, b'e' * 1000000)", read_limit=1, timeout=0.2
+                ),
+                timeout=5,
+            )
+
+    asyncio.run(scenario())
+
+
 def _tar_bytes(path: str, data: bytes, *, pax_headers: dict[str, str] | None = None) -> bytes:
     """A one-entry tar as ``docker cp <name>:<path> -`` would stream it out."""
     buffer = io.BytesIO()
@@ -429,6 +490,7 @@ class TestBackendIdentity:
                 Capability.FILES_OUT,
                 Capability.FILES_DELETE,
                 Capability.HOST_TOOLS,
+                Capability.RECLAIM,
             }
         )
 
