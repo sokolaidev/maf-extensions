@@ -490,6 +490,40 @@ def _tool(
     return tools[0]
 
 
+def test_integrity_admission_abandons_the_call_before_any_file_or_code_is_written(monkeypatch):
+    from functools import partial
+
+    from maf_sandbox import FileStoreProvenance
+    from maf_sandbox.maf import file_store_provenance_middleware, sandboxed_tool
+
+    record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+    file_store_provenance_middleware(record)
+    record.record("weak.csv")
+    monkeypatch.setattr(
+        _tool_module,
+        "sandboxed_tool",
+        partial(
+            sandboxed_tool,
+            file_store_provenance=record,
+            requires_file_integrity=SourceIntegrity.TRUSTED,
+        ),
+    )
+    sandbox = _ScriptedSandbox()
+    tool = _tool(
+        _backend(sandbox),
+        file_store=InMemoryStore(
+            {"trusted.csv": "allowed", "weak.csv": "secret"}, integrity=SourceIntegrity.TRUSTED
+        ),
+    )
+
+    out = _run(tool, "print('hi')", files=["trusted.csv", "weak.csv"])
+
+    assert "'weak.csv' does not meet the required file integrity (trusted)" in out
+    assert "secret" not in out
+    assert sandbox.written_files == {}
+    assert sandbox.commands == []
+
+
 def _landing(mode: CodeactOutputs, sink: _RecordingSink | None = None) -> dict[str, Any]:
     """The pair `make_codeact_tools` requires together: a mode, and somewhere to land."""
     return {"outputs": mode, "output_sink": (sink or _RecordingSink()).sink}

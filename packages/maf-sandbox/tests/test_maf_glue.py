@@ -216,6 +216,7 @@ def _session(
     name="workload_tool",
     logger=None,
     file_store_provenance=None,
+    requires_file_integrity=None,
 ):
     return SandboxToolSession(
         _router(backend if backend is not None else InProcessSandboxBackend()),
@@ -225,6 +226,7 @@ def _session(
         name=name,
         logger=logger if logger is not None else logging.getLogger("test_workload"),
         file_store_provenance=file_store_provenance,
+        requires_file_integrity=requires_file_integrity,
     )
 
 
@@ -4379,6 +4381,139 @@ class TestReadFileRefoldsAgainstTheRecord:
                     _ReadStore({"a.txt": "1"}), ListedFile("a.txt", SourceIntegrity.TRUSTED)
                 )
             )
+
+
+class TestFileIntegrityAdmission:
+    @pytest.mark.parametrize("required", [None, *SourceIntegrity])
+    @pytest.mark.parametrize("integrity", [None, *SourceIntegrity])
+    @pytest.mark.parametrize("text", ["", "file content"])
+    def test_admission_uses_the_integrity_order(self, required, integrity, text):
+        item = asyncio.run(
+            _session(requires_file_integrity=required).read_file(
+                _ReadStore({"a.txt": text}), ListedFile("a.txt", integrity)
+            )
+        )
+        admitted = required is None or (
+            integrity is not None
+            and (required is SourceIntegrity.UNTRUSTED or integrity is SourceIntegrity.TRUSTED)
+        )
+
+        if admitted:
+            assert not isinstance(item, str) and item is not None
+            assert item.text == text
+            assert item.additional_properties.get(SOURCE_INTEGRITY_PROPERTY) == integrity
+        else:
+            assert isinstance(item, str)
+            assert item == f"Error: 'a.txt' does not meet the required file integrity ({required})"
+
+    @pytest.mark.parametrize("listed_integrity", [None, *SourceIntegrity])
+    @pytest.mark.parametrize("recorded_integrity", [None, *SourceIntegrity])
+    def test_both_the_listing_and_the_record_must_meet_the_requirement(
+        self, listed_integrity, recorded_integrity
+    ):
+        record = FileStoreProvenance(floor=recorded_integrity)
+        file_store_provenance_middleware(record)
+        item = asyncio.run(
+            _session(
+                file_store_provenance=record, requires_file_integrity=SourceIntegrity.TRUSTED
+            ).read_file(_ReadStore({"a.txt": "1"}), ListedFile("a.txt", listed_integrity))
+        )
+
+        if listed_integrity is recorded_integrity is SourceIntegrity.TRUSTED:
+            assert not isinstance(item, str) and item is not None
+            assert item.text == "1"
+        else:
+            assert isinstance(item, str) and "required file integrity" in item
+
+    @pytest.mark.parametrize("required", list(SourceIntegrity))
+    @pytest.mark.parametrize("mutation", ["write", "forget", "write_then_forget", "elsewhere"])
+    def test_a_record_changed_during_the_read_cannot_satisfy_any_requirement(
+        self, required, mutation
+    ):
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        file_store_provenance_middleware(record)
+        if mutation == "forget":
+            record.record("a.txt")
+
+        def change_record():
+            if mutation != "forget":
+                record.record("b.txt" if mutation == "elsewhere" else "a.txt")
+            if mutation in {"forget", "write_then_forget"}:
+                record.forget("a.txt")
+
+        item = asyncio.run(
+            _session(file_store_provenance=record, requires_file_integrity=required).read_file(
+                _ReadStore({"a.txt": "content"}, during_read=change_record),
+                ListedFile("a.txt", SourceIntegrity.TRUSTED),
+            )
+        )
+
+        assert isinstance(item, str) and "required file integrity" in item
+        assert "content" not in item
+
+    @pytest.mark.parametrize(
+        ("name", "options", "shown"),
+        [
+            ("a.txt", {"at": "files[0]"}, "'a.txt'"),
+            ("a.txt", {"at": "files[0]", "hidden": True}, "the 5-character value at files[0]"),
+            ("a.txt", {"hidden": True}, "a 5-character value"),
+            ("a\nb.txt", {"at": "files[1]"}, "the 7-character value at files[1]"),
+            (
+                "main.bicep",
+                {"at": "files[1]", "hidden": True, "named": "the 12-character value at files[1]"},
+                "the 12-character value at files[1]",
+            ),
+        ],
+    )
+    def test_a_refusal_uses_the_callers_rendering(self, name, options, shown):
+        item = asyncio.run(
+            _session(requires_file_integrity=SourceIntegrity.TRUSTED).read_file(
+                _ReadStore({name: "content"}), ListedFile(name), **options
+            )
+        )
+
+        assert item == f"Error: {shown} does not meet the required file integrity (trusted)"
+
+    @pytest.mark.parametrize("second_reading", [False, True])
+    def test_a_provenance_wiring_error_still_raises(self, second_reading):
+        record = FileStoreProvenance(floor=SourceIntegrity.TRUSTED)
+        if second_reading:
+            record.record("a.txt")
+        store = _ReadStore({"a.txt": "1"}, during_read=lambda: record.forget("a.txt"))
+
+        with pytest.raises(ValueError, match="file_store_provenance_middleware"):
+            asyncio.run(
+                _session(
+                    file_store_provenance=record, requires_file_integrity=SourceIntegrity.TRUSTED
+                ).read_file(store, ListedFile("a.txt", SourceIntegrity.TRUSTED))
+            )
+
+        assert store.asked == (["a.txt"] if second_reading else [])
+
+    def test_missing_and_failed_reads_keep_their_existing_answers(self):
+        session = _session(requires_file_integrity=SourceIntegrity.TRUSTED)
+
+        assert asyncio.run(session.read_file(_ReadStore({}), ListedFile("gone.txt"))) is None
+        assert (
+            asyncio.run(
+                session.read_file(_ReadStore({}, fails=RuntimeError("down")), ListedFile("a.txt"))
+            )
+            == "Error: 'a.txt' could not be read from the file store"
+        )
+
+    def test_a_string_requirement_is_coerced(self):
+        assert isinstance(
+            asyncio.run(
+                _session(requires_file_integrity="trusted").read_file(
+                    _ReadStore({"a.txt": "1"}), ListedFile("a.txt", SourceIntegrity.UNTRUSTED)
+                )
+            ),
+            str,
+        )
+
+    def test_an_unknown_requirement_is_refused_at_construction(self):
+        with pytest.raises(ValueError):
+            _session(requires_file_integrity="trustde")
 
 
 class TestListAllFilesFoldsAHostsRecord:
