@@ -159,6 +159,36 @@ def _calls_the_suite(tests: Path, suite: str) -> bool:
     return False
 
 
+def _claims_confinement(src: Path) -> bool:
+    """Treat any non-literal-false confinement keyword as a claim requiring measurement."""
+    return any(
+        keyword.arg == "confined_to_guest_call_path"
+        and not (isinstance(keyword.value, ast.Constant) and keyword.value.value is False)
+        for module in src.rglob("*.py")
+        for node in ast.walk(ast.parse(module.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+    )
+
+
+@pytest.mark.parametrize("package", sorted(PACKAGES.iterdir()), ids=lambda path: path.name)
+def test_a_kind_claiming_confinement_measures_its_call(package: Path):
+    if _claims_confinement(package / "src"):
+        assert _calls_the_suite(package / "tests", "assert_nothing_left_behind"), (
+            f"{package.name} claims confined_to_guest_call_path but its own suite does not "
+            "call maf_sandbox.conformance.assert_nothing_left_behind. Run the workload and "
+            "its cleanup against an engine fingerprint subject and assert the probe passed."
+        )
+
+
+@pytest.mark.parametrize("value, expected", [("True", True), ("False", False), ("claim", True)])
+def test_confinement_claim_detection(tmp_path: Path, value: str, expected: bool):
+    (tmp_path / "kind.py").write_text(
+        f"spec = SandboxSpec(confined_to_guest_call_path={value})", encoding="utf-8"
+    )
+    assert _claims_confinement(tmp_path) is expected
+
+
 def _binding_text(annotation: ast.expr) -> str:
     """The annotation as source text, so `tuple[SandboxBackend, type[Sandbox]]` matches however it is spaced."""
     return ast.unparse(annotation)

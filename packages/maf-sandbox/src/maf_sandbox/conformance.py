@@ -66,6 +66,10 @@ it however its guest allows.
 
 Nothing here imports a test framework: this module ships in the wheel.  A failure raises
 :class:`ConformanceFailure` naming every probe that failed rather than the first.
+
+:func:`assert_nothing_left_behind` measures a kind's confinement claim through a separate
+:class:`FingerprintSubject`. It compares engine-observed paths and processes before the
+kind's own call and after its cleanup, without executing a guest utility to inspect either.
 """
 
 from __future__ import annotations
@@ -89,15 +93,18 @@ __all__ = [
     "ConformanceFailure",
     "ConformancePaths",
     "ConformanceSubject",
+    "FingerprintSubject",
     "PosixGuestSubject",
     "Probe",
     "ProbeResult",
+    "SandboxFingerprint",
     "assert_call_scope_conformance",
     "assert_egress_conformance",
     "assert_exec_conformance",
     "assert_files_delete_conformance",
     "assert_files_in_conformance",
     "assert_files_out_conformance",
+    "assert_nothing_left_behind",
     "assert_reach_conformance",
     "assert_reclaim_conformance",
     "measure_files_delete_probes",
@@ -464,6 +471,79 @@ class ConformanceFailure(AssertionError):
             lines.append(f"  - {result.probe.name}: {result.failure}")
             lines.append(f"    why it is in the suite: {result.probe.why}")
         super().__init__("\n".join(lines))
+
+
+@dataclass(frozen=True)
+class SandboxFingerprint:
+    """Engine-observed changes since creation and identities of all running processes.
+
+    Process identities must distinguish replacements, even with identical command lines.
+    This measures neither kernel state nor open sockets.
+    """
+
+    changed_paths: frozenset[str]
+    running_programs: frozenset[str]
+
+
+class FingerprintSubject(Protocol):
+    """An engine's view of one sandbox, independent of its guest's reporting utilities."""
+
+    async def fingerprint(self) -> SandboxFingerprint | None:
+        """Snapshot paths and processes without altering them; None means unsupported.
+
+        Refuse an incomplete view, including writable mounts invisible to the engine diff.
+        Include implicit writable storage such as /dev/shm through an engine-side read.
+        Keep reporting paths the engine marks changed even if their original bytes return.
+        """
+        ...
+
+
+async def assert_nothing_left_behind(
+    subject: FingerprintSubject, call: Callable[[], Awaitable[object]]
+) -> tuple[ProbeResult, ...]:
+    """Measure a kind's call and its cleanup against a sandbox no call has touched.
+
+    ``call`` must perform the workload and await its cleanup on this same sandbox. An
+    unsupported initial fingerprint returns a skipped result without running the call;
+    a dirty baseline, measurement error, or any final difference fails the probe.
+    """
+    before: SandboxFingerprint | None = None
+
+    async def measure() -> None:
+        nonlocal before
+        before = await subject.fingerprint()
+        if before is None:
+            return
+        if before.changed_paths:
+            raise AssertionError(f"sandbox is not pristine: {sorted(before.changed_paths)!r}")
+        await call()
+        after = await subject.fingerprint()
+        if after is None:
+            raise AssertionError("engine fingerprint became unavailable after the call")
+        differences: list[str] = []
+        if after.changed_paths != before.changed_paths:
+            differences.append(f"changed paths: {sorted(after.changed_paths)!r}")
+        if after.running_programs != before.running_programs:
+            differences.append(
+                f"processes added: {sorted(after.running_programs - before.running_programs)!r}; "
+                f"processes removed: {sorted(before.running_programs - after.running_programs)!r}"
+            )
+        if differences:
+            raise AssertionError("; ".join(differences))
+
+    async def run(_subject: ConformanceSubject, _paths: ConformancePaths) -> None:
+        await measure()
+
+    probe = Probe(
+        name="nothing_left_behind",
+        why="a confined call must leave no changed path or process after its cleanup",
+        requires=frozenset(),
+        run=run,
+    )
+    result = await _capture_probe_result(probe, measure())
+    if result.passed and before is None:
+        result = ProbeResult(probe=probe, skipped="engine fingerprint is unsupported")
+    return _assert_conformance((result,), "CONFINEMENT")
 
 
 async def _refused_with(
@@ -2113,8 +2193,12 @@ async def _probe_result(
     probe: Probe, subject: ConformanceSubject, paths: ConformancePaths
 ) -> ProbeResult:
     """Run one probe and turn whatever it did into its result."""
+    return await _capture_probe_result(probe, probe.run(subject, paths))
+
+
+async def _capture_probe_result(probe: Probe, call: Awaitable[None]) -> ProbeResult:
     try:
-        await probe.run(subject, paths)
+        await call
     except AssertionError as failed:
         return ProbeResult(probe=probe, failure=str(failed))
     except Exception as raised:

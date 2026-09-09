@@ -27,6 +27,25 @@ This snippet never calls `ensure_can_serve` (below) and is checked anyway: `acqu
 
 [`samples/01_acas_bicep`](https://github.com/sokolaidev/maf-extensions/tree/main/samples/01_acas_bicep) is that wiring as a runnable program, including the part no snippet shows well: building the `CallerContext` out of callables rather than values, which is what keeps a `SandboxKey` a property of the host's request.
 
+## Testing a confinement claim
+
+A kind setting `SandboxSpec.confined_to_guest_call_path=True` owes `maf_sandbox.conformance.assert_nothing_left_behind` in its own suite. Supply a pristine sandbox's engine fingerprint subject and a callback that runs the kind's call and awaits its cleanup on that sandbox:
+
+```python
+from collections.abc import Awaitable, Callable
+from maf_sandbox.conformance import FingerprintSubject, assert_nothing_left_behind
+
+async def check_confinement(
+    subject: FingerprintSubject, call: Callable[[], Awaitable[object]]
+) -> None:
+    results = await assert_nothing_left_behind(subject, call)
+    assert all(result.passed for result in results)
+```
+
+The subject's async `fingerprint()` returns `SandboxFingerprint(changed_paths, running_programs)`, both immutable sets of strings answered from the engine. Paths are changes since creation; process identities must distinguish replacements. An initial path change refuses the probe before the workload runs. Any final path or process difference raises `ConformanceFailure`. Return `None` only when fingerprinting is unsupported: the probe then reports a skipped result without running the callback. Measurement errors fail, including loss of the fingerprint after the call.
+
+An engine subject must refuse writable storage its diff cannot see and include implicit storage such as `/dev/shm` through engine reads. The pair says nothing about kernel state or open sockets. `InProcessSandbox.fingerprint()` supports harness tests through the fake's stores; it does not execute guest programs or detect bytes changed and then restored. It cannot establish a real workload's confinement. See [the cleanup contract](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/tool-call.md) for the engine requirements and remaining backend work.
+
 ## Threat model
 
 This package draws no isolation boundary itself — it is protocol and policy over whatever a `SandboxBackend` implementation actually provides. `Isolation` is a seven-rung ladder a backend declares itself onto, weakest to strongest: `none` (no boundary at all — the workload runs in the host process, with the host's authority), `runtime` (a software boundary inside the host process, e.g. a restricted interpreter or a WASM runtime's fault isolation), `os_process` (a separate OS process — a kernel-enforced address space, sharing the kernel and the filesystem), `container` (shared-kernel namespaces and cgroups), `hardened_container` (syscall interception in a userspace kernel — gVisor-class), `microvm` (a hypervisor boundary with a minimal or absent guest OS and no ambient identity reachable from inside — the default floor), and `vm` (a dedicated, full VM provisioned for the workload). `SandboxRouter` enforces the checks below on top of that declaration; the package's job is to make an unsafe backend selection fail loudly at construction or attach, not silently at first use. Beyond backend selection this layer holds no credentials, executes nothing and reaches no network, and everything security-relevant about a *specific* sandbox lives in the backend that implements it. It has exactly one boundary of its own, and it is on the way out rather than in: `make_file_system_sink` writes guest-produced bytes under a host directory, so it resolves each destination and refuses one that leaves that directory — see *Getting files back* below, which is also where a host landing somewhere other than a filesystem is told it owns the same question.
