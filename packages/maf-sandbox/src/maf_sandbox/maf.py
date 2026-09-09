@@ -2295,14 +2295,9 @@ def _label_tool_result(
             )
         items.append(item)
     derived_count = len(items) - len(committed)
-    if derived_count < 1:
-        raise ValueError(
-            f"{tool}: this result needs a derived item that carries the call's confidentiality "
-            "before its standing guidance."
-        )
     substitution = {CALL_ID_PLACEHOLDER: call_id} if call_id is not None else {}
     rendered = [sentence.format(**substitution) for sentence in committed]
-    if any(
+    if derived_count < 0 or any(
         item.type != "text" or item.text != sentence
         for item, sentence in zip(items[derived_count:], rendered, strict=True)
     ):
@@ -2310,6 +2305,11 @@ def _label_tool_result(
             f"{tool}: the {len(rendered)} committed sentences must be the last "
             f"{len(rendered)} item(s), in the committed order, each carrying only its "
             "committed text."
+        )
+    if derived_count == 0:
+        raise ValueError(
+            f"{tool}: this result needs a derived item that carries the call's confidentiality "
+            "before its standing guidance."
         )
     label = _result_label(declarations, fed)
     labelled: list[Content] = []

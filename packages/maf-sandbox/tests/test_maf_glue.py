@@ -5420,8 +5420,11 @@ class TestAResultThatIsItems:
         with pytest.raises(ValueError, match=r"the text '\[\]'"):
             _call(self._tool(_items()), target="x")
 
-    def test_guidance_alone_cannot_replace_the_calls_confidentiality(self):
-        tool = self._tool(_items(_text(_GUIDANCE)), standing_guidance=(_GUIDANCE,))
+    @pytest.mark.parametrize("committed", [(_GUIDANCE,), (_GUIDANCE, "Read the diagnostics.")])
+    def test_guidance_alone_cannot_replace_the_calls_confidentiality(self, committed):
+        tool = self._tool(
+            _items(*(_text(sentence) for sentence in committed)), standing_guidance=committed
+        )
         with pytest.raises(ValueError, match="carries the call's confidentiality"):
             _call(tool, target="x")
 
@@ -5995,12 +5998,22 @@ class TestGuidanceIsCommittedWhereAReviewerCanSeeIt:
         assert "hunter2" not in str(raised.value)
         assert "committed sentences" in str(raised.value), "counts stand in for the text"
 
-    def test_a_committed_sentence_missing_from_this_result_is_refused(self):
+    @pytest.mark.parametrize(
+        ("committed", "returned"),
+        [
+            ((_GUIDANCE,), ("EXIT=1",)),
+            ((_GUIDANCE, "Read the diagnostics."), ("EXIT=1",)),
+            ((_GUIDANCE, "Read the diagnostics."), ("EXIT=1", "Read the diagnostics.")),
+            ((_GUIDANCE, "Read the diagnostics."), (_GUIDANCE,)),
+        ],
+        ids=["no-guidance", "short-result", "partial-suffix", "truncated-guidance"],
+    )
+    def test_a_committed_sentence_missing_from_this_result_is_refused(self, committed, returned):
         """The presence half: a sentence emitted on the paths that suit and dropped on the ones
         that do not is a bit about which path ran."""
-        tool = self._attach([_text("EXIT=1")], standing_guidance=(_GUIDANCE,))
+        tool = self._attach([_text(text) for text in returned], standing_guidance=committed)
 
-        with pytest.raises(ValueError, match="needs a derived item"):
+        with pytest.raises(ValueError, match="committed sentences must be the last"):
             asyncio.run(tool.invoke(arguments={"target": "t"}))
 
     def test_a_string_answer_is_refused_once_anything_is_committed(self):
