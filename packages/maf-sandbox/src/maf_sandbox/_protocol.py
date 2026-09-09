@@ -230,8 +230,8 @@ class Capability(StrEnum):
     #: Stat and read files back out, at the paths a spec declared. Reading only, never
     #: discovery.
     FILES_OUT = "files_out"
-    #: Enumerate a directory. Split from :data:`FILES_OUT` because Docker has no engine-level
-    #: primitive for it, which is also why a declared output is a literal path and not a glob.
+    #: Enumerate a directory. Split from :data:`FILES_OUT` because a backend can pull named
+    #: files without offering enumeration; declared outputs are therefore literal paths, not globs.
     FILES_LIST = "files_list"
     #: Delete what a workload put there. Split from :data:`FILES_IN` because writing and
     #: removing are different powers to grant, and a backend can honestly offer one without
