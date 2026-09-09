@@ -18,7 +18,6 @@ from __future__ import annotations
 import fnmatch
 import json
 import re
-import shutil
 import subprocess
 import sys
 import tomllib
@@ -28,6 +27,7 @@ from pathlib import Path
 
 import pytest
 from _version_prose import release_named_in
+from _workflow_commands import command_arguments, run_release
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = REPO_ROOT / "release-please-config.json"
@@ -500,6 +500,9 @@ class TestRoutineAutomationDoesNotClaimToCloseAnIssue:
 
     def test_the_release_workflow_writes_no_closing_keyword(self):
         text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+        text += "\n".join(
+            path.read_text("utf-8") for path in (REPO_ROOT / "scripts/templates").glob("*-body.md")
+        )
         found = self._CLOSING_KEYWORD.findall(text)
         assert not found, (
             f"release-please.yml emits {found} into a pull request body it writes every "
@@ -507,19 +510,8 @@ class TestRoutineAutomationDoesNotClaimToCloseAnIssue:
         )
 
 
-class TestTheProposalBodySurvivesTheShell:
-    """The pull request body the release workflow writes must still be prose after bash reads it.
-
-    It was not, once. The body was a multi-line double-quoted assignment, and the quotes around
-    `"Approve and run"` in the last paragraph closed the string: bash read the remainder as
-    commands and the step exited 127 on `and: command not found`. It failed after the tag and
-    after the publish dispatch, so the release was whole and only the proposal was lost — a
-    branch pushed to the remote with no pull request on it, which nothing reports.
-
-    `bash -n` does not catch this; the broken form parses cleanly and only misbehaves when run.
-    So this executes the fragment for real, against a temporary directory, and reads the file
-    it writes. A test that only checked syntax would have passed on the exact bug it was for.
-    """
+class TestTheProposalBodyIsWrittenIntact:
+    """Proposal prose and substitutions use the same Python entry point as the workflow."""
 
     _RANGE_EXPECTED = (
         # The phrase that broke it. Quotes are the failure mode, so this is the assertion.
@@ -540,32 +532,6 @@ class TestTheProposalBodySurvivesTheShell:
         "**If this pull request is already green, still check the release order.**",
     )
 
-    def _body_fragment(self, step: str, body_file: str) -> str:
-        """Just the heredoc through the substitution — no git, gh or python3 to stand up."""
-        lines = run_block(RELEASE_WORKFLOW, step).splitlines()
-        start = next(
-            (
-                i
-                for i, line in enumerate(lines)
-                if line.startswith(f'cat > "${{RUNNER_TEMP}}/{body_file}"')
-            ),
-            None,
-        )
-        end = next(
-            (
-                i
-                for i, line in enumerate(lines[start or 0 :], start or 0)
-                if line.startswith("gh pr create")
-            ),
-            None,
-        )
-        assert start is not None and end is not None, (
-            "the step no longer builds the body in a file — if it has gone back to a shell "
-            "variable, the prose is being parsed by bash again, which is the bug this is for"
-        )
-        assert start < end, "the substitution must follow the heredoc that needs it"
-        return "\n".join(lines[start:end])
-
     @pytest.mark.parametrize(
         ("step", "body_file", "expected"),
         [
@@ -576,59 +542,28 @@ class TestTheProposalBodySurvivesTheShell:
     def test_the_body_is_written_intact(
         self, tmp_path: Path, step: str, body_file: str, expected: tuple[str, ...]
     ):
-        if shutil.which("bash") is None:
-            pytest.skip("no bash on PATH; the release runner is ubuntu-latest")
-        script = (
-            "set -euo pipefail\n"
-            "VERSION=1.2.3\n"
-            # `.` with the process started in tmp_path, rather than an absolute path: a
-            # Windows checkout may resolve `bash` to one that cannot read `C:/...`, and the
-            # test would then fail on the path instead of testing the body.
-            "RUNNER_TEMP=.\n"
-            f"{self._body_fragment(step, body_file)}\n"
-            f'cat "$RUNNER_TEMP/{body_file}"\n'
+        arguments = command_arguments(
+            run_block(RELEASE_WORKFLOW, step),
+            "release_workflow.py",
+            {"VERSION": "1.2.3", "RUNNER_TEMP": str(tmp_path)},
         )
-        # Through stdin rather than a path: a Windows checkout would otherwise hand a
-        # drive-lettered path to a shell that does not read one, and skip for the wrong reason.
-        # Bytes rather than `text=True`, because that translates the newlines on the way in and
-        # a shell handed `set -euo pipefail\r` rejects the option instead of the prose.
-        result = subprocess.run(
-            ["bash", "-s"],
-            input=script.encode("utf-8"),
-            capture_output=True,
-            cwd=tmp_path,
-        )
-        stdout = result.stdout.decode("utf-8")
-        assert result.returncode == 0, (
-            f"the body fragment did not survive bash (exit {result.returncode}): "
-            f"{result.stderr.decode('utf-8', 'replace').strip()}"
-        )
+        result = run_release(tmp_path, arguments)
+        assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+        stdout = (tmp_path / body_file).read_text("utf-8")
         for phrase in expected:
             assert phrase in stdout, f"the body lost {phrase!r}"
         assert "1.2.3" in stdout, "the version was never substituted"
         assert "@VERSION@" not in stdout, "a placeholder reached the pull request body"
         assert "@MINOR@" not in stdout, "a placeholder reached the pull request body"
 
-    @pytest.mark.parametrize(
-        ("step", "body_file"),
-        [
-            ("Propose the dependents' range", "range-body.md"),
-            ("Propose the samples' floor", "samples-body.md"),
-        ],
-    )
-    def test_the_heredoc_does_not_expand(self, step: str, body_file: str):
-        """Quoting the delimiter is what makes the prose inert, and it has to stay quoted.
-
-        The test above would pass on an unquoted heredoc too, because nothing in today's body
-        expands. The next paragraph is the risk: this repository writes `maf-sandbox` and
-        `${VERSION}` in backticks everywhere else, and a backtick in an unquoted heredoc is
-        command substitution — the same failure again, with a different character.
-        """
-        fragment = self._body_fragment(step, body_file)
-        assert re.search(r"<<'\w+'", fragment), (
-            "the body heredoc must quote its delimiter (`<<'BODY'`) so nothing in the prose "
-            "is expanded; the version is substituted afterwards instead"
-        )
+    def test_prose_is_not_interpreted_as_shell_code(self, tmp_path: Path):
+        version = '1.2.3 `literal` $(literal) "quoted" café & |'
+        result = run_release(tmp_path, ["proposal", "range", version, "body with spaces.md"])
+        assert result.returncode == 0, result.stderr
+        body = (tmp_path / "body with spaces.md").read_text("utf-8")
+        assert version in body
+        assert 'held at "Approve and run"' in body
+        assert "`samples/`" in body
 
 
 class TestTheReleaseWorkflowProposesSeparateSamplesFloor:
@@ -770,37 +705,28 @@ class TestReadingAGateOutOfTheWorkflow:
         )
 
 
-def _execute_step(tmp_path: Path, step: str, stub: str) -> subprocess.CompletedProcess[bytes]:
-    """Run a publish step's `run:` block with `python3` shadowed, the way the runner would.
-
-    The step is executed for real, `python3` shadowed by a shell function, because the failure
-    that matters is one bash makes rather than one the text shows: `set -e` is on in these
-    steps, so a verdict read as a plain `output="$(…)"` assignment ends the whole step when the
-    script exits non-zero — refusing a release over a decision about a later job, which is the
-    behaviour that has to hold or break in the right direction.
-    """
-    if shutil.which("bash") is None:
-        pytest.skip("no bash on PATH; the release runner is ubuntu-latest")
-    script = (
-        "PACKAGE=maf-sandbox\n"
-        "VERSION=0.13.0\n"
-        "GITHUB_OUTPUT=out.txt\n"
-        "GITHUB_STEP_SUMMARY=summary.md\n"
-        ": > out.txt\n"
-        ": > summary.md\n"
-        # A function, not a file on PATH: no exec bit to set, and it shadows the command
-        # the step calls on any runner.
-        f"{stub}\n"
-        f"{run_block(PUBLISH_WORKFLOW, step)}\n"
+def _execute_step(
+    tmp_path: Path,
+    step: str,
+    stdout: str,
+    *,
+    stderr: str = "",
+    status: int = 0,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run the production release wrapper against a controlled native checker process."""
+    arguments = command_arguments(
+        run_block(PUBLISH_WORKFLOW, step),
+        "release_workflow.py",
+        {"PACKAGE": "maf-sandbox", "VERSION": "0.13.0"},
     )
-    # Bytes rather than `text=True`: that translates the newlines on the way in, and a shell
-    # handed `set -euo pipefail\r` rejects the option instead of running the script.
-    return subprocess.run(
-        ["bash", "-s"],
-        input=script.encode("utf-8"),
-        capture_output=True,
-        cwd=tmp_path,
+    stub = tmp_path / "checker with spaces.py"
+    stub.write_text(
+        f"import sys\nsys.stdout.write({stdout!r})\nsys.stderr.write({stderr!r})\n"
+        f"raise SystemExit({status})\n",
+        encoding="utf-8",
     )
+    arguments = arguments[: arguments.index("--") + 1] + [sys.executable, str(stub)]
+    return run_release(tmp_path, arguments)
 
 
 def _step_outputs(tmp_path: Path) -> tuple[str, str]:
@@ -819,7 +745,7 @@ class TestTheBreakingDetectorIsInformational:
     _STEP = "Check whether this release is breaking"
 
     def test_a_breaking_release_is_reported_without_claiming_a_skip(self, tmp_path: Path):
-        result = _execute_step(tmp_path, self._STEP, 'python3() { echo "breaking=true"; }')
+        result = _execute_step(tmp_path, self._STEP, "breaking=true\n")
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
         output, summary = _step_outputs(tmp_path)
         assert output.strip() == "breaking=true"
@@ -829,7 +755,7 @@ class TestTheBreakingDetectorIsInformational:
         assert "273" not in summary
 
     def test_an_ordinary_release_stays_quiet(self, tmp_path: Path):
-        result = _execute_step(tmp_path, self._STEP, 'python3() { echo "breaking=false"; }')
+        result = _execute_step(tmp_path, self._STEP, "breaking=false\n")
         assert result.returncode == 0, (
             "the step ended non-zero on the ordinary answer, which fails the release over a "
             f"context note: {result.stderr.decode('utf-8', 'replace')}"
@@ -839,9 +765,7 @@ class TestTheBreakingDetectorIsInformational:
         assert summary == "", "nothing was reported, so the summary has nothing to say"
 
     def test_a_detector_that_cannot_answer_does_not_fail_the_release(self, tmp_path: Path):
-        result = _execute_step(
-            tmp_path, self._STEP, 'python3() { echo "no section for 0.13.0" >&2; return 1; }'
-        )
+        result = _execute_step(tmp_path, self._STEP, "", stderr="no section for 0.13.0\n", status=1)
         assert result.returncode == 0, (
             "an unanswerable question must not fail the release: the dispatch is not this "
             f"step's to make: {result.stderr.decode('utf-8', 'replace')}"
@@ -874,8 +798,7 @@ class TestTheBuildWorkCheckIsEarlyValidation:
         result = _execute_step(
             tmp_path,
             self._STEP,
-            'python3() { printf "every published dependent that admits maf-sandbox 0.13.0 '
-            'imports against it (maf-sandbox-bicep==0.5.6)\\nlive_check=run\\n"; }',
+            "every published dependent that admits maf-sandbox 0.13.0 imports against it (maf-sandbox-bicep==0.5.6)\nlive_check=run\n",
         )
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
         output, summary = _step_outputs(tmp_path)
@@ -886,8 +809,7 @@ class TestTheBuildWorkCheckIsEarlyValidation:
         result = _execute_step(
             tmp_path,
             self._STEP,
-            'python3() { printf "no published dependent admits maf-sandbox 0.13.0; nothing to '
-            'verify\\nlive_check=skip\\n"; }',
+            "no published dependent admits maf-sandbox 0.13.0; nothing to verify\nlive_check=skip\n",
         )
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
         output, summary = _step_outputs(tmp_path)
@@ -896,12 +818,14 @@ class TestTheBuildWorkCheckIsEarlyValidation:
         assert "maf-sandbox" in summary and "0.13.0" in summary
 
     def test_a_break_fails_the_step(self, tmp_path: Path):
-        # A break refuses the release before the dispatch is decided: `set -e` ends the step on
-        # the script's exit 1, so no verdict is written and the gate is never reached.
+        # A break refuses the release before dispatch: the wrapper preserves the checker's
+        # failure and writes no verdict.
         result = _execute_step(
             tmp_path,
             self._STEP,
-            'python3() { echo "maf-sandbox-docker==0.2.0: ImportError" >&2; return 1; }',
+            "",
+            stderr="maf-sandbox-docker==0.2.0: ImportError\n",
+            status=1,
         )
         assert result.returncode != 0, "a break must fail the step, not dispatch on a guess"
         output, _summary = _step_outputs(tmp_path)
@@ -923,8 +847,7 @@ class TestThePreUploadRecheckIsBreakRefusalOnly:
         result = _execute_step(
             tmp_path,
             self._STEP,
-            'python3() { printf "every published dependent newly admitting maf-sandbox 0.13.0 '
-            'imports against it (maf-sandbox-bicep==0.5.6)\\nlive_check=run\\n"; }',
+            "every published dependent newly admitting maf-sandbox 0.13.0 imports against it (maf-sandbox-bicep==0.5.6)\nlive_check=run\n",
         )
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
         output, summary = _step_outputs(tmp_path)
@@ -937,8 +860,7 @@ class TestThePreUploadRecheckIsBreakRefusalOnly:
         result = _execute_step(
             tmp_path,
             self._STEP,
-            'python3() { printf "no published dependent admits maf-sandbox 0.13.0; nothing to '
-            'verify\\nlive_check=skip\\n"; }',
+            "no published dependent admits maf-sandbox 0.13.0; nothing to verify\nlive_check=skip\n",
         )
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
         output, summary = _step_outputs(tmp_path)
@@ -946,12 +868,13 @@ class TestThePreUploadRecheckIsBreakRefusalOnly:
         assert summary == "", "no provisional summary — the post-upload step writes the final one"
 
     def test_a_break_fails_the_step(self, tmp_path: Path):
-        # A break refuses the upload before the core ships: `set -e` ends the step on the script's
-        # exit 1, so no verdict is written and the upload is never reached.
+        # A break refuses the upload before the core ships, without writing a dispatch verdict.
         result = _execute_step(
             tmp_path,
             self._STEP,
-            'python3() { echo "maf-sandbox-docker==0.7.0: ImportError" >&2; return 1; }',
+            "",
+            stderr="maf-sandbox-docker==0.7.0: ImportError\n",
+            status=1,
         )
         assert result.returncode != 0, "a break must refuse the upload, not ship on a guess"
         output, _summary = _step_outputs(tmp_path)
@@ -980,8 +903,7 @@ class TestThePostUploadDispatchGatesTheLiveCheck:
         result = _execute_step(
             tmp_path,
             self._STEP,
-            'python3() { printf "every published dependent newly admitting maf-sandbox 0.13.0 '
-            'imports against it (maf-sandbox-bicep==0.5.6)\\nlive_check=run\\n"; }',
+            "every published dependent newly admitting maf-sandbox 0.13.0 imports against it (maf-sandbox-bicep==0.5.6)\nlive_check=run\n",
         )
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
         output, summary = _step_outputs(tmp_path)
@@ -992,8 +914,7 @@ class TestThePostUploadDispatchGatesTheLiveCheck:
         result = _execute_step(
             tmp_path,
             self._STEP,
-            'python3() { printf "no published dependent admits maf-sandbox 0.13.0; nothing to '
-            'verify\\nlive_check=skip\\n"; }',
+            "no published dependent admits maf-sandbox 0.13.0; nothing to verify\nlive_check=skip\n",
         )
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
         output, summary = _step_outputs(tmp_path)
@@ -1009,8 +930,8 @@ class TestThePostUploadDispatchGatesTheLiveCheck:
         result = _execute_step(
             tmp_path,
             self._STEP,
-            'python3() { echo "maf-sandbox-docker==0.7.0: ImportError" >&2; '
-            'printf "live_check=run\\n"; }',
+            "live_check=run\n",
+            stderr="maf-sandbox-docker==0.7.0: ImportError\n",
         )
         assert result.returncode == 0, (
             "a break after the upload must dispatch, not fail the job and suppress the live check: "
@@ -1329,24 +1250,16 @@ _TWO_DIGIT_PATCH = """# Changelog
 
 
 def _extract_notes(tmp_path: Path, version: str, changelog: str) -> tuple[int, str, str]:
-    """Run the publish workflow's changelog step over ``changelog``; answer code, body, log."""
-    if shutil.which("bash") is None:
-        pytest.skip("no bash on PATH; the release runner is ubuntu-latest")
+    """Run the production changelog command over a temporary package."""
     package = tmp_path / "packages" / "maf-sandbox-otel"
     package.mkdir(parents=True)
     (package / "CHANGELOG.md").write_text(changelog, encoding="utf-8", newline="\n")
-    script = (
-        "PACKAGE=maf-sandbox-otel\n"
-        f"VERSION={version}\n"
-        "GITHUB_OUTPUT=out.txt\n"
-        ": > out.txt\n"
-        f"{run_block(PUBLISH_WORKFLOW, 'Extract the changelog section')}\n"
+    arguments = command_arguments(
+        run_block(PUBLISH_WORKFLOW, "Extract the changelog section"),
+        "release_workflow.py",
+        {"PACKAGE": "maf-sandbox-otel", "VERSION": version},
     )
-    # Bytes in, for the reason `_execute_step` gives: text mode would translate the newlines
-    # and bash rejects `set -euo pipefail\r`.
-    result = subprocess.run(
-        ["bash", "-s"], input=script.encode("utf-8"), capture_output=True, cwd=tmp_path
-    )
+    result = run_release(tmp_path, arguments)
     return (
         result.returncode,
         (tmp_path / "out.txt").read_text("utf-8"),

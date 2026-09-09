@@ -1295,34 +1295,10 @@ jobs:
           # Retry only exit 3, which marks model-only non-convergence; deterministic failures exit.
           # Annotate retries and summarize attempts so intermittent failures remain visible.
           #
-          # One number, read three times below, because copies drift and the summary is what a
-          # reader trusts. Six from measurement: two attempts passed 59% of 27 runs, so one is
+          # Six from measurement: two attempts passed 59% of 27 runs, so one is
           # near 36% and six near 93%. A rate, not a fix — the fix turn is a live model.
-          allowed=6
-          attempts=0
-          status=0
-          while [ "$attempts" -lt "$allowed" ]; do
-            attempts=$((attempts + 1))
-            # Captured rather than left to `set -e`: a sample that dies here would otherwise
-            # take the whole step with it, before the attempt count is written. It is also not
-            # the model's half — nothing was measured — so it breaks without a second loop.
-            status=0
-            uv run --no-project samples/13_bicep_fix_loop/agent.py | tee /tmp/sample13-out.txt || status=$?
-            if [ "$status" -ne 0 ]; then
-              echo "::error title=sample 13 did not run::the sample exited $status, so the check saw nothing"
-              break
-            fi
-            python3 "$HARNESS"/scripts/check_live_fix_loop_sample.py /tmp/sample13-out.txt || status=$?
-            [ "$status" -eq 3 ] || break
-            if [ "$attempts" -lt "$allowed" ]; then
-              note="the model's half did not converge on attempt $attempts of $allowed and every"
-              note="$note other measurement passed, so the two-turn loop runs again (#421)"
-              echo "::warning title=sample 13 retried::$note"
-            fi
-          done
-          said="samples/13_bicep_fix_loop: exit $status after $attempts attempt(s), $allowed allowed."
-          echo "$said" | tee -a "$GITHUB_STEP_SUMMARY"
-          exit "$status"
+          python3 "$HARNESS"/scripts/retry_live_sample.py sample13 --allowed 6 \
+            --output /tmp/sample13-out.txt
 
       - name: Assert the published version the sample resolved
         if: ${{ always() && inputs.version != '' }}
@@ -1576,31 +1552,8 @@ jobs:
           #
           # Three, against sample 13's six, because an attempt holds a sandbox per route and so
           # costs two. Sequential, and each disposes its own pair, so the peak is unchanged.
-          allowed=3
-          attempts=0
-          status=0
-          while [ "$attempts" -lt "$allowed" ]; do
-            attempts=$((attempts + 1))
-            # Captured rather than left to `set -e`: a sample that dies here would otherwise
-            # take the whole step with it, before the attempt count is written. It is also not
-            # the model's half — nothing was measured — so it breaks without a second loop.
-            status=0
-            uv run --no-project samples/15_acas_codeact_host_tools/agent.py | tee /tmp/sample15-out.txt || status=$?
-            if [ "$status" -ne 0 ]; then
-              echo "::error title=sample 15 did not run::the sample exited $status, so the check saw nothing"
-              break
-            fi
-            python3 "$HARNESS"/scripts/check_live_host_tools_call_sample.py /tmp/sample15-out.txt || status=$?
-            [ "$status" -eq 3 ] || break
-            if [ "$attempts" -lt "$allowed" ]; then
-              note="the model's half did not converge on attempt $attempts of $allowed and every"
-              note="$note other measurement passed, so the walk runs again (#421)"
-              echo "::warning title=sample 15 retried::$note"
-            fi
-          done
-          said="samples/15_acas_codeact_host_tools: exit $status after $attempts attempt(s), $allowed allowed."
-          echo "$said" | tee -a "$GITHUB_STEP_SUMMARY"
-          exit "$status"
+          python3 "$HARNESS"/scripts/retry_live_sample.py sample15 --allowed 3 \
+            --output /tmp/sample15-out.txt
 
       - name: Assert the published version the sample resolved
         if: ${{ always() && inputs.version != '' }}
@@ -1699,28 +1652,8 @@ jobs:
           # The same retry on the same exit 3. Which half owns a failure is not a question about
           # the backend, so a leg that retried and one that did not would stop being comparable —
           # the budget is held equal for that, though attempts here are only local containers.
-          allowed=3
-          attempts=0
-          status=0
-          while [ "$attempts" -lt "$allowed" ]; do
-            attempts=$((attempts + 1))
-            status=0
-            uv run --no-project samples/15_acas_codeact_host_tools/agent.py | tee /tmp/sample15-docker-out.txt || status=$?
-            if [ "$status" -ne 0 ]; then
-              echo "::error title=sample 15 on docker did not run::the sample exited $status, so the check saw nothing"
-              break
-            fi
-            python3 "$HARNESS"/scripts/check_live_host_tools_call_sample.py --docker /tmp/sample15-docker-out.txt || status=$?
-            [ "$status" -eq 3 ] || break
-            if [ "$attempts" -lt "$allowed" ]; then
-              note="the model's half did not converge on attempt $attempts of $allowed and every"
-              note="$note other measurement passed, so the walk runs again (#421)"
-              echo "::warning title=sample 15 on docker retried::$note"
-            fi
-          done
-          said="samples/15_acas_codeact_host_tools on docker: exit $status after $attempts attempt(s), $allowed allowed."
-          echo "$said" | tee -a "$GITHUB_STEP_SUMMARY"
-          exit "$status"
+          python3 "$HARNESS"/scripts/retry_live_sample.py sample15-docker --allowed 3 \
+            --output /tmp/sample15-docker-out.txt
 
       - name: Assert the published version the sample resolved
         if: ${{ always() && inputs.version != '' }}
