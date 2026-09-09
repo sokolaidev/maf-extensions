@@ -74,6 +74,7 @@ kind's own call and after its cleanup, without executing a guest utility to insp
 
 from __future__ import annotations
 
+import math
 import posixpath
 import shlex
 import time
@@ -2287,6 +2288,13 @@ def _assert_conformance(results: tuple[ProbeResult, ...], suite: str) -> tuple[P
 # answering 404 on its own passes the deny probe having reached the host.
 
 
+def _curl_max_time(exec_timeout: float) -> str:
+    """Leave time for curl to report a denial before the outer exec deadline."""
+    if not math.isfinite(exec_timeout) or exec_timeout < 1:
+        raise ValueError("curl exec timeout must be finite and at least 1 second")
+    return f"{exec_timeout * (5.0 / 6.0):.3f}"
+
+
 async def _http_reaches(subject: ConformanceSubject, url: str, exec_timeout: float) -> bool:
     """Whether the guest reached ``url`` — a 2xx over a completed request.
 
@@ -2294,7 +2302,12 @@ async def _http_reaches(subject: ConformanceSubject, url: str, exec_timeout: flo
     tunnel, ``000``), a proxy deny (``403``) or any non-2xx status all mean "did not reach".
     """
     result = await subject.sandbox.exec(
-        ["sh", "-c", f"curl -s -o /dev/null -w '%{{http_code}}' --max-time 25 {shlex.quote(url)}"],
+        [
+            "sh",
+            "-c",
+            f"curl -s -o /dev/null -w '%{{http_code}}' "
+            f"--max-time {_curl_max_time(exec_timeout)} {shlex.quote(url)}",
+        ],
         working_directory=subject.working_directory,
         timeout=exec_timeout,
     )
@@ -2317,7 +2330,8 @@ async def run_egress_probes(
     fixture rather than of the backend. Both URLs must name endpoints known to answer 2xx when
     reached: the allowed probe is that half's positive control, and a ``denied_url`` answering
     non-2xx on its own would pass the deny probe having reached the host, which is the one thing
-    that probe exists to refute.
+    that probe exists to refute. ``exec_timeout`` must be finite and at least one second;
+    curl's deadline leaves headroom inside that bound.
     """
 
     async def _allowed(s: ConformanceSubject, _paths: ConformancePaths) -> None:
@@ -2399,7 +2413,10 @@ class EgressMethodsSubject(Protocol):
 
 @dataclass(frozen=True)
 class ExecEgressMethodsSubject:
-    """Measure HTTP methods through a POSIX guest with curl; no filesystem probes required."""
+    """Measure HTTP methods through a POSIX guest with curl; no filesystem probes required.
+
+    Request timeouts must be finite and at least one second, including exec headroom.
+    """
 
     sandbox: Sandbox
     capabilities: frozenset[Capability]
@@ -2411,7 +2428,7 @@ class ExecEgressMethodsSubject:
             [
                 "sh",
                 "-c",
-                f"curl -s -o /dev/null -w '%{{http_code}}' --max-time 25 "
+                f"curl -s -o /dev/null -w '%{{http_code}}' --max-time {_curl_max_time(timeout)} "
                 f"-X {shlex.quote(method)} {shlex.quote(url)}",
             ],
             working_directory=self.working_directory,

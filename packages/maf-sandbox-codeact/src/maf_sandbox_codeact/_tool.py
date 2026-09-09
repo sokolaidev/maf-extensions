@@ -226,7 +226,7 @@ def codeact_sandbox_spec(
     everything is registered.
 
     Raises:
-        ValueError: when an ``egress_allow`` entry is not a single hostname — blank, or holding
+        ValueError: when an ``egress_allow`` host is blank, scheme-qualified, or holds
             whitespace or a comma.
         TypeError: when ``egress_allow`` is a bare ``str`` rather than a sequence of hostnames.
     """
@@ -370,7 +370,7 @@ def make_codeact_tools(
         ValueError: when a sink is supplied with nothing to send down it — an output mode of
             :data:`CodeactOutputs.NONE` — when ``withhold_guest_output`` is paired with any
             output mode but :data:`CodeactOutputs.DECLARED`, or when an ``egress_allow`` entry
-            is not a single hostname (blank, or holding whitespace or a comma), where a sandbox
+            has a blank or scheme-qualified host, or holds whitespace or a comma, where a sandbox
             is configured.
         TypeError: when ``egress_allow`` is a bare ``str`` rather than a sequence of hostnames
             (which would otherwise be read one character at a time), again only where a sandbox
@@ -567,7 +567,7 @@ def _validated_hosts(hosts: Sequence[str | EgressRule]) -> tuple[str | EgressRul
     becomes seven single-character hosts — the real endpoint unreachable, with no refusal
     anywhere and a confidentiality cap applied to a flow nobody opened.
 
-    Each entry is one hostname, so an entry that is blank, holds whitespace, or holds a comma is
+    Each entry is one schemeless hostname; blank hosts, schemes, whitespace and commas are
     refused rather than passed through: no hostname contains any of those, and each is a way for
     a spec, the description the model reads, and a backend's allowlist to end up disagreeing
     silently — a comma-joined ``"a,b"`` becomes one spec entry the wslc proxy expands back into

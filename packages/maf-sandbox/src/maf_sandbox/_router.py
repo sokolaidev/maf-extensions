@@ -372,7 +372,7 @@ def _claims_egress_observation(backend: SandboxBackend) -> bool:
 
 
 def _declarations(backend: SandboxBackend) -> BackendDeclarations:
-    """The one object every optional declaration is read from: one ``getattr``, six fields.
+    """The one object every optional declaration is read from, through one ``getattr``.
 
     Not a Protocol member, so declaring nothing is legal and reads as
     :data:`~maf_sandbox.DEFAULT_BACKEND_DECLARATIONS`.  *Declaring nothing* is narrower than it

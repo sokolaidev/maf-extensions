@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 from dataclasses import dataclass, field
 
 import pytest
@@ -11,6 +12,8 @@ from maf_sandbox import Capability, ExecResult
 from maf_sandbox.conformance import (
     ConformanceFailure,
     ExecEgressMethodsSubject,
+    PosixGuestSubject,
+    assert_egress_conformance,
     assert_egress_methods_conformance,
     run_egress_methods_probes,
 )
@@ -93,7 +96,7 @@ def test_exec_subject_reads_completed_status_and_quotes_the_method(status, exit_
         [
             "sh",
             "-c",
-            "curl -s -o /dev/null -w '%{http_code}' --max-time 25 -X get '" + URL + "?a=1&b=2'",
+            "curl -s -o /dev/null -w '%{http_code}' --max-time 25.000 -X get '" + URL + "?a=1&b=2'",
         ]
     ]
 
@@ -104,3 +107,62 @@ def test_missing_curl_is_a_harness_failure():
     )
     with pytest.raises(RuntimeError, match="curl"):
         asyncio.run(subject.http_reaches("POST", URL, timeout=30))
+
+
+class TimedCurlSandbox(InProcessSandbox):
+    def __init__(self, *, response_delay: float, deny_post: bool = False):
+        super().__init__()
+        self.response_delay = response_delay
+        self.deny_post = deny_post
+        self.outer_timeouts: list[float] = []
+
+    async def exec(self, command, *, working_directory=None, timeout=None):
+        assert timeout is not None
+        self.outer_timeouts.append(timeout)
+        args = shlex.split(command[-1])
+        inner_timeout = float(args[args.index("--max-time") + 1])
+        method = args[args.index("-X") + 1] if "-X" in args else "GET"
+        blocked = args[-1].endswith("/denied") or (self.deny_post and method == "POST")
+        if blocked:
+            if inner_timeout >= timeout:
+                raise TimeoutError("exec expired before curl could report the denial")
+            return ExecResult(stdout="000", exit_code=28)
+        if self.response_delay >= min(inner_timeout, timeout):
+            return ExecResult(stdout="000", exit_code=28)
+        return ExecResult(stdout="200", exit_code=0)
+
+
+@pytest.mark.parametrize(("timeout", "response_delay"), [(1.0, 0.0), (12.0, 0.0), (60.0, 30.0)])
+@pytest.mark.parametrize("methods", [False, True])
+def test_configured_timeout_allows_curl_to_report_denials(timeout, response_delay, methods):
+    sandbox = TimedCurlSandbox(response_delay=response_delay, deny_post=methods)
+    if methods:
+        control = TimedCurlSandbox(response_delay=response_delay)
+        asyncio.run(
+            assert_egress_methods_conformance(
+                ExecEgressMethodsSubject(sandbox, CAPABILITIES),
+                ExecEgressMethodsSubject(control, CAPABILITIES),
+                allowed_url=URL,
+                request_timeout=timeout,
+            )
+        )
+        assert control.outer_timeouts == [timeout]
+    else:
+        asyncio.run(
+            assert_egress_conformance(
+                PosixGuestSubject(sandbox, "/", frozenset({Capability.EXEC})),
+                allowed_url=URL,
+                denied_url=URL + "/denied",
+                exec_timeout=timeout,
+            )
+        )
+    assert sandbox.outer_timeouts == [timeout, timeout]
+
+
+@pytest.mark.parametrize("timeout", [0.0, -1.0, 0.5, float("nan"), float("inf")])
+def test_curl_timeout_refuses_unsupported_bounds_before_exec(timeout):
+    sandbox = CurlSandbox(ExecResult(stdout="200", exit_code=0))
+    subject = ExecEgressMethodsSubject(sandbox, CAPABILITIES)
+    with pytest.raises(ValueError, match="finite and at least 1 second"):
+        asyncio.run(subject.http_reaches("GET", URL, timeout=timeout))
+    assert not sandbox.http_commands
