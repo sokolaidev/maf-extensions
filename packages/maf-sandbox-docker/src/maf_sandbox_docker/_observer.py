@@ -41,7 +41,9 @@ def _metadata(info: os.stat_result) -> tuple[int, ...]:
     )
 
 
-def measure(max_bytes: int, max_entries: int) -> dict[str, object]:
+def measure(
+    max_bytes: int, max_entries: int, network_file_roots: dict[str, str]
+) -> dict[str, object]:
     """Read writable storage and process births through the workload's kernel namespace."""
     directory_flag: int = getattr(os, "O_DIRECTORY")
     nofollow_flag: int = getattr(os, "O_NOFOLLOW")
@@ -50,10 +52,16 @@ def measure(max_bytes: int, max_entries: int) -> dict[str, object]:
     with open("/proc/1/mountinfo") as stream:
         mountinfo = stream.read()
     mounts: dict[str, tuple[str, bool]] = {}
+    network_files: set[str] = set()
     for line in mountinfo.splitlines():
         fields = line.split()
         separator = fields.index("-")
-        mounts[_unescape(fields[4])] = (fields[separator + 1], "rw" in fields[5].split(","))
+        path = _unescape(fields[4])
+        mounts[path] = (fields[separator + 1], "rw" in fields[5].split(","))
+        if path in network_file_roots and _unescape(fields[3]).endswith(network_file_roots[path]):
+            network_files.add(path)
+        else:
+            network_files.discard(path)
     # These expose kernel state, outside the filesystem/process-residue contract.
     kernel = {"proc", "sysfs", "devpts", "mqueue", "cgroup", "cgroup2"}
     roots = sorted(
@@ -115,6 +123,9 @@ def measure(max_bytes: int, max_entries: int) -> dict[str, object]:
                 os.close(descriptor)
         if _metadata(os.stat(name, dir_fd=parent, follow_symlinks=False)) != metadata:
             raise RuntimeError("entry changed during observation")
+        if path in network_files and stat.S_ISREG(info.st_mode):
+            # Docker archive setup chowns these files even when ownership already matches.
+            metadata = metadata[:-1]
         entries[path] = json.dumps([metadata, content], separators=(",", ":"))
         if mounts[mount][0] == "tmpfs" and path != mount:
             if mount != "/dev" or path not in {
@@ -157,4 +168,4 @@ def measure(max_bytes: int, max_entries: int) -> dict[str, object]:
 
 
 if __name__ == "__main__":
-    print(json.dumps(measure(int(sys.argv[1]), int(sys.argv[2]))))
+    print(json.dumps(measure(int(sys.argv[1]), int(sys.argv[2]), json.loads(sys.argv[3]))))

@@ -34,6 +34,9 @@ pytestmark = pytest.mark.skipif(
         ("echo residue > /dev/residue", "/dev/residue"),
         ("echo residue >> /etc/hosts", "/etc/hosts"),
         ("touch /etc/hosts", "/etc/hosts"),
+        ("chmod 600 /etc/hosts", "/etc/hosts"),
+        ("chown 123:123 /etc/hosts", "/etc/hosts"),
+        ("chmod 600 /etc/hosts; chmod 644 /etc/hosts", None),
         ("touch /dev/shm", "/dev/shm"),
         ("touch -h /dev/stdout", "/dev/stdout"),
         ("ln -s /etc/passwd /dev/shm/residue", "/dev/shm/residue"),
@@ -61,6 +64,41 @@ def test_engine_observes_residue(script, expected):
             else:
                 with pytest.raises(ConformanceFailure, match=expected):
                     await assert_nothing_left_behind(subject, call)
+        finally:
+            assert await backend.dispose(key) is None
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("operation", ["stat", "read", "write_reclaim"])
+def test_file_plane_leaves_no_mounted_file_residue(operation):
+    async def scenario():
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+        key = SandboxKey(
+            scope="fingerprint-files-" + uuid.uuid4().hex, thread_id="test", agent_dir="test"
+        )
+        try:
+            sandbox = await backend.acquire(
+                key, SandboxSpec(kind="fingerprint", image=_IMAGE, work_dir="/")
+            )
+            subject = DockerFingerprintSubject(sandbox, observer_image=_OBSERVER)
+
+            async def call():
+                if operation == "write_reclaim":
+                    await sandbox.write_file(
+                        "tmp/confined-call/input", b"input", working_directory="/"
+                    )
+                    await sandbox.reclaim("/tmp/confined-call", working_directory="/", timeout=30)
+                else:
+                    for path in ("etc/hostname", "etc/hosts", "etc/resolv.conf"):
+                        if operation == "stat":
+                            assert await sandbox.stat_file(path, working_directory="/") is not None
+                        else:
+                            assert await sandbox.read_file(
+                                path, working_directory="/", max_bytes=65536
+                            )
+
+            assert all(r.passed for r in await assert_nothing_left_behind(subject, call))
         finally:
             assert await backend.dispose(key) is None
 

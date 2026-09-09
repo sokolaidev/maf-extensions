@@ -21,6 +21,30 @@ from ._backend import _DockerSandbox  # pyright: ignore[reportPrivateUsage]
 _OUTPUT_LIMIT = 4 * 1024 * 1024
 
 
+def _network_file_roots(inspected: dict[str, Any]) -> dict[str, str]:
+    roots: dict[str, str] = {}
+    for path, field, name in (
+        ("/etc/hostname", "HostnamePath", "hostname"),
+        ("/etc/hosts", "HostsPath", "hosts"),
+        ("/etc/resolv.conf", "ResolvConfPath", "resolv.conf"),
+    ):
+        suffix = f"/{inspected['Id']}/{name}"
+        source = inspected.get(field)
+        if (
+            isinstance(source, str)
+            and source.startswith("/")
+            and source.endswith(suffix)
+            and not any(
+                path == mount["Destination"]
+                or path.startswith(mount["Destination"].rstrip("/") + "/")
+                for mount in inspected["Mounts"]
+            )
+        ):
+            # Mount roots are relative to their filesystem, not the daemon's root.
+            roots[path] = suffix
+    return roots
+
+
 def _changed_paths(output: bytes) -> set[str]:
     changed: set[str] = set()
     for line in output.decode("utf-8").splitlines():
@@ -141,6 +165,7 @@ class DockerFingerprintSubject:
                 script,
                 str(self._max_bytes),
                 str(self._max_entries),
+                json.dumps(_network_file_roots(inspected)),
             )
         finally:
             # Killing the client on timeout/cancellation does not stop its container.
