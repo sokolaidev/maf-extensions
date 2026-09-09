@@ -25,6 +25,22 @@ def _unescape(path: str) -> str:
     return path
 
 
+def _metadata(info: os.stat_result) -> tuple[int, ...]:
+    # Access time can change when the observer reads an entry.
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_nlink,
+        info.st_uid,
+        info.st_gid,
+        getattr(info, "st_rdev"),
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
 def measure(max_bytes: int, max_entries: int) -> dict[str, object]:
     """Read writable storage and process births through the workload's kernel namespace."""
     directory_flag: int = getattr(os, "O_DIRECTORY")
@@ -70,14 +86,14 @@ def measure(max_bytes: int, max_entries: int) -> dict[str, object]:
         if len(entries) >= max_entries:
             raise RuntimeError("observer entry limit exceeded")
         info = os.stat(name, dir_fd=parent, follow_symlinks=False)
-        metadata = [info.st_mode, info.st_uid, info.st_gid, getattr(info, "st_rdev")]
+        metadata = _metadata(info)
         content = ""
         if stat.S_ISLNK(info.st_mode):
             content = os.readlink(name, dir_fd=parent)
         elif stat.S_ISREG(info.st_mode):
             descriptor = os.open(name, os.O_RDONLY | nofollow_flag | nonblock_flag, dir_fd=parent)
             with os.fdopen(descriptor, "rb") as stream:
-                if os.fstat(stream.fileno()) != info:
+                if _metadata(os.fstat(stream.fileno())) != metadata:
                     raise RuntimeError("file changed during observation")
                 digest = hashlib.sha256()
                 while chunk := stream.read(min(65536, remaining + 1)):
@@ -89,7 +105,7 @@ def measure(max_bytes: int, max_entries: int) -> dict[str, object]:
         elif stat.S_ISDIR(info.st_mode):
             descriptor = os.open(name, os.O_RDONLY | directory_flag | nofollow_flag, dir_fd=parent)
             try:
-                if os.fstat(descriptor) != info:
+                if _metadata(os.fstat(descriptor)) != metadata:
                     raise RuntimeError("directory changed during observation")
                 for child in sorted(os.listdir(descriptor)):
                     child_path = path + "/" + child
@@ -97,17 +113,8 @@ def measure(max_bytes: int, max_entries: int) -> dict[str, object]:
                         record(descriptor, child, child_path, mount)
             finally:
                 os.close(descriptor)
-        if os.stat(name, dir_fd=parent, follow_symlinks=False) != info:
-            # atime is allowed to move as a consequence of the read itself.
-            after = os.stat(name, dir_fd=parent, follow_symlinks=False)
-            if (
-                after.st_ino,
-                after.st_mode,
-                after.st_size,
-                after.st_mtime_ns,
-                after.st_ctime_ns,
-            ) != (info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns):
-                raise RuntimeError("entry changed during observation")
+        if _metadata(os.stat(name, dir_fd=parent, follow_symlinks=False)) != metadata:
+            raise RuntimeError("entry changed during observation")
         entries[path] = json.dumps([metadata, content], separators=(",", ":"))
         if mounts[mount][0] == "tmpfs" and path != mount:
             if mount != "/dev" or path not in {
