@@ -446,14 +446,16 @@ async def run() -> int:
             f"{MEASURED}faults introduced:  {len(introduced)} — {'; '.join(introduced) or 'none'}\n"
         )
     finally:
-        disposed = (await router.dispose_scope(SCOPE, THREAD_ID)).disposed
+        purge = await router.dispose_scope(SCOPE, THREAD_ID)
         if credential is not None:
             await credential.close()
 
     print(
-        f"{MEASURED}Disposed {disposed} sandbox(es) after 2 turns and a check. "
+        f"{MEASURED}Disposed {purge.disposed} sandbox(es) after 2 turns and a check. "
         f"Containers left: {len(containers())}."
     )
+    if purge.undisposed is not None:
+        print(f"{MEASURED}Not fully disposed: {purge.undisposed}")
     return 0
 
 

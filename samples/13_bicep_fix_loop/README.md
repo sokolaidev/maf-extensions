@@ -11,7 +11,7 @@ The file store starts **empty**. Turn 1 writes `main.bicep` from a brief and val
 
 At least four validations reach a sandbox. A model may validate more than once in either turn; the checker requires at least one successful validation per turn. The counts come from returned tool results carrying both compiler phases, because a rejected request may never acquire a sandbox. Zero containers alone cannot prove any work happened.
 
-Each checkpoint must report `0 (none)`, and the final scope purge must report `Disposed 0` and no containers left. The container ids remain in the output to identify leaks when cleanup fails. Warm reuse under bicep's confinement claim remains separate work in [#985](https://github.com/sokolaidev/maf-extensions/issues/985); this sample currently checks the per-call disposal default.
+Each checkpoint must report `0 (none)`, and the final scope purge must report `Disposed 0` and no containers left. An explicit purge failure is printed as `[measured] Not fully disposed` and fails the check even when both counts are zero. The container ids remain in the output to identify leaks when cleanup fails. Warm reuse under bicep's confinement claim remains separate work in [#985](https://github.com/sokolaidev/maf-extensions/issues/985); this sample currently checks the per-call disposal default.
 
 ## The session is the mechanism
 

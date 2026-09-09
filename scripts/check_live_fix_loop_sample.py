@@ -122,6 +122,7 @@ _TOLERATED_RULE = "use-recent-api-versions"
 _FOOTER = re.compile(
     _M + r"Disposed\s+(\d+)\s+sandbox\(es\)[^.]*\.\s*Containers left:\s*(\d+)\.", _F
 )
+_NOT_DISPOSED = re.compile(_M + r"Not fully disposed:[^\r\n]*", _F)
 
 
 def _named(rule: str, tail: str) -> str:
@@ -570,6 +571,8 @@ def _assess_footer(output: str) -> list[str]:
         return ["no footer line — the sample did not run to completion"]
     disposed, leftover = (int(group) for group in footer.groups())
     failures: list[str] = []
+    if _NOT_DISPOSED.search(output):
+        failures.append("the scope purge could not account for every sandbox — data may remain")
     if disposed != 0:
         failures.append(
             f"the router reported disposing {disposed}, expected 0 after per-call disposal"

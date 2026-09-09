@@ -13,12 +13,15 @@ because that is where a repair can be miscounted before the checker ever sees th
 from __future__ import annotations
 
 import ast
+import asyncio
 import importlib.util
 import re
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from maf_sandbox import DisposalFailure, ScopePurge
 
 #: Every way this file could start a process. `subprocess.run` alone is not the set: an async
 #: sample reaches for `asyncio.create_subprocess_exec`, and `os` is already imported here.
@@ -699,6 +702,23 @@ class TestWhichHalfFailedIsInTheExitStatus:
     def test_a_healthy_run_exits_zero(self, tmp_path):
         assert self._status(tmp_path, _HEALTHY) == 0
 
+    @pytest.mark.parametrize("base", [_HEALTHY, _SWAPPED], ids=["healthy", "model_failure"])
+    @pytest.mark.parametrize("reason", ["timeout", ""])
+    def test_scope_purge_failure_is_not_retryable(self, tmp_path, base, reason):
+        output = base + f"\n  [measured] Not fully disposed: {reason}\n"
+        assert self._status(tmp_path, output) == 1
+
+    @pytest.mark.parametrize(
+        "marker",
+        [
+            "Not fully disposed: timeout",
+            "  [Measured] Not fully disposed: timeout",
+            "> [measured] Not fully disposed: timeout",
+        ],
+    )
+    def test_unmeasured_purge_failure_does_not_override_measurements(self, tmp_path, marker):
+        assert self._status(tmp_path, _HEALTHY + "\n" + marker + "\n") == 0
+
     def test_a_repair_that_did_not_converge_asks_for_another_attempt(self, tmp_path):
         assert self._status(tmp_path, _SWAPPED) == check.MODEL_DID_NOT_CONVERGE
 
@@ -784,6 +804,44 @@ class TestTurnOneReportedRealDiagnostics:
 # --- the sample's own tally, which the checker above can only see the output of ---------------
 
 _SAMPLE = _ROOT / "samples" / "13_bicep_fix_loop" / "agent.py"
+
+
+@pytest.mark.parametrize(
+    "undisposed", [None, DisposalFailure("timeout", "purge timed out")], ids=["empty", "failed"]
+)
+def test_sample_reports_scope_purge_failure(undisposed, capsys):
+    tree = ast.parse(_SAMPLE.read_text(encoding="utf-8"))
+    run = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "run")
+    cleanup_index, cleanup = next(
+        (i, n) for i, n in enumerate(run.body) if isinstance(n, ast.Try) and n.finalbody
+    )
+    # Exercise the sample's cleanup and footer without a model or Docker engine.
+    run.body = cleanup.finalbody + run.body[cleanup_index + 1 :]
+
+    async def dispose_scope(scope, thread_id):
+        assert (scope, thread_id) == ("samples", "13-fix-loop")
+        return ScopePurge(disposed=0, undisposed=undisposed)
+
+    namespace: dict = {
+        "router": SimpleNamespace(dispose_scope=dispose_scope),
+        "credential": None,
+        "SCOPE": "samples",
+        "THREAD_ID": "13-fix-loop",
+        "MEASURED": "  [measured] ",
+        "containers": lambda: [],
+    }
+    exec(compile(ast.Module(body=[run], type_ignores=[]), "<sample-13>", "exec"), namespace)
+    assert asyncio.run(namespace["run"]()) == 0
+    output = capsys.readouterr().out
+    assert "Disposed 0 sandbox(es)" in output
+    assert "Containers left: 0." in output
+    marker = "  [measured] Not fully disposed:"
+    if undisposed is None:
+        assert marker not in output
+        assert check._assess_footer(output) == []
+    else:
+        assert f"{marker} {undisposed}\n" in output
+        assert any("data may remain" in reason for reason in check._assess_footer(output))
 
 
 #: What `faults_left` is built out of, in the sample. Lifted together, in source order.
