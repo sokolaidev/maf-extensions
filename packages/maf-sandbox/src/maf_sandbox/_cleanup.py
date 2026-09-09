@@ -1,7 +1,4 @@
-"""Resolve cleanup and coordinate shared or exclusive use of each sandbox.
-
-RECLAIM takes a shared hold; RESET and DISPOSE require exclusive use. Failed reclaim may
-escalate to disposal under a sibling, as documented in docs/sandbox/tool-call.md."""
+"""Coordinate call admission and drain siblings before whole-instance cleanup."""
 
 from __future__ import annotations
 
@@ -9,14 +6,23 @@ import asyncio
 import threading
 import time
 from dataclasses import dataclass, field
+from typing import Literal
 
-from ._protocol import CLEANUP_RANK, Capability, Cleanup, SandboxKey, SandboxSpec
+from ._protocol import (
+    CLEANUP_RANK,
+    Capability,
+    Cleanup,
+    Sandbox,
+    SandboxBackend,
+    SandboxKey,
+    SandboxSpec,
+)
 
 __all__ = [
     "QUEUED_CALL_TIMEOUT",
     "ExclusiveSlots",
+    "PendingCleanup",
     "established_cleanup",
-    "needs_exclusive_use",
     "resolve_cleanup",
 ]
 
@@ -40,11 +46,6 @@ def resolve_cleanup(established: frozenset[Cleanup], floor: Cleanup) -> Cleanup:
     return min(above, key=CLEANUP_RANK.__getitem__)
 
 
-def needs_exclusive_use(rung: Cleanup) -> bool:
-    """Whether the rung removes or resets the whole sandbox."""
-    return CLEANUP_RANK[rung] > CLEANUP_RANK[Cleanup.RECLAIM]
-
-
 @dataclass
 class _Waiter:
     loop: asyncio.AbstractEventLoop
@@ -52,11 +53,31 @@ class _Waiter:
     exclusive: bool
 
 
+@dataclass(eq=False)
+class PendingCleanup:
+    """One physical instance's folded cleanup and its loop-local completion waiters."""
+
+    backend: SandboxBackend
+    spec: SandboxSpec
+    sandbox: Sandbox
+    instance_id: str
+    rung: Cleanup
+    timeout: float
+    unclean: str | None = None
+    done: bool = False
+    failure: str | None = None
+    waiters: list[_Waiter] = field(default_factory=list[_Waiter])
+
+
 @dataclass
 class _Slot:
     """Who is inside one ``(key, kind)`` right now. Plain data; the guard outside protects it."""
 
-    #: Owners holding it shared — ``RECLAIM`` calls, which may run together.
+    state: Literal["serving", "draining", "cleaning"] = "serving"
+    pending: dict[tuple[int, str], PendingCleanup] = field(
+        default_factory=dict[tuple[int, str], PendingCleanup]
+    )
+    #: Ordinary call bodies may overlap regardless of their cleanup rung.
     shared: set[str] = field(default_factory=set[str])
     #: The owner holding it exclusively, if any. Never set while ``shared`` is non-empty.
     exclusive: str | None = None
@@ -67,8 +88,8 @@ class _Slot:
 class ExclusiveSlots:
     """Call-owned holds shared across every event loop using this router.
 
-    RECLAIM callers share; stronger cleanup excludes all other callers. Owners identify calls,
-    not tasks, so a child task may acquire a hold the parent releases. Waiters are notified on
+    Ordinary callers share until cleanup starts draining the entry. Explicit exclusive holds
+    exclude every sibling. Owners identify calls, not tasks. Waiters are notified on
     their own loops. Sharing across routers or processes requires CALL isolation scope."""
 
     def __init__(self) -> None:
@@ -94,6 +115,7 @@ class ExclusiveSlots:
                     if exclusive
                     else slot.exclusive is None and not any(one.exclusive for one in ahead)
                 )
+                free = free and slot.state == "serving"
                 if free or slot.exclusive == owner or (not exclusive and owner in slot.shared):
                     if queued is not None:
                         slot.waiters.remove(queued)
@@ -117,9 +139,8 @@ class ExclusiveSlots:
                 self._forget_waiter(at, queued)
                 raise TimeoutError(
                     f"another call is using the sandbox for {key.scope}/{key.thread_id}/"
-                    f"{key.agent_dir} and did not finish within {timeout:g}s. A workload cleaned "
-                    "by anything stronger than a reclaim runs one call at a time in its sandbox, "
-                    "because a reset or a delete cannot run under a sibling."
+                    f"{key.agent_dir} and did not finish within {timeout:g}s. Admission waits "
+                    "while the sandbox drains, cleans, or is held exclusively."
                 ) from None
             except BaseException:
                 self._forget_waiter(at, queued)
@@ -135,19 +156,89 @@ class ExclusiveSlots:
             self._drop_if_idle(at, slot)
         self._wake(at)
 
-    def release(self, key: SandboxKey, kind: str, *, owner: str) -> None:
-        """Release only this owner's hold; a cancelled or timed-out waiter releases nothing."""
+    def queue(
+        self, key: SandboxKey, kind: str, *, owner: str, cleanup: PendingCleanup
+    ) -> PendingCleanup:
+        """Condemn an instance while its call still holds the entry; fold its strongest rung."""
+        with self._guard:
+            slot = self._slots[(key, kind)]
+            if owner not in slot.shared and slot.exclusive != owner:
+                raise RuntimeError("cleanup must be recorded by an admitted call")
+            at = (id(cleanup.backend), cleanup.instance_id)
+            existing = slot.pending.get(at)
+            if existing is None:
+                slot.pending[at] = cleanup
+            else:
+                existing.rung = max(existing.rung, cleanup.rung, key=CLEANUP_RANK.__getitem__)
+                existing.sandbox = cleanup.sandbox
+                existing.timeout = min(existing.timeout, cleanup.timeout)
+                existing.unclean = existing.unclean or cleanup.unclean
+                cleanup = existing
+            slot.state = "draining"
+            return cleanup
+
+    def drain(self, key: SandboxKey, kind: str, *, owner: str) -> None:
+        """Close admission for a finished call whose acquire has not returned yet."""
+        with self._guard:
+            slot = self._slots.get((key, kind))
+            if slot is not None and (owner in slot.shared or slot.exclusive == owner):
+                slot.state = "draining"
+
+    def release(self, key: SandboxKey, kind: str, *, owner: str) -> list[PendingCleanup]:
+        """Leave this hold and atomically claim cleanup if it was the last active call."""
         at = (key, kind)
         with self._guard:
             slot = self._slots.get(at)
             if slot is None:
-                return
+                return []
             if slot.exclusive == owner:
                 slot.exclusive = None
             elif owner in slot.shared:
                 slot.shared.discard(owner)
             else:
-                return
+                return []
+            if not slot.shared and slot.exclusive is None and slot.pending:
+                slot.state = "cleaning"
+                return list(slot.pending.values())
+            if not slot.shared and slot.exclusive is None:
+                slot.state = "serving"
+            self._drop_if_idle(at, slot)
+        self._wake(at)
+        return []
+
+    async def wait(self, cleanup: PendingCleanup, *, timeout: float) -> str | None:
+        """Wait on this event loop without transferring ownership of the pending cleanup."""
+        loop = asyncio.get_running_loop()
+        waiter = _Waiter(loop, loop.create_future(), False)
+        with self._guard:
+            if cleanup.done:
+                return cleanup.failure
+            cleanup.waiters.append(waiter)
+        try:
+            await asyncio.wait_for(waiter.future, timeout)
+            return cleanup.failure
+        finally:
+            with self._guard:
+                cleanup.waiters.remove(waiter)
+
+    def complete(self, cleanup: PendingCleanup, failure: str | None) -> None:
+        """Publish a landed cleanup or a failure already transferred to the router ledger."""
+        with self._guard:
+            cleanup.failure = failure
+            cleanup.done = True
+            waiters = list(cleanup.waiters)
+        for waiter in waiters:
+            _notify(waiter)
+
+    def cleaned(self, key: SandboxKey, kind: str) -> None:
+        """Reopen admission only after every claimed record has reached its completion path."""
+        at = (key, kind)
+        with self._guard:
+            slot = self._slots[at]
+            if not all(one.done for one in slot.pending.values()):
+                raise RuntimeError("unfinished cleanup cannot reopen admission")
+            slot.pending.clear()
+            slot.state = "serving"
             self._drop_if_idle(at, slot)
         self._wake(at)
 
@@ -173,7 +264,13 @@ class ExclusiveSlots:
 
     def _drop_if_idle(self, at: tuple[SandboxKey, str], slot: _Slot) -> None:
         """Forget a slot nobody holds or wants. Call under the guard."""
-        if slot.exclusive is None and not slot.shared and not slot.waiters:
+        if (
+            slot.exclusive is None
+            and not slot.shared
+            and not slot.waiters
+            and not slot.pending
+            and slot.state == "serving"
+        ):
             self._slots.pop(at, None)
 
     def holds(self, key: SandboxKey, kind: str, *, owner: str) -> bool:
@@ -188,3 +285,12 @@ def _resolve(waiter: asyncio.Future[None]) -> None:
     """Complete a waiter unless its own call already gave up on it."""
     if not waiter.done():
         waiter.set_result(None)
+
+
+def _notify(waiter: _Waiter) -> None:
+    """Notify only through the future's owning loop, tolerating loop shutdown."""
+    try:
+        waiter.loop.call_soon_threadsafe(_resolve, waiter.future)
+    except RuntimeError:
+        if not waiter.loop.is_closed():
+            raise

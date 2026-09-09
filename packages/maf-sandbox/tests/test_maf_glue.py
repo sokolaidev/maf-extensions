@@ -3330,7 +3330,7 @@ class TestCleanupAdmission:
                 assert await fn(target="x") == "busy"
                 assert router._slots.holds(_KEY, _SPEC.kind, owner="other")
             finally:
-                router.release_call(_KEY, _SPEC.kind, owner="other")
+                await router.release_call(_KEY, _SPEC.kind, owner="other")
 
         asyncio.run(scenario())
         assert not backend.keys
@@ -3425,7 +3425,7 @@ class TestCleanupAdmission:
             assert len(backend.disposed) == 1
             assert not backend.sandboxes
             await router.enter_call(_KEY, spec, owner="rival", timeout=0.1)
-            router.release_call(_KEY, spec.kind, owner="rival")
+            await router.release_call(_KEY, spec.kind, owner="rival")
             assert not router._slots._slots
 
         asyncio.run(scenario())
@@ -3455,7 +3455,7 @@ class TestCleanupAdmission:
         async def scenario():
             await router._slots.take(_KEY, _SPEC.kind, owner="other", exclusive=True, timeout=1)
             assert await fn(target="x") == "done"
-            router.release_call(_KEY, _SPEC.kind, owner="other")
+            await router.release_call(_KEY, _SPEC.kind, owner="other")
             with pytest.raises(RuntimeError, match="no open tool call"):
                 await tasks[0]
             assert not router._slots._slots
@@ -3588,11 +3588,8 @@ class TestACallThatReachesTwoSandboxes:
             with pytest.raises(SandboxUnclean):
                 asyncio.run(router.acquire(key, _SPEC))
 
-    def test_a_cancellation_during_the_disposal_refuses_the_later_keys(self):
-        """The removal is not the only place a cancellation can land. The first sandbox is left
-        unclean, so its removal reaches the disposal; a cancellation *there* must still refuse the
-        keys the loop has not yet reached — not only the one being disposed, which the router
-        already refuses before its first await."""
+    def test_cancelled_disposal_preserves_a_sibling_already_reclaimed(self):
+        """A clean sibling needs no refusal when another instance's disposal is cancelled."""
 
         class _CancelsOnDispose(_PerKeyBackend):
             async def dispose(
@@ -3623,9 +3620,11 @@ class TestACallThatReachesTwoSandboxes:
         tool = _attach_with(build, router)[0]
         with pytest.raises(asyncio.CancelledError):
             _call(tool, target="x")
-        for key in (_KEY, self._OTHER):
-            with pytest.raises(SandboxUnclean):
-                asyncio.run(router.acquire(key, _SPEC))
+        with pytest.raises(SandboxUnclean):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+        sibling = asyncio.run(router.acquire(self._OTHER, _SPEC))
+        assert isinstance(sibling, InProcessSandbox)
+        assert not sibling.contents
 
     def test_a_note_left_by_a_wrapper_a_reacquire_replaced_still_disposes(self):
         """A key reacquired mid-call gets a fresh wrapper — a real backend hands out a new one —

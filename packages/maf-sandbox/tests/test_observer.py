@@ -77,9 +77,6 @@ from maf_sandbox.testing import (
 )
 
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-1")
-# Confinement claimed, which puts this suite on the `Cleanup.RECLAIM` rung. It has to be: a
-# workload cleaned by anything stronger runs one call at a time in its sandbox, and the test
-# below that watches two calls in flight together could never get them both in.
 _SPEC = SandboxSpec(
     kind="test",
     egress=Egress.ALLOWLIST,
