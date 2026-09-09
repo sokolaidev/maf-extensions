@@ -33,6 +33,7 @@ from maf_sandbox import (
     OsFamily,
     SandboxBackend,
     SandboxBackendNotPermitted,
+    SandboxCapabilityNotSupported,
     SandboxKey,
     SandboxOsFamilyNotSupported,
     SandboxRouter,
@@ -1566,6 +1567,8 @@ class TestExecDiscardsATimedOutSandbox:
         def responder(args):
             if args[0] == "cp" and args[1].startswith(f"{_NAME}:/maf-sandbox"):
                 raise TimeoutError("a daemon too slow to answer the ancestor walk")
+            if args[:3] == ("inspect", "-f", "{{.Config.User}}"):
+                return _DockerResult(0, b"0:0", "")
             if args[:2] == ("image", "inspect"):
                 return _DockerResult(0, b"", "")
             if args[0] == "inspect" and args[-1] == _NAME:
@@ -1596,7 +1599,7 @@ class TestExecDiscardsATimedOutSandbox:
         with caplog.at_level(logging.INFO):
             asyncio.run(backend.acquire(_KEY, _SPEC))
         assert fake.matching("rm", "-f", _NAME) == []
-        assert [(f.guest_uid, f.guest_gid) for f in backend._facts.values()] == [(0, 0)]
+        assert backend._facts == {}
         assert fake.matching("exec") == []
         assert any("could not be resolved" in r.message for r in caplog.records)
 
@@ -2707,11 +2710,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         # rather than through the responder.
         assert fake.matching("cp", f"{_NAME}:/etc/passwd") == []
 
-    def test_an_unresolvable_identity_fails_open_to_root(self, caplog):
-        """A named user with neither a passwd answer nor `id` leaves root-owned entries, and
-        the reach rule decides the removals.  Guessing an arbitrary ownership could stamp a
-        stranger's identity on the files.
-        """
+    def test_an_unresolvable_identity_keeps_fallback_ownership_separate(self, caplog):
         passwd = b"root:x:0:0:root:/root:/bin/bash\n"
         overrides = {
             **_WORK_IS_A_DIRECTORY,
@@ -2724,15 +2723,12 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         with caplog.at_level(logging.INFO):
             facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
         assert (facts.guest_uid, facts.guest_gid) == (0, 0)
+        assert not facts.identity_resolved
         assert any("could not be resolved" in r.message for r in caplog.records), [
             r.message for r in caplog.records
         ]
 
-    def test_an_unreadable_user_fails_open_to_root_and_says_so(self, caplog):
-        """An image this backend cannot ask keeps today's behaviour: root-owned entries — and
-        is warned about, because a daemon that would not answer and an image that names no
-        user reach the same `0:0` from opposite states, and only one of them is a choice.
-        """
+    def test_an_unreadable_user_establishes_no_identity(self, caplog):
         overrides = {
             **_WORK_IS_A_DIRECTORY,
             ("inspect", "-f", "{{.Config.User}}"): _DockerResult(1, b"", "daemon error"),
@@ -2741,6 +2737,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         with caplog.at_level(logging.INFO):
             facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
         assert (facts.guest_uid, facts.guest_gid) == (0, 0)
+        assert not facts.identity_resolved
         assert any("could not be resolved" in r.message for r in caplog.records), [
             r.message for r in caplog.records
         ]
@@ -2753,6 +2750,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         with caplog.at_level(logging.INFO):
             facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
         assert (facts.guest_uid, facts.guest_gid) == (0, 0)
+        assert facts.identity_resolved
         assert [r.message for r in caplog.records if "could not be resolved" in r.message] == []
 
     def test_the_answer_is_read_once_per_container(self):
@@ -2765,6 +2763,121 @@ class TestTheGuestIdentityIsReadFromTheContainer:
             for c in fake.calls[fake._marked :]
             if c.args[:3] == ("inspect", "-f", "{{.Config.User}}")
         ] == []
+
+
+class TestUnresolvedGuestCapabilities:
+    @pytest.mark.parametrize("state", ["running", "stopped", "absent"])
+    @pytest.mark.parametrize("capability", [Capability.FILES_OUT, Capability.HOST_TOOLS])
+    @pytest.mark.parametrize("user", [b"app", b"root", None])
+    def test_acquire_refuses_writing_guest_capabilities(self, state, capability, user):
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): (
+                _DockerResult(0, user, "")
+                if user is not None
+                else _DockerResult(1, b"", "inspect unavailable")
+            ),
+        }
+        backend, fake = _backend_with(
+            _machine(
+                running=[_NAME] if state == "running" else [],
+                stopped=[_NAME] if state == "stopped" else [],
+                overrides=overrides,
+            )
+        )
+        spec = replace(_SPEC, requires=_SPEC.requires | {capability})
+        with pytest.raises(SandboxCapabilityNotSupported, match=capability.value) as refused:
+            asyncio.run(backend.acquire(_KEY, spec))
+        assert "uid:gid" in str(refused.value)
+        assert not backend._facts
+        assert not fake.matching("cp", "-")
+        assert all(call.args[4] == "id" for call in fake.matching("exec"))
+        assert asyncio.run(backend.dispose(_KEY, kind=spec.kind)) is None
+        assert fake.matching("rm", "-f", _NAME)
+
+    @pytest.mark.parametrize("user", [b"", b"0:0", b"10001:20001", b"10001"])
+    def test_resolved_root_and_nonroot_users_keep_writing_capabilities(self, user):
+        backend, _ = _backend_with(
+            _machine(
+                running=[_NAME],
+                overrides={("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, user, "")},
+            )
+        )
+        spec = replace(
+            _SPEC, requires=_SPEC.requires | {Capability.FILES_OUT, Capability.HOST_TOOLS}
+        )
+        assert asyncio.run(backend.acquire(_KEY, spec)) is not None
+
+    def test_input_only_workload_keeps_root_owned_files_and_warns(self, caplog):
+        backend, fake = _backend_with(
+            _machine(
+                running=[_NAME],
+                overrides={
+                    **_WORK_IS_A_DIRECTORY,
+                    _cp(f"{_WORK}/input.txt"): _not_in_the_container(f"{_WORK}/input.txt"),
+                    ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"app", ""),
+                    ("exec", "-w", _WORK, _NAME, "program"): _DockerResult(0, b"result", ""),
+                },
+            )
+        )
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        asyncio.run(sandbox.write_file("input.txt", "input", working_directory=_WORK))
+        with tarfile.open(fileobj=io.BytesIO(fake.only("cp", "-").stdin)) as archive:
+            assert all((entry.uid, entry.gid) == (0, 0) for entry in archive.getmembers())
+        result = asyncio.run(sandbox.exec(["program"], working_directory=_WORK, timeout=10))
+        assert result.stdout == "result"
+        assert "root-owned inputs" in caplog.text
+        assert "FILES_OUT and HOST_TOOLS" in caplog.text
+
+    def test_a_later_writing_spec_cannot_reuse_the_input_only_fallback(self):
+        backend, _ = _backend_with(
+            _machine(
+                running=[_NAME],
+                overrides={("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"app", "")},
+            )
+        )
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        spec = replace(
+            _SPEC, requires=_SPEC.requires | {Capability.FILES_OUT, Capability.HOST_TOOLS}
+        )
+        with pytest.raises(SandboxCapabilityNotSupported) as refused:
+            asyncio.run(backend.acquire(_KEY, spec))
+        assert "files_out, host_tools" in str(refused.value)
+
+    def test_a_transient_identity_failure_is_retried(self):
+        backend, fake = _backend_with(
+            _machine(
+                running=[_NAME],
+                overrides={("inspect", "-f", "{{.Config.User}}"): _DockerResult(1, b"", "busy")},
+            )
+        )
+        spec = replace(_SPEC, requires=_SPEC.requires | {Capability.FILES_OUT})
+        with pytest.raises(SandboxCapabilityNotSupported):
+            asyncio.run(backend.acquire(_KEY, spec))
+        fake._responder = _machine(
+            running=[_NAME],
+            overrides={("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001:20001", "")},
+        )
+        assert asyncio.run(backend.acquire(_KEY, spec)) is not None
+        assert len(fake.matching("inspect", "-f", "{{.Config.User}}")) == 2
+        assert not fake.matching("run")
+
+    @pytest.mark.parametrize(
+        "failure", [OSError("probe unavailable"), TimeoutError("slow inspect")]
+    )
+    def test_identity_probe_exceptions_do_not_establish_root(self, failure):
+        base = _machine(running=[_NAME])
+
+        def respond(args):
+            if args[:3] == ("inspect", "-f", "{{.Config.User}}"):
+                raise failure
+            return base(args)
+
+        backend, _ = _backend_with(respond)
+        spec = replace(_SPEC, requires=_SPEC.requires | {Capability.HOST_TOOLS})
+        with pytest.raises(SandboxCapabilityNotSupported):
+            asyncio.run(backend.acquire(_KEY, spec))
+        assert not backend._facts
 
 
 # ---------------------------------------------------------------------------
