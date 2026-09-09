@@ -277,6 +277,7 @@ def test_failed_instance_does_not_skip_another_and_survives_entry_eviction(monke
         attempts.append(instance_id)
         if instance_id == a.instance_id:
             return DisposalFailure("refused", "delete refused")
+        return None
 
     monkeypatch.setattr(backend, "dispose", dispose)
 
