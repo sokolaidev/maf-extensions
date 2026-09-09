@@ -1737,15 +1737,15 @@ class TestAnImageWhoseGuestIsNotRoot:
 
         monkeypatch.setattr("maf_sandbox_acas._backend.monotonic", lambda: 100.0)
 
-        async def race():
+        def race():
             client = _GuestGroupClient(_guest_removing(measured))
             backend = _backend_with(client)
             identity = ("pinned-id", "python-nonroot:3.13")
             execing = _spec_requiring(Capability.EXEC)
             if seeded:
-                await backend.acquire(self._key("seed"), execing)
-            started = [asyncio.Event(), asyncio.Event()]
-            finish = [asyncio.Event(), asyncio.Event()]
+                asyncio.run(backend.acquire(self._key("seed"), execing))
+            started = [threading.Event(), threading.Event()]
+            finish = [threading.Event(), threading.Event()]
             original = _GuestSandboxClient.exec
             first_id = client.create_calls + 1
 
@@ -1753,21 +1753,24 @@ class TestAnImageWhoseGuestIsNotRoot:
                 index = int(sc.sandbox_id.removeprefix("sbx-")) - first_id
                 if index in (0, 1):
                     started[index].set()
-                    await finish[index].wait()
+                    assert finish[index].wait(5)
                 return await original(sc, command, working_directory=working_directory)
 
             monkeypatch.setattr(_GuestSandboxClient, "exec", ordered_exec)
-            client._answer = _GuestAnswer(exit_code=127)
-            unknown = asyncio.create_task(backend.acquire(self._key("unknown"), execing))
-            await asyncio.wait_for(started[0].wait(), timeout=5)
-            client._answer = _guest_removing(measured)
-            measurement = asyncio.create_task(backend.acquire(self._key("measured"), execing))
-            await asyncio.wait_for(started[1].wait(), timeout=5)
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                client._answer = _GuestAnswer(exit_code=127)
+                unknown = pool.submit(asyncio.run, backend.acquire(self._key("unknown"), execing))
+                assert started[0].wait(5)
+                client._answer = _guest_removing(measured)
+                measurement = pool.submit(
+                    asyncio.run, backend.acquire(self._key("measured"), execing)
+                )
+                assert started[1].wait(5)
 
-            order = (1, 0) if unknown_finishes_last else (0, 1)
-            for index in order:
-                finish[index].set()
-                await asyncio.wait_for((unknown, measurement)[index], timeout=5)
+                order = (1, 0) if unknown_finishes_last else (0, 1)
+                for index in order:
+                    finish[index].set()
+                    (unknown, measurement)[index].result(timeout=5)
 
             assert backend._guest_removals[identity] == _RemovalHint(
                 measured, 160.0, int(seeded) + (1 if unknown_finishes_last else 2)
@@ -1776,16 +1779,94 @@ class TestAnImageWhoseGuestIsNotRoot:
             assert held.probed and held.removal is None
             deleting = _spec_requiring(Capability.FILES_DELETE)
             with pytest.raises(SandboxCapabilityNotSupported, match="files_delete"):
-                await backend.acquire(self._key("unknown"), deleting)
+                asyncio.run(backend.acquire(self._key("unknown"), deleting))
             if measured:
-                assert await backend.acquire(self._key("fresh"), deleting)
+                assert asyncio.run(backend.acquire(self._key("fresh"), deleting))
             else:
                 creates = client.create_calls
                 with pytest.raises(SandboxCapabilityNotSupported, match="files_delete"):
-                    await backend.acquire(self._key("fresh"), deleting)
+                    asyncio.run(backend.acquire(self._key("fresh"), deleting))
                 assert client.create_calls == creates
 
-        asyncio.run(race())
+        race()
+
+    @pytest.mark.parametrize("measured", [False, True])
+    @pytest.mark.parametrize("unknown_first", [False, True])
+    def test_cross_loop_hint_updates_are_atomic(self, monkeypatch, measured, unknown_first):
+        """A hint read and its replacement exclude a competing loop's update."""
+        from maf_sandbox_acas._backend import _AcasSandbox
+
+        monkeypatch.setattr("maf_sandbox_acas._backend.monotonic", lambda: 100.0)
+        client = _GuestGroupClient(_guest_removing(measured))
+        backend = _backend_with(client)
+        spec = _spec_requiring(Capability.EXEC)
+        asyncio.run(backend.acquire(self._key("seed"), spec))
+        identity = ("pinned-id", "python-nonroot:3.13")
+        first_probing, other_probing, entered, progressed = (threading.Event() for _ in range(4))
+        local = threading.local()
+
+        class _Guard:
+            def __init__(self):
+                self.lock = threading.Lock()
+
+            def __enter__(self):
+                if not self.lock.acquire(blocking=False):
+                    progressed.set()
+                    assert self.lock.acquire(timeout=5)
+
+            def __exit__(self, *args):
+                self.lock.release()
+
+        class _Hints(dict):
+            def get(self, key, default=None):
+                hint = super().get(key, default)
+                if getattr(local, "pause", False):
+                    local.pause = False
+                    entered.set()
+                    assert progressed.wait(5)
+                return hint
+
+        monkeypatch.setattr(backend, "_guest_removals_guard", _Guard())
+        backend._guest_removals = _Hints(backend._guest_removals)
+        original = _AcasSandbox.probe_guest_removal
+
+        async def ordered_probe(sandbox):
+            if local.first:
+                first_probing.set()
+                assert other_probing.wait(5)
+            else:
+                other_probing.set()
+                assert entered.wait(5)
+            answer = await original(sandbox)
+            local.pause = local.first
+            return answer
+
+        monkeypatch.setattr(_AcasSandbox, "probe_guest_removal", ordered_probe)
+
+        def acquire(first):
+            local.first = first
+            try:
+                return asyncio.run(backend.acquire(self._key("first" if first else "other"), spec))
+            finally:
+                if not first:
+                    progressed.set()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            client._answer = (
+                _GuestAnswer(exit_code=127) if unknown_first else _guest_removing(measured)
+            )
+            first = pool.submit(acquire, True)
+            assert first_probing.wait(5)
+            client._answer = (
+                _guest_removing(measured) if unknown_first else _GuestAnswer(exit_code=127)
+            )
+            other = pool.submit(acquire, False)
+            first.result(timeout=5)
+            other.result(timeout=5)
+
+        assert backend._guest_removals[identity] == _RemovalHint(
+            measured, 160.0, 3 if unknown_first else 2
+        )
 
     def test_a_remembered_successful_removal_does_not_license_a_newly_booted_image(self):
         """A create probes the sandbox it booted rather than trusting a remembered removal.
