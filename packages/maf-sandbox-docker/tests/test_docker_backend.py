@@ -53,6 +53,7 @@ from maf_sandbox_docker._backend import (
     _egress_decisions,
     _network_name,
     _proxy_name,
+    _sandbox_labels,
     _Sweep,
 )
 
@@ -4791,3 +4792,91 @@ class TestTheProxysOwnDecisionsReachARecord:
         backend.observe_egress(seen.append)
         asyncio.run(backend.dispose(_KEY))
         assert [d.host for e in seen for d in e.decisions] == ["evil.example"]
+
+
+@pytest.mark.parametrize(
+    "route", ["acquire", "instance", "dispose", "scope", "orphan", "derived", "network"]
+)
+@pytest.mark.parametrize("failure", ["refused", "exception", "cancelled"])
+@pytest.mark.parametrize("unreadable", [False, True])
+def test_proxy_removal_retry_publishes_only_the_successful_window(
+    route, failure, unreadable, monkeypatch
+):
+    backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+    asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+    seen: list[EgressObserved] = []
+    backend.observe_egress(seen.append)
+    failed = True
+    removal_landed = False
+    base = _machine(
+        running=[_AL_PROXY]
+        if route == "orphan"
+        else [_AL]
+        if route == "derived"
+        else [_AL, _AL_PROXY],
+        networks={_AL_NET: _ADDRESSED if route == "network" else _UNADDRESSED},
+    )
+
+    def respond(args):
+        nonlocal removal_landed
+        if args[:2] == ("logs", "--tail"):
+            if unreadable:
+                return _DockerResult(1, b"", "engine refused")
+            return _DockerResult(0, b"ALLOW example.com:443\n" * (1 if failed else 2), "")
+        if args[:1] == ("rm",) and args[-1] in (_AL_PROXY, "proxy-id"):
+            assert seen == []
+            if failed:
+                if failure == "exception":
+                    raise RuntimeError("engine unavailable")
+                if failure == "cancelled":
+                    raise asyncio.CancelledError
+                return _DockerResult(1, b"", "engine refused")
+            removal_landed = True
+        if failed and args[:1] == ("run",) and _AL_PROXY in args:
+            return _DockerResult(1, b"", "engine refused")
+        return base(args)
+
+    async def inspect(target):
+        labels = _sandbox_labels(_KEY, _ALLOW_SPEC)
+        if target == _AL_PROXY:
+            return {
+                "Id": "proxy-id",
+                "Name": _AL_PROXY,
+                "Labels": {**labels, "maf-sandbox.role": "proxy"},
+            }
+        return {"Id": "workload-id", "Name": _AL, "Labels": labels}
+
+    monkeypatch.setattr(backend, "_inspect_disposal_target", inspect)
+    fake._responder = respond
+
+    async def attempt():
+        if route == "acquire":
+            await backend._ensure_proxy(_AL, _KEY, _ALLOW_SPEC)
+        elif route == "network" and failed:
+            await backend._discard_a_sandbox_on_an_unusable_network(_AL, _KEY)
+        elif route == "instance":
+            await backend.dispose(_KEY, instance_id="workload-id")
+        elif route == "dispose":
+            await backend.dispose(_KEY)
+        else:
+            await backend.dispose_scope(_KEY.scope, _KEY.thread_id)
+
+    if failure == "cancelled":
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(attempt())
+    elif route in ("acquire", "network"):
+        with pytest.raises(RuntimeError):
+            asyncio.run(attempt())
+    else:
+        asyncio.run(attempt())
+    assert seen == []
+    assert _AL in backend._acquired
+    failed = False
+    if route == "derived":
+        base = _machine(running=[_AL_PROXY])
+    asyncio.run(attempt())
+    assert removal_landed
+    assert len(seen) == 1
+    assert seen[0].key == _KEY
+    assert len(seen[0].decisions) == (0 if unreadable else 2)
+    assert bool(seen[0].unreadable) == unreadable

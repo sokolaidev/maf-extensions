@@ -751,8 +751,8 @@ class WslcSandboxBackend:
 
     async def _drain_the_proxy(
         self, name: str, key: SandboxKey, *, proxy_id: str | None = None
-    ) -> None:
-        """Report what this sandbox's proxy decided, before the container holding it goes.
+    ) -> EgressObserved | None:
+        """Read this proxy's decisions; publish the returned event only after removal succeeds.
 
         **This is called on the acquire path, not only at disposal, and that is the whole
         design.**  :meth:`_ensure_proxy` removes and rebuilds the proxy on *every* acquire, so a
@@ -761,8 +761,8 @@ class WslcSandboxBackend:
 
         Never raises.  It runs beside a removal on the acquire and disposal paths, where a
         failure would cost a sandbox or a delete, and no record is worth either.  A drain that
-        could not read reports *that* rather than nothing, because a window with no account of
-        it is what an operator most needs to see.
+        could not read returns an unreadable event. A failed removal discards that attempt
+        without publishing; a retry reads the surviving proxy again.
         """
         report = self._egress_report
         if report is None:
@@ -815,16 +815,19 @@ class WslcSandboxBackend:
         # incomplete yields no decision and still says the window was not seen whole.
         if not decisions and unreadable is None and not truncated:
             return
-        report(
-            EgressObserved(
-                key=key,
-                backend=self.name,
-                decisions=decisions,
-                truncated=truncated,
-                unreadable=unreadable,
-                seconds=time.monotonic() - started,
-            )
+        return EgressObserved(
+            key=key,
+            backend=self.name,
+            decisions=decisions,
+            truncated=truncated,
+            unreadable=unreadable,
+            seconds=time.monotonic() - started,
         )
+
+    def _report_proxy_drain(self, event: EgressObserved | None) -> None:
+        """Publish a saved drain once its proxy is confirmed gone."""
+        if event is not None and self._egress_report is not None:
+            self._egress_report(event)
 
     # -- SandboxBackend -----------------------------------------------------------
 
@@ -1088,8 +1091,9 @@ class WslcSandboxBackend:
         except Exception as exc:  # noqa: BLE001 - unread ownership cannot authorize deletion
             return DisposalFailure("unlisted", f"could not select the sandbox instance: {exc}")
         if proxy_id is not None:
-            await self._drain_the_proxy(name, key, proxy_id=proxy_id)
+            event = await self._drain_the_proxy(name, key, proxy_id=proxy_id)
             if (await self._remove(proxy_id)).failure is None:
+                self._report_proxy_drain(event)
                 self._forget_attribution(name, key.thread_id)
         removal = await self._remove(instance_id)
         if removal.failure is None:
@@ -1233,15 +1237,18 @@ class WslcSandboxBackend:
         async def command(*args: str) -> _WslcResult:
             return await self._wslc(*args, timeout=self._config.command_timeout_seconds)
 
+        drained: dict[str, EgressObserved | None] = {}
+
         async def drain(workload: str, proxy_id: str) -> None:
             attribution = self._acquired.get(workload)
             if attribution is not None:
                 key = SandboxKey(
                     scope=attribution[0], thread_id=attribution[1], agent_dir=attribution[2]
                 )
-                await self._drain_the_proxy(workload, key, proxy_id=proxy_id)
+                drained[workload] = await self._drain_the_proxy(workload, key, proxy_id=proxy_id)
 
         def forget(workload: str) -> None:
+            self._report_proxy_drain(drained.pop(workload, None))
             attribution = self._acquired.get(workload)
             if attribution is not None:
                 self._forget_attribution(workload, attribution[1])
@@ -1285,6 +1292,7 @@ class WslcSandboxBackend:
         # containers and the registry kept only the later — the earlier one's proxy is reached
         # here or nowhere. `drain_key` answers `None` for a name this process cannot attribute,
         # which is a container another replica created, and that window is lost with it.
+        drained: dict[str, EgressObserved | None] = {}
         if drain_key is not None:
             # Normalised to the workload the proxy belongs to, because a sweep can return a
             # proxy whose workload went separately — filtering those out would delete exactly
@@ -1292,7 +1300,7 @@ class WslcSandboxBackend:
             for workload in dict.fromkeys(n.removesuffix(_PROXY_SUFFIX) for n in names):
                 attributed = drain_key(workload)
                 if attributed is not None:
-                    await self._drain_the_proxy(workload, attributed)
+                    drained[workload] = await self._drain_the_proxy(workload, attributed)
 
         count = 0
         undeleted: dict[str, DisposalFailure] = {}
@@ -1310,6 +1318,7 @@ class WslcSandboxBackend:
                 # Keyed on the *proxy* being gone, not on the pair: a workload can go while
                 # its proxy stays, and that proxy is still deciding. `failure is None` covers
                 # removed and already-absent alike, which are the same thing to a later drain.
+                self._report_proxy_drain(drained.pop(target.removesuffix(_PROXY_SUFFIX), None))
                 self._forget_attribution(target.removesuffix(_PROXY_SUFFIX), thread_id)
             if removal.removed and not target.endswith(_PROXY_SUFFIX):
                 logger.info("sandbox released: container=%s thread=%s (purge)", target, thread_id)
@@ -1330,6 +1339,7 @@ class WslcSandboxBackend:
                     # The same rule as above: attribution goes when the proxy does.
                     removed = await self._remove(_proxy_name(workload))
                     if removed.failure is None:
+                        self._report_proxy_drain(drained.pop(workload, None))
                         self._forget_attribution(workload, thread_id)
                 networks.add(_network_name(workload))
         for net in networks:
@@ -1553,11 +1563,12 @@ class WslcSandboxBackend:
         # Before the removal that would take them with it. This is the drain that matters: the
         # proxy is rebuilt per acquire, so this is where a warm conversation's decisions are
         # picked up, one call at a time.
-        await self._drain_the_proxy(name, key)
+        event = await self._drain_the_proxy(name, key)
         # Forgotten with the removal, so a replacement that fails to come up leaves no
         # entry claiming a proxy is there: the retry's drain then reports nothing rather
         # than a window it already read.
         if (await self._remove(proxy)).failure is None:
+            self._report_proxy_drain(event)
             self._forget_attribution(name, key.thread_id)
 
         args = ["container", "run", "-d", "--name", proxy, "--network", _network_name(name)]

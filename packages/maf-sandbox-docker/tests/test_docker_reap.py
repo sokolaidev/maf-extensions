@@ -388,13 +388,13 @@ def test_proxy_attribution_is_retained_only_when_removal_fails(outcome):
     result = asyncio.run(backend.reap(timedelta(days=1)))
     assert result.proxies_removed == (outcome == "removed")
     assert (_NAME in backend._acquired) == (outcome == "refused")
-    assert len(events) == 1
+    assert len(events) == (outcome != "refused")
     if outcome == "refused":
         assert result.failures[0].code == "refused"
         engine.failures.clear()
         assert asyncio.run(backend.reap(timedelta(days=1))).proxies_removed == 1
         assert _NAME not in backend._acquired
-        assert len(events) == 2
+        assert len(events) == 1
     else:
         assert result.failures == ()
         engine.failures[("logs",)] = _DockerResult(1, b"", f"No such container: {_NAME}-proxy")

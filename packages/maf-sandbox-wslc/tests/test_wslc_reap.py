@@ -444,6 +444,45 @@ def test_egress_drain_uses_inspected_proxy_id_after_workload_removal(monkeypatch
     assert not backend._acquired
 
 
+@pytest.mark.parametrize("failure", ["refused", "exception", "cancelled"])
+def test_reap_reports_only_after_proxy_removal_succeeds(failure):
+    engine = _Engine([_container(), _proxy()], [_network()])
+    backend = _backend(engine)
+    backend._acquired[_NAME] = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+    events = []
+    backend.observe_egress(events.append)
+    failed = True
+
+    def respond(args):
+        if args[:2] == ("container", "stop"):
+            return _WslcResult(0, b"", b"")
+        if args[:2] == ("container", "logs"):
+            return _WslcResult(0, b"ALLOW example.com:443\n", b"")
+        if args[:2] == ("container", "remove") and args[-1] == "b" * 64:
+            assert events == []
+            if failed:
+                if failure == "exception":
+                    raise RuntimeError("engine unavailable")
+                if failure == "cancelled":
+                    raise asyncio.CancelledError
+                return _WslcResult(1, b"", b"engine refused")
+        return None
+
+    engine.before = respond
+    if failure == "cancelled":
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(backend.reap(_PERIOD))
+    else:
+        assert asyncio.run(backend.reap(_PERIOD)).failures
+    assert events == []
+    assert _NAME in backend._acquired
+    failed = False
+    assert asyncio.run(backend.reap(_PERIOD)).proxies_removed == 1
+    assert len(events) == 1
+    assert events[0].decisions[0].host == "example.com"
+    assert not backend._acquired
+
+
 def test_network_creation_writes_a_persistent_timestamp(monkeypatch):
     backend = WslcSandboxBackend(WslcSandboxConfig())
     calls = []
