@@ -42,6 +42,7 @@ from ._observer import SandboxAcquired
 from ._protocol import (
     Capability,
     Egress,
+    EgressRule,
     Identity,
     Isolation,
     IsolationScope,
@@ -89,7 +90,7 @@ class EffectiveState:
     #: The network posture the sandbox was served under.
     egress: Egress
     #: The hosts an ``ALLOWLIST`` run could reach, and empty in every other mode.
-    egress_allow: tuple[str, ...]
+    egress_allow: tuple[str | EgressRule, ...]
     #: What the workload required, which the router matched before it served.
     requires: frozenset[Capability]
     #: The image reference the spec named, unresolved — a backend completes its own.
@@ -159,7 +160,12 @@ class EffectiveState:
             "isolation": _named(self.isolation),
             "isolation_scope": str(self.isolation_scope),
             "egress": str(self.egress),
-            "egress_allow": list(self.egress_allow),
+            "egress_allow": [
+                {"host": entry.host, "methods": list(entry.methods or ())}
+                if isinstance(entry, EgressRule)
+                else entry
+                for entry in self.egress_allow
+            ],
             "requires": _sorted(self.requires),
             "image": self.image,
             "work_dir": self.work_dir,

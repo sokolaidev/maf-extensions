@@ -61,6 +61,7 @@ from ._protocol import (
     Cleanup,
     DisposalCode,
     DisposalFailure,
+    EgressRule,
     Identity,
     Isolation,
     IsolationScope,
@@ -920,6 +921,10 @@ class SandboxRouter:
             # a raise is indistinguishable from a backend honestly refusing one spec.
             _declared_set(backend, cast("object", declared.capabilities), "capabilities")
             _declared_set(backend, cast("object", declared.egress_modes), "egress_modes")
+            if declared.egress_method_tokens is not None:
+                _declared_set(
+                    backend, cast("object", declared.egress_method_tokens), "egress_method_tokens"
+                )
             _declared_isolation_scopes(backend, declared)
             _declared_limits(backend, declared)
         below = [(backend, rung) for backend, rung in rungs if not meets_floor(rung, floor)]
@@ -1199,6 +1204,22 @@ class SandboxRouter:
                 "never implemented fails inside the sandbox, where the reason is hardest to "
                 "see."
             )
+
+        tokens = declarations.egress_method_tokens
+        if tokens is not None:
+            supported = _declared_set(backend, cast("object", tokens), "egress_method_tokens")
+            requested = {
+                method
+                for entry in spec.egress_allow
+                if isinstance(entry, EgressRule)
+                for method in entry.methods or ()
+            }
+            unsupported = requested - supported
+            if unsupported:
+                raise SandboxCapabilityNotSupported(
+                    f"sandbox backend {backend.name!r} cannot enforce egress methods "
+                    f"{', '.join(sorted(unsupported))} as written for {spec.kind!r}"
+                )
 
         # After the capability match and before the ceilings, because it is the same kind of
         # question the capability match asks — can this backend serve this workload at all —

@@ -3719,7 +3719,7 @@ _ALLOW_SPEC = SandboxSpec(
     egress=Egress.ALLOWLIST,
     egress_allow=("mcr.microsoft.com", "*.data.mcr.microsoft.com"),
 )
-_ALLOW_ID = "allow:" + ",".join(sorted(_ALLOW_SPEC.egress_allow))
+_ALLOW_ID = "allow:" + ",".join(sorted(map(str, _ALLOW_SPEC.egress_allow)))
 #: What `os.environ.get("MAF_EGRESS_PROXY_IMAGE", "")` hands the constructor when nothing is set.
 _EMPTY_PROXY_CONFIG = DockerSandboxConfig(egress_proxy_image="")
 _AL = _container_name(_KEY, _ALLOW_SPEC.kind, _ALLOW_ID)
@@ -4504,7 +4504,7 @@ class TestTheProxysOwnDecisionsReachARecord:
         proxy is reached by the label sweep, and its decisions go with it unless drained."""
         seen: list[EgressObserved] = []
         other = replace(_ALLOW_SPEC, egress_allow=("example.invalid",))
-        first = _container_name(_KEY, other.kind, "allow:" + ",".join(other.egress_allow))
+        first = _container_name(_KEY, other.kind, "allow:" + ",".join(map(str, other.egress_allow)))
         drained = _DockerResult(0, b"ALLOW example.invalid:443", "")
         backend, _fake = _backend_with(
             _machine(running=[first], overrides={("logs", "--tail"): drained}),
@@ -4551,7 +4551,7 @@ class TestTheProxysOwnDecisionsReachARecord:
         kind replaces the registry entry — and the first container is still swept."""
         seen: list[EgressObserved] = []
         other = replace(_ALLOW_SPEC, egress_allow=("example.invalid",))
-        first = _container_name(_KEY, other.kind, "allow:" + ",".join(other.egress_allow))
+        first = _container_name(_KEY, other.kind, "allow:" + ",".join(map(str, other.egress_allow)))
         drained = _DockerResult(0, b"ALLOW example.invalid:443", "")
         backend, _fake = _backend_with(
             _machine(running=[first], overrides={("logs", "--tail"): drained}),

@@ -2852,6 +2852,7 @@ class TestPolicyVocabularyExports:
         "name",
         [
             "Capability",
+            "EgressRule",
             "DEFAULT_CAPABILITIES",
             "HostToolRegistry",
             "INTEGRITY_RANK",

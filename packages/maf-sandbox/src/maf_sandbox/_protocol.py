@@ -12,10 +12,11 @@ The split is what lets the same tool run against any of them unchanged, and it i
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, cast, runtime_checkable
 
 __all__ = [
     "CLEANUP_RANK",
@@ -33,6 +34,7 @@ __all__ = [
     "DisposalCode",
     "DisposalFailure",
     "Egress",
+    "EgressRule",
     "EntryKind",
     "ExecResult",
     "HostToolAggregate",
@@ -212,6 +214,39 @@ class Egress(StrEnum):
     CLOSED = "closed"
 
 
+@dataclass(frozen=True)
+class EgressRule:
+    """Allow a host for the literal, case-sensitive HTTP methods named, or all for ``None``.
+
+    Method scope narrows a channel; it does not close it. GET can still send data through
+    URLs, headers and request content. Lowercase ``get`` does not mean ``GET``.
+    """
+
+    host: str
+    methods: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if self.methods is None:
+            return
+        if not isinstance(cast("object", self.methods), tuple):
+            raise TypeError("egress methods must be a tuple of HTTP tokens or None")
+        if not self.methods:
+            raise ValueError("egress methods cannot be empty; omit the host instead")
+        for method in cast("tuple[object, ...]", self.methods):
+            if (
+                not isinstance(method, str)
+                or re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", method) is None
+            ):
+                raise ValueError(f"egress method must be an HTTP token, got {method!r}")
+        if len(set(self.methods)) != len(self.methods):
+            raise ValueError("egress methods must not contain duplicate tokens")
+
+    def __str__(self) -> str:
+        if self.methods is None:
+            return self.host
+        return f"{self.host} ({', '.join(self.methods)})"
+
+
 class Capability(StrEnum):
     """What a sandbox can *do* — declared by a backend, required by a spec, matched at attach.
 
@@ -248,6 +283,8 @@ class Capability(StrEnum):
     #: Reuse also requires workload confinement. Without this declaration, cleanup resolves
     #: to RESET where SNAPSHOT is available, otherwise DISPOSE.
     RECLAIM = "reclaim"
+    #: Enforce literal HTTP methods on allowlist entries, within ``egress_method_tokens``.
+    EGRESS_METHODS = "egress_methods"
 
 
 #: What every :class:`Sandbox` already obligates.
@@ -754,7 +791,7 @@ class SandboxSpec:
     kind: str
     image: str | None = None
     image_id: str | None = None
-    egress_allow: tuple[str, ...] = ()
+    egress_allow: tuple[str | EgressRule, ...] = ()
     work_dir: str = "/maf-sandbox/work"
     # `dict[str, str]` rather than a bare `dict` as the factory: the bare builtin gives a
     # strict type checker `dict[Unknown, Unknown]` to work with, and this package's own
@@ -808,12 +845,33 @@ class SandboxSpec:
         if self.min_cleanup is not None:
             object.__setattr__(self, "min_cleanup", Cleanup(str(self.min_cleanup)))
         if self.egress_allow and self.egress is not Egress.ALLOWLIST:
-            hosts = ", ".join(self.egress_allow)
+            hosts = ", ".join(str(entry) for entry in self.egress_allow)
             raise ValueError(
                 f"egress_allow names hosts ({hosts}) but egress is {str(self.egress)!r}: a host "
                 f"list is the payload of an {str(Egress.ALLOWLIST)!r} run and has no meaning "
                 "without it. Set egress=Egress.ALLOWLIST, or drop the hosts."
             )
+        entries: dict[str, str | EgressRule] = {}
+        methods_by_host: dict[str, frozenset[str] | None] = {}
+        for entry in self.egress_allow:
+            if isinstance(entry, EgressRule) and entry.methods is None:
+                entry = entry.host
+            host = entry.host if isinstance(entry, EgressRule) else entry
+            methods = (
+                frozenset(entry.methods)
+                if isinstance(entry, EgressRule) and entry.methods is not None
+                else None
+            )
+            folded = host.lower()
+            if folded in entries:
+                if methods_by_host[folded] != methods:
+                    raise ValueError(f"conflicting egress rules for host {host!r}")
+            else:
+                entries[folded] = entry
+                methods_by_host[folded] = methods
+        object.__setattr__(self, "egress_allow", tuple(entries.values()))
+        if any(isinstance(entry, EgressRule) for entry in self.egress_allow):
+            object.__setattr__(self, "requires", self.requires | {Capability.EGRESS_METHODS})
         if Capability.RECLAIM in self.requires:
             raise ValueError(
                 "Capability.RECLAIM belongs in backend declarations; "
@@ -1284,6 +1342,9 @@ class BackendDeclarations:
     #: to implement :class:`~maf_sandbox.ObservesEgress`, and the router warns at construction
     #: where it does not.
     observes_egress: bool = False
+    #: Exact method spellings enforced with EGRESS_METHODS. None means every valid HTTP token;
+    #: an omitted declaration permits none. Ignored unless the capability is declared.
+    egress_method_tokens: frozenset[str] | None = frozenset()
 
 
 #: What a backend declaring no ``declarations`` is read as: every field at its own silence rule.
