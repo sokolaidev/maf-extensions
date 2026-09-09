@@ -173,9 +173,18 @@ async def _deliver(artifact: Artifact) -> LandedArtifact:
 _SINK = OutputSink(deliver=_deliver)
 
 
-def _router(*backends, **kwargs):
-    """Every fake here declares `none` isolation, so these routers opt below the floor."""
-    return SandboxRouter(list(backends), min_isolation=Isolation.NONE, **kwargs)
+def _router(*backends, warm=True, **kwargs):
+    """Use an already-served sandbox for call-body and end-of-call cleanup tests."""
+    router = SandboxRouter(list(backends), min_isolation=Isolation.NONE, **kwargs)
+    if warm:
+        for backend in backends:
+            if isinstance(backend, InProcessSandboxBackend):
+                router._seen[(_KEY, _SPEC.kind, id(backend))] = {backend.sandbox.instance_id}
+            if isinstance(backend, _PerKeyBackend):
+                for key in (_KEY, TestACallThatReachesTwoSandboxes._OTHER):
+                    sandbox = backend.per_key.setdefault(key, InProcessSandbox())
+                    router._seen[(key, _SPEC.kind, id(backend))] = {sandbox.instance_id}
+    return router
 
 
 def _pulling_backend():
@@ -671,6 +680,24 @@ class TestSessionListFiles:
 
 
 class TestSessionAcquire:
+    def test_failed_adoption_never_reaches_the_tool_body(self):
+        backend = InProcessSandboxBackend(dispose_failure=DisposalFailure("refused", "busy"))
+        ran = []
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                sandbox = await session.acquire(session.key())
+                if isinstance(sandbox, str):
+                    return sandbox
+                ran.append(target)
+                return "executed"
+
+            return widget_run
+
+        tool = _attach_with(build, _router(backend, warm=False))[0]
+        assert "Error:" in _call(tool, target="x")
+        assert not ran
+
     def test_a_healthy_acquire_returns_the_sandbox(self):
         backend = InProcessSandboxBackend()
         session = _session(backend)
@@ -2952,14 +2979,14 @@ class TestCleanupAdmission:
                 with pytest.raises(asyncio.CancelledError):
                     await second
                 release.set()
-                assert await first is backend.sandbox
+                assert await first is backend.sandboxes[(_KEY, spec.kind)]
                 return "done"
 
             return widget_run
 
         assert _call(_attach_with(build, router, spec=spec)[0], target="x") == "done"
         assert router.attempts == 1
-        assert len(backend.disposed) == 1
+        assert len(backend.disposed) == 2
         assert not router._slots._slots
 
     @pytest.mark.parametrize("rung", [Cleanup.RESET, Cleanup.DISPOSE])
@@ -3536,6 +3563,7 @@ class TestACallThatReachesTwoSandboxes:
             async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> InProcessSandbox:
                 await super().acquire(key, spec)
                 sandbox = InProcessSandbox()
+                sandbox.instance_id = self.sandbox.instance_id
                 self.handed.append(sandbox)
                 return sandbox
 

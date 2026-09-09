@@ -2721,6 +2721,7 @@ class TestConcurrentAcquire:
         assert client.create_calls == 1
         assert client.peak_creates == 1
         assert first.sandbox_id == second.sandbox_id == "sbx-1"
+        assert first.instance_id == second.instance_id == "sbx-1"
         assert backend._registry == {
             ("scope-a", "thread-1", "devops-engineer", "bicep"): _Held("sbx-1")
         }
@@ -2787,6 +2788,7 @@ class TestKindIdentity:
 
         assert client.create_calls == 2
         assert first.sandbox_id != second.sandbox_id
+        assert first.instance_id != second.instance_id
         assert ("scope-a", "thread-1", "devops-engineer", "bicep") in backend._registry
         assert ("scope-a", "thread-1", "devops-engineer", "codeact") in backend._registry
 

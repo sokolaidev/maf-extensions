@@ -233,8 +233,8 @@ class TestTheCallIsDisposed:
         sandbox = _Renderer()
         _render(sandbox, out_dir)
         backend = _BACKENDS[sandbox]
-        assert len(backend.disposed) == 1
-        assert backend.disposed_kinds == [diagram_sandbox_spec().kind]
+        assert len(backend.disposed) == 2
+        assert backend.disposed_kinds == [diagram_sandbox_spec().kind] * 2
         assert not sandbox.reclaims
 
 

@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
+from uuid import uuid4
 
 from maf_sandbox import (
     BackendDeclarations,
@@ -69,6 +70,7 @@ class NoIsolationSandbox:
     def __init__(self, host_root: Path, guest_work_dir: str) -> None:
         self._host_root = host_root
         self._guest_work_dir = guest_work_dir
+        self.instance_id = uuid4().hex
 
     def destroy(self) -> str | None:
         """Remove the host work directory. Never raises; answers why it could not.

@@ -58,7 +58,8 @@ class Engine:
 
     def subject(self):
         return DockerFingerprintSubject(
-            _DockerSandbox(self, "workload", 30), observer_image="trusted-python"
+            _DockerSandbox(self, "workload", 30, instance_id="fixture-id"),
+            observer_image="trusted-python",
         )
 
 

@@ -140,6 +140,7 @@ class _Leaky:
     """
 
     def __init__(self, *, checks: bool = True, names_links: bool = True) -> None:
+        self.instance_id = "leaky-specimen"
         self.contents: dict[str, bytes] = {}
         self.links: dict[str, str] = {}
         self._checks = checks

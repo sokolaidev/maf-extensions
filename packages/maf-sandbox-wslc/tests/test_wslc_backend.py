@@ -97,6 +97,8 @@ class _FakeWslc:
     async def __call__(self, *args: str, stdin=None, timeout=None, read_limit=None) -> _WslcResult:
         self.calls.append(_Recorded(args, stdin, timeout, read_limit))
         result = self._responder(args)
+        if args[:2] == ("container", "inspect") and result == _WslcResult(0, b"", b""):
+            result = _WslcResult(0, json.dumps([{"Id": f"id-{args[-1]}"}]).encode(), b"")
         if (
             args[:2] == ("container", "cp")
             and args[2] != "-"
@@ -138,6 +140,8 @@ def _machine(
                 payload = [{"Id": f"id-{n}", "Name": n} for n in names]
                 return _WslcResult(0, json.dumps(payload).encode(), b"")
             return _WslcResult(0, "".join(f"id-{n}\n" for n in names).encode(), b"")
+        if args[:2] == ("container", "inspect"):
+            return _WslcResult(0, json.dumps([{"Id": f"id-{args[-1]}"}]).encode(), b"")
         if args[:2] == ("container", "logs"):
             return _WslcResult(0, b"listening on 3128\n", b"")
         return _WslcResult(0, b"", b"")
@@ -160,6 +164,26 @@ def _backend_with(responder=None, config=None) -> tuple[WslcSandboxBackend, _Fak
 # ---------------------------------------------------------------------------
 # Backend identity — read by the router's isolation floor and capability match
 # ---------------------------------------------------------------------------
+
+
+def test_instance_id_comes_from_the_engine_on_every_acquire():
+    ids = ["a" * 64]
+    machine = _machine(running=[_NAME])
+
+    def respond(args):
+        if args[:2] == ("container", "inspect"):
+            return _WslcResult(0, json.dumps([{"Id": ids[0]}]).encode(), b"")
+        return machine(args)
+
+    backend, _ = _backend_with(respond)
+    first = asyncio.run(backend.acquire(_KEY, _SPEC))
+    second = asyncio.run(backend.acquire(_KEY, _SPEC))
+    assert first is not second
+    assert first.instance_id == second.instance_id == "a" * 64
+    ids[0] = "b" * 64
+    replacement = asyncio.run(backend.acquire(_KEY, _SPEC))
+    assert replacement.instance_id == "b" * 64
+    assert first.instance_id == "a" * 64
 
 
 class TestBackendIdentity:

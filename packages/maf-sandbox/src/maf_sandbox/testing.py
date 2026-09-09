@@ -22,6 +22,7 @@ import shlex
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 from ._outputs import SandboxTransferCapExceeded
 from ._protocol import (
@@ -181,6 +182,7 @@ class InProcessSandbox:
         #: because a baseline taken after a call has served preserves the residue the reset
         #: exists to remove. Last in this constructor, so it sees every store above it.
         self._baseline = self._snapshot()
+        self.instance_id = uuid4().hex
 
     def _snapshot(self) -> tuple[dict[str, bytes], set[str], set[str], set[str], set[str]]:
         """Everything :meth:`reset` puts back, copied rather than aliased."""
@@ -202,6 +204,7 @@ class InProcessSandbox:
         self.non_regular = set(non_regular)
         self.directories = set(directories)
         self.running = set(running)
+        self.instance_id = uuid4().hex
 
     def changed_paths(self) -> frozenset[str]:
         """Return every path whose contents or entry kind differs from the initial state."""

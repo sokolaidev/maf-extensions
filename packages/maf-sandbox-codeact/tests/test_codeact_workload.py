@@ -630,12 +630,13 @@ class TestCodeactSandboxSpec:
             assert sandbox.reclaims == []
             assert backend.specs[-1].confined_to_guest_call_path is False
             if expected is Cleanup.RESET:
-                assert len(sandbox.resets) == count
+                assert len(sandbox.resets) == count + 1
                 assert backend.disposed == []
             else:
-                assert backend.disposed == [backend.keys[0]] * count
-                assert backend.disposed_kinds == [CODEACT_KIND] * count
-                assert sandbox.resets == []
+                disposals = count + int(not snapshot)
+                assert backend.disposed == [backend.keys[0]] * disposals
+                assert backend.disposed_kinds == [CODEACT_KIND] * disposals
+                assert sandbox.resets == ([0] if snapshot else [])
 
     def test_egress_is_closed_by_default(self):
         """A spec that names no host denies every host, so the program can compute but cannot

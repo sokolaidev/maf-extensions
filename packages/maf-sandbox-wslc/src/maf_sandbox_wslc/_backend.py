@@ -365,11 +365,18 @@ class _WslcSandbox:
     """A running container, narrowed to what a workload is allowed to do with it."""
 
     def __init__(
-        self, run: _WslcRunner, name: str, command_timeout: float, guest_uid: int | None = None
+        self,
+        run: _WslcRunner,
+        name: str,
+        command_timeout: float,
+        guest_uid: int | None = None,
+        *,
+        instance_id: str,
     ) -> None:
         self._run = run
         self._name = name
         self._command_timeout = command_timeout
+        self.instance_id = instance_id
         self._guest_uid = guest_uid
 
     @property
@@ -843,9 +850,27 @@ class WslcSandboxBackend:
                 # on, and a closed sandbox has no record to attribute — listing one would
                 # make every closed teardown report a proxy that was never there.
                 self._acquired[name] = (key.scope, key.thread_id, key.agent_dir)
+            inspected = await self._wslc(
+                "container", "inspect", name, timeout=self._config.command_timeout_seconds
+            )
+            if inspected.returncode:
+                raise RuntimeError("wslc did not establish the sandbox instance ID")
+            rows: object = json.loads(inspected.stdout_text)
+            if not isinstance(rows, list) or len(cast("list[object]", rows)) != 1:
+                raise ValueError("wslc did not return exactly one inspected sandbox")
+            row = cast("list[object]", rows)[0]
+            if not isinstance(row, dict):
+                raise ValueError("wslc did not return an inspected sandbox object")
+            instance_id = cast("dict[str, object]", row).get("Id")
+            if not isinstance(instance_id, str) or not instance_id:
+                raise ValueError("wslc did not return the sandbox instance ID")
             guest_uid = await self._probe_guest_uid(name)
             sandbox = _WslcSandbox(
-                self._wslc, name, self._config.command_timeout_seconds, guest_uid
+                self._wslc,
+                name,
+                self._config.command_timeout_seconds,
+                guest_uid,
+                instance_id=instance_id,
             )
             logger.info(
                 "sandbox cleanup: container=%s guest_principal=%s guest_uid=%s cleanup=dispose",

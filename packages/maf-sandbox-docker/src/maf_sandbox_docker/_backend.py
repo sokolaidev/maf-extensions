@@ -594,6 +594,8 @@ class _DockerSandbox:
         reclaim_as_root: bool = True,
         guest_uid: int = 0,
         guest_gid: int = 0,
+        *,
+        instance_id: str,
     ) -> None:
         self._run = run
         self._name = name
@@ -603,6 +605,7 @@ class _DockerSandbox:
         self._cap_drop_all = cap_drop_all
         self._guest_uid = guest_uid
         self._guest_gid = guest_gid
+        self.instance_id = instance_id
 
     @property
     def container_name(self) -> str:
@@ -1391,7 +1394,13 @@ class DockerSandboxBackend:
                 # on, and a closed sandbox has no record to attribute — listing one would
                 # make every closed teardown report a proxy that was never there.
                 self._acquired[name] = (key.scope, key.thread_id, key.agent_dir)
-            facts = await self._container_facts(name, spec)
+            inspected = await self._docker(
+                "inspect", "-f", "{{.Id}}", name, timeout=self._config.command_timeout_seconds
+            )
+            instance_id = inspected.stdout.decode().strip()
+            if inspected.returncode or not instance_id:
+                raise RuntimeError("docker did not establish the sandbox instance ID")
+            facts = await self._container_facts(name, spec, instance_id=instance_id)
             refuse_capabilities_the_guest_cannot_back(
                 spec,
                 files_land_as_guest=facts.identity_resolved,
@@ -1409,6 +1418,7 @@ class DockerSandboxBackend:
                 facts.host_owned_ancestors,
                 facts.guest_uid,
                 facts.guest_gid,
+                instance_id=instance_id,
             )
 
     async def _capabilities_dropped(self, name: str) -> bool:
@@ -1606,7 +1616,9 @@ class DockerSandboxBackend:
                 groups[fields[0]] = int(fields[2])
         return groups
 
-    async def _container_facts(self, name: str, spec: SandboxSpec) -> _ContainerFacts:
+    async def _container_facts(
+        self, name: str, spec: SandboxSpec, *, instance_id: str
+    ) -> _ContainerFacts:
         """Read container facts, caching resolved identities and retrying unresolved ones.
 
         Here rather than in :meth:`_DockerSandbox.reclaim` because the ancestors above
@@ -1618,7 +1630,9 @@ class DockerSandboxBackend:
         cached = self._facts.get(key)
         if cached is not None:
             return cached
-        probe = _DockerSandbox(self._docker, name, self._config.command_timeout_seconds)
+        probe = _DockerSandbox(
+            self._docker, name, self._config.command_timeout_seconds, instance_id=instance_id
+        )
         try:
             answer = await probe.ancestors_are_the_hosts(spec.work_dir)
         except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
