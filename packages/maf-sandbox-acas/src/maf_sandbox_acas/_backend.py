@@ -398,6 +398,10 @@ class _AcasSandbox:
     def sandbox_id(self) -> str:
         return self._sc.sandbox_id
 
+    @property
+    def instance_id(self) -> str:
+        return self.sandbox_id
+
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
         """Write ``content`` at ``path`` through the data plane, which lands it as ``0:0``.
 

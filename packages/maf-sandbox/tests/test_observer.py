@@ -1933,7 +1933,9 @@ class TestTheCallIsRecorded:
 
         asyncio.run(_fn(_tool(router, build))())
 
-        assert recorder.one(SandboxDisposed).outcome == "gone"
+        assert [
+            event.outcome for event in recorder.events if isinstance(event, SandboxDisposed)
+        ] == ["gone", "gone"]
         assert recorder.one(ToolCallEnded).unclean == 1
 
 
@@ -2193,7 +2195,8 @@ class TestEveryRecordSaysWhichCallItCameFrom:
 
         # Both calls were open at once rather than one after the other: neither read until both
         # had acquired, so no reader of this stream could have split it by time.
-        assert [type(event).__name__ for event in recorder.events[:2]] == [
+        assert [type(event).__name__ for event in recorder.events[:3]] == [
+            "SandboxDisposed",
             "SandboxAcquired",
             "SandboxAcquired",
         ]
@@ -2291,7 +2294,7 @@ class TestEveryRecordSaysWhichCallItCameFrom:
         asyncio.run(router.dispose_scope(_KEY.scope, _KEY.thread_id))
 
         assert recorder.one(SandboxAcquired).call is None
-        assert recorder.one(SandboxDisposed).call is None
+        assert [event.call for event in recorder.only(SandboxDisposed)] == [None, None]
         assert recorder.one(ScopeDisposed).call is None
 
     def test_a_purge_a_call_asked_for_names_that_call(self):

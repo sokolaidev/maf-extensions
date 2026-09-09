@@ -51,6 +51,8 @@ class Measurement:
 class _Guest:
     """A guest that publishes requests one at a time or all at once."""
 
+    instance_id = "measured-guest"
+
     def __init__(self, concurrent: bool) -> None:
         self.concurrent = concurrent
         self.files: dict[str, bytes] = {}

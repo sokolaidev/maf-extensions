@@ -947,6 +947,11 @@ class Sandbox(Protocol):
     show of it, which is necessary and not sufficient: a green run is evidence, not proof.
     """
 
+    @property
+    def instance_id(self) -> str:
+        """Engine identifier, stable across acquires and new after replacement or reset."""
+        ...
+
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
         """Write ``content`` to ``path`` inside the sandbox.
 
@@ -1142,7 +1147,8 @@ class Sandbox(Protocol):
 
         Requires Capability.SNAPSHOT; backends without it raise NotImplementedError. Restoring
         only the filesystem is insufficient. The sandbox stays addressable under the same key
-        and kind. Raise on failure so cleanup can escalate to disposal."""
+        and kind with a new instance_id. Raise on failure, including a missing baseline, so
+        cleanup can escalate to disposal. Never snapshot a reused sandbox as its baseline."""
         raise NotImplementedError
 
 

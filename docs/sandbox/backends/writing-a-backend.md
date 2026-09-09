@@ -24,6 +24,13 @@ And the boundaries the repository's tests enforce: every top-level import is the
 
 ## The methods
 
+### `instance_id`
+
+- **Owes:** A nonempty engine identifier for the physical sandbox, stable across acquire wrappers and new after replacement or reset. The router cleans unfamiliar instances before serving them.
+- **Use:** The container ID on Docker and WSLC, or the sandbox ID on ACAS, read from the engine on acquire.
+- **Never:** Use the derived name or wrapper identity, or manufacture a baseline from a reused sandbox.
+- **Proved by:** Direct adapter tests for stable IDs across acquires and changed IDs after replacement; router adoption tests cover reset, disposal, failure and concurrent first use. No shared conformance probe yet.
+
 ### `write_file`
 
 The in-door every backend serving `FILES_IN` owes — which is every backend whose `capabilities` field is silent — and the method where two shipped backends independently wrote the same escape ([#142](https://github.com/sokolaidev/maf-extensions/issues/142)): confinement here is not a check on the argument string, and reading the prose alone has not been enough to write it.

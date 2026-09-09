@@ -88,6 +88,8 @@ def test_failure_is_reported_and_does_not_stop_the_sweep_or_refuse_the_key(failu
     assert (
         "still present" in caplog.text if failure == "returned" else "delete broke" in caplog.text
     )
+    bad.dispose_failure = None
+    bad.dispose_error = None
     assert asyncio.run(router.acquire(_KEY, _SPEC)) is bad.sandbox
 
 
@@ -139,8 +141,8 @@ def test_interrupted_delete_is_observed_and_releases_the_lock(cancel, caplog):
         assert len(recorder.events) == 1
         assert recorder.events[0].failure is not None
         assert recorder.events[0].outcome != "gone"
-        assert await router.acquire(_KEY, _SPEC) is backend.sandbox
         release.set()
+        assert await router.acquire(_KEY, _SPEC) is backend.sandbox
         assert await router.dispose_kind(_KEY, "target", timeout=1)
 
     asyncio.run(scenario())

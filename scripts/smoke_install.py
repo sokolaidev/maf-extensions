@@ -225,8 +225,11 @@ def _smoke_maf_sandbox_bicep() -> str:
         raise SystemExit(f"FAIL: the result is not one labelled sentence closing it: {answer!r}")
     if not any(path.endswith("/main.bicep") for path in written):
         raise SystemExit(f"FAIL: the workload never wrote the file into the sandbox: {written}")
-    if len(backend.keys) != 1:
-        raise SystemExit(f"FAIL: the happy path acquired {len(backend.keys)} sandbox(es), not 1")
+    # Adoption can acquire the same key again before serving the call.
+    if len(set(backend.keys)) != 1:
+        raise SystemExit(
+            f"FAIL: the happy path acquired {len(set(backend.keys))} sandbox keys, not 1"
+        )
 
     # The failure paths (#22, #33): the message an agent receives is the whole product here,
     # and both return before a sandbox is acquired — the free half of "verify the published

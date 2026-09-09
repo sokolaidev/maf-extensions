@@ -69,10 +69,6 @@ def _tool(router, spec, use):
     return getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
 
 
-async def _nothing(sandbox, guest_path, target):
-    pass
-
-
 @pytest.mark.parametrize(
     "spec,rung",
     [
@@ -89,7 +85,7 @@ def test_rungs_remove_call_state_and_preserve_a_warm_sibling(spec, rung):
     served = []
 
     async def use(sandbox, guest_path, target):
-        served.append(sandbox)
+        served.append((sandbox, len(sandbox.resets)))
         assert sandbox.contents[f"{guest_path}/payload"] == b"data"
         if rung is Cleanup.RESET:
             sandbox.contents["/outside-call"] = b"residue"
@@ -100,9 +96,9 @@ def test_rungs_remove_call_state_and_preserve_a_warm_sibling(spec, rung):
         assert isinstance(sibling, InProcessSandbox)
         await sibling.write_file("warm", "keep", working_directory=sibling_spec.work_dir)
         guest_path = await _tool(router, spec, use)(target="data")
-        sandbox = served[0]
+        sandbox, resets = served[0]
         assert len(sandbox.reclaims) == (rung is Cleanup.RECLAIM)
-        assert len(sandbox.resets) == (rung is Cleanup.RESET)
+        assert len(sandbox.resets) == resets + (rung is Cleanup.RESET)
         if rung is Cleanup.DISPOSE:
             if spec.isolation_scope is IsolationScope.CALL:
                 assert backend.disposed_kinds == [None]
@@ -142,7 +138,7 @@ def test_an_unclaimed_spec_disposes_by_default_and_next_call_gets_a_fresh_sandbo
         await run(target="second")
         assert not backend.sandboxes
         assert served[0] is not served[1]
-        assert backend.disposed_kinds == [spec.kind, spec.kind]
+        assert backend.disposed_kinds == [spec.kind] * 4
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))
 
@@ -181,6 +177,7 @@ def test_two_tool_calls_share_or_wait_for_cleanup(rung, expire, monkeypatch):
         run = _tool(router, spec, use)
         first = asyncio.create_task(run(target="first"))
         await first_entered.wait()
+        resets = list(backend.sandbox.resets)
         second = asyncio.create_task(run(target="second"))
         try:
             await queued.wait()
@@ -195,7 +192,7 @@ def test_two_tool_calls_share_or_wait_for_cleanup(rung, expire, monkeypatch):
                 assert "another call is using" in await second
                 assert not second_entered.is_set()
                 assert len(backend.keys) == 1
-                assert not backend.disposed and not backend.sandbox.resets
+                assert not backend.disposed and backend.sandbox.resets == resets
             else:
                 assert not second_entered.is_set()
                 assert not second.done()
@@ -222,27 +219,37 @@ def test_failed_reset_escalates_and_failed_disposal_obeys_host_policy(
     reset_fails, disposal, policy
 ):
     class _ResetFails(InProcessSandbox):
+        fail_reset = False
+
         async def reset(self, *, timeout):
+            if not self.fail_reset:
+                await super().reset(timeout=timeout)
+                return
             self.resets.append(0)
             raise RuntimeError("reset refused")
 
     backend = InProcessSandboxBackend(
         _ResetFails(), sandbox_per_key=True, declarations=_DECLARATIONS
     )
-    if disposal == "reported":
-        backend.dispose_failure = DisposalFailure("refused", "delete refused")
-    elif disposal == "raised":
-        backend.dispose_error = RuntimeError("delete refused")
     router = SandboxRouter(
         [backend],
         min_isolation=Isolation.NONE,
         reclaim=ReclaimConfig(failed_reclaim_policy=policy),
     )
     spec = dataclasses.replace(_SPEC, min_cleanup=Cleanup.RESET if reset_fails else Cleanup.DISPOSE)
+    resets_at_use = []
+
+    async def use(sandbox, guest_path, target):
+        resets_at_use.append(len(sandbox.resets))
+        sandbox.fail_reset = True
+        if disposal == "reported":
+            backend.dispose_failure = DisposalFailure("refused", "delete refused")
+        elif disposal == "raised":
+            backend.dispose_error = RuntimeError("delete refused")
 
     async def scenario():
-        guest_path = await _tool(router, spec, _nothing)(target="data")
-        assert len(backend.sandbox.resets) == reset_fails
+        guest_path = await _tool(router, spec, use)(target="data")
+        assert len(backend.sandbox.resets) == resets_at_use[0] + reset_fails
         assert backend.disposed_kinds == [spec.kind]
         if disposal == "success":
             assert not backend.sandboxes

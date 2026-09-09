@@ -257,6 +257,8 @@ class _FakeDocker:
     ) -> _DockerResult:
         self.calls.append(_Recorded(args, stdin, timeout, read_limit))
         result = self._responder(args)
+        if args[:3] == ("inspect", "-f", "{{.Id}}") and result == _DockerResult(0, b"", ""):
+            result = _DockerResult(0, f"id-{args[-1]}\n".encode(), "")
         if read_limit is not None and len(result.stdout) > read_limit:
             result = _DockerResult(result.returncode, result.stdout[:read_limit], result.stderr)
         return result
@@ -386,6 +388,8 @@ def _machine(
             return _DockerResult(0, net.encode() + b"\n", "")
         if args[:3] == ("inspect", "-f", "{{.Config.User}}"):
             return _DockerResult(0, b"\n", "")
+        if args[:3] == ("inspect", "-f", "{{.Id}}"):
+            return _DockerResult(0, f"id-{args[-1]}\n".encode(), "")
         if args[0] == "cp" and args[1].endswith(":/"):
             # Every walk now stats the root, and a real engine answers it with the root
             # directory's own header — root's, writable by nobody else on any sane image.
@@ -456,6 +460,47 @@ def _daemon_running(os_name: bytes | None, base=None):
 # ---------------------------------------------------------------------------
 # Backend identity — read by the router's isolation floor and capability match
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("warm", [False, True])
+@pytest.mark.parametrize("failure", ["status", "empty", "decode", "raise"])
+def test_failed_instance_inspection_disposes_the_container(warm, failure):
+    machine = _machine(running=[_NAME] if warm else [])
+
+    def respond(args):
+        if args[:3] == ("inspect", "-f", "{{.Id}}"):
+            if failure == "raise":
+                raise TimeoutError("inspection timed out")
+            return _DockerResult(
+                1 if failure == "status" else 0, b"\xff" if failure == "decode" else b"\n", ""
+            )
+        return machine(args)
+
+    backend, fake = _backend_with(respond)
+    with pytest.raises((RuntimeError, UnicodeDecodeError, TimeoutError)):
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+    assert any(_NAME in call.args for call in fake.matching("rm", "-f"))
+    assert bool(fake.matching("run")) is (not warm)
+
+
+def test_instance_id_comes_from_the_engine_on_every_acquire():
+    ids = ["a" * 64]
+    machine = _machine(running=[_NAME])
+
+    def respond(args):
+        if args[:3] == ("inspect", "-f", "{{.Id}}"):
+            return _DockerResult(0, ids[0].encode(), "")
+        return machine(args)
+
+    backend, _ = _backend_with(respond)
+    first = asyncio.run(backend.acquire(_KEY, _SPEC))
+    second = asyncio.run(backend.acquire(_KEY, _SPEC))
+    assert first is not second
+    assert first.instance_id == second.instance_id == "a" * 64
+    ids[0] = "b" * 64
+    replacement = asyncio.run(backend.acquire(_KEY, _SPEC))
+    assert replacement.instance_id == "b" * 64
+    assert first.instance_id == "a" * 64
 
 
 class TestBackendIdentity:
@@ -1536,6 +1581,8 @@ class TestAContainerThatVanishedBehindThisBackend:
         def respond(args):
             if args[:3] == ("inspect", "-f", "{{.HostConfig.CapDrop}}"):
                 return _DockerResult(0, hardening[0], "")
+            if args[:3] == ("run", "-d", "--name"):
+                present.add(args[3])
             if args[0] == "inspect" and args[-1] not in present:
                 return _DockerResult(1, b"", f"Error: No such object: {args[-1]}")
             return base(args)
@@ -2502,7 +2549,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
             ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, user, ""),
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        facts = asyncio.run(backend._container_facts(name, _SPEC))
+        facts = asyncio.run(backend._container_facts(name, _SPEC, instance_id="engine-id"))
         return facts, fake
 
     def test_an_unset_user_reads_as_root(self):
@@ -2521,7 +2568,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
             ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(0, b"20001\n", ""),
         }
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC, instance_id="engine-id"))
         assert (facts.guest_uid, facts.guest_gid) == (0, 20001)
 
     def test_a_bare_uid_keeps_gid_0_when_neither_passwd_nor_id_answers(self):
@@ -2548,7 +2595,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
             ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(0, b"20001\n", ""),
         }
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC, instance_id="engine-id"))
         assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
 
     def test_a_known_gid_is_never_asked_for_even_if_id_would_hang(self):
@@ -2569,7 +2616,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
             return _machine(running=[_NAME], overrides=overrides)(args)
 
         fake._responder = respond
-        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC, instance_id="engine-id"))
         assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
         assert [c.args for c in fake.matching("exec")] == [
             ("exec", "-w", "/", _NAME, "id", "-u"),
@@ -2588,7 +2635,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
             ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(1, b"", "id: cannot"),
         }
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC, instance_id="engine-id"))
         assert (facts.guest_uid, facts.guest_gid) == (10001, 0)
 
     def test_a_passwd_read_that_reached_the_byte_cap_is_still_used(self):
@@ -2611,7 +2658,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
             return _machine(running=[_NAME], overrides=overrides)(args)
 
         fake._responder = respond
-        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC, instance_id="engine-id"))
         assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
         assert fake.matching("exec") == []
 
@@ -2633,7 +2680,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
             return _machine(running=[_NAME], overrides=overrides)(args)
 
         fake._responder = respond
-        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC, instance_id="engine-id"))
         assert (facts.guest_uid, facts.guest_gid) == (10001, 30001)
         assert fake.matching("exec") == []
 
@@ -2658,7 +2705,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         fake._responder = _passwd_responder([_NAME], overrides, passwd)
-        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC, instance_id="engine-id"))
         assert (facts.guest_uid, facts.guest_gid) == (0, 0)
         assert fake.matching("exec") == []
 
@@ -2673,7 +2720,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         fake._responder = _passwd_responder([_NAME], overrides, passwd)
-        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC, instance_id="engine-id"))
         assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
         assert fake.matching("exec") == []
 
@@ -2693,7 +2740,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         fake._responder = _passwd_responder([_NAME], overrides, passwd)
-        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC, instance_id="engine-id"))
         assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
         assert fake.matching("exec") == []
 
@@ -2707,7 +2754,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
             ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(0, b"10001\n", ""),
         }
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC, instance_id="engine-id"))
         assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
 
     def test_a_bare_uid_takes_its_gid_from_the_passwd_entry(self):
@@ -2719,7 +2766,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         fake._responder = _passwd_responder([_NAME], overrides, passwd)
-        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC, instance_id="engine-id"))
         assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
         assert fake.matching("exec") == []
 
@@ -2751,7 +2798,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
             return _machine(running=[_NAME], overrides=overrides)(args)
 
         fake._responder = respond
-        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC, instance_id="engine-id"))
         assert (facts.guest_uid, facts.guest_gid) == expected
         # Both account files answer this pair, so `id` — the one step that runs a guest
         # command — is never reached.
@@ -2777,7 +2824,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
             return _machine(running=[_NAME], overrides=overrides)(args)
 
         fake._responder = respond
-        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC, instance_id="engine-id"))
         assert (facts.guest_uid, facts.guest_gid) == (10001, 30001)
         assert fake.matching("exec") == []
         # `_passwd_entry` swallows every exception, so the pull is asserted on the record
@@ -2795,7 +2842,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         fake._responder = _passwd_responder([_NAME], overrides, passwd)
         with caplog.at_level(logging.INFO):
-            facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+            facts = asyncio.run(backend._container_facts(_NAME, _SPEC, instance_id="engine-id"))
         assert (facts.guest_uid, facts.guest_gid) == (0, 0)
         assert not facts.identity_resolved
         assert any("could not be resolved" in r.message for r in caplog.records), [
@@ -2809,7 +2856,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         }
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
         with caplog.at_level(logging.INFO):
-            facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+            facts = asyncio.run(backend._container_facts(_NAME, _SPEC, instance_id="engine-id"))
         assert (facts.guest_uid, facts.guest_gid) == (0, 0)
         assert not facts.identity_resolved
         assert any("could not be resolved" in r.message for r in caplog.records), [
@@ -2822,7 +2869,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         """
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=_WORK_IS_A_DIRECTORY))
         with caplog.at_level(logging.INFO):
-            facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+            facts = asyncio.run(backend._container_facts(_NAME, _SPEC, instance_id="engine-id"))
         assert (facts.guest_uid, facts.guest_gid) == (0, 0)
         assert facts.identity_resolved
         assert [r.message for r in caplog.records if "could not be resolved" in r.message] == []

@@ -65,6 +65,7 @@ class _Backend(InProcessSandboxBackend):
 async def _finish(router, backend, kind, rung=Cleanup.DISPOSE):
     spec = SandboxSpec(kind=kind, min_cleanup=rung)
     sandbox = await backend.acquire(_KEY, spec)
+    router._seen[(_KEY, kind, id(backend))] = {sandbox.instance_id}
     await router._slots.take(_KEY, kind, owner=kind, exclusive=True, timeout=1)
     return await router.finish_call(
         _KEY,
@@ -277,7 +278,8 @@ def test_acquire_reads_refusal_atomically_while_another_loop_clears_it(reason, m
         assert refusal.value.code == (None if reason is None else reason.code)
         cleared.result(timeout=2)
     assert _KEY not in router._unclean
-    assert asyncio.run(router.acquire(_KEY, SandboxSpec(kind="test"))) is backend.sandbox
+    acquired = asyncio.run(router.acquire(_KEY, SandboxSpec(kind="test")))
+    assert acquired is backend.sandboxes[(_KEY, "test")]
 
 
 @pytest.mark.parametrize(

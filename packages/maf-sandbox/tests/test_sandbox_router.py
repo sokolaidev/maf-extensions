@@ -137,7 +137,7 @@ class TestSelection:
         backend = InProcessSandboxBackend()
         router = SandboxRouter([backend], min_isolation=Isolation.NONE)
         sandbox = asyncio.run(router.acquire(_KEY, _SPEC))
-        assert backend.keys == [_KEY]
+        assert backend.keys == [_KEY, _KEY]
         assert sandbox is backend.sandbox
 
     def test_default_reclaim_config_is_applied(self):
@@ -1828,6 +1828,7 @@ class TestAKeyTheRouterCouldNotDisposeIsRefused:
         router = self._router(backend)
         asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
         other = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="another-agent")
+        backend.dispose_error = None
         asyncio.run(router.acquire(other, _SPEC))
 
     def test_a_disposal_that_hangs_is_bounded_and_counts_as_not_landed(self):
@@ -1851,8 +1852,8 @@ class TestAKeyTheRouterCouldNotDisposeIsRefused:
             with pytest.raises(ValueError, match="finite positive"):
                 asyncio.run(router.dispose_unclean(_KEY, timeout=bad))
         # Nothing was marked or disposed by the rejected calls: the key is still served.
-        asyncio.run(router.acquire(_KEY, _SPEC))
         assert backend.disposed == []
+        asyncio.run(router.acquire(_KEY, _SPEC))
 
     def test_the_key_is_refused_while_a_disposal_is_still_running(self):
         """Refused from the moment the disposal starts, not only once it fails: calls sharing a
@@ -1897,6 +1898,7 @@ class TestAKeyTheRouterCouldNotDisposeIsRefused:
         asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
         asyncio.run(router.dispose_unclean(elsewhere, timeout=1.0))
         asyncio.run(router.dispose_scope("scope-a", "thread-1"))
+        backend.dispose_error = None
         asyncio.run(router.acquire(_KEY, _SPEC))
         with pytest.raises(SandboxUnclean):
             asyncio.run(router.acquire(elsewhere, _SPEC))
@@ -1915,11 +1917,11 @@ class TestAKeyTheRouterCouldNotDisposeIsRefused:
         assert asyncio.run(router.dispose_unclean(_KEY, timeout=1.0)) is False
         assert good.disposed == [_KEY]
 
-    def test_the_refusal_is_unknown_to_a_second_router(self):
-        """In-process knowledge only, the same bound `dispose_scope` exists to reach past."""
+    def test_a_second_router_refuses_an_instance_it_cannot_adopt(self):
         backend = InProcessSandboxBackend(dispose_error=RuntimeError("down"))
         asyncio.run(self._router(backend).dispose_unclean(_KEY, timeout=1.0))
-        asyncio.run(self._router(backend).acquire(_KEY, _SPEC))
+        with pytest.raises(SandboxUnclean):
+            asyncio.run(self._router(backend).acquire(_KEY, _SPEC))
 
 
 class TestABackendReportsAFailedDeleteWithoutRaising:
@@ -2017,6 +2019,7 @@ class TestAScopePurgeReportsWhatItCouldNotDelete:
         router = self._router(backend)
         asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
         assert asyncio.run(router.dispose_scope("scope-a", "thread-1")).undisposed is None
+        backend.dispose_failure = None
         asyncio.run(router.acquire(_KEY, _SPEC))
 
     def test_the_backend_that_reported_is_named(self):
@@ -2242,9 +2245,10 @@ class TestOnlyTheUncleanPathClosesAKey:
     def test_a_plain_dispose_that_fails_leaves_the_key_servable(self):
         """Its caller never said the sandbox was unclean, so a transient failure here must not
         make the key unservable - and `dispose` returns nothing, so nobody would know why."""
-        router = self._router(
-            InProcessSandboxBackend(dispose_failure=DisposalFailure("unreachable", "transient"))
-        )
+        backend = InProcessSandboxBackend()
+        router = self._router(backend)
+        asyncio.run(router.acquire(_KEY, _SPEC))
+        backend.dispose_failure = DisposalFailure("unreachable", "transient")
         asyncio.run(router.dispose(_KEY))
         asyncio.run(router.acquire(_KEY, _SPEC))
 
@@ -3606,7 +3610,7 @@ class TestPerSpecSelection:
         )
         asyncio.run(router.acquire(_KEY, _wanting_files_out()))
         assert weak.keys == []
-        assert strong.keys == [_KEY]
+        assert strong.keys == [_KEY, _KEY]
 
     def test_a_sandbox_refused_after_the_create_is_disposed_on_the_backend_that_made_it(self):
         """The refusal path `acquire` owns must follow the route, not the registration: a
