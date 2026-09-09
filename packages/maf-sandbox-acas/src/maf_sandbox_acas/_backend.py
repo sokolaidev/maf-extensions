@@ -19,6 +19,7 @@ import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
+from time import monotonic
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
@@ -164,6 +165,9 @@ _GUEST_PROBE_WORKING_DIRECTORY = "/"
 
 #: One bound for preparation, exec and observation; cleanup has its own equal bound.
 _PROBE_TIMEOUT_S = 30.0
+
+#: Bound stale pre-create refusals without paying for a sandbox on every rejected acquire.
+_REMOVAL_HINT_TTL_S = 60.0
 
 
 def _image_identity(spec: SandboxSpec) -> tuple[str, str]:
@@ -373,6 +377,14 @@ class _Held:
     sandbox_id: str
     removal: bool | None = None
     probed: bool = False
+
+
+@dataclass(frozen=True)
+class _RemovalHint:
+    """An image result usable before a create only until its monotonic deadline."""
+
+    removal: bool | None
+    expires_at: float
 
 
 @dataclass(frozen=True)
@@ -767,7 +779,7 @@ class AcasSandboxBackend:
         # connection pool per tool invocation.
         self._clients: dict[asyncio.AbstractEventLoop, tuple[Any, Any]] = {}
         #: An image-level hint for the pre-create refusal, never proof for another sandbox.
-        self._guest_removals: dict[tuple[str, str], bool | None] = {}
+        self._guest_removals: dict[tuple[str, str], _RemovalHint] = {}
         #: Which (image, kind) pairs have already been warned about. `acquire` runs on every
         #: tool call, and a warning per call is noise rather than a signal.
         self._warned_about_the_guest: set[tuple[tuple[str, str], str]] = set()
@@ -1040,9 +1052,10 @@ class AcasSandboxBackend:
         if sandbox is None or held is None:
             # Nothing running to ask, so the hint answers or the caller creates one. This is
             # the refusal that spares the second workload a create.
-            if identity not in self._guest_removals:
+            hint = self._guest_removals.get(identity)
+            if hint is None or monotonic() >= hint.expires_at:
                 return
-            removal = self._guest_removals[identity]
+            removal = hint.removal
         elif held.probed:
             # This sandbox's own answer, never the image hint: another sandbox booted from the
             # same reference may have moved that since, and it describes a different guest.
@@ -1083,26 +1096,25 @@ class AcasSandboxBackend:
                     "Serve this workload on an image whose guest can run rm and whose "
                     "file plane confirms the removal — a root USER alone does not prove it"
                 )
-            # What decides the advice is what will answer the *next* acquire, and that turns
-            # on whether this sandbox survives this one. A refused fresh create is deleted
-            # with its verdict, so the hint answers next time and only a restrictive hint
-            # blocks; a warm sandbox stays, so its own recorded verdict answers; and a probe
-            # that dropped recorded nothing either way, so the next acquire simply asks.
-            recovery = (
-                "Repointing the same reference does not lift this by itself: the refusal is "
-                "answered from a remembered verdict and stops the create that would re-read "
-                "it. Something else has to read the reference again — an acquire this gate "
-                "does not refuse *and* that has no warm sandbox to reuse, since a reuse skips "
-                "the create and the probe with it, a reference this backend has not seen yet, "
-                "or a restart of this process."
-                if (
-                    self._guest_removals.get(identity, True) is not True
-                    if sandbox is None or freshly_created
-                    else held is not None and held.probed
+            if sandbox is not None and not freshly_created and held is not None and held.probed:
+                recovery = (
+                    "This warm sandbox retains its own verdict. Dispose it before acquiring "
+                    "from a repaired image; repointing a reference cannot change a running guest."
                 )
-                else "Nothing was remembered, because the probe did not land, so an identical "
-                "acquire asks again rather than repeating this from a cached answer."
-            )
+            else:
+                hint = self._guest_removals.get(identity)
+                remaining = (
+                    max(0.0, hint.expires_at - monotonic())
+                    if hint is not None and hint.removal is not True
+                    else 0.0
+                )
+                recovery = (
+                    f"The cached refusal expires in {remaining:.1f} seconds. After expiry, "
+                    "the next cold acquire creates and probes again. Repeated refusals do "
+                    "not extend the deadline; no process restart is needed."
+                    if remaining > 0
+                    else "No cached refusal blocks a retry; the next cold acquire asks again."
+                )
             raise SandboxCapabilityNotSupported(
                 f"sandbox backend {BACKEND_NAME!r} cannot serve "
                 f"{', '.join(sorted(refused))} to the {spec.kind!r} workload from {image}: "
@@ -1144,12 +1156,16 @@ class AcasSandboxBackend:
                 error_detail(unreachable),
             )
             return held.removal if held.probed else None
+        identity = _image_identity(spec)
+        hint = _RemovalHint(removal, monotonic() + _REMOVAL_HINT_TTL_S)
         if removal is None:
-            self._guest_removals.setdefault(_image_identity(spec), None)
+            previous = self._guest_removals.get(identity)
+            if previous is None or monotonic() >= previous.expires_at:
+                self._guest_removals[identity] = hint
             held.probed = True
             return held.removal
         held.removal, held.probed = removal, True
-        self._guest_removals[_image_identity(spec)] = removal
+        self._guest_removals[identity] = hint
         return removal
 
     async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> DisposalFailure | None:
