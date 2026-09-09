@@ -797,17 +797,7 @@ def _spec_requiring(*capabilities):
 
 
 class TestAnImageWhoseGuestIsNotRoot:
-    """One image property, two refusals, and they are not the same refusal.
-
-    The file plane writes as root and `exec` runs as the image's `USER`. So a guest program on
-    a non-root image can create nothing beside the files it was given, which is what makes
-    `FILES_OUT` and `HOST_TOOLS` unservable (#722); and every data-plane call acts with more
-    authority than that guest, which is what makes `FILES_DELETE` unsafe to serve even though
-    it works (#950). The second is a reach rule, so it fails closed where the first fails open.
-
-    `acquire` is where both are answered rather than `ensure_can_serve`: the router matches a
-    capability set before any image is running, so nothing earlier can know the authority.
-    """
+    """Acquisition checks guest removal compatibility before serving writing workloads."""
 
     @staticmethod
     def _key(scope: str = "scope-a") -> SandboxKey:
@@ -828,6 +818,32 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert not any(client.files.values())
         assert client.deleted == ["sbx-1"]
 
+    @pytest.mark.parametrize("exit_code", [0, 1])
+    def test_a_probe_only_privileged_wrapper_never_unlocks_a_host_delete(
+        self, monkeypatch, exit_code
+    ):
+        original = _GuestSandboxClient.exec
+
+        async def selective_rm(sc, command, *, working_directory):
+            if command.startswith("rm -- /.maf-authority-"):
+                return await original(sc, command, working_directory=working_directory)
+            return _GuestAnswer(exit_code=exit_code)
+
+        monkeypatch.setattr(_GuestSandboxClient, "exec", selective_rm)
+        client = _GuestGroupClient(_guest_removing(True))
+        backend = _backend_with(client)
+        sandbox = asyncio.run(
+            backend.acquire(self._key(), _spec_requiring(Capability.FILES_DELETE))
+        )
+        guest_file = "/work/protected/file"
+        asyncio.run(sandbox.write_file(guest_file, "keep", working_directory="/"))
+
+        with pytest.raises(OSError):
+            asyncio.run(sandbox.remove("protected", working_directory="/work", recursive=True))
+
+        assert asyncio.run(sandbox.stat_file(guest_file, working_directory="/")) is not None
+        assert all(path.startswith("/.maf-authority-") for path in client.cleanups)
+
     def test_a_removal_is_observed_independently_of_stdout(self):
         answer = _guest_removing(True)
         answer.stdout = "this is not a uid"
@@ -835,7 +851,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         backend = _backend_with(client)
 
         assert asyncio.run(backend.acquire(self._key(), _spec_requiring(Capability.FILES_DELETE)))
-        assert backend._guest_authorities[("pinned-id", "python-nonroot:3.13")] is True
+        assert backend._guest_removals[("pinned-id", "python-nonroot:3.13")] is True
         assert len(client.cleanups) == 1
         assert not any(client.files.values())
 
@@ -870,7 +886,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         for _ in range(2):
             with pytest.raises(SandboxCapabilityNotSupported, match="files_delete"):
                 asyncio.run(backend.acquire(self._key(), _spec_requiring(Capability.FILES_DELETE)))
-        assert backend._guest_authorities == {}
+        assert backend._guest_removals == {}
         assert backend._registry == {}
         assert client.create_calls == 2
         if phase != "delete_file":
@@ -898,7 +914,7 @@ class TestAnImageWhoseGuestIsNotRoot:
             asyncio.run(backend.acquire(self._key(), _spec_requiring(Capability.FILES_DELETE)))
 
         assert len(client.cleanups) == 1
-        assert backend._guest_authorities == {}
+        assert backend._guest_removals == {}
         assert not next(iter(backend._registry.values())).probed
 
     def test_a_workload_collecting_outputs_is_refused(self):
@@ -959,14 +975,8 @@ class TestAnImageWhoseGuestIsNotRoot:
                 )
             )
 
-    def test_deleting_is_refused_for_reach_rather_than_for_want_of_writing(self):
-        """`FILES_DELETE` works perfectly well on a non-root image, and that is the problem.
-
-        The data plane deletes as the host, and the check keeping a removal inside the working
-        directory is not held, so a guest that swaps a parent redirects a delete it could not
-        have performed itself (#950). The message has to say *that* rather than the
-        cannot-write reason, since a reader who fixes the wrong thing changes nothing.
-        """
+    def test_deleting_requires_observed_removal_compatibility(self):
+        """Deletion requires the guest command to have removed a file-plane entry."""
         from maf_sandbox import SandboxCapabilityNotSupported
 
         client = _GuestGroupClient(_guest_removing(False))
@@ -982,12 +992,12 @@ class TestAnImageWhoseGuestIsNotRoot:
         message = str(refusal.value)
         assert "files_delete" in message
         assert "could not remove the file plane's probe file" in message
-        assert "separate calls" in message, message
-        assert "did not demonstrate it could delete itself" in message, message
+        assert "Each requested removal runs as the guest" in message, message
+        assert "did not demonstrate removal" in message, message
         # The other reason is about creating files, and this spec asks for nothing that needs it.
         assert "Permission denied" not in message, message
 
-    def test_deleting_alone_is_enough_to_make_the_authority_worth_reading(self):
+    def test_deleting_alone_is_enough_to_make_the_removal_worth_reading(self):
         """The probe gate and the refusal set are two constants, and a capability added to one
         and not the other is refused by nothing at all."""
         from maf_sandbox import SandboxCapabilityNotSupported
@@ -1021,7 +1031,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         message = str(refusal.value)
         assert "files_delete" in message and "files_out" in message, message
         assert "Permission denied" in message, message
-        assert "did not demonstrate it could delete itself" in message, message
+        assert "did not demonstrate removal" in message, message
 
     def test_a_root_guest_is_served(self):
         client = _GuestGroupClient(_guest_removing(True))
@@ -1035,8 +1045,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert len(client.probes) == 1 and client.probes[0][0].startswith("rm -- /.maf-authority-")
 
     def test_a_root_guest_is_still_served_a_delete(self):
-        """The withholding is keyed on the guest's authority and nothing else: where the guest is
-        root, a redirected delete reaches only what it could have deleted anyway."""
+        """A guest that passes the removal check is served."""
         client = _GuestGroupClient(_guest_removing(True))
         backend = _backend_with(client)
 
@@ -1048,7 +1057,7 @@ class TestAnImageWhoseGuestIsNotRoot:
 
     def test_the_probe_never_runs_in_the_working_directory(self):
         """Nothing has created `work_dir` at acquire, so a probe run there would fail for a
-        reason that has nothing to do with the authority."""
+        reason that has nothing to do with the removal."""
         client = _GuestGroupClient(_guest_removing(True))
         backend = _backend_with(client)
 
@@ -1131,7 +1140,7 @@ class TestAnImageWhoseGuestIsNotRoot:
 
         unread_message, known_message = str(unread.value), str(known.value)
         # The unread branch must not send an operator to the Dockerfile: that is the fix that
-        # looks right, changes the authority nothing can read, and is refused identically.
+        # looks right, changes the removal nothing can read, and is refused identically.
         assert "file plane confirms the removal" in unread_message, unread_message
         assert "a root USER alone does not" in unread_message, unread_message
         # The known branch keeps the remedy that does work there.
@@ -1139,12 +1148,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert "id -u" not in known_message, known_message
 
     def test_a_guest_that_cannot_be_asked_is_still_refused_a_delete(self):
-        """The reach set fails the other way, and the direction is the whole point.
-
-        `authority is None` is the absence of evidence, not evidence of root. Serving the functional
-        set on it costs a `Permission denied` the deployment sees; serving the reach set on it
-        costs a host-authority delete nothing reports, so this one refuses.
-        """
+        """Deletion keeps its conservative refusal on an unreadable compatibility probe."""
         from maf_sandbox import SandboxCapabilityNotSupported
 
         client = _GuestGroupClient(RuntimeError("no shell in this image"))
@@ -1159,12 +1163,12 @@ class TestAnImageWhoseGuestIsNotRoot:
 
         message = str(refusal.value)
         assert "files_delete" in message
-        assert "not evidence of root" in message, message
-        # It has no authority to name, and naming `None` as one would send a reader looking for it.
-        assert "authority None" not in message, message
+        assert "removal probe was inconclusive" in message, message
+        # It has no removal to name, and naming `None` as one would send a reader looking for it.
+        assert "removal None" not in message, message
 
-    def test_an_unreadable_probe_refuses_only_the_reach_half(self):
-        """One refusal names both sets, and an unknown authority still splits them: the spec keeps
+    def test_an_unreadable_probe_refuses_only_deletion(self):
+        """One refusal names both sets, and an unknown removal still splits them: the spec keeps
         `FILES_OUT`, which is served on no evidence, and loses only `FILES_DELETE`."""
         from maf_sandbox import SandboxCapabilityNotSupported
 
@@ -1195,7 +1199,7 @@ class TestAnImageWhoseGuestIsNotRoot:
 
         assert caplog.records == []
 
-    def test_a_failed_command_is_not_read_as_an_authority(self):
+    def test_a_failed_command_is_not_read_as_an_removal(self):
         client = _GuestGroupClient(_GuestAnswer(stdout="", stderr="not found", exit_code=127))
         backend = _backend_with(client)
 
@@ -1212,7 +1216,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         )
 
     def test_a_completed_inconclusive_probe_is_asked_only_once(self):
-        """A guest that answered and said something that is not an authority is a fact about the
+        """A guest that answered and said something that is not a removal is a fact about the
         artefact, so it is remembered: re-asking would put a round trip, and its timeout, in
         front of every tool call.
         Measured on the **warm** path, which is where memoising is observable at all: a cold
@@ -1227,7 +1231,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         asyncio.run(backend.acquire(self._key(), spec))  # warm: the memo answers
 
         assert len(client.probes) == 1
-        assert backend._guest_authorities == {("pinned-id", "python-nonroot:3.13"): None}
+        assert backend._guest_removals == {("pinned-id", "python-nonroot:3.13"): None}
 
     def test_a_probe_that_never_landed_is_asked_again(self):
         """A timeout is not a fact about the image, and remembering one as `None` would take
@@ -1245,9 +1249,9 @@ class TestAnImageWhoseGuestIsNotRoot:
         asyncio.run(backend.acquire(self._key(), spec))
 
         assert len(client.probes) == 2, "a dropped probe was remembered as an answer"
-        assert backend._guest_authorities == {}, "a transient failure recorded a verdict"
+        assert backend._guest_removals == {}, "a transient failure recorded a verdict"
 
-    def test_the_authority_is_read_once_per_sandbox_rather_than_once_per_image(self):
+    def test_the_removal_is_read_once_per_sandbox_rather_than_once_per_image(self):
         """The memo answers before a create and on a warm reuse; it does not answer *for* a
         create. A second key boots a second artefact from the same reference, and an image
         reference is the service's to repoint, so the memo describes the previous one."""
@@ -1266,7 +1270,7 @@ class TestAnImageWhoseGuestIsNotRoot:
 
         Two keys boot two sandboxes from one mutable name. The second is root and moves the
         image-level hint to `True`; a warm reacquire of the **first**, whose guest is not root,
-        must not read that `True` and be handed the host-authority delete without being asked.
+        must not read that `True` and skip its own removal compatibility check.
         """
         from maf_sandbox import SandboxCapabilityNotSupported
 
@@ -1283,7 +1287,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         # the answer instead of the recorded verdict would pass this test for the wrong reason.
         client._answer = _guest_removing(True)
         asyncio.run(backend.acquire(self._key("scope-b"), execing))
-        assert backend._guest_authorities[("pinned-id", "python-nonroot:3.13")] is True, (
+        assert backend._guest_removals[("pinned-id", "python-nonroot:3.13")] is True, (
             "the second sandbox did not move the image-level hint, so this proves nothing"
         )
 
@@ -1309,7 +1313,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         # A second sandbox, root, moves the image-level hint.
         client._answer = _guest_removing(True)
         asyncio.run(backend.acquire(self._key("scope-b"), _spec_requiring(Capability.EXEC)))
-        assert backend._guest_authorities[("pinned-id", "python-nonroot:3.13")] is True
+        assert backend._guest_removals[("pinned-id", "python-nonroot:3.13")] is True
 
         client._answer = retry_answer
         return backend
@@ -1345,15 +1349,15 @@ class TestAnImageWhoseGuestIsNotRoot:
             )
 
         unverified = backend._registry[("scope-a", "thread-1", "devops-engineer", "codeact")]
-        assert unverified.authority is None, "it recorded another guest's authority"
-        assert backend._guest_authorities[("pinned-id", "python-nonroot:3.13")] is True, (
+        assert unverified.removal is None, "it recorded another guest's removal"
+        assert backend._guest_removals[("pinned-id", "python-nonroot:3.13")] is True, (
             "the hint lost the answer a working probe measured"
         )
 
     def test_a_verdict_cannot_outlive_the_sandbox_it_describes(self):
         """It lives on the registry entry, so disposal takes it with no sweeping to get wrong.
 
-        Both answer kinds, because they are recorded on different lines: an authority and a definitive
+        Both answer kinds, because they are recorded on different lines: a removal and a definitive
         inconclusive reply. And a probe that lands after its entry is dropped writes to an object
         nobody holds, which is what a map beside the registry could not arrange.
         """
@@ -1373,7 +1377,7 @@ class TestAnImageWhoseGuestIsNotRoot:
 
             assert backend._registry == {}, f"the entry outlived its sandbox for {answer}"
             # The detached entry is what a late probe would write to, and nothing reads it.
-            held.authority, held.probed = True, True
+            held.removal, held.probed = True, True
             assert backend._registry == {}, "a late write reached the backend"
 
     def test_a_warm_root_sandbox_is_not_refused_by_another_sandbox_s_hint(self):
@@ -1390,7 +1394,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         asyncio.run(backend.acquire(self._key("scope-a"), _spec_requiring(Capability.EXEC)))
         client._answer = _guest_removing(False)
         asyncio.run(backend.acquire(self._key("scope-b"), _spec_requiring(Capability.EXEC)))
-        assert backend._guest_authorities[("pinned-id", "python-nonroot:3.13")] is False, (
+        assert backend._guest_removals[("pinned-id", "python-nonroot:3.13")] is False, (
             "the non-root sandbox did not move the hint, so this proves nothing"
         )
 
@@ -1437,7 +1441,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         client = _GuestGroupClient(_guest_removing(True))
         backend = _backend_with(client)
         asyncio.run(backend.acquire(self._key("scope-a"), _spec_requiring(Capability.EXEC)))
-        assert backend._guest_authorities[("pinned-id", "python-nonroot:3.13")] is True
+        assert backend._guest_removals[("pinned-id", "python-nonroot:3.13")] is True
 
         # A definitive inconclusive answer: the verdict is recorded, then the refusal deletes it.
         client._answer = _GuestAnswer(stdout="", stderr="not found", exit_code=127)
@@ -1451,7 +1455,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         message = str(refusal.value)
         assert "Nothing was remembered" in message, message
         assert "restart of this process" not in message, message
-        assert backend._guest_authorities[("pinned-id", "python-nonroot:3.13")] is True, (
+        assert backend._guest_removals[("pinned-id", "python-nonroot:3.13")] is True, (
             "the hint was demoted, so the next acquire would not re-create and this passes "
             "for the wrong reason"
         )
@@ -1469,7 +1473,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         backend = _backend_with(client)
         # A permissive hint, from an acquire that measured root.
         asyncio.run(backend.acquire(self._key("scope-a"), _spec_requiring(Capability.EXEC)))
-        assert backend._guest_authorities[("pinned-id", "python-nonroot:3.13")] is True
+        assert backend._guest_removals[("pinned-id", "python-nonroot:3.13")] is True
 
         client._answer = RuntimeError("transport dropped")
         with pytest.raises(SandboxCapabilityNotSupported) as refusal:
@@ -1483,9 +1487,8 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert "Nothing was remembered" in message, message
         assert "restart of this process" not in message, message
 
-    def test_an_unknown_authority_does_not_claim_the_guest_lacks_the_reach(self):
-        """The refusal is right because root was not established, and the reason must say only
-        that: an image that cannot run `rm` may well be running as root."""
+    def test_an_unknown_removal_does_not_claim_the_guest_lacks_the_reach(self):
+        """An unreadable probe is distinguished from a completed removal failure."""
         from maf_sandbox import SandboxCapabilityNotSupported
 
         client = _GuestGroupClient(RuntimeError("no rm in this image"))
@@ -1504,9 +1507,9 @@ class TestAnImageWhoseGuestIsNotRoot:
                 )
             )
 
-        assert "is not known to be able to delete itself" in str(unread.value), str(unread.value)
-        # The measured branch keeps the stronger claim, which it has actually established.
-        assert "did not demonstrate it could delete itself" in str(known.value), str(known.value)
+        assert "removal probe was inconclusive" in str(unread.value), str(unread.value)
+        # The completed failure names the observation.
+        assert "did not demonstrate removal" in str(known.value), str(known.value)
 
     def test_the_pre_create_hint_never_warns_about_the_guest(self, caplog):
         """A warning there describes whatever the reference last resolved to, and marks the
@@ -1555,16 +1558,16 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert "asks again" in message, message
         # The blocking advice belongs to the other branch and would be false here.
         assert "restart of this process" not in message, message
-        assert backend._guest_authorities == {}, "something was remembered after all"
+        assert backend._guest_removals == {}, "something was remembered after all"
 
-    def test_a_cold_acquire_cannot_demote_an_authority_another_cold_acquire_measured(self):
+    def test_a_cold_acquire_cannot_demote_an_removal_another_cold_acquire_measured(self):
         """The race on the path a create actually takes, which the two direct-call race tests
         below do not reach.
 
-        Two cold acquires for one image, the second answering no authority. Sequential rather than
+        Two cold acquires for one image, the second answering no removal. Sequential rather than
         concurrent — the ordering that matters is which answer lands last, not that the calls
         overlap — so this pins the rule and not the race: a later inconclusive answer must not
-        demote a measured authority. Demoting it would refuse before a create for every acquire
+        demote a measured removal. Demoting it would refuse before a create for every acquire
         after, and that refusal raises before any sandbox exists to correct the verdict, so one
         spurious answer costs a working image its capabilities (#969).
         """
@@ -1574,18 +1577,17 @@ class TestAnImageWhoseGuestIsNotRoot:
 
         # The acquire that measured root.
         asyncio.run(backend.acquire(self._key("scope-a"), _spec_requiring(Capability.EXEC)))
-        assert backend._guest_authorities[identity] is True
+        assert backend._guest_removals[identity] is True
 
-        # The overlapping one, finishing second against a guest that answers no authority.
+        # The overlapping one, finishing second against a guest that answers no removal.
         client._answer = _GuestAnswer(stdout="", stderr="not found", exit_code=127)
         asyncio.run(backend.acquire(self._key("scope-b"), _spec_requiring(Capability.EXEC)))
 
-        assert backend._guest_authorities[identity] is True, (
-            "an inconclusive answer demoted a measured authority"
+        assert backend._guest_removals[identity] is True, (
+            "an inconclusive answer demoted a measured removal"
         )
         assert (
-            backend._registry[("scope-b", "thread-1", "devops-engineer", "codeact")].authority
-            is None
+            backend._registry[("scope-b", "thread-1", "devops-engineer", "codeact")].removal is None
         ), "the second sandbox borrowed the hint"
 
         # And the hint still lets a fresh acquire reach a create rather than being refused
@@ -1595,8 +1597,8 @@ class TestAnImageWhoseGuestIsNotRoot:
             backend.acquire(self._key("scope-c"), _spec_requiring(Capability.FILES_DELETE))
         )
 
-    def test_a_remembered_root_authority_does_not_license_a_newly_booted_image(self):
-        """A create probes the sandbox it booted rather than trusting a remembered authority.
+    def test_a_remembered_successful_removal_does_not_license_a_newly_booted_image(self):
+        """A create probes the sandbox it booted rather than trusting a remembered removal.
 
         An image reference is mutable, so a hint saying root describes whatever it last
         resolved to, and only a fresh probe can decide the sandbox in hand.
@@ -1607,22 +1609,22 @@ class TestAnImageWhoseGuestIsNotRoot:
         backend = _backend_with(client)
         spec = _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
         # What an earlier acquire measured, before the reference was repointed.
-        backend._guest_authorities[("pinned-id", "python-nonroot:3.13")] = True
+        backend._guest_removals[("pinned-id", "python-nonroot:3.13")] = True
 
         with pytest.raises(SandboxCapabilityNotSupported, match="files_delete"):
             asyncio.run(backend.acquire(self._key(), spec))
 
-        assert backend._guest_authorities[("pinned-id", "python-nonroot:3.13")] is False, (
+        assert backend._guest_removals[("pinned-id", "python-nonroot:3.13")] is False, (
             "the fresh probe did not correct the memo, so the next acquire repeats the mistake"
         )
 
-    def test_a_dropped_probe_does_not_displace_an_authority_another_one_measured(self):
+    def test_a_dropped_probe_does_not_displace_an_removal_another_one_measured(self):
         """A second probe of an already-measured sandbox drops, and answers what was measured.
 
         Driven by calling the probe directly on the entry a real acquire filled, which is the
         losing half of two overlapping probes without scheduling the fake to produce one. The
-        rule is that neither the entry nor the hint may lose an authority to a failure: an entry
-        demoted to `None` would refuse the reach set for as long as that sandbox lives, and a
+        rule is that neither the entry nor the hint may lose a removal to a failure: an entry
+        demoted to `None` would refuse deletion for as long as that sandbox lives, and a
         hint demoted would refuse the next key before it could create anything.
         """
         from maf_sandbox import SandboxCapabilityNotSupported
@@ -1637,10 +1639,10 @@ class TestAnImageWhoseGuestIsNotRoot:
             handed_out._answer = RuntimeError("transport dropped")
 
         held = backend._registry[("scope-a", "thread-1", "devops-engineer", "codeact")]
-        answered = asyncio.run(backend._probe_guest_authority(sandbox, execing, held))
+        answered = asyncio.run(backend._probe_guest_removal(sandbox, execing, held))
 
         assert answered is False, "the losing probe reported its failure over the measurement"
-        assert backend._guest_authorities[identity] is False
+        assert backend._guest_removals[identity] is False
         with pytest.raises(SandboxCapabilityNotSupported, match="files_out"):
             asyncio.run(
                 backend.acquire(
@@ -1650,7 +1652,7 @@ class TestAnImageWhoseGuestIsNotRoot:
 
     def test_an_unreadable_answer_does_not_displace_one_either(self):
         """The same, down the other failure path: a guest that answers with something that is
-        not an authority. Its entry is marked probed and keeps the authority it already had."""
+        not a removal. Its entry is marked probed and keeps the removal it already had."""
         client = _GuestGroupClient(_guest_removing(False))
         backend = _backend_with(client)
         execing = _spec_requiring(Capability.EXEC)
@@ -1661,13 +1663,13 @@ class TestAnImageWhoseGuestIsNotRoot:
             handed_out._answer = _GuestAnswer(stdout="", stderr="not found", exit_code=127)
 
         held = backend._registry[("scope-a", "thread-1", "devops-engineer", "codeact")]
-        answered = asyncio.run(backend._probe_guest_authority(sandbox, execing, held))
+        answered = asyncio.run(backend._probe_guest_removal(sandbox, execing, held))
 
         assert answered is False
-        assert backend._guest_authorities[identity] is False
+        assert backend._guest_removals[identity] is False
 
     def test_the_second_workload_is_refused_without_a_sandbox_of_its_own(self):
-        """What the memo buys: the first acquire pays a create to learn the authority, and no acquire
+        """What the memo buys: the first acquire pays a create to learn the removal, and no acquire
         after it does."""
         from maf_sandbox import SandboxCapabilityNotSupported
 
@@ -1699,7 +1701,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert client.create_calls == 0
 
     def test_a_refused_create_is_deleted_rather_than_left_running(self):
-        """The create is what learned the authority, and an acquire that raises is handed to nobody —
+        """The create is what learned the removal, and an acquire that raises is handed to nobody —
         so the framework's per-call cleanup never sees this sandbox. It is billable until
         something deletes it, and this is the only place that can."""
         from maf_sandbox import SandboxCapabilityNotSupported
@@ -1796,7 +1798,7 @@ class TestAnImageWhoseGuestIsNotRoot:
                 backend.acquire(key, _spec_requiring(Capability.EXEC, Capability.FILES_OUT))
             )
 
-        assert backend._registry == {registry_key: _Held("sbx-warm", authority=False, probed=True)}
+        assert backend._registry == {registry_key: _Held("sbx-warm", removal=False, probed=True)}
         assert client.deleted == []
 
     def test_a_refused_reuse_is_not_logged_as_a_reuse(self, caplog):
@@ -1818,7 +1820,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert not [r for r in caplog.records if "sandbox reused" in r.getMessage()], caplog.text
 
     def test_a_workload_that_neither_execs_nor_collects_is_never_probed(self):
-        """A spec asking for nothing the authority could refuse pays nothing to find it out."""
+        """A spec asking for nothing the removal could refuse pays nothing to find it out."""
         client = _GuestGroupClient(_guest_removing(False))
         backend = _backend_with(client)
 
@@ -4010,68 +4012,142 @@ class TestRunCode:
             asyncio.run(_sandbox().run_code("print(1)", timeout=5.0))
 
 
+class _GuestRemovalClient(_FakeDataPlaneClient):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.commands = []
+        self.exec_raises: Exception | None = None
+        self.answer = _GuestAnswer()
+        self.removes = True
+
+    async def exec(self, command, *, working_directory):
+        self.commands.append((command, working_directory))
+        if self.exec_raises is not None:
+            raise self.exec_raises
+        if self.removes:
+            target = shlex.split(command)[-1]
+            for name in list(self._entries):
+                if name == target or name.startswith(target + "/"):
+                    self._entries.pop(name)
+        return self.answer
+
+
 class TestRemove:
-    """The data-plane delete: what it sends, what it swallows, and what it refuses."""
+    """Removal stays on guest exec, with service observation of its outcome."""
 
-    def test_a_recursive_removal_reaches_delete_file_with_the_confined_path(self):
-        client = _FakeDataPlaneClient()
-        sandbox = _sandbox(client)
-        asyncio.run(sandbox.remove("sub", working_directory=_WORK_DIR, recursive=True))
-        assert client.deletes == [(f"{_WORK_DIR}/sub", True)]
-
-    def test_recursive_defaults_off(self):
-        client = _FakeDataPlaneClient()
-        sandbox = _sandbox(client)
-        asyncio.run(sandbox.remove("real.txt", working_directory=_WORK_DIR))
-        assert client.deletes == [(f"{_WORK_DIR}/real.txt", False)]
-
-    def test_a_final_link_reaches_the_data_plane(self):
-        client = _FakeDataPlaneClient()
-        sandbox = _sandbox(client)
-        asyncio.run(sandbox.remove("link-out.txt", working_directory=_WORK_DIR))
-        assert client.deletes == [(f"{_WORK_DIR}/link-out.txt", False)]
-
-    def test_a_directory_is_refused_without_recursive(self):
-        """The rule is on the kind, not on children: the data plane accepts an empty one."""
-        client = _FakeDataPlaneClient()
-        sandbox = _sandbox(client)
-        with pytest.raises(OSError):
-            asyncio.run(sandbox.remove("sub", working_directory=_WORK_DIR))
-        assert client.deletes == [], "a directory reached the data plane without recursive"
-
-    def test_a_final_link_to_a_directory_reaches_the_data_plane(self):
-        client = _FakeDataPlaneClient(
-            entries={**_GUEST_FILESYSTEM, "/maf-sandbox/work/out": _LIVE_SYMLINK_DIR}
-        )
-        sandbox = _sandbox(client)
-        asyncio.run(sandbox.remove("out", working_directory=_WORK_DIR, recursive=True))
-        assert client.deletes == [(f"{_WORK_DIR}/out", True)]
-
-    def test_the_working_directory_itself_is_refused(self):
-        client = _FakeDataPlaneClient()
-        sandbox = _sandbox(client)
-        with pytest.raises(ValueError):
-            asyncio.run(sandbox.remove(".", working_directory=_WORK_DIR, recursive=True))
+    @pytest.mark.parametrize(
+        ("path", "recursive", "flags"),
+        [("sub", True, "-rf"), ("real.txt", False, "-f"), ("link-out.txt", False, "-f")],
+    )
+    def test_removal_runs_as_the_guest(self, path, recursive, flags):
+        client = _GuestRemovalClient()
+        asyncio.run(_sandbox(client).remove(path, working_directory=_WORK_DIR, recursive=recursive))
+        assert client.commands == [(f"rm {flags} -- {_WORK_DIR}/{path}", "/")]
         assert client.deletes == []
 
-    def test_a_path_that_is_not_there_is_success(self):
-        """Cleanup runs in a `finally`; a missing path must not become a second failure."""
-        from azure.core.exceptions import ResourceNotFoundError
-
-        client = _FakeDataPlaneClient()
-        client.delete_raises = ResourceNotFoundError(message="no such path")
-        sandbox = _sandbox(client)
-        asyncio.run(sandbox.remove("real.txt", working_directory=_WORK_DIR))
-
-    def test_a_service_failure_arrives_as_the_oserror_the_protocol_documents(self):
-        """`azure.core` raises its own hierarchy, and `HttpResponseError` is no `OSError` —
-        a caller writing the documented `except OSError` would otherwise have it escape a
-        `finally` over the failure already being reported."""
-        client = _FakeDataPlaneClient()
-        client.delete_raises = _HttpError()
-        sandbox = _sandbox(client)
+    def test_a_directory_is_refused_without_recursive(self):
+        client = _GuestRemovalClient()
         with pytest.raises(OSError):
-            asyncio.run(sandbox.remove("real.txt", working_directory=_WORK_DIR))
+            asyncio.run(_sandbox(client).remove("sub", working_directory=_WORK_DIR))
+        assert client.commands == client.deletes == []
+
+    def test_a_final_link_to_a_directory_is_passed_without_a_trailing_slash(self):
+        client = _GuestRemovalClient(
+            entries={**_GUEST_FILESYSTEM, "/maf-sandbox/work/out": _LIVE_SYMLINK_DIR}
+        )
+        asyncio.run(_sandbox(client).remove("out/", working_directory=_WORK_DIR, recursive=True))
+        assert client.commands == [(f"rm -rf -- {_WORK_DIR}/out", "/")]
+        assert client.deletes == []
+
+    @pytest.mark.parametrize("path", [".", "../escape", "link-out.txt/child"])
+    def test_a_refused_path_never_reaches_exec(self, path):
+        client = _GuestRemovalClient()
+        with pytest.raises(ValueError):
+            asyncio.run(_sandbox(client).remove(path, working_directory=_WORK_DIR, recursive=True))
+        assert client.commands == client.deletes == []
+
+    def test_a_path_that_is_not_there_needs_no_command(self):
+        client = _GuestRemovalClient()
+        asyncio.run(_sandbox(client).remove("missing", working_directory=_WORK_DIR))
+        assert client.commands == client.deletes == []
+
+    def test_a_service_failure_arrives_as_oserror(self):
+        client = _GuestRemovalClient()
+        client.exec_raises = _HttpError()
+        with pytest.raises(OSError) as failure:
+            asyncio.run(_sandbox(client).remove("real.txt", working_directory=_WORK_DIR))
+        assert failure.value.__cause__ is client.exec_raises
+        assert client.deletes == []
+
+    def test_a_failed_command_is_reported_even_if_the_entry_disappeared(self):
+        client = _GuestRemovalClient()
+        client.answer = _GuestAnswer(exit_code=1)
+        with pytest.raises(OSError, match="exited 1"):
+            asyncio.run(_sandbox(client).remove("real.txt", working_directory=_WORK_DIR))
+        assert client.deletes == []
+
+    def test_a_successful_command_that_leaves_the_entry_is_refused(self):
+        client = _GuestRemovalClient()
+        client.removes = False
+        with pytest.raises(OSError, match="still reports the entry"):
+            asyncio.run(_sandbox(client).remove("real.txt", working_directory=_WORK_DIR))
+        assert client.deletes == []
+
+    @pytest.mark.parametrize("phase", ["exec", "observation"])
+    def test_the_command_and_its_observation_are_bounded(self, monkeypatch, phase):
+        client = _GuestRemovalClient()
+        original = client._dp_get
+
+        async def hang(*args, **kwargs):
+            await asyncio.Event().wait()
+
+        async def observe(*args, **kwargs):
+            if client.commands:
+                await hang()
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(
+            client, "exec" if phase == "exec" else "_dp_get", hang if phase == "exec" else observe
+        )
+        with pytest.raises(TimeoutError):
+            asyncio.run(
+                _sandbox(client, read_timeout=0.01).remove("real.txt", working_directory=_WORK_DIR)
+            )
+        assert client.deletes == []
+
+    def test_an_unreadable_observation_is_not_success(self, monkeypatch):
+        client = _GuestRemovalClient()
+        original = client._dp_get
+
+        async def observe(*args, **kwargs):
+            if client.commands:
+                raise _HttpError()
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(client, "_dp_get", observe)
+        with pytest.raises(OSError):
+            asyncio.run(_sandbox(client).remove("real.txt", working_directory=_WORK_DIR))
+        assert client.deletes == []
+
+    def test_cancellation_never_falls_back_to_the_host_plane(self, monkeypatch):
+        client = _GuestRemovalClient()
+
+        async def cancel(*args, **kwargs):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(client, "exec", cancel)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(_sandbox(client).remove("real.txt", working_directory=_WORK_DIR))
+        assert client.deletes == []
+
+    def test_a_hostile_name_is_one_quoted_argument(self):
+        path = "-x; $(id) 'quoted'"
+        client = _GuestRemovalClient(
+            entries={**_GUEST_FILESYSTEM, f"{_WORK_DIR}/{path}": _LIVE_REGULAR}
+        )
+        asyncio.run(_sandbox(client).remove(path, working_directory=_WORK_DIR))
+        assert shlex.split(client.commands[0][0]) == ["rm", "-f", "--", f"{_WORK_DIR}/{path}"]
+        assert client.deletes == []
 
 
 class TestReclaim:
