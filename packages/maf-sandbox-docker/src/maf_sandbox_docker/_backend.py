@@ -2146,13 +2146,10 @@ class DockerSandboxBackend:
     async def _read_bounded(
         process: asyncio.subprocess.Process, read_limit: int, timeout: float | None
     ) -> _DockerResult:
-        """Read at most ``read_limit`` stdout bytes, then kill and reap — the cp read path.
+        """Read at most ``read_limit`` stdout bytes, killing the child only at the cap.
 
-        stderr is read only after the child is killed, so a pipe that fills cannot deadlock the
-        bounded stdout read against it — and it is short in every case that matters (``docker
-        cp`` writes its error there and nothing else).  A returncode of ``None`` after the kill
-        is normal for a file larger than ``read_limit`` and means nothing to the caller, which
-        decides on the tar header it now holds.
+        EOF below the cap preserves the command's exit status. Timeouts and cancellation kill
+        and reap the child; paused pipes must be drained to allow subprocess cleanup to finish.
         """
         assert process.stdout is not None and process.stderr is not None
         # Bound to locals so the narrowing survives into the closure below.
@@ -2171,16 +2168,16 @@ class DockerSandboxBackend:
 
         try:
             stdout = await asyncio.wait_for(_pull_head(), timeout=timeout)
+            if len(stdout) == read_limit:
+                with contextlib.suppress(Exception):
+                    process.kill()
+            _, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
         except BaseException:
             with contextlib.suppress(Exception):
                 process.kill()
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(process.communicate(), timeout=timeout)
             raise
-        with contextlib.suppress(Exception):
-            process.kill()
-        # wait() also waits for pipe closure; paused readers must be drained first.
-        _, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
         return _DockerResult(
             process.returncode or 0, stdout, stderr.decode("utf-8", errors="replace")
         )

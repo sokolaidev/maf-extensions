@@ -75,6 +75,24 @@ _NAME = _container_name(_KEY, _SPEC.kind)
 _WORK = "/maf-sandbox/work"
 
 
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_bounded_read_preserves_exit_status_after_stdout_closes(exit_code):
+    async def scenario():
+        backend = DockerSandboxBackend(DockerSandboxConfig(docker_path=sys.executable))
+        result = await backend._docker(
+            "-c",
+            "import os, time; os.write(1, b'ok'); os.close(1); time.sleep(0.1); "
+            f"os.write(2, b'detail'); os._exit({exit_code})",
+            read_limit=100,
+            timeout=5,
+        )
+        assert result.stdout == b"ok"
+        assert result.stderr == "detail"
+        assert result.returncode == exit_code
+
+    asyncio.run(scenario())
+
+
 def test_bounded_read_drains_a_full_pipe_before_waiting_for_exit():
     async def scenario():
         backend = DockerSandboxBackend(DockerSandboxConfig(docker_path=sys.executable))
