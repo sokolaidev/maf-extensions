@@ -2148,8 +2148,8 @@ class DockerSandboxBackend:
     ) -> _DockerResult:
         """Read at most ``read_limit`` stdout bytes, killing the child only at the cap.
 
-        EOF below the cap preserves the command's exit status. Timeouts and cancellation kill
-        and reap the child; paused pipes must be drained to allow subprocess cleanup to finish.
+        Reading and normal exit share one deadline. EOF below the cap preserves the exit status;
+        timeout/cancellation cleanup has a separate budget to kill and drain paused pipes.
         """
         assert process.stdout is not None and process.stderr is not None
         # Bound to locals so the narrowing survives into the closure below.
@@ -2167,11 +2167,12 @@ class DockerSandboxBackend:
             return b"".join(chunks)
 
         try:
-            stdout = await asyncio.wait_for(_pull_head(), timeout=timeout)
-            if len(stdout) == read_limit:
-                with contextlib.suppress(Exception):
-                    process.kill()
-            _, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+            async with asyncio.timeout(timeout):
+                stdout = await _pull_head()
+                if len(stdout) == read_limit:
+                    with contextlib.suppress(Exception):
+                        process.kill()
+                _, stderr = await process.communicate()
         except BaseException:
             with contextlib.suppress(Exception):
                 process.kill()

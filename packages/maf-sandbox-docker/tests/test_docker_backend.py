@@ -93,6 +93,21 @@ def test_bounded_read_preserves_exit_status_after_stdout_closes(exit_code):
     asyncio.run(scenario())
 
 
+def test_bounded_read_and_exit_share_one_timeout():
+    async def scenario():
+        backend = DockerSandboxBackend(DockerSandboxConfig(docker_path=sys.executable))
+        with pytest.raises(TimeoutError):
+            await backend._docker(
+                "-c",
+                "import os, time; time.sleep(0.6); os.write(1, b'ok'); os.close(1); "
+                "time.sleep(0.6)",
+                read_limit=100,
+                timeout=1,
+            )
+
+    asyncio.run(scenario())
+
+
 def test_bounded_read_drains_a_full_pipe_before_waiting_for_exit():
     async def scenario():
         backend = DockerSandboxBackend(DockerSandboxConfig(docker_path=sys.executable))
