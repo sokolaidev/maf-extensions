@@ -122,7 +122,6 @@ class DockerFingerprintSubject:
         try:
             output = await self._command(
                 "run",
-                "--rm",
                 "--pull=never",
                 "--name",
                 observer,

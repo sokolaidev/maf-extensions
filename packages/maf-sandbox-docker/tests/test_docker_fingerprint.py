@@ -80,6 +80,28 @@ def test_unchanged_baseline_passes_and_observer_is_separate_and_removed():
     assert not any(args[0] == "exec" for args in commands)
 
 
+@pytest.mark.parametrize("error", [None, TimeoutError("deadline"), asyncio.CancelledError()])
+def test_explicit_cleanup_cannot_overlap_observer_auto_removal(error):
+    class RacingEngine(Engine):
+        auto_removing = False
+
+        async def __call__(self, *args, **kwargs):
+            if args[0] == "run":
+                self.auto_removing = "--rm" in args
+            if args[0] == "rm" and self.auto_removing:
+                return _DockerResult(1, b"", "removal of container is already in progress")
+            return await super().__call__(*args, **kwargs)
+
+    engine = RacingEngine()
+    engine.observer_error = error
+    if error is None:
+        assert asyncio.run(engine.subject().fingerprint()) is not None
+    else:
+        with pytest.raises(type(error)):
+            asyncio.run(engine.subject().fingerprint())
+    assert any(args[0] == "rm" for args, _ in engine.calls)
+
+
 @pytest.mark.parametrize("change", ["rootfs", "tmpfs", "process", "replacement", "mounts"])
 def test_residue_or_replacement_fails(change):
     engine = Engine()
