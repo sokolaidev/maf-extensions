@@ -1092,6 +1092,8 @@ class WslcSandboxBackend:
             if (await self._remove(proxy_id)).failure is None:
                 self._forget_attribution(name, key.thread_id)
         removal = await self._remove(instance_id)
+        if removal.failure is None:
+            await self._remove_network(_network_name(name))
         return removal.failure
 
     async def dispose(
@@ -1672,7 +1674,7 @@ class WslcSandboxBackend:
         return _listed_names(result.stdout_text)
 
     async def _remove_network(self, net: str) -> bool:
-        """Force-remove a network. Returns whether it removed one; never raises.
+        """Remove an unused network. Returns whether it removed one; never raises.
 
         A network that was never there is a no-op, not a failure — an allowlisting backend's
         purge tries a workload's network whether or not that workload turns out to have had one.
