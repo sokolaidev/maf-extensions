@@ -28,6 +28,7 @@ def test_each_phase_restores_modules_under_its_call_path(template: str, name: st
     command = template.format(path=f"{guest_call_path}/{name}")
     script = f"""set -eu
 test ! -e /root/.bicep
+test ! -e /tmp/.bicep
 for round in 1 2; do
     mkdir -p {guest_call_path}
     cd {guest_call_path}
@@ -45,7 +46,9 @@ using './main.bicep'
 PARAMS
     {command}
     test -d .bicep/br
+    test -f .bicep/bicep.profile
     test ! -e /root/.bicep
+    test ! -e /tmp/.bicep
     cd /
     rm -rf {guest_call_path}
 done

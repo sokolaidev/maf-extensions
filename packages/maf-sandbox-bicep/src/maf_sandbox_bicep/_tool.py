@@ -152,8 +152,8 @@ _WORK_DIR = "/maf-sandbox/work"
 # diagnostics come from the SARIF blob.
 # Note: `bicep build` emits SARIF on stderr; `2>&1` merges it into stdout so both legs read
 # `.stdout` uniformly.  `bicep lint` emits SARIF on stdout natively.
-# Bicep's default module cache is under HOME; the working directory belongs to this call.
-_BUILD_CMD = 'HOME="$PWD" bicep build {path} --diagnostics-format sarif 2>&1 || true'
+# Bicep writes its module cache under HOME and its profile under the temporary directory.
+_BUILD_CMD = 'HOME="$PWD" TMPDIR="$PWD" bicep build {path} --diagnostics-format sarif 2>&1 || true'
 
 # `.bicepparam` is a parameter file, not a template, and `bicep build` refuses it outright:
 #   The specified input "…/main.bicepparam" was not recognized as a Bicep file.
@@ -165,11 +165,11 @@ _BUILD_CMD = 'HOME="$PWD" bicep build {path} --diagnostics-format sarif 2>&1 || 
 # because only the diagnostics are wanted. `bicep lint` accepts both kinds, so only the
 # build half varies. All three behaviours were checked against the pinned CLI in the image.
 _BUILD_PARAMS_CMD = (
-    'HOME="$PWD" bicep build-params {path} --diagnostics-format sarif --outfile /dev/null '
-    "2>&1 || true"
+    'HOME="$PWD" TMPDIR="$PWD" bicep build-params {path} --diagnostics-format sarif '
+    "--outfile /dev/null 2>&1 || true"
 )
 
-_LINT_CMD = 'HOME="$PWD" bicep lint {path} --diagnostics-format sarif || true'
+_LINT_CMD = 'HOME="$PWD" TMPDIR="$PWD" bicep lint {path} --diagnostics-format sarif || true'
 
 _PARAM_SUFFIX = ".bicepparam"
 _ACCEPTED_SUFFIXES = (".bicep", _PARAM_SUFFIX)
