@@ -231,6 +231,30 @@ That list goes on the agent's `middleware=`. Order does not matter, but not beca
 
 Two limits worth stating plainly. A refusal the tools return as a *string* rather than an exception still records, so a write refused for an existing name marks the path untrusted when the file may be untouched — conservative, and better than parsing a human sentence for whether it meant failure. And `FILE_STORE_WRITE_TOOLS` is a copy of a private upstream constant; a divergence alarm in the suite fails when the framework's own set changes, because a write tool this does not observe is a path the record would answer from the floor.
 
+## Classify derived tool results
+
+The host supplies result confidentiality independently of file provenance. To enable core's complete per-item stamp, the attached tool must have both a valid `source_integrity` declaration and an explicit `confidentiality` classification in `additional_properties`. A kind supplies its justified source declaration; the host configures confidentiality before exposing the tool to calls:
+
+```python
+for tool in tools:
+    tool.additional_properties["confidentiality"] = "private"
+```
+
+Here `private` is this host's classification, not a default imposed by the library. Use the value appropriate to the application. This setting applies to the derived results; committed guidance remains trusted/public because its text and presence carry no input information. The framework combines the items, so the complete result retains the derived items' classification.
+
+Core copies the host's classification and weakens source integrity if the call successfully read an untrusted or unestablished file. Reading trusted files never promotes an untrusted tool. Both shipped kinds remain untrusted. A custom kind with a justified trusted declaration is demoted on a weak read even when it declared `nothing_survives_from=(SourceChannel.FILE_STORE,)`.
+
+The keys have different jobs:
+
+| Setting | Meaning | Enables core's derived-item stamp? |
+|---|---|---|
+| Tool `confidentiality` | Classification of that tool's results | Yes, alongside valid `source_integrity` |
+| Middleware `default_confidentiality` | Framework fallback for undeclared results | No |
+| Tool `max_allowed_confidentiality` | Maximum classification an outbound sink may accept | No |
+| `FileStoreProvenance.floor` | Integrity of paths with no recorded write | No; it supplies read evidence only |
+
+If either result declaration is absent or invalid, core leaves derived items unlabelled and preserves framework resolution; it still validates and stamps committed guidance. A source declaration alone cannot safely produce a whole per-item label because that would also overwrite confidentiality. The [design decision table](information-flow.md#how-core-labels-a-call) covers every case, and the [kind-authoring guide](kinds/writing-a-kind.md#let-the-host-supply-provenance-and-confidentiality) shows a complete listing, session, and middleware setup.
+
 ## Where the storage base comes from
 
 A guest path is relative to something, and today that something is owned by nobody. A workload declares `work_dir` in its spec, no backend reads it, no backend creates it, and the protocol does not promise it exists. Every kind then composes absolute paths from a base the stack only hopes is there.
