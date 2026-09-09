@@ -96,6 +96,18 @@ jobs:
       - name: Sync workspace
         run: uv sync --locked
 
+      # Include the CodeAct imports even though this suite does not boot them.
+      - name: Check all live ACAS image prerequisites
+        env:
+          ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
+          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_RESOURCE_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
+          ACAS_SANDBOX_GROUP: ${{ secrets.ACAS_SANDBOX_GROUP }}
+          ACAS_SANDBOX_REGISTRY: ${{ secrets.ACAS_SANDBOX_REGISTRY }}
+          BICEP_SANDBOX_IMAGE: ${{ vars.BICEP_SANDBOX_IMAGE }}
+          ACAS_SANDBOX_NONROOT_IMAGE: ${{ vars.ACAS_SANDBOX_NONROOT_IMAGE }}
+        run: uv run --locked python scripts/check_acas_live_images.py --summary "$GITHUB_STEP_SUMMARY"
+
       # `-ra` because this suite skips itself when a variable it gates on is empty, and the
       # check above has already made that impossible for every required one: a skip here is a
       # bug rather than a configuration gap, and without the summary it reads identically to a
