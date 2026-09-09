@@ -410,11 +410,10 @@ class _WslcSandbox:
         )
         data = content.encode("utf-8") if isinstance(content, str) else content
         guest_work_dir = "/" + posixpath.normpath(working_directory).lstrip("/")
+        guest_leaf_dir = "/" + posixpath.normpath(posixpath.dirname(guest)).lstrip("/")
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w") as archive:
-            for guest_directory in guest_path_and_ancestors(
-                posixpath.dirname(guest), guest_work_dir
-            ):
+            for guest_directory in guest_path_and_ancestors(guest_leaf_dir, guest_work_dir):
                 if (
                     guest_directory in existing
                     or guest_directory == "/"

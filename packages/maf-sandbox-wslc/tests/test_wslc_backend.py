@@ -713,6 +713,30 @@ class TestGuestPrincipal:
 
 
 class TestWriteFile:
+    @pytest.mark.parametrize("work", ["workspace", "./workspace", "/workspace", "//workspace"])
+    def test_work_dir_spellings_stamp_every_missing_directory(self, work):
+        spec = replace(_SPEC, work_dir=work)
+        name = _container_name(_KEY, spec.kind)
+        overrides = {
+            ("container", "inspect"): _WslcResult(
+                0, b'[{"Id":"instance","Config":{"User":"10001:20001"}}]', b""
+            ),
+        }
+        backend, fake = _backend_with(_machine(running=[name], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, spec))
+        asyncio.run(sandbox.write_file("call-a1/nested/input", b"data", working_directory=work))
+        sent = fake.only("container", "cp").stdin
+        assert sent is not None
+        with tarfile.open(fileobj=io.BytesIO(sent)) as archive:
+            assert archive.getnames() == [
+                "workspace",
+                "workspace/call-a1",
+                "workspace/call-a1/nested",
+                "workspace/call-a1/nested/input",
+            ]
+            assert all(entry.isdir() for entry in archive.getmembers()[:-1])
+            assert {(entry.uid, entry.gid) for entry in archive} == {(10001, 20001)}
+
     @pytest.mark.parametrize(
         ("user", "uid", "gid", "expected"),
         [
