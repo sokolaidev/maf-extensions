@@ -2362,7 +2362,7 @@ class DockerSandboxBackend:
         """
         if not self._config.egress_proxy_image or not spec.egress_allow:
             return ""
-        return "allow:" + ",".join(sorted(spec.egress_allow))
+        return "allow:" + ",".join(sorted(map(str, spec.egress_allow)))
 
     def _acquire_lock(self, key: SandboxKey, kind: str) -> asyncio.Lock:
         """The get-or-create lock for one key and kind on the running loop (see ``__init__``)."""
@@ -2675,7 +2675,7 @@ class DockerSandboxBackend:
             self._forget_attribution(name, key.thread_id)
 
         args = ["run", "-d", "--name", proxy, "--network", _network_name(name)]
-        args += ["-e", f"{_ALLOW_ENV}={','.join(spec.egress_allow)}"]
+        args += ["-e", f"{_ALLOW_ENV}={','.join(map(str, spec.egress_allow))}"]
         for label, value in _sandbox_labels(key, spec).items():
             args += ["--label", f"{label}={value}"]
         args += ["--label", f"{_LABEL_ROLE}=proxy", proxy_image]

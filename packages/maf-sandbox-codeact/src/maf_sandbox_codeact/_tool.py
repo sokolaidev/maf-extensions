@@ -42,6 +42,7 @@ from maf_sandbox import (
     Capability,
     DeclaredOutput,
     Egress,
+    EgressRule,
     ExecResult,
     HostToolRun,
     ListedFile,
@@ -187,7 +188,7 @@ def codeact_sandbox_spec(
     files_in: TransferLimits = DEFAULT_TRANSFER_LIMITS,
     files_out: TransferLimits = _DEFAULT_FILES_OUT,
     host_tools: HostToolRegistry | None = None,
-    egress_allow: Sequence[str] = (),
+    egress_allow: Sequence[str | EgressRule] = (),
 ) -> SandboxSpec:
     """The sandbox a CodeAct program needs, in backend-neutral terms.
 
@@ -225,7 +226,7 @@ def codeact_sandbox_spec(
     everything is registered.
 
     Raises:
-        ValueError: when an ``egress_allow`` entry is not a single hostname — blank, or holding
+        ValueError: when an ``egress_allow`` host is blank, scheme-qualified, or holds
             whitespace or a comma.
         TypeError: when ``egress_allow`` is a bare ``str`` rather than a sequence of hostnames.
     """
@@ -256,7 +257,7 @@ def make_codeact_tools(
     exec_timeout_seconds: int = 120,
     files_in: TransferLimits = DEFAULT_TRANSFER_LIMITS,
     files_out: TransferLimits = _DEFAULT_FILES_OUT,
-    egress_allow: Sequence[str] = (),
+    egress_allow: Sequence[str | EgressRule] = (),
 ) -> list[Any]:
     """Return the ``[execute_code]`` tool list, or ``[]`` when no sandbox is available.
 
@@ -369,7 +370,7 @@ def make_codeact_tools(
         ValueError: when a sink is supplied with nothing to send down it — an output mode of
             :data:`CodeactOutputs.NONE` — when ``withhold_guest_output`` is paired with any
             output mode but :data:`CodeactOutputs.DECLARED`, or when an ``egress_allow`` entry
-            is not a single hostname (blank, or holding whitespace or a comma), where a sandbox
+            has a blank or scheme-qualified host, or holds whitespace or a comma, where a sandbox
             is configured.
         TypeError: when ``egress_allow`` is a bare ``str`` rather than a sequence of hostnames
             (which would otherwise be read one character at a time), again only where a sandbox
@@ -545,7 +546,7 @@ def _standing_guidance(*, withhold: bool, lands_per_call: bool) -> tuple[str, ..
     return (_WITHHELD_ROUTE,)
 
 
-def _effective_egress(extra: Sequence[str]) -> tuple[str, ...]:
+def _effective_egress(extra: Sequence[str | EgressRule]) -> tuple[str | EgressRule, ...]:
     """The union of what this kind needs and what the deployment added, in that order.
 
     The union is what everything downstream must read — the router matches it against the
@@ -559,14 +560,14 @@ def _effective_egress(extra: Sequence[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys((*_KIND_EGRESS, *_validated_hosts(extra))))
 
 
-def _validated_hosts(hosts: Sequence[str]) -> tuple[str, ...]:
+def _validated_hosts(hosts: Sequence[str | EgressRule]) -> tuple[str | EgressRule, ...]:
     """Refuse an allowlist that does not say what its author meant.
 
     A bare ``str`` satisfies ``Sequence[str]``, so ``egress_allow="pypi.org"`` type-checks and
     becomes seven single-character hosts — the real endpoint unreachable, with no refusal
     anywhere and a confidentiality cap applied to a flow nobody opened.
 
-    Each entry is one hostname, so an entry that is blank, holds whitespace, or holds a comma is
+    Each entry is one schemeless hostname; blank hosts, schemes, whitespace and commas are
     refused rather than passed through: no hostname contains any of those, and each is a way for
     a spec, the description the model reads, and a backend's allowlist to end up disagreeing
     silently — a comma-joined ``"a,b"`` becomes one spec entry the wslc proxy expands back into
@@ -583,11 +584,13 @@ def _validated_hosts(hosts: Sequence[str]) -> tuple[str, ...]:
     # the loop and come back empty from the return, silently dropping the whole allowlist.
     hosts = tuple(hosts)
     for entry in hosts:
-        if not entry.strip():
+        host = entry.host if isinstance(entry, EgressRule) else entry
+        if not host.strip():
             raise ValueError(f"egress_allow entries must be non-empty hostnames, got {entry!r}")
-        if any(character.isspace() for character in entry) or "," in entry:
+        if any(character.isspace() for character in host) or "," in host or "://" in host:
             raise ValueError(
-                f"egress_allow entries are one hostname each, with no whitespace or commas: "
+                f"egress_allow entries are one hostname each, "
+                f"with no scheme, whitespace or commas: "
                 f"got {entry!r}"
             )
     return tuple(hosts)
@@ -616,7 +619,7 @@ def _codeact_spec(
     files_in: TransferLimits,
     files_out: TransferLimits,
     surface: HostToolAggregate | None,
-    egress_allow: Sequence[str] = (),
+    egress_allow: Sequence[str | EgressRule] = (),
 ) -> SandboxSpec:
     """:func:`codeact_sandbox_spec`, over a host-tool surface the caller has already derived."""
     collects = outputs is not CodeactOutputs.NONE
@@ -846,7 +849,7 @@ def _tool_description(
     takes_files: bool,
     outputs: CodeactOutputs,
     host_tool_names: frozenset[str] = frozenset(),
-    egress_allow: Sequence[str] = (),
+    egress_allow: Sequence[str | EgressRule] = (),
     withhold: bool,
     lands_per_call: bool = False,
 ) -> str:

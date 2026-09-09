@@ -37,6 +37,7 @@ from maf_sandbox import (
     CallerContext,
     Capability,
     Cleanup,
+    EgressRule,
     EntryKind,
     ExecResult,
     GuestRunLayout,
@@ -664,6 +665,26 @@ class TestCodeactSandboxSpec:
         spec = codeact_sandbox_spec(egress_allow=("index.example", "artifacts.example"))
 
         assert spec.egress_allow == ("index.example", "artifacts.example")
+
+    def test_method_rules_survive_the_factory_and_derive_the_requirement(self):
+        rule = EgressRule("api.example", ("GET",))
+        spec = codeact_sandbox_spec(egress_allow=(rule,))
+        assert spec.egress_allow == (rule,)
+        assert Capability.EGRESS_METHODS in spec.required_capabilities
+
+    @pytest.mark.parametrize("host", ["", "a b", "a,b", "https://api.example"])
+    def test_method_rule_hosts_receive_the_same_validation(self, host):
+        with pytest.raises(ValueError):
+            codeact_sandbox_spec(egress_allow=(EgressRule(host, ("GET",)),))
+
+    def test_a_scheme_qualified_plain_host_is_refused(self):
+        with pytest.raises(ValueError, match="no scheme"):
+            codeact_sandbox_spec(egress_allow=("https://api.example",))
+
+    def test_a_deployment_cannot_narrow_the_kinds_all_methods_requirement(self, monkeypatch):
+        monkeypatch.setattr("maf_sandbox_codeact._tool._KIND_EGRESS", ("api.example",))
+        with pytest.raises(ValueError, match="conflicting"):
+            codeact_sandbox_spec(egress_allow=(EgressRule("api.example", ("GET",)),))
 
     def test_the_spec_carries_the_union_of_both_lists(self, monkeypatch: pytest.MonkeyPatch):
         """`_KIND_EGRESS` is empty today, which makes the union indistinguishable from the
@@ -1590,6 +1611,19 @@ _UNWIRED_DESCRIPTION = """Run a short Python program inside a sandbox and return
 
 
 class TestToolDescription:
+    def test_method_policy_reaches_the_attached_tools_description(self):
+        provider = InProcessSandboxBackend(
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS,
+                capabilities=_PULLS | {Capability.EGRESS_METHODS},
+                egress_method_tokens=None,
+            )
+        )
+        tool = _tool(provider, egress_allow=(EgressRule("api.example", ("GET",)),))
+        description = _callable(tool).__doc__ or ""
+        assert "api.example (GET)" in description
+        assert "EgressRule(" not in description
+
     def _description(self, **kw) -> str:
         return _callable(_tool(_backend(capabilities=_PULLS), **kw)).__doc__ or ""
 

@@ -252,7 +252,7 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             EGRESS_MODE: str(spec.egress),
             EGRESS_ALLOW: sorted_values(spec.egress_allow),
             EGRESS_ALLOW_COUNT: len(spec.egress_allow),
-            CAPABILITIES: sorted_values(spec.requires),
+            CAPABILITIES: sorted_values(getattr(spec, "required_capabilities", spec.requires)),
         }
         if event.declarations is not None:
             recorded[BACKEND_CAPABILITIES] = sorted_values(event.declarations.capabilities)

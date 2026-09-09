@@ -61,6 +61,7 @@ from ._protocol import (
     Cleanup,
     DisposalCode,
     DisposalFailure,
+    EgressRule,
     Identity,
     Isolation,
     IsolationScope,
@@ -371,7 +372,7 @@ def _claims_egress_observation(backend: SandboxBackend) -> bool:
 
 
 def _declarations(backend: SandboxBackend) -> BackendDeclarations:
-    """The one object every optional declaration is read from: one ``getattr``, six fields.
+    """The one object every optional declaration is read from, through one ``getattr``.
 
     Not a Protocol member, so declaring nothing is legal and reads as
     :data:`~maf_sandbox.DEFAULT_BACKEND_DECLARATIONS`.  *Declaring nothing* is narrower than it
@@ -928,6 +929,10 @@ class SandboxRouter:
             # a raise is indistinguishable from a backend honestly refusing one spec.
             _declared_set(backend, cast("object", declared.capabilities), "capabilities")
             _declared_set(backend, cast("object", declared.egress_modes), "egress_modes")
+            if declared.egress_method_tokens is not None:
+                _declared_set(
+                    backend, cast("object", declared.egress_method_tokens), "egress_method_tokens"
+                )
             _declared_isolation_scopes(backend, declared)
             _declared_limits(backend, declared)
         below = [(backend, rung) for backend, rung in rungs if not meets_floor(rung, floor)]
@@ -1151,7 +1156,7 @@ class SandboxRouter:
         against this host's posture, not about what a backend could do, so routing has nothing
         to offer them: there is no next backend to try.
         """
-        denied_capabilities = spec.requires & self._denied_capabilities
+        denied_capabilities = spec.required_capabilities & self._denied_capabilities
         if denied_capabilities:
             raise SandboxCapabilityDenied(
                 f"the {spec.kind!r} workload requires "
@@ -1196,7 +1201,7 @@ class SandboxRouter:
         capabilities = _declared_set(
             backend, cast("object", declarations.capabilities), "capabilities"
         )
-        missing = spec.requires - capabilities
+        missing = spec.required_capabilities - capabilities
         if missing:
             raise SandboxCapabilityNotSupported(
                 f"sandbox backend {backend.name!r} does not support "
@@ -1207,6 +1212,22 @@ class SandboxRouter:
                 "never implemented fails inside the sandbox, where the reason is hardest to "
                 "see."
             )
+
+        tokens = declarations.egress_method_tokens
+        if tokens is not None:
+            supported = _declared_set(backend, cast("object", tokens), "egress_method_tokens")
+            requested = {
+                method
+                for entry in spec.egress_allow
+                if isinstance(entry, EgressRule)
+                for method in entry.methods or ()
+            }
+            unsupported = requested - supported
+            if unsupported:
+                raise SandboxCapabilityNotSupported(
+                    f"sandbox backend {backend.name!r} cannot enforce egress methods "
+                    f"{', '.join(sorted(unsupported))} as written for {spec.kind!r}"
+                )
 
         # After the capability match and before the ceilings, because it is the same kind of
         # question the capability match asks — can this backend serve this workload at all —
@@ -1336,7 +1357,7 @@ class SandboxRouter:
         """
         if not self._candidates:
             return None
-        if spec.requires & self._denied_capabilities:
+        if spec.required_capabilities & self._denied_capabilities:
             return None
         if spec.identities & self._denied_identities:
             return None
