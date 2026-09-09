@@ -17,24 +17,20 @@ import subprocess
 import sys
 import time
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from maf_sandbox import Egress, Isolation, OsFamily, SandboxKey, SandboxRouter, SandboxSpec
+from maf_sandbox import Cleanup, Egress, Isolation, OsFamily, SandboxKey, SandboxRouter, SandboxSpec
 from maf_sandbox.conformance import (
+    ConformanceFailure,
     PosixGuestSubject,
     assert_egress_conformance,
     assert_exec_conformance,
     assert_files_delete_conformance,
     assert_files_in_conformance,
+    assert_reclaim_conformance,
 )
-
-# Feature-detected, not floored: the published-cores gate runs this suite against every
-# core the range admits, and cores before 0.23 have no Sandbox.reclaim to conform to.
-try:
-    from maf_sandbox.conformance import assert_reclaim_conformance
-except ImportError:
-    assert_reclaim_conformance = None
 
 from maf_sandbox_wslc import WslcReapResult, WslcSandboxBackend, WslcSandboxConfig
 from maf_sandbox_wslc._backend import _container_name
@@ -43,7 +39,7 @@ _IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_IMAGE")
 _PROXY_IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_PROXY_IMAGE")
 #: An image whose ``USER`` is not root. Every image this suite otherwise runs is root's, which is
 #: what keeps the two-principal split invisible: the file plane writes as root and so does the
-#: guest. A non-root image separates them, and is what ``reclaim``'s ``--user 0`` raise exists for.
+#: guest. A non-root image separates them; disposal cleans both principals' files.
 _NONROOT_IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_NONROOT_IMAGE")
 
 _WORK = "/maf-sandbox/work"
@@ -77,6 +73,43 @@ def _names_on_the_machine(name: str) -> list[str]:
     ).stdout
     rows = json.loads(listing) if listing.strip() else []
     return [row["Name"] for row in rows if row.get("Name") == name]
+
+
+@pytest.mark.parametrize("confined", [False, True])
+def test_router_disposes_each_call_and_preserves_another_kind(confined):
+    scope = f"e2e-{uuid.uuid4()}"
+    backend = WslcSandboxBackend(WslcSandboxConfig())
+    router = SandboxRouter(backends=[backend], min_isolation=Isolation.CONTAINER)
+    spec = replace(_spec(), confined_to_guest_call_path=confined)
+    key = _key(scope)
+
+    async def scenario() -> None:
+        sibling = await backend.acquire(key, replace(spec, kind="sibling"))
+        for owner in ("first", "second"):
+            admission = await router.enter_call(key, spec, owner=owner)
+            assert admission.rung is Cleanup.DISPOSE
+            sandbox = await router.acquire(key, spec, _admission=admission)
+            result = await sandbox.exec(
+                ["test", "!", "-e", "/tmp/call-residue"], working_directory="/", timeout=30
+            )
+            assert result.exit_code == 0
+            result = await sandbox.exec(
+                ["touch", "/tmp/call-residue"], working_directory="/", timeout=30
+            )
+            assert result.exit_code == 0
+            assert (
+                await router.finish_call(
+                    key, spec, admission=admission, sandbox=sandbox, owner=owner, timeout=30
+                )
+                is None
+            )
+            assert _names_on_the_machine(_container_name(key, spec.kind)) == []
+            assert _names_on_the_machine(sibling.container_name) == [sibling.container_name]
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        asyncio.run(backend.dispose_scope(scope, key.thread_id))
 
 
 @pytest.mark.parametrize(
@@ -501,23 +534,7 @@ class TestAllowlistEgress:
 
 
 class TestTheSharedConformanceSuites:
-    """`maf_sandbox.conformance`'s FILES_IN, EXEC, FILES_DELETE and RECLAIM suites, against a
-    real guest.
-
-    This is the backend the FILES_IN and EXEC suites exist for: it declares exactly those two
-    and no pull surface, so before them nothing held it to anything (#450). The suites verify
-    through `exec`, which this backend has — the probes are why that shape was chosen.
-
-    FILES_DELETE is **called and refused**: the suite gate raises before any probe runs,
-    because this backend declares no such capability — the filesystem path check a removal owes
-    is answered inside the guest for the kinds that decide an escape (#495). The call is
-    the wiring; the refusal is the answer, and there are no results to skip.
-
-    RECLAIM is answered in full, unlike FILES_DELETE: it is gated by no capability, so this is
-    the backend `reclaim` exists to prove — a mandatory removal served honestly beside a
-    `remove` that keeps refusing (see `test_wslc_backend.py`'s `TestReclaim` for that refusal
-    pinned offline).
-    """
+    """Live file and exec conformance, with deletion and reclamation refused."""
 
     def test_it_answers_the_files_in_probes(self):
         scope = f"e2e-{uuid.uuid4()}"
@@ -564,25 +581,24 @@ class TestTheSharedConformanceSuites:
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
-    def test_it_answers_the_reclaim_probes(self):
-        if assert_reclaim_conformance is None:
-            pytest.skip("this maf-sandbox predates Sandbox.reclaim (< 0.23)")
+    def test_the_reclaim_suite_records_the_withheld_mechanism(self):
         scope = f"e2e-{uuid.uuid4()}"
         backend = WslcSandboxBackend(WslcSandboxConfig())
 
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
-            # The narrowing does not cross into this closure; the assert re-establishes it,
-            # and the coverage check wants the suite called by name.
-            assert assert_reclaim_conformance is not None
-            results = await assert_reclaim_conformance(
-                PosixGuestSubject(
-                    sandbox=sandbox,
-                    working_directory=_WORK,
-                    capabilities=backend.declarations.capabilities,
+            with pytest.raises(ConformanceFailure) as refused:
+                await assert_reclaim_conformance(
+                    PosixGuestSubject(
+                        sandbox=sandbox,
+                        working_directory=_WORK,
+                        capabilities=backend.declarations.capabilities,
+                    )
                 )
+            assert refused.value.results
+            assert all(
+                r.failure and "does not support RECLAIM" in r.failure for r in refused.value.results
             )
-            assert not [r for r in results if r.skipped]
 
         try:
             asyncio.run(scenario())
@@ -624,14 +640,7 @@ class TestTheSharedConformanceSuites:
     reason="needs MAF_SANDBOX_WSLC_E2E_NONROOT_IMAGE naming an image whose USER is not root",
 )
 class TestAGuestThatIsNotRoot:
-    """The file plane against an image whose ``USER`` is not root.
-
-    Every other image this suite runs is root's, so the file plane (``write_file`` writes as the
-    host authority, root) and the guest (``exec`` runs as the image's ``USER``) are the same
-    principal and the split is invisible. A non-root image separates them, and is what
-    ``reclaim``'s ``--user 0`` raise is for: the guest cannot remove what the file plane wrote, so
-    ``reclaim`` raises authority to root to take the call directory back.
-    """
+    """The root file plane and non-root guest are both cleaned by container disposal."""
 
     def _spec(self, image: str | None = None) -> SandboxSpec:
         return SandboxSpec(kind="e2e-nonroot", image=image or _NONROOT_IMAGE, work_dir=_WORK)
@@ -647,8 +656,8 @@ class TestAGuestThatIsNotRoot:
         assert done.returncode == 0, done.stderr
         return done.stdout.strip()
 
-    def test_reclaim_removes_a_call_directory_the_file_plane_wrote(self):
-        """The file plane writes as root; ``reclaim`` raises to ``--user 0`` to remove it."""
+    def test_disposal_removes_a_call_directory_the_file_plane_wrote(self):
+        """Root-owned inputs are removed with their container."""
         scope = f"e2e-{uuid.uuid4()}"
         backend = WslcSandboxBackend(WslcSandboxConfig())
 
@@ -659,16 +668,10 @@ class TestAGuestThatIsNotRoot:
                 f"{call_directory}/note", "left behind\n", working_directory=_WORK
             )
 
-            # The framework's own ``finally`` member, now raised to root. Without the raise this
-            # raises OSError (rm exits 1, the directory leaks); with it the tree is gone.
-            await sandbox.reclaim(call_directory, working_directory=_WORK, timeout=60)
-
-            assert (
-                self._as_root(
-                    sandbox.container_name, f"test -d {call_directory} && echo yes || echo no"
-                )
-                == "no"
-            )
+            with pytest.raises(NotImplementedError, match="RECLAIM"):
+                await sandbox.reclaim(call_directory, working_directory=_WORK, timeout=60)
+            assert await backend.dispose(_key(scope), kind=self._spec().kind) is None
+            assert _names_on_the_machine(sandbox.container_name) == []
 
         try:
             asyncio.run(scenario())
@@ -685,6 +688,7 @@ class TestAGuestThatIsNotRoot:
             whoami = await sandbox.exec(["id", "-u"], working_directory="/", timeout=60)
             assert whoami.exit_code == 0, whoami.stderr
             assert whoami.stdout.strip() not in ("", "0")
+            assert sandbox.guest_principal == "unprivileged"
 
         try:
             asyncio.run(scenario())
@@ -724,8 +728,8 @@ class TestAGuestThatIsNotRoot:
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
-    def test_reclaim_removes_a_tree_the_two_principals_share(self):
-        """The host's files beside the guest's, under one directory, removed in one walk."""
+    def test_disposal_removes_a_tree_the_two_principals_share(self):
+        """Disposal removes both the host's files and the guest's output."""
         scope = f"e2e-{uuid.uuid4()}"
         backend = WslcSandboxBackend(WslcSandboxConfig())
 
@@ -749,14 +753,8 @@ class TestAGuestThatIsNotRoot:
             )
             assert wrote.exit_code == 0, wrote.stderr
 
-            await sandbox.reclaim(call_directory, working_directory=_WORK, timeout=60)
-
-            assert (
-                self._as_root(
-                    sandbox.container_name, f"test -d {call_directory} && echo yes || echo no"
-                )
-                == "no"
-            )
+            assert await backend.dispose(_key(scope), kind=self._spec().kind) is None
+            assert _names_on_the_machine(sandbox.container_name) == []
 
         try:
             asyncio.run(scenario())
