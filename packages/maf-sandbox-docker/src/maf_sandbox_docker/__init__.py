@@ -17,9 +17,9 @@ every container — and becomes :data:`~maf_sandbox.Egress.ALLOWLIST` when the c
 :func:`proxy_build_context`-built image, which places each sandbox on its own internal network
 behind a filtering proxy.  It declares :data:`~maf_sandbox.Capability.FILES_OUT` — stat from
 the tar entry header of ``docker cp``, read from the same stream — and never
-:data:`~maf_sandbox.Capability.FILES_LIST`, the enumeration capability Docker has no
-engine-level primitive for.  Its ``os_families`` comes from the daemon rather than from
-configuration: :meth:`DockerSandboxBackend.create` asks once and declares
+:data:`~maf_sandbox.Capability.FILES_LIST`, because enumerating a directory through its tar
+archive transfers the whole subtree, including file contents. Its ``os_families`` comes from
+the daemon: :meth:`DockerSandboxBackend.create` asks once and declares
 :data:`~maf_sandbox.OsFamily.POSIX` for a ``linux`` daemon, nothing for any other answer, and
 the plain constructor declares nothing.
 
