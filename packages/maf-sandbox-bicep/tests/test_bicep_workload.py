@@ -302,7 +302,7 @@ class TestParameterFiles:
 
         commands = [c for c, _, _ in backend.sandbox.commands]
         assert any("build-params" in c for c in commands), commands
-        assert not any(c.startswith("bicep build ") for c in commands), (
+        assert not any(" bicep build " in c for c in commands), (
             f"a parameter file must not go through `bicep build`: {commands}"
         )
 
@@ -312,7 +312,7 @@ class TestParameterFiles:
         _run(_tool(store, backend), ["main.bicep"])
 
         commands = [c for c, _, _ in backend.sandbox.commands]
-        assert any(c.startswith("bicep build ") for c in commands), commands
+        assert any(" bicep build " in c for c in commands), commands
         assert not any("build-params" in c for c in commands), commands
 
     def test_both_kinds_still_get_linted(self):
@@ -321,7 +321,7 @@ class TestParameterFiles:
             backend = _fake_backend()
             _run(_tool(store, backend), [filename])
             commands = [c for c, _, _ in backend.sandbox.commands]
-            assert any(c.startswith("bicep lint ") for c in commands), (filename, commands)
+            assert any(" bicep lint " in c for c in commands), (filename, commands)
 
     def test_the_build_command_keeps_the_stderr_merge(self):
         """Both build variants must keep `2>&1`; SARIF goes to stderr for each."""
@@ -605,7 +605,7 @@ class TestConcurrentRounds:
         # Nothing compiled outside the directory it was written into, and both survived to
         # be compiled — a sibling wipe would leave one of these commands with no source.
         for command, working_directory, _ in _commands(backend):
-            compiled = command.split(" ")[2]
+            compiled = command.split(" bicep ", 1)[1].split(" ")[1]
             assert compiled.startswith(f"{working_directory}/")
             assert compiled in _written(backend)
 
