@@ -643,6 +643,8 @@ def _codeact_spec(
         egress=egress,
         egress_allow=effective_egress,
         work_dir=_WORK_DIR,
+        # Model-written code can write outside the call path and leave processes running.
+        confined_to_guest_call_path=False,
         requires=frozenset(requires),
         outputs_named_at_call_time=collects,
         files_in=files_in,
@@ -1113,7 +1115,7 @@ async def _execute(
     if isinstance(sandbox, str):
         return sandbox
 
-    # The session owns this path, and `sandboxed_tool` reclaims it when the call returns.
+    # The session owns this path, and `sandboxed_tool` cleans the sandbox when the call returns.
     # Built before anything is written, because it decides where everything goes. A call that
     # calls a host tool is two directories — the model's files in `work`, the program and the shim
     # in the transport's — and one that does not is the call directory flat, which is what a kind

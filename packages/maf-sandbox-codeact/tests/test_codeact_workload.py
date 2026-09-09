@@ -36,6 +36,7 @@ from maf_sandbox import (
     Artifact,
     CallerContext,
     Capability,
+    Cleanup,
     EntryKind,
     ExecResult,
     GuestRunLayout,
@@ -595,6 +596,46 @@ class TestCodeactSandboxSpec:
 
     def test_work_dir_is_the_programs_own_root(self):
         assert codeact_sandbox_spec().work_dir == _WORK_DIR == "/maf-sandbox/work"
+
+    @pytest.mark.parametrize("outputs", list(CodeactOutputs))
+    @pytest.mark.parametrize("with_host_tools", [False, True])
+    def test_model_written_code_claims_no_confinement(self, outputs, with_host_tools):
+        registry = HostToolRegistry()
+        registry.register(_exchange_rate)
+        spec = codeact_sandbox_spec(
+            outputs=outputs, host_tools=registry if with_host_tools else None
+        )
+        assert spec.confined_to_guest_call_path is False
+
+    @pytest.mark.parametrize(
+        ("snapshot", "floor", "expected"),
+        [
+            (False, Cleanup.RECLAIM, Cleanup.DISPOSE),
+            (True, Cleanup.RECLAIM, Cleanup.RESET),
+            (True, Cleanup.DISPOSE, Cleanup.DISPOSE),
+        ],
+    )
+    def test_each_call_cleans_above_reclaim(self, snapshot, floor, expected):
+        sandbox = _ScriptedSandbox()
+        capabilities = DEFAULT_CAPABILITIES | {Capability.RECLAIM}
+        if snapshot:
+            capabilities |= {Capability.SNAPSHOT}
+        backend = _backend(sandbox, capabilities=capabilities)
+        router = SandboxRouter([backend], min_isolation=backend.isolation, min_cleanup=floor)
+        assert router.effective_cleanup(codeact_sandbox_spec()) is expected
+        tool = make_codeact_tools(router, "data-analyst", _context())[0]
+
+        for count in (1, 2):
+            _run(tool, "print('hi')")
+            assert sandbox.reclaims == []
+            assert backend.specs[-1].confined_to_guest_call_path is False
+            if expected is Cleanup.RESET:
+                assert len(sandbox.resets) == count
+                assert backend.disposed == []
+            else:
+                assert backend.disposed == [backend.keys[0]] * count
+                assert backend.disposed_kinds == [CODEACT_KIND] * count
+                assert sandbox.resets == []
 
     def test_egress_is_closed_by_default(self):
         """A spec that names no host denies every host, so the program can compute but cannot
