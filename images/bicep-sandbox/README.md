@@ -68,7 +68,7 @@ The revision is the half people leave off, and leaving it off is what [#308](htt
 | the config, or the path it is copied to, changes | `bicep-sandbox:0.46.1-2` |
 | Bicep upgraded to 0.47.0 | `bicep-sandbox:0.47.0-1` |
 
-**Never overwrite a tag that has been imported.** Not as a style preference — nothing downstream can recover from it. The import below will not notice: its idempotency check compares the OCI reference string, so re-running it against an overwritten tag prints `already imported`, exits 0, and leaves the old snapshot serving traffic. You get a success message and no new image. Import a second one past that check — through the portal or the `aca` CLI, neither of which checks — and it is no better, because `resolve_disk_image_id` returns the *first* disk image whose base matches the reference, and nothing fixes that iteration order. Which of the two boots is then unspecified.
+**Never overwrite a tag that has been imported.** A disk image retains the old snapshot when its source tag changes. The repository's import script refuses a reference already present in the group with `Nothing imported` and exit 1; it does not compare registry contents. If several snapshots share a reference after imports through the portal or the `aca` CLI, `resolve_disk_image_id` rejects an uncached lookup and names their ids. Pin the intended disk-image id explicitly, or push and import a new revision tag. Successful resolutions are cached for the process lifetime, so restart the host after changing imports or its image configuration.
 
 ## Import it into the sandbox group
 
@@ -91,7 +91,7 @@ The token above is what works instead. `az acr login --expose-token` warns that 
 
 The portal is the third way, and the one that needs nothing installed: [sandboxes.azure.com](https://sandboxes.azure.com) → your sandbox group → **Disk Images** → **Create** takes the same OCI reference in **Base Image URL**, with **Registry Authentication** set to a username and token or a managed identity for a private registry like this one. It also states plainly what the flag list does not: a disk image is a snapshot, and changing the source tag afterwards does not touch disk images already created.
 
-If you would rather not install the CLI, this repository ships the equivalent as a script with explicit arguments instead of environment variables — see [`packages/maf-sandbox-acas/scripts/README.md`](../../packages/maf-sandbox-acas/scripts/README.md). It prints the resolved disk-image id. It is idempotent *on the reference string*, which is the footgun described above: give it a tag it has already imported and it reports success without importing anything, whatever that tag now points at.
+If you would rather not install the CLI, this repository ships a script with explicit scope arguments — see [`packages/maf-sandbox-acas/scripts/README.md`](../../packages/maf-sandbox-acas/scripts/README.md). It accepts `--username` with `--token` or `--token-stdin` and prints the new disk-image id after a successful import. A reference already imported is refused with exit 1 and no id on stdout, even if a different `--name` is supplied. Serialize imports for the same group and reference because the listing check and creation are separate service operations.
 
 Whichever route you take, an identity doing the pull has to be attached to the sandbox group and hold `Container Registry Repository Reader` on a registry in RBAC + ABAC permissions mode, or `AcrPull` on a classic-mode one — `az acr show --query roleAssignmentMode` tells you which. Satisfying both is necessary and, on the evidence above, not sufficient, so treat it as the floor rather than the fix: a private registry answers an unauthenticated pull by failing the import rather than the run.
 
@@ -105,7 +105,7 @@ Build time is a different question and a different machine: the `Dockerfile` dow
 
 ## Changing the rule set
 
-[`bicepconfig.json`](bicepconfig.json) is the rule set both samples report against, so editing it changes their output. Two rules are deliberately away from their defaults: `no-unused-params` is raised to `error`, because that severity is the samples' visible proof the config was discovered at all, and `use-recent-api-versions` is switched on with `maxAgeInDays: 730`. Rebuild, push and import under the next revision afterwards (`0.46.1-1` → `0.46.1-2`) — a disk image already imported does not change when the tag it came from is overwritten, and the import will not tell you so.
+[`bicepconfig.json`](bicepconfig.json) is the rule set both samples report against, so editing it changes their output. Two rules are deliberately away from their defaults: `no-unused-params` is raised to `error`, because that severity is the samples' visible proof the config was discovered at all, and `use-recent-api-versions` is switched on with `maxAgeInDays: 730`. Rebuild, push and import under the next revision afterwards (`0.46.1-1` → `0.46.1-2`) — a disk image already imported does not change when the tag it came from is overwritten.
 
 ## Reproducibility
 

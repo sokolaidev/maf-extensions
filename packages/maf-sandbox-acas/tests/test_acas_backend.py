@@ -424,6 +424,30 @@ class TestResolveDiskImageId:
         asyncio.run(resolve_disk_image_id(client, None, "acr.io/x:1"))
         assert client.list_calls == 1
 
+    @pytest.mark.parametrize("ids", [("img-old", "img-new"), ("img-new", "img-old")])
+    def test_multiple_snapshots_require_an_explicit_id(self, ids):
+        client = _FakeGroupClient(images=[_disk_image(image_id, "acr.io/x:1") for image_id in ids])
+        with pytest.raises(ValueError, match="Multiple disk images") as raised:
+            asyncio.run(resolve_disk_image_id(client, None, "acr.io/x:1"))
+        assert "img-new, img-old" in str(raised.value)
+        assert "Pin a disk-image id" in str(raised.value)
+        assert asyncio.run(resolve_disk_image_id(client, "img-new", "acr.io/x:1")) == "img-new"
+        assert client.list_calls == 1
+
+    def test_ambiguous_resolution_is_not_cached(self):
+        client = _FakeGroupClient(
+            images=[_disk_image("img-old", "acr.io/x:1"), _disk_image("img-new", "acr.io/x:1")]
+        )
+        with pytest.raises(ValueError, match="Multiple disk images"):
+            asyncio.run(resolve_disk_image_id(client, None, "acr.io/x:1"))
+        client._images = [_disk_image("img-new", "acr.io/x:1")]
+        assert asyncio.run(resolve_disk_image_id(client, None, "acr.io/x:1")) == "img-new"
+        assert client.list_calls == 2
+
+    def test_repeated_listing_of_one_id_is_not_ambiguous(self):
+        client = _FakeGroupClient(images=[_disk_image("img-1", "acr.io/x:1")] * 2)
+        assert asyncio.run(resolve_disk_image_id(client, None, "acr.io/x:1")) == "img-1"
+
     def test_raises_when_nothing_configured(self):
         with pytest.raises(ValueError, match="No sandbox image is configured"):
             asyncio.run(resolve_disk_image_id(_FakeGroupClient(), None, None))

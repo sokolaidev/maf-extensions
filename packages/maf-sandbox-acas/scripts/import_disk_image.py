@@ -1,20 +1,7 @@
-"""Import the bicep-sandbox OCI image into an ACA sandbox group as a disk image.
+"""Import an OCI image into an ACA sandbox group as a disk image.
 
-A deploy builds and pushes ``bicep-sandbox:<version>`` to the sandbox stack's **own**
-registry, but a sandbox boots from a *disk image* registered in the sandbox group, which is
-a different namespace.  This script closes that gap: it imports the pushed image once, so
-the host application can then resolve it by reference at runtime
-(:func:`maf_sandbox_acas.resolve_disk_image_id`).
-
-Importing is deliberately kept out of the request path — it is slow, it is a write against
-the group, and it needs registry credentials that the application itself has no reason to
-hold.
-
-A CI deploy is better served by the vendor's ``aca`` CLI
-(``aca sandboxgroup disk create --identity …``), which needs no Python toolchain and nothing
-from this repository.  This script stays as the equivalent for anyone who would rather not
-install the CLI, and because its idempotency check shares
-:func:`~maf_sandbox_acas.disk_image_base` with the runtime resolver.
+An existing reference is refused: a disk image is a snapshot, and comparing reference
+strings cannot tell whether a tag's contents have changed. Use a new tag for each build.
 
 See ``scripts/README.md`` for how to run it, the arguments, and authentication.
 """
@@ -42,9 +29,27 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--identity",
         default=None,
-        help="Managed identity resource id that can pull the image, for a private registry.",
+        help="Managed identity resource id for the pull (preview service support varies).",
     )
-    return parser.parse_args(argv)
+    parser.add_argument("--username", help="Registry username; requires a token.")
+    token_source = parser.add_mutually_exclusive_group()
+    token_source.add_argument("--token", help="Registry token; requires --username.")
+    token_source.add_argument(
+        "--token-stdin", action="store_true", help="Read the registry token from standard input."
+    )
+    args = parser.parse_args(argv)
+    has_token = args.token is not None or args.token_stdin
+    if args.identity is not None and (args.username is not None or has_token):
+        parser.error("--identity cannot be combined with --username or a registry token")
+    if (args.username is not None) != has_token:
+        parser.error("--username and either --token or --token-stdin must be supplied together")
+    if args.token_stdin:
+        args.token = sys.stdin.read().strip()
+    if args.username is not None and (
+        not args.username.strip() or args.token is None or not args.token.strip()
+    ):
+        parser.error("registry username and token must not be empty")
+    return args
 
 
 def _default_name(image_ref: str) -> str:
@@ -55,6 +60,7 @@ def _default_name(image_ref: str) -> str:
 
 async def _run(args: argparse.Namespace) -> int:
     try:
+        from azure.containerapps.sandbox import RegistryCredentials
         from azure.containerapps.sandbox.aio import SandboxGroupClient
         from azure.identity.aio import DefaultAzureCredential
     except ImportError:
@@ -64,9 +70,6 @@ async def _run(args: argparse.Namespace) -> int:
         )
         return 2
 
-    # The same accessor the runtime resolver uses.  `DiskImage.image` is a DiskImageSpec,
-    # not a string, so comparing it directly to the reference never matches and the
-    # idempotency check below would silently re-import on every run.
     from maf_sandbox_acas import disk_image_base
 
     credential = DefaultAzureCredential()
@@ -80,29 +83,34 @@ async def _run(args: argparse.Namespace) -> int:
     try:
         async for image in client.list_disk_images():
             if disk_image_base(image) == args.image:
-                print(f"already imported: {image.id}")
-                return 0
+                print(
+                    f"Nothing imported: {args.image!r} already has a disk image ({image.id}). "
+                    "Its snapshot does not change when the tag is overwritten. "
+                    "Push and import a new build tag, or pin the existing disk-image id "
+                    "explicitly if you intend to reuse it.",
+                    file=sys.stderr,
+                )
+                return 1
 
         print(f"importing {args.image} …", file=sys.stderr)
-        # Spelled out rather than splatted from a dict: `**kwargs` erases the argument
-        # types, so a typo in a keyword — or a value of the wrong type — would only show
-        # up as a service error during a slow LRO.  `managed_identity_resource_id=None` is
-        # the SDK's own default, so passing it unconditionally changes nothing.
-        # `Any`-annotated on purpose: azure-containerapps-sandbox is a 0.1.0bN preview that
-        # ships no type information, so a strict checker reports every value that comes back
-        # from it as unknown. Naming the type here says "untyped SDK boundary" once, instead
-        # of leaving five reportUnknown* findings for a reader to re-derive.
         poller: Any = await client.begin_create_disk_image(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
             args.image,
             name=args.name or _default_name(args.image),
             managed_identity_resource_id=args.identity or None,
+            registry_credentials=(
+                RegistryCredentials(username=args.username, token=args.token)
+                if args.username is not None
+                else None
+            ),
         )
         image: Any = await poller.result()
         print(image.id)
         return 0
     finally:
-        await client.close()
-        await credential.close()
+        try:
+            await client.close()
+        finally:
+            await credential.close()
 
 
 def main(argv: list[str] | None = None) -> int:
