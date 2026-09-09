@@ -923,14 +923,14 @@ class AcasSandboxBackend:
         held = self._registry[registry_key] = _Held(sc.sandbox_id)
         try:
             await self._configure(sc)
-        except Exception:  # noqa: BLE001
-            # Non-fatal: the sandbox runs with SDK default policies. No best-effort delete —
-            # the auto-delete timer reclaims it, and failing the caller here would turn a
-            # policy hiccup into a lost turn.
+        except Exception as exc:  # noqa: BLE001
+            # Non-fatal: the sandbox runs with SDK default policies. The service default is not
+            # known to include auto-delete, so recovery is operator-owned from here.
             logger.warning(
                 "acas backend: failed to configure lifecycle policy for sandbox %s; "
-                "it will be reclaimed by the auto-delete timer",
+                "it is labelled for recovery but no auto-delete timer was confirmed: %s",
                 sc.sandbox_id,
+                error_detail(exc),
             )
         created = _AcasSandbox(sc, self._config.read_timeout_seconds)
         try:

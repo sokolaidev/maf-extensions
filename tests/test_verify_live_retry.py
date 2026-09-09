@@ -10,6 +10,7 @@ import dataclasses
 import importlib.util
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -34,6 +35,47 @@ check = _load("check_live_fix_loop_sample")
 _HOST_TOOLS = _load("check_live_host_tools_call_sample")
 
 _BASH = shutil.which("bash")
+
+
+def _bash_path(path: Path) -> str:
+    if os.name != "nt" or _BASH is None:
+        return path.as_posix()
+    if _is_wsl_launcher():
+        drive = path.drive.rstrip(":").lower()
+        if drive:
+            rest = path.as_posix()[len(path.drive) :].lstrip("/")
+            return f"/mnt/{drive}/{rest}"
+        return path.as_posix()
+    converted = subprocess.run(
+        [_BASH, "-lc", 'cygpath -u "$WINDOWS_PATH"'],
+        capture_output=True,
+        text=True,
+        env=os.environ | {"WINDOWS_PATH": str(path)},
+        check=False,
+    )
+    if converted.returncode == 0:
+        return converted.stdout.strip()
+    drive = path.drive.rstrip(":").lower()
+    if drive:
+        rest = path.as_posix()[len(path.drive) :].lstrip("/")
+        return f"/mnt/{drive}/{rest}"
+    return path.as_posix()
+
+
+def _bash_env_path(prepend: Path) -> str:
+    if os.name != "nt" or _BASH is None:
+        return f"{prepend}{os.pathsep}{os.environ['PATH']}"
+    converted = subprocess.run(
+        [_BASH, "-lc", 'printf "%s" "$PATH"'],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return f"{_bash_path(prepend)}:{converted}"
+
+
+def _is_wsl_launcher() -> bool:
+    return os.name == "nt" and _BASH is not None and "system32" in _BASH.casefold()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -124,7 +166,7 @@ class _Ran:
 
 
 def _stub(path: Path, body: str) -> None:
-    path.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+    path.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8", newline="\n")
     path.chmod(0o755)
 
 
@@ -142,7 +184,7 @@ def _run(
     attempts.write_text("", encoding="utf-8")
     # POSIX spellings: these are `sh` scripts, and a Windows path inside one is a broken
     # redirect rather than an error.
-    tally = attempts.as_posix()
+    tally = shlex.quote(_bash_path(attempts))
 
     _stub(binaries / "uv", f'printf "sample output\n"\nprintf "x" >> {tally}\nexit {sample_status}')
     _stub(
@@ -158,13 +200,29 @@ def _run(
     summary.touch()
     environment = {
         **os.environ,
-        "PATH": f"{binaries}{os.pathsep}{os.environ['PATH']}",
-        "HARNESS": str(tmp_path),
-        "GITHUB_STEP_SUMMARY": str(summary),
+        "PATH": _bash_env_path(binaries),
+        "HARNESS": _bash_path(tmp_path),
+        "GITHUB_STEP_SUMMARY": _bash_path(summary),
     }
+    run = _the_step(retrying)["run"]
+    if _is_wsl_launcher():
+        run = "\n".join(
+            (
+                f"export PATH={shlex.quote(environment['PATH'])}",
+                f"export HARNESS={shlex.quote(environment['HARNESS'])}",
+                f"export GITHUB_STEP_SUMMARY={shlex.quote(environment['GITHUB_STEP_SUMMARY'])}",
+                run,
+            )
+        )
     assert _BASH is not None
+    command = [_BASH, "-c", run]
+    if _is_wsl_launcher():
+        script = tmp_path / "workflow.sh"
+        script.write_text(run, encoding="utf-8", newline="\n")
+        script.chmod(0o755)
+        command = [_BASH, _bash_path(script)]
     finished = subprocess.run(  # noqa: S603 - the repo's own workflow, stubbed binaries
-        [_BASH, "-c", _the_step(retrying)["run"]],
+        command,
         capture_output=True,
         text=True,
         cwd=tmp_path,

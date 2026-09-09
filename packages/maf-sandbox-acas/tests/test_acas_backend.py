@@ -2458,6 +2458,34 @@ class TestLifecycleLogging:
         released = [r for r in caplog.records if "sandbox released" in r.getMessage()]
         assert len(released) == 2, caplog.text
 
+    def test_failed_lifecycle_configuration_does_not_promise_auto_delete(self, caplog):
+        class _CreatedSandbox:
+            sandbox_id = "sbx-1"
+
+            async def set_lifecycle_policy(self, policy) -> None:
+                raise RuntimeError("HTTP 400 invalid policy")
+
+        class _Poller:
+            async def result(self):
+                return _CreatedSandbox()
+
+        class _LifecycleFailsGroupClient:
+            async def begin_create_sandbox(self, *, disk_id, labels, egress_policy):
+                return _Poller()
+
+        client = _LifecycleFailsGroupClient()
+        backend = _backend_with(client)
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+
+        from maf_sandbox import SandboxSpec
+
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox_acas"):
+            asyncio.run(backend.acquire(key, SandboxSpec(kind="bicep", image_id="pinned-id")))
+
+        assert "no auto-delete timer was confirmed" in caplog.text
+        assert "HTTP 400 invalid policy" in caplog.text
+        assert "will be reclaimed by the auto-delete timer" not in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # Concurrent acquire — two calls for one key

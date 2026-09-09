@@ -32,7 +32,6 @@ exec uv run --project "$root" pre-commit hook-impl \\
 
 def main() -> None:
     """Write runtime-resolving wrappers into Git's existing hooks directory."""
-    root = Path(_git("rev-parse", "--show-toplevel"))
     configured = subprocess.run(
         ["git", "config", "--get", "core.hooksPath"],
         check=False,
@@ -45,6 +44,7 @@ def main() -> None:
         raise RuntimeError(
             "core.hooksPath is already configured; unset it before installing repository hooks"
         )
+    root = Path(_git("rev-parse", "--show-toplevel"))
     hook_dir = Path(_git("-C", str(root), "rev-parse", "--git-path", "hooks"))
     if not hook_dir.is_absolute():
         hook_dir = (root / hook_dir).resolve()
