@@ -557,6 +557,15 @@ class TestFilesInAgainstTheRealService:
 class TestFilesDeleteAgainstTheRealService:
     """The declared FILES_DELETE capability is exercised by the shared probes."""
 
+    def test_acquire_observes_the_guests_removal_authority(self, live: _Live):
+        sandbox = live.run(
+            live.backend.acquire(live.key, _spec(requires=frozenset({Capability.FILES_DELETE})))
+        )
+
+        assert sandbox.sandbox_id == live.sandbox.sandbox_id
+        held = next(iter(live.backend._registry.values()))
+        assert held.probed and held.authority is True
+
     def test_every_delete_probe_reached_a_verdict(self, files_delete_results):
         results = files_delete_results
         assert results, "the FILES_DELETE conformance run returned no results"
@@ -997,7 +1006,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert "denied" in refused.stderr.lower(), refused.stderr
 
     def test_a_workload_collecting_outputs_is_refused_at_acquire(self, nonroot: _Live):
-        """And refused without a second sandbox: the uid the fixture's acquire read is what
+        """And refused without a second sandbox: the authority the fixture's acquire observed is what
         answers here, before any create."""
         from maf_sandbox import SandboxCapabilityNotSupported
 
@@ -1012,7 +1021,7 @@ class TestAnImageWhoseGuestIsNotRoot:
             nonroot.run(nonroot.backend.acquire(nonroot.key, collecting))
 
     def test_a_workload_that_deletes_is_refused_at_acquire(self, nonroot: _Live):
-        """The reach half, and free for the same reason: the uid is already known.
+        """The reach half, and free for the same reason: the authority is already known.
 
         `FILES_DELETE` is withheld here for what a delete could *reach* rather than for what
         the guest cannot write, so the refusal is asserted on that reason and not merely on the
@@ -1030,7 +1039,9 @@ class TestAnImageWhoseGuestIsNotRoot:
         with pytest.raises(SandboxCapabilityNotSupported) as refusal:
             nonroot.run(nonroot.backend.acquire(nonroot.key, deleting))
 
-        assert "could never have deleted itself" in str(refusal.value), str(refusal.value)
+        assert "did not demonstrate it could delete itself" in str(refusal.value), str(
+            refusal.value
+        )
 
     def test_a_cold_refusal_deletes_the_sandbox_it_had_to_create(self, nonroot: _Live, caplog):
         """A refusal that had to create a sandbox to reach its verdict still deletes it.
