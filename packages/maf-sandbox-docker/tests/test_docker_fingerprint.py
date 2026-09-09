@@ -23,6 +23,9 @@ class Engine:
             "State": {"Running": True, "StartedAt": "start"},
             "HostConfig": {"PidMode": "", "Privileged": False},
             "Mounts": [],
+            "HostnamePath": f"/engine/containers/{_ID}/hostname",
+            "HostsPath": f"/engine/containers/{_ID}/hosts",
+            "ResolvConfPath": f"/engine/containers/{_ID}/resolv.conf",
         }
         self.observed = {
             "entries": {"/dev/shm": "directory"},
@@ -75,9 +78,34 @@ def test_unchanged_baseline_passes_and_observer_is_separate_and_removed():
         assert "--read-only" in args and "--network=none" in args
         assert "--cap-drop=ALL" in args and "--cap-add=SYS_PTRACE" in args
         assert _IMAGE in args and "trusted-python" not in args
+        assert json.loads(args[-1]) == {
+            "/etc/hostname": f"/{_ID}/hostname",
+            "/etc/hosts": f"/{_ID}/hosts",
+            "/etc/resolv.conf": f"/{_ID}/resolv.conf",
+        }
         name = args[args.index("--name") + 1]
         assert ("rm", "-f", name) in commands
     assert not any(args[0] == "exec" for args in commands)
+
+
+@pytest.mark.parametrize(
+    "source", [None, "", "relative/hosts", "/custom/hosts", f"/engine/{'c' * 64}/hosts"]
+)
+def test_unverified_network_source_keeps_ctime(source):
+    engine = Engine()
+    engine.container["HostsPath"] = source
+    asyncio.run(engine.subject().fingerprint())
+    observer = next(args for args, _ in engine.calls if args[0] == "run")
+    assert "/etc/hosts" not in json.loads(observer[-1])
+
+
+@pytest.mark.parametrize("destination", ["/etc/hosts", "/etc", "/"])
+def test_declared_network_mount_keeps_ctime(destination):
+    engine = Engine()
+    engine.container["Mounts"] = [{"RW": False, "Destination": destination}]
+    asyncio.run(engine.subject().fingerprint())
+    observer = next(args for args, _ in engine.calls if args[0] == "run")
+    assert "/etc/hosts" not in json.loads(observer[-1])
 
 
 @pytest.mark.parametrize("error", [None, TimeoutError("deadline"), asyncio.CancelledError()])
