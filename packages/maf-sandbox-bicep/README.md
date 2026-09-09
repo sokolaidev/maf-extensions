@@ -29,6 +29,8 @@ tools = make_bicep_tools(router, file_store, "devops-engineer", context,
 
 Pass `router=None` — or a router with no backend — and you get `[]` back: an unconfigured host attaches no tool rather than one that fails when called.
 
+Build, parameter-file compilation, and lint run with `HOME` and `TMPDIR` set to the call directory, so Bicep's default module cache and temporary profile are removed with that call. A second call restores its modules again. The image's `bicepconfig.json` still supplies the compiler and linter settings through normal source-directory discovery.
+
 `router`, `file_store` and `context` are the host's, and this snippet shows none of them being built. [`samples/01_acas_bicep`](https://github.com/sokolaidev/maf-extensions/tree/main/samples/01_acas_bicep) is the whole wiring as a runnable program: a one-turn agent that validates a deliberately flawed Bicep file and prints the compiler's diagnostics.
 
 ## Threat model

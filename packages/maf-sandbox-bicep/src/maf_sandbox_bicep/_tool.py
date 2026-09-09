@@ -152,7 +152,8 @@ _WORK_DIR = "/maf-sandbox/work"
 # diagnostics come from the SARIF blob.
 # Note: `bicep build` emits SARIF on stderr; `2>&1` merges it into stdout so both legs read
 # `.stdout` uniformly.  `bicep lint` emits SARIF on stdout natively.
-_BUILD_CMD = "bicep build {path} --diagnostics-format sarif 2>&1 || true"
+# Bicep writes its module cache under HOME and its profile under the temporary directory.
+_BUILD_CMD = 'HOME="$PWD" TMPDIR="$PWD" bicep build {path} --diagnostics-format sarif 2>&1 || true'
 
 # `.bicepparam` is a parameter file, not a template, and `bicep build` refuses it outright:
 #   The specified input "…/main.bicepparam" was not recognized as a Bicep file.
@@ -164,10 +165,11 @@ _BUILD_CMD = "bicep build {path} --diagnostics-format sarif 2>&1 || true"
 # because only the diagnostics are wanted. `bicep lint` accepts both kinds, so only the
 # build half varies. All three behaviours were checked against the pinned CLI in the image.
 _BUILD_PARAMS_CMD = (
-    "bicep build-params {path} --diagnostics-format sarif --outfile /dev/null 2>&1 || true"
+    'HOME="$PWD" TMPDIR="$PWD" bicep build-params {path} --diagnostics-format sarif '
+    "--outfile /dev/null 2>&1 || true"
 )
 
-_LINT_CMD = "bicep lint {path} --diagnostics-format sarif || true"
+_LINT_CMD = 'HOME="$PWD" TMPDIR="$PWD" bicep lint {path} --diagnostics-format sarif || true'
 
 _PARAM_SUFFIX = ".bicepparam"
 _ACCEPTED_SUFFIXES = (".bicep", _PARAM_SUFFIX)
@@ -332,20 +334,9 @@ def _bicep_validate_tool(
         listed_names = [entry.name for entry in listing]
         listed_by_name = {entry.name: entry for entry in listing}
 
-        # Every call gets a fresh directory, because the sandbox is REUSED across fix rounds
-        # and only the named files are written into it.
-        #
-        # Without this, a file deleted from the file store between rounds survives in the
-        # sandbox, and a template still referencing it *compiles* — the tool reports "no
-        # diagnostics" for something that cannot build from the actual file store. A false
-        # green, from the one tool whose entire purpose is compiler truth.
-        #
-        # A fresh directory rather than wiping the old one: `bicepconfig.json` lives at the
-        # work-dir root (the image COPYs it there), so a recursive delete would take the
-        # repo's lint rules with it and every later `bicep lint` would quietly fall back to
-        # defaults. Bicep finds that config by walking UP from the file, so a subdirectory
-        # still picks it up — and the AVM module cache lives in ~/.bicep, untouched either
-        # way. Staleness becomes impossible by construction instead of something to reconcile.
+        # Fresh directories keep stale or concurrent inputs out of this validation.
+        # Bicep finds the parent's bicepconfig.json by walking up from the source, so cleanup
+        # removes only the call's inputs, module cache, and temporary profile.
         call_directory = session.guest_call_path()
 
         # Validate each name against that listing (the injection guard).
