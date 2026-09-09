@@ -18,7 +18,9 @@ An operator program talks directly to a backend-specific helper or the provider 
 
 Host disposal creates no unclean refusal on failure. A successful kind sweep retires only that kind's pending cleanup targets; pending targets for other kinds, a whole-key target, or a newer mark retain the key's refusal. A `True` result describes the requested sweep, not whether the key has reopened.
 
-`dispose_unclean` deliberately takes no kind filter: it retries the backend/kind targets already recorded by failed framework cleanup or by `mark_unclean(key, kind=...)`, and sweeps every registered backend when no target was recorded. It keeps refusal at the whole key until every pending target lands. A host choosing one kind for ordinary cleanup uses `dispose_kind`; a host retrying failed cleanup uses `dispose_unclean`. The refusal boundary is described in [the tool-call contract](tool-call.md#cleanup-as-a-consequence).
+`dispose_kind(key, kind, instance_id=..., timeout=...)` deletes one physical sandbox on the backend that served it. A failed instance disposal, including timeout or cancellation, retains that target and refuses the key unless the host chose `FailedReclaimPolicy.KEEP`. Backend selection uses the serving record; without a record, backends must verify the supplied ID against engine ownership before deleting it. An absent ID cannot select a replacement. Successful routine cleanup creates no refusal.
+
+`dispose_unclean(key, kind=None, instance_id=None, timeout=...)` retries the recorded backend/kind/instance targets, narrowed by either supplied selector. With no recorded target and no selectors it sweeps every registered backend. A successful attempt retires only the targets it covered, so another instance or a newer failure keeps the whole key refused. The refusal boundary is described in [the tool-call contract](tool-call.md#cleanup-as-a-consequence).
 
 ## Purge and expiry
 

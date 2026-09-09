@@ -86,7 +86,7 @@ class _ExplodingBackend(InProcessSandboxBackend):
     async def dispose_scope(self, scope: str, thread_id: str) -> int:
         raise RuntimeError("service unavailable")
 
-    async def dispose(self, key, *, kind: str | None = None) -> None:
+    async def dispose(self, key, *, kind: str | None = None, instance_id=None) -> None:
         raise RuntimeError("service unavailable")
 
 
@@ -396,7 +396,9 @@ class _BackendDeclaringOnlyEgress:
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> object:
         return object()
 
-    async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> None:
+    async def dispose(
+        self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
+    ) -> None:
         return None
 
     async def dispose_scope(self, scope: str, thread_id: str) -> int:
@@ -569,7 +571,9 @@ class TestTheDeclarationsObject:
             async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> object:
                 return object()
 
-            async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> None:
+            async def dispose(
+                self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
+            ) -> None:
                 return None
 
             async def dispose_scope(self, scope: str, thread_id: str) -> int:
@@ -1200,7 +1204,9 @@ class _BackendDeclaringNothing:
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> object:
         return object()
 
-    async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> None:
+    async def dispose(
+        self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
+    ) -> None:
         return None
 
     async def dispose_scope(self, scope: str, thread_id: str) -> int:
@@ -1641,7 +1647,7 @@ class TestTheLedgerNeverCarriesAKeyNamingACall:
                 del key, spec
                 return object()  # no `reclaim`, so the router refuses and disposes
 
-            async def dispose(self, key, *, kind: str | None = None):
+            async def dispose(self, key, *, kind: str | None = None, instance_id=None):
                 del key
                 return DisposalFailure("refused", "and the disposal did not land either")
 
@@ -1833,7 +1839,7 @@ class TestAKeyTheRouterCouldNotDisposeIsRefused:
 
     def test_a_disposal_that_hangs_is_bounded_and_counts_as_not_landed(self):
         class _Hangs(InProcessSandboxBackend):
-            async def dispose(self, key, *, kind: str | None = None):
+            async def dispose(self, key, *, kind: str | None = None, instance_id=None):
                 await asyncio.Event().wait()
 
         router = self._router(_Hangs())
@@ -1862,7 +1868,9 @@ class TestAKeyTheRouterCouldNotDisposeIsRefused:
         started = asyncio.Event()
 
         class _HangsAfterStarting(InProcessSandboxBackend):
-            async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> None:
+            async def dispose(
+                self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
+            ) -> None:
                 started.set()
                 await asyncio.Event().wait()
 
@@ -2160,7 +2168,9 @@ class TestTheDisposalCodeIsWhatACallerBranchesOn:
         `.code` off that would raise out of a `finally`."""
 
         class _Odd(InProcessSandboxBackend):
-            async def dispose(self, key: SandboxKey, *, kind: str | None = None):  # type: ignore[override]
+            async def dispose(
+                self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
+            ):  # type: ignore[override]
                 return True
 
         router = self._router(_Odd())
@@ -2172,7 +2182,7 @@ class TestTheDisposalCodeIsWhatACallerBranchesOn:
     def test_a_bound_that_expired_is_a_timeout_not_a_guess(self):
         class _Hangs(InProcessSandboxBackend):
             async def dispose(
-                self, key: SandboxKey, *, kind: str | None = None
+                self, key: SandboxKey, *, kind: str | None = None, instance_id=None
             ) -> DisposalFailure | None:
                 await asyncio.Event().wait()
 
@@ -2188,7 +2198,7 @@ class TestTheDisposalCodeIsWhatACallerBranchesOn:
 
         class _Hangs(InProcessSandboxBackend):
             async def dispose(
-                self, key: SandboxKey, *, kind: str | None = None
+                self, key: SandboxKey, *, kind: str | None = None, instance_id=None
             ) -> DisposalFailure | None:
                 if self.dispose_failure is None:
                     await asyncio.Event().wait()  # never returns; the bound expires first
@@ -2210,7 +2220,7 @@ class TestTheDisposalCodeIsWhatACallerBranchesOn:
 
         class _Hangs(InProcessSandboxBackend):
             async def dispose(
-                self, key: SandboxKey, *, kind: str | None = None
+                self, key: SandboxKey, *, kind: str | None = None, instance_id=None
             ) -> DisposalFailure | str | None:
                 await asyncio.Event().wait()
 
@@ -2266,7 +2276,7 @@ class TestOnlyTheUncleanPathClosesAKey:
 
         class _Hangs(InProcessSandboxBackend):
             async def dispose(
-                self, key: SandboxKey, *, kind: str | None = None
+                self, key: SandboxKey, *, kind: str | None = None, instance_id=None
             ) -> DisposalFailure | str | None:
                 await asyncio.Event().wait()
 
@@ -2305,7 +2315,9 @@ class _BlocksUntilReleased(InProcessSandboxBackend):
         self.entered = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> DisposalFailure | None:
+    async def dispose(
+        self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
+    ) -> DisposalFailure | None:
         self.entered.set()
         await self.release.wait()
         return None
@@ -2333,7 +2345,7 @@ class TestDisposalsForOneKeyDoNotInterleave:
 
         class _SlowFirst(InProcessSandboxBackend):
             async def dispose(
-                self, key: SandboxKey, *, kind: str | None = None
+                self, key: SandboxKey, *, kind: str | None = None, instance_id=None
             ) -> DisposalFailure | None:
                 nonlocal calls
                 calls += 1
@@ -2369,7 +2381,7 @@ class TestDisposalsForOneKeyDoNotInterleave:
                 return await super().acquire(key, spec)
 
             async def dispose(
-                self, key: SandboxKey, *, kind: str | None = None
+                self, key: SandboxKey, *, kind: str | None = None, instance_id=None
             ) -> DisposalFailure | None:
                 return DisposalFailure("refused", "still there")
 
@@ -2398,7 +2410,7 @@ class TestDisposalsForOneKeyDoNotInterleave:
                 return await super().acquire(key, spec)
 
             async def dispose(
-                self, key: SandboxKey, *, kind: str | None = None
+                self, key: SandboxKey, *, kind: str | None = None, instance_id=None
             ) -> DisposalFailure | None:
                 disposed.append(key)
                 return DisposalFailure("refused", "still there") if len(disposed) == 1 else None
@@ -2455,7 +2467,7 @@ class TestDisposalsForOneKeyDoNotInterleave:
                 return await super().acquire(key, spec)
 
             async def dispose(
-                self, key: SandboxKey, *, kind: str | None = None
+                self, key: SandboxKey, *, kind: str | None = None, instance_id=None
             ) -> DisposalFailure | None:
                 return DisposalFailure("refused", "still there")
 
@@ -2470,17 +2482,14 @@ class TestDisposalsForOneKeyDoNotInterleave:
 
         asyncio.run(scenario())
 
-    def test_a_bound_that_expires_does_not_refuse_a_key_another_disposal_cleaned(self):
-        """A landed disposal clears the key — including the mark a second one wrote before
-        queueing behind it. If that second one then times out, the ledger has no entry for the
-        key, and `get` flattens absent to marked-with-no-reason: the timeout is written and a
-        key whose sandbox is gone stays refused for ever."""
+    def test_a_bound_preserves_the_failure_target_recorded_after_a_sweep_started(self):
+        """A sweep cannot retire a failure target recorded after its attempt began."""
         first = asyncio.Event()
         release = asyncio.Event()
 
         class _LandsThenHangs(InProcessSandboxBackend):
             async def dispose(
-                self, key: SandboxKey, *, kind: str | None = None
+                self, key: SandboxKey, *, kind: str | None = None, instance_id=None
             ) -> DisposalFailure | None:
                 if first.is_set():
                     await asyncio.Event().wait()  # the second disposal runs into its bound
@@ -2494,12 +2503,12 @@ class TestDisposalsForOneKeyDoNotInterleave:
             await first.wait()
             times_out = asyncio.create_task(router.dispose_unclean(_KEY, timeout=0.1))
             await asyncio.sleep(0)  # it marks the key, then queues behind the lock
-            release.set()  # the first lands and pops the mark with it
+            release.set()
             assert await lands is None, "the first disposal has to land, or nothing pops"
             assert await times_out is False
             return _KEY in router._unclean  # noqa: SLF001
 
-        assert asyncio.run(scenario()) is False, "a key another disposal cleaned was refused"
+        assert asyncio.run(scenario()) is True, "the newer failure target must remain refused"
 
     def test_the_mid_create_cleanup_waits_for_the_disposal_that_refused_the_key(self):
         """Two deletes for one key at once are what the lock exists to prevent, and this
@@ -2518,7 +2527,7 @@ class TestDisposalsForOneKeyDoNotInterleave:
                 return await super().acquire(key, spec)
 
             async def dispose(
-                self, key: SandboxKey, *, kind: str | None = None
+                self, key: SandboxKey, *, kind: str | None = None, instance_id=None
             ) -> DisposalFailure | None:
                 calls.append("holder" if not holding.is_set() else "cleanup")
                 if not holding.is_set():
@@ -3274,8 +3283,8 @@ class TestASandboxThatCannotBeReclaimed:
 
     def test_a_disposal_that_fails_does_not_replace_the_refusal(self):
         class _KeepsItsSandboxes(InProcessSandboxBackend):
-            async def dispose(self, key, *, kind: str | None = None):
-                await super().dispose(key, kind=kind)
+            async def dispose(self, key, *, kind: str | None = None, instance_id=None):
+                await super().dispose(key, kind=kind, instance_id=instance_id)
                 raise RuntimeError("the control plane is down")
 
         backend = _KeepsItsSandboxes(self._Stale())

@@ -117,10 +117,10 @@ def test_interrupted_delete_is_observed_and_releases_the_lock(cancel, caplog):
     release = asyncio.Event()
 
     class _Blocking(InProcessSandboxBackend):
-        async def dispose(self, key, *, kind=None):
+        async def dispose(self, key, *, kind=None, instance_id=None):
             entered.set()
             await release.wait()
-            return await super().dispose(key, kind=kind)
+            return await super().dispose(key, kind=kind, instance_id=instance_id)
 
     backend = _Blocking()
     recorder = _Recorder()
@@ -156,7 +156,7 @@ def test_disposals_share_the_per_key_lock_and_the_wait_is_bounded(other, kind_fi
     attempts = []
 
     class _Blocking(InProcessSandboxBackend):
-        async def dispose(self, key, *, kind=None):
+        async def dispose(self, key, *, kind=None, instance_id=None):
             attempts.append((key, kind))
             if key == _KEY and len(attempts) == 1:
                 entered.set()
@@ -232,7 +232,7 @@ def test_failed_sweep_retains_pending_targets():
 
 def test_success_does_not_clear_a_newer_mark_for_the_same_kind():
     class _MarkedDuringDelete(InProcessSandboxBackend):
-        async def dispose(self, key, *, kind=None):
+        async def dispose(self, key, *, kind=None, instance_id=None):
             router.mark_unclean(key, backend=self, kind=kind)
             return None
 

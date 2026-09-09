@@ -356,16 +356,25 @@ class NoIsolationBackend:
             return sandbox
 
     def _remove(
-        self, wanted: Callable[[SandboxKey], bool], kind: str | None = None
+        self,
+        wanted: Callable[[SandboxKey], bool],
+        kind: str | None = None,
+        instance_id: str | None = None,
     ) -> tuple[int, list[str]]:
         """Destroy matching sandboxes under the lock, retaining failures for the next attempt."""
 
-        def taken(ident: tuple[SandboxKey, str]) -> bool:
-            return wanted(ident[0]) and (kind is None or ident[1] == kind)
+        def taken(ident: tuple[SandboxKey, str], sandbox: NoIsolationSandbox) -> bool:
+            return (
+                wanted(ident[0])
+                and (kind is None or ident[1] == kind)
+                and (instance_id is None or sandbox.instance_id == instance_id)
+            )
 
-        doomed = [(i, self._sandboxes.pop(i)) for i in list(self._sandboxes) if taken(i)]
-        doomed += [(i, s) for i, s in self._undeleted if taken(i)]
-        self._undeleted = [(i, s) for i, s in self._undeleted if not taken(i)]
+        doomed = [
+            (i, self._sandboxes.pop(i)) for i, s in list(self._sandboxes.items()) if taken(i, s)
+        ]
+        doomed += [(i, s) for i, s in self._undeleted if taken(i, s)]
+        self._undeleted = [(i, s) for i, s in self._undeleted if not taken(i, s)]
 
         removed = 0
         problems: list[str] = []
@@ -378,10 +387,12 @@ class NoIsolationBackend:
                 problems.append(problem)
         return removed, problems
 
-    async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> DisposalFailure | None:
+    async def dispose(
+        self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
+    ) -> DisposalFailure | None:
         """Delete this key's sandboxes, narrowed to kind when given; report any failure."""
         async with self._lock:
-            _, problems = self._remove(lambda k: k == key, kind)
+            _, problems = self._remove(lambda k: k == key, kind, instance_id)
         return _refused(problems)
 
     async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:

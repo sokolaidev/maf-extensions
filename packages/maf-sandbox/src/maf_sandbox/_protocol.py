@@ -1353,11 +1353,15 @@ class SandboxBackend(Protocol):
         """
         ...
 
-    async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> DisposalFailure | None:
+    async def dispose(
+        self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
+    ) -> DisposalFailure | None:
         """Delete this key's sandboxes. Best-effort: return a failure instead of raising.
 
-        kind narrows disposal to that workload; None takes every kind. Preserve attribution
-        when retaining failed deletions so retries cannot delete a sibling kind.
+        kind narrows disposal to that workload; instance_id selects one physical sandbox
+        within the key and optional kind. With neither selector, sweep the whole key.
+        Verify ownership in the engine before deleting an ID. An absent or stale ID is a
+        no-op and must never select a replacement. Retain exact targets for retries.
 
         Return DisposalFailure when a sandbox may remain, or None when no failure is known.
         Callers branch on its code; detail is for logs. Use unknown when the cause is uncertain.

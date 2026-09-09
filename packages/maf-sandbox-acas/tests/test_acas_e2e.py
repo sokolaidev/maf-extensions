@@ -272,11 +272,6 @@ class TestALiveSandbox:
             # Read back through a *fresh* backend, which has an empty registry, so this asks
             # the service by label rather than this process's memory. A suspended-but-undeleted
             # sandbox is still found there, which is the thing worth proving does not happen.
-            #
-            # Polled rather than asserted once: `_delete` calls `begin_delete()` and never
-            # awaits the poller, so `dispose` above only *starts* the deletion and a sandbox
-            # still terminating is legitimately still listed. Asserting zero on the first call
-            # would be a race that reads as a teardown regression when it loses.
             fresh = AcasSandboxBackend(_config())
             try:
                 rounds = await _drains_to_empty(fresh, scope)
@@ -1174,3 +1169,51 @@ class TestEgressAgainstTheRealService:
         )
         assert results, "the egress conformance run returned no results"
         assert all(r.passed for r in results), [r.failure for r in results if r.failure]
+
+
+def test_instance_disposal_conforms_against_the_service(loop):
+    from dataclasses import replace
+
+    from azure.core.exceptions import ResourceNotFoundError
+    from maf_sandbox.conformance import assert_instance_disposal_conformance
+
+    creators = [AcasSandboxBackend(_config()), AcasSandboxBackend(_config())]
+    disposer = AcasSandboxBackend(_config())
+    key = _key(f"e2e-instance-{uuid.uuid4()}")
+    spec = _spec()
+
+    async def exists(identity):
+        try:
+            await disposer._group_client().get_sandbox_client(identity).get()
+        except ResourceNotFoundError:
+            return False
+        return True
+
+    async def scenario():
+        try:
+            target = await creators[0].acquire(key, spec)
+            same_kind = await creators[1].acquire(key, spec)
+            other_kind = await creators[0].acquire(key, replace(spec, kind="sibling"))
+            await assert_instance_disposal_conformance(
+                disposer,
+                key,
+                spec.kind,
+                target.instance_id,
+                [same_kind.instance_id, other_kind.instance_id],
+                exists,
+            )
+            replacement = await creators[0].acquire(key, spec)
+            assert replacement.instance_id != target.instance_id
+            assert (
+                await disposer.dispose(key, kind=spec.kind, instance_id=target.instance_id) is None
+            )
+            assert await exists(replacement.instance_id)
+            assert await exists(same_kind.instance_id) and await exists(other_kind.instance_id)
+        finally:
+            try:
+                await disposer.dispose_scope(key.scope, key.thread_id)
+            finally:
+                for backend in [*creators, disposer]:
+                    await backend.aclose()
+
+    loop.run_until_complete(scenario())

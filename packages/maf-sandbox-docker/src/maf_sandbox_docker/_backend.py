@@ -1734,11 +1734,111 @@ class DockerSandboxBackend:
         if not attributed:
             self._undeleted_kinds.pop(prefix, None)
 
-    async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> DisposalFailure | None:
+    async def _inspect_disposal_target(self, target: str) -> dict[str, object] | None:
+        """Read immutable identity and ownership; absence alone is a successful no-op."""
+        result = await self._docker(
+            "container", "inspect", target, timeout=self._config.command_timeout_seconds
+        )
+        if result.returncode:
+            if _reads_as_absent(result.stderr, target):
+                return None
+            raise RuntimeError(result.stderr)
+        rows: object = json.loads(result.stdout)
+        if not isinstance(rows, list) or len(cast(list[object], rows)) != 1:
+            raise ValueError("expected exactly one inspected container")
+        row = cast(list[object], rows)[0]
+        if not isinstance(row, dict):
+            raise ValueError("expected a container object")
+        return cast(dict[str, object], row)
+
+    async def _dispose_instance(
+        self, key: SandboxKey, kind: str | None, instance_id: str
+    ) -> DisposalFailure | None:
+        """Delete only the engine ID whose labels prove it belongs to this boundary."""
+        try:
+            data = await self._inspect_disposal_target(instance_id)
+            if data is None:
+                return None
+            if not instance_id or data.get("Id") != instance_id:
+                raise ValueError("the selector must be the complete engine instance ID")
+            wanted = {
+                _LABEL_SCOPE: _label_value(key.scope),
+                _LABEL_THREAD: _label_value(key.thread_id),
+                _LABEL_AGENT: _label_value(key.agent_dir),
+            }
+            if kind is not None:
+                wanted[_LABEL_KIND] = _label_value(kind)
+            metadata = data.get("Config")
+            owned = data.get("Labels")
+            if owned is None and isinstance(metadata, dict):
+                owned = cast(dict[str, object], metadata).get("Labels")
+            if not isinstance(owned, dict):
+                raise ValueError("the engine did not return ownership labels")
+            labels = cast(dict[str, object], owned)
+            if any(labels.get(label) != value for label, value in wanted.items()):
+                return None
+            name = str(data.get("Name", "")).removeprefix("/")
+            if not name or name.endswith(_PROXY_SUFFIX):
+                return None
+            proxy = await self._inspect_disposal_target(_proxy_name(name))
+            proxy_id: str | None = None
+            if proxy is not None:
+                metadata = proxy.get("Config")
+                proxy_labels = proxy.get("Labels")
+                if proxy_labels is None and isinstance(metadata, dict):
+                    proxy_labels = cast(dict[str, object], metadata).get("Labels")
+                if (
+                    isinstance(proxy_labels, dict)
+                    and all(
+                        cast(dict[str, object], proxy_labels).get(label) == labels.get(label)
+                        for label in (_LABEL_SCOPE, _LABEL_THREAD, _LABEL_AGENT, _LABEL_KIND)
+                    )
+                    and cast(dict[str, object], proxy_labels).get(_LABEL_ROLE) == "proxy"
+                ):
+                    candidate = proxy.get("Id")
+                    if isinstance(candidate, str) and candidate:
+                        proxy_id = candidate
+            # Names can be reused between the two inspections; recheck the original ID.
+            if await self._inspect_disposal_target(instance_id) is None:
+                return None
+        except Exception as exc:  # noqa: BLE001 - unread ownership cannot authorize deletion
+            return DisposalFailure("unlisted", f"could not select the sandbox instance: {exc}")
+        if proxy_id is not None:
+            await self._drain_the_proxy(name, key, proxy_id=proxy_id)
+            if (await self._remove(proxy_id)).failure is None:
+                self._forget_attribution(name, key.thread_id)
+        self._forget_facts(name)
+        removal = await self._remove(instance_id)
+        if removal.failure is None:
+            settings = data.get("NetworkSettings")
+            networks = (
+                cast(dict[str, object], settings).get("Networks")
+                if isinstance(settings, dict)
+                else None
+            )
+            network = (
+                cast(dict[str, object], networks).get(_network_name(name))
+                if isinstance(networks, dict)
+                else None
+            )
+            network_id = (
+                cast(dict[str, object], network).get("NetworkID")
+                if isinstance(network, dict)
+                else None
+            )
+            if isinstance(network_id, str) and network_id:
+                await self._remove_network(network_id)
+        return removal.failure
+
+    async def dispose(
+        self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
+    ) -> DisposalFailure | None:
         """Delete this key's sandboxes, narrowed to kind when given.
 
         Labels reach unregistered containers; retained names cover a failed listing.
         Failed deletions are retained per kind for retries and reported without raising."""
+        if instance_id is not None:
+            return await self._dispose_instance(key, kind, instance_id)
         prefix = (key.scope, key.thread_id, key.agent_dir)
         with self._disposal_guard:
             mine = [

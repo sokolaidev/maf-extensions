@@ -21,7 +21,7 @@ import posixpath
 import shlex
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 from ._outputs import SandboxTransferCapExceeded
@@ -490,6 +490,7 @@ class InProcessSandboxBackend:
         #: the way a real create does — and kept when one was configured to fail, because a
         #: sandbox that was not deleted is one the next acquire still finds.
         self.sandboxes: dict[tuple[SandboxKey, str], InProcessSandbox] = {}
+        self._instance_ids: dict[tuple[SandboxKey, str], str] = {}
         self._handed_out = False
         self.keys: list[SandboxKey] = []
         self.specs: list[SandboxSpec] = []
@@ -497,6 +498,7 @@ class InProcessSandboxBackend:
         #: The ``kind`` each disposal narrowed to, ``None`` for a whole-key one. Parallel
         #: to :attr:`disposed`, so a test reads the pair by index.
         self.disposed_kinds: list[str | None] = []
+        self.disposed_instances: list[str | None] = []
         self.purged: list[tuple[str, str]] = []
         self.purge_count = 1
 
@@ -527,11 +529,15 @@ class InProcessSandboxBackend:
             held = InProcessSandbox() if self._handed_out else self.sandbox
             self._handed_out = True
             self.sandboxes[(key, spec.kind)] = held
+            self._instance_ids[(key, spec.kind)] = held.instance_id
         return held
 
-    async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> DisposalFailure | None:
+    async def dispose(
+        self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
+    ) -> DisposalFailure | None:
         self.disposed.append(key)
         self.disposed_kinds.append(kind)
+        self.disposed_instances.append(instance_id)
         if self.dispose_error is not None:
             raise self.dispose_error
         if self.dispose_failure is not None:
@@ -542,10 +548,22 @@ class InProcessSandboxBackend:
         taking = [
             entry
             for entry in self.sandboxes
-            if entry[0] == key and (kind is None or entry[1] == kind)
+            if entry[0] == key
+            and (kind is None or entry[1] == kind)
+            and (
+                instance_id is None
+                or (
+                    self.sandboxes[entry].instance_id
+                    if isinstance(cast(object, self.sandboxes[entry].instance_id), str)
+                    and self.sandboxes[entry].instance_id
+                    else self._instance_ids.get(entry)
+                )
+                == instance_id
+            )
         ]
         for held in taking:
             del self.sandboxes[held]
+            self._instance_ids.pop(held, None)
         return None
 
     async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
@@ -560,6 +578,7 @@ class InProcessSandboxBackend:
             if entry[0].scope == scope and entry[0].thread_id == thread_id
         ]:
             del self.sandboxes[held]
+            self._instance_ids.pop(held, None)
         return ScopePurge(self.purge_count, self.purge_failure)
 
 

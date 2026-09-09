@@ -2162,7 +2162,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
 
     def test_sandboxed_tool_uses_router_reclaim_timeout_when_not_passed(self, caplog):
         class _HangsOnDispose(InProcessSandboxBackend):
-            async def dispose(self, key, *, kind=None):
+            async def dispose(self, key, *, kind=None, instance_id=None):
                 await asyncio.Event().wait()
 
         backend = _HangsOnDispose(_RefusesToRemove())
@@ -2179,7 +2179,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
 
     def test_sandboxed_tool_explicit_reclaim_timeout_overrides_router(self, caplog):
         class _HangsOnDispose(InProcessSandboxBackend):
-            async def dispose(self, key, *, kind=None):
+            async def dispose(self, key, *, kind=None, instance_id=None):
                 await asyncio.Event().wait()
 
         backend = _HangsOnDispose(_RefusesToRemove())
@@ -2259,7 +2259,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
 
     def test_a_disposal_that_never_returns_is_bounded_and_counts_as_failed(self, caplog):
         class _HangsOnDispose(InProcessSandboxBackend):
-            async def dispose(self, key, *, kind=None):
+            async def dispose(self, key, *, kind=None, instance_id=None):
                 await asyncio.Event().wait()
 
         backend = _HangsOnDispose(_RefusesToRemove())
@@ -2339,7 +2339,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
 
     def test_a_cancellation_during_the_disposal_still_refuses_the_key(self, caplog):
         class _CancelsOnDispose(InProcessSandboxBackend):
-            async def dispose(self, key, *, kind=None):
+            async def dispose(self, key, *, kind=None, instance_id=None):
                 raise asyncio.CancelledError()
 
         backend = _CancelsOnDispose(_RefusesToRemove())
@@ -2660,9 +2660,9 @@ class TestTheStrongRungsHonourTheCallsOwnBound:
 
     def test_an_explicit_reclaim_timeout_bounds_the_disposal(self):
         class _Slow(InProcessSandboxBackend):
-            async def dispose(self, key, *, kind=None):
+            async def dispose(self, key, *, kind=None, instance_id=None):
                 await asyncio.sleep(0.3)
-                return await super().dispose(key, kind=kind)
+                return await super().dispose(key, kind=kind, instance_id=instance_id)
 
         backend = _Slow()
         router = _router(backend)
@@ -2691,6 +2691,40 @@ class TestAHeldSandboxIsGivenBackHoweverTheCleanupEnds:
     _OTHER = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-9")
     _SPEC = dataclasses.replace(_SPEC, confined_to_guest_call_path=False)
 
+    def test_cancelled_disposal_retries_only_unfinished_instances(self):
+        first, second = InProcessSandbox(), InProcessSandbox()
+        queue = iter((first, second))
+
+        class _TwoInstances(InProcessSandboxBackend):
+            async def acquire(self, key, spec):
+                return next(queue)
+
+            async def dispose(self, key, *, kind=None, instance_id=None):
+                if instance_id == second.instance_id:
+                    raise asyncio.CancelledError
+                return await super().dispose(key, kind=kind, instance_id=instance_id)
+
+        backend = _TwoInstances()
+        router = _router(backend, warm=False)
+        spec = dataclasses.replace(_SPEC, min_cleanup=Cleanup.DISPOSE)
+        for sandbox in (first, second):
+            router._remember_instance(_KEY, spec.kind, backend, sandbox)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                session.guest_call_path()
+                key = session.key()
+                await session.acquire(key)
+                await session.acquire(key)
+                return target
+
+            return widget_run
+
+        with pytest.raises(asyncio.CancelledError):
+            _call(_attach_with(build, router, spec=spec)[0], target="done")
+        assert backend.disposed_instances == [first.instance_id]
+        assert [target.instance_id for target in router._pending_for(_KEY)] == [second.instance_id]
+
     def _build(self, session: SandboxToolSession):
         async def widget_run(target: str) -> str:
             mine = session.key()
@@ -2706,11 +2740,11 @@ class TestAHeldSandboxIsGivenBackHoweverTheCleanupEnds:
         cancelling = {"first": True}
 
         class _CancelsOnce(InProcessSandboxBackend):
-            async def dispose(self, key, *, kind=None):
+            async def dispose(self, key, *, kind=None, instance_id=None):
                 if cancelling["first"]:
                     cancelling["first"] = False
                     raise asyncio.CancelledError
-                return await super().dispose(key, kind=kind)
+                return await super().dispose(key, kind=kind, instance_id=instance_id)
 
         backend = _CancelsOnce(sandbox_per_key=True)
         router = _router(backend)
@@ -3000,10 +3034,10 @@ class TestCleanupAdmission:
         class _CancelsDisposal(InProcessSandboxBackend):
             cancel = True
 
-            async def dispose(self, key, *, kind=None):
+            async def dispose(self, key, *, kind=None, instance_id=None):
                 if self.cancel:
                     raise asyncio.CancelledError
-                return await super().dispose(key, kind=kind)
+                return await super().dispose(key, kind=kind, instance_id=instance_id)
 
         backend = _CancelsDisposal(
             _CancelsReset(),
@@ -3433,6 +3467,45 @@ class TestACallThatReachesTwoSandboxes:
 
     _OTHER = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-2")
 
+    @pytest.mark.parametrize("rung", [Cleanup.RECLAIM, Cleanup.DISPOSE])
+    def test_same_key_instances_receive_only_their_own_cleanup(self, rung):
+        first, second = InProcessSandbox(), InProcessSandbox()
+
+        class _TwoInstances(InProcessSandboxBackend):
+            async def acquire(self, key, spec):
+                return first if not self.keys else second
+
+        backend = _TwoInstances()
+        router = _router(backend, warm=False)
+        spec = dataclasses.replace(_SPEC, min_cleanup=rung)
+        for sandbox in (first, second):
+            router._remember_instance(_KEY, spec.kind, backend, sandbox)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                session.guest_call_path()
+                key = session.key()
+                assert not isinstance(key, str)
+                a = await session.acquire(key)
+                assert a is first
+                backend.keys.append(key)
+                b = await session.acquire(key)
+                assert b is second
+                note_unclean(a, "the process did not stop")
+                return target
+
+            return widget_run
+
+        assert _call(_attach_with(build, router, spec=spec)[0], target="done") == "done"
+        assert backend.disposed_instances == (
+            [first.instance_id]
+            if rung is Cleanup.RECLAIM
+            else [first.instance_id, second.instance_id]
+        )
+        if rung is Cleanup.RECLAIM:
+            assert len(first.reclaims) == len(second.reclaims) == 1
+        assert not router._unclean
+
     def _build(self, session: SandboxToolSession):
         async def widget_run(target: str) -> str:
             """Write the call's name into two sandboxes."""
@@ -3520,7 +3593,9 @@ class TestACallThatReachesTwoSandboxes:
         already refuses before its first await."""
 
         class _CancelsOnDispose(_PerKeyBackend):
-            async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> None:
+            async def dispose(
+                self, key: SandboxKey, *, kind: str | None = None, instance_id: str | None = None
+            ) -> None:
                 raise asyncio.CancelledError()
 
         def build(session: SandboxToolSession):
