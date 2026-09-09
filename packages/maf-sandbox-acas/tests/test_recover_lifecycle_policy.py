@@ -8,7 +8,10 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+import pytest
+from azure.containerapps.sandbox import AutoDeletePolicy, LifecyclePolicy, Sandbox
 from azure.core.exceptions import ResourceNotFoundError
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -97,11 +100,19 @@ class _Group:
         self.requested_delete: list[str] = []
         self.set_errors: dict[str, Exception] = {}
         self.delete_errors: dict[str, Exception] = {}
+        self.verification_reads: list[object] = []
+        self.read_ids: list[str] = []
 
     def list_sandboxes(self):
         return _Pager(self.inventory)
 
     async def get_sandbox(self, sandbox_id: str):
+        self.read_ids.append(sandbox_id)
+        if self.installed and self.verification_reads:
+            response = self.verification_reads.pop(0)
+            if isinstance(response, BaseException):
+                raise response
+            return response
         if sandbox_id not in self.current:
             raise ResourceNotFoundError("gone")
         return self.current[sandbox_id]
@@ -136,6 +147,100 @@ def test_successfully_installed_policy_is_retained():
     assert result.configured == ["configured"]
     assert result.candidates == []
     assert group.installed == group.requested_delete == []
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("wire", [True, False])
+def test_sdk_lifecycle_metadata_is_recognized(enabled, wire):
+    sandbox = Sandbox(
+        id="sdk",
+        created_at=_OLD,
+        labels=_LABELS,
+        lifecycle=LifecyclePolicy(auto_delete=AutoDeletePolicy(enabled=enabled)),
+    )
+    payload = {"lifecycle": {"autoDeletePolicy": {"enabled": enabled}}}
+
+    assert recovery._auto_delete_enabled(payload if wire else sandbox) is enabled
+    group = _Group(sandbox)
+    result = _run(group)
+    assert result.configured == (["sdk"] if enabled else [])
+    assert result.candidates == ([] if enabled else ["sdk"])
+    assert group.installed == []
+
+
+@pytest.mark.parametrize("stale_reads", [0, 2, 6])
+def test_verification_waits_for_sdk_lifecycle_visibility(monkeypatch, stale_reads):
+    missing = _sandbox("delayed")
+    group = _Group(missing)
+    group.verification_reads = [missing] * stale_reads + [
+        Sandbox(lifecycle=LifecyclePolicy(auto_delete=AutoDeletePolicy(enabled=True)))
+    ]
+    sleep = AsyncMock()
+    monkeypatch.setattr(recovery.asyncio, "sleep", sleep)
+
+    result = _run(group, apply=True)
+
+    assert result.failures == []
+    assert result.installed == result.verified == ["delayed"]
+    assert result.deleted == result.retained == []
+    assert len(group.installed) == 1
+    assert len(group.read_ids) == stale_reads + 2
+    assert sleep.await_count == stale_reads
+    assert all(call.args == (5.0,) for call in sleep.await_args_list)
+
+
+@pytest.mark.parametrize("expired", [True, False])
+def test_verification_exhaustion_preserves_expiry_policy(monkeypatch, expired):
+    missing = _sandbox("missing")
+    group = _Group(missing)
+    group.verification_reads = [missing] * 7
+    sleep = AsyncMock()
+    monkeypatch.setattr(recovery.asyncio, "sleep", sleep)
+
+    result = _run(group, apply=True, max_age=timedelta(days=1) if expired else None)
+
+    assert result.installed == ["missing"]
+    assert result.verified == []
+    assert result.failures == [
+        "Lifecycle policy for 'missing' still lacks auto-delete after 7 reads"
+    ]
+    assert result.deleted == group.requested_delete == (["missing"] if expired else [])
+    assert result.retained == ([] if expired else ["missing"])
+    assert len(group.read_ids) == 8
+    assert sleep.await_count == 6
+
+
+@pytest.mark.parametrize("absent", [True, False])
+def test_verification_read_errors_do_not_delete(monkeypatch, absent):
+    missing = _sandbox("missing")
+    group = _Group(missing)
+    error = ResourceNotFoundError("gone") if absent else RuntimeError("read failed")
+    group.verification_reads = [missing, error]
+    monkeypatch.setattr(recovery.asyncio, "sleep", AsyncMock())
+
+    result = _run(group, apply=True, max_age=timedelta(days=1))
+
+    assert result.installed == ["missing"]
+    assert result.verified == result.deleted == group.requested_delete == []
+    assert result.already_absent == (["missing"] if absent else [])
+    assert result.retained == ([] if absent else ["missing"])
+    if absent:
+        assert result.failures == []
+    else:
+        assert "Could not verify lifecycle policy" in result.failures[0]
+        assert "read failed" in result.failures[0]
+    assert len(group.read_ids) == 3
+
+
+def test_cancellation_during_verification_propagates(monkeypatch):
+    missing = _sandbox("missing")
+    group = _Group(missing)
+    group.verification_reads = [missing]
+    monkeypatch.setattr(recovery.asyncio, "sleep", AsyncMock(side_effect=asyncio.CancelledError))
+
+    with pytest.raises(asyncio.CancelledError):
+        _run(group, apply=True)
+    assert group.requested_delete == []
 
 
 def test_apply_follows_preview_order_across_inventory_orders():
