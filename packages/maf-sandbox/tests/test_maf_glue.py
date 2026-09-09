@@ -2254,6 +2254,8 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
         _call(tool, target="x")
         asyncio.run(router.dispose_scope("scope-a", "thread-1"))
         # The purge landed even though per-key disposal is still broken on this backend.
+        assert not router._unclean
+        backend.dispose_error = None
         assert _call(tool, target="y").startswith("/maf-sandbox/work/")
 
     def test_a_disposal_that_never_returns_is_bounded_and_counts_as_failed(self, caplog):

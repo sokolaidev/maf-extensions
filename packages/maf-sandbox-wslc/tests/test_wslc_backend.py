@@ -166,6 +166,26 @@ def _backend_with(responder=None, config=None) -> tuple[WslcSandboxBackend, _Fak
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("warm", [False, True])
+@pytest.mark.parametrize("failure", ["status", "json", "shape", "empty", "raise"])
+def test_failed_instance_inspection_disposes_the_container(warm, failure):
+    machine = _machine(running=[_NAME] if warm else [])
+
+    def respond(args):
+        if args[:2] == ("container", "inspect"):
+            if failure == "raise":
+                raise TimeoutError("inspection timed out")
+            output = {"status": b"", "json": b"{", "shape": b"{}", "empty": b"[{}]"}
+            return _WslcResult(1 if failure == "status" else 0, output[failure], b"")
+        return machine(args)
+
+    backend, fake = _backend_with(respond)
+    with pytest.raises((RuntimeError, ValueError, TimeoutError)):
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+    assert any(_NAME in call.args for call in fake.matching("container", "remove"))
+    assert bool(fake.matching("container", "run")) is (not warm)
+
+
 def test_instance_id_comes_from_the_engine_on_every_acquire():
     ids = ["a" * 64]
     machine = _machine(running=[_NAME])

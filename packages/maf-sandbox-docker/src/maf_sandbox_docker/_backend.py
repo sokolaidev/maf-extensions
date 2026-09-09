@@ -1394,12 +1394,21 @@ class DockerSandboxBackend:
                 # on, and a closed sandbox has no record to attribute — listing one would
                 # make every closed teardown report a proxy that was never there.
                 self._acquired[name] = (key.scope, key.thread_id, key.agent_dir)
-            inspected = await self._docker(
-                "inspect", "-f", "{{.Id}}", name, timeout=self._config.command_timeout_seconds
-            )
-            instance_id = inspected.stdout.decode().strip()
-            if inspected.returncode or not instance_id:
-                raise RuntimeError("docker did not establish the sandbox instance ID")
+            try:
+                inspected = await self._docker(
+                    "inspect", "-f", "{{.Id}}", name, timeout=self._config.command_timeout_seconds
+                )
+                instance_id = inspected.stdout.decode().strip()
+                if inspected.returncode or not instance_id:
+                    raise RuntimeError("docker did not establish the sandbox instance ID")
+            except BaseException:
+                try:
+                    failure = await self.dispose(key, kind=spec.kind)
+                    if failure is not None:
+                        logger.warning("sandbox identity refusal cleanup failed: %s", failure)
+                except Exception as failure:
+                    logger.warning("sandbox identity refusal cleanup raised: %s", failure)
+                raise
             facts = await self._container_facts(name, spec, instance_id=instance_id)
             refuse_capabilities_the_guest_cannot_back(
                 spec,

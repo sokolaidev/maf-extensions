@@ -304,6 +304,16 @@ def _refuse_an_invalid_sandbox(sandbox: Sandbox) -> None:
         raise TypeError(f"{type(sandbox).__name__} must expose a nonempty `Sandbox.instance_id`")
 
 
+async def _reset_instance(sandbox: Sandbox, *, timeout: float) -> str:
+    """Reset and validate the replacement identity, returning the retired ID."""
+    previous = sandbox.instance_id
+    await sandbox.reset(timeout=timeout)
+    _refuse_an_invalid_sandbox(sandbox)
+    if sandbox.instance_id == previous:
+        raise TypeError("Sandbox.reset must establish a new instance_id")
+    return previous
+
+
 def _declared_isolation(backend: SandboxBackend) -> Isolation:
     """The rung ``backend`` claims, refusing any value this package does not recognise.
 
@@ -1476,6 +1486,7 @@ class SandboxRouter:
             )
         _, reported = self._unclean_state(key)
         if undisposed is None:
+            self._forget_instances(backend, key=key, kind=kind)
             outcome = "The sandbox just created has been disposed"
         else:
             logger.warning(
@@ -1680,6 +1691,8 @@ class SandboxRouter:
                 self.mark_unclean(
                     key, _coded(served.name, reported), backend=served, kind=spec.kind
                 )
+            else:
+                self._forget_instances(served, key=key, kind=spec.kind)
             raise
         if scope is not IsolationScope.CALL:
             sandbox = await self._adopt(key, spec, served, sandbox, snapshot=snapshot)
@@ -1703,7 +1716,7 @@ class SandboxRouter:
         if snapshot:
             try:
                 async with asyncio.timeout(bound):
-                    await sandbox.reset(timeout=bound)
+                    previous = await _reset_instance(sandbox, timeout=bound)
             except (asyncio.CancelledError, GeneratorExit):
                 if self._reclaim.failed_reclaim_policy is not FailedReclaimPolicy.KEEP:
                     self.mark_unclean(key, backend=backend, kind=spec.kind)
@@ -1713,7 +1726,7 @@ class SandboxRouter:
             else:
                 if self._unclean_state(key)[0]:
                     await self._refuse_a_key_closed_during_the_create(key, backend, kind=spec.kind)
-                self._remember_instance(key, spec.kind, backend, sandbox)
+                self._remember_instance(key, spec.kind, backend, sandbox, previous=previous)
                 return sandbox
         failure = await self._dispose_the_kind(key, spec, backend, None, bound)
         if failure is not None:
@@ -1732,14 +1745,45 @@ class SandboxRouter:
                 raise
         if self._unclean_state(key)[0]:
             await self._refuse_a_key_closed_during_the_create(key, backend, kind=spec.kind)
+        _refuse_an_invalid_sandbox(sandbox)
         self._remember_instance(key, spec.kind, backend, sandbox)
         return sandbox
 
     def _remember_instance(
-        self, key: SandboxKey, kind: str, backend: SandboxBackend, sandbox: Sandbox
+        self,
+        key: SandboxKey,
+        kind: str,
+        backend: SandboxBackend,
+        sandbox: Sandbox,
+        *,
+        previous: str | None = None,
     ) -> None:
         with self._seen_guard:
-            self._seen.setdefault((key, kind, id(backend)), set()).add(sandbox.instance_id)
+            known = self._seen.setdefault((key, kind, id(backend)), set())
+            if previous is not None:
+                known.discard(previous)
+            known.add(sandbox.instance_id)
+
+    def _forget_instances(
+        self,
+        backend: SandboxBackend,
+        *,
+        key: SandboxKey | None = None,
+        kind: str | None = None,
+        scope: str | None = None,
+        thread_id: str | None = None,
+    ) -> None:
+        with self._seen_guard:
+            for at in list(self._seen):
+                held, workload, provider = at
+                if (
+                    provider == id(backend)
+                    and (key is None or held == key)
+                    and (kind is None or workload == kind)
+                    and (scope is None or held.scope == scope)
+                    and (thread_id is None or held.thread_id == thread_id)
+                ):
+                    del self._seen[at]
 
     async def enter_call(
         self,
@@ -1821,7 +1865,7 @@ class SandboxRouter:
         if rung is Cleanup.RESET and sandbox is not None:
             try:
                 async with asyncio.timeout(bound):
-                    await sandbox.reset(timeout=bound)
+                    previous = await _reset_instance(sandbox, timeout=bound)
             except (asyncio.CancelledError, GeneratorExit):
                 raise
             except Exception as unreset:  # noqa: BLE001 — escalates rather than propagates
@@ -1834,7 +1878,7 @@ class SandboxRouter:
                     error_detail(unreset),
                 )
             else:
-                self._remember_instance(key, spec.kind, backend, sandbox)
+                self._remember_instance(key, spec.kind, backend, sandbox, previous=previous)
                 return None
         return await self._dispose_the_kind(key, spec, backend, unclean, bound)
 
@@ -1863,6 +1907,7 @@ class SandboxRouter:
         failure = None if reported is None else _coded(_recorded_name(backend), reported)
         self._record_disposal(key, backend, failure, started)
         if failure is None:
+            self._forget_instances(backend, key=key, kind=spec.kind)
             return None
         logger.warning(
             "sandbox router: the cleanup disposal for %s/%s (%s) did not land: %s",
@@ -1960,6 +2005,8 @@ class SandboxRouter:
                         undisposed,
                     )
             self._record_disposal(key, backend, answered, started)
+            if answered is None:
+                self._forget_instances(backend, key=key, kind=kind)
             if refuse and answered is not None:
                 with self._unclean_guard:
                     targets = self._pending_disposals.setdefault(key, {})
@@ -2291,6 +2338,7 @@ class SandboxRouter:
                         purged.undisposed,
                     )
             if answered is None:
+                self._forget_instances(backend, scope=scope, thread_id=thread_id)
                 for key, targets in pending.items():
                     self._forget_pending(
                         key, [target for target in targets if target.backend is backend]

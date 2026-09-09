@@ -9,6 +9,7 @@ import pytest
 
 from maf_sandbox import (
     Capability,
+    Cleanup,
     DisposalFailure,
     FailedReclaimPolicy,
     Isolation,
@@ -75,6 +76,85 @@ def test_restart_cleans_unknown_files_and_processes_once(snapshot):
         assert len(adopted.resets) == (1 if snapshot else 0)
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("phase", ["adoption", "cleanup"])
+@pytest.mark.parametrize("value", ["unchanged", None, "", 7])
+def test_reset_must_establish_a_new_valid_identity(phase, value):
+    subject = backend(snapshot=True)
+    current = router(subject)
+
+    async def scenario():
+        sandbox = subject.sandbox
+        if phase == "cleanup":
+            sandbox = await current.acquire(KEY, SPEC)
+        assert isinstance(sandbox, InProcessSandbox)
+
+        async def reset(*, timeout):
+            if value != "unchanged":
+                sandbox.instance_id = value
+
+        sandbox.reset = reset
+        if phase == "adoption":
+            await current.acquire(KEY, SPEC)
+        else:
+            await current._run_the_rung(KEY, SPEC, subject, Cleanup.RESET, sandbox, None, 1)
+        assert subject.disposed == [KEY]
+
+    asyncio.run(scenario())
+
+
+def test_reset_retires_only_the_replaced_instance():
+    subject = backend(snapshot=True)
+    current = router(subject)
+    other_policy = InProcessSandbox()
+    at = (KEY, SPEC.kind, id(subject))
+
+    async def scenario():
+        sandbox = await current.acquire(KEY, SPEC)
+        current._remember_instance(KEY, SPEC.kind, subject, other_policy)
+        for _ in range(4):
+            await current._run_the_rung(KEY, SPEC, subject, Cleanup.RESET, sandbox, None, 1)
+            assert current._seen[at] == {sandbox.instance_id, other_policy.instance_id}
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("operation", ["kind", "key", "scope", "cleanup"])
+@pytest.mark.parametrize("fails", [False, True])
+def test_disposal_retires_only_covered_instances_on_success(operation, fails):
+    subject = backend(snapshot=True)
+    current = router(subject)
+    other_backend = backend()
+    entries = [
+        (KEY, SPEC.kind, subject),
+        (KEY, "sibling", subject),
+        (dataclasses.replace(KEY, agent_dir="other"), SPEC.kind, subject),
+        (dataclasses.replace(KEY, thread_id="other"), SPEC.kind, subject),
+        (KEY, SPEC.kind, other_backend),
+    ]
+    for key, kind, provider in entries:
+        current._remember_instance(key, kind, provider, InProcessSandbox())
+    before = dict(current._seen)
+    if fails:
+        subject.dispose_failure = subject.purge_failure = DisposalFailure("refused", "busy")
+
+    async def scenario():
+        if operation == "kind":
+            await current.dispose_kind(KEY, SPEC.kind, timeout=1)
+        elif operation == "key":
+            await current.dispose(KEY)
+        elif operation == "scope":
+            await current.dispose_scope(KEY.scope, KEY.thread_id)
+        else:
+            await current._dispose_the_kind(KEY, SPEC, subject, None, 1)
+
+    asyncio.run(scenario())
+    removed = 0 if fails else {"kind": 1, "cleanup": 1, "key": 2, "scope": 3}[operation]
+    expected = dict(before)
+    for key, kind, provider in entries[:removed]:
+        expected.pop((key, kind, id(provider)))
+    assert current._seen == expected
 
 
 def test_first_create_is_followed_by_one_disposal_and_one_fresh_acquire():

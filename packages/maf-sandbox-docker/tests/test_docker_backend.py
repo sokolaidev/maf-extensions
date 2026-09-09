@@ -462,6 +462,27 @@ def _daemon_running(os_name: bytes | None, base=None):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("warm", [False, True])
+@pytest.mark.parametrize("failure", ["status", "empty", "decode", "raise"])
+def test_failed_instance_inspection_disposes_the_container(warm, failure):
+    machine = _machine(running=[_NAME] if warm else [])
+
+    def respond(args):
+        if args[:3] == ("inspect", "-f", "{{.Id}}"):
+            if failure == "raise":
+                raise TimeoutError("inspection timed out")
+            return _DockerResult(
+                1 if failure == "status" else 0, b"\xff" if failure == "decode" else b"\n", ""
+            )
+        return machine(args)
+
+    backend, fake = _backend_with(respond)
+    with pytest.raises((RuntimeError, UnicodeDecodeError, TimeoutError)):
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+    assert any(_NAME in call.args for call in fake.matching("rm", "-f"))
+    assert bool(fake.matching("run")) is (not warm)
+
+
 def test_instance_id_comes_from_the_engine_on_every_acquire():
     ids = ["a" * 64]
     machine = _machine(running=[_NAME])
