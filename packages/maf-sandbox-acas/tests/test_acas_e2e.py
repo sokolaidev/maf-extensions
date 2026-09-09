@@ -1092,21 +1092,26 @@ def reclaim_results(live):
     """One RECLAIM run, shared — mirrors `probe_results` and `files_in_results` above."""
     if assert_reclaim_conformance is None:
         pytest.skip("this maf-sandbox predates Sandbox.reclaim (< 0.23)")
-    return live.run(assert_reclaim_conformance(_subject(live)))
+    subject = _subject(live)
+    try:
+        return live.run(assert_reclaim_conformance(subject))
+    except ValueError as refused:
+        assert Capability.RECLAIM not in subject.capabilities
+        assert "declares no RECLAIM" in str(refused)
+        return refused
 
 
 class TestReclaimAgainstTheRealService:
-    """The framework's own removal, gated by no capability — every backend owes it.
-
-    Unlike FILES_DELETE above, there is no measurement fallback and no withheld-capability
-    answer: `reclaim` is mandatory, so this asserts rather than measures.
-    """
+    """Assert the RECLAIM suite or its declaration gate across supported cores."""
 
     def test_the_reclaim_probes_come_back_clean(self, reclaim_results):
         results = reclaim_results
+        if isinstance(results, ValueError):
+            assert "declares no RECLAIM" in str(results)
+            return
         assert results, "the RECLAIM conformance run returned no results"
         skipped = {result.probe.name: result.skipped for result in results if result.skipped}
-        assert not skipped, f"probes skipped against reclaim, which no capability gates: {skipped}"
+        assert not skipped, f"probes skipped against declared reclaim: {skipped}"
 
 
 class TestExecAgainstTheRealService:

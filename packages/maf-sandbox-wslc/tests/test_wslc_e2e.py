@@ -23,7 +23,6 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from maf_sandbox import Cleanup, Egress, Isolation, OsFamily, SandboxKey, SandboxRouter, SandboxSpec
 from maf_sandbox.conformance import (
-    ConformanceFailure,
     PosixGuestSubject,
     assert_egress_conformance,
     assert_exec_conformance,
@@ -581,13 +580,13 @@ class TestTheSharedConformanceSuites:
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
-    def test_the_reclaim_suite_records_the_withheld_mechanism(self):
+    def test_the_reclaim_suite_refuses_an_undeclared_capability(self):
         scope = f"e2e-{uuid.uuid4()}"
         backend = WslcSandboxBackend(WslcSandboxConfig())
 
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
-            with pytest.raises(ConformanceFailure) as refused:
+            with pytest.raises(ValueError, match="declares no RECLAIM"):
                 await assert_reclaim_conformance(
                     PosixGuestSubject(
                         sandbox=sandbox,
@@ -595,10 +594,6 @@ class TestTheSharedConformanceSuites:
                         capabilities=backend.declarations.capabilities,
                     )
                 )
-            assert refused.value.results
-            assert all(
-                r.failure and "does not support RECLAIM" in r.failure for r in refused.value.results
-            )
 
         try:
             asyncio.run(scenario())
