@@ -271,7 +271,7 @@ _FILES_LIMITS = TransferLimits(
 _LIMITS = SandboxLimits(files_in=_FILES_LIMITS, files_out=_FILES_LIMITS)
 
 # FILES_OUT from day one — the pull surface is native (stat from the tar entry header, read from
-# the same stream). Never FILES_LIST: no engine-level enumeration primitive.
+# the same stream). FILES_LIST is withheld because directory archives transfer the whole subtree.
 #
 # HOST_TOOLS is the one member with no method behind it, so what it asserts is narrower than the
 # others and worth stating: `exec` **detaches**. A process started by one call outlives it and is
@@ -969,14 +969,13 @@ class _DockerSandbox:
     async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
         """Not supported: this backend does not declare :data:`~maf_sandbox.Capability.FILES_LIST`.
 
-        Docker has no engine-level primitive for enumerating a directory, which is exactly why
-        that capability is split from ``FILES_OUT``.  The router refuses a spec requiring it
-        before a workload runs, so a well-formed caller never reaches here; the raise is the
-        honest floor under a caller that skipped the check.
+        A directory archive transfers the whole subtree, including file bodies, to discover
+        its immediate children. The router refuses a spec requiring enumeration at attach.
         """
         raise NotImplementedError(
-            "the docker backend does not support FILES_LIST: Docker has no engine-level "
-            "primitive for enumerating a directory. Declare literal output paths instead."
+            "the docker backend does not support FILES_LIST: enumerating a directory through "
+            "docker cp requires transferring the whole subtree, including file contents. "
+            "Declare literal output paths instead."
         )
 
 
