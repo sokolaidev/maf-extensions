@@ -12,6 +12,14 @@ The deployment owns cleanup after an application process dies. Backends and oper
 
 An operator program talks directly to a backend-specific helper or the provider API. The ACAS example uses the provider SDK; it does not reconstruct a router or attach an agent tool. Operator retention adds no `SandboxBackend` member or capability, and neither the router nor a kind starts a cleanup scheduler. A deployment can replace GitHub Actions with its existing scheduler without changing the extension.
 
+## Host disposal
+
+`SandboxRouter.dispose(key)` releases every kind's sandbox for a key. `dispose_kind(key, kind, *, timeout)` releases only the named kind across every registered backend, preserving the conversation's other kinds even when routing configuration has changed. Both report backend failures through logs and `SandboxDisposed` events. `dispose_kind` also returns `True` when every backend reports success, or `False` on failure or timeout. Its timeout must be finite and positive and covers the wait for the same per-key, per-event-loop disposal lock used by `dispose` and the complete backend sweep; cancellation propagates. These host methods do not drain active calls, so the host coordinates those calls before deleting their sandbox.
+
+Host disposal creates no unclean refusal on failure. A successful kind sweep retires only that kind's pending cleanup targets; pending targets for other kinds, a whole-key target, or a newer mark retain the key's refusal. A `True` result describes the requested sweep, not whether the key has reopened.
+
+`dispose_unclean` deliberately takes no kind filter: it retries the backend/kind targets already recorded by failed framework cleanup or by `mark_unclean(key, kind=...)`, and sweeps every registered backend when no target was recorded. It keeps refusal at the whole key until every pending target lands. A host choosing one kind for ordinary cleanup uses `dispose_kind`; a host retrying failed cleanup uses `dispose_unclean`. The refusal boundary is described in [the tool-call contract](tool-call.md#cleanup-as-a-consequence).
+
 ## Purge and expiry
 
 A restarted host can reconstruct its router and call `dispose_scope(scope, thread_id)`. Each registered backend discovers the conversation's resources from service labels. A backend removed from configuration needs its operator to finish cleanup through the original engine or sandbox group.
@@ -64,6 +72,7 @@ The workflow becomes scheduled when it reaches the repository's default branch. 
 
 | Decision | State | Tracking |
 | --- | --- | --- |
+| A host can dispose one kind across registered backends while refusal stays at the key; unclean retries use recorded targets without a kind filter | implemented — bounded disposal shares the per-key lock and preserves unrelated pending targets | [#1006](https://github.com/sokolaidev/maf-extensions/issues/1006) (open) |
 | Infrastructure owns post-crash cleanup scheduling; an ACAS operator example manages the live verification group after one day continuously stopped | implemented — script and hourly workflow; scheduling starts on the default branch, and the first Actions execution remains unverified | [#1008](https://github.com/sokolaidev/maf-extensions/issues/1008) (closed) by [#1014](https://github.com/sokolaidev/maf-extensions/pull/1014) (merged) |
 | Docker cleanup by maximum creation age | implemented — backend primitive with an operator-selected lifetime, separate from the ACAS stopped-retention example | [#1009](https://github.com/sokolaidev/maf-extensions/issues/1009) (closed) by [#1012](https://github.com/sokolaidev/maf-extensions/pull/1012) (merged) |
 | WSLC stopped retention and orphan infrastructure cleanup | implemented — separate-process workload and partial-infrastructure cleanup verified on WSLC 2.9.4.0 | [#1010](https://github.com/sokolaidev/maf-extensions/issues/1010) (closed) by [#1015](https://github.com/sokolaidev/maf-extensions/pull/1015) (merged) |

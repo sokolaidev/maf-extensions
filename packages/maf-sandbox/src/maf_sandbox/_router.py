@@ -1803,6 +1803,33 @@ class SandboxRouter:
         async with self._disposal_lock(key):
             await self._dispose_each(key)
 
+    async def dispose_kind(self, key: SandboxKey, kind: str, *, timeout: float) -> bool:
+        """Delete one kind across every registered backend; return False on failure or timeout.
+
+        The finite positive timeout covers the per-key disposal lock wait and the whole sweep;
+        cancellation propagates. Like :meth:`dispose`, failures are logged and observed without
+        creating a refusal. Success retires only this kind's pending targets, so other targets
+        keep the key refused. Hosts must coordinate active calls before disposing their sandbox.
+        """
+        if not isinstance(cast(object, kind), str):
+            raise TypeError("kind must be a string; use dispose(key) to delete every kind")
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError(f"timeout must be a finite positive number of seconds, not {timeout}")
+        try:
+            async with asyncio.timeout(timeout):
+                async with self._disposal_lock(key):
+                    return await self._dispose_each(key, kind=kind)
+        except TimeoutError:
+            logger.warning(
+                "sandbox router: disposing %s/%s/%s (%s) did not finish within %ss",
+                key.scope,
+                key.thread_id,
+                key.agent_dir,
+                kind,
+                timeout,
+            )
+            return False
+
     async def _dispose_each(
         self,
         key: SandboxKey,
