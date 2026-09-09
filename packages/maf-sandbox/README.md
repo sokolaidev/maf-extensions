@@ -185,22 +185,24 @@ It costs round trips — several backend calls per host-tool call, plus polling,
 
 ## A result the model may read half of
 
-A sandbox result is rarely uniformly derived: a compiler's diagnostics quote a template the model wrote, while the sentence naming what to do about them is a constant the package ships. Under one label a kind has to choose — claim `trusted` over the guest's text, or declare honestly and watch MAF's information-flow module hide the whole result behind a variable reference. So a tool body may answer with a **list of items** instead of one string, and MAF labels and hides each item separately: the standing guidance stays readable while everything the call produced is hidden.
+A body returns a string or a list of unlabelled `Content` items. To keep a standing sentence readable beside diagnostics, commit it with `sandboxed_tool(..., standing_guidance=(RECOVERY_ROUTE,))` and return it last on every path:
 
 ```python
 from agent_framework import Content
-from maf_sandbox import SourceIntegrity
-from maf_sandbox.maf import labelled_result_item
 
 return [
-    labelled_result_item(RECOVERY_ROUTE, SourceIntegrity.TRUSTED),
     Content.from_text(rendered_diagnostics),
+    Content.from_text(RECOVERY_ROUTE),
 ]
 ```
 
-**Label as little as you can, and never every item.** A per-item label replaces the item's *whole* label, confidentiality included, and this package has no confidentiality value to put there — those are the host's vocabulary, carried verbatim. An item left unlabelled takes the call's own label instead, and the result's combined label is the most restrictive across every item, so one unlabelled item is what keeps the host's classification. `sandboxed_tool` refuses a result whose every item carries a label, because nothing in it is left to carry the call's; `labelled_result_item` refuses `SourceIntegrity.UNTRUSTED` for the same reason from the other side, since the untrusted item is the one holding what the call produced. `str` stays valid and stays the common case.
+The wrapper checks the trailing text against the commitment and rebuilds those items as trusted/public guidance. Its text, count, order and placement are fixed; only `{call_id}` may interpolate. Missing guidance, guidance without a derived item before it, and any label supplied by the body are refused. `labelled_result_item` has been removed: replace it with `Content.from_text` and commit the sentence at attach.
 
-What may carry `TRUSTED` is narrow — text whose value **and whose presence** are independent of everything the call touched, which in practice means standing guidance emitted on every return path. A count, an exit status, a size, or a line emitted only on failure all fail that test however they are split out. [`docs/sandbox/information-flow.md`](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/information-flow.md) carries the rule and the measurements behind it.
+**The file fold can weaken a call's result.** A host enables this by setting the attached tool's `additional_properties["confidentiality"]` to its classification, alongside a valid `source_integrity` declaration. The wrapper stamps every derived item with the weaker of that declaration and the files the call actually read through `SandboxToolSession.read_file`, copying confidentiality verbatim. An untrusted or unestablished read demotes a trusted declaration; a trusted read never promotes an untrusted one. A call that read nothing keeps its declaration, and failed or absent reads do not count. Strings become one stamped item, including returned error sentences. The declaration itself is never changed, so concurrent calls keep separate answers.
+
+Without both valid declarations, derived items remain unlabelled and take the framework's input join or defaults as before. `max_allowed_confidentiality` is an outbound cap and does not enable this feature. Guidance keeps its committed label regardless of the file fold. Both shipped kinds declare untrusted, so this never promotes their diagnostics or changes which guidance remains readable. The runtime check also applies to a kind using `nothing_survives_from=(SourceChannel.FILE_STORE,)` to justify a trusted declaration: reading weak content still demotes that call when the host has enabled stamping.
+
+Only text whose value and presence are independent of unestablished sources qualifies as standing guidance. Counts, exit statuses and conditional advice remain derived items. See [information flow](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/information-flow.md) for the rule.
 
 ## Recording what the sandbox did
 

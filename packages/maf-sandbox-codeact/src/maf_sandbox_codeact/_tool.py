@@ -65,7 +65,6 @@ from maf_sandbox import (
 from maf_sandbox.maf import (
     SandboxToolSession,
     hidden_content_candidates,
-    labelled_result_item,
     positions_holding_hidden_content,
     sandboxed_tool,
 )
@@ -967,7 +966,7 @@ def _execute_code_tool(
         )
         return [
             Content.from_text(answer),
-            labelled_result_item(route, SourceIntegrity.TRUSTED),
+            Content.from_text(route),
         ]
 
     async def with_files_and_outputs(

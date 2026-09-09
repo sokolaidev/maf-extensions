@@ -32,7 +32,6 @@ from maf_sandbox import (
 )
 from maf_sandbox.maf import (
     SandboxToolSession,
-    labelled_result_item,
     positions_holding_hidden_content,
     sandboxed_tool,
 )
@@ -531,7 +530,7 @@ def _bicep_validate_tool(
         # honest only where it is on every path, refusals included.
         return [
             Content.from_text(await report(files)),
-            labelled_result_item(_UNREAD_IS_NOT_A_PASS, SourceIntegrity.TRUSTED),
+            Content.from_text(_UNREAD_IS_NOT_A_PASS),
         ]
 
     return bicep_validate
