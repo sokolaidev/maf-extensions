@@ -164,6 +164,29 @@ def test_the_backend_meets_the_floor_this_suite_assumes():
     assert DockerSandboxBackend(DockerSandboxConfig()).isolation is Isolation.CONTAINER
 
 
+def test_the_next_call_cannot_read_a_write_outside_the_call_directory():
+    thread_id = f"thread-{uuid.uuid4()}"
+    backend = DockerSandboxBackend(DockerSandboxConfig())
+    router = SandboxRouter([backend], min_isolation=backend.isolation)
+    tool = make_codeact_tools(router, "data-analyst", _context(thread_id), image=_IMAGE)[0]
+    guest_residue = f"/tmp/codeact-{uuid.uuid4().hex}"
+
+    async def scenario():
+        try:
+            first = await _callable(tool)(
+                code=f"from pathlib import Path\nPath({guest_residue!r}).write_text('residue')\nprint('written')"
+            )
+            assert "written" in first
+            second = await _callable(tool)(
+                code=f"from pathlib import Path\nprint(Path({guest_residue!r}).exists())"
+            )
+            assert second == "stdout:\nFalse"
+        finally:
+            await backend.dispose_scope("e2e", thread_id)
+
+    asyncio.run(scenario())
+
+
 class TestManifestAgainstARealInterpreter:
     """The mode no sample uses and no live run had ever reached."""
 
