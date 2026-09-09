@@ -3,9 +3,8 @@
     python samples/13_bicep_fix_loop/agent.py | tee out.txt
     python scripts/check_live_fix_loop_sample.py out.txt   # or: ... | python …
 
-Three claims, checked together because each is weak alone: turn 1 authored a file with a real
-fault in it, one container served all four `acquire` calls, and the compiler agrees with the
-repair the run reported. The sample's README says why each is measured the way it is.
+Turn 1 must author a file with a real fault, both turns must validate, and the compiler must
+agree with the reported repair. Per-call disposal must leave no containers at each checkpoint.
 
 Every *number* comes off a line the sample tagged `[measured]`, never from the model's replies
 around it. The one thing read out of a reply is turn 1's prose, which has to name the rules the
@@ -59,10 +58,7 @@ _TURN_ONE = (
     re.compile(_M + r"validations that reached the sandbox in turn 1", _F),
 )
 
-#: `docker ps -a` after each of the four acquires: the count, then the ids behind it. All four
-#: must read 1, and all four must name the *same* id — one container existing at four instants
-#: is not one container serving all four, and a backend that force-removes on a timeout would
-#: satisfy the count while the second acquire paid for a fresh create.
+#: `docker ps -a` after each phase must show no containers under per-call disposal.
 _COUNTS = (
     ("after turn 1", re.compile(_M + r"containers after turn 1:\s*(\d+)\s*\(([^)]*)\)", _F)),
     (
@@ -89,10 +85,7 @@ _FIXED = re.compile(_M + r"faults fixed:\s*(\d+)\s*[-—]\s*([^\n]*)", _F)
 _REMAINING = re.compile(_M + r"faults remaining:\s*(\d+)\s*[-—]\s*([^\n]*)", _F)
 _INTRODUCED = re.compile(_M + r"faults introduced:\s*(\d+)\s*[-—]\s*([^\n]*)", _F)
 
-#: How many times each turn reached the sandbox. The container count cannot answer this: a turn
-#: that never validated leaves the previous turn's container standing, so the count still reads
-#: 1 while no second `acquire` happened. Counted from results rather than requests, because the
-#: tool refuses some calls before it acquires anything.
+#: Successful compiler results prove work even when per-call cleanup leaves no containers.
 _TOOL_CALLS = (
     ("turn 1", re.compile(_M + r"validations that reached the sandbox in turn 1:\s*(\d+)", _F)),
     ("turn 2", re.compile(_M + r"validations that reached the sandbox in turn 2:\s*(\d+)", _F)),
@@ -231,7 +224,7 @@ def assess(output: str) -> list[str]:
     """Return every reason ``output`` is not a healthy sample run — empty means it passed."""
     authored, failures = _authored_faults(output)
     failures.extend(_assess_first_turn(output, authored))
-    failures.extend(_assess_reuse(output))
+    failures.extend(_assess_calls_and_cleanup(output))
     failures.extend(_assess_repair(output, authored))
     failures.extend(_assess_footer(output))
     return failures
@@ -313,52 +306,32 @@ def _assess_first_turn(output: str, authored: set[str]) -> list[str]:
     return []
 
 
-def _assess_reuse(output: str) -> list[str]:
-    """One sandbox across all four acquires — the claim the sample exists to make."""
+def _assess_calls_and_cleanup(output: str) -> list[str]:
+    """Both turns validate, and per-call disposal leaves every checkpoint empty."""
     failures: list[str] = []
 
-    # Before the counts, because they are what makes the counts mean anything. A fix turn that
-    # edited the file and never validated it makes no second `acquire` at all, and turn 1's
-    # container is still sitting there to be counted — so the run reads as reuse, goes green,
-    # and never exercises the claim. The final compile would pass too.
     for turn, pattern in _TOOL_CALLS:
         calls = _one(pattern, output)
         if calls is None:
             failures.append(
-                f"{turn} did not report how many validations reached the sandbox — without it a "
-                "container count of 1 is equally consistent with that turn never acquiring"
+                f"{turn} did not report how many validations reached the sandbox — "
+                "an empty container count alone does not prove work"
             )
         elif int(calls) < 1:
             failures.append(
-                f"{turn} reached the sandbox no times — the container count after it is left "
-                "over from the previous turn, so it says nothing about acquire reusing anything"
+                f"{turn} reached the sandbox no times — both turns must validate their file"
             )
 
-    seen: dict[str, str] = {}
     for where, pattern in _COUNTS:
         match = pattern.search(output)
         if match is None:
-            failures.append(f"no container count {where} — reuse is unshown at that point")
+            failures.append(f"no container count {where} — cleanup is unshown at that point")
             continue
         count, ids = int(match.group(1)), match.group(2).strip()
-        if count != 1:
-            failures.append(
-                f"{count} container(s) {where}, expected exactly 1 — a second sandbox answers "
-                "the call just as well, so this count is what distinguishes acquire reusing one "
-                "from acquire creating another"
-            )
-        else:
-            seen[where] = ids
-
-    # The same one, not merely one. Without this the sample measures existence at four instants
-    # and claims continuity across them, which is a different sentence.
-    distinct = set(seen.values())
-    if len(distinct) > 1:
-        failures.append(
-            f"the container changed during the run: {', '.join(f'{k} {v}' for k, v in seen.items())}"
-            " — one sandbox existed at each point, but not the same one, so an acquire created "
-            "a replacement rather than finding what was there"
-        )
+        if count != 0:
+            failures.append(f"{count} container(s) {where}, expected 0 after per-call disposal")
+        elif ids.lower() != "none":
+            failures.append(f"container count {where} is 0 but lists {ids!r}, expected 'none'")
     return failures
 
 
@@ -597,10 +570,9 @@ def _assess_footer(output: str) -> list[str]:
         return ["no footer line — the sample did not run to completion"]
     disposed, leftover = (int(group) for group in footer.groups())
     failures: list[str] = []
-    if disposed != 1:
+    if disposed != 0:
         failures.append(
-            f"the router reported disposing {disposed}, expected exactly 1 — the whole run "
-            "acquired one sandbox, so any other number contradicts the counts above"
+            f"the router reported disposing {disposed}, expected 0 after per-call disposal"
         )
     if leftover != 0:
         failures.append(
@@ -624,7 +596,7 @@ def main(argv: list[str]) -> int:
     failures = assess(output)
     if failures:
         print(
-            "FAIL: the fix-loop sample did not repair the file against one sandbox:",
+            "FAIL: the fix-loop sample did not repair the file with per-call disposal:",
             file=sys.stderr,
         )
         for reason in failures:
@@ -633,8 +605,8 @@ def main(argv: list[str]) -> int:
         # log is the first consumer; `verify-live.yml` is the second (#421).
         if all(isinstance(reason, _TheModelsHalf) for reason in failures):
             print(
-                "  every failure above is the model's own — the sandbox was reused, both "
-                "turns reached it, the file was written and changed, and nothing was left "
+                "  every failure above is the model's own — both turns reached the sandbox, "
+                "the file was written and changed, and nothing was left "
                 f"behind. Exiting {MODEL_DID_NOT_CONVERGE}: the loop is worth another attempt.",
                 file=sys.stderr,
             )
@@ -643,7 +615,7 @@ def main(argv: list[str]) -> int:
     # "agrees with the repair reported", not "the file is fixed": a run that repaired one of two
     # faults and said so passes, and the compiler still reports an error on it.
     print(
-        "OK  the model wrote main.bicep and repaired it against one sandbox, "
+        "OK  the model wrote main.bicep and repaired it with per-call disposal, "
         "and the compiler agrees with the repair the run reported"
     )
     return 0

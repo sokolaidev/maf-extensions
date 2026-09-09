@@ -1,21 +1,17 @@
-# 13 — author, validate, fix: two turns against one sandbox
+# 13 — author, validate, fix: two turns with per-call disposal
 
-Every other sample runs a single turn against a file that was already there. The model is asked something, a tool answers, the program prints the reply and exits — so nothing has ever shown the thing `acquire` is get-or-create *for*: a second turn arriving to find its sandbox still there.
+The file store starts **empty**. Turn 1 writes `main.bicep` from a brief and validates it; turn 2 repairs the compiler's diagnostics. The host file store and agent session preserve the work across calls, while each sandbox is disposed when its call ends.
 
-Here the file store starts **empty**. There is no `main.bicep` in this directory; the model writes one.
-
-| | What happens | validations reaching the sandbox | Containers |
+| | What happens | Validations reaching the sandbox | Containers afterwards |
 |---|---|---|---|
-| Turn 1 | the model writes `main.bicep` from a brief, then validates what it wrote | ≥1 | 1 |
-| The baseline | the program compiles what turn 1 left, with no model involved | 1 | 1 |
-| Turn 2 | it repairs what the compiler reported, and validates again | ≥1 | 1 |
-| The check | the program compiles the result, again with no model involved | 1 | 1 |
+| Turn 1 | the model writes `main.bicep` from a brief, then validates what it wrote | ≥1 | 0 |
+| The baseline | the program compiles what turn 1 left, with no model involved | 1 | 0 |
+| Turn 2 | it repairs what the compiler reported, and validates again | ≥1 | 0 |
+| The check | the program compiles the result, again with no model involved | 1 | 0 |
 
-At least four `acquire` calls, one container. Nothing stops a model from validating twice in a turn — that is a normal thing for one to do, and it makes no difference to the claim, since the second call finds the same sandbox as the first. So the sample prints what happened and the check requires at least one call per turn rather than exactly one. The two compiles are fixed at one apiece, because the program makes those calls itself.
+At least four validations reach a sandbox. A model may validate more than once in either turn; the checker requires at least one successful validation per turn. The counts come from returned tool results carrying both compiler phases, because a rejected request may never acquire a sandbox. Zero containers alone cannot prove any work happened.
 
-A second container would have answered every one of those calls just as well, which is why the count is printed rather than described — and the container's **id** is printed beside it, because a count says one sandbox existed at that instant and the claim is that the same one served all four. A backend that force-removes a sandbox on an exec timeout leaves the next `acquire` to create a replacement, and every count still reads 1. The live check requires the four ids to agree.
-
-**The validation counts are there because the container count cannot carry the claim alone.** A fix turn that edits the file and never validates it makes no second `acquire` at all — and turn 1's container is still sitting there to be counted, so the run would read as reuse while never demonstrating any. The counts come from each turn's returned messages, and count only calls whose result carries both compiler phases: `bicep_validate` refuses a bad filename before it acquires anything, so counting requests would score a rejected call as a reacquisition.
+Each checkpoint must report `0 (none)`, and the final scope purge must report `Disposed 0` and no containers left. The container ids remain in the output to identify leaks when cleanup fails. Warm reuse under bicep's confinement claim remains separate work in [#985](https://github.com/sokolaidev/maf-extensions/issues/985); this sample currently checks the per-call disposal default.
 
 ## The session is the mechanism
 
@@ -45,7 +41,7 @@ Two things the compiler cannot answer, so the sample keeps them separate.
 
 Every number the sample measures is printed with a `[measured]` tag, and the live check takes its numbers only from tagged lines. This is the one sample where a model writes into the same stream the check parses, so a reply mentioning "containers after turn 2: 2" is otherwise indistinguishable from the count — and it is the model's reply that comes first. The tag also tells a reader of the log which lines are the harness speaking.
 
-Both program-side compiles are `acquire` calls too, which is why each earns its own container count. Turn 2 finding the sandbox warm could be two calls landing close together; the last of the four runs after all the model's work is done and still finds the same one.
+Both program-side compiles acquire sandboxes too, so each has its own cleanup checkpoint.
 
 ## The approval gate that makes a fix turn do nothing
 
@@ -75,7 +71,7 @@ The brief in `agent.py` asks for the template [sample 05](../05_docker_bicep/) c
 
 **Nothing in the brief calls them faults.** It asks for an `environmentName` parameter "which a later change will use", and for no `sku` "because the tier is still being decided" — both ordinary things to write in a real template, and between them they produce the first two. Naming the faults instead would script the repair, which is the thing [#304](https://github.com/sokolaidev/maf-extensions/issues/304) rules out: the point is a model reacting to real diagnostics.
 
-Because the file is the model's, how many tracked faults it arrives with is measured rather than assumed. The sample prints `tracked faults in the authored file`, and the live check requires it to be at least one — an authored file that came out clean leaves the fix turn nothing to do, and would otherwise pass every assertion about reuse while demonstrating no fix loop at all.
+Because the file is the model's, how many tracked faults it arrives with is measured rather than assumed. The sample prints `tracked faults in the authored file`, and the live check requires it to be at least one — an authored file that came out clean leaves the fix turn nothing to do, and would otherwise pass every cleanup assertion while demonstrating no fix loop at all.
 
 **That baseline is the program's own compile of the snapshot, not a quote of turn 1's validation**, and the difference is not cosmetic. A model is free to validate a draft, edit it, and validate again — the sample permits more than one call per turn. Its *first* result then describes a file that no longer exists, and measuring against it would credit turn 2 with faults turn 1 had already fixed: two repairs attributed to a turn that changed a comment. Compiling the snapshot makes the diagnostics correspond to the file by construction.
 
@@ -119,7 +115,7 @@ This sample asks more of a model than any other here: turn 1 has to write valid 
 
 ## One retry, announced
 
-The fix turn is a live model doing open-ended work, so it often does not converge. Over the 27 runs that have reached this step, a job passed 59% of the time on the two attempts [#421](https://github.com/sokolaidev/maf-extensions/issues/421) allowed — which puts a single attempt near 36%, and made a reddened release the outcome two times in five. So the live job runs the two-turn loop **six times at most**, and only when the check exits 3: every failure belonged to the **model's half** and every deterministic measurement passed. Six is where that arithmetic puts the job near 93%, and it buys a rate rather than a fix — no budget makes a model converge, and the number is one line in `verify-live.yml` to move again. Either turn counts — a first turn that wrote a clean file or left a diagnostic out of its reply is the same model doing the same open-ended work as the repair. A container that was not reused, a turn that never reached the sandbox, a file that was never written or never changed, a suppressed rule, a sandbox left behind — those exit 1 and fail on the first attempt, because a second live model cannot mend any of them and re-confirming a broken sandbox costs a container to learn nothing.
+The fix turn is a live model doing open-ended work, so it often does not converge. Over the 27 runs that have reached this step, a job passed 59% of the time on the two attempts [#421](https://github.com/sokolaidev/maf-extensions/issues/421) allowed — which puts a single attempt near 36%, and made a reddened release the outcome two times in five. So the live job runs the two-turn loop **six times at most**, and only when the check exits 3: every failure belonged to the **model's half** and every deterministic measurement passed. Six is where that arithmetic puts the job near 93%, and it buys a rate rather than a fix — no budget makes a model converge, and the number is one line in `verify-live.yml` to move again. Either turn counts — a first turn that wrote a clean file or left a diagnostic out of its reply is the same model doing the same open-ended work as the repair. A container surviving a cleanup checkpoint, a turn that never reached the sandbox, a file that was never written or never changed, a suppressed rule, a sandbox left behind — those exit 1 and fail on the first attempt, because a second live model cannot mend any of them and re-confirming a broken sandbox costs a container to learn nothing.
 
 A sample that dies before the check is not the model's half either: nothing was measured, so it fails on the first attempt and the run says the sample never reached the check.
 
@@ -127,4 +123,4 @@ The retry annotates the run and the attempt count goes into the job summary, pas
 
 ## Where this sits
 
-Sample 05 runs this workload once, against a file checked in beside it. Sample 12 shows when a sandbox goes away. This one is the case they leave out — the sandbox that is still there because the conversation is not over, which is what get-or-create was for.
+Sample 05 runs this workload once, against a file checked in beside it. Sample 12 shows when a sandbox goes away. This one shows a repair spanning two turns, with the session and file store preserving the work across per-call sandbox disposal.

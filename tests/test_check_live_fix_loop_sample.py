@@ -1,7 +1,6 @@
 """The match logic behind `scripts/check_live_fix_loop_sample.py`, tested on every PR.
 
-`_HEALTHY` is a real run's output, trimmed — checked against one rather than written from
-memory, since a fixture that has drifted makes every assertion below pass against a fiction.
+`_HEALTHY` is a trimmed live transcript with per-call disposal checkpoints.
 
 Every tamper asserts `tampered != _HEALTHY` first. A substitution that matches nothing produces
 a test that passes while testing the unmodified fixture, which is the one failure a green run
@@ -82,7 +81,7 @@ Validation complete. Here are the 3 diagnostics, one line each:
 3. `use-recent-api-versions` — warning — line 5 (`2023-01-01` is over the 730-day guideline)
 
   [measured] validations that reached the sandbox in turn 1: 1
-  [measured] containers after turn 1: 1 (a1b2c3d4e5f6)
+  [measured] containers after turn 1: 0 (none)
 
 == What the compiler says about the file turn 1 wrote ==
 
@@ -96,7 +95,7 @@ Validation complete. Here are the 3 diagnostics, one line each:
     [warning] use-recent-api-versions @ main.bicep:5: '2023-01-01' is 1322 days old.
 
   [measured] tracked faults in the authored file: 2 — no-unused-params(environmentName); BCP035(sku)
-  [measured] containers after the baseline compile: 1 (a1b2c3d4e5f6)
+  [measured] containers after the baseline compile: 0 (none)
 
 == Turn 2: fix, then validate again ==
 
@@ -107,14 +106,14 @@ Validation is clean — zero diagnostics. What changed:
 3. `use-recent-api-versions` — bumped the API version to `2025-01-01`.
 
   [measured] validations that reached the sandbox in turn 2: 1
-  [measured] containers after turn 2: 1 (a1b2c3d4e5f6)
+  [measured] containers after turn 2: 0 (none)
 
 == What the compiler says about the file the model left ==
 
   build(main.bicep): no diagnostics
   lint(main.bicep): no diagnostics
 
-  [measured] containers after the check: 1 (a1b2c3d4e5f6)
+  [measured] containers after the check: 0 (none)
 
 == The work product ==
 
@@ -126,7 +125,7 @@ Validation is clean — zero diagnostics. What changed:
   [measured] faults remaining:   0 — none
   [measured] faults introduced:  0 — none
 
-  [measured] Disposed 1 sandbox(es) after 2 turns and a check. Containers left: 0.
+  [measured] Disposed 0 sandbox(es) after 2 turns and a check. Containers left: 0.
 """
 
 #: A run where the model fixed only `BCP035` and left the unused parameter. Both the tally and
@@ -237,13 +236,7 @@ class TestHealthyRuns:
 
 
 class TestTheSecondAcquireActuallyHappened:
-    """A container count cannot show this, and inferring it from one is the trap.
-
-    If the fix turn edits the file and never validates it, no second `acquire` is made at all —
-    but turn 1's container is still there to be counted, so the count reads 1 and the run looks
-    like reuse. The final compile passes too. CI would go green having never exercised the
-    claim the sample exists to make.
-    """
+    """Both turns must validate even when every container count is zero."""
 
     def test_a_fix_turn_that_never_validated_is_caught(self):
         reasons = _tampered(
@@ -266,55 +259,43 @@ class TestTheSecondAcquireActuallyHappened:
         assert any("did not report how many validations" in r for r in reasons), reasons
 
 
-class TestOneSandboxAcrossTheRun:
-    def test_a_second_container_on_the_fix_turn_is_caught(self):
+class TestPerCallDisposal:
+    @pytest.mark.parametrize(
+        "where", ["after turn 1", "after the baseline compile", "after turn 2", "after the check"]
+    )
+    @pytest.mark.parametrize("count", [1, 2])
+    def test_a_container_surviving_a_checkpoint_is_caught(self, where, count):
         reasons = _tampered(
-            "containers after turn 2: 1 (a1b2c3d4e5f6)",
-            "containers after turn 2: 2 (a1b2c3d4e5f6, 9f8e7d6c5b4a)",
+            f"containers {where}: 0 (none)",
+            f"containers {where}: {count} (a1b2c3d4e5f6)",
         )
-        assert any("after turn 2, expected exactly 1" in r for r in reasons), reasons
+        assert any(f"{where}, expected 0 after per-call disposal" in r for r in reasons), reasons
 
-    def test_a_second_container_on_the_baseline_compile_is_caught(self):
-        # The acquire between the two turns. It is the program's, not the model's, so a second
-        # container here would mean get-or-create failed on a call nothing else covers.
+    @pytest.mark.parametrize(
+        "where", ["after turn 1", "after the baseline compile", "after turn 2", "after the check"]
+    )
+    def test_a_missing_checkpoint_is_caught(self, where):
+        reasons = _tampered(f"  [measured] containers {where}: 0 (none)\n", "")
+        assert any(f"no container count {where}" in r for r in reasons), reasons
+
+    @pytest.mark.parametrize("ids", ["a1b2c3d4e5f6", ""])
+    def test_zero_count_must_report_no_ids(self, ids):
         reasons = _tampered(
-            "containers after the baseline compile: 1 (a1b2c3d4e5f6)",
-            "containers after the baseline compile: 2 (a1b2c3d4e5f6, 9f8e7d6c5b4a)",
+            "containers after turn 2: 0 (none)", f"containers after turn 2: 0 ({ids})"
         )
-        assert any("after the baseline compile, expected exactly 1" in r for r in reasons), reasons
-
-    def test_a_second_container_on_the_final_compile_is_caught(self):
-        reasons = _tampered(
-            "containers after the check: 1 (a1b2c3d4e5f6)",
-            "containers after the check: 2 (a1b2c3d4e5f6, 9f8e7d6c5b4a)",
-        )
-        assert any("after the check, expected exactly 1" in r for r in reasons), reasons
-
-    def test_a_replaced_container_is_caught_even_though_every_count_reads_one(self):
-        """The claim is the *same* sandbox, and a count cannot say that.
-
-        A backend that force-removes on an exec timeout leaves the next `acquire` to create a
-        fresh container. The removed one is gone from `docker ps -a` — which is exactly why the
-        count cannot see the swap: every checkpoint still reads 1, dispose reads 1, and nothing
-        is left behind. A green run over a cold recreate.
-        """
-        reasons = _tampered(
-            "containers after turn 2: 1 (a1b2c3d4e5f6)",
-            "containers after turn 2: 1 (0f0e0d0c0b0a)",
-        )
-        assert any("not the same one" in r for r in reasons), reasons
+        assert any("is 0 but lists" in r for r in reasons), reasons
 
     def test_a_container_left_behind_is_caught(self):
         reasons = _tampered("Containers left: 0.", "Containers left: 1.")
         assert any("left behind" in r for r in reasons), reasons
 
-    def test_disposing_nothing_is_caught(self):
-        reasons = _tampered("Disposed 1 sandbox(es)", "Disposed 0 sandbox(es)")
-        assert any("reported disposing 0" in r for r in reasons), reasons
+    def test_disposal_deferred_to_scope_purge_is_caught(self):
+        reasons = _tampered("Disposed 0 sandbox(es)", "Disposed 1 sandbox(es)")
+        assert any("reported disposing 1" in r for r in reasons), reasons
 
     def test_a_run_that_died_before_the_footer_is_caught(self):
-        reasons = _tampered("Disposed 1 sandbox(es)", "Traceback (most recent call last)")
-        assert any("did not run to completion" in r for r in reasons), reasons
+        reasons = _tampered("Disposed 0 sandbox(es)", "Traceback (most recent call last)")
+        assert any("no footer line" in r for r in reasons), reasons
 
 
 class TestTurnOneActuallyAuthoredTheFile:
@@ -322,7 +303,7 @@ class TestTurnOneActuallyAuthoredTheFile:
 
     The store starts empty, so every later signal is about a file the model wrote. A run where
     turn 1 wrote nothing has no subject at all, and one where it wrote something already clean
-    has nothing for turn 2 to repair — both would otherwise pass every assertion about reuse.
+    has nothing for turn 2 to repair — both would otherwise pass every cleanup assertion.
     """
 
     def test_a_turn_one_that_wrote_nothing_is_caught(self):
@@ -741,7 +722,7 @@ class TestWhichHalfFailedIsInTheExitStatus:
     def test_a_measurement_this_suite_owns_does_not(self, tmp_path):
         """Two containers is a broken sandbox, and a second model attempt cannot mend it."""
         broken = _HEALTHY.replace(
-            "containers after turn 2: 1 (a1b2c3d4e5f6)",
+            "containers after turn 2: 0 (none)",
             "containers after turn 2: 2 (a1b2c3d4e5f6, 0badc0ffee00)",
         )
         assert broken != _HEALTHY
@@ -749,7 +730,7 @@ class TestWhichHalfFailedIsInTheExitStatus:
 
     def test_one_hard_failure_among_the_model_s_is_enough_to_forbid_a_retry(self, tmp_path):
         both = _SWAPPED.replace(
-            "  [measured] Disposed 1 sandbox(es)", "  [measured] Disposed 0 sandbox(es)"
+            "  [measured] Disposed 0 sandbox(es)", "  [measured] Disposed 1 sandbox(es)"
         )
         assert both != _SWAPPED
         assert self._status(tmp_path, both) == 1
@@ -758,7 +739,7 @@ class TestWhichHalfFailedIsInTheExitStatus:
         """A reworded failure must keep its class, so nothing downstream parses prose."""
         assert all(isinstance(r, check._TheModelsHalf) for r in check.assess(_SWAPPED))
         containers = check.assess(
-            _HEALTHY.replace("containers after the check: 1", "containers after the check: 2")
+            _HEALTHY.replace("containers after the check: 0", "containers after the check: 2")
         )
         assert containers and not any(isinstance(r, check._TheModelsHalf) for r in containers)
 
@@ -1102,12 +1083,12 @@ class TestModelTextCannotImpersonateAMeasurement:
         # reader accepts only widens what has to be sanitized.
         assert re.search(
             check._M + r"containers",
-            "  [measured] containers after turn 2: 1 (a1b2c3d4e5f6)",
+            "  [measured] containers after turn 2: 0 (none)",
             check._F,
         )
         assert not re.search(
             check._M + r"containers",
-            "  [Measured] containers after turn 2: 1 (a1b2c3d4e5f6)",
+            "  [Measured] containers after turn 2: 0 (none)",
             check._F,
         )
 
