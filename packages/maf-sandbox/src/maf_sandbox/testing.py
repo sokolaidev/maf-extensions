@@ -539,7 +539,7 @@ class InProcessSandboxBackend:
             held = InProcessSandbox() if self._handed_out else self.sandbox
             self._handed_out = True
             self.sandboxes[(key, spec.kind)] = held
-            self._instances[(key, spec.kind)] = held._instance
+            self._instances[(key, spec.kind)] = held._instance  # pyright: ignore[reportPrivateUsage]
         return held
 
     async def dispose(
