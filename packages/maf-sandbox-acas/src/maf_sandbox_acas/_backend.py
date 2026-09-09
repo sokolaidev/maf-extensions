@@ -496,6 +496,7 @@ class _AcasSandbox:
                     # a guest-controlled intermediate component or a final symlink.
                     await self._sc.delete_file(guest_directory, recursive=True)
             except ResourceNotFoundError:
+                # An absent scratch directory already satisfies cleanup.
                 pass
             except Exception as cleanup_failed:  # noqa: BLE001 - keep the probe failure
                 logger.warning(

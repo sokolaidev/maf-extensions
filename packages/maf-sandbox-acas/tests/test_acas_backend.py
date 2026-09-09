@@ -1581,7 +1581,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         asyncio.run(backend.acquire(self._key("scope-b"), _spec_requiring(Capability.EXEC)))
 
         assert backend._guest_authorities[identity] is True, (
-            "a inconclusive answer demoted a measured authority"
+            "an inconclusive answer demoted a measured authority"
         )
         assert (
             backend._registry[("scope-b", "thread-1", "devops-engineer", "codeact")].authority
