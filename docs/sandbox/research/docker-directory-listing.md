@@ -48,7 +48,7 @@ The directory fixture held a file link, a directory link and a dangling link, al
 
 The Windows client's `-L` copies of both relative and absolute source-directory links failed, asking the daemon for `/listing/listing/links` instead of `/listing/links`. This run therefore does not claim a successful source-link-following measurement. The [CLI implementation's `copyFromContainer`](https://github.com/docker/cli/blob/v29.7.2/cli/command/container/cp.go) resolves the requested source when `followLink` is set and then makes the archive request; it does not set a recursive link-follow option. The [copy command documentation](https://docs.docker.com/reference/cli/docker/container/cp/) likewise describes `-L` in terms of the source path.
 
-Internal links remaining entries is necessary, but it does not prove confinement. Any future implementation must refuse a linked directory and linked ancestors, confine every returned name, and run the four shared `FILES_LIST` probes against a real engine. This investigation leaves the declaration unchanged and does not claim those probes passed.
+Archiving internal symlinks as link entries is necessary, but does not prove confinement. Any future implementation must refuse a linked directory and linked ancestors, confine every returned name, and run the four shared `FILES_LIST` probes against a real engine. This investigation leaves the declaration unchanged and does not claim those probes passed.
 
 ## The HTTP API has the same cost
 
