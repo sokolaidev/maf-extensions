@@ -28,6 +28,7 @@ from maf_sandbox.conformance import (
     assert_exec_conformance,
     assert_files_delete_conformance,
     assert_files_in_conformance,
+    assert_reach_conformance,
     assert_reclaim_conformance,
 )
 
@@ -36,10 +37,9 @@ from maf_sandbox_wslc._backend import _container_name
 
 _IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_IMAGE")
 _PROXY_IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_PROXY_IMAGE")
-#: An image whose ``USER`` is not root. Every image this suite otherwise runs is root's, which is
-#: what keeps the two-principal split invisible: the file plane writes as root and so does the
-#: guest. A non-root image separates them; disposal cleans both principals' files.
+#: A non-root image without work_dir: the file plane must create it for the guest.
 _NONROOT_IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_NONROOT_IMAGE")
+_GUEST_OWNED_IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_GUEST_OWNED_IMAGE")
 
 _WORK = "/maf-sandbox/work"
 
@@ -640,19 +640,8 @@ class TestAGuestThatIsNotRoot:
     def _spec(self, image: str | None = None) -> SandboxSpec:
         return SandboxSpec(kind="e2e-nonroot", image=image or _NONROOT_IMAGE, work_dir=_WORK)
 
-    def _as_root(self, container: str, script: str) -> str:
-        """One command in the container with root's authority, from outside the backend."""
-        done = subprocess.run(
-            ["wslc", "container", "exec", "--user", "0", container, "sh", "-c", script],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        assert done.returncode == 0, done.stderr
-        return done.stdout.strip()
-
     def test_disposal_removes_a_call_directory_the_file_plane_wrote(self):
-        """Root-owned inputs are removed with their container."""
+        """Inputs are removed with their container."""
         scope = f"e2e-{uuid.uuid4()}"
         backend = WslcSandboxBackend(WslcSandboxConfig())
 
@@ -690,33 +679,41 @@ class TestAGuestThatIsNotRoot:
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
-    def test_the_guest_cannot_rewrite_what_the_host_wrote(self):
-        """A file the file plane planted as root stays the host's: the non-root guest can
-        neither rewrite nor delete it, so a call's inputs survive the guest that read them.
-        """
+    def test_the_guest_can_modify_inputs_and_create_outputs(self):
+        """The file plane's inputs and missing directories belong to the image's user."""
         scope = f"e2e-{uuid.uuid4()}"
         backend = WslcSandboxBackend(WslcSandboxConfig())
 
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), self._spec())
+            absent = await sandbox.exec(
+                ["test", "!", "-e", _WORK], working_directory="/", timeout=60
+            )
+            assert absent.exit_code == 0, "the non-root fixture must not already carry work_dir"
             planted = f"{_WORK}/call-a1b2c3/host_note"
             await sandbox.write_file(planted, "# the host wrote this\n", working_directory=_WORK)
-
-            rewritten = await sandbox.exec(
-                ["sh", "-c", f"echo '# tampered' > {planted}"], working_directory="/", timeout=60
+            result = await sandbox.exec(
+                [
+                    "sh",
+                    "-ec",
+                    f"""
+                    test "$(id -u)" != 0
+                    for path in . call-a1b2c3 {planted}; do
+                        test "$(stat -c %u:%g "$path")" = "$(id -u):$(id -g)"
+                    done
+                    echo appended >> {planted}
+                    echo output > result.txt
+                    mkdir sub
+                    cat {planted}
+                    echo rewritten > {planted}
+                    rm {planted}
+                """,
+                ],
+                working_directory=_WORK,
+                timeout=60,
             )
-            assert rewritten.exit_code != 0
-
-            deleted = await sandbox.exec(
-                ["sh", "-c", f"rm -f {planted}"], working_directory="/", timeout=60
-            )
-            assert deleted.exit_code != 0
-
-            # The guest can still *read* what it could not rewrite or delete (the file is the
-            # host's, mode 0644), which is the half that makes the call's inputs survivable.
-            intact = await sandbox.exec(["cat", planted], working_directory="/", timeout=60)
-            assert intact.exit_code == 0, intact.stderr
-            assert intact.stdout == "# the host wrote this\n"
+            assert result.exit_code == 0, result.stderr
+            assert result.stdout == "# the host wrote this\nappended\n"
 
         try:
             asyncio.run(scenario())
@@ -734,15 +731,12 @@ class TestAGuestThatIsNotRoot:
             await sandbox.write_file(
                 f"{call_directory}/program.py", "print(1)\n", working_directory=_WORK
             )
-            guest = await sandbox.exec(["id", "-u"], working_directory="/", timeout=60)
-            guest_uid = guest.stdout.strip()
-            chown = (
-                f"mkdir -p {call_directory}/work && "
-                f"chown -R {guest_uid}:{guest_uid} {call_directory}/work"
-            )
-            self._as_root(sandbox.container_name, chown)
             wrote = await sandbox.exec(
-                ["sh", "-c", f"echo mine > {call_directory}/work/output.txt"],
+                [
+                    "sh",
+                    "-ec",
+                    f"mkdir {call_directory}/work; echo mine > {call_directory}/work/output.txt",
+                ],
                 working_directory="/",
                 timeout=60,
             )
@@ -755,3 +749,40 @@ class TestAGuestThatIsNotRoot:
             asyncio.run(scenario())
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+
+@pytest.mark.skipif(
+    not _GUEST_OWNED_IMAGE,
+    reason="needs MAF_SANDBOX_WSLC_E2E_GUEST_OWNED_IMAGE with a non-root USER owning work_dir",
+)
+def test_a_guest_owned_work_dir_answers_the_reach_probe():
+    scope = f"e2e-{uuid.uuid4()}"
+    backend = WslcSandboxBackend(WslcSandboxConfig())
+    spec = SandboxSpec(kind="e2e-guest-owned", image=_GUEST_OWNED_IMAGE, work_dir=_WORK)
+
+    async def scenario() -> None:
+        sandbox = await backend.acquire(_key(scope), spec)
+        before = await sandbox.exec(
+            ["sh", "-ec", f'test "$(id -u)" != 0; test -w {_WORK}; stat -c %u:%g:%a {_WORK}'],
+            working_directory="/",
+            timeout=60,
+        )
+        assert before.exit_code == 0, before.stderr
+        results = await assert_reach_conformance(
+            PosixGuestSubject(
+                sandbox=sandbox,
+                working_directory=_WORK,
+                capabilities=backend.declarations.capabilities,
+            )
+        )
+        assert len([result for result in results if not result.skipped]) == 1
+        after = await sandbox.exec(
+            ["stat", "-c", "%u:%g:%a", _WORK], working_directory="/", timeout=60
+        )
+        assert after.exit_code == 0, after.stderr
+        assert after.stdout == before.stdout
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        asyncio.run(backend.dispose_scope(scope, "thread-1"))

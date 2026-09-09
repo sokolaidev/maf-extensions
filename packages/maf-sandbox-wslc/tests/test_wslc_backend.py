@@ -98,7 +98,9 @@ class _FakeWslc:
         self.calls.append(_Recorded(args, stdin, timeout, read_limit))
         result = self._responder(args)
         if args[:2] == ("container", "inspect") and result == _WslcResult(0, b"", b""):
-            result = _WslcResult(0, json.dumps([{"Id": f"id-{args[-1]}"}]).encode(), b"")
+            result = _WslcResult(
+                0, json.dumps([{"Id": f"id-{args[-1]}", "Config": {"User": ""}}]).encode(), b""
+            )
         if (
             args[:2] == ("container", "cp")
             and args[2] != "-"
@@ -115,7 +117,7 @@ class _FakeWslc:
         found = [
             c
             for c in self.matching(*prefix)
-            if not (c.args[-2:] == ("id", "-u") and c.read_limit == 64)
+            if not (c.args[-2:] in (("id", "-u"), ("id", "-g")) and c.read_limit == 64)
         ]
         if prefix == ("container", "cp"):
             found = [call for call in found if len(call.args) > 2 and call.args[2] == "-"]
@@ -141,7 +143,9 @@ def _machine(
                 return _WslcResult(0, json.dumps(payload).encode(), b"")
             return _WslcResult(0, "".join(f"id-{n}\n" for n in names).encode(), b"")
         if args[:2] == ("container", "inspect"):
-            return _WslcResult(0, json.dumps([{"Id": f"id-{args[-1]}"}]).encode(), b"")
+            return _WslcResult(
+                0, json.dumps([{"Id": f"id-{args[-1]}", "Config": {"User": ""}}]).encode(), b""
+            )
         if args[:2] == ("container", "logs"):
             return _WslcResult(0, b"listening on 3128\n", b"")
         return _WslcResult(0, b"", b"")
@@ -709,6 +713,148 @@ class TestGuestPrincipal:
 
 
 class TestWriteFile:
+    @pytest.mark.parametrize("work", ["workspace", "./workspace", "/workspace", "//workspace"])
+    def test_work_dir_spellings_stamp_every_missing_directory(self, work):
+        spec = replace(_SPEC, work_dir=work)
+        name = _container_name(_KEY, spec.kind)
+        overrides = {
+            ("container", "inspect"): _WslcResult(
+                0, b'[{"Id":"instance","Config":{"User":"10001:20001"}}]', b""
+            ),
+        }
+        backend, fake = _backend_with(_machine(running=[name], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, spec))
+        asyncio.run(sandbox.write_file("call-a1/nested/input", b"data", working_directory=work))
+        sent = fake.only("container", "cp").stdin
+        assert sent is not None
+        with tarfile.open(fileobj=io.BytesIO(sent)) as archive:
+            assert archive.getnames() == [
+                "workspace",
+                "workspace/call-a1",
+                "workspace/call-a1/nested",
+                "workspace/call-a1/nested/input",
+            ]
+            assert all(entry.isdir() for entry in archive.getmembers()[:-1])
+            assert {(entry.uid, entry.gid) for entry in archive} == {(10001, 20001)}
+
+    @pytest.mark.parametrize(
+        ("user", "uid", "gid", "expected"),
+        [
+            ("10001:20001", b"", b"", (10001, 20001)),
+            ("", b"", b"", (0, 0)),
+            ("10001", b"10001", b"20001", (10001, 20001)),
+            ("worker:staff", b"10001", b"20001", (10001, 20001)),
+            ("10001:staff", b"10001", b"20001", (10001, 20001)),
+        ],
+    )
+    @pytest.mark.parametrize("instance_id", ["engine-instance-1", "engine-instance-2"])
+    def test_files_and_missing_parents_belong_to_the_image_user(
+        self, user, uid, gid, expected, instance_id
+    ):
+        inspected = {"Id": instance_id, "Config": {"User": user}}
+        overrides = {
+            ("container", "inspect"): _WslcResult(0, json.dumps([inspected]).encode(), b""),
+            ("container", "exec", "-w", "/", _NAME, "id", "-u"): _WslcResult(0, uid, b""),
+            ("container", "exec", "-w", "/", _NAME, "id", "-g"): _WslcResult(0, gid, b""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert sandbox.instance_id == instance_id
+        assert len(fake.matching("container", "inspect")) == 1
+        asyncio.run(sandbox.write_file("nested/input", b"data", working_directory=_WORK))
+        archive = tarfile.open(fileobj=io.BytesIO(fake.only("container", "cp").stdin))
+        assert archive.getnames() == [
+            "maf-sandbox/work",
+            "maf-sandbox/work/nested",
+            "maf-sandbox/work/nested/input",
+        ]
+        assert [(entry.uid, entry.gid) for entry in archive] == [expected] * 3
+        assert [entry.mode for entry in archive] == [0o755, 0o755, 0o644]
+        assert [entry.isdir() for entry in archive] == [True, True, False]
+
+    @pytest.mark.parametrize(
+        "inspection",
+        [
+            _WslcResult(1, b"", b"unavailable"),
+            _WslcResult(0, b"not json", b""),
+            _WslcResult(0, b"[]", b""),
+            _WslcResult(0, b"{}", b""),
+            _WslcResult(0, b'[{"Id":"instance","Config":{"User":null}}]', b""),
+            _WslcResult(0, b'[{"Id":"instance","Config":{"User":"worker"}}]', b""),
+            _WslcResult(0, b'[{"Id":"instance","Config":{"User":"4294967295:0"}}]', b""),
+        ],
+    )
+    def test_unresolved_identity_refuses_before_copying(self, inspection):
+        backend, fake = _backend_with(
+            _machine(running=[_NAME], overrides={("container", "inspect"): inspection})
+        )
+        with pytest.raises((RuntimeError, ValueError)):
+            sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+            asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
+        assert not fake.matching("container", "cp")
+
+    def test_existing_directories_are_not_restamped(self):
+        overrides = {
+            ("container", "cp", f"{_NAME}:{guest}"): _WslcResult(
+                1, b"", b"cannot copy a directory to a file path"
+            )
+            for guest in ("/maf-sandbox", _WORK, f"{_WORK}/existing")
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        asyncio.run(sandbox.write_file("existing/new/input", b"data", working_directory=_WORK))
+        archive = tarfile.open(fileobj=io.BytesIO(fake.only("container", "cp").stdin))
+        assert archive.getnames() == [
+            "maf-sandbox/work/existing/new",
+            "maf-sandbox/work/existing/new/input",
+        ]
+
+    @pytest.mark.parametrize("gid", [b"", b"-1", b"staff", b"20001\n0", b"4294967295"])
+    def test_a_named_user_with_no_valid_group_cannot_write(self, gid):
+        overrides = {
+            ("container", "inspect"): _WslcResult(
+                0, b'[{"Id":"instance","Config":{"User":"worker"}}]', b""
+            ),
+            ("container", "exec", "-w", "/", _NAME, "id", "-u"): _WslcResult(0, b"10001", b""),
+            ("container", "exec", "-w", "/", _NAME, "id", "-g"): _WslcResult(0, gid, b""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        with pytest.raises(RuntimeError, match="resolve the image user"):
+            asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
+        assert not fake.matching("container", "cp")
+
+    def test_each_acquire_resolves_write_ownership_again(self):
+        answers = iter(
+            [
+                _WslcResult(0, b'[{"Id":"instance"}]', b""),
+                _WslcResult(0, b'[{"Id":"instance","Config":{"User":"10001:20001"}}]', b""),
+                _WslcResult(0, b'[{"Id":"instance","Config":{"User":"10002:20002"}}]', b""),
+            ]
+        )
+        machine = _machine(running=[_NAME])
+
+        def respond(args):
+            return next(answers) if args[:2] == ("container", "inspect") else machine(args)
+
+        backend, fake = _backend_with(respond)
+        first = asyncio.run(backend.acquire(_KEY, _SPEC))
+        with pytest.raises(RuntimeError, match="resolve the image user"):
+            asyncio.run(first.write_file("input", b"data", working_directory=_WORK))
+        for expected in ((10001, 20001), (10002, 20002)):
+            sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+            asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
+            sent = fake.matching("container", "cp", "-")[-1]
+            archive = tarfile.open(fileobj=io.BytesIO(sent.stdin))
+            assert {(entry.uid, entry.gid) for entry in archive} == {expected}
+
+    def test_working_at_root_never_emits_a_root_directory_entry(self):
+        backend, fake = _backend_with(_machine(running=[_NAME]))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        asyncio.run(sandbox.write_file("nested/input", b"data", working_directory="/"))
+        archive = tarfile.open(fileobj=io.BytesIO(fake.only("container", "cp").stdin))
+        assert archive.getnames() == ["nested", "nested/input"]
+
     def _sent(self, path: str, content: str) -> tuple[_Recorded, tarfile.TarFile]:
         backend, fake = _backend_with(_machine(running=[_NAME]))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
@@ -724,11 +870,20 @@ class TestWriteFile:
 
     def test_the_entry_is_the_path_without_its_leading_slash(self):
         _, archive = self._sent("/maf-sandbox/work/r1/main.bicep", "x")
-        assert archive.getnames() == ["maf-sandbox/work/r1/main.bicep"]
+        assert archive.getnames() == [
+            "maf-sandbox/work",
+            "maf-sandbox/work/r1",
+            "maf-sandbox/work/r1/main.bicep",
+        ]
 
     def test_a_relative_path_is_left_alone(self):
         _, archive = self._sent("maf-sandbox/work/main.bicep", "x")
-        assert archive.getnames() == ["maf-sandbox/work/maf-sandbox/work/main.bicep"]
+        assert archive.getnames() == [
+            "maf-sandbox/work",
+            "maf-sandbox/work/maf-sandbox",
+            "maf-sandbox/work/maf-sandbox/work",
+            "maf-sandbox/work/maf-sandbox/work/main.bicep",
+        ]
 
     def test_the_content_round_trips_as_utf8(self):
         _, archive = self._sent("/maf-sandbox/work/main.bicep", "param naïve string\n")

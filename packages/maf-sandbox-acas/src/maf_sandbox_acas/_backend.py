@@ -381,10 +381,11 @@ class _Held:
 
 @dataclass(frozen=True)
 class _RemovalHint:
-    """An image result usable before a create only until its monotonic deadline."""
+    """An image result with a monotonic deadline and a generation for ordering updates."""
 
     removal: bool | None
     expires_at: float
+    generation: int = 0
 
 
 @dataclass(frozen=True)
@@ -780,6 +781,7 @@ class AcasSandboxBackend:
         self._clients: dict[asyncio.AbstractEventLoop, tuple[Any, Any]] = {}
         #: An image-level hint for the pre-create refusal, never proof for another sandbox.
         self._guest_removals: dict[tuple[str, str], _RemovalHint] = {}
+        self._guest_removals_guard = threading.Lock()
         #: Which (image, kind) pairs have already been warned about. `acquire` runs on every
         #: tool call, and a warning per call is noise rather than a signal.
         self._warned_about_the_guest: set[tuple[tuple[str, str], str]] = set()
@@ -1150,6 +1152,8 @@ class AcasSandboxBackend:
         self, sandbox: _AcasSandbox, spec: SandboxSpec, held: _Held
     ) -> bool | None:
         """Cache completed probes for this sandbox, preserving measurements on failure."""
+        identity = _image_identity(spec)
+        generation = self._guest_removals.get(identity, _RemovalHint(None, 0)).generation
         try:
             removal = await sandbox.probe_guest_removal()
         except Exception as unreachable:  # noqa: BLE001 - an acquire must not fail over this
@@ -1159,17 +1163,19 @@ class AcasSandboxBackend:
                 error_detail(unreachable),
             )
             return held.removal if held.probed else None
-        identity = _image_identity(spec)
-        hint = _RemovalHint(removal, monotonic() + _REMOVAL_HINT_TTL_S)
         if removal is None:
-            previous = self._guest_removals.get(identity)
-            if previous is None or monotonic() >= previous.expires_at:
-                self._guest_removals[identity] = hint
             held.probed = True
-            return held.removal
-        held.removal, held.probed = removal, True
-        self._guest_removals[identity] = hint
-        return removal
+        else:
+            held.removal, held.probed = removal, True
+        # The comparison and write must be atomic across the host's event loops. Even a
+        # repeated measurement advances the generation so an overlapping unknown stands down.
+        with self._guest_removals_guard:
+            current = self._guest_removals.get(identity, _RemovalHint(None, 0))
+            if removal is not None or (held.removal is None and current.generation == generation):
+                self._guest_removals[identity] = _RemovalHint(
+                    removal, monotonic() + _REMOVAL_HINT_TTL_S, current.generation + 1
+                )
+        return held.removal
 
     async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> DisposalFailure | None:
         """Delete this key's sandboxes, narrowed to kind when given.

@@ -927,10 +927,8 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert client.create_calls == 2
         assert len(client.probes) == 4
 
-    @pytest.mark.parametrize(
-        "answer", [RuntimeError("transport dropped"), _GuestAnswer(exit_code=127)]
-    )
-    def test_an_inconclusive_probe_cannot_extend_a_concrete_hint(self, monkeypatch, answer):
+    @pytest.mark.parametrize("completed", [False, True])
+    def test_only_a_completed_probe_replaces_the_hint_deadline(self, monkeypatch, completed):
         from maf_sandbox import SandboxCapabilityNotSupported
 
         now = 100.0
@@ -942,9 +940,16 @@ class TestAnImageWhoseGuestIsNotRoot:
             asyncio.run(backend.acquire(self._key(), deleting))
 
         now = 159.0
-        client._answer = answer
+        client._answer = (
+            _GuestAnswer(exit_code=127) if completed else RuntimeError("transport dropped")
+        )
         asyncio.run(backend.acquire(self._key("exec-only"), _spec_requiring(Capability.EXEC)))
         now = 160.0
+        if completed:
+            with pytest.raises(SandboxCapabilityNotSupported):
+                asyncio.run(backend.acquire(self._key(), deleting))
+            assert client.create_calls == 2
+            now = 219.0
         client._answer = _guest_removing(True)
         assert asyncio.run(backend.acquire(self._key(), deleting))
         assert client.create_calls == len(client.probes) == 3
@@ -1514,9 +1519,7 @@ class TestAnImageWhoseGuestIsNotRoot:
 
         unverified = backend._registry[("scope-a", "thread-1", "devops-engineer", "codeact")]
         assert unverified.removal is None, "it recorded another guest's removal"
-        assert backend._guest_removals[("pinned-id", "python-nonroot:3.13")].removal is True, (
-            "the hint lost the answer a working probe measured"
-        )
+        assert backend._guest_removals[("pinned-id", "python-nonroot:3.13")].removal is None
 
     def test_a_verdict_cannot_outlive_the_sandbox_it_describes(self):
         """It lives on the registry entry, so disposal takes it with no sweeping to get wrong.
@@ -1583,15 +1586,12 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert "Repeated refusals do not extend the deadline" in message
         assert "no process restart is needed" in message
 
-    def test_a_refused_fresh_sandbox_is_gone_so_the_hint_decides_the_advice(self):
-        """A refused create is deleted with its verdict, so what answers the next acquire is
-        the hint — and a permissive one lets that acquire create and probe again.
-
-        The verdict existing at the moment of the refusal is therefore the wrong test: it is
-        removed by the handler that catches this very refusal.
-        """
+    def test_a_refused_fresh_sandbox_is_gone_so_the_hint_decides_the_advice(self, monkeypatch):
+        """A completed inconclusive result stops repeated creates after a reference changes."""
         from maf_sandbox import SandboxCapabilityNotSupported
 
+        now = 100.0
+        monkeypatch.setattr("maf_sandbox_acas._backend.monotonic", lambda: now)
         client = _GuestGroupClient(_guest_removing(True))
         backend = _backend_with(client)
         asyncio.run(backend.acquire(self._key("scope-a"), _spec_requiring(Capability.EXEC)))
@@ -1599,20 +1599,32 @@ class TestAnImageWhoseGuestIsNotRoot:
 
         # A definitive inconclusive answer: the verdict is recorded, then the refusal deletes it.
         client._answer = _GuestAnswer(stdout="", stderr="not found", exit_code=127)
-        with pytest.raises(SandboxCapabilityNotSupported) as refusal:
-            asyncio.run(
-                backend.acquire(
-                    self._key("scope-b"), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+        for scope in ("scope-b", "scope-b", "scope-c"):
+            with pytest.raises(SandboxCapabilityNotSupported) as refusal:
+                asyncio.run(
+                    backend.acquire(
+                        self._key(scope), _spec_requiring(Capability.EXEC, Capability.FILES_DELETE)
+                    )
                 )
-            )
-
-        message = str(refusal.value)
-        assert "No cached refusal blocks a retry" in message, message
-        assert "restart of this process" not in message, message
-        assert backend._guest_removals[("pinned-id", "python-nonroot:3.13")].removal is True, (
-            "the hint was demoted, so the next acquire would not re-create and this passes "
-            "for the wrong reason"
+            assert "cached refusal expires in" in str(refusal.value)
+        assert backend._guest_removals[("pinned-id", "python-nonroot:3.13")] == _RemovalHint(
+            None, 160.0, 2
         )
+        assert client.create_calls == 2
+        assert client.deleted == ["sbx-2"]
+        assert len(client.probes) == 2
+        assert len(backend._registry) == 1
+        warm = asyncio.run(
+            backend.acquire(self._key("scope-a"), _spec_requiring(Capability.FILES_DELETE))
+        )
+        assert warm.sandbox_id == "sbx-1"
+        now = 160.0
+        client._answer = _guest_removing(True)
+        refreshed = asyncio.run(
+            backend.acquire(self._key("scope-b"), _spec_requiring(Capability.FILES_DELETE))
+        )
+        assert refreshed.sandbox_id == "sbx-3"
+        assert client.create_calls == 3
 
     def test_a_permissive_hint_is_not_an_obstacle_the_refusal_should_name(self):
         """Hint *presence* is the wrong test; whether anything will answer next time is right.
@@ -1714,32 +1726,146 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert "restart of this process" not in message, message
         assert backend._guest_removals == {}, "something was remembered after all"
 
-    def test_a_cold_acquire_cannot_demote_a_removal_another_cold_acquire_measured(self):
-        """An inconclusive probe preserves an unexpired concrete image hint."""
-        client = _GuestGroupClient(_guest_removing(True))
+    @pytest.mark.parametrize("seeded", [False, True])
+    @pytest.mark.parametrize("measured", [False, True])
+    @pytest.mark.parametrize("unknown_finishes_last", [False, True])
+    def test_overlapping_cold_probes_preserve_a_measurement(
+        self, monkeypatch, seeded, measured, unknown_finishes_last
+    ):
+        """An overlapping unknown cannot displace even an unchanged measurement."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        monkeypatch.setattr("maf_sandbox_acas._backend.monotonic", lambda: 100.0)
+
+        def race():
+            client = _GuestGroupClient(_guest_removing(measured))
+            backend = _backend_with(client)
+            identity = ("pinned-id", "python-nonroot:3.13")
+            execing = _spec_requiring(Capability.EXEC)
+            if seeded:
+                asyncio.run(backend.acquire(self._key("seed"), execing))
+            started = [threading.Event(), threading.Event()]
+            finish = [threading.Event(), threading.Event()]
+            original = _GuestSandboxClient.exec
+            first_id = client.create_calls + 1
+
+            async def ordered_exec(sc, command, *, working_directory):
+                index = int(sc.sandbox_id.removeprefix("sbx-")) - first_id
+                if index in (0, 1):
+                    started[index].set()
+                    assert finish[index].wait(5)
+                return await original(sc, command, working_directory=working_directory)
+
+            monkeypatch.setattr(_GuestSandboxClient, "exec", ordered_exec)
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                client._answer = _GuestAnswer(exit_code=127)
+                unknown = pool.submit(asyncio.run, backend.acquire(self._key("unknown"), execing))
+                assert started[0].wait(5)
+                client._answer = _guest_removing(measured)
+                measurement = pool.submit(
+                    asyncio.run, backend.acquire(self._key("measured"), execing)
+                )
+                assert started[1].wait(5)
+
+                order = (1, 0) if unknown_finishes_last else (0, 1)
+                for index in order:
+                    finish[index].set()
+                    (unknown, measurement)[index].result(timeout=5)
+
+            assert backend._guest_removals[identity] == _RemovalHint(
+                measured, 160.0, int(seeded) + (1 if unknown_finishes_last else 2)
+            )
+            held = backend._registry[("unknown", "thread-1", "devops-engineer", "codeact")]
+            assert held.probed and held.removal is None
+            deleting = _spec_requiring(Capability.FILES_DELETE)
+            with pytest.raises(SandboxCapabilityNotSupported, match="files_delete"):
+                asyncio.run(backend.acquire(self._key("unknown"), deleting))
+            if measured:
+                assert asyncio.run(backend.acquire(self._key("fresh"), deleting))
+            else:
+                creates = client.create_calls
+                with pytest.raises(SandboxCapabilityNotSupported, match="files_delete"):
+                    asyncio.run(backend.acquire(self._key("fresh"), deleting))
+                assert client.create_calls == creates
+
+        race()
+
+    @pytest.mark.parametrize("measured", [False, True])
+    @pytest.mark.parametrize("unknown_first", [False, True])
+    def test_cross_loop_hint_updates_are_atomic(self, monkeypatch, measured, unknown_first):
+        """A hint read and its replacement exclude a competing loop's update."""
+        from maf_sandbox_acas._backend import _AcasSandbox
+
+        monkeypatch.setattr("maf_sandbox_acas._backend.monotonic", lambda: 100.0)
+        client = _GuestGroupClient(_guest_removing(measured))
         backend = _backend_with(client)
+        spec = _spec_requiring(Capability.EXEC)
+        asyncio.run(backend.acquire(self._key("seed"), spec))
         identity = ("pinned-id", "python-nonroot:3.13")
+        first_probing, other_probing, entered, progressed = (threading.Event() for _ in range(4))
+        local = threading.local()
 
-        # The acquire that measured root.
-        asyncio.run(backend.acquire(self._key("scope-a"), _spec_requiring(Capability.EXEC)))
-        assert backend._guest_removals[identity].removal is True
+        class _Guard:
+            def __init__(self):
+                self.lock = threading.Lock()
 
-        # The overlapping one, finishing second against a guest that answers no removal.
-        client._answer = _GuestAnswer(stdout="", stderr="not found", exit_code=127)
-        asyncio.run(backend.acquire(self._key("scope-b"), _spec_requiring(Capability.EXEC)))
+            def __enter__(self):
+                if not self.lock.acquire(blocking=False):
+                    progressed.set()
+                    assert self.lock.acquire(timeout=5)
 
-        assert backend._guest_removals[identity].removal is True, (
-            "an inconclusive answer demoted a measured removal"
-        )
-        assert (
-            backend._registry[("scope-b", "thread-1", "devops-engineer", "codeact")].removal is None
-        ), "the second sandbox borrowed the hint"
+            def __exit__(self, *args):
+                self.lock.release()
 
-        # And the hint still lets a fresh acquire reach a create rather than being refused
-        # before one exists — the availability half the demotion would have cost.
-        client._answer = _guest_removing(True)
-        assert asyncio.run(
-            backend.acquire(self._key("scope-c"), _spec_requiring(Capability.FILES_DELETE))
+        class _Hints(dict):
+            def get(self, key, default=None):
+                hint = super().get(key, default)
+                if getattr(local, "pause", False):
+                    local.pause = False
+                    entered.set()
+                    assert progressed.wait(5)
+                return hint
+
+        monkeypatch.setattr(backend, "_guest_removals_guard", _Guard())
+        backend._guest_removals = _Hints(backend._guest_removals)
+        original = _AcasSandbox.probe_guest_removal
+
+        async def ordered_probe(sandbox):
+            if local.first:
+                first_probing.set()
+                assert other_probing.wait(5)
+            else:
+                other_probing.set()
+                assert entered.wait(5)
+            answer = await original(sandbox)
+            local.pause = local.first
+            return answer
+
+        monkeypatch.setattr(_AcasSandbox, "probe_guest_removal", ordered_probe)
+
+        def acquire(first):
+            local.first = first
+            try:
+                return asyncio.run(backend.acquire(self._key("first" if first else "other"), spec))
+            finally:
+                if not first:
+                    progressed.set()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            client._answer = (
+                _GuestAnswer(exit_code=127) if unknown_first else _guest_removing(measured)
+            )
+            first = pool.submit(acquire, True)
+            assert first_probing.wait(5)
+            client._answer = (
+                _guest_removing(measured) if unknown_first else _GuestAnswer(exit_code=127)
+            )
+            other = pool.submit(acquire, False)
+            first.result(timeout=5)
+            other.result(timeout=5)
+
+        assert backend._guest_removals[identity] == _RemovalHint(
+            measured, 160.0, 3 if unknown_first else 2
         )
 
     def test_a_remembered_successful_removal_does_not_license_a_newly_booted_image(self):

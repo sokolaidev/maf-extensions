@@ -3,7 +3,7 @@ name: Verify (live)
 # Installs the PUBLISHED wheels into a clean environment and runs the samples below, each
 # asserting that its own workload ran rather than that the program exited zero.
 #
-# **One job is not a sample and does not install published wheels**: `acas-e2e` runs
+# **Two jobs do not install published wheels**: the image preflight reads the group, and `acas-e2e` runs
 # `maf-sandbox-acas`'s live suite from this checkout. Everything else here asks "does the
 # published set still work"; that one asks "does the real service still do what the backend
 # believes" — refusals, confinement, teardown read back from the service — which a sample with a
@@ -105,7 +105,74 @@ env:
   HARNESS: ${{ startsWith(github.ref, 'refs/tags/') && '.harness' || '.' }}
 
 jobs:
+  acas-images:
+    name: Check ACAS image prerequisites
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact"]'), inputs.package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: live-verify
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
+      ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ secrets.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+      ACAS_SANDBOX_RESOURCE_GROUP: ${{ secrets.ACAS_SANDBOX_RESOURCE_GROUP }}
+      ACAS_SANDBOX_GROUP: ${{ secrets.ACAS_SANDBOX_GROUP }}
+      ACAS_SANDBOX_REGISTRY: ${{ secrets.ACAS_SANDBOX_REGISTRY }}
+      BICEP_SANDBOX_IMAGE: ${{ vars.BICEP_SANDBOX_IMAGE }}
+      ACAS_SANDBOX_NONROOT_IMAGE: ${{ vars.ACAS_SANDBOX_NONROOT_IMAGE }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # The checker uses the harness's workspace; image literals still come from the ref under test.
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            ACAS_SANDBOX_ENDPOINT ACAS_SANDBOX_SUBSCRIPTION_ID \
+            ACAS_SANDBOX_RESOURCE_GROUP ACAS_SANDBOX_GROUP; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Check the selected jobs' images
+        env:
+          PACKAGE: ${{ inputs.package }}
+        run: |
+          set -euo pipefail
+          uv run --project "$HARNESS" --locked python "$HARNESS"/scripts/check_acas_live_images.py \
+            --source-root "$GITHUB_WORKSPACE" --package "$PACKAGE" --summary "$GITHUB_STEP_SUMMARY"
+
   sample-01:
+    needs: acas-images
     name: samples/01_acas_bicep against a live sandbox
     # Empty input (verify-everything) or a package sample-01 actually exercises: the router
     # (maf-sandbox) and the backend it runs on (maf-sandbox-acas) both affect it, and so does
@@ -218,6 +285,7 @@ jobs:
           set -euo pipefail
           python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample-out.txt "$PACKAGE" "$VERSION"
   sample-03:
+    needs: acas-images
     name: samples/03_acas_codeact against a live sandbox
     # No `needs: sample-01` — the two never had a data dependency (each creates its own
     # sandbox and reads disjoint configuration); the `needs` edge existed only to keep this
@@ -1268,6 +1336,7 @@ jobs:
           set -euo pipefail
           python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample13-out.txt "$PACKAGE" "$VERSION"
   sample-14:
+    needs: acas-images
     name: samples/14_acas_codeact_files against a live sandbox
     # The pull surface on a second backend, which is the whole reason this job exists (#300).
     # Sample 08 is its pair and the assertion is shared, so a red here while 08 is green is a
@@ -1393,6 +1462,7 @@ jobs:
           set -euo pipefail
           python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample14-out.txt "$PACKAGE" "$VERSION"
   sample-15:
+    needs: acas-images
     name: samples/15_acas_codeact_host_tools against a live sandbox
     # The ACAS half of the live host-tools dispatch pair (#302); the `sample-15-docker` job below
     # runs the SAME sample with SAMPLE_BACKEND=docker (#519). Together they are where
@@ -1762,8 +1832,9 @@ jobs:
           set -euo pipefail
           python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample16-out.txt "$PACKAGE" "$VERSION"
   acas-e2e:
+    needs: acas-images
     name: maf-sandbox-acas conformance against a live sandbox group
-    # **The one job here that is not a sample**, and the one that does not install published
+    # **The conformance job**, which does not install published
     # wheels: it runs the workspace suite from this checkout, because it tests a backend rather
     # than what a reader can install. Everything below it in this file answers "does the
     # published set still work"; this one answers "does the real service still do what this

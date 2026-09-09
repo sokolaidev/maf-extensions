@@ -24,6 +24,7 @@ import contextlib
 import io
 import json
 import logging
+import posixpath
 import re
 import tarfile
 import threading
@@ -59,6 +60,7 @@ from maf_sandbox import (
 )
 from maf_sandbox.paths import (
     confine_resolve_guest_write_path,
+    guest_path_and_ancestors,
     sandbox_entry_from_tar_header,
     stat_by_asking_the_guest_as_root,
     tar_header_from_block,
@@ -370,6 +372,7 @@ class _WslcSandbox:
         name: str,
         command_timeout: float,
         guest_uid: int | None = None,
+        guest_identity: tuple[int, int] | None = None,
         *,
         instance_id: str,
     ) -> None:
@@ -378,6 +381,7 @@ class _WslcSandbox:
         self._command_timeout = command_timeout
         self.instance_id = instance_id
         self._guest_uid = guest_uid
+        self._guest_identity = guest_identity
 
     @property
     def guest_principal(self) -> str:
@@ -393,23 +397,41 @@ class _WslcSandbox:
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
         """Write ``content`` to ``path`` inside the container, parents included.
 
-        Sent as a one-entry tar on stdin.  A ``cp`` destination must already exist and ``/``
-        is the only path that always does, so the entry name carries the whole path and wslc
-        creates the missing directories from it.
-
-        ``str`` is encoded UTF-8 whatever the host's locale says; ``bytes`` is written as
-        given, and is what an in-door carrying a PNG or a spreadsheet needs — the shape the
-        :class:`~maf_sandbox.Sandbox` protocol promises and the docker backend already takes.
+        Explicit entries give missing directories at or below ``working_directory`` the
+        guest's ownership; existing directories must keep their modes and owners. An
+        unresolved image identity refuses the write rather than planting root-owned inputs.
         """
+        if self._guest_identity is None:
+            raise RuntimeError("wslc could not resolve the image user for write_file")
+        existing: set[str] = set()
+
         guest = await confine_resolve_guest_write_path(
-            lambda p: self._stat_guest(p, p), path, working_directory
+            lambda p: self._stat_for_write(p, existing), path, working_directory
         )
         data = content.encode("utf-8") if isinstance(content, str) else content
+        guest_work_dir = "/" + posixpath.normpath(working_directory).lstrip("/")
+        guest_leaf_dir = "/" + posixpath.normpath(posixpath.dirname(guest)).lstrip("/")
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w") as archive:
+            for guest_directory in guest_path_and_ancestors(guest_leaf_dir, guest_work_dir):
+                if (
+                    guest_directory in existing
+                    or guest_directory == "/"
+                    or not (
+                        guest_directory == guest_work_dir
+                        or guest_directory.startswith(guest_work_dir.rstrip("/") + "/")
+                    )
+                ):
+                    continue
+                entry = tarfile.TarInfo(guest_directory.lstrip("/") + "/")
+                entry.type = tarfile.DIRTYPE
+                entry.mode = 0o755
+                entry.uid, entry.gid = self._guest_identity
+                archive.addfile(entry)
             entry = tarfile.TarInfo(guest.lstrip("/"))
             entry.size = len(data)
             entry.mode = 0o644
+            entry.uid, entry.gid = self._guest_identity
             archive.addfile(entry, io.BytesIO(data))
 
         result = await self._run(
@@ -422,6 +444,13 @@ class _WslcSandbox:
         )
         if result.returncode != 0:
             raise RuntimeError(f"wslc could not write {guest}: {result.stderr_text.strip()}")
+
+    async def _stat_for_write(self, guest: str, existing: set[str]) -> SandboxEntry | None:
+        """Retain existing paths so tar entries cannot restamp their directory metadata."""
+        entry = await self._stat_guest(guest, guest)
+        if entry is not None:
+            existing.add(guest)
+        return entry
 
     async def _stat_guest(self, guest: str, rel: str) -> SandboxEntry | None:
         """Stat an absolute guest path from the first container-cp tar header."""
@@ -874,11 +903,15 @@ class WslcSandboxBackend:
                     logger.warning("sandbox identity refusal cleanup raised: %s", failure)
                 raise
             guest_uid = await self._probe_guest_uid(name)
+            guest_identity = await self._write_identity(
+                name, guest_uid, cast("dict[str, object]", row)
+            )
             sandbox = _WslcSandbox(
                 self._wslc,
                 name,
                 self._config.command_timeout_seconds,
                 guest_uid,
+                guest_identity,
                 instance_id=instance_id,
             )
             logger.info(
@@ -888,6 +921,42 @@ class WslcSandboxBackend:
                 guest_uid,
             )
             return sandbox
+
+    async def _write_identity(
+        self, name: str, guest_uid: int | None, inspected: dict[str, object]
+    ) -> tuple[int, int] | None:
+        """Resolve write ownership from Config.User, using guest ids for named identities."""
+        try:
+            config = inspected.get("Config")
+            if not isinstance(config, dict):
+                return None
+            user = cast("dict[str, object]", config).get("User")
+            if user == "":
+                return (0, 0)
+            if not isinstance(user, str):
+                return None
+            if re.fullmatch(r"[0-9]{1,10}:[0-9]{1,10}", user):
+                uid, gid = (int(part) for part in user.split(":"))
+                return (uid, gid) if max(uid, gid) < 2**32 - 1 else None
+            if guest_uid is None or guest_uid >= 2**32 - 1:
+                return None
+            result = await self._wslc(
+                "container",
+                "exec",
+                "-w",
+                "/",
+                name,
+                "id",
+                "-g",
+                timeout=self._config.command_timeout_seconds,
+                read_limit=64,
+            )
+            gid = result.stdout_text.strip()
+            if result.returncode == 0 and re.fullmatch(r"[0-9]{1,10}", gid):
+                return (guest_uid, int(gid)) if int(gid) < 2**32 - 1 else None
+        except Exception:
+            return None
+        return None
 
     async def _probe_guest_uid(self, name: str) -> int | None:
         """Read the image user's announcement; never cache it by a mutable container name."""
