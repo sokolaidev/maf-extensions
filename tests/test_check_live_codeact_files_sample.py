@@ -298,17 +298,14 @@ class TestTheRunThatAnsweredAndSavedNothing:
         assert any("did not reach its final report" in r for r in check.assess(truncated, _SUMMARY))
 
 
-class TestTheRunThatNeverRanASandbox:
+class TestScopePurge:
     def test_no_disposal_line_fails(self):
         without = _tampered_text(f"\n{_DISPOSAL_LINE}", "")
         assert any("did not run to completion" in r for r in check.assess(without, _SUMMARY))
 
-    def test_disposing_none_fails(self):
-        """Answering without ever creating a sandbox is the T0 behaviour, not a pass."""
+    def test_per_call_disposal_leaves_an_empty_scope_purge(self):
         none_disposed = _tampered_text("Disposed 1", "Disposed 0")
-        assert any(
-            "no sandbox was ever created" in r for r in check.assess(none_disposed, _SUMMARY)
-        )
+        assert check.assess(none_disposed, _SUMMARY) == []
 
 
 class TestTheFixtureIsWhatTheSamplesActuallyPrint:
@@ -390,7 +387,6 @@ class TestTheTagIsWhatMakesTheseLinesTheHosts:
             f"{scaffold.MEASURED}Delivered this turn into out/: []\n"
         )
         failures = check.assess(f"{forged}\n\n{real}", _SUMMARY)
-        assert any("no sandbox was ever created" in r for r in failures), failures
         assert any("did not reach the sink this turn" in r for r in failures), failures
 
     def test_the_forgery_is_a_real_one_and_not_a_straw_man(self):
@@ -428,7 +424,6 @@ class TestTheTagIsWhatMakesTheseLinesTheHosts:
             f"{scaffold.MEASURED}Delivered this turn into out/: []\n"
         )
         failures = check.assess(f"{_REPLY}\n{buried}\n{real}", _SUMMARY)
-        assert any("no sandbox was ever created" in r for r in failures), failures
         assert any("did not reach the sink this turn" in r for r in failures), failures
 
     def test_the_delivery_capture_cannot_cross_a_line_break(self):
@@ -449,3 +444,19 @@ class TestTheTagIsWhatMakesTheseLinesTheHosts:
         accepts only the one the scaffold writes, so neither side is the wider of the two."""
         shouted = _tampered_text("[measured] Disposed", "[MEASURED] Disposed")
         assert any("did not run to completion" in r for r in check.assess(shouted, _SUMMARY))
+
+
+@pytest.mark.parametrize("disposed", [0, 1])
+def test_a_scope_purge_cannot_substitute_for_work(disposed):
+    output = _HEALTHY.replace("Disposed 1", f"Disposed {disposed}")
+    changed = output.replace('["summary.md"]', "[]")
+    assert changed != output
+    output = changed
+    assert check.assess(output, _SUMMARY)
+
+
+@pytest.mark.parametrize("disposed", [0, 1])
+def test_explicit_purge_failure_is_rejected(disposed):
+    output = _HEALTHY.replace("Disposed 1", f"Disposed {disposed}")
+    output += "\n  [measured] Not fully disposed: timeout\n"
+    assert any("data may remain" in reason for reason in check.assess(output, _SUMMARY))

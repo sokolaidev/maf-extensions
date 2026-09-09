@@ -15,11 +15,10 @@ carrying it is evidence of nothing; the same digits inside `execute_code`'s own 
 evidence a program ran in the sandbox and printed them (#314). The sample prints that block from
 what the framework recorded next to the call, so the model does not write it.
 
-Three things together, and each is weak alone: `execute_code` returned output at all — a call it
+Two things together: `execute_code` returned output at all — a call it
 refuses answers with an `Error:` string and never reaches the interpreter; that output carries
-the one right answer; and the router disposed at least one sandbox, on a line the sample tagged
-rather than one a model could write. `Disposed 0` means no sandbox was ever created, which is
-the T0 behaviour these samples exist to contrast with.
+the one right answer. The final scope purge reports completion, not work: it can remove zero
+sandboxes when per-call cleanup already disposed them.
 
 What this still does not prove: a program that prints the constant rather than computing it ran
 in the sandbox just the same, and its output is indistinguishable here. The gap this closes is
@@ -57,6 +56,7 @@ _STDOUT = re.compile(r"^\s*stdout:\s*$", re.MULTILINE)
 #: Tagged, so a model writing "Disposed 1 sandbox(es)." into its reply does not answer for the
 #: router. This line is the sample's own report of what `dispose_scope` returned.
 _DISPOSED = re.compile(_M + r"Disposed\s+(\d+)\s+sandbox", _F)
+_NOT_DISPOSED = re.compile(_M + r"Not fully disposed:[^\r\n]*", _F)
 
 
 def _split(output: str) -> tuple[str, str, int] | None:
@@ -147,10 +147,8 @@ def _assess_disposal(output: str) -> list[str]:
     disposed = _DISPOSED.search(output)
     if disposed is None:
         return ["no measured 'Disposed N sandbox(es)' line — the sample did not run to completion"]
-    if int(disposed.group(1)) < 1:
-        return [
-            "'Disposed 0 sandbox(es)' — no sandbox was ever created, so nothing was computed in one"
-        ]
+    if _NOT_DISPOSED.search(output):
+        return ["the scope purge could not account for every sandbox — data may remain"]
     return []
 
 

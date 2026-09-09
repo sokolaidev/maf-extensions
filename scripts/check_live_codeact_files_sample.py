@@ -71,6 +71,7 @@ _M = r"^  (?-i:\[measured\]) "
 _F = re.MULTILINE | re.IGNORECASE
 
 _DISPOSED = re.compile(_M + r"Disposed\s+(\d+)\s+sandbox", _F)
+_NOT_DISPOSED = re.compile(_M + r"Not fully disposed:[^\r\n]*", _F)
 
 #: `[^:\n]` and `[ \t]` rather than `[^:]` and `\s`, both of which cross a line break: were the
 #: sample's own line ever to lose its colon, the greedy walk would find the next one further
@@ -172,10 +173,8 @@ def assess(output: str, summary: str | None) -> list[str]:
         failures.append(
             "no measured 'Disposed N sandbox(es)' line — the sample did not run to completion"
         )
-    elif int(disposed.group(1)) < 1:
-        failures.append(
-            "'Disposed 0 sandbox(es)' — no sandbox was ever created, so nothing ran in one"
-        )
+    if _NOT_DISPOSED.search(output):
+        failures.append("the scope purge could not account for every sandbox — data may remain")
 
     delivered = _DELIVERED.search(output)
     if delivered is None:

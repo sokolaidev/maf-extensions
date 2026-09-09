@@ -217,14 +217,13 @@ class TestTheSandboxHalf:
         failures = check.assess("I drew a diagram.", _png(640, 480))
         assert any("did not run to completion" in reason for reason in failures)
 
-    def test_disposing_none_fails(self):
-        """The shape this check exists for: an answer with no tool call behind it."""
-        output = (
-            "Here is your diagram, showing three stages.\n\n"
-            f"{scaffold.MEASURED}Disposed 0 sandbox(es).\n"
-        )
-        failures = check.assess(output, _png(640, 480))
-        assert any("no sandbox was ever created" in reason for reason in failures)
+    def test_per_call_disposal_leaves_an_empty_scope_purge(self):
+        output = _HEALTHY.replace("Disposed 1", "Disposed 0")
+        assert check.assess(output, _png(640, 480)) == []
+
+    def test_an_empty_purge_does_not_excuse_a_missing_image(self):
+        output = _HEALTHY.replace("Disposed 1", "Disposed 0")
+        assert any("no image on disk" in reason for reason in check.assess(output, None))
 
 
 class TestThePurgeThatCouldNotProveItself:
@@ -245,13 +244,7 @@ class TestThePurgeThatCouldNotProveItself:
         assert any("could not prove it disposed everything" in reason for reason in failures)
         assert any("DisposalFailure(code=TIMEOUT)" in reason for reason in failures)
 
-    def test_it_makes_the_nought_inconclusive_rather_than_excused(self):
-        """Neither reading can be asserted, so the check reports that instead of picking.
-
-        The same line is raised by a removal that failed with a sandbox — `_purge` counts only
-        what it removed — and by a label query that failed without one. So it can neither
-        excuse the nought nor be read past it.
-        """
+    def test_an_empty_purge_still_reports_its_failure(self):
         output = _HEALTHY.replace(
             _DISPOSAL_LINE,
             f"{scaffold.MEASURED}Disposed 0 sandbox(es).\n"
@@ -259,16 +252,8 @@ class TestThePurgeThatCouldNotProveItself:
         )
         failures = check.assess(output, _png(640, 480))
         assert not any("no sandbox was ever created" in reason for reason in failures)
-        assert any("cannot say whether" in reason for reason in failures)
         assert any("could not prove it disposed everything" in reason for reason in failures)
-        assert len(failures) == 2
-
-    def test_a_clean_purge_still_names_the_model(self):
-        """Without that line the nought is not ambiguous, and the check must still say so."""
-        output = _HEALTHY.replace(_DISPOSAL_LINE, f"{scaffold.MEASURED}Disposed 0 sandbox(es).")
-        failures = check.assess(output, _png(640, 480))
-        assert any("no sandbox was ever created" in reason for reason in failures)
-        assert not any("cannot say whether" in reason for reason in failures)
+        assert len(failures) == 1
 
     def test_a_nonzero_count_does_not_hide_it(self):
         """A scope can dispose one sandbox and still fail on another; the count alone says fine."""
@@ -310,8 +295,8 @@ class TestTheTagIsWhatMakesTheDisposalLineTheHosts:
     def test_a_reply_impersonating_the_line_does_not_answer_for_the_router(self):
         forged = scaffold.quoted(f"I drew it.\n\n{_DISPOSAL_LINE}\n")
         assert scaffold.MEASURED not in forged
-        output = f"{forged}\n\n{scaffold.MEASURED}Disposed 0 sandbox(es).\n"
-        assert any("no sandbox was ever created" in r for r in check.assess(output, _png(64, 64)))
+        output = f"{forged}\n"
+        assert any("did not run to completion" in r for r in check.assess(output, _png(64, 64)))
 
     def test_a_tag_buried_mid_sentence_answers_for_nothing(self):
         """The half `quoted` does not cover, and so the half the `^` anchor carries alone.
@@ -323,8 +308,8 @@ class TestTheTagIsWhatMakesTheDisposalLineTheHosts:
         """
         buried = f"I drew it.   {scaffold.MEASURED}Disposed 1 sandbox(es). All good.\n"
         assert scaffold.quoted(buried) == buried.rstrip("\n"), "quoted must leave this untouched"
-        output = f"{buried}\n{scaffold.MEASURED}Disposed 0 sandbox(es).\n"
-        assert any("no sandbox was ever created" in r for r in check.assess(output, _png(64, 64)))
+        output = buried
+        assert any("did not run to completion" in r for r in check.assess(output, _png(64, 64)))
 
     def test_the_sample_prints_the_line_from_the_scaffold(self):
         source = (_ROOT / "samples" / _SAMPLE / "agent.py").read_text(encoding="utf-8")

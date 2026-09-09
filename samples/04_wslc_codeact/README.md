@@ -64,7 +64,7 @@ It printed:
 
 That block is one real run, against a local OpenAI-compatible endpoint. The prose and the formatting around the number are the model's and vary; the number and the disposal line do not.
 
-The same number sample 03 gets from a microVM in Azure, computed by the same program in the same way — the interpreter, not the model. The backend and the image it runs in are what differ from sample 03; the method is not. The wording around it is the model's and varies run to run. The block under it does not: it is what `execute_code` returned, printed from the tool result rather than from the reply, which is what separates a number the interpreter produced from one the model recited ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). `[measured] Disposed 1 sandbox(es).` is what tells you a container was really created and torn down.
+The same number sample 03 gets from a microVM in Azure, computed by the same program in the same way — the interpreter, not the model. The backend and the image it runs in are what differ from sample 03; the method is not. The wording around it is the model's and varies run to run. The block under it does not: it is what `execute_code` returned, printed from the tool result rather than from the reply, which is what separates a number the interpreter produced from one the model recited ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). The measured program-output count proves a program ran. `Disposed N` reports only the final scope purge, which can remove zero containers after per-call disposal.
 
 ## Troubleshooting
 

@@ -24,7 +24,7 @@ anything the model said before either is printed — so a model can write the he
 plausible Markdown under it, and cannot close the block. What is inside came from the tool.
 
 Four further things are read, all of them the host's own tagged lines: that the scope purge
-disposed a sandbox and could account for every one, that the summary reached the sink this
+completed without reporting a failure, that the summary reached the sink this
 turn, that it landed under a per-call folder rather than at the top of the store, and that a
 read returned one — which the block above cannot say on its own, since the read tool's
 refusals render the name they were given and the name is the model's to choose.
@@ -232,25 +232,12 @@ def _assess_read_of_the_landing(output: str) -> list[str]:
 
 
 def _assess_disposal(output: str) -> list[str]:
-    """Every reason the scope purge is not proof that this conversation left nothing behind.
-
-    A purge that reported a failure makes a nought *inconclusive* rather than excusing it: the
-    sample cannot then say whether no sandbox was made or one was made and could not be removed.
-    """
+    """Require the final purge report and reject any explicit purge failure."""
     disposed = _DISPOSED.search(output)
     if disposed is None:
         return ["no measured 'Disposed N sandbox(es)' line — the sample did not run to completion"]
     undisposed = _NOT_DISPOSED.search(output)
     failures: list[str] = []
-    if int(disposed.group(1)) < 1 and undisposed is None:
-        failures.append(
-            "'Disposed 0 sandbox(es)' — no sandbox was ever created, so nothing ran in one"
-        )
-    elif int(disposed.group(1)) < 1:
-        failures.append(
-            "'Disposed 0 sandbox(es)' beside a purge that failed — this cannot say whether "
-            "nothing ran or a sandbox was made and could not be removed"
-        )
     if undisposed is not None:
         failures.append(
             f"the scope purge could not account for every sandbox "

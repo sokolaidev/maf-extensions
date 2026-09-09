@@ -30,8 +30,10 @@ message. And the config check has to stay an either-or: it asserts the compiler 
 tool no longer writes to lints against the CLI's built-in defaults and still satisfies every
 other assertion here — same rule ids, same sandbox, weaker rule set (#308).
 
-Exits non-zero listing every reason it failed. A run that never created a sandbox
-(`Disposed 0`) or never produced these diagnostics is a broken stack, not a clean file.
+The measured compile count and diagnostics prove the work. The final scope purge reports
+completion; it can remove zero sandboxes when per-call cleanup already disposed them.
+
+Exits non-zero listing every reason it failed.
 """
 
 from __future__ import annotations
@@ -73,6 +75,7 @@ _DIAGNOSTIC = re.compile(r"^\s*\[(\w+)\]\s+(\S+)\s+@", re.MULTILINE)
 #: Tagged, so a model writing "Disposed 1 sandbox(es)." into its reply does not answer for the
 #: router. This line is the sample's own report of what `dispose_scope` returned.
 _DISPOSED = re.compile(_M + r"Disposed\s+(\d+)\s+sandbox", _F)
+_NOT_DISPOSED = re.compile(_M + r"Not fully disposed:[^\r\n]*", _F)
 
 
 def _split(output: str) -> tuple[str, str, int] | None:
@@ -216,10 +219,8 @@ def _assess_disposal(output: str) -> list[str]:
     disposed = _DISPOSED.search(output)
     if disposed is None:
         return ["no measured 'Disposed N sandbox(es)' line — the sample did not run to completion"]
-    if int(disposed.group(1)) < 1:
-        return [
-            "'Disposed 0 sandbox(es)' — no sandbox was ever created, so nothing was validated in one"
-        ]
+    if _NOT_DISPOSED.search(output):
+        return ["the scope purge could not account for every sandbox — data may remain"]
     return []
 
 
