@@ -627,6 +627,12 @@ class _DockerSandbox:
         The entries stop at ``working_directory``: an absent ancestor above it is docker's
         to create as root, since a guest-owned entry there would be a redirect the reach
         rule never cleared, and ``/`` is the destination and needs none.
+
+        Residual: the path check and extraction are separate calls. The daemon follows a
+        parent swapped for a symlink with root's authority, so a write can land where the
+        guest program could not write. A symlinked final component is replaced instead.
+        Stamping guest ownership does not bound placement authority; the REACH write probe
+        checks what lands, not the authority that resolved its path.
         """
         walked: dict[str, tuple[int, int]] = {}
         guest = await confine_resolve_guest_write_path(
