@@ -50,7 +50,7 @@ def disk_image_base(image: Any) -> str | None:
     version flattens the field.
 
     Shared with ``scripts/import_disk_image.py`` so the runtime lookup and the operator
-    script's idempotency check can never disagree about the shape.
+    script's existing-reference check can never disagree about the shape.
     """
     spec = getattr(image, "image", None)
     if spec is None:
@@ -128,9 +128,8 @@ async def resolve_disk_image_id(
     reference rather than pasting an opaque id.
 
     Raises:
-        ValueError: when neither is set, or when the reference was never imported. Both are
-            operator errors rather than transient ones, so they carry an actionable message
-            a caller can safely surface.
+        ValueError: when neither is set, or the reference has no import or multiple imports.
+            Pin an explicit id to select among multiple snapshots of one reference.
     """
     if explicit_id:
         return explicit_id
@@ -147,12 +146,23 @@ async def resolve_disk_image_id(
     if cached is not None:
         return cached
 
+    matches: set[str] = set()
     async for image in group_client.list_disk_images():
         if disk_image_base(image) == image_ref:
             image_id = getattr(image, "id", None)
             if image_id:
-                _disk_image_cache[image_ref] = image_id
-                return image_id
+                matches.add(image_id)
+
+    if len(matches) > 1:
+        raise ValueError(
+            f"Multiple disk images in the sandbox group were built from {image_ref!r}: "
+            f"{', '.join(sorted(matches))}. Pin a disk-image id explicitly, or push and "
+            "import a new build tag."
+        )
+    if matches:
+        image_id = matches.pop()
+        _disk_image_cache[image_ref] = image_id
+        return image_id
 
     raise ValueError(
         f"No disk image in the sandbox group was built from {image_ref!r}. "
