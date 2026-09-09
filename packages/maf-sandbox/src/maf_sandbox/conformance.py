@@ -74,6 +74,7 @@ kind's own call and after its cleanup, without executing a guest utility to insp
 
 from __future__ import annotations
 
+import math
 import posixpath
 import shlex
 import time
@@ -93,6 +94,8 @@ __all__ = [
     "ConformanceFailure",
     "ConformancePaths",
     "ConformanceSubject",
+    "EgressMethodsSubject",
+    "ExecEgressMethodsSubject",
     "FingerprintSubject",
     "PosixGuestSubject",
     "Probe",
@@ -100,6 +103,7 @@ __all__ = [
     "SandboxFingerprint",
     "assert_call_scope_conformance",
     "assert_egress_conformance",
+    "assert_egress_methods_conformance",
     "assert_exec_conformance",
     "assert_files_delete_conformance",
     "assert_files_in_conformance",
@@ -112,6 +116,7 @@ __all__ = [
     "plant_layout",
     "run_call_scope_probes",
     "run_egress_probes",
+    "run_egress_methods_probes",
     "run_exec_probes",
     "run_files_delete_probes",
     "run_files_in_probes",
@@ -2283,6 +2288,13 @@ def _assert_conformance(results: tuple[ProbeResult, ...], suite: str) -> tuple[P
 # answering 404 on its own passes the deny probe having reached the host.
 
 
+def _curl_max_time(exec_timeout: float) -> str:
+    """Leave time for curl to report a denial before the outer exec deadline."""
+    if not math.isfinite(exec_timeout) or exec_timeout < 1:
+        raise ValueError("curl exec timeout must be finite and at least 1 second")
+    return f"{exec_timeout * (5.0 / 6.0):.3f}"
+
+
 async def _http_reaches(subject: ConformanceSubject, url: str, exec_timeout: float) -> bool:
     """Whether the guest reached ``url`` — a 2xx over a completed request.
 
@@ -2290,7 +2302,12 @@ async def _http_reaches(subject: ConformanceSubject, url: str, exec_timeout: flo
     tunnel, ``000``), a proxy deny (``403``) or any non-2xx status all mean "did not reach".
     """
     result = await subject.sandbox.exec(
-        ["sh", "-c", f"curl -s -o /dev/null -w '%{{http_code}}' --max-time 25 {shlex.quote(url)}"],
+        [
+            "sh",
+            "-c",
+            f"curl -s -o /dev/null -w '%{{http_code}}' "
+            f"--max-time {_curl_max_time(exec_timeout)} {shlex.quote(url)}",
+        ],
         working_directory=subject.working_directory,
         timeout=exec_timeout,
     )
@@ -2313,7 +2330,8 @@ async def run_egress_probes(
     fixture rather than of the backend. Both URLs must name endpoints known to answer 2xx when
     reached: the allowed probe is that half's positive control, and a ``denied_url`` answering
     non-2xx on its own would pass the deny probe having reached the host, which is the one thing
-    that probe exists to refute.
+    that probe exists to refute. ``exec_timeout`` must be finite and at least one second;
+    curl's deadline leaves headroom inside that bound.
     """
 
     async def _allowed(s: ConformanceSubject, _paths: ConformancePaths) -> None:
@@ -2377,6 +2395,126 @@ async def assert_egress_conformance(
 
 
 # ---------------------------------------------------------------------------
+class EgressMethodsSubject(Protocol):
+    """An acquired sandbox whose native request surface can measure method enforcement."""
+
+    @property
+    def capabilities(self) -> frozenset[Capability]:
+        """The backend's declared capabilities, without filtering."""
+        ...
+
+    async def http_reaches(self, method: str, url: str, *, timeout: float) -> bool:
+        """Issue the literal method from the guest; return whether it completed with 2xx.
+
+        A network or policy denial returns False; a harness failure raises.
+        """
+        ...
+
+
+@dataclass(frozen=True)
+class ExecEgressMethodsSubject:
+    """Measure HTTP methods through a POSIX guest with curl; no filesystem probes required.
+
+    Request timeouts must be finite and at least one second, including exec headroom.
+    """
+
+    sandbox: Sandbox
+    capabilities: frozenset[Capability]
+    working_directory: str = "/"
+
+    async def http_reaches(self, method: str, url: str, *, timeout: float) -> bool:
+        """Issue the request through curl and read its completed HTTP status."""
+        result = await self.sandbox.exec(
+            [
+                "sh",
+                "-c",
+                f"curl -s -o /dev/null -w '%{{http_code}}' --max-time {_curl_max_time(timeout)} "
+                f"-X {shlex.quote(method)} {shlex.quote(url)}",
+            ],
+            working_directory=self.working_directory,
+            timeout=timeout,
+        )
+        status = result.stdout.strip()
+        if result.exit_code in (126, 127):
+            raise RuntimeError("the egress method harness could not execute curl")
+        return (
+            result.exit_code == 0 and len(status) == 3 and status.isdecimal() and status[0] == "2"
+        )
+
+
+async def run_egress_methods_probes(
+    scoped: EgressMethodsSubject,
+    control: EgressMethodsSubject,
+    *,
+    allowed_url: str,
+    request_timeout: float = 30.0,
+) -> tuple[ProbeResult, ...]:
+    """Measure GET-only policy against a separate all-methods positive control.
+
+    Acquire both subjects before calling, with the same target allowed in each. The target
+    must answer 2xx to GET and POST: the control's POST prevents an origin's 405 from passing
+    as enforcement. Acquisition, policy selection and disposal belong to the caller.
+    """
+    for subject in (scoped, control):
+        if Capability.EGRESS_METHODS not in subject.capabilities:
+            raise ValueError("the subject must declare EGRESS_METHODS before it can be measured")
+
+    async def measure(
+        subject: EgressMethodsSubject, method: str, expected: bool, name: str, why: str
+    ) -> ProbeResult:
+        async def check() -> None:
+            reached = await subject.http_reaches(method, allowed_url, timeout=request_timeout)
+            if reached != expected:
+                outcome = "reach the target with 2xx" if expected else "be refused"
+                raise AssertionError(f"{method} {allowed_url} must {outcome}")
+
+        async def run(_subject: ConformanceSubject, _paths: ConformancePaths) -> None:
+            await check()
+
+        probe = Probe(name, why, frozenset({Capability.EGRESS_METHODS}), run)
+        return await _capture_probe_result(probe, check())
+
+    return (
+        await measure(
+            control,
+            "POST",
+            True,
+            "an-unscoped-post-is-reachable",
+            "the origin must accept POST before a scoped denial can prove enforcement",
+        ),
+        await measure(
+            scoped,
+            "GET",
+            True,
+            "a-scoped-get-is-reachable",
+            "severing all traffic must not pass as method enforcement",
+        ),
+        await measure(
+            scoped,
+            "POST",
+            False,
+            "a-scoped-post-is-refused",
+            "a GET-only rule must not admit POST to the allowed host",
+        ),
+    )
+
+
+async def assert_egress_methods_conformance(
+    scoped: EgressMethodsSubject,
+    control: EgressMethodsSubject,
+    *,
+    allowed_url: str,
+    request_timeout: float = 30.0,
+) -> tuple[ProbeResult, ...]:
+    """Run method probes and raise ConformanceFailure if enforcement or a control fails."""
+    return _assert_conformance(
+        await run_egress_methods_probes(
+            scoped, control, allowed_url=allowed_url, request_timeout=request_timeout
+        ),
+        "EGRESS_METHODS",
+    )
+
+
 # CALL_SCOPE — that a sandbox per call is a boundary and not a name (#436)
 # ---------------------------------------------------------------------------
 #

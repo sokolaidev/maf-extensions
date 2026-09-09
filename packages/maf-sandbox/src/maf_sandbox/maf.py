@@ -977,7 +977,7 @@ def _channel_clause(channel: SourceChannel, spec: SandboxSpec) -> str:
     if channel is SourceChannel.EGRESS:
         if spec.egress is Egress.UNRESTRICTED:
             return f"the network (egress is {str(Egress.UNRESTRICTED)!r})"
-        return f"the network (egress_allow names {', '.join(spec.egress_allow)})"
+        return f"the network (egress_allow names {', '.join(map(str, spec.egress_allow))})"
     if spec.host_tools is None:
         return (
             f"host tools (requires holds {str(Capability.HOST_TOOLS)!r} and the spec carries no "

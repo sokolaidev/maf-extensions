@@ -2117,7 +2117,7 @@ _ALLOW_SPEC = SandboxSpec(
 )
 # The allowlist folds into the name, so an allowlisted sandbox is a different container from a
 # closed one for the same key — which is what stops a reuse from crossing egress modes.
-_ALLOW_ID = "allow:" + ",".join(sorted(_ALLOW_SPEC.egress_allow))
+_ALLOW_ID = "allow:" + ",".join(sorted(map(str, _ALLOW_SPEC.egress_allow)))
 _AL = _container_name(_KEY, _ALLOW_SPEC.kind, _ALLOW_ID)
 _AL_NET = _network_name(_AL)
 _AL_PROXY = _proxy_name(_AL)
@@ -2294,7 +2294,7 @@ class TestAllowlistIdentity:
         )
 
     def test_a_different_allowlist_is_a_different_sandbox(self):
-        wider = "allow:" + ",".join(sorted((*_ALLOW_SPEC.egress_allow, "aka.ms")))
+        wider = "allow:" + ",".join(sorted(map(str, (*_ALLOW_SPEC.egress_allow, "aka.ms"))))
         assert _container_name(_KEY, _ALLOW_SPEC.kind, _ALLOW_ID) != _container_name(
             _KEY, _ALLOW_SPEC.kind, wider
         )
@@ -2483,7 +2483,7 @@ class TestTheProxysOwnDecisionsReachARecord:
         kept only the later — the earlier proxy is reached by the label sweep alone."""
         seen: list[EgressObserved] = []
         other = replace(_ALLOW_SPEC, egress_allow=("example.invalid",))
-        first = _container_name(_KEY, other.kind, "allow:" + ",".join(other.egress_allow))
+        first = _container_name(_KEY, other.kind, "allow:" + ",".join(map(str, other.egress_allow)))
         drained = _WslcResult(0, b"ALLOW example.invalid:443", b"")
         backend, _fake = _backend_with(
             _machine(running=[first], overrides={("container", "logs", "--tail"): drained}),
@@ -2513,7 +2513,7 @@ class TestTheProxysOwnDecisionsReachARecord:
     def test_a_purge_attributes_a_name_the_registry_has_replaced(self):
         seen: list[EgressObserved] = []
         other = replace(_ALLOW_SPEC, egress_allow=("example.invalid",))
-        first = _container_name(_KEY, other.kind, "allow:" + ",".join(other.egress_allow))
+        first = _container_name(_KEY, other.kind, "allow:" + ",".join(map(str, other.egress_allow)))
         drained = _WslcResult(0, b"ALLOW example.invalid:443", b"")
         backend, _fake = _backend_with(
             _machine(running=[first], overrides={("container", "logs", "--tail"): drained}),

@@ -4,7 +4,7 @@
 
 ## The vocabulary
 
-`Capability` is a `StrEnum` with ten members. It is the second of the two axes — [`policy-isolation.md`](policy-isolation.md) holds the first — and it answers a different question: not *how strong is the boundary*, but *what is behind it*. Where the axis sits in the stack is [`architecture.md`](architecture.md); what a kind does with it is [`kinds/README.md`](kinds/README.md); how each backend implements it is [`backends/README.md`](backends/README.md).
+`Capability` is a `StrEnum` with eleven members. It is the second of the two axes — [`policy-isolation.md`](policy-isolation.md) holds the first — and it answers a different question: not *how strong is the boundary*, but *what is behind it*. Where the axis sits in the stack is [`architecture.md`](architecture.md); what a kind does with it is [`kinds/README.md`](kinds/README.md); how each backend implements it is [`backends/README.md`](backends/README.md).
 
 | Member | What it gates | Declared today by |
 |---|---|---|
@@ -18,6 +18,7 @@
 | `SNAPSHOT` | Snapshot and restore a sandbox for reuse, which also establishes the `RESET` cleanup rung — `Sandbox.reset` | nobody |
 | `RECLAIM` | Take a directory this stack created, which is what the `RECLAIM` cleanup rung runs — `Sandbox.reclaim`, which stays mandatory whether or not this is declared | docker |
 | `ATTACHED_IDENTITY` | A platform-attached identity scoped to the sandbox itself | nobody |
+| `EGRESS_METHODS` | Enforce literal HTTP methods on allowlist entries, within `egress_method_tokens` — [network policy](network.md#method-scoped-allow-entries) | nobody |
 
 `InProcessSandboxBackend` defaults to `DEFAULT_CAPABILITIES | {Capability.RECLAIM}`; tests can override its declarations. The router’s default for an unstated capability set remains:
 

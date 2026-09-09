@@ -1392,7 +1392,9 @@ class AcasSandboxBackend:
         return EgressPolicy(
             default_action="Deny",
             traffic_inspection="Full",
-            host_rules=[EgressHostRule(pattern=host, action="Allow") for host in spec.egress_allow],
+            host_rules=[
+                EgressHostRule(pattern=str(host), action="Allow") for host in spec.egress_allow
+            ],
         )
 
     async def _configure(self, sandbox_client: Any) -> None:
