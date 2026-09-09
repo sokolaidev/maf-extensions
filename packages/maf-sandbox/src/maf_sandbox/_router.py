@@ -291,18 +291,13 @@ def _coded(backend_name: str, reported: object) -> DisposalFailure:
 
 
 def _refuse_a_sandbox_that_cannot_be_reclaimed(sandbox: Sandbox) -> None:
-    """Refuse a sandbox missing :meth:`Sandbox.reclaim`, naming the member rather than leaking.
-
-    No capability gates ``reclaim``, so no other check notices a backend without it — every
-    call would leak its directory instead. A :class:`TypeError` because an absent protocol
-    member is exactly that: read by a person and fixed in code, never caught to recover.
-    """
+    """Require the protocol member, including on backends that implement it as a refusal."""
     if not callable(getattr(sandbox, "reclaim", None)):
         raise TypeError(
-            f"{type(sandbox).__name__} does not implement `Sandbox.reclaim`, which every backend "
-            "serves and no capability gates. Add it — a directory this stack created under the "
-            "working directory, removed recursively, where a missing directory is success — and "
-            "`maf_sandbox.conformance.assert_reclaim_conformance` proves the implementation."
+            f"{type(sandbox).__name__} does not implement `Sandbox.reclaim`, a required protocol "
+            "member. Implement safe reclamation or an explicit refusal; declare RECLAIM only "
+            "when safe reclamation is established. "
+            "`maf_sandbox.conformance.assert_reclaim_conformance` checks that declaration."
         )
 
 

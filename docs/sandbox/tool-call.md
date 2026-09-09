@@ -86,9 +86,9 @@ The subject implements `FingerprintSubject.fingerprint()` in `maf_sandbox.confor
 
 **What it removes with is the backend's choice; whether reclamation is sufficient is core's.** `Sandbox.reclaim(directory, *, working_directory, timeout)` remains a required method, but the backend withholds `RECLAIM` and refuses direct calls when it cannot establish safe reclamation. The cleanup ladder admits reclamation only when the backend declares it and the workload is confined; otherwise it selects an established stronger rung. The method dispatches to a backend mechanism rather than spelling a shell line. A framework-chosen directory does not establish that the guest cannot swap an ancestor, so the removal must still satisfy the reach rule. Core bounds the operand under the working directory, refuses the working directory itself and paths fewer than two components from the root, and supplies the cleanup timeout. Cleanup failures reach the host as `ReclaimFailure` rather than replacing the call's result; cancellation propagates.
 
-Three rules a caller depends on, and the first is what pays for the absent check:
+Three rules apply to reclamation the backend can safely attempt:
 
-- **The caller created the directory** — under `working_directory`, with an unguessable name. Statable, not enforceable: a backend takes it on the contract, and that is the whole of what lets the method skip confinement.
+- **The caller created the directory** under `working_directory`, with an unguessable name. This distinguishes it from model-supplied input; it does not prove safe reach after the guest has run. The backend owns any safety checks and refuses if it cannot establish the reach bound.
 - **A path that is not there is success.** Cleanup runs in a `finally` and must not report a second failure over the first.
 - **Anything else raises**, so the caller can escalate.
 

@@ -4208,7 +4208,8 @@ class _GuestThatRecordsRemovals(_GuestThatRecordsTheKill):
 
 class TestTheTransportReclaimsItsOwnFiles:
     """`Sandbox.reclaim`, not `Sandbox.remove`: requiring `FILES_DELETE` would cut off a
-    backend that serves dispatch and withholds it, and the reclaim is behind no capability.
+    backend that serves dispatch and withholds it. The transport calls the reclaim mechanism
+    directly and reports failure for the caller's cleanup policy.
 
     The files it writes carry a run's host-tool traffic — every argument a program passed to a
     host tool and every value it got back — plus the program a model wrote. Left behind, they
