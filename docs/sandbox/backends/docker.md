@@ -108,7 +108,7 @@ The inventory includes stopped containers, proxies without a workload and networ
 
 | Decision | State | Tracking |
 |---|---|---|
-| Rootfs-only pull surface; mounted paths are outside its absence guarantee | documented — creation tests forbid volume, mount and tmpfs flags in both network modes; no runtime mount detection | [#944](https://github.com/sokolaidev/maf-extensions/issues/944) (open) |
+| Rootfs-only pull surface; mounted paths are outside its absence guarantee | documented — creation tests forbid volume, mount and tmpfs flags in both network modes; no runtime mount detection | [#944](https://github.com/sokolaidev/maf-extensions/issues/944) (closed) by [#1034](https://github.com/sokolaidev/maf-extensions/pull/1034) (merged) |
 | Cleanup ownership, lifecycle guidance and a reference operator deployment | implemented — deployment-owned scheduling and an ACAS reference example in [operations.md](../operations.md) | [#1008](https://github.com/sokolaidev/maf-extensions/issues/1008) (closed) by [#1014](https://github.com/sokolaidev/maf-extensions/pull/1014) (merged) |
 | Explicit age-based cleanup of Docker workloads, proxies and networks | shipped | [#1009](https://github.com/sokolaidev/maf-extensions/issues/1009) (closed) by [#1012](https://github.com/sokolaidev/maf-extensions/pull/1012) (merged), under umbrella [#808](https://github.com/sokolaidev/maf-extensions/issues/808) (open) |
 | The backend, its declarations, and `FILES_OUT` from the day the package existed | shipped | [#109](https://github.com/sokolaidev/maf-extensions/issues/109) open as the `FILES_OUT` tracking issue; the docker item landed first, as the gate |
