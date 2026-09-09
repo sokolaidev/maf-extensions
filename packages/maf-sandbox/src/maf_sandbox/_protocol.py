@@ -745,8 +745,7 @@ class SandboxSpec:
     ``confined_to_guest_call_path`` claims that every write stays under the guest call path
     and no started process outlives the call. Together with Capability.RECLAIM, it permits
     warm reuse. The default is False; a kind claiming confinement owes a real-backend
-    filesystem and process probe. The planned assert_nothing_left_behind probe is not yet
-    available.
+    filesystem and process probe through ``maf_sandbox.conformance.assert_nothing_left_behind``.
 
     ``min_cleanup`` may raise the host's floor, never lower it. None adds no constraint.
     DISPOSE is always available, so a stronger floor costs cleanup rather than refusing a spec.

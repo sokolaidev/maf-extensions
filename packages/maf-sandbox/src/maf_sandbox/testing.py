@@ -42,6 +42,7 @@ from ._protocol import (
     ScopePurge,
     SourceIntegrity,
 )
+from .conformance import SandboxFingerprint
 from .paths import (
     confine_resolve_guest_delete_path,
     confine_resolve_guest_list_path,
@@ -219,6 +220,10 @@ class InProcessSandbox:
     def running_programs(self) -> frozenset[str]:
         """Every program still running — the fingerprint's other half."""
         return frozenset(self.running)
+
+    async def fingerprint(self) -> SandboxFingerprint:
+        """Snapshot the fake's stores; restored bytes are indistinguishable from untouched bytes."""
+        return SandboxFingerprint(self.changed_paths(), self.running_programs())
 
     @property
     def files(self) -> Mapping[str, str]:
