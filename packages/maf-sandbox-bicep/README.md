@@ -31,6 +31,10 @@ Pass `router=None` — or a router with no backend — and you get `[]` back: an
 
 Build, parameter-file compilation, and lint run with `HOME` and `TMPDIR` set to the call directory, so Bicep's default module cache and temporary profile are removed with that call. A second call restores its modules again. The image's `bicepconfig.json` still supplies the compiler and linter settings through normal source-directory discovery.
 
+The kind declares `confined_to_guest_call_path=True`: its writes stay inside the call directory and its processes finish with the call. On a backend declaring `RECLAIM`, cleanup removes that directory and keeps the sandbox warm. A stricter host cleanup floor still applies; a backend without `RECLAIM` uses reset where available or disposal. The package's Docker confinement suite runs the real tool and cleanup through `assert_nothing_left_behind`, checking for changed paths and surviving processes after successful validation, compiler diagnostics, and module restores.
+
+Cancellation waits for the active compiler command to finish within its `exec_timeout_seconds` bound before reclaiming the directory and propagating cancellation. Cancelling the host's wait alone does not reliably stop a guest process.
+
 `router`, `file_store` and `context` are the host's, and this snippet shows none of them being built. [`samples/01_acas_bicep`](https://github.com/sokolaidev/maf-extensions/tree/main/samples/01_acas_bicep) is the whole wiring as a runnable program: a one-turn agent that validates a deliberately flawed Bicep file and prints the compiler's diagnostics.
 
 ## Threat model

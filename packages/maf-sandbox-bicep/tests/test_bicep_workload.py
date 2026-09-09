@@ -510,6 +510,42 @@ class TestEndToEnd:
         assert "build(main.bicep): Error: timed out after 3s" in out
         assert "lint(main.bicep): Error: timed out after 3s" in out
 
+    @pytest.mark.parametrize("exec_error", [None, TimeoutError(), RuntimeError("exec failed")])
+    def test_cancellation_waits_for_the_active_command_before_reclaim(self, exec_error):
+        async def scenario():
+            started = asyncio.Event()
+            finish = asyncio.Event()
+
+            class FinishesBeforeReclaim(_KeepsWhatItWrote):
+                async def exec(self, command, *, working_directory, timeout):
+                    started.set()
+                    await finish.wait()
+                    assert self.contents
+                    assert not self.reclaims
+                    if exec_error is not None:
+                        raise exec_error
+                    return await super().exec(
+                        command, working_directory=working_directory, timeout=timeout
+                    )
+
+            sandbox = FinishesBeforeReclaim(default_stdout=_EMPTY_SARIF)
+            tool = _tool(InMemoryStore({"main.bicep": "x"}), _fake_backend(sandbox))
+            call = asyncio.create_task(_callable(tool)(files=["main.bicep"]))
+            await started.wait()
+            for _ in range(2):
+                call.cancel()
+                await asyncio.sleep(0)
+                assert not call.done()
+                assert not sandbox.reclaims
+            finish.set()
+            with pytest.raises(asyncio.CancelledError):
+                await call
+            assert len(sandbox.reclaims) == 1
+            assert not sandbox.contents
+            assert len(sandbox.commands) == (1 if exec_error is None else 0)
+
+        asyncio.run(scenario())
+
     def test_validates_every_file_it_is_given(self):
         store = InMemoryStore({"a.bicep": "1", "b.bicep": "2"})
         backend = _fake_backend()
@@ -1498,6 +1534,25 @@ class TestWhatAFidesHostSeesOfASplitResult:
 
 
 class TestBicepSandboxSpec:
+    @pytest.mark.parametrize("egress", [Egress.ALLOWLIST, Egress.CLOSED, Egress.UNRESTRICTED])
+    def test_confined_calls_can_reclaim_but_respect_the_hosts_cleanup_floor(self, egress):
+        from dataclasses import replace
+
+        from maf_sandbox import Cleanup
+        from maf_sandbox.testing import FAKE_BACKEND_DECLARATIONS
+
+        backend = InProcessSandboxBackend(
+            declarations=replace(FAKE_BACKEND_DECLARATIONS, egress_modes=frozenset({egress}))
+        )
+        spec = bicep_sandbox_spec(egress=egress)
+        assert spec.confined_to_guest_call_path is True
+        router = SandboxRouter([backend], min_isolation=backend.isolation)
+        assert router.effective_cleanup(spec) is Cleanup.RECLAIM
+        strict = SandboxRouter(
+            [backend], min_isolation=backend.isolation, min_cleanup=Cleanup.DISPOSE
+        )
+        assert strict.effective_cleanup(spec) is Cleanup.DISPOSE
+
     def test_allows_exactly_the_four_restore_hosts(self):
         """Two pairs, and every one of them is load-bearing for a restore.
 

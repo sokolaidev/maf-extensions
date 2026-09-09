@@ -14,6 +14,7 @@ hosts Bicep is allowed to reach — lives here and only here.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Mapping
 from time import perf_counter
@@ -223,6 +224,7 @@ def bicep_sandbox_spec(
         egress=egress,
         egress_allow=_MODULE_HOSTS if egress is Egress.ALLOWLIST else (),
         work_dir=_WORK_DIR,
+        confined_to_guest_call_path=True,
     )
 
 
@@ -564,12 +566,26 @@ async def _run_phase(
     expanded name renders it.
     """
     started = perf_counter()
-    try:
-        result = await sandbox.exec(
+    execution = asyncio.create_task(
+        sandbox.exec(
             template.format(path=sandbox_path),
             working_directory=working_directory,
             timeout=timeout,
         )
+    )
+    try:
+        result = await asyncio.shield(execution)
+    except asyncio.CancelledError:
+        # Cancelling the host wait need not stop the guest. Keep the call path until the
+        # bounded exec finishes, even if the caller cancels its wait more than once.
+        while not execution.done():
+            try:
+                await asyncio.shield(execution)
+            except (asyncio.CancelledError, Exception):
+                pass
+        if not execution.cancelled():
+            execution.exception()
+        raise
     except TimeoutError:
         logger.warning("bicep_validate: %s exec timed out for %r after %ss", phase, name, timeout)
         return f"{phase}({label}): Error: timed out after {timeout}s"
