@@ -873,7 +873,8 @@ class TestAnImageWhoseGuestIsNotRoot:
         backend = _backend_with(client)
         spec = _spec_requiring(Capability.FILES_DELETE)
 
-        for now in (100.0, 159.0, 160.0, 219.0):
+        for probe_time in (100.0, 159.0, 160.0, 219.0):
+            now = probe_time
             with pytest.raises(SandboxCapabilityNotSupported):
                 asyncio.run(backend.acquire(self._key(), spec))
         assert client.create_calls == len(client.probes) == 2
@@ -937,7 +938,8 @@ class TestAnImageWhoseGuestIsNotRoot:
 
         now = 160.0
         client._answer = _GuestAnswer(exit_code=127)
-        for now in (160.0, 219.0):
+        for probe_time in (160.0, 219.0):
+            now = probe_time
             with pytest.raises(SandboxCapabilityNotSupported):
                 asyncio.run(backend.acquire(self._key(), deleting))
         assert client.create_calls == len(client.probes) == 2
