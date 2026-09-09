@@ -486,9 +486,14 @@ jobs:
         run: |
           set -euo pipefail
           engine="maf-fingerprint-rootless-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          trap 'docker logs "$engine"; docker rm -fv "$engine"' EXIT
+          profile="$RUNNER_TEMP/$engine.apparmor"
+          trap 'docker logs "$engine" || true; docker rm -fv "$engine" || true; sudo apparmor_parser -R "$profile"' EXIT
+          # Ubuntu requires an explicit userns grant for the nested rootless daemon.
+          printf 'abi <abi/4.0>,\nprofile %s flags=(unconfined) {\n  userns,\n}\n' "$engine" > "$profile"
+          sudo apparmor_parser -r "$profile"
           # Docker's rootless-in-Docker recipe requires this on the outer container only.
           docker run -d --privileged --name "$engine" \
+            --security-opt "apparmor=$engine" \
             -e DOCKER_HOST=unix:///run/user/1000/docker.sock \
             docker:29-dind-rootless@sha256:e17fa54c2ffd511d8407c746eec77f7814e6f74fe20caf822dad1870599984c0
           for attempt in {1..30}; do
