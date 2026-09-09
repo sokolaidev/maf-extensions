@@ -12,9 +12,12 @@ import importlib.util
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from maf_sandbox import EntryKind, SandboxEntry
 
 _AGENT = Path(__file__).resolve().parent.parent / "samples/15_acas_codeact_host_tools/agent.py"
 _spec = importlib.util.spec_from_file_location("sample_15", _AGENT)
@@ -60,6 +63,79 @@ def test_act_five_reports_version_derived_cleanup_with_surviving_directories(mon
     assert sample.CALL_RECLAIMS
     assert "call directory cleanup: reclaimed by the framework" in output
     assert "call directories across both sandboxes: 6" in output
+
+
+def test_act_five_reports_zero_leftovers_when_reacquired_sandboxes_have_no_work_directory(capsys):
+    sandbox = SimpleNamespace(
+        list_dir=AsyncMock(side_effect=FileNotFoundError("no such directory"))
+    )
+    router = SimpleNamespace(acquire=AsyncMock(return_value=sandbox))
+
+    asyncio.run(sample.act_five_what_the_runs_left_behind(router, sample.HostToolRegistry()))
+
+    output = capsys.readouterr().out
+    assert "call directories across both sandboxes: 0" in output
+    assert "of those, runs that called a host tool: 0" in output
+    assert "transport files left behind: 0, of which answered calls: 0" in output
+    assert router.acquire.await_count == 2
+    assert sandbox.list_dir.await_count == 2
+    for call in sandbox.list_dir.await_args_list:
+        assert call.args == (".",)
+        assert call.kwargs == {"working_directory": "/maf-sandbox/work"}
+
+
+@pytest.mark.parametrize("error", [PermissionError("denied"), RuntimeError("service unavailable")])
+def test_act_five_does_not_hide_other_work_directory_listing_errors(error):
+    sandbox = SimpleNamespace(list_dir=AsyncMock(side_effect=error))
+    router = SimpleNamespace(acquire=AsyncMock(return_value=sandbox))
+
+    with pytest.raises(type(error), match=str(error)):
+        asyncio.run(sample._what_one_sandbox_holds(router, "route", None))
+
+
+def test_act_five_does_not_hide_acquire_errors():
+    router = SimpleNamespace(acquire=AsyncMock(side_effect=FileNotFoundError("image not found")))
+
+    with pytest.raises(FileNotFoundError, match="image not found"):
+        asyncio.run(sample._what_one_sandbox_holds(router, "route", None))
+
+
+@pytest.mark.parametrize("missing_calls", [False, True])
+def test_act_five_inspects_retained_run_directories(missing_calls):
+    direct, host = "a" * 32, "b" * 32
+    calls = f"{host}/host_tools/{sample.CALLS_DIRECTORY}"
+    files = [
+        SandboxEntry(f"{calls}/tool{suffix}", EntryKind.FILE, 1)
+        for suffix in (".claimed", ".request.json", ".response.json")
+    ]
+    sandbox = SimpleNamespace(
+        list_dir=AsyncMock(
+            side_effect=[
+                [
+                    SandboxEntry(direct, EntryKind.DIRECTORY, None),
+                    SandboxEntry(host, EntryKind.DIRECTORY, None),
+                    SandboxEntry("unrelated", EntryKind.DIRECTORY, None),
+                    SandboxEntry("c" * 32, EntryKind.FILE, 1),
+                ],
+                FileNotFoundError("no host tools in the direct run"),
+                [SandboxEntry(calls, EntryKind.DIRECTORY, None)],
+                FileNotFoundError("calls disappeared") if missing_calls else files,
+            ]
+        )
+    )
+    router = SimpleNamespace(acquire=AsyncMock(return_value=sandbox))
+
+    if missing_calls:
+        with pytest.raises(FileNotFoundError, match="calls disappeared"):
+            asyncio.run(sample._what_one_sandbox_holds(router, "route", None))
+    else:
+        assert asyncio.run(sample._what_one_sandbox_holds(router, "route", None)) == (2, 1, 3, 1)
+    assert [call.args[0] for call in sandbox.list_dir.await_args_list] == [
+        ".",
+        f"{direct}/host_tools",
+        f"{host}/host_tools",
+        calls,
+    ]
 
 
 def _table(cells: dict[str, dict[str, float]], separator: str = "\t") -> str:

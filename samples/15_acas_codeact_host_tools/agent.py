@@ -678,11 +678,14 @@ async def _what_one_sandbox_holds(
 ) -> tuple[int, int, int, int]:
     """Count run directories and transport files in a route's acquired sandbox.
 
-    Inspection requires the route's work directory to survive until this acquire.
+    A missing work directory counts as empty: per-call disposal can make this acquire a fresh guest.
     """
     spec = codeact_sandbox_spec(image=CODEACT_IMAGE, host_tools=registry)
     sandbox = await router.acquire(SandboxKey(SCOPE, thread, AGENT_DIR), spec)
-    runs = await sandbox.list_dir(".", working_directory=spec.work_dir)
+    try:
+        runs = await sandbox.list_dir(".", working_directory=spec.work_dir)
+    except FileNotFoundError:
+        return 0, 0, 0, 0
     # Kind *and* name, because the guest can write here: a program that walks up out of its
     # work directory can leave a file beside the runs, and `list_dir` on `<file>/host_tools`
     # raises rather than reporting nothing. Each directory is one call's, named after it.
@@ -740,6 +743,9 @@ async def act_five_what_the_runs_left_behind(
     print(f"{MEASURED}call directories across both sandboxes: {directories}")
     print(f"{MEASURED}of those, runs that called a host tool: {runs_that_called_a_host_tool}")
     print(f"{MEASURED}transport files left behind: {left}, of which answered calls: {answered}")
+    print()
+    print("  Inspection can acquire a fresh sandbox after per-call disposal; a missing work")
+    print("  directory counts as nothing left in the acquired guest.")
     print()
     print("  A fresh directory per run keeps one run's traffic out of the next one's.")
     if CALL_RECLAIMS:

@@ -102,7 +102,7 @@ So a host-tool call that is answered at all proves the launcher detached and the
 
 Act 5 enumerates the work root with `list_dir`, which needs `Capability.FILES_LIST`. ACAS declares it and Docker does not, so on `SAMPLE_BACKEND=docker` act 5 prints a skip note and everything in this section applies only to the ACAS run.
 
-**Known limitation with per-call disposal:** act 5 reacquires a sandbox and assumes it is the warm one the route used. After disposal it can instead acquire a fresh sandbox with no `/maf-sandbox/work`, and enumeration fails with an ACAS 404. Correcting the purge-count check does not fix this separate inspection problem ([#1024](https://github.com/sokolaidev/maf-extensions/issues/1024)).
+Act 5 counts what is present in the acquired guest. After per-call disposal, that can be a fresh sandbox with no `/maf-sandbox/work`; a missing work directory reports zero call directories and transport files. These counts describe the acquired guest, not the disposed one. Other listing errors still fail the sample, and the final scope purge removes the inspection sandboxes.
 
 A fresh directory per run keeps one run's traffic out of the next one's. On current CodeAct, the framework owns that call directory and reclaims it when the tool call returns, so act 5 may find no directories at all. Older CodeAct kinds leave those directories for the sandbox, and act 5 reports that behavior too.
 
