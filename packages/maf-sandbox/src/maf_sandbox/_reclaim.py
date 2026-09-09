@@ -151,8 +151,8 @@ async def reclaim_guest_path(
     removal is the caller's deadline arriving, and it propagates — containing it would let the
     call return past a bound the host thought it had.
 
-    Dispatches to :meth:`Sandbox.reclaim`, which every backend serves. The guards stay here:
-    the backend is the mechanism, not the policy.
+    Dispatches to :meth:`Sandbox.reclaim` and reports refusals to the caller. Placement guards
+    stay here; the backend owns the removal mechanism and its safety checks.
     """
     try:
         resolved = confine_resolve_guest_path(path, working_directory)
@@ -171,10 +171,10 @@ async def reclaim_guest_path(
         # `AttributeError`: a correct `reclaim` raising one of its own is a different fault.
         if not callable(getattr(sandbox, "reclaim", None)):
             return (
-                "this backend does not implement `Sandbox.reclaim`, which every backend serves "
-                "and no capability gates — every call leaks its directory until it does. "
-                "`maf_sandbox.conformance.assert_reclaim_conformance` is what proves an "
-                "implementation"
+                "this backend does not implement `Sandbox.reclaim`, a required protocol member. "
+                "Implement safe reclamation or an explicit refusal; declare RECLAIM only "
+                "when safe reclamation is established. "
+                "`maf_sandbox.conformance.assert_reclaim_conformance` checks that declaration"
             )
         await sandbox.reclaim(resolved, working_directory=working_directory, timeout=timeout)
     except Exception as refused:  # noqa: BLE001 — an unreclaimed path is a leak, not a fault

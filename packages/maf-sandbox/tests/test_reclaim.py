@@ -127,8 +127,7 @@ class TestItNeverRaises:
 
 
 class TestABackendThatPredatesReclaim:
-    """`reclaim` is the one protocol member no capability gates, so nothing else refuses a
-    backend without it — the reason has to name the member itself."""
+    """A missing protocol member is reported distinctly from a removal that failed."""
 
     class _Stale(InProcessSandbox):
         """Every member but the one that became mandatory."""

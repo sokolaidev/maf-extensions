@@ -1211,8 +1211,7 @@ class TestReachAgainstARealEngine:
 
 
 class TestReclaimAgainstARealEngine:
-    """`maf_sandbox.conformance`'s RECLAIM suite — gated by no capability, unlike FILES_DELETE
-    above, so every backend owes the assert directly rather than a measurement."""
+    """Assert the RECLAIM suite or its declaration gate across supported cores."""
 
     def test_it_answers_the_reclaim_probes(self):
         if assert_reclaim_conformance is None:
@@ -1225,14 +1224,19 @@ class TestReclaimAgainstARealEngine:
             # The narrowing does not cross into this closure; the assert re-establishes it,
             # and the coverage check wants the suite called by name.
             assert assert_reclaim_conformance is not None
-            results = await assert_reclaim_conformance(
-                PosixGuestSubject(
-                    sandbox=sandbox,
-                    working_directory=_WORK,
-                    capabilities=backend.declarations.capabilities,
+            try:
+                results = await assert_reclaim_conformance(
+                    PosixGuestSubject(
+                        sandbox=sandbox,
+                        working_directory=_WORK,
+                        capabilities=backend.declarations.capabilities,
+                    )
                 )
-            )
-            assert not [r for r in results if r.skipped]
+            except ValueError as refused:
+                assert Capability.RECLAIM not in backend.declarations.capabilities
+                assert "declares no RECLAIM" in str(refused)
+            else:
+                assert not [r for r in results if r.skipped]
 
         try:
             asyncio.run(scenario())

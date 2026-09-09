@@ -79,6 +79,7 @@ _EVERYTHING = frozenset(
         Capability.FILES_OUT,
         Capability.FILES_LIST,
         Capability.FILES_DELETE,
+        Capability.RECLAIM,
     }
 )
 
@@ -1335,8 +1336,7 @@ class _RuntimeOnlyGuest(InProcessSandbox):
     """The shipped fake with no shell and no push surface: `exec` and `write_file` refuse.
 
     The runtime-only shape #382 and #425 name, where the guest is reached through `run_code` or
-    a store API alone. `reclaim` stays the fake's real one, because `reclaim` is mandatory
-    whatever else a backend declines to serve.
+    a store API alone. Its subject declares RECLAIM independently of those surfaces.
     """
 
     async def exec(self, command, *, working_directory, timeout):
@@ -1358,7 +1358,7 @@ class _RuntimeOnlySubject:
     def __init__(self, sandbox: InProcessSandbox) -> None:
         self.sandbox = sandbox
         self.working_directory = _WORK
-        self.capabilities = frozenset()
+        self.capabilities = frozenset({Capability.RECLAIM})
 
     async def plant_file(self, path: str, content: bytes) -> None:
         self.sandbox.contents[path] = content
@@ -1392,7 +1392,18 @@ class _RuntimeOnlySubject:
 
 
 class TestReclaimConformance:
-    """No gate here, so the negatives are backends that answer without doing what they promise."""
+    """Declared reclamation runs the probes; withheld reclamation reaches no guest."""
+
+    @pytest.mark.parametrize("run", [run_reclaim_probes, assert_reclaim_conformance])
+    def test_an_undeclared_reclaim_is_refused_before_planting(self, run):
+        class _NoPlant(_RuntimeOnlySubject):
+            async def plant_file(self, path, content):
+                raise AssertionError("the capability gate must precede planting")
+
+        subject = _NoPlant(_RuntimeOnlyGuest())
+        subject.capabilities = _EVERYTHING - {Capability.RECLAIM}
+        with pytest.raises(ValueError, match="declares no RECLAIM"):
+            asyncio.run(run(subject))
 
     def test_the_simulator_answers_every_probe(self):
         assert _sim_results(_sim_subject(), run_reclaim_probes) == dict.fromkeys(
@@ -1532,7 +1543,7 @@ class TestReclaimConformance:
         assert "exited 127" in failures["nested-content-goes-with-it"]
 
     def test_a_backend_with_no_exec_and_no_write_file_answers_every_probe(self):
-        """The suite is mandatory, so a runtime-only backend has to be able to sit it (#639)."""
+        """Declared reclamation can be verified without EXEC or FILES_IN (#639)."""
         results = asyncio.run(assert_reclaim_conformance(_RuntimeOnlySubject(_RuntimeOnlyGuest())))
         assert [r.probe.name for r in results] == [p.name for p in RECLAIM_PROBES]
         assert all(r.passed for r in results)
@@ -1894,7 +1905,7 @@ class TestCallScopeConformance:
     def test_no_capability_gates_the_run(self):
         """A backend owes these probes whatever else it declares.
 
-        `plant_file` and `exists` are the subject's own seams, as they are for the mandatory
+        `plant_file` and `exists` are the subject's own seams, as they are for the
         reclaim suite, so gating on `FILES_IN` would lock a valid call-scoped backend out of the
         suite it owes for declaring the scope. The two probes that read a sandbox back still skip.
         """

@@ -892,7 +892,8 @@ class Sandbox(Protocol):
     last sentence. A kind that calls :meth:`remove` directly must put the capability in
     ``requires`` itself; omit it and the router may hand back a backend whose ``remove`` raises
     :class:`NotImplementedError` — from a ``finally``, over whatever the run was already
-    reporting. :meth:`reclaim` is behind no capability: every backend implements it.
+    reporting. :meth:`reclaim` remains a required method, but may refuse when safety cannot
+    be established; :data:`Capability.RECLAIM` admits it for router-managed cleanup.
 
     ``working_directory`` is a parameter on those four — the pull surface and :meth:`remove` —
     exactly as it is on :meth:`exec`,
@@ -1089,28 +1090,28 @@ class Sandbox(Protocol):
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
         """Remove ``directory`` and everything under it, within ``timeout`` seconds.
 
-        The framework's cleanup. Mandatory, and behind no :class:`Capability`.
+        Required on every sandbox; a backend that cannot establish safe reclamation raises
+        :class:`NotImplementedError` and withholds :data:`Capability.RECLAIM`. That declaration
+        admits reclamation for router-managed cleanup and gates its conformance suite; without
+        it, the router selects a stronger established cleanup rung.
 
-        Three rules. The caller created ``directory`` under ``working_directory`` with an
-        unguessable name, so no filesystem path check is owed — stated, not checked. The premise is
-        not stable: the **guest program** — the payload a kind ran, not the transport files a
-        backend put beside it — can have swapped the path, or a parent, for a link before the
-        call returned.
+        The caller created ``directory`` under ``working_directory``, but the guest may have
+        replaced it or an ancestor. The reach rule still holds: a swap must not let removal
+        delete anything the guest program could not have deleted itself. The backend owns the
+        mechanism and any safety checks, performed here or established at acquire. It must
+        refuse when safe reach cannot be established; the caller can escalate to disposal.
 
-        What the contract holds is the **reach rule** stated for the whole file surface above:
-        a swap must not let the removal delete anything that program could not have deleted
-        itself. It binds here with no filesystem path check to read the ownership from, so a
-        backend removing with more authority than the guest had owes the argument some other
-        way — from what it learned about the image when it acquired the sandbox, say.
+        Keeping removal within the call directory is a best practice, not an additional
+        confinement guarantee. No particular mechanism or link-handling strategy is promised.
+        For a removal that can safely be attempted, an absent directory is success; other
+        failures raise.
 
-        A directory that is not there is success: this runs in a ``finally``. Anything else
-        raises.
-
-        ``directory`` is absolute. Run the removal from ``/``, not from ``working_directory``,
-        which may not exist. Not :meth:`remove`: that takes a model-supplied path, owes
-        confinement, and sits behind :data:`Capability.FILES_DELETE`.
+        ``directory`` is absolute. A guest command must not depend on ``working_directory``
+        existing; it can run from ``/``. Unlike :meth:`remove`, this method does not take a
+        model-supplied path or inherit its :data:`Capability.FILES_DELETE` confinement duty.
 
         Raises:
+            NotImplementedError: The backend cannot offer safe reclamation.
             ValueError: A path that is not absolute, or fewer than two components from the
                 root — a backend refusing a path it cannot place. The guards in this module
                 refuse the same shapes, and a backend that repeats them stands on its own:

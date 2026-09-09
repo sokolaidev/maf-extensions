@@ -27,23 +27,23 @@ confinement.  The FILES_IN, EXEC and FILES_DELETE probes verify through :meth:`S
 rather than the pull surface, because a backend with no pull surface still owes those
 capabilities.  They need ``cat``, ``test``, ``printf``, ``pwd``, ``sleep``, ``sh`` and
 ``mkdir``, and ``rm`` for the reach probes' own measurements — beyond
-``PosixGuestSubject``'s own ``ln`` and ``test``, which the mandatory reclaim
-suite costs even where no capability suite runs.  So the image has to carry the POSIX core
+``PosixGuestSubject``'s own ``ln`` and ``test``, which the reclaim suite uses when declared.
+So the image has to carry the POSIX core
 utilities, and what those suites assert is measured
 against the guest the image ships, which for the suites that run in CI is the image the workflow
 names.
 
-**Two suites belong to no capability.** ``assert_call_scope_conformance`` is gated by a
+**The call-scope suite belongs to no capability.** ``assert_call_scope_conformance`` is gated by a
 declaration rather than a capability — a backend owes it once it declares
 :data:`~maf_sandbox.IsolationScope.CALL` — and it is the only one that acquires a sandbox of
 its own, because one of its probes has to plant before that sandbox exists.
 
-**One belongs to no capability and no declaration.**  :func:`assert_reclaim_conformance` covers
-:meth:`Sandbox.reclaim`, which is mandatory, so it runs with no declaration gate.  Its probes
+**Reclamation is gated by** :data:`~maf_sandbox.Capability.RECLAIM`.
+:func:`assert_reclaim_conformance` refuses an undeclared capability before planting. Its probes
 verify through the subject rather than through ``exec``: they plant with
 :meth:`ConformanceSubject.plant_file` and ask :meth:`ConformanceSubject.exists` what survived.
-A mandatory suite may not require a capability nobody declared — a runtime-only backend answers
-``exec`` with ``NotImplementedError`` and still owes every probe here (#639).
+A runtime-only backend can declare reclamation without declaring ``EXEC``; its subject answers
+through its native store or runtime.
 
 **And one is gated per probe rather than per suite.**  :func:`assert_reach_conformance` covers the
 reach rule :class:`~maf_sandbox.Sandbox` states for the whole file surface, and that surface spans
@@ -145,8 +145,8 @@ class ConformanceSubject(Protocol):
 
     Planting is a subject method because creating a link is the *guest's* move — a sandbox that
     offered it would hand the attacker the tool — so each backend plants however its guest
-    allows.  Seeing is one for a second reason: the reclaim suite is mandatory, so its probes
-    may not verify through an ``exec`` the backend never promised (#639).  ``capabilities``
+    allows. Seeing is separate because a backend can declare reclamation without promising
+    ``exec``. ``capabilities``
     decides which probes run: a backend that never claimed
     :data:`~maf_sandbox.Capability.FILES_LIST` skips the ones attacking :meth:`Sandbox.list_dir`
     rather than failing them.  It is this subject's own field, filled from the backend's
@@ -1857,7 +1857,7 @@ async def measure_files_delete_probes(subject: ConformanceSubject) -> tuple[Prob
 
 
 # ---------------------------------------------------------------------------
-# RECLAIM — the framework's own removal, which no capability gates
+# RECLAIM — the framework's own removal, gated by the backend's declaration
 # ---------------------------------------------------------------------------
 
 
@@ -1937,13 +1937,13 @@ RECLAIM_PROBES: tuple[Probe, ...] = (
     Probe(
         name="a-created-directory-is-gone",
         why="the positive control: a reclaim that did nothing would pass every other probe.",
-        requires=frozenset(),
+        requires=frozenset({Capability.RECLAIM}),
         run=_probe_a_created_directory_is_gone,
     ),
     Probe(
         name="nested-content-goes-with-it",
         why="a call's directory is a tree; removing only the top entry leaves the rest readable.",
-        requires=frozenset(),
+        requires=frozenset({Capability.RECLAIM}),
         run=_probe_nested_content_goes_with_it,
     ),
     Probe(
@@ -1952,13 +1952,13 @@ RECLAIM_PROBES: tuple[Probe, ...] = (
             "a guest plants what it likes inside the directory; a removal that follows a link "
             "deletes a file outside the working directory on every cleanup."
         ),
-        requires=frozenset(),
+        requires=frozenset({Capability.RECLAIM}),
         run=_probe_a_link_inside_is_unlinked_not_followed,
     ),
     Probe(
         name="a-missing-directory-is-success",
         why="cleanup runs in a finally; a second failure over the first buries the real one.",
-        requires=frozenset(),
+        requires=frozenset({Capability.RECLAIM}),
         run=_probe_a_missing_directory_is_success,
     ),
     Probe(
@@ -1967,20 +1967,19 @@ RECLAIM_PROBES: tuple[Probe, ...] = (
             "working_directory says where the directory sits, not where to run from; a call "
             "that wrote nothing leaves it absent."
         ),
-        requires=frozenset(),
+        requires=frozenset({Capability.RECLAIM}),
         run=_probe_an_absent_working_directory_still_succeeds,
     ),
 )
 
 
 async def run_reclaim_probes(subject: ConformanceSubject) -> tuple[ProbeResult, ...]:
-    """Run the reclaim probes. No gate: every backend owes every probe here."""
-    paths = await _plant_nothing(subject)
-    return tuple([await _probe_result(probe, subject, paths) for probe in RECLAIM_PROBES])
+    """Run declared reclamation; raise ValueError before planting when RECLAIM is absent."""
+    return await _run_suite(subject, Capability.RECLAIM, _plant_nothing, RECLAIM_PROBES)
 
 
 async def assert_reclaim_conformance(subject: ConformanceSubject) -> tuple[ProbeResult, ...]:
-    """Run the reclaim probes and raise :class:`ConformanceFailure` if any failed."""
+    """Refuse undeclared reclamation; raise :class:`ConformanceFailure` if a probe fails."""
     return _assert_conformance(await run_reclaim_probes(subject), "RECLAIM")
 
 
@@ -2401,7 +2400,7 @@ async def run_call_scope_probes(
     one that can see that, which is why the seam is required rather than optional.
 
     No capability gates the run.  ``plant_file`` and ``exists`` are the subject's own seams, as
-    they are for the mandatory reclaim suite, so a backend that declares
+    they are for the reclaim suite, so a backend that declares
     :data:`~maf_sandbox.IsolationScope.CALL` owes these probes whatever else it declares; the
     two that read a sandbox back still skip without ``FILES_OUT`` and ``FILES_LIST``.
     """

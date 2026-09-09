@@ -26,6 +26,7 @@ from dataclasses import replace
 import pytest
 from maf_sandbox import (
     Capability,
+    Cleanup,
     DisposalFailure,
     Egress,
     EgressObserved,
@@ -109,7 +110,11 @@ class _FakeWslc:
         return [c for c in self.calls if c.args[: len(prefix)] == prefix]
 
     def only(self, *prefix: str) -> _Recorded:
-        found = self.matching(*prefix)
+        found = [
+            c
+            for c in self.matching(*prefix)
+            if not (c.args[-2:] == ("id", "-u") and c.read_limit == 64)
+        ]
         if prefix == ("container", "cp"):
             found = [call for call in found if len(call.args) > 2 and call.args[2] == "-"]
         assert len(found) == 1, [c.args for c in self.calls]
@@ -202,7 +207,7 @@ class TestBackendIdentity:
 class TestGuestFamilyDeclaration:
     """`os_families` is stated rather than read: `wslc` runs Linux containers and nothing else.
 
-    That constant is what this backend's argv, its `rm -rf` reclaim and its `posixpath` path
+    That constant is what this backend's argv, its POSIX command lines and its guest path
     arithmetic are written against, so the router matches it rather than taking it on trust.
     """
 
@@ -579,124 +584,79 @@ class TestExecDiscardsATimedOutSandbox:
 
 
 class TestReclaim:
-    """The backend this change exists for: `reclaim` is served honestly while `remove` refuses.
-
-    `reclaim` owes no confinement — the caller made the directory, with no attacker-chosen
-    component to walk — so it needs none of the `stat_file` this backend does not have (#125).
-    """
-
-    def _sandbox(self, overrides=None):
-        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
-
-    def test_a_directory_is_removed_as_root_via_rm_rf_behind_a_double_dash(self):
-        sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
-        assert fake.only("container", "exec").args == (
-            "container",
-            "exec",
-            "--user",
-            "0",
-            "-w",
-            "/",
-            _NAME,
-            "rm",
-            "-rf",
-            "--",
-            f"{_WORK}/call-a1b2c3",
-        )
-
-    def test_a_relative_path_is_refused_before_the_call(self):
-        """The removal is recursive and runs as root, so a path the backend cannot place is
-        refused here rather than resolved against whatever the container considers the root."""
-        sandbox, fake = self._sandbox()
+    @pytest.mark.parametrize("directory", ["/work/call", "/tmp/linked/call", "/", "relative"])
+    def test_reclaim_refuses_without_running_a_guest_command(self, directory):
+        backend, fake = _backend_with(_machine(running=[_NAME]))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
         seen = len(fake.calls)
-        for directory in ("work/call-a1b2c3", "etc/ssh", "./x/y", "../../etc/ssh"):
-            with pytest.raises(ValueError, match="not absolute"):
-                asyncio.run(sandbox.reclaim(directory, working_directory=_WORK, timeout=30))
-        assert len(fake.calls) == seen, "the refusal has to land before the engine is called"
-
-    @pytest.mark.parametrize(
-        "directory", ["/tmp", "/", "/etc", "/maf-sandbox/", "//tmp", "/a/..", "/tmp/."]
-    )
-    def test_a_path_too_close_to_the_root_is_refused_before_the_call(self, directory):
-        """`/` and `/tmp` are the shapes that turn a cleanup into an outage, and this one
-        carries root's authority on a recursive delete. The written-spelling cases — `//tmp`,
-        `/a/..`, `/tmp/.` — hold only if the count reads the normalized form: counting the
-        raw input would pass them as two components and send `rm -rf /` as root.
-        """
-        sandbox, fake = self._sandbox()
-        seen = len(fake.calls)
-        with pytest.raises(ValueError, match="close to the root"):
+        with pytest.raises(NotImplementedError, match="RECLAIM.*Dispose the sandbox"):
             asyncio.run(sandbox.reclaim(directory, working_directory=_WORK, timeout=30))
-        assert len(fake.calls) == seen, "the refusal has to land before the engine is called"
+        assert len(fake.calls) == seen
 
-    def test_a_trailing_slash_is_normalized_away(self):
-        """Whether a trailing slash changes `rm`'s answer on a name is not worth a probe: the
-        command runs against one form, so the same directory arrives as one argument whatever
-        the caller passed."""
-        sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3/", working_directory=_WORK, timeout=30))
-        assert fake.only("container", "exec").args[-1] == f"{_WORK}/call-a1b2c3"
-
-    def test_a_missing_directory_is_success(self):
-        """`rm -rf` already exits 0 on a path that is not there; this pins that no raise follows."""
-        sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.reclaim(f"{_WORK}/never-there", working_directory=_WORK, timeout=30))
-
-    def test_a_nonzero_exit_raises_with_the_exit_code_and_what_the_guest_said(self):
-        """The message is the whole diagnosis a host gets: core turns it into
-        `ReclaimFailure.reason` and hands that to `on_reclaim_failure`. A read-only
-        filesystem, a full disk and a permission denial are told apart only by these two.
-        """
-        overrides = {("container", "exec"): _WslcResult(1, b"", b"rm: permission denied")}
-        sandbox, fake = self._sandbox(overrides)
-        with pytest.raises(OSError, match=r"rm exited 1.*rm: permission denied"):
-            asyncio.run(sandbox.reclaim(f"{_WORK}/x", working_directory=_WORK, timeout=30))
-
-    def test_the_timeout_reaches_the_transport(self):
-        sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.reclaim(f"{_WORK}/x", working_directory=_WORK, timeout=42))
-        assert fake.only("container", "exec").timeout == 42
-
-    def test_the_removal_runs_from_root_not_the_uncreated_working_directory(self):
-        """`working_directory` says where the directory sits, not where to run the removal
-        from: no backend creates a spec's `work_dir`, so a call whose work dir was never
-        written must still reclaim cleanly, which it can only do by execing from `/` rather
-        than a directory that is not there.
-        """
-        sandbox, fake = self._sandbox()
-        asyncio.run(
-            sandbox.reclaim(
-                f"{_WORK}/never-created/call-a1b2c3",
-                working_directory=f"{_WORK}/never-created",
-                timeout=30,
-            )
+    @pytest.mark.parametrize("confined", [False, True])
+    @pytest.mark.parametrize("floor", list(Cleanup))
+    def test_every_workload_resolves_to_disposal(self, confined, floor):
+        backend, _ = _backend_with()
+        router = SandboxRouter(
+            backends=[backend], min_isolation=Isolation.CONTAINER, min_cleanup=floor
         )
-        args = fake.only("container", "exec").args
-        assert args[args.index("-w") + 1] == "/"
+        spec = replace(_SPEC, confined_to_guest_call_path=confined)
+        assert Capability.RECLAIM not in backend.declarations.capabilities
+        assert Capability.SNAPSHOT not in backend.declarations.capabilities
+        assert router.effective_cleanup(spec) is Cleanup.DISPOSE
 
-    def test_a_name_a_shell_would_read_stays_one_argument(self):
-        """Core dispatches the path unaltered; this backend's argv `exec` is what keeps the
-        name one argument. A `work_dir` is host-supplied, so a name holding a space or a `;`
-        is reachable, and one that split would have `rm -rf` delete something else.
-        """
-        hostile = f"{_WORK}/a b; touch pwned"
-        sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.reclaim(hostile, working_directory=_WORK, timeout=30))
-        assert fake.only("container", "exec").args[-1] == hostile
 
-    def test_remove_still_refuses_beside_a_served_reclaim(self):
-        """Serving `reclaim` must not open a delete surface for `remove` by a side door.
+class TestGuestPrincipal:
+    @pytest.mark.parametrize(
+        ("result", "principal"),
+        [
+            (_WslcResult(0, b"0\n", b""), "root"),
+            (_WslcResult(0, b"1000\n", b""), "unprivileged"),
+            (_WslcResult(0, b"", b""), "unknown"),
+            (_WslcResult(1, b"0", b"failed"), "unknown"),
+            (_WslcResult(0, b"-1", b""), "unknown"),
+            (_WslcResult(0, b"0\n1000", b""), "unknown"),
+            (_WslcResult(0, b"root", b""), "unknown"),
+        ],
+    )
+    def test_reported_principal_names_the_refusal_and_cleanup(self, result, principal, caplog):
+        probe = ("container", "exec", "-w", "/", _NAME, "id", "-u")
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides={probe: result}))
+        with caplog.at_level(logging.INFO):
+            sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert sandbox.guest_principal == principal
+        assert f"guest_principal={principal}" in caplog.text
+        assert "cleanup=dispose" in caplog.text
+        assert len(fake.matching(*probe)) == 1
+        assert fake.matching(*probe)[0].read_limit == 64
+        seen = len(fake.calls)
+        with pytest.raises(NotImplementedError, match=f"Guest principal: {principal}"):
+            asyncio.run(sandbox.remove("x", working_directory=_WORK))
+        with pytest.raises(NotImplementedError, match=f"Guest principal: {principal}"):
+            asyncio.run(sandbox.reclaim(f"{_WORK}/call", working_directory=_WORK, timeout=30))
+        assert len(fake.calls) == seen
 
-        The two share a mechanism (`rm -rf` over `exec`) but not a duty: `remove` takes a
-        model-supplied path and owes the filesystem path check, which this backend answers
-        inside the guest for the kinds that decide an escape, so it must keep refusing exactly
-        as it did before `reclaim` existed.
-        """
-        sandbox, _ = self._sandbox()
-        with pytest.raises(NotImplementedError, match="FILES_DELETE"):
-            asyncio.run(sandbox.remove(f"{_WORK}/x", working_directory=_WORK))
+    def test_a_failed_probe_is_retried_and_never_cached_by_name(self):
+        answers = iter(
+            [
+                TimeoutError("probe timed out"),
+                _WslcResult(0, b"0", b""),
+                _WslcResult(0, b"1000", b""),
+            ]
+        )
+        machine = _machine(running=[_NAME])
+
+        def respond(args):
+            if args[-2:] == ("id", "-u"):
+                answer = next(answers)
+                if isinstance(answer, Exception):
+                    raise answer
+                return answer
+            return machine(args)
+
+        backend, _ = _backend_with(respond)
+        principals = [asyncio.run(backend.acquire(_KEY, _SPEC)).guest_principal for _ in range(3)]
+        assert principals == ["unknown", "root", "unprivileged"]
 
 
 # ---------------------------------------------------------------------------

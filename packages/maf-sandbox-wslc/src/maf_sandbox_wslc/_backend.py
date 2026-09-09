@@ -24,7 +24,6 @@ import contextlib
 import io
 import json
 import logging
-import posixpath
 import re
 import tarfile
 import threading
@@ -102,7 +101,7 @@ _LABEL_VALUE_MAX = 63
 _LABEL_VALUE_SAFE = re.compile(r"[A-Za-z0-9._-]+")
 _LABEL_VALUE_DIGEST = re.compile(r"sha256-[0-9a-f]{48}")
 
-# The narrowest set any shipped backend declares: no pull surface, no removal, no run_code.
+# Guest-answered path checks cannot license root reclamation; cleanup requires disposal.
 _CAPABILITIES = frozenset({Capability.EXEC, Capability.FILES_IN})
 
 #: `wslc` exits non-zero for a container that is not there, so removal is judged by this.
@@ -365,10 +364,20 @@ class _WslcRunner(Protocol):
 class _WslcSandbox:
     """A running container, narrowed to what a workload is allowed to do with it."""
 
-    def __init__(self, run: _WslcRunner, name: str, command_timeout: float) -> None:
+    def __init__(
+        self, run: _WslcRunner, name: str, command_timeout: float, guest_uid: int | None = None
+    ) -> None:
         self._run = run
         self._name = name
         self._command_timeout = command_timeout
+        self._guest_uid = guest_uid
+
+    @property
+    def guest_principal(self) -> str:
+        """Classify the reported uid for diagnostics; it licenses no raised operation."""
+        if self._guest_uid is None:
+            return "unknown"
+        return "root" if self._guest_uid == 0 else "unprivileged"
 
     @property
     def container_name(self) -> str:
@@ -434,9 +443,8 @@ class _WslcSandbox:
     async def _test_in_guest(self, argv: Sequence[str]) -> int:
         """One ``container exec --user 0``, answering its exit status for the guest-side stat.
 
-        Raised for the same reason :meth:`reclaim` is: the file plane writes as root, so a probe
-        as the image's user would leave the check blind exactly where a write is not.  What
-        asking the guest costs is on
+        The file plane writes as root, so a probe as the image's user would leave the check
+        blind exactly where a write is not. What asking the guest costs is on
         :func:`~maf_sandbox.paths.stat_by_asking_the_guest_as_root` and in this package's README.
         """
         probe = await self._run(
@@ -474,21 +482,12 @@ class _WslcSandbox:
         *,
         working_directory: str,
         timeout: float,
-        as_root: bool = False,
     ) -> ExecResult:
-        """One ``wslc container exec``, as the image's user or as ``--user 0``.
-
-        :meth:`exec` is the guest program's own and names no user; :meth:`reclaim` asks for root,
-        because the file plane (:meth:`write_file`) writes as the host authority and the image's
-        user cannot remove what a call left behind on a non-root image.  See
-        ``docs/sandbox/backends/wslc.md``.
-        """
-        privilege = ("--user", "0") if as_root else ()
+        """One ``wslc container exec`` as the image's user."""
         try:
             result = await self._run(
                 "container",
                 "exec",
-                *privilege,
                 "-w",
                 working_directory,
                 self._name,
@@ -571,7 +570,8 @@ class _WslcSandbox:
             "the wslc backend does not support FILES_DELETE: it runs the filesystem path check, "
             "but the entry kind that decides an escape is answered by the container being "
             "confined, which a recursive delete must not rest on. Remove through exec if the "
-            "workload already requires it, or declare a backend whose engine answers that check."
+            "workload already requires it, or declare a backend whose engine answers that check. "
+            f"Guest principal: {self.guest_principal}."
         )
 
     async def reset(self, *, timeout: float) -> None:
@@ -581,35 +581,12 @@ class _WslcSandbox:
         )
 
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
-        """Remove ``directory`` with ``rm -rf`` over :meth:`_exec`, as ``--user 0``.
-
-        The file plane (:meth:`write_file`) writes as the host authority, so on a non-root image
-        the image's user cannot remove what a call left behind.  Root is always correct here
-        because the caller made ``directory``: no filesystem path check is owed at all here,
-        which is why this member is served where :meth:`remove` is not. Runs from ``/`` because
-        ``working_directory`` may not exist.
-
-        Raises:
-            ValueError: A path that is not absolute, or fewer than two components from the
-                root.
-        """
-        del working_directory
-        if not directory.startswith("/"):
-            raise ValueError(f"refusing to reclaim a path that is not absolute: {directory}")
-        target = posixpath.normpath(directory)
-        if len([part for part in target.split("/") if part]) < 2:
-            raise ValueError(f"refusing to reclaim recursively that close to the root: {target}")
-        removed = await self._exec(
-            ["rm", "-rf", "--", target],
-            working_directory="/",
-            timeout=timeout,
-            as_root=True,
+        """Unsupported: the engine cannot establish ancestor ownership for a raised delete."""
+        raise NotImplementedError(
+            "the wslc backend does not support RECLAIM: its file plane writes as root, "
+            "but guest-answered path checks cannot license a recursive delete as root. "
+            f"Guest principal: {self.guest_principal}. Dispose the sandbox instead."
         )
-        if removed.exit_code != 0:
-            raise OSError(
-                f"could not reclaim {directory}: rm exited {removed.exit_code}"
-                f"{f' — {removed.stderr.strip()}' if removed.stderr else ''}"
-            )
 
 
 class WslcSandboxBackend:
@@ -625,8 +602,7 @@ class WslcSandboxBackend:
         #
         # `os_families` is POSIX and no input can change it: `wslc` runs Linux containers in
         # WSL 2's utility VM and has no other guest to hand out, so there is no engine to ask
-        # the way the docker backend asks its daemon. It is what `_exec`'s argv, the `rm -rf`
-        # in `reclaim` and this module's `posixpath` arithmetic already rest on.
+        # the way the docker backend asks its daemon. It is what `_exec`'s argv rests on.
         #
         # `observes_egress` reads the proxy image for the reason `egress_modes` does: what this
         # backend can *watch* is what it enforces itself, in a proxy container it owns. Without
@@ -867,7 +843,38 @@ class WslcSandboxBackend:
                 # on, and a closed sandbox has no record to attribute — listing one would
                 # make every closed teardown report a proxy that was never there.
                 self._acquired[name] = (key.scope, key.thread_id, key.agent_dir)
-            return _WslcSandbox(self._wslc, name, self._config.command_timeout_seconds)
+            guest_uid = await self._probe_guest_uid(name)
+            sandbox = _WslcSandbox(
+                self._wslc, name, self._config.command_timeout_seconds, guest_uid
+            )
+            logger.info(
+                "sandbox cleanup: container=%s guest_principal=%s guest_uid=%s cleanup=dispose",
+                name,
+                sandbox.guest_principal,
+                guest_uid,
+            )
+            return sandbox
+
+    async def _probe_guest_uid(self, name: str) -> int | None:
+        """Read the image user's announcement; never cache it by a mutable container name."""
+        try:
+            result = await self._wslc(
+                "container",
+                "exec",
+                "-w",
+                "/",
+                name,
+                "id",
+                "-u",
+                timeout=self._config.command_timeout_seconds,
+                read_limit=64,
+            )
+        except Exception:
+            return None
+        uid = result.stdout_text.strip()
+        if result.returncode != 0 or re.fullmatch(r"[0-9]{1,10}", uid) is None:
+            return None
+        return int(uid)
 
     def _retain_disposals(
         self, prefix: tuple[str, str, str], names: Sequence[str], kinds: Mapping[str, str]

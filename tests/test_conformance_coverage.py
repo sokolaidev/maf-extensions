@@ -25,9 +25,8 @@ SAMPLES = REPO_ROOT / "samples"
 
 #: The suites a package's tests have to call, and where they come from. FILES_OUT is gated on
 #: implementing the pull surface (`_serving` below); FILES_IN, EXEC and FILES_DELETE are the
-#: three every backend owes regardless of what it declares — a backend declaring none of them
-#: is not a backend. RECLAIM is gated by no `Capability` at all, so unlike FILES_DELETE it has
-#: no withheld-capability answer and no MEASURE escape: every backend owes the assert itself.
+#: suites every backend answers regardless of what it declares. RECLAIM likewise requires
+#: the assert call: declared capabilities run the probes; withheld ones assert gate refusal.
 #: REACH is deliberately absent: its probes stop rather than fail wherever nothing on the path
 #: is the guest's to swap, so requiring the call would add a green run to two backends it can
 #: say nothing about. `maf-sandbox-docker` wires it against the one image shape where it bites;
@@ -389,18 +388,18 @@ def test_every_backend_answers_the_suites_it_cannot_opt_out_of(package: Path):
     answers: the assert for a backend that declares the capability, and
     `measure_files_delete_probes` for one that withholds it — the measurement is how a withheld
     capability can ever be evidenced into or out of declaration (#450: a gate nothing can run
-    against an undeclared mechanism is a gate that never opens). RECLAIM has no such escape: it
-    is gated by no capability, so there is nothing to withhold and no measurement stands in —
-    every backend answers the assert directly. The wiring check proves a call is written either
-    way, which is all it can prove; what the call found is each suite's own business.
+    against an undeclared mechanism is a gate that never opens). RECLAIM has no measurement
+    escape: every backend calls the assert, checking its refusal when the capability is withheld.
+    The wiring check proves a call is written either way, which is all it can prove; what the
+    call found is each suite's own business.
     """
     for suite in SUITES[1:]:
         assert _calls_the_suite(package / "tests", suite) or (
             suite == SUITES[3] and _calls_the_suite(package / "tests", MEASURE)
         ), (
             f"nothing in {package.name}'s tests imports {suite} from {SUITE_MODULE} and calls "
-            "it. A backend declaring none of the capabilities a suite probes is not a backend, "
-            "and one that withholds one answers it with an asserted skip or a measurement — "
+            "it. A backend must answer each suite with its probes or gate refusal, "
+            "or with a measurement where offered — "
             "but neither is checkable from a call that was never written. #450 is what this "
             "silence cost."
         )

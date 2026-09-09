@@ -3246,11 +3246,8 @@ class TestScope:
 
 
 class TestASandboxThatCannotBeReclaimed:
-    """What gates `reclaim`, since no capability does.
-
-    Without this a stale backend acquires cleanly and the loss is reported once per call, for
-    the life of the process, as a removal that failed.
-    """
+    """The router requires a callable `reclaim` for protocol completeness, even when
+    `RECLAIM` is withheld and the method implements an explicit refusal."""
 
     class _Stale(InProcessSandbox):
         reclaim = None  # type: ignore[assignment]
