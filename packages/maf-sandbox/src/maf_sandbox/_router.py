@@ -485,10 +485,17 @@ def _declared_isolation_scopes(
     return scopes or frozenset({IsolationScope.CONVERSATION})
 
 
+def _instance_id(sandbox: object) -> str | None:
+    """Read an acquired ID even when another required protocol member is invalid."""
+    value = getattr(sandbox, "instance_id", None)
+    return value if isinstance(value, str) and value else None
+
+
 @dataclasses.dataclass(eq=False)
 class _PendingDisposal:
     backend: SandboxBackend
     kind: str | None
+    instance_id: str | None = None
 
 
 @dataclasses.dataclass
@@ -745,7 +752,7 @@ class SandboxRouter:
         # Keyed, not a set, so a refusal can say why; `None` for a key marked before a try.
         self._unclean: dict[SandboxKey, DisposalFailure | None] = {}
         self._pending_disposals: dict[
-            SandboxKey, dict[tuple[int, str | None], _PendingDisposal]
+            SandboxKey, dict[tuple[int, str | None, str | None], _PendingDisposal]
         ] = {}
         self._unclean_guard = threading.Lock()
         # Disposals for one key run one at a time. Only they: a disposal body awaits once per
@@ -773,6 +780,7 @@ class SandboxRouter:
         self._slots = ExclusiveSlots()
         self._adoptions = ExclusiveSlots()
         self._seen: dict[tuple[SandboxKey, str, int], set[str]] = {}
+        self._served: dict[tuple[SandboxKey, str, int], tuple[SandboxBackend, set[str]]] = {}
         self._seen_guard = threading.Lock()
         self._selected_name = selected
         self._selection = Selection(str(selection))
@@ -1461,46 +1469,29 @@ class SandboxRouter:
         return lock
 
     async def _refuse_a_key_closed_during_the_create(
-        self, key: SandboxKey, backend: SandboxBackend, *, kind: str
+        self, key: SandboxKey, backend: SandboxBackend, *, kind: str, instance_id: str | None
     ) -> None:
-        """Dispose the refused acquire's kind without clearing other pending cleanup targets."""
-        started = time.monotonic()
-        async with self._disposal_lock(key):
-            try:
-                undisposed = await backend.dispose(key, kind=kind)
-            except Exception as failed:  # noqa: BLE001 — the refusal must reach the caller
-                undisposed = str(failed)
-            except BaseException as interrupted:
-                self._record_an_interrupted_disposal(key, backend, started, interrupted)
-                self.mark_unclean(key, backend=backend, kind=kind)
-                raise
-        self._record_disposal(
-            key,
-            backend,
-            None if undisposed is None else _coded(_recorded_name(backend), undisposed),
-            started,
-        )
-        if undisposed is not None:
-            self.mark_unclean(
-                key, _coded(_recorded_name(backend), undisposed), backend=backend, kind=kind
-            )
+        """Dispose the refused acquire without clearing another instance's pending cleanup."""
+        if self._reclaim.failed_reclaim_policy is not FailedReclaimPolicy.KEEP:
+            self.mark_unclean(key, backend=backend, kind=kind, instance_id=instance_id)
+        try:
+            async with asyncio.timeout(self._reclaim.timeout):
+                async with self._disposal_lock(key):
+                    failure = await self._dispose_the_kind(
+                        key,
+                        SandboxSpec(kind=kind),
+                        backend,
+                        None,
+                        self._reclaim.timeout,
+                        instance_id=instance_id,
+                    )
+        except TimeoutError:
+            failure = "the refused acquire's disposal timed out"
         _, reported = self._unclean_state(key)
-        if undisposed is None:
-            self._forget_instances(backend, key=key, kind=kind)
-            outcome = "The sandbox just created has been disposed"
-        else:
-            logger.warning(
-                "sandbox router: backend %s failed to dispose a sandbox refused mid-create: %s",
-                backend.name,
-                undisposed,
-            )
-            # Said out loud, not only logged: an operator who reads "disposed" stops looking,
-            # and what is still running is billable.
-            outcome = "The sandbox just created could not be disposed either"
+        outcome = "disposed" if failure is None else "could not be disposed either"
         raise SandboxUnclean(
-            f"the sandbox for {key.scope}/{key.thread_id}/{key.agent_dir} was refused while "
-            f"this acquire was creating it — a disposal for the key ran and did not land. "
-            f"{outcome}; the key stays refused until a disposal lands.",
+            f"the sandbox for {key.scope}/{key.thread_id}/{key.agent_dir} was refused "
+            f"while this acquire was creating it; the {kind!r} instance {outcome}",
             code=reported.code if reported is not None else None,
         )
 
@@ -1660,42 +1651,25 @@ class SandboxRouter:
             # before the await, and a disposal that begins during it closes the key without
             # this call ever seeing the mark. One that began earlier is caught above, since a
             # disposal marks the key before its own first await.
-            await self._refuse_a_key_closed_during_the_create(key, served, kind=spec.kind)
+            await self._refuse_a_key_closed_during_the_create(
+                key, served, kind=spec.kind, instance_id=_instance_id(sandbox)
+            )
         try:
             _refuse_an_invalid_sandbox(sandbox)
         except TypeError:
-            # A refused sandbox still owes cleanup; sibling kinds may be reclaimable.
-            started = time.monotonic()
-            try:
-                reported = await served.dispose(key, kind=spec.kind)
-            except Exception as undisposed:  # noqa: BLE001 — the refusal must reach the caller
-                reported = str(undisposed)
-            except BaseException as interrupted:
-                self._record_an_interrupted_disposal(key, served, started, interrupted)
-                self.mark_unclean(key, backend=served, kind=spec.kind)
-                raise
-            self._record_disposal(
+            await self._dispose_the_kind(
                 key,
+                spec,
                 served,
-                None if reported is None else _coded(_recorded_name(served), reported),
-                started,
+                "the acquired sandbox violates the protocol",
+                self._reclaim.timeout,
+                instance_id=_instance_id(sandbox),
             )
-            if reported is not None:
-                logger.warning(
-                    "sandbox router: backend %s failed to dispose after a reclaim refusal: %s",
-                    served.name,
-                    reported,
-                )
-                # A refused acquire owes nothing billable left running. This one does, so
-                # the key is closed rather than served over a sandbox nothing can reclaim.
-                self.mark_unclean(
-                    key, _coded(served.name, reported), backend=served, kind=spec.kind
-                )
-            else:
-                self._forget_instances(served, key=key, kind=spec.kind)
             raise
         if scope is not IsolationScope.CALL:
             sandbox = await self._adopt(key, spec, served, sandbox, snapshot=snapshot)
+        else:
+            self._remember_instance(key, spec.kind, served, sandbox)
         return sandbox
 
     async def _adopt(
@@ -1713,22 +1687,32 @@ class SandboxRouter:
             if sandbox.instance_id in self._seen.get(at, set()):
                 return sandbox
         bound = self._reclaim.timeout
+        instance_id = sandbox.instance_id
         if snapshot:
             try:
                 async with asyncio.timeout(bound):
                     previous = await _reset_instance(sandbox, timeout=bound)
             except (asyncio.CancelledError, GeneratorExit):
                 if self._reclaim.failed_reclaim_policy is not FailedReclaimPolicy.KEEP:
-                    self.mark_unclean(key, backend=backend, kind=spec.kind)
+                    self.mark_unclean(
+                        key,
+                        backend=backend,
+                        kind=spec.kind,
+                        instance_id=_instance_id(sandbox) or instance_id,
+                    )
                 raise
             except Exception as unreset:  # noqa: BLE001 — disposal is the fallback
                 logger.warning("sandbox adoption reset failed: %s", error_detail(unreset))
             else:
                 if self._unclean_state(key)[0]:
-                    await self._refuse_a_key_closed_during_the_create(key, backend, kind=spec.kind)
+                    await self._refuse_a_key_closed_during_the_create(
+                        key, backend, kind=spec.kind, instance_id=_instance_id(sandbox)
+                    )
                 self._remember_instance(key, spec.kind, backend, sandbox, previous=previous)
                 return sandbox
-        failure = await self._dispose_the_kind(key, spec, backend, None, bound)
+        failure = await self._dispose_the_kind(
+            key, spec, backend, None, bound, instance_id=_instance_id(sandbox) or instance_id
+        )
         if failure is not None:
             if self._reclaim.failed_reclaim_policy is not FailedReclaimPolicy.KEEP:
                 _, reported = self._unclean_state(key)
@@ -1741,10 +1725,19 @@ class SandboxRouter:
             try:
                 _refuse_an_invalid_sandbox(sandbox)
             except TypeError:
-                await self._dispose_the_kind(key, spec, backend, None, bound)
+                await self._dispose_the_kind(
+                    key,
+                    spec,
+                    backend,
+                    None,
+                    bound,
+                    instance_id=_instance_id(sandbox),
+                )
                 raise
         if self._unclean_state(key)[0]:
-            await self._refuse_a_key_closed_during_the_create(key, backend, kind=spec.kind)
+            await self._refuse_a_key_closed_during_the_create(
+                key, backend, kind=spec.kind, instance_id=_instance_id(sandbox)
+            )
         _refuse_an_invalid_sandbox(sandbox)
         self._remember_instance(key, spec.kind, backend, sandbox)
         return sandbox
@@ -1763,6 +1756,10 @@ class SandboxRouter:
             if previous is not None:
                 known.discard(previous)
             known.add(sandbox.instance_id)
+            served = self._served.setdefault((key, kind, id(backend)), (backend, set()))[1]
+            if previous is not None:
+                served.discard(previous)
+            served.add(sandbox.instance_id)
 
     def _forget_instances(
         self,
@@ -1770,11 +1767,12 @@ class SandboxRouter:
         *,
         key: SandboxKey | None = None,
         kind: str | None = None,
+        instance_id: str | None = None,
         scope: str | None = None,
         thread_id: str | None = None,
     ) -> None:
         with self._seen_guard:
-            for at in list(self._seen):
+            for at in self._seen.keys() | self._served.keys():
                 held, workload, provider = at
                 if (
                     provider == id(backend)
@@ -1783,7 +1781,20 @@ class SandboxRouter:
                     and (scope is None or held.scope == scope)
                     and (thread_id is None or held.thread_id == thread_id)
                 ):
-                    del self._seen[at]
+                    if instance_id is None:
+                        self._seen.pop(at, None)
+                        self._served.pop(at, None)
+                    else:
+                        known = self._seen.get(at)
+                        if known is not None:
+                            known.discard(instance_id)
+                            if not known:
+                                self._seen.pop(at, None)
+                        served = self._served.get(at)
+                        if served is not None:
+                            served[1].discard(instance_id)
+                            if not served[1]:
+                                self._served.pop(at, None)
 
     async def enter_call(
         self,
@@ -1837,6 +1848,7 @@ class SandboxRouter:
         owner: str,
         unclean: str | None = None,
         timeout: float | None = None,
+        sandboxes: Sequence[Sandbox] | None = None,
     ) -> str | None:
         """Clean under the admitted rung and release its hold.
 
@@ -1845,9 +1857,29 @@ class SandboxRouter:
         policy; RECLAIM uses the framework's directory removal instead."""
         bound = self._reclaim.timeout if timeout is None else timeout
         try:
-            return await self._run_the_rung(
-                key, spec, admission.backend, admission.rung, sandbox, unclean, bound
-            )
+            held = {
+                one.instance_id: one for one in sandboxes or (() if sandbox is None else (sandbox,))
+            }
+            failures: list[str] = []
+            remaining = list(held.items())
+            for index, (_, one) in enumerate(remaining):
+                try:
+                    failure = await self._run_the_rung(
+                        key, spec, admission.backend, admission.rung, one, unclean, bound
+                    )
+                except (asyncio.CancelledError, GeneratorExit):
+                    if self._reclaim.failed_reclaim_policy is not FailedReclaimPolicy.KEEP:
+                        for instance_id, unfinished in remaining[index:]:
+                            self.mark_unclean(
+                                key,
+                                backend=admission.backend,
+                                kind=spec.kind,
+                                instance_id=_instance_id(unfinished) or instance_id,
+                            )
+                    raise
+                if failure is not None:
+                    failures.append(failure)
+            return "; ".join(failures) or None
         finally:
             self._slots.release(key, spec.kind, owner=owner)
 
@@ -1862,6 +1894,7 @@ class SandboxRouter:
         bound: float,
     ) -> str | None:
         """The rung itself, with a reset that failed escalating to the disposal below it."""
+        instance_id = None if sandbox is None else sandbox.instance_id
         if rung is Cleanup.RESET and sandbox is not None:
             try:
                 async with asyncio.timeout(bound):
@@ -1880,7 +1913,15 @@ class SandboxRouter:
             else:
                 self._remember_instance(key, spec.kind, backend, sandbox, previous=previous)
                 return None
-        return await self._dispose_the_kind(key, spec, backend, unclean, bound)
+            unclean = unclean or "the reset failed"
+        return await self._dispose_the_kind(
+            key,
+            spec,
+            backend,
+            unclean,
+            bound,
+            instance_id=(_instance_id(sandbox) or instance_id),
+        )
 
     async def _dispose_the_kind(
         self,
@@ -1889,25 +1930,32 @@ class SandboxRouter:
         backend: SandboxBackend,
         unclean: str | None,
         bound: float,
+        *,
+        instance_id: str | None = None,
     ) -> str | None:
-        """Dispose this kind on its serving backend, preserving sibling kinds."""
+        """Dispose the serving instance; failures retain that exact target for retry."""
+        refuse = self._reclaim.failed_reclaim_policy is not FailedReclaimPolicy.KEEP
+        if unclean is not None and refuse:
+            self.mark_unclean(key, backend=backend, kind=spec.kind, instance_id=instance_id)
+        pending = self._pending_for(key, [backend], spec.kind, instance_id)
         started = time.monotonic()
         try:
             async with asyncio.timeout(bound):
-                reported = await backend.dispose(key, kind=spec.kind)
+                reported = await backend.dispose(key, kind=spec.kind, instance_id=instance_id)
         except TimeoutError:
-            reported = f"the delete did not finish within {bound:g}s"
-        except (asyncio.CancelledError, GeneratorExit):
-            self._record_an_interrupted_disposal(key, backend, started, asyncio.CancelledError())
+            reported = DisposalFailure("timeout", f"the delete did not finish within {bound:g}s")
+        except (asyncio.CancelledError, GeneratorExit) as interrupted:
+            self._record_an_interrupted_disposal(key, backend, started, interrupted)
             if self._reclaim.failed_reclaim_policy is not FailedReclaimPolicy.KEEP:
-                self.mark_unclean(key, backend=backend, kind=spec.kind)
+                self.mark_unclean(key, backend=backend, kind=spec.kind, instance_id=instance_id)
             raise
         except Exception as undisposed:  # noqa: BLE001 — a `finally` must not raise over a result
             reported = str(undisposed)
         failure = None if reported is None else _coded(_recorded_name(backend), reported)
         self._record_disposal(key, backend, failure, started)
         if failure is None:
-            self._forget_instances(backend, key=key, kind=spec.kind)
+            self._forget_instances(backend, key=key, kind=spec.kind, instance_id=instance_id)
+            self._forget_pending(key, pending)
             return None
         logger.warning(
             "sandbox router: the cleanup disposal for %s/%s (%s) did not land: %s",
@@ -1918,7 +1966,9 @@ class SandboxRouter:
         )
         if self._reclaim.failed_reclaim_policy is not FailedReclaimPolicy.KEEP:
             # A failed delete leaves the call's residue available to the next acquire.
-            self.mark_unclean(key, failure, backend=backend, kind=spec.kind)
+            self.mark_unclean(
+                key, failure, backend=backend, kind=spec.kind, instance_id=instance_id
+            )
         return f"{failure}" if unclean is None else f"{unclean}; {failure}"
 
     async def dispose(self, key: SandboxKey) -> None:
@@ -1926,13 +1976,15 @@ class SandboxRouter:
         async with self._disposal_lock(key):
             await self._dispose_each(key)
 
-    async def dispose_kind(self, key: SandboxKey, kind: str, *, timeout: float) -> bool:
-        """Delete one kind across every registered backend; return False on failure or timeout.
+    async def dispose_kind(
+        self, key: SandboxKey, kind: str, *, instance_id: str | None = None, timeout: float
+    ) -> bool:
+        """Sweep a kind, or delete one engine instance on the backend that served it.
 
-        The finite positive timeout covers the per-key disposal lock wait and the whole sweep;
-        cancellation propagates. Like :meth:`dispose`, failures are logged and observed without
-        creating a refusal. Success retires only this kind's pending targets, so other targets
-        keep the key refused. Hosts must coordinate active calls before disposing their sandbox.
+        timeout bounds the lock wait and all deletes. Failed instance cleanup refuses the key
+        unless KEEP was chosen; host sweeps create no refusal. Success retires only covered
+        attempts. Returns False on failure or timeout; cancellation propagates. Hosts must
+        coordinate active calls before disposal.
         """
         if not isinstance(cast(object, kind), str):
             raise TypeError("kind must be a string; use dispose(key) to delete every kind")
@@ -1941,8 +1993,42 @@ class SandboxRouter:
         try:
             async with asyncio.timeout(timeout):
                 async with self._disposal_lock(key):
+                    backends = self._backends_for_instance(key, kind, instance_id)
+                    if instance_id is not None:
+                        landed = True
+                        for backend in backends:
+                            failure = await self._dispose_the_kind(
+                                key,
+                                SandboxSpec(kind=kind),
+                                backend,
+                                None,
+                                timeout,
+                                instance_id=instance_id,
+                            )
+                            landed = failure is None and landed
+                        return landed
                     return await self._dispose_each(key, kind=kind)
+        except (asyncio.CancelledError, GeneratorExit):
+            if (
+                instance_id is not None
+                and self._reclaim.failed_reclaim_policy is not FailedReclaimPolicy.KEEP
+            ):
+                for backend in self._backends_for_instance(key, kind, instance_id):
+                    self.mark_unclean(key, backend=backend, kind=kind, instance_id=instance_id)
+            raise
         except TimeoutError:
+            if (
+                instance_id is not None
+                and self._reclaim.failed_reclaim_policy is not FailedReclaimPolicy.KEEP
+            ):
+                for backend in self._backends_for_instance(key, kind, instance_id):
+                    self.mark_unclean(
+                        key,
+                        DisposalFailure("timeout", "instance disposal timed out"),
+                        backend=backend,
+                        kind=kind,
+                        instance_id=instance_id,
+                    )
             logger.warning(
                 "sandbox router: disposing %s/%s/%s (%s) did not finish within %ss",
                 key.scope,
@@ -1960,13 +2046,13 @@ class SandboxRouter:
         refuse: bool = False,
         backends: Sequence[SandboxBackend] | None = None,
         kind: str | None = None,
+        instance_id: str | None = None,
         pending: Sequence[_PendingDisposal] | None = None,
     ) -> bool:
         """Dispose the selected targets and retire only records this attempt covered."""
         selected = self._backends if backends is None else backends
-        whole_key = pending is None and kind is None
         if pending is None:
-            pending = self._pending_for(key, selected, kind)
+            pending = self._pending_for(key, selected, kind, instance_id)
         reasons: list[DisposalFailure] = []
         for backend in selected:
             started = time.monotonic()
@@ -1976,8 +2062,8 @@ class SandboxRouter:
             try:
                 undisposed = (
                     await backend.dispose(key)
-                    if kind is None
-                    else await backend.dispose(key, kind=kind)
+                    if kind is None and instance_id is None
+                    else await backend.dispose(key, kind=kind, instance_id=instance_id)
                 )
             except Exception as exc:  # noqa: BLE001 - disposal must not fail a caller
                 # Nothing a backend says while breaking never-raises can be classified.
@@ -2006,23 +2092,21 @@ class SandboxRouter:
                     )
             self._record_disposal(key, backend, answered, started)
             if answered is None:
-                self._forget_instances(backend, key=key, kind=kind)
+                self._forget_instances(backend, key=key, kind=kind, instance_id=instance_id)
+                self._forget_pending(key, [one for one in pending if one.backend is backend])
             if refuse and answered is not None:
                 with self._unclean_guard:
                     targets = self._pending_disposals.setdefault(key, {})
-                    targets[(id(backend), kind)] = _PendingDisposal(backend, kind)
+                    targets.setdefault(
+                        (id(backend), kind, instance_id),
+                        _PendingDisposal(backend, kind, instance_id),
+                    )
                     recorded = self._unclean.get(key)
                     self._unclean[key] = fold_disposal_failures(
                         [answered] if recorded is None else [recorded, answered]
                     )
         if reasons:
             return False
-        if whole_key:
-            pending = [
-                *pending,
-                *(one for one in self._pending_for(key, selected) if one.kind is None),
-            ]
-        self._forget_pending(key, pending)
         return True
 
     async def dispose_call(
@@ -2121,8 +2205,15 @@ class SandboxRouter:
         served = self.backend_for(spec)
         return served, ([] if served is None else [served])
 
-    async def dispose_unclean(self, key: SandboxKey, *, timeout: float) -> bool:
-        """Retry pending backend/kind targets, or sweep all backends when none are recorded.
+    async def dispose_unclean(
+        self,
+        key: SandboxKey,
+        *,
+        kind: str | None = None,
+        instance_id: str | None = None,
+        timeout: float,
+    ) -> bool:
+        """Retry recorded backend/kind/instance targets, optionally narrowed by the selectors.
 
         The key stays refused until every pending target lands. KEEP suppresses refusal;
         timeout bounds the lock wait and all deletes together. Returns False on failure or
@@ -2141,19 +2232,28 @@ class SandboxRouter:
         # The opt-down is from closing the key, not from the bound: this still runs after a
         # tool call's body. So the bound wraps both paths; only the ledger writes differ.
         refuse = self._reclaim.failed_reclaim_policy is not FailedReclaimPolicy.KEEP
-        if refuse:
+        if refuse and (kind is not None or instance_id is not None):
+            for backend in self._backends_for_instance(key, kind, instance_id):
+                self.mark_unclean(key, backend=backend, kind=kind, instance_id=instance_id)
+        elif refuse:
             with self._unclean_guard:
                 if key not in self._unclean:
-                    self._mark_unclean(key, None, backend=None, kind=None)
+                    self._mark_unclean(key, None, backend=None, kind=None, instance_id=None)
         try:
             async with asyncio.timeout(timeout):
                 # Inside the bound: waiting on another disposal for this key is still the
                 # caller's time, and a bound covering only part of the wait is not the bound
                 # this docstring promises.
                 async with self._disposal_lock(key):
-                    pending = self._pending_for(key)
+                    pending = self._pending_for(key, kind=kind, instance_id=instance_id)
                     if not pending:
-                        return await self._dispose_each(key, refuse=refuse)
+                        return await self._dispose_each(
+                            key,
+                            refuse=refuse,
+                            kind=kind,
+                            instance_id=instance_id,
+                            backends=self._backends_for_instance(key, kind, instance_id),
+                        )
                     landed = True
                     for target in pending:
                         landed = (
@@ -2162,6 +2262,7 @@ class SandboxRouter:
                                 refuse=refuse,
                                 backends=[target.backend],
                                 kind=target.kind,
+                                instance_id=target.instance_id,
                                 pending=[target],
                             )
                             and landed
@@ -2208,6 +2309,7 @@ class SandboxRouter:
         *,
         backend: SandboxBackend | None = None,
         kind: str | None = None,
+        instance_id: str | None = None,
     ) -> None:
         """Refuse a conversation key and retain its cleanup targets for a later retry.
 
@@ -2217,7 +2319,7 @@ class SandboxRouter:
         if not self._may_be_refused(key):
             return
         with self._unclean_guard:
-            self._mark_unclean(key, reason, backend=backend, kind=kind)
+            self._mark_unclean(key, reason, backend=backend, kind=kind, instance_id=instance_id)
 
     def _mark_unclean(
         self,
@@ -2226,13 +2328,30 @@ class SandboxRouter:
         *,
         backend: SandboxBackend | None,
         kind: str | None,
+        instance_id: str | None,
     ) -> None:
         """Record targets and a reason while holding the ledger guard."""
         targets = self._pending_disposals.setdefault(key, {})
         for serving in self._backends if backend is None else [backend]:
-            targets[(id(serving), kind)] = _PendingDisposal(serving, kind)
+            targets[(id(serving), kind, instance_id)] = _PendingDisposal(serving, kind, instance_id)
         if self._unclean.get(key) is None:
             self._unclean[key] = None if reason is None else fold_disposal_failures([reason])
+
+    def _backends_for_instance(
+        self, key: SandboxKey, kind: str | None, instance_id: str | None
+    ) -> list[SandboxBackend]:
+        """Use every recorded serving backend, falling back to engine ownership checks."""
+        if instance_id is None:
+            return self._backends
+        with self._seen_guard:
+            known = {
+                provider: backend
+                for (held, workload, provider), (backend, instances) in self._served.items()
+                if held == key and (kind is None or workload == kind) and instance_id in instances
+            }
+        for target in self._pending_for(key, kind=kind, instance_id=instance_id):
+            known[id(target.backend)] = target.backend
+        return list(known.values()) or self._backends
 
     def _unclean_state(self, key: SandboxKey) -> tuple[bool, DisposalFailure | None]:
         with self._unclean_guard:
@@ -2243,6 +2362,7 @@ class SandboxRouter:
         key: SandboxKey,
         backends: Sequence[SandboxBackend] | None = None,
         kind: str | None = None,
+        instance_id: str | None = None,
     ) -> list[_PendingDisposal]:
         with self._unclean_guard:
             return [
@@ -2250,13 +2370,14 @@ class SandboxRouter:
                 for target in self._pending_disposals.get(key, {}).values()
                 if (backends is None or any(target.backend is one for one in backends))
                 and (kind is None or target.kind == kind)
+                and (instance_id is None or target.instance_id == instance_id)
             ]
 
     def _forget_pending(self, key: SandboxKey, pending: Sequence[_PendingDisposal]) -> None:
         with self._unclean_guard:
             targets = self._pending_disposals.get(key, {})
             for target in pending:
-                at = (id(target.backend), target.kind)
+                at = (id(target.backend), target.kind, target.instance_id)
                 if targets.get(at) is target:
                     targets.pop(at)
             if not targets:

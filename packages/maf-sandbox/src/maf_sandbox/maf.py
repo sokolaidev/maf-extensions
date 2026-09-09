@@ -1753,6 +1753,8 @@ async def _dispose_the_unclean(
     prefix: str,
     logger: logging.Logger,
     timeout: float,
+    kind: str,
+    instance_id: str,
 ) -> DisposalOutcome:
     """Dispose a sandbox the call could not leave clean, unless the host opted down.
 
@@ -1769,7 +1771,9 @@ async def _dispose_the_unclean(
         )
         return "kept"
     try:
-        landed = await router.dispose_unclean(key, timeout=timeout)
+        landed = await router.dispose_unclean(
+            key, kind=kind, instance_id=instance_id, timeout=timeout
+        )
     except (asyncio.CancelledError, GeneratorExit) as stopped:
         logger.warning(
             f"{prefix}: the sandbox could not be disposed: %s during the disposal; the router "
@@ -1794,7 +1798,7 @@ async def _dispose_the_unclean(
 
 def _refuse_not_yet_reclaimed(
     router: SandboxRouter,
-    acquired: Sequence[tuple[SandboxKey, object]],
+    acquired: Sequence[tuple[SandboxKey, list[Sandbox]]],
     start: int,
     *,
     call: _SandboxToolCall,
@@ -1803,19 +1807,19 @@ def _refuse_not_yet_reclaimed(
     """Retain the unclean targets cancellation left unfinished, unless the host chose KEEP."""
     if router.reclaim.failed_reclaim_policy is FailedReclaimPolicy.KEEP:
         return
-    for key, _ in acquired[start:]:
+    for key, sandboxes in acquired[start:]:
         admission = call.entered.get((key, kind))
         if key.call_id:
             # A call-scoped key has no next acquire to refuse.
             continue
-        router.mark_unclean(
-            key,
-            DisposalFailure(
-                "unknown", "the tool call's cleanup was cancelled before it could dispose"
-            ),
-            backend=None if admission is None else admission.backend,
-            kind=kind,
-        )
+        for sandbox in sandboxes:
+            router.mark_unclean(
+                key,
+                DisposalFailure("unknown", "the tool call's cleanup was cancelled"),
+                backend=None if admission is None else admission.backend,
+                kind=kind,
+                instance_id=sandbox.instance_id,
+            )
 
 
 async def _tell_the_host(
@@ -1970,6 +1974,17 @@ async def _clean_each_sandbox(
     unclean: Sequence[tuple[object, str]],
 ) -> None:
     """Clean each acquired sandbox while the caller retains its admission holds."""
+    grouped: list[tuple[SandboxKey, list[Sandbox]]] = []
+    for key, sandboxes in acquired:
+        admission = call.entered.get((key, spec.kind))
+        if admission is None or admission.rung is not Cleanup.RECLAIM or key.call_id:
+            grouped.append((key, sandboxes))
+            continue
+        instances: dict[str, list[Sandbox]] = {}
+        for sandbox in sandboxes:
+            instances.setdefault(sandbox.instance_id, []).append(sandbox)
+        grouped.extend((key, wrappers) for wrappers in instances.values())
+    acquired = tuple(grouped)
     for index, (key, sandboxes) in enumerate(acquired):
         admission = call.entered.get((key, spec.kind))
         if key.call_id:
@@ -2036,12 +2051,13 @@ async def _clean_each_sandbox(
                     spec,
                     admission=admission,
                     sandbox=sandboxes[-1],
+                    sandboxes=sandboxes,
                     owner=call.id,
                     unclean="; ".join(noted) or None,
                     timeout=timeout,
                 )
             except (asyncio.CancelledError, GeneratorExit):
-                _refuse_not_yet_reclaimed(router, acquired, index, call=call, kind=spec.kind)
+                _refuse_not_yet_reclaimed(router, acquired, index + 1, call=call, kind=spec.kind)
                 logger.warning(
                     f"{prefix}: the sandbox was not cleaned: the call was cancelled during the %s",
                     str(rung),
@@ -2103,9 +2119,20 @@ async def _clean_each_sandbox(
             continue
         try:
             if router.reclaim.failed_reclaim_policy is not FailedReclaimPolicy.KEEP:
-                router.mark_unclean(key, backend=admission.backend, kind=spec.kind)
+                router.mark_unclean(
+                    key,
+                    backend=admission.backend,
+                    kind=spec.kind,
+                    instance_id=sandboxes[-1].instance_id,
+                )
             disposal = await _dispose_the_unclean(
-                router, key, prefix=prefix, logger=logger, timeout=timeout
+                router,
+                key,
+                prefix=prefix,
+                logger=logger,
+                timeout=timeout,
+                kind=spec.kind,
+                instance_id=sandboxes[-1].instance_id,
             )
             if on_failure is None:
                 continue

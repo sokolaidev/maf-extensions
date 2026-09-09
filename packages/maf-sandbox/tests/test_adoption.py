@@ -171,7 +171,7 @@ def test_adoption_failure_is_bounded_and_obeys_keep(keep, failure):
     subject = backend()
     attempted = []
 
-    async def dispose(key, *, kind=None):
+    async def dispose(key, *, kind=None, instance_id=None):
         attempted.append((key, kind))
         assert subject.keys == [KEY]
         if failure == "timeout":
@@ -218,10 +218,10 @@ def test_concurrent_first_acquires_wait_for_one_adoption():
     entered, release = asyncio.Event(), asyncio.Event()
     original = subject.dispose
 
-    async def dispose(key, *, kind=None):
+    async def dispose(key, *, kind=None, instance_id=None):
         entered.set()
         await release.wait()
-        return await original(key, kind=kind)
+        return await original(key, kind=kind, instance_id=instance_id)
 
     subject.dispose = dispose
     current = router(subject)
@@ -311,10 +311,10 @@ def test_first_acquires_on_different_event_loops_share_one_adoption():
     entered, release = threading.Event(), threading.Event()
     original = subject.dispose
 
-    async def dispose(key, *, kind=None):
+    async def dispose(key, *, kind=None, instance_id=None):
         entered.set()
         assert await asyncio.to_thread(release.wait, 2)
-        return await original(key, kind=kind)
+        return await original(key, kind=kind, instance_id=instance_id)
 
     subject.dispose = dispose
     current = SandboxRouter(
@@ -339,15 +339,71 @@ def test_missing_or_invalid_instance_id_is_refused_and_disposed(value, monkeypat
     assert subject.disposed == [KEY]
 
 
+def test_invalid_fresh_replacement_is_disposed_after_adoption(monkeypatch):
+    subject = backend()
+    acquire = subject.acquire
+
+    async def malformed_replacement(key, spec):
+        sandbox = await acquire(key, spec)
+        if len(subject.keys) == 2:
+            monkeypatch.setattr(sandbox, "instance_id", None)
+        return sandbox
+
+    monkeypatch.setattr(subject, "acquire", malformed_replacement)
+    with pytest.raises(TypeError, match="instance_id"):
+        asyncio.run(router(subject).acquire(KEY, SPEC))
+    assert subject.disposed == [KEY, KEY]
+    assert subject.disposed_instances[-1] is None
+    assert not subject.sandboxes
+
+
+@pytest.mark.parametrize("phase", ["adoption", "cleanup"])
+def test_cancelled_reset_keeps_the_last_valid_identity(phase, monkeypatch):
+    subject = backend(snapshot=True)
+    current = router(subject)
+
+    async def scenario():
+        spec = dataclasses.replace(SPEC, min_cleanup=Cleanup.RESET)
+        admission = await current.enter_call(KEY, spec, owner="call")
+        sandbox = subject.sandbox
+        if phase == "cleanup":
+            sandbox = await current.acquire(KEY, spec, _admission=admission)
+        instance_id = sandbox.instance_id
+
+        async def reset(*, timeout):
+            monkeypatch.setattr(sandbox, "instance_id", None)
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(sandbox, "reset", reset)
+        with pytest.raises(asyncio.CancelledError):
+            if phase == "adoption":
+                await current.acquire(KEY, spec, _admission=admission)
+            else:
+                await current.finish_call(
+                    KEY, spec, admission=admission, sandbox=sandbox, owner="call"
+                )
+        assert [target.instance_id for target in current._pending_for(KEY)] == [instance_id]
+        sibling = await subject.acquire(KEY, dataclasses.replace(spec, kind="sibling"))
+        assert await current.dispose_unclean(KEY, timeout=1)
+        assert (KEY, spec.kind) not in subject.sandboxes
+        assert subject.sandboxes[(KEY, "sibling")] is sibling
+        replacement = await subject.acquire(KEY, spec)
+        assert replacement is not sandbox
+        assert await subject.dispose(KEY, kind=spec.kind, instance_id=instance_id) is None
+        assert subject.sandboxes[(KEY, spec.kind)] is replacement
+
+    asyncio.run(scenario())
+
+
 def test_cancelled_adoption_waiter_does_not_cancel_the_adoption():
     subject = backend()
     entered, release = asyncio.Event(), asyncio.Event()
     original = subject.dispose
 
-    async def dispose(key, *, kind=None):
+    async def dispose(key, *, kind=None, instance_id=None):
         entered.set()
         await release.wait()
-        return await original(key, kind=kind)
+        return await original(key, kind=kind, instance_id=instance_id)
 
     subject.dispose = dispose
     current = router(subject)

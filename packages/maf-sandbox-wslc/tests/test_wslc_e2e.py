@@ -786,3 +786,100 @@ def test_a_guest_owned_work_dir_answers_the_reach_probe():
         asyncio.run(scenario())
     finally:
         asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+
+@pytest.mark.parametrize("network", [False, True])
+def test_instance_disposal_conforms_against_engine_inventory(network):
+    from maf_sandbox.conformance import assert_instance_disposal_conformance
+
+    from maf_sandbox_wslc._backend import _network_name, _sandbox_labels
+
+    backend = WslcSandboxBackend(WslcSandboxConfig())
+    key = _key(f"e2e-instance-{uuid.uuid4()}")
+    spec = _spec()
+
+    async def create(kind, variant):
+        selected = SandboxSpec(kind=kind, image=_IMAGE)
+        name = _container_name(key, kind, variant)
+        if network:
+            await backend._ensure_network(_network_name(name), key, selected)
+        args = [
+            "container",
+            "run",
+            "-d",
+            "--name",
+            name,
+            "--network",
+            _network_name(name) if network else "none",
+        ]
+        for label, value in _sandbox_labels(key, selected).items():
+            args += ["--label", f"{label}={value}"]
+        args += [str(_IMAGE), "sleep", "infinity"]
+        created = await backend._wslc(*args, timeout=60)
+        assert created.returncode == 0
+        identity = created.stdout_text.strip()
+        inspected = await backend._inspect_disposal_target(identity)
+        assert inspected is not None
+        return str(inspected["Id"])
+
+    async def exists(identity):
+        return await backend._inspect_disposal_target(identity) is not None
+
+    async def scenario():
+        try:
+            target = await create(spec.kind, "target")
+            same_kind = await create(spec.kind, "sibling")
+            other_kind = await create("sibling-kind", "")
+            await assert_instance_disposal_conformance(
+                backend,
+                key,
+                spec.kind,
+                target,
+                [same_kind, other_kind],
+                exists,
+            )
+            if network:
+                removed = await backend._wslc(
+                    "network",
+                    "inspect",
+                    _network_name(_container_name(key, spec.kind, "target")),
+                    timeout=60,
+                )
+                assert (
+                    removed.returncode != 0 and "network not found" in removed.stderr_text.lower()
+                )
+                for kind, variant in ((spec.kind, "sibling"), ("sibling-kind", "")):
+                    sibling_network = await backend._wslc(
+                        "network",
+                        "inspect",
+                        _network_name(_container_name(key, kind, variant)),
+                        timeout=60,
+                    )
+                    assert sibling_network.returncode == 0
+            replacement = await create(spec.kind, "target")
+            assert replacement != target
+            assert await backend.dispose(key, kind=spec.kind, instance_id=target) is None
+            assert await exists(replacement)
+            assert await exists(same_kind) and await exists(other_kind)
+            if network:
+                replacement_network = await backend._wslc(
+                    "network",
+                    "inspect",
+                    _network_name(_container_name(key, spec.kind, "target")),
+                    timeout=60,
+                )
+                assert replacement_network.returncode == 0
+        finally:
+            failure = await backend.dispose(key)
+            if network:
+                for kind, variant in (
+                    (spec.kind, "target"),
+                    (spec.kind, "sibling"),
+                    ("sibling-kind", ""),
+                ):
+                    await backend._remove_network(
+                        _network_name(_container_name(key, kind, variant))
+                    )
+            assert failure is None
+
+    asyncio.run(scenario())

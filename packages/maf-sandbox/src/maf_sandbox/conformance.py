@@ -77,11 +77,11 @@ from __future__ import annotations
 import posixpath
 import shlex
 import time
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from ._protocol import Capability, EntryKind, Sandbox
+from ._protocol import Capability, EntryKind, Sandbox, SandboxBackend, SandboxKey
 
 __all__ = [
     "EXEC_PROBES",
@@ -104,6 +104,7 @@ __all__ = [
     "assert_files_delete_conformance",
     "assert_files_in_conformance",
     "assert_files_out_conformance",
+    "assert_instance_disposal_conformance",
     "assert_nothing_left_behind",
     "assert_reach_conformance",
     "assert_reclaim_conformance",
@@ -118,6 +119,36 @@ __all__ = [
     "run_reach_probes",
     "run_reclaim_probes",
 ]
+
+
+async def assert_instance_disposal_conformance(
+    backend: SandboxBackend,
+    key: SandboxKey,
+    kind: str,
+    instance_id: str,
+    siblings: Sequence[str],
+    exists: Callable[[str], Awaitable[bool]],
+) -> None:
+    """Delete one instance twice and preserve every sibling, observing IDs through the engine.
+
+    Supply at least one distinct, live sibling and an engine-backed existence query; the
+    target must also be live before this destructive probe starts.
+    """
+    if not siblings or instance_id in siblings:
+        raise ValueError("instance disposal needs distinct live siblings")
+    for identity in (instance_id, *siblings):
+        if not await exists(identity):
+            raise AssertionError(f"instance {identity!r} was absent before disposal")
+    for _ in range(2):
+        failure = await backend.dispose(key, kind=kind, instance_id=instance_id)
+        if failure is not None:
+            raise AssertionError(f"instance disposal failed: {failure}")
+        if await exists(instance_id):
+            raise AssertionError("the selected instance survived disposal")
+        for sibling in siblings:
+            if not await exists(sibling):
+                raise AssertionError("instance disposal removed a sibling")
+
 
 #: What the read probes allow. Large enough that nothing here is refused for its size — every
 #: refusal these probes assert is a confinement refusal, and a cap breach would mask one.

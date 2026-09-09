@@ -49,7 +49,7 @@ class _Backend(InProcessSandboxBackend):
         self.failure = failure
         self.attempts = []
 
-    async def dispose(self, key, *, kind=None):
+    async def dispose(self, key, *, kind=None, instance_id=None):
         self.attempts.append(kind)
         if self.failure == "cancel":
             raise asyncio.CancelledError
@@ -59,7 +59,7 @@ class _Backend(InProcessSandboxBackend):
             raise RuntimeError("delete refused")
         if self.failure == "failure":
             return DisposalFailure("refused", "delete refused")
-        return await super().dispose(key, kind=kind)
+        return await super().dispose(key, kind=kind, instance_id=instance_id)
 
 
 async def _finish(router, backend, kind, rung=Cleanup.DISPOSE):
@@ -136,7 +136,7 @@ def test_successful_retry_does_not_clear_a_newer_cleanup_failure(later_kind):
     class _Overlapping(_Backend):
         calls = 0
 
-        async def dispose(self, key, *, kind=None):
+        async def dispose(self, key, *, kind=None, instance_id=None):
             self.calls += 1
             if self.calls == 2:
                 entered.set()
