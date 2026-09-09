@@ -84,7 +84,7 @@ backend = DockerSandboxBackend(DockerSandboxConfig())
 | | |
 |---|---|
 | `acquire(key, spec)` | get-or-create, keyed `(scope, thread, agent, kind)`. A running container is reused, a stopped one started, a missing one created; an absent image is pulled explicitly first so a cold pull does not ride the lifecycle timeout |
-| `write_file(path, content, *, working_directory)` | a confined tar on stdin to `cp - <container>:/`, carrying the file and an explicit entry for every missing directory at or below `working_directory`, each stamped with the user `Config.User` resolves to — or with root's `0:0` on an image that names a user and answers no identity probe ([#741](https://github.com/sokolaidev/maf-extensions/issues/741)); `str` is UTF-8, `bytes` is written as given |
+| `write_file(path, content, *, working_directory)` | a confined tar on stdin to `cp - <container>:/`, carrying the file and an explicit entry for every missing directory at or below `working_directory`, each stamped with the user `Config.User` resolves to — with root's `0:0` retained only for workloads that require neither `FILES_OUT` nor `HOST_TOOLS` when the uid is unresolved; `str` is UTF-8, `bytes` is written as given |
 | `stat_file` / `read_file` | the `FILES_OUT` pull surface — stat from the tar entry header of `docker cp`, read from the same stream; extended metadata limited to a 64 KiB prefix and 32 headers, with a larger copy retried when needed; symlinks and other non-regular entries refused on the header type, every parent component refused unless it is a real directory, a body over the caller's cap refused rather than truncated |
 | `dispose(key, *, kind=None)` | `rm -f` on the named kind's container, or on every kind's when omitted, with the proxy and network of an allowlisted one; a retained failure keeps its kind, so a retry stays as narrow as the disposal that left it |
 | `dispose_scope(scope, thread)` | delete every container for a conversation — **by label, read back from docker**, not from process memory |
@@ -100,6 +100,12 @@ Container names are derived from the key and kind rather than remembered, so `ac
 No bind mounts, no host paths, and never the Docker socket cross into a sandbox — files go in and out only through `docker cp`. The hardening flags `--security-opt no-new-privileges` and `--pids-limit` go on every container; `--cap-drop ALL`, `--memory` and `--cpus` are opt-in through the config.
 
 `stop` is never used. A container whose init process ignores `SIGTERM` takes ten seconds to stop and a fraction of a second to remove, and there is nothing in a sandbox worth waiting for.
+
+## Images whose user cannot be resolved
+
+`acquire` raises `SandboxCapabilityNotSupported` when a workload requires `FILES_OUT` or `HOST_TOOLS` and the container's uid cannot be resolved. Root-owned input directories cannot promise that the guest can write outputs or host-tool markers beside them. Resolution uses `Config.User`, the container's `/etc/passwd` and `/etc/group` over `docker cp`, then `id` for missing values. An unset user is root; a numeric uid or any user these sources resolve remains supported.
+
+Give the image a numeric `uid:gid`, readable account files, or an `id` it can run. Unresolved identities are retried on the next acquire, including after an unreadable `Config.User`; the container remains registered for retry or explicit disposal. Workloads requiring neither writing capability still run with a warning and root-owned inputs, which the guest may be unable to modify or reclaim. Commands whose result is stdout remain usable.
 
 ## Explicit age-based cleanup
 

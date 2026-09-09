@@ -58,6 +58,7 @@ from maf_sandbox import (
     OsFamily,
     Sandbox,
     SandboxBackend,
+    SandboxCapabilityNotSupported,
     SandboxEntry,
     SandboxKey,
     SandboxLimits,
@@ -488,6 +489,7 @@ class _ContainerFacts:
     host_owned_ancestors: bool
     #: Runs with ``--cap-drop ALL``, so root holds no ``CAP_DAC_OVERRIDE``.
     capabilities_dropped: bool
+    identity_resolved: bool
     #: The default user UID, or 0 when unknown.
     guest_uid: int = 0
     #: The default user GID, or 0 when unknown.
@@ -1388,6 +1390,18 @@ class DockerSandboxBackend:
                 # make every closed teardown report a proxy that was never there.
                 self._acquired[name] = (key.scope, key.thread_id, key.agent_dir)
             facts = await self._container_facts(name, spec)
+            if not facts.identity_resolved:
+                refused = spec.requires & {Capability.FILES_OUT, Capability.HOST_TOOLS}
+                if refused:
+                    raise SandboxCapabilityNotSupported(
+                        f"sandbox backend {BACKEND_NAME!r} cannot serve "
+                        f"{', '.join(sorted(refused))} to the {spec.kind!r} workload: "
+                        f"container {name!r}'s user could not be resolved, so files would "
+                        "be root-owned and the guest may be unable to write outputs or "
+                        "host-tool markers or empty its call directory. Give the image a "
+                        "numeric uid:gid in Config.User, a readable /etc/passwd, or an `id` "
+                        "it can run. Unresolved identities are retried on the next acquire."
+                    )
             return _DockerSandbox(
                 self._docker,
                 name,
@@ -1416,24 +1430,11 @@ class DockerSandboxBackend:
             return True
         return "ALL" in result.stdout.decode("utf-8", errors="replace").upper()
 
-    async def _guest_identity(self, name: str, probe: _DockerSandbox) -> tuple[int, int]:
-        """Read the container's default user's uid and gid.
+    async def _guest_identity(self, name: str, probe: _DockerSandbox) -> tuple[int, int] | None:
+        """Resolve the default user's uid/gid from config, account files, then ``id``.
 
-        An unset user is root by definition, and an explicit ``uid:gid`` pair — both
-        numeric — is taken as-is; anything else is resolved against the container's own
-        account files, read over the same ``docker cp`` pull surface every other fact
-        uses, because the primary gid comes from ``/etc/passwd`` (or a named group from
-        ``/etc/group``) and is not the uid's to guess — a bare ``0`` no more implies gid
-        ``0`` than ``10001`` implies ``10001``.  ``id`` inside the container answers when
-        the account files cannot be read.  When nothing answers, the write falls back to
-        root's ``0:0`` for an image that positively identifies nothing, rather than a guess
-        that could stamp a stranger's ownership.
-
-        Only the ``id`` step's ``TimeoutError`` propagates, because only it runs a guest
-        command and ``_exec`` removes the container on its way out: that is a dying sandbox
-        rather than an unreadable identity, and caching fallback facts for it would serve
-        ``acquire`` a container that no longer exists.  A host-side read that times out has
-        removed nothing, so it falls back like any other unreadable answer.
+        ``None`` establishes no owner, including root. A guest-command timeout propagates
+        because ``exec`` removes the container; a host-side read timeout removes nothing.
         """
         uid: int | None = None
         gid: int | None = None
@@ -1491,7 +1492,7 @@ class DockerSandboxBackend:
             if gid is None and group_name is not None:
                 groups = await self._group_entry(name)
                 gid = groups.get(group_name)
-        except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
+        except Exception as unreadable:  # noqa: BLE001 — unreadable identity establishes no owner
             logger.debug("docker: could not read %s's guest identity (%s)", name, unreadable)
         # Outside that `except` deliberately; the docstring says why.
         if named_a_user and (uid is None or gid is None):
@@ -1506,13 +1507,7 @@ class DockerSandboxBackend:
             # A positively-known uid with no gid answer: the runtime picks 0 for a uid with
             # no passwd entry, so that is the honest remainder.
             return uid, 0
-        logger.warning(
-            "docker: %s's user could not be resolved, so its files stay root-owned and the "
-            "guest cannot empty its own call directory; give the image a numeric uid:gid in "
-            "Config.User, or a readable /etc/passwd, or an `id` it can run",
-            name,
-        )
-        return 0, 0
+        return None
 
     async def _effective_ids(
         self, probe: _DockerSandbox, *, want_uid: bool, want_gid: bool
@@ -1613,7 +1608,7 @@ class DockerSandboxBackend:
         return groups
 
     async def _container_facts(self, name: str, spec: SandboxSpec) -> _ContainerFacts:
-        """Read what ``name`` says about itself, once per container.
+        """Read container facts, caching resolved identities and retrying unresolved ones.
 
         Here rather than in :meth:`_DockerSandbox.reclaim` because the ancestors above
         ``work_dir`` are fixed before any guest runs: one answer per container, not one check
@@ -1638,19 +1633,32 @@ class DockerSandboxBackend:
                 spec.work_dir,
             )
         try:
-            guest_uid, guest_gid = await self._guest_identity(name, probe)
+            identity = await self._guest_identity(name, probe)
         except TimeoutError:
             raise
-        except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
+        except Exception as unreadable:  # noqa: BLE001 — unreadable identity establishes no owner
             logger.debug("docker: could not read %s's guest identity (%s)", name, unreadable)
-            guest_uid, guest_gid = 0, 0
+            identity = None
+        if identity is None:
+            logger.warning(
+                "docker: %s's user could not be resolved; FILES_OUT and HOST_TOOLS workloads "
+                "are refused. Other workloads keep root-owned inputs, which the guest may be "
+                "unable to modify or reclaim; commands whose result is stdout can still run. "
+                "Give the image a numeric uid:gid in Config.User, a readable /etc/passwd, "
+                "or an `id` it can run",
+                name,
+            )
+        guest_uid, guest_gid = identity if identity is not None else (0, 0)
         facts = _ContainerFacts(
             host_owned_ancestors=answer,
             capabilities_dropped=await self._capabilities_dropped(name),
+            identity_resolved=identity is not None,
             guest_uid=guest_uid,
             guest_gid=guest_gid,
         )
-        self._facts[key] = facts
+        # A transient probe failure must not become a permanent capability refusal.
+        if facts.identity_resolved:
+            self._facts[key] = facts
         return facts
 
     def _forget_facts(self, container: str) -> None:
