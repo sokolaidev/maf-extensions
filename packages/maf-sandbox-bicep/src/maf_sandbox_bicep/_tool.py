@@ -334,20 +334,9 @@ def _bicep_validate_tool(
         listed_names = [entry.name for entry in listing]
         listed_by_name = {entry.name: entry for entry in listing}
 
-        # Every call gets a fresh directory, because the sandbox is REUSED across fix rounds
-        # and only the named files are written into it.
-        #
-        # Without this, a file deleted from the file store between rounds survives in the
-        # sandbox, and a template still referencing it *compiles* — the tool reports "no
-        # diagnostics" for something that cannot build from the actual file store. A false
-        # green, from the one tool whose entire purpose is compiler truth.
-        #
-        # A fresh directory rather than wiping the old one: `bicepconfig.json` lives at the
-        # work-dir root (the image COPYs it there), so a recursive delete would take the
-        # repo's lint rules with it and every later `bicep lint` would quietly fall back to
-        # defaults. Bicep finds that config by walking UP from the file, so a subdirectory
-        # still picks it up — and the AVM module cache lives in ~/.bicep, untouched either
-        # way. Staleness becomes impossible by construction instead of something to reconcile.
+        # Fresh directories keep stale or concurrent inputs out of this validation.
+        # Bicep finds the parent's bicepconfig.json by walking up from the source, so cleanup
+        # removes only the call's inputs, module cache, and temporary profile.
         call_directory = session.guest_call_path()
 
         # Validate each name against that listing (the injection guard).
