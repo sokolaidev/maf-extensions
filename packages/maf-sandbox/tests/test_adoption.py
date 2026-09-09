@@ -383,6 +383,14 @@ def test_cancelled_reset_keeps_the_last_valid_identity(phase, monkeypatch):
                     KEY, spec, admission=admission, sandbox=sandbox, owner="call"
                 )
         assert [target.instance_id for target in current._pending_for(KEY)] == [instance_id]
+        sibling = await subject.acquire(KEY, dataclasses.replace(spec, kind="sibling"))
+        assert await current.dispose_unclean(KEY, timeout=1)
+        assert (KEY, spec.kind) not in subject.sandboxes
+        assert subject.sandboxes[(KEY, "sibling")] is sibling
+        replacement = await subject.acquire(KEY, spec)
+        assert replacement is not sandbox
+        assert await subject.dispose(KEY, kind=spec.kind, instance_id=instance_id) is None
+        assert subject.sandboxes[(KEY, spec.kind)] is replacement
 
     asyncio.run(scenario())
 

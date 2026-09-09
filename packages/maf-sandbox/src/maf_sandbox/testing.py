@@ -20,8 +20,9 @@ from __future__ import annotations
 import posixpath
 import shlex
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from ._outputs import SandboxTransferCapExceeded
@@ -74,6 +75,13 @@ def _child_name(entry_rel: str | None, directory_rel: str) -> str | None:
         return None
     name, _, _nested = entry_rel[len(prefix) :].partition("/")
     return prefix + name
+
+
+@dataclass
+class _InstanceIdentity:
+    """Engine identity shared with the backend independently of the public wrapper field."""
+
+    value: str
 
 
 class InProcessSandbox:
@@ -182,7 +190,8 @@ class InProcessSandbox:
         #: because a baseline taken after a call has served preserves the residue the reset
         #: exists to remove. Last in this constructor, so it sees every store above it.
         self._baseline = self._snapshot()
-        self.instance_id = uuid4().hex
+        self._instance = _InstanceIdentity(uuid4().hex)
+        self.instance_id = self._instance.value
 
     def _snapshot(self) -> tuple[dict[str, bytes], set[str], set[str], set[str], set[str]]:
         """Everything :meth:`reset` puts back, copied rather than aliased."""
@@ -204,7 +213,8 @@ class InProcessSandbox:
         self.non_regular = set(non_regular)
         self.directories = set(directories)
         self.running = set(running)
-        self.instance_id = uuid4().hex
+        self._instance.value = uuid4().hex
+        self.instance_id = self._instance.value
 
     def changed_paths(self) -> frozenset[str]:
         """Return every path whose contents or entry kind differs from the initial state."""
@@ -490,7 +500,7 @@ class InProcessSandboxBackend:
         #: the way a real create does — and kept when one was configured to fail, because a
         #: sandbox that was not deleted is one the next acquire still finds.
         self.sandboxes: dict[tuple[SandboxKey, str], InProcessSandbox] = {}
-        self._instance_ids: dict[tuple[SandboxKey, str], str] = {}
+        self._instances: dict[tuple[SandboxKey, str], _InstanceIdentity] = {}
         self._handed_out = False
         self.keys: list[SandboxKey] = []
         self.specs: list[SandboxSpec] = []
@@ -529,7 +539,7 @@ class InProcessSandboxBackend:
             held = InProcessSandbox() if self._handed_out else self.sandbox
             self._handed_out = True
             self.sandboxes[(key, spec.kind)] = held
-            self._instance_ids[(key, spec.kind)] = held.instance_id
+            self._instances[(key, spec.kind)] = held._instance
         return held
 
     async def dispose(
@@ -550,20 +560,11 @@ class InProcessSandboxBackend:
             for entry in self.sandboxes
             if entry[0] == key
             and (kind is None or entry[1] == kind)
-            and (
-                instance_id is None
-                or (
-                    self.sandboxes[entry].instance_id
-                    if isinstance(cast(object, self.sandboxes[entry].instance_id), str)
-                    and self.sandboxes[entry].instance_id
-                    else self._instance_ids.get(entry)
-                )
-                == instance_id
-            )
+            and (instance_id is None or self._instances[entry].value == instance_id)
         ]
         for held in taking:
             del self.sandboxes[held]
-            self._instance_ids.pop(held, None)
+            self._instances.pop(held, None)
         return None
 
     async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
@@ -578,7 +579,7 @@ class InProcessSandboxBackend:
             if entry[0].scope == scope and entry[0].thread_id == thread_id
         ]:
             del self.sandboxes[held]
-            self._instance_ids.pop(held, None)
+            self._instances.pop(held, None)
         return ScopePurge(self.purge_count, self.purge_failure)
 
 
