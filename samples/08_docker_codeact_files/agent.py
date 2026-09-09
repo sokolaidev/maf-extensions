@@ -82,14 +82,12 @@ MODEL_VARS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_MODEL")
 def make_recording_sink(output_dir: Path, delivered: list[str]) -> OutputSink:
     """`make_file_system_sink`, with this turn's names recorded as they land.
 
-    The writing and the confinement are the library's — a sink that joins a validated name
-    onto a directory is still not safe, because the name says nothing about what is already
-    at the path it resolves to.  What is left here is the only part that belongs to the
-    application: `delivered` is *this turn's* record, and the directory cannot stand in for
-    it because it also holds whatever an earlier run left behind.
+    Repeated names replace earlier files; other names remain in the directory, so only
+    `delivered` records what landed this turn. Writing and confinement belong to the library.
     """
     landing = make_file_system_sink(
         output_dir,
+        existing="replace",
         # No leading verb: the kind introduces this list with "Saved:" of its own.
         display=lambda artifact, _destination: (
             f"{artifact.name} ({len(artifact.content)} bytes), in {output_dir.name}/"

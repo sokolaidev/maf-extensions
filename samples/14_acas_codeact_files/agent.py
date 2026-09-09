@@ -106,12 +106,12 @@ MODEL_VARS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_MODEL")
 def make_recording_sink(output_dir: Path, delivered: list[str]) -> OutputSink:
     """`make_file_system_sink`, with this turn's names recorded as they land.
 
-    Sample 08's, unchanged, and it is unchanged on purpose: a sink is host-side code that
-    never learns which backend produced the bytes it is handed.  If this function had to know,
-    the pull surface would not be portable and the sample would be making the opposite point.
+    Repeated names replace earlier files; other names remain in the directory, so only
+    `delivered` records what landed this turn. Writing and confinement belong to the library.
     """
     landing = make_file_system_sink(
         output_dir,
+        existing="replace",
         # No leading verb: the kind introduces this list with "Saved:" of its own.
         display=lambda artifact, _destination: (
             f"{artifact.name} ({len(artifact.content)} bytes), in {output_dir.name}/"
