@@ -676,10 +676,9 @@ def act_four_what_the_round_trips_bought(host_tool_call: int, direct: int) -> No
 async def _what_one_sandbox_holds(
     router: SandboxRouter, thread: str, registry: HostToolRegistry | None
 ) -> tuple[int, int, int, int]:
-    """Run directories, how many called a host tool, and the files those left, for one route's
-    sandbox.
+    """Count run directories and transport files in a route's acquired sandbox.
 
-    Acquiring returns the same warm sandbox the route used, which is the point: the runs are in it.
+    Inspection requires the route's work directory to survive until this acquire.
     """
     spec = codeact_sandbox_spec(image=CODEACT_IMAGE, host_tools=registry)
     sandbox = await router.acquire(SandboxKey(SCOPE, thread, AGENT_DIR), spec)

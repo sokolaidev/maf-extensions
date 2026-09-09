@@ -210,9 +210,8 @@ class TestABrokenStackFails:
         reasons = _tampered(_REPLY, "I ran it. The number came out as expected.")
         assert any("never carries" in r for r in reasons), reasons
 
-    def test_no_sandbox_created_fails(self):
-        reasons = _tampered("Disposed 1 sandbox(es).", "Disposed 0 sandbox(es).")
-        assert any("no sandbox was ever created" in r for r in reasons), reasons
+    def test_per_call_disposal_leaves_an_empty_scope_purge(self):
+        assert _tampered("Disposed 1 sandbox(es).", "Disposed 0 sandbox(es).") == []
 
     def test_an_incomplete_run_has_no_disposal_line(self):
         reasons = _tampered("\n  [measured] Disposed 1 sandbox(es).\n", "\n")
@@ -229,3 +228,22 @@ class TestABrokenStackFails:
 
     def test_empty_output_fails_rather_than_passing_vacuously(self):
         assert check.assess("") != []
+
+
+@pytest.mark.parametrize("disposed", [0, 1])
+def test_a_scope_purge_cannot_substitute_for_work(disposed):
+    output = _HEALTHY.replace("Disposed 1", f"Disposed {disposed}")
+    changed = output.replace(
+        "programs whose output came back from the sandbox: 1",
+        "programs whose output came back from the sandbox: 0",
+    )
+    assert changed != output
+    output = changed
+    assert check.assess(output)
+
+
+@pytest.mark.parametrize("disposed", [0, 1])
+def test_explicit_purge_failure_is_rejected(disposed):
+    output = _HEALTHY.replace("Disposed 1", f"Disposed {disposed}")
+    output += "\n  [measured] Not fully disposed: timeout\n"
+    assert any("data may remain" in reason for reason in check.assess(output))

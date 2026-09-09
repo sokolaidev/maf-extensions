@@ -32,7 +32,7 @@ read, and every line must carry the `[measured]` tag at the left margin (#314).
 Each reason is classed by who owns it and the exit status carries the class. The model's own are
 the walk its program took, the table that program printed, the products it named, how it batched,
 and how many figures the direct route's model carried. This suite's are the round-trip
-arithmetic, the cleanup acts, the cap, the disposals, and any `[measured]` line missing or
+arithmetic, the cleanup acts, the cap, the scope purge report, and any `[measured]` line missing or
 doubled.
 
 Exits non-zero listing every reason it failed: `MODEL_DID_NOT_CONVERGE` when every reason is the
@@ -68,9 +68,6 @@ _STAGES = 4
 #: `7 of 7`. A check that reads its expectations off the output it is checking agrees with
 #: whatever it is given.
 _FIGURES = 12
-
-#: One sandbox per route, so neither route's program can read the other's leftovers.
-_SANDBOXES = 2
 
 #: The walk's own arithmetic, and the registry default it has to clear. Pinned here for the
 #: reason `_FIGURES` is: read off the sample's own line, `32 (the walk needs 2 at best, 12
@@ -143,6 +140,7 @@ _CALL_DIRS = _tagged(r"call directories across both sandboxes:\s+(\d+)")
 _RUNS_THAT_CALLED = _tagged(r"of those, runs that called a host tool:\s+(\d+)")
 _LEFT = _tagged(r"transport files left behind:\s+(\d+), of which answered calls:\s+(\d+)")
 _DISPOSED = _tagged(r"Disposed\s+(\d+)\s+sandbox\(es\)\.")
+_NOT_DISPOSED = _tagged(r"Not fully disposed:[^\r\n]*")
 
 
 def _once[M](matches: list[M], what: str) -> tuple[M | None, list[str]]:
@@ -778,27 +776,11 @@ def _assess_what_the_runs_left(output: str) -> list[str]:
     return failures
 
 
-def _assess_the_sandbox_went_away(output: str, *, docker: bool = False) -> list[str]:
-    """Two — a sandbox per route — and both gone, whether they bill (ACAS) or not (docker)."""
-    match, failures = _once(_DISPOSED.findall(output), "Disposed")
-    if match is None:
-        return failures
-    if int(match) != _SANDBOXES:
-        if docker:
-            failures.append(
-                f"{match} sandbox(es) disposed where the sample acquires {_SANDBOXES}, one per "
-                "route so neither route's program can reach the other's outward channel — a "
-                "container this sample leaves behind keeps running until it is explicitly removed "
-                "(docker rm, a label-based purge, or the host going away); nothing here reclaims "
-                "it on a timer"
-            )
-        else:
-            failures.append(
-                f"{match} sandbox(es) disposed where the sample acquires {_SANDBOXES}, one per "
-                "route so neither can read the other's leftovers — a sandbox this "
-                "sample leaves behind bills until the lifecycle timers reach it, and it is also "
-                "the only thing that removes the files act 5 counted"
-            )
+def _assess_scope_purge(output: str) -> list[str]:
+    """Require the final purge report; per-call disposal can leave its count at zero."""
+    _, failures = _once(_DISPOSED.findall(output), "Disposed")
+    if _NOT_DISPOSED.search(output):
+        failures.append("the scope purge could not account for every sandbox — data may remain")
     return failures
 
 
@@ -846,7 +828,7 @@ def assess(output: str, *, docker: bool = False) -> list[str]:
         *_assess_who_carried_the_figures(output),
         *_assess_the_round_trips(output),
         *([] if docker else _assess_what_the_runs_left(output)),
-        *_assess_the_sandbox_went_away(output, docker=docker),
+        *_assess_scope_purge(output),
     ]
 
 
@@ -882,8 +864,8 @@ def main(argv: list[str]) -> int:
         if all(isinstance(reason, _TheModelsHalf) for reason in failures):
             print(
                 "  every failure above is the model's own — the host served the lookups it was "
-                "asked for, the transport accounted for every round trip, and the sandboxes "
-                f"went away. Exiting {MODEL_DID_NOT_CONVERGE}: the walk is worth another "
+                "asked for, the transport accounted for every round trip, and the scope purges "
+                f"reported no failures. Exiting {MODEL_DID_NOT_CONVERGE}: the walk is worth another "
                 "attempt.",
                 file=sys.stderr,
             )

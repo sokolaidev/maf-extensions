@@ -102,13 +102,15 @@ So a host-tool call that is answered at all proves the launcher detached and the
 
 Act 5 enumerates the work root with `list_dir`, which needs `Capability.FILES_LIST`. ACAS declares it and Docker does not, so on `SAMPLE_BACKEND=docker` act 5 prints a skip note and everything in this section applies only to the ACAS run.
 
+**Known limitation with per-call disposal:** act 5 reacquires a sandbox and assumes it is the warm one the route used. After disposal it can instead acquire a fresh sandbox with no `/maf-sandbox/work`, and enumeration fails with an ACAS 404. Correcting the purge-count check does not fix this separate inspection problem ([#1024](https://github.com/sokolaidev/maf-extensions/issues/1024)).
+
 A fresh directory per run keeps one run's traffic out of the next one's. On current CodeAct, the framework owns that call directory and reclaims it when the tool call returns, so act 5 may find no directories at all. Older CodeAct kinds leave those directories for the sandbox, and act 5 reports that behavior too.
 
 Whether the *traffic* is still there depends on the transport, so act 5 names which one it measured before it counts anything. Where the transport reclaims what it owns, zero transport files is the cleanup working. The call-directory marker separately says whether the framework reclaimed the kind's directory; when it did, the program count comes from the host's own observer rather than the guest. Both are measured; the check grades the behavior the run declares.
 
 On a legacy transport, sixty-three transport files survived one run of this sample. That is **three per served call** — the id the caller claimed with an exclusive create, the request, and the answer — so the sample reports the answered subset alongside the total. A current transport reports zero instead, because it removes the directory holding that traffic.
 
-Disposing the sandbox is the only thing that removes them, which is what the footer does.
+Disposing the sandbox removes any remaining files, whether disposal happens at the end of a call or in the final scope purge.
 
 ## What the check enforces
 
@@ -129,17 +131,17 @@ The first and fourth bullets above are read off a program a live model wrote, an
 
 **The model's half** is all of: the stages its program exercised, the state totals, per-product cells and labelled rows that program printed, the products the host-tool-call table names, whether direct paid more tool-calling rounds than the host-tool-call route, a walk shorter than the twelve lookups the table is made of, a host-tool-call message asking for more than one program, direct batching in fewer batches than there are stages, and the direct route's model carrying fewer than all twelve figures. The check exits 3 and the live job attempts the sample again — **three times at most**, on either backend.
 
-Everything else exits 1 on the first attempt: the round-trip arithmetic, both cleanup acts, the cap, the disposals, the host-tool-call route carrying any figure at all, two of the sample's own lines disagreeing about one attempt, and any `[measured]` line missing or doubled.
+Everything else exits 1 on the first attempt: the round-trip arithmetic, both cleanup acts, the cap, explicit purge failures, the host-tool-call route carrying any figure at all, two of the sample's own lines disagreeing about one attempt, and any `[measured]` line missing or doubled.
 
-Three where [sample 13](../13_bicep_fix_loop/README.md) allows six, because an attempt holds a sandbox per route and so costs two. They are sequential and each disposes its own pair, so the peak does not move. A budget buys a rate, not a fix: a walk that never converges still reds the job, and every retry is annotated with the attempt count in the job summary, because a silent retry is how a flaky check starts reading green.
+Three where [sample 13](../13_bicep_fix_loop/README.md) allows six, because each attempt runs both routes and creates billable sandboxes on ACAS. With per-call disposal, multiple calls can create more than two sandboxes during an attempt. Attempts run sequentially and each ends with a scope purge. A walk that never converges still reds the job, and every retry is annotated with the attempt count in the job summary.
 
 ## Prerequisites
 
 `SAMPLE_BACKEND` selects the backend; the model deployment is needed either way (no key — `az login` is enough).
 
-**On `acas` (default):** an Azure subscription with the [Container Apps Sandboxes](https://learn.microsoft.com/azure/container-apps/sandboxes) preview enabled and a sandbox group, plus `mcr.microsoft.com/devcontainers/python:3.13-bookworm` imported into that group as a disk image (sample 14's, so a group set up for that one already has it). **This creates two billable sandboxes**, one per route, both disposed at the end — the check fails the run if they were not.
+**On `acas` (default):** an Azure subscription with the [Container Apps Sandboxes](https://learn.microsoft.com/azure/container-apps/sandboxes) preview enabled and a sandbox group, plus `mcr.microsoft.com/devcontainers/python:3.13-bookworm` imported into that group as a disk image (sample 14's, so a group set up for that one already has it). **This creates billable sandboxes** for the two routes. Per-call cleanup can dispose the workload sandboxes, but act 5 reacquires one sandbox per route outside that cleanup. When both inspections complete, their sandboxes remain for the final scope purge. The checker requires the purge report and rejects `Not fully disposed`; the programs' returned tables and host measurements prove the work.
 
-**On `docker` (`SAMPLE_BACKEND=docker`):** Docker with a daemon this process can reach — no cloud subscription and no sandbox group. The same image, which `docker run` pulls on first use (samples 06 and 08 use it too). It creates two local containers, one per route, and bills nothing.
+**On `docker` (`SAMPLE_BACKEND=docker`):** Docker with a daemon this process can reach — no cloud subscription and no sandbox group. The same image, which `docker run` pulls on first use (samples 06 and 08 use it too). It creates local containers for the two routes and bills nothing. This path skips act 5, so per-call disposal can leave the final scope purge reporting `Disposed 0`.
 
 Either way the launcher is POSIX shell and the shim is Python, so the guest needs **`sh`, `nohup`, `mkdir`, `mv`, `printf`, `rm`, `kill` and `python3`**, and uses `setsid` where it is present. A distroless or Windows image cannot serve this whatever it declares.
 

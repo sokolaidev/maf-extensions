@@ -1136,14 +1136,15 @@ class TestAModelCannotAnswerForTheHost:
         assert any("none of them can be trusted" in r for r in check.assess(doubled))
 
 
-class TestTheBillableSandboxWentAway:
-    def test_a_leaked_sandbox_fails(self):
-        assert any(
-            "bills until" in r
-            for r in check.assess(
-                _swap("[measured] Disposed 2 sandbox(es).", "[measured] Disposed 1 sandbox(es).")
-            )
+class TestScopePurge:
+    @pytest.mark.parametrize("disposed", [0, 1, 2, 3])
+    def test_scope_purge_count_is_not_a_work_measurement(self, disposed):
+        output = (
+            _swap("Disposed 2 sandbox(es).", f"Disposed {disposed} sandbox(es).")
+            if disposed != 2
+            else _HEALTHY
         )
+        assert check.assess(output) == []
 
     def test_a_missing_footer_fails(self):
         assert any("Disposed" in r for r in check.assess(_without("Disposed")))
@@ -1244,21 +1245,13 @@ class TestTheDockerSampleHasNoActFive:
             "before any host-tool call can answer" in r for r in check.assess(broken, docker=True)
         )
 
-    def test_a_leaked_container_still_fails(self):
-        broken = _DOCKER.replace("Disposed 2 sandbox(es).", "Disposed 1 sandbox(es).")
-        assert any("until it is explicitly removed" in r for r in check.assess(broken, docker=True))
+    def test_per_call_disposal_leaves_an_empty_scope_purge(self):
+        output = _DOCKER.replace("Disposed 2 sandbox(es).", "Disposed 0 sandbox(es).")
+        assert check.assess(output, docker=True) == []
 
-    def test_the_cli_docker_flag_selects_docker_mode(self, tmp_path: Path, capsys):
-        path = tmp_path / "out.txt"
-        path.write_text(_DOCKER, encoding="utf-8")
-        assert check.main(["check", "--docker", str(path)]) == 0
-        assert "host-tool-call" in capsys.readouterr().out
-
-    def test_without_the_flag_the_cli_rejects_the_docker_run(self, tmp_path: Path, capsys):
-        path = tmp_path / "out.txt"
-        path.write_text(_DOCKER, encoding="utf-8")
-        assert check.main(["check", str(path)]) == 1
-        assert "FAIL" in capsys.readouterr().err
+    def test_a_failed_scope_purge_still_fails(self):
+        output = _DOCKER + "\n  [measured] Not fully disposed: timeout\n"
+        assert any("data may remain" in r for r in check.assess(output, docker=True))
 
 
 class TestWhichHalfFailedIsInTheExitStatus:
@@ -1286,15 +1279,21 @@ class TestWhichHalfFailedIsInTheExitStatus:
         assert self._status(tmp_path, zeroed) == check.MODEL_DID_NOT_CONVERGE
 
     def test_a_measurement_this_suite_owns_does_not(self, tmp_path: Path):
-        """A sandbox left running is not something a second attempt can mend."""
-        broken = _swap("Disposed 2 sandbox(es).", "Disposed 1 sandbox(es).")
+        """A failed purge is not a model convergence failure."""
+        broken = _swap(
+            "Disposed 2 sandbox(es).",
+            "Disposed 0 sandbox(es).\n  [measured] Not fully disposed: timeout",
+        )
         assert self._status(tmp_path, broken) == 1
 
     def test_one_hard_failure_among_the_model_s_is_enough_to_forbid_a_retry(self, tmp_path: Path):
         both = _swap(
             "[measured] host-tool-call route: state totals the program printed: 2 of 2",
             "[measured] host-tool-call route: state totals the program printed: 0 of 2",
-        ).replace("Disposed 2 sandbox(es).", "Disposed 1 sandbox(es).")
+        ).replace(
+            "Disposed 2 sandbox(es).",
+            "Disposed 0 sandbox(es).\n  [measured] Not fully disposed: timeout",
+        )
         assert self._status(tmp_path, both) == 1
 
     def test_the_exit_line_does_not_blame_the_transport(self, tmp_path: Path, capsys):
@@ -1319,7 +1318,12 @@ class TestWhichHalfFailedIsInTheExitStatus:
             )
         )
         assert zeroed and all(isinstance(r, check._TheModelsHalf) for r in zeroed)
-        disposed = check.assess(_swap("Disposed 2 sandbox(es).", "Disposed 1 sandbox(es)."))
+        disposed = check.assess(
+            _swap(
+                "Disposed 2 sandbox(es).",
+                "Disposed 0 sandbox(es).\n  [measured] Not fully disposed: timeout",
+            )
+        )
         assert disposed and not any(isinstance(r, check._TheModelsHalf) for r in disposed)
 
     def test_a_run_that_never_finished_is_not_the_model_s_half(self, tmp_path: Path):

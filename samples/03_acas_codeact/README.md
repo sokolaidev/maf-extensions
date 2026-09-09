@@ -69,7 +69,7 @@ That block is one real run. This model answered with the number alone; another w
 
 The wording around the number is the model's and varies run to run; the model is instructed to report the tool's answer verbatim, not to paraphrase, round, or recompute it. What tells you the number came from a real run rather than the model reciting a well-known sequence is the block below it. `354224848179261915075` is a constant, and a model that never ran anything can write it — so the live check reads the copy inside `== Program output as execute_code returned it ==`, which is the interpreter's own stdout, recorded by the framework beside the call ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). The `[measured]` lines are the sample vouching for a number, and the model's reply is filtered before printing so a line of it starting with that tag comes out quoted (`> [measured] …`) — a reply can write the heading and cannot close the block.
 
-`[measured] Disposed 1 sandbox(es).` is the other half: it only prints once `execute_code` has actually created and torn down a sandbox, and a `Disposed 0` would mean the model answered without running anything.
+The measured program-output count and the interpreter block prove the work. `Disposed N` reports only what the final scope purge removed; `Disposed 0` is expected when per-call cleanup already disposed the sandbox.
 
 ## Troubleshooting
 

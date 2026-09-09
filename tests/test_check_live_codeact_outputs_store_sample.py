@@ -262,10 +262,8 @@ class TestDisposal:
 
         assert any("did not run to completion" in reason for reason in check.assess(missing))
 
-    def test_disposing_nothing_fails(self):
-        assert any(
-            "no sandbox was ever created" in reason for reason in check.assess(_output(disposed=0))
-        )
+    def test_per_call_disposal_leaves_an_empty_scope_purge(self):
+        assert check.assess(_output(disposed=0)) == []
 
     def test_a_purge_that_could_not_account_for_everything_fails(self):
         """The line the sample prints only when the purge failed, on an otherwise healthy run."""
@@ -275,11 +273,10 @@ class TestDisposal:
             "could not account for every sandbox" in reason for reason in check.assess(reported)
         )
 
-    def test_disposing_nothing_beside_a_failed_purge_is_inconclusive(self):
-        """Both are failures; only this one sends the reader to the right place."""
+    def test_an_empty_purge_still_reports_its_failure(self):
         reasons = check.assess(_output(disposed=0, undisposed="sandbox 'abc' refused removal"))
 
-        assert any("could not be removed" in reason for reason in reasons)
+        assert any("could not account for every sandbox" in reason for reason in reasons)
         assert not any("no sandbox was ever created" in reason for reason in reasons)
 
 
