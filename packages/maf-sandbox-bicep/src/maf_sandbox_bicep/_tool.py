@@ -32,7 +32,6 @@ from maf_sandbox import (
 )
 from maf_sandbox.maf import (
     SandboxToolSession,
-    labelled_result_item,
     positions_holding_hidden_content,
     sandboxed_tool,
 )
@@ -279,8 +278,7 @@ def make_bicep_tools(
         # because a declaration replaces the other two tiers, and neither is this kind's to
         # answer for — `information-flow.md` carries why.
         source_integrity=SourceIntegrity.UNTRUSTED,
-        # Committed where a reviewer sees it, so the per-item `trusted` the body writes stops
-        # being a claim only that body executes.
+        # The wrapper validates this suffix on every return and owns its trusted label.
         standing_guidance=(_UNREAD_IS_NOT_A_PASS,),
         # No confidentiality key on purpose — a host's confidentiality tiers are the host's
         # classification, and declaring one here can activate a policy leg a given host keeps
@@ -531,7 +529,7 @@ def _bicep_validate_tool(
         # honest only where it is on every path, refusals included.
         return [
             Content.from_text(await report(files)),
-            labelled_result_item(_UNREAD_IS_NOT_A_PASS, SourceIntegrity.TRUSTED),
+            Content.from_text(_UNREAD_IS_NOT_A_PASS),
         ]
 
     return bicep_validate

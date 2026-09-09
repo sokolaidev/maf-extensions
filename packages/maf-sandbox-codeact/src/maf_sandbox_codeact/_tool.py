@@ -65,7 +65,6 @@ from maf_sandbox import (
 from maf_sandbox.maf import (
     SandboxToolSession,
     hidden_content_candidates,
-    labelled_result_item,
     positions_holding_hidden_content,
     sandboxed_tool,
 )
@@ -520,8 +519,8 @@ def make_codeact_tools(
         # kind's to answer for. It does not reach the withheld route's per-item `trusted`,
         # which is tier 1 and read first — `information-flow.md` carries both.
         source_integrity=SourceIntegrity.UNTRUSTED,
-        # Committed where a reviewer sees it, so the per-item `trusted` this kind writes on
-        # the withheld route stops being a claim only its body executes.
+        # The wrapper validates and stamps this suffix so the body cannot choose which
+        # returned items become trusted.
         standing_guidance=_standing_guidance(
             withhold=withhold_guest_output,
             lands_per_call=output_sink is not None and output_sink.per_call,
@@ -967,7 +966,7 @@ def _execute_code_tool(
         )
         return [
             Content.from_text(answer),
-            labelled_result_item(route, SourceIntegrity.TRUSTED),
+            Content.from_text(route),
         ]
 
     async def with_files_and_outputs(
