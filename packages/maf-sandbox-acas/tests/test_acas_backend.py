@@ -1383,7 +1383,7 @@ class TestAnImageWhoseGuestIsNotRoot:
     def test_a_warm_root_sandbox_is_not_refused_by_another_sandbox_s_hint(self):
         """The hint must not answer for a sandbox that has a verdict of its own.
 
-        A verified-root sandbox kept warm, then a non-root one created from the same mutable
+        A sandbox with a successful removal probe kept warm, then a non-root one from the same
         name, which moves the hint to `False`. The next `FILES_DELETE` acquire for the warm
         root sandbox must read *its* `True`, not the hint — and it only can if the registry is
         consulted before the hint is.

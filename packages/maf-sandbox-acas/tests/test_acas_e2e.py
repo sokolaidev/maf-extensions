@@ -938,7 +938,7 @@ class TestAnImageWhoseGuestIsNotRoot:
     creates on a backend of its own. The refusals below pay for neither, because the fixture's
     acquire already left an image-level hint and that is what the refusal running before a
     create reads — which is why the cold path, on a backend with no hint yet, cannot borrow
-    the fixture's sandbox. The authoritative verdict is per sandbox; the hint is only what
+    the fixture's sandbox. The compatibility result is per sandbox; the hint is only what
     spares a second workload a create.
     """
 
@@ -998,8 +998,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert "denied" in refused.stderr.lower(), refused.stderr
 
     def test_a_workload_collecting_outputs_is_refused_at_acquire(self, nonroot: _Live):
-        """And refused without a second sandbox: the authority the fixture's acquire observed is what
-        answers here, before any create."""
+        """The fixture's failed removal compatibility result refuses before another create."""
         from maf_sandbox import SandboxCapabilityNotSupported
 
         collecting = SandboxSpec(

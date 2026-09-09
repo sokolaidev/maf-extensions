@@ -842,9 +842,10 @@ class AcasSandboxBackend:
 
         Raises:
             SandboxCapabilityNotSupported: when the spec requires ``FILES_OUT`` or
-                ``HOST_TOOLS`` and the image's guest is not root, or ``FILES_DELETE`` and its
-                guest has no successful removal observation. The two differ on an unreadable probe;
-                :meth:`_refuse_or_warn_on_guest_removal` says why.
+                ``HOST_TOOLS`` and the removal compatibility probe completed with failure,
+                or ``FILES_DELETE`` without a successful removal observation. An inconclusive
+                probe serves the writing capabilities but refuses deletion; a successful
+                probe does not establish that the guest is root.
         """
         async with self._acquire_lock((key.scope, key.thread_id, key.agent_dir, spec.kind)):
             return await self._get_or_create(key, spec)
