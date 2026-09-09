@@ -1944,8 +1944,8 @@ class SandboxRouter:
                 reported = await backend.dispose(key, kind=spec.kind, instance_id=instance_id)
         except TimeoutError:
             reported = DisposalFailure("timeout", f"the delete did not finish within {bound:g}s")
-        except (asyncio.CancelledError, GeneratorExit):
-            self._record_an_interrupted_disposal(key, backend, started, asyncio.CancelledError())
+        except (asyncio.CancelledError, GeneratorExit) as interrupted:
+            self._record_an_interrupted_disposal(key, backend, started, interrupted)
             if self._reclaim.failed_reclaim_policy is not FailedReclaimPolicy.KEEP:
                 self.mark_unclean(key, backend=backend, kind=spec.kind, instance_id=instance_id)
             raise
