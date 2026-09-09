@@ -118,7 +118,7 @@ def _archive(
             timer.cancel()
             if process.poll() is None:
                 process.kill()
-            process.wait(timeout=10)
+            process.wait()
         children = [entry for entry in entries if len(PurePosixPath(entry["name"]).parts) == 2]
         return {
             "path": guest_path,
@@ -148,7 +148,7 @@ def _stop_early(container: str) -> dict[str, Any]:
             timer.cancel()
             if process.poll() is None:
                 process.kill()
-            process.communicate(timeout=10)
+            process.communicate()
     elapsed = round(time.perf_counter() - started, 4)
     next_copy = _archive(container, "/listing/empty")
     return {
