@@ -20,6 +20,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, cast
+from uuid import uuid4
 
 from maf_sandbox import (
     BackendDeclarations,
@@ -152,38 +153,21 @@ _RESUME_TIMEOUT_S = 120
 #: pid, exit and session markers into a directory the file plane made.
 _NEEDS_A_WRITING_GUEST = frozenset({Capability.FILES_OUT, Capability.HOST_TOOLS})
 
-#: What a guest that is not root must not be handed, whatever it can write. A *reach* rule
-#: rather than a functional one, and a set of its own because the two fail in opposite
-#: directions on an unknown uid: `remove` deletes through the data plane, which acts as the
-#: host, so a delete redirected through a parent swapped after the check reaches what the guest
-#: could not. Withheld rather than gated per call the way `maf-sandbox-docker` gates root,
-#: because that gate reads each component's owner and this data plane's stat payload carries
-#: none. `docs/sandbox/backends/acas.md` carries the argument.
-_UNSAFE_WHERE_THE_GUEST_IS_NOT_ROOT = frozenset({Capability.FILES_DELETE})
+#: Deletion requires a completed compatibility check even when output collection fails open.
+_NEEDS_OBSERVED_REMOVAL = frozenset({Capability.FILES_DELETE})
 
-#: What makes the guest's uid worth reading at all. `EXEC` earns a warning rather than a
-#: refusal: a command whose whole result is its stdout runs fine as any user.
-_PROBE_WHEN_REQUIRED = (
-    _NEEDS_A_WRITING_GUEST | _UNSAFE_WHERE_THE_GUEST_IS_NOT_ROOT | {Capability.EXEC}
-)
+#: EXEC earns a warning rather than a refusal: stdout-only commands need no writing guest.
+_PROBE_WHEN_REQUIRED = _NEEDS_A_WRITING_GUEST | _NEEDS_OBSERVED_REMOVAL | {Capability.EXEC}
 
-#: How the guest's uid is read: on an acquire that requires the probe and has no verdict
-#: recorded for the sandbox in hand.
-_GUEST_UID_COMMAND = "id -u"
-
-#: Where that runs. Never `spec.work_dir`, which nothing has created yet at acquire: an exec
-#: into a directory that does not exist fails for a reason unrelated to the answer.
+#: The probe must not depend on a workload directory that does not exist at acquire.
 _GUEST_PROBE_WORKING_DIRECTORY = "/"
 
-#: How long the probe gets. Its own bound rather than `read_timeout_seconds`, which is 120 by
-#: default and describes a read that never returns: a guest that has not answered `id -u` in 30
-#: seconds is not going to. It runs on the way to a cold acquire, and again on a warm one
-#: whose own probe never landed, so a guest dropping every call pays it per acquire.
+#: One bound for preparation, exec and observation; cleanup has its own equal bound.
 _PROBE_TIMEOUT_S = 30.0
 
 
 def _image_identity(spec: SandboxSpec) -> tuple[str, str]:
-    """What a spec names its image by — the key the guest's uid is remembered under.
+    """What a spec names its image by — the key the guest's removal result is remembered under.
 
     Both fields, because ``image_id`` skips resolution entirely: two specs sharing an ``image``
     can still boot different artefacts.
@@ -247,13 +231,9 @@ _LIMITS = SandboxLimits(files_in=_FILES_LIMITS, files_out=_FILES_LIMITS)
 # does. That gap is #111's axis, and it is the same gap `EXEC` already has: a kind execing
 # `python3` against an image without Python fails inside the sandbox today.
 #
-# The image narrows this set two ways, and `acquire` is where both land rather than here, since
-# nothing before a running guest can read its uid. A guest that is not root can create nothing
-# inside a directory the file plane made, so `FILES_OUT` and `HOST_TOOLS` are refused for such an
-# image (#722). And that same split gives every data-plane call more authority than the guest, so
-# `FILES_DELETE` is refused there too — not for want of working, but because a delete the guest
-# can redirect is a delete beyond its reach (#950). Three of six are therefore a **ceiling**
-# rather than a promise; `FILES_IN` stays, with a residual `write_file` states (#951).
+# Three capabilities are a ceiling: acquire checks removal from a file-plane directory before
+# serving FILES_DELETE and conservatively refuses writing workloads on a completed failure.
+# FILES_IN stays, with the residual write_file states (#951).
 _DECLARATIONS = BackendDeclarations(
     capabilities=frozenset(
         {
@@ -384,17 +364,14 @@ def _listed_entry_path(payload: Mapping[str, Any], *, listed: str, working_direc
 
 @dataclass
 class _Held:
-    """A sandbox this backend is holding, and what it has learned about that guest's uid.
+    """A sandbox this backend is holding, and its guest removal compatibility result.
 
-    The uid lives on the entry rather than in a map beside it, so it cannot outlive what it
-    describes: a probe still awaiting ``exec`` when the entry is dropped writes to an object
-    nobody holds any more, where a parallel map would keep an unreachable row.  ``probed``
-    separates "answered ``None``" from "not asked", which is what lets a dropped probe be
-    retried while a definitive non-uid answer is not.
+    The verdict lives on the entry so it cannot outlive the sandbox it describes.
+    ``probed`` separates an inconclusive completed probe from one that must be retried.
     """
 
     sandbox_id: str
-    uid: int | None = None
+    removal: bool | None = None
     probed: bool = False
 
 
@@ -472,6 +449,54 @@ class _AcasSandbox:
             exit_code=getattr(result, "exit_code", 0) or 0,
         )
 
+    async def probe_guest_removal(self) -> bool | None:
+        """Check guest removal compatibility; this cannot establish workload authority."""
+        from azure.core.exceptions import ResourceNotFoundError
+
+        guest_directory = f"/.maf-authority-{uuid4().hex}"
+        guest_file = f"{guest_directory}/probe"
+        removal: bool | None = None
+        cleaned = True
+        try:
+            async with asyncio.timeout(_PROBE_TIMEOUT_S):
+                await self._sc.write_file(guest_file, b"probe", create_dirs=True)
+                planted = await self.stat_file(guest_file, working_directory="/")
+                if planted is None or planted.kind is not EntryKind.FILE:
+                    raise OSError("the file plane did not create the removal probe file")
+                answered = await self.exec(
+                    ["rm", "--", guest_file],
+                    working_directory=_GUEST_PROBE_WORKING_DIRECTORY,
+                    timeout=_PROBE_TIMEOUT_S,
+                )
+                parent = await self.stat_file(guest_directory, working_directory="/")
+                remaining = await self.stat_file(guest_file, working_directory="/")
+                if parent is not None and parent.kind is EntryKind.DIRECTORY:
+                    if remaining is None and answered.exit_code == 0:
+                        removal = True
+                    elif remaining is not None and remaining.kind is EntryKind.FILE:
+                        if answered.exit_code == 1:
+                            removal = False
+        finally:
+            try:
+                async with asyncio.timeout(_PROBE_TIMEOUT_S):
+                    # The random directory is a direct child of /; cleanup never follows
+                    # a guest-controlled intermediate component or a final symlink.
+                    await self._sc.delete_file(guest_directory, recursive=True)
+            except ResourceNotFoundError:
+                # An absent scratch directory already satisfies cleanup.
+                pass
+            except Exception as cleanup_failed:  # noqa: BLE001 - keep the probe failure
+                logger.warning(
+                    "acas: could not clean removal probe %s in sandbox %s: %s",
+                    guest_directory,
+                    self.sandbox_id,
+                    error_detail(cleanup_failed),
+                )
+                cleaned = False
+        if not cleaned:
+            raise OSError("the removal probe could not be cleaned up")
+        return removal
+
     # -- the pull surface ---------------------------------------------------------
 
     async def _files_payload(self, route: str, guest_path: str) -> Mapping[str, Any]:
@@ -522,45 +547,39 @@ class _AcasSandbox:
         )
 
     async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
-        """Delete ``path`` through the data plane's own ``delete_file`` — no shell, no ``rm``.
+        """Remove as the guest and verify absence through the file plane.
 
-        The service unlinks a final symlink component, but resolves symlinked parents, so the
-        filesystem path check still runs before the delete. A directory is refused without
-        ``recursive`` whatever it holds: the rule is on the entry's kind, because a backend
-        that cannot enumerate cannot tell empty from full.
-
-        **That check is not held, which is why the capability behind this is withheld on a
-        non-root image.**  The check and the delete are separate calls, so a parent swapped in
-        between is followed, and this plane deletes as the host.  Where the guest is root that
-        reaches nothing it could not have deleted itself; where it is not, it reaches a tree it
-        could never have touched, so ``acquire`` refuses ``FILES_DELETE`` there —
-        :data:`_UNSAFE_WHERE_THE_GUEST_IS_NOT_ROOT` carries the argument, and #950 the decision.
+        The image controls its commands, so a successful probe cannot authorize a host-plane
+        delete. Parent checks are not held; a redirected command still runs as the guest.
         """
-        from azure.core.exceptions import ResourceNotFoundError
-
-        guest = await confine_resolve_guest_delete_path(
-            self._unconfined_stat, path, working_directory
-        )
-        planted = await self._stat_guest(guest, posixpath.normpath(path))
-        if planted is not None and planted.kind is EntryKind.DIRECTORY and not recursive:
-            raise OSError(f"refusing to remove a directory without recursive: {path}")
-        try:
-            # Bounded like every other call on this data plane: this one runs from a `finally`,
-            # where a wedged service would otherwise hold the caller's turn open with the run's
-            # own failure still unreported.
-            await asyncio.wait_for(
-                self._sc.delete_file(guest, recursive=recursive),
-                timeout=self._read_timeout,
-            )
-        except ResourceNotFoundError:
-            return
-        except TimeoutError:
-            raise
-        except Exception as refused:
-            # `azure.core` raises its own hierarchy, and `HttpResponseError` is no `OSError`.
-            # Chained rather than interpolated: `error_detail` enriches with the response body,
-            # and this one is raised at a caller rather than logged.
-            raise OSError(f"could not remove {path}: {type(refused).__name__}") from refused
+        async with asyncio.timeout(self._read_timeout):
+            try:
+                guest = await confine_resolve_guest_delete_path(
+                    self._unconfined_stat, path, working_directory
+                )
+                planted = await self._stat_guest(guest, posixpath.normpath(path))
+                if planted is None:
+                    return
+                if planted.kind is EntryKind.DIRECTORY and not recursive:
+                    raise OSError(f"refusing to remove a directory without recursive: {path}")
+                answered = await self.exec(
+                    ["rm", "-rf" if recursive else "-f", "--", guest],
+                    working_directory="/",
+                    timeout=self._read_timeout,
+                )
+                if answered.exit_code != 0:
+                    raise OSError(
+                        f"could not remove {path}: guest rm exited {answered.exit_code}"
+                        f"{f' — {answered.stderr.strip()}' if answered.stderr else ''}"
+                    )
+                if await self.stat_file(guest, working_directory=working_directory) is not None:
+                    raise OSError(
+                        f"could not remove {path}: the file plane still reports the entry"
+                    )
+            except (OSError, ValueError):
+                raise
+            except Exception as refused:
+                raise OSError(f"could not remove {path}: {type(refused).__name__}") from refused
 
     async def reset(self, *, timeout: float) -> None:
         """Unsupported: this backend does not declare Capability.SNAPSHOT."""
@@ -743,12 +762,8 @@ class AcasSandboxBackend:
         # loop, so one shared client would be a cross-loop hazard; one per call would leak a
         # connection pool per tool invocation.
         self._clients: dict[asyncio.AbstractEventLoop, tuple[Any, Any]] = {}
-        #: The uid `exec` runs as, per image a spec named — `None` where the image could not
-        #: say. A **hint** rather than a verdict: an image reference is the service's to
-        #: repoint, so this describes whatever it last resolved to. It answers the refusal that
-        #: runs before a create, which is what spares the second workload a sandbox of its own;
-        #: membership, not the value, is what says it was asked.
-        self._guest_uids: dict[tuple[str, str], int | None] = {}
+        #: An image-level hint for the pre-create refusal, never proof for another sandbox.
+        self._guest_removals: dict[tuple[str, str], bool | None] = {}
         #: Which (image, kind) pairs have already been warned about. `acquire` runs on every
         #: tool call, and a warning per call is noise rather than a signal.
         self._warned_about_the_guest: set[tuple[tuple[str, str], str]] = set()
@@ -827,9 +842,10 @@ class AcasSandboxBackend:
 
         Raises:
             SandboxCapabilityNotSupported: when the spec requires ``FILES_OUT`` or
-                ``HOST_TOOLS`` and the image's guest is not root, or ``FILES_DELETE`` and its
-                guest is not *known* to be root — the two differ on an unreadable probe, and
-                :meth:`_refuse_or_warn_where_the_guest_is_not_root` says why.
+                ``HOST_TOOLS`` and the removal compatibility probe completed with failure,
+                or ``FILES_DELETE`` without a successful removal observation. An inconclusive
+                probe serves the writing capabilities but refuses deletion; a successful
+                probe does not establish that the guest is root.
         """
         async with self._acquire_lock((key.scope, key.thread_id, key.agent_dir, spec.kind)):
             return await self._get_or_create(key, spec)
@@ -873,7 +889,7 @@ class AcasSandboxBackend:
                 # sandbox that failed to resume, and the handler above would swallow it into a
                 # replacement create. Before the log, so a refused acquire does not report one
                 # of the three outcomes `acquire` promises to name.
-                await self._refuse_or_warn_where_the_guest_is_not_root(spec, reused, held=held)
+                await self._refuse_or_warn_on_guest_removal(spec, reused, held=held)
                 logger.info(
                     "sandbox reused: id=%s kind=%s thread=%s agent=%s",
                     sandbox_id,
@@ -888,7 +904,7 @@ class AcasSandboxBackend:
         # be paid for: the second workload to meet a refused image is refused without one. A
         # warm sandbox never reaches this, and must not — it has a verdict of its own, where
         # the hint is whatever some other guest last answered for the same reference.
-        await self._refuse_or_warn_where_the_guest_is_not_root(spec)
+        await self._refuse_or_warn_on_guest_removal(spec)
 
         # Two namespaces, and `image` says which by whether it carries a tag: a bare name is
         # one the service prebuilt, anything else is repository:tag for an image this
@@ -934,7 +950,7 @@ class AcasSandboxBackend:
             )
         created = _AcasSandbox(sc, self._config.read_timeout_seconds)
         try:
-            await self._refuse_or_warn_where_the_guest_is_not_root(
+            await self._refuse_or_warn_on_guest_removal(
                 spec, created, held=held, freshly_created=True
             )
         except SandboxCapabilityNotSupported:
@@ -1001,7 +1017,7 @@ class AcasSandboxBackend:
             key.agent_dir,
         )
 
-    async def _refuse_or_warn_where_the_guest_is_not_root(
+    async def _refuse_or_warn_on_guest_removal(
         self,
         spec: SandboxSpec,
         sandbox: _AcasSandbox | None = None,
@@ -1009,33 +1025,10 @@ class AcasSandboxBackend:
         held: _Held | None = None,
         freshly_created: bool = False,
     ) -> None:
-        """Refuse a spec a non-root guest cannot back or must not be handed; warn one that only
-        runs commands.
+        """Require observed removal compatibility for deletes; warn an exec-only workload.
 
-        Two refusals with one trigger and two different reasons.  The file plane writes as root
-        and ``exec`` runs as the image's ``USER``, so on a non-root image a guest program can
-        create nothing inside a directory the file plane made — that is
-        :data:`_NEEDS_A_WRITING_GUEST`, and it is about what the workload can *do*.  The same
-        split makes every data-plane call act with more authority than the guest, which is what
-        :data:`_UNSAFE_WHERE_THE_GUEST_IS_NOT_ROOT` is about, and it is a reach rule rather than
-        a functional one.  ``sandbox`` is optional because the memo can answer before one
-        exists; ``freshly_created`` says this one was just booted, which makes the memo the
-        wrong answer — it describes whatever the same reference resolved to last time.
-
-        An image whose uid cannot be read is **served the functional set**: refusing on an
-        unreadable probe would take a working root image off a deployment.  It is asked again
-        unless the guest *answered* — a definitive non-uid reply is recorded, so it costs no
-        ``exec`` per tool call, where a timeout is retried on the next acquire.  It is
-        **refused the reach set**, because an unread uid is not evidence of root, and the two
-        directions are not interchangeable: a functional refusal that guesses wrong costs a
-        ``Permission denied`` the deployment sees, and a reach one costs a host-authority
-        delete nothing reports.
-
-        Raises:
-            SandboxCapabilityNotSupported: when the spec requires a capability only a guest that
-                can write is able to back, or one this backend must not serve to a guest that is
-                not root.  Both are named in one message where a spec asks for both, so a caller
-                narrowing its ``requires`` is not sent round the loop twice.
+        A completed removal failure also refuses workloads that need a writing guest.
+        An inconclusive probe serves that functional set, but never FILES_DELETE.
         """
         if not spec.requires & _PROBE_WHEN_REQUIRED:
             return
@@ -1043,25 +1036,24 @@ class AcasSandboxBackend:
         if sandbox is None or held is None:
             # Nothing running to ask, so the hint answers or the caller creates one. This is
             # the refusal that spares the second workload a create.
-            if identity not in self._guest_uids:
+            if identity not in self._guest_removals:
                 return
-            uid = self._guest_uids[identity]
+            removal = self._guest_removals[identity]
         elif held.probed:
             # This sandbox's own answer, never the image hint: another sandbox booted from the
             # same reference may have moved that since, and it describes a different guest.
-            uid = held.uid
+            removal = held.removal
         else:
-            uid = await self._probe_guest_uid(sandbox, spec, held)
-        if uid == 0:
+            removal = await self._probe_guest_removal(sandbox, spec, held)
+        if removal is True:
             return
 
-        # The asymmetry this method's docstring states: an unknown uid keeps the functional set.
         image = _image_label(spec)
         unbackable: frozenset[Capability] = (
-            spec.requires & _NEEDS_A_WRITING_GUEST if uid is not None else frozenset()
+            spec.requires & _NEEDS_A_WRITING_GUEST if removal is not None else frozenset()
         )
-        unsafe = spec.requires & _UNSAFE_WHERE_THE_GUEST_IS_NOT_ROOT
-        refused = unbackable | unsafe
+        unproven = spec.requires & _NEEDS_OBSERVED_REMOVAL
+        refused = unbackable | unproven
         if refused:
             reasons: list[str] = []
             if unbackable:
@@ -1072,36 +1064,20 @@ class AcasSandboxBackend:
                     "nor the host-tool transport's own markers — inside the tool call that "
                     "arrives as a shell's 'Permission denied'"
                 )
-            if unsafe:
-                # An unread uid establishes nothing about the guest, including that it is not
-                # root, so the reason must not claim the reach it could not measure.
-                reach = (
-                    "could never have deleted itself — which nothing inside the tool call "
-                    "would report at all"
-                    if uid is not None
-                    else "is not known to be able to delete itself — which nothing inside the "
-                    "tool call would report at all"
-                )
+            if unproven:
                 reasons.append(
-                    f"{', '.join(sorted(unsafe))} because remove deletes through that same file "
-                    "plane, which acts as the host, and the check that keeps it inside the "
-                    "working directory is not held: the check and the delete are separate calls, "
-                    "the service resolves a symlinked parent, and a parent swapped in between "
-                    f"would delete a tree this guest {reach}"
+                    f"{', '.join(sorted(unproven))} because its guest rm did not demonstrate "
+                    "removal of the file plane's probe file. Each requested removal runs as "
+                    "the guest and must also be confirmed through the file plane"
                 )
-            # A root `USER` does not answer the probe, so the two branches want two remedies.
-            if uid is not None:
-                whose_guest = f"its guest runs as uid {uid}"
-                remedy = "Serve this workload on an image whose USER is root"
+            if removal is False:
+                whose_guest = "its guest could not remove the file plane's probe file"
+                remedy = "Serve this workload on an image whose USER is root and can run rm"
             else:
-                whose_guest = (
-                    f"its guest did not answer {_GUEST_UID_COMMAND!r}, and an unread uid is not "
-                    "evidence of root"
-                )
+                whose_guest = "its guest's removal probe was inconclusive"
                 remedy = (
-                    "Serve this workload on an image whose guest answers "
-                    f"{_GUEST_UID_COMMAND!r} with 0 — a root USER alone does not, and an image "
-                    "that cannot run the probe is refused however it is built"
+                    "Serve this workload on an image whose guest can run rm and whose "
+                    "file plane confirms the removal — a root USER alone does not prove it"
                 )
             # What decides the advice is what will answer the *next* acquire, and that turns
             # on whether this sandbox survives this one. A refused fresh create is deleted
@@ -1116,7 +1092,7 @@ class AcasSandboxBackend:
                 "the create and the probe with it, a reference this backend has not seen yet, "
                 "or a restart of this process."
                 if (
-                    self._guest_uids.get(identity, 0) != 0
+                    self._guest_removals.get(identity, True) is not True
                     if sandbox is None or freshly_created
                     else held is not None and held.probed
                 )
@@ -1130,7 +1106,7 @@ class AcasSandboxBackend:
                 f"rather than inside the tool call. {remedy}, or narrow what it requires. "
                 f"{recovery}"
             )
-        if uid is None or sandbox is None:
+        if removal is None or sandbox is None:
             # Served, and silently. An unreadable probe would otherwise warn about a wall this
             # image may not have, on every acquire. And the pre-create path is reading a hint
             # from whatever the reference last resolved to, so warning here would describe the
@@ -1142,80 +1118,35 @@ class AcasSandboxBackend:
             return
         self._warned_about_the_guest.add(already_warned)
         logger.warning(
-            "acas: %s runs its guest as uid %s, so a program the %s workload execs can read "
+            "acas: %s could not remove the file plane's probe file, so a program the %s "
+            "workload execs can read "
             "what write_file placed but cannot create any file of its own beside it — every "
             "directory the file plane makes belongs to root. An exec whose whole result is its "
             "stdout is unaffected; anything the guest has to write is not.",
             image,
-            uid,
             spec.kind,
         )
 
-    async def _probe_guest_uid(
+    async def _probe_guest_removal(
         self, sandbox: _AcasSandbox, spec: SandboxSpec, held: _Held
-    ) -> int | None:
-        """The uid ``exec`` runs as, ``None`` when the guest cannot say. Answered by the guest.
-
-        Three rules. A **definitive** non-uid answer — a non-zero exit, a word, no ``id`` in
-        the image — is a fact about *this sandbox*, so ``held`` is marked probed. A
-        **transient** failure records nothing at all, because one timeout must not withdraw a
-        capability for as long as a sandbox lives. And **no failure ever displaces an answer**,
-        by two different mechanisms now that there is one map and one field: the image hint
-        takes a failure through ``setdefault``, and ``held.uid`` is simply never assigned on
-        one. So a probe that raced a working one, or that ran against a reference now resolving
-        elsewhere, cannot demote what was measured — only a uid replaces a uid, which is how a
-        repointed reference is corrected.
-
-        What ``None`` costs is the caller's and is not one policy:
-        :meth:`_refuse_or_warn_where_the_guest_is_not_root` serves the functional set on it and
-        refuses the reach set.
-
-        **The answer is the guest's own, so it is worth what the image is.** An image that
-        ships an ``id`` printing ``0`` is believed, which is announcement where
-        ``guest-platform-and-commands.md`` § Decision 3 asks for observation.  What that costs
-        and why it is served anyway: ``docs/sandbox/backends/acas.md``.
-        """
-        image = _image_label(spec)
-        identity = _image_identity(spec)
+    ) -> bool | None:
+        """Cache completed probes for this sandbox, preserving measurements on failure."""
         try:
-            answered = await sandbox.exec(
-                _GUEST_UID_COMMAND,
-                working_directory=_GUEST_PROBE_WORKING_DIRECTORY,
-                timeout=_PROBE_TIMEOUT_S,
-            )
+            removal = await sandbox.probe_guest_removal()
         except Exception as unreachable:  # noqa: BLE001 - an acquire must not fail over this
             logger.debug(
-                "acas: %s did not answer %r (%s); not remembered, so the next acquire asks again",
-                image,
-                _GUEST_UID_COMMAND,
+                "acas: removal probe for %s did not complete (%s); the next acquire retries",
+                _image_label(spec),
                 error_detail(unreachable),
             )
-            # Never the image hint: it can hold another sandbox's answer, and nothing has
-            # verified this one. Its own verdict if it has one, otherwise nothing.
-            return held.uid if held.probed else None
-        reported = answered.stdout.strip()
-        if answered.exit_code != 0 or not reported.isdecimal():
-            logger.debug(
-                "acas: %s answered %r with exit %s and %r, so its guest's uid is unknown",
-                image,
-                _GUEST_UID_COMMAND,
-                answered.exit_code,
-                reported,
-            )
-            # A concrete hint survives a fresh non-uid answer: a probe cannot tell a repointed
-            # reference from a racing measurement without ordering it does not have, and
-            # demoting on one answer refuses before the create that would re-read it. The cost
-            # is a create per acquire while a reference stays repointed to an image with no
-            # readable uid (#971). The verdict is this sandbox's own and never the hint, which
-            # is some other guest's answer; an earlier measurement on this entry stands, so a
-            # racing probe cannot demote it either.
-            self._guest_uids.setdefault(identity, None)
+            return held.removal if held.probed else None
+        if removal is None:
+            self._guest_removals.setdefault(_image_identity(spec), None)
             held.probed = True
-            return held.uid
-        uid = int(reported)
-        held.uid, held.probed = uid, True
-        self._guest_uids[identity] = uid
-        return uid
+            return held.removal
+        held.removal, held.probed = removal, True
+        self._guest_removals[_image_identity(spec)] = removal
+        return removal
 
     async def dispose(self, key: SandboxKey, *, kind: str | None = None) -> DisposalFailure | None:
         """Delete this key's sandboxes, narrowed to kind when given.

@@ -332,15 +332,7 @@ def files_delete_results(live):
 
 @pytest.fixture(scope="module")
 def service_link_delete(live):
-    """What the *service* does with a link on delete, measured below :meth:`remove`.
-
-    ``remove`` refuses a link before the service is ever called, so the gated probe
-    ``a-link-is-removed-never-followed`` measures that refusal rather than the service — and
-    the refusal exists because nothing had measured the service. Only a call to the SDK's own
-    ``delete_file`` breaks that circle, so this reaches past the backend to make it.
-
-    One dictionary of measured facts, asserted by the class below.
-    """
+    """Measure SDK delete link semantics used by host-side reclaim."""
     paths = ConformancePaths.under(_WORK)
     sc = live.sandbox._sc  # noqa: SLF001 — reaching past the backend is the whole measurement
 
@@ -415,7 +407,7 @@ def service_link_delete(live):
 
 
 class TestWhatTheServiceDoesWithALinkOnDelete:
-    """Regression coverage for the service link semantics behind FILES_DELETE and reclaim."""
+    """Regression coverage for the service link semantics behind reclaim."""
 
     def test_a_link_named_directly_is_unlinked_and_its_target_kept(self, service_link_delete):
         """Both flag values — `recursive` may reach a different operation on the service."""
@@ -452,7 +444,7 @@ class TestWhatTheServiceDoesWithALinkOnDelete:
         assert service_link_delete["tree-gone"], "the recursively deleted tree is still there"
         assert service_link_delete["interior-target-survives"], (
             "a recursive delete resolved an interior link and removed a file outside the "
-            "tree — the escape that keeps `reclaim` on `rm -rf` over `exec`"
+            "tree during host-side reclaim"
         )
 
 
@@ -556,6 +548,15 @@ class TestFilesInAgainstTheRealService:
 
 class TestFilesDeleteAgainstTheRealService:
     """The declared FILES_DELETE capability is exercised by the shared probes."""
+
+    def test_acquire_observes_guest_removal_compatibility(self, live: _Live):
+        sandbox = live.run(
+            live.backend.acquire(live.key, _spec(requires=frozenset({Capability.FILES_DELETE})))
+        )
+
+        assert sandbox.sandbox_id == live.sandbox.sandbox_id
+        held = next(iter(live.backend._registry.values()))
+        assert held.probed and held.removal is True
 
     def test_every_delete_probe_reached_a_verdict(self, files_delete_results):
         results = files_delete_results
@@ -937,7 +938,7 @@ class TestAnImageWhoseGuestIsNotRoot:
     creates on a backend of its own. The refusals below pay for neither, because the fixture's
     acquire already left an image-level hint and that is what the refusal running before a
     create reads — which is why the cold path, on a backend with no hint yet, cannot borrow
-    the fixture's sandbox. The authoritative verdict is per sandbox; the hint is only what
+    the fixture's sandbox. The compatibility result is per sandbox; the hint is only what
     spares a second workload a create.
     """
 
@@ -997,8 +998,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert "denied" in refused.stderr.lower(), refused.stderr
 
     def test_a_workload_collecting_outputs_is_refused_at_acquire(self, nonroot: _Live):
-        """And refused without a second sandbox: the uid the fixture's acquire read is what
-        answers here, before any create."""
+        """The fixture's failed removal compatibility result refuses before another create."""
         from maf_sandbox import SandboxCapabilityNotSupported
 
         collecting = SandboxSpec(
@@ -1012,12 +1012,7 @@ class TestAnImageWhoseGuestIsNotRoot:
             nonroot.run(nonroot.backend.acquire(nonroot.key, collecting))
 
     def test_a_workload_that_deletes_is_refused_at_acquire(self, nonroot: _Live):
-        """The reach half, and free for the same reason: the uid is already known.
-
-        `FILES_DELETE` is withheld here for what a delete could *reach* rather than for what
-        the guest cannot write, so the refusal is asserted on that reason and not merely on the
-        exception (#950).
-        """
+        """A failed removal check refuses deletion before the workload runs."""
         from maf_sandbox import SandboxCapabilityNotSupported
 
         deleting = SandboxSpec(
@@ -1030,7 +1025,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         with pytest.raises(SandboxCapabilityNotSupported) as refusal:
             nonroot.run(nonroot.backend.acquire(nonroot.key, deleting))
 
-        assert "could never have deleted itself" in str(refusal.value), str(refusal.value)
+        assert "did not demonstrate removal" in str(refusal.value), str(refusal.value)
 
     def test_a_cold_refusal_deletes_the_sandbox_it_had_to_create(self, nonroot: _Live, caplog):
         """A refusal that had to create a sandbox to reach its verdict still deletes it.
