@@ -904,8 +904,9 @@ class _DockerSandbox:
 
         Split out because the filesystem path check stats the working directory's own
         ancestors, which by definition sit outside it — confining here would refuse the
-        very check being made.  ``None`` means the engine said this path is not there; any
-        other failure raises, since that answer is what ends the check.
+        very check being made. ``None`` means the engine said this path is absent from its
+        rootfs view, not the running guest's mount namespace. The pull surface requires
+        rootfs paths; any other copy failure raises, since absence ends the check.
         """
         result, info, _ = await self._copy_entry(guest)
         if result.returncode != 0 and not result.stdout:
