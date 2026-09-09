@@ -2592,10 +2592,8 @@ def sandboxed_tool(
     # mistake in a kind, and finding it at attach costs a reviewer nothing.
     committed = _committed_guidance(standing_guidance, tool=name, awaits=_awaits(body))
     if not _awaits(body):
-        # `acquire` is a coroutine, so a body that awaits nothing can hold no sandbox and owns
-        # nothing to reclaim, and this wrapper reads the result's shape and does nothing else.
-        # It stays synchronous so MAF still runs the body off the event loop the way it runs
-        # any synchronous tool.
+        # Keep the wrapper synchronous so MAF runs the body and result labelling off
+        # the event loop, as it does for other synchronous tools.
         @functools.wraps(body)
         def checked(*args: Any, **kwargs: Any) -> Any:
             # No `_SandboxToolCall` — there is nothing to reclaim — so the id is minted here.
