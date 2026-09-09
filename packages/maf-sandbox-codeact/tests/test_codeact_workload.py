@@ -616,7 +616,16 @@ class TestCodeactSandboxSpec:
         ],
     )
     def test_each_call_cleans_above_reclaim(self, snapshot, floor, expected):
-        sandbox = _ScriptedSandbox()
+        cleanups_at_exec: list[tuple[int, int]] = []
+
+        class _CleanupRecordingSandbox(_ScriptedSandbox):
+            async def exec(self, command, *, working_directory, timeout):
+                cleanups_at_exec.append((len(self.resets), len(backend.disposed)))
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        sandbox = _CleanupRecordingSandbox()
         capabilities = DEFAULT_CAPABILITIES | {Capability.RECLAIM}
         if snapshot:
             capabilities |= {Capability.SNAPSHOT}
@@ -627,16 +636,17 @@ class TestCodeactSandboxSpec:
 
         for count in (1, 2):
             _run(tool, "print('hi')")
+            assert len(cleanups_at_exec) == count
+            resets, disposals = cleanups_at_exec[-1]
             assert sandbox.reclaims == []
             assert backend.specs[-1].confined_to_guest_call_path is False
             if expected is Cleanup.RESET:
-                assert len(sandbox.resets) == count + 1
-                assert backend.disposed == []
+                assert len(sandbox.resets) == resets + 1
+                assert len(backend.disposed) == disposals
             else:
-                disposals = count + int(not snapshot)
-                assert backend.disposed == [backend.keys[0]] * disposals
-                assert backend.disposed_kinds == [CODEACT_KIND] * disposals
-                assert sandbox.resets == ([0] if snapshot else [])
+                assert backend.disposed[disposals:] == [backend.keys[-1]]
+                assert backend.disposed_kinds[disposals:] == [CODEACT_KIND]
+                assert len(sandbox.resets) == resets
 
     def test_egress_is_closed_by_default(self):
         """A spec that names no host denies every host, so the program can compute but cannot
