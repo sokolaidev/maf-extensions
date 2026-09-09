@@ -2921,6 +2921,7 @@ _PROTOCOL_MODULES = frozenset(
         "_shim_wire_contract",
         "conformance",
         "paths",
+        "guest_access",
         "testing",
         # `_guest/` is the source maf-sandbox copies into a guest, kept as real Python. It is
         # stdlib-only by necessity — a guest carries no third-party packages — so the claim this

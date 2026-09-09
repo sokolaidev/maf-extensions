@@ -13,7 +13,7 @@ The four below `isolation` are fields of this backend's `declarations`. Three ar
 | Declaration | Value |
 |---|---|
 | `isolation` | `Isolation.CONTAINER` |
-| `capabilities` | `EXEC`, `FILES_IN`, `FILES_OUT`, `FILES_DELETE`, `HOST_TOOLS` — never `FILES_LIST`, never `RUN_CODE` |
+| `capabilities` | `EXEC`, `FILES_IN`, `FILES_OUT`, `FILES_DELETE`, `HOST_TOOLS`, `RECLAIM` — never `FILES_LIST`, never `RUN_CODE` |
 | `egress_modes` | `{Egress.CLOSED}`; `{Egress.CLOSED, Egress.ALLOWLIST}` when an egress proxy image is configured. Never `UNRESTRICTED`: a container backend always cuts or proxies |
 | `limits` | 64 MiB per file, 256 MiB total, 256 files — the same `TransferLimits` in each direction |
 | `os_families` | `{OsFamily.POSIX}` when the daemon reports `linux`; `frozenset()` for every other answer, `windows` included. Read once by `DockerSandboxBackend.create`, and the plain constructor declares nothing |
@@ -50,9 +50,21 @@ Docker has **no engine-level primitive for enumerating a directory**. A *named* 
 
 `remove` runs `rm -f` — or `rm -rf` when `recursive` — after confining the path and checking its ancestors, because the engine has no delete primitive. `rm`'s exit codes are the contract rather than a re-implementation of it: `-f` makes a missing path succeed and refuses a directory without `-r`. The image dependency is the one the `EXEC` declaration already names, so nothing new is being assumed. The working directory itself is refused before the subprocess is built.
 
+## Measuring a confinement claim
+
+`maf_sandbox_docker.conformance.DockerFingerprintSubject` implements the shared `FingerprintSubject` seam. The host supplies a trusted local Python 3.12+ observer image; the subject pins its engine image ID before use. It measures one acquired, quiescent Linux container before a kind's call and after its cleanup. A nonempty initial `docker diff` or populated tmpfs refuses the probe before the callback runs. A non-Linux engine returns an unsupported result; core treats paths and process identities as opaque strings and imposes no POSIX assumptions on other backend subjects.
+
+`docker diff` answers for rootfs changes. Mounted storage is read by a separate observer container sharing the workload's PID namespace, through `/proc/1/root` and kernel mount metadata. This replaces the proposal's `docker cp /dev/shm` approach: that copy reads the rootfs and misses tmpfs contents. The observer measures implicit `/dev` and `/dev/shm`, host-added `--tmpfs`, and engine-mounted regular files such as `/etc/hosts`. Declared writable mounts are refused from `docker inspect`; other writable directory mounts outside tmpfs are refused by the observer. It reads symlinks as entries, never follows workload-controlled path components, and never opens devices, FIFOs, or sockets for content. A changed mount inventory or container replacement fails. Kernel process IDs paired with start ticks distinguish surviving and replaced processes, without interpreting host-mapped UIDs on rootless engines.
+
+The observer runs its own Python with isolated imports, a read-only filesystem, no network, no workload executable, and only `SYS_PTRACE` above an empty capability set. That capability permits the kernel namespace read; it is given to the observer, not the workload. The host must trust the observer image as it trusts its Docker client. The helper removes the observer after success, failure, timeout, and cancellation; workload disposal remains the test owner's responsibility. Byte and entry limits bound the storage read, and reaching a limit fails rather than returning a partial fingerprint. Shared PID namespaces and privileged workload containers are refused.
+
+This is a conformance measurement, not a production file API or a proof against concurrent tampering. The workload must be quiescent at each measurement. Kernel state and open sockets are outside the claim. Mounted-file fingerprints compare final contents and metadata, so a mounted file rewritten to identical contents and metadata is not distinguishable; rootfs paths that the engine reports changed remain changed even if their original bytes return. The source and tests retain this distinction rather than claiming a filesystem history the engine cannot supply.
+
 ## `reclaim` is the same `rm`, without the confinement duty
 
-`reclaim` is a required method, and this backend implements it with `rm -rf` through `_removal`: as root when the acquire-time ancestor check permits raised authority, otherwise as the image's user. `-f` makes an already-gone directory a success, as the contract requires; other failures raise for the caller to report. The framework chooses the call directory, but the reach rule still bounds removal through ancestors the guest could swap. Docker withholds `RECLAIM`, so router-managed cleanup selects disposal and the conformance suite refuses before planting. `FILES_DELETE` is a separate declaration for model-directed removal. [WSLC](wslc.md) refuses both removal methods; [ACAS](acas.md) implements reclamation through its data plane.
+Docker declares `Capability.RECLAIM` over its acquire-time reach check and existing guest-authority fallback. A kind's confinement declaration makes that cleanup rung available; a kind declaring nothing still resolves to disposal. Guest file access is refused through `maf_sandbox.guest_access.refuse_capabilities_the_guest_cannot_back`, an OS-independent helper whose caller supplies an established access fact rather than a UID.
+
+`reclaim` is a required method, and this backend implements it with `rm -rf` through `_removal`: as root when the acquire-time ancestor check permits raised authority, otherwise as the image's user. `-f` makes an already-gone directory a success, as the contract requires; other failures raise for the caller to report. The framework chooses the call directory, but the reach rule still bounds removal through ancestors the guest could swap. The conformance suite requires the `RECLAIM` declaration before planting. `FILES_DELETE` is a separate declaration for model-directed removal. [WSLC](wslc.md) refuses both removal methods; [ACAS](acas.md) implements reclamation through its data plane.
 
 ## Who each command runs as
 
@@ -108,6 +120,7 @@ The inventory includes stopped containers, proxies without a workload and networ
 
 | Decision | State | Tracking |
 |---|---|---|
+| Docker declares RECLAIM and measures confinement through trusted engine observations | implemented — rootfs diff plus a separate Linux observer for mounted storage and process birth identities; OS-independent core comparison and guest-access refusal | [#980](https://github.com/sokolaidev/maf-extensions/issues/980) (open) |
 | Rootfs-only pull surface; mounted paths are outside its absence guarantee | documented — creation tests forbid volume, mount and tmpfs flags in both network modes; no runtime mount detection | [#944](https://github.com/sokolaidev/maf-extensions/issues/944) (closed) by [#1034](https://github.com/sokolaidev/maf-extensions/pull/1034) (merged) |
 | Cleanup ownership, lifecycle guidance and a reference operator deployment | implemented — deployment-owned scheduling and an ACAS reference example in [operations.md](../operations.md) | [#1008](https://github.com/sokolaidev/maf-extensions/issues/1008) (closed) by [#1014](https://github.com/sokolaidev/maf-extensions/pull/1014) (merged) |
 | Explicit age-based cleanup of Docker workloads, proxies and networks | shipped | [#1009](https://github.com/sokolaidev/maf-extensions/issues/1009) (closed) by [#1012](https://github.com/sokolaidev/maf-extensions/pull/1012) (merged), under umbrella [#808](https://github.com/sokolaidev/maf-extensions/issues/808) (open) |

@@ -58,7 +58,6 @@ from maf_sandbox import (
     OsFamily,
     Sandbox,
     SandboxBackend,
-    SandboxCapabilityNotSupported,
     SandboxEntry,
     SandboxKey,
     SandboxLimits,
@@ -70,6 +69,7 @@ from maf_sandbox import (
     error_detail,
     fold_disposal_failures,
 )
+from maf_sandbox.guest_access import refuse_capabilities_the_guest_cannot_back
 from maf_sandbox.paths import (
     confine_resolve_guest_delete_path,
     confine_resolve_guest_path,
@@ -294,6 +294,7 @@ _CAPABILITIES = frozenset(
         Capability.FILES_OUT,
         Capability.FILES_DELETE,
         Capability.HOST_TOOLS,
+        Capability.RECLAIM,
     }
 )
 
@@ -1391,18 +1392,15 @@ class DockerSandboxBackend:
                 # make every closed teardown report a proxy that was never there.
                 self._acquired[name] = (key.scope, key.thread_id, key.agent_dir)
             facts = await self._container_facts(name, spec)
-            if not facts.identity_resolved:
-                refused = spec.requires & {Capability.FILES_OUT, Capability.HOST_TOOLS}
-                if refused:
-                    raise SandboxCapabilityNotSupported(
-                        f"sandbox backend {BACKEND_NAME!r} cannot serve "
-                        f"{', '.join(sorted(refused))} to the {spec.kind!r} workload: "
-                        f"container {name!r}'s user could not be resolved, so files would "
-                        "be root-owned and the guest may be unable to write outputs or "
-                        "host-tool markers or empty its call directory. Give the image a "
-                        "numeric uid:gid in Config.User, a readable /etc/passwd, or an `id` "
-                        "it can run. Unresolved identities are retried on the next acquire."
-                    )
+            refuse_capabilities_the_guest_cannot_back(
+                spec,
+                files_land_as_guest=facts.identity_resolved,
+                backend_name=BACKEND_NAME,
+                detail=(
+                    "Give the image a numeric uid:gid in Config.User, a readable /etc/passwd, "
+                    "or an `id` it can run. Unresolved identities are retried on the next acquire."
+                ),
+            )
             return _DockerSandbox(
                 self._docker,
                 name,
@@ -2159,7 +2157,6 @@ class DockerSandboxBackend:
         assert process.stdout is not None and process.stderr is not None
         # Bound to locals so the narrowing survives into the closure below.
         out_stream = process.stdout
-        err_stream = process.stderr
 
         async def _pull_head() -> bytes:
             chunks: list[bytes] = []
@@ -2178,19 +2175,12 @@ class DockerSandboxBackend:
             with contextlib.suppress(Exception):
                 process.kill()
             with contextlib.suppress(Exception):
-                await process.wait()
+                await asyncio.wait_for(process.communicate(), timeout=timeout)
             raise
         with contextlib.suppress(Exception):
             process.kill()
-        try:
-            stderr = await asyncio.wait_for(err_stream.read(), timeout=timeout)
-        except Exception:
-            # Best-effort diagnostics only. `Exception`, not `BaseException`: this branch
-            # swallows rather than re-raising (unlike the stdout read above, which cleans up and
-            # re-raises), so it must let `CancelledError` and `KeyboardInterrupt` through.
-            stderr = b""
-        with contextlib.suppress(Exception):
-            await process.wait()
+        # wait() also waits for pipe closure; paused readers must be drained first.
+        _, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
         return _DockerResult(
             process.returncode or 0, stdout, stderr.decode("utf-8", errors="replace")
         )
