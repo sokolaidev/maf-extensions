@@ -486,13 +486,14 @@ jobs:
         run: |
           set -euo pipefail
           engine="maf-fingerprint-rootless-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          trap 'docker rm -fv "$engine"' EXIT
+          trap 'docker logs "$engine"; docker rm -fv "$engine"' EXIT
           # Docker's rootless-in-Docker recipe requires this on the outer container only.
-          docker run -d --rm --privileged --name "$engine" \
+          docker run -d --privileged --name "$engine" \
             -e DOCKER_HOST=unix:///run/user/1000/docker.sock \
             docker:29-dind-rootless@sha256:e17fa54c2ffd511d8407c746eec77f7814e6f74fe20caf822dad1870599984c0
           for attempt in {1..30}; do
             if timeout 5 docker exec "$engine" docker info >/dev/null 2>&1; then break; fi
+            if [ "$(docker inspect --format '{{.State.Running}}' "$engine")" != true ]; then exit 1; fi
             sleep 1
           done
           docker exec "$engine" docker info --format '{{json .SecurityOptions}}' | grep -q rootless
