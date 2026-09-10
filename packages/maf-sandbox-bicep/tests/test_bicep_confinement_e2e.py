@@ -40,7 +40,7 @@ _MODULE = """module storage 'br/public:avm/res/storage/storage-account:0.31.0' =
 """
 
 
-@pytest.mark.parametrize("case", ["local", "diagnostics", "modules", "cancelled"])
+@pytest.mark.parametrize("case", ["local", "diagnostics", "modules", "closed-modules", "cancelled"])
 def test_validation_leaves_nothing_behind_and_reuses_the_sandbox(case: str, monkeypatch):
     if case == "modules" and not _PROXY:
         pytest.skip("module restore needs MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE")
@@ -53,7 +53,9 @@ def test_validation_leaves_nothing_behind_and_reuses_the_sandbox(case: str, monk
         key = SandboxKey(
             scope="bicep-confinement-" + uuid.uuid4().hex, thread_id="test", agent_dir="test"
         )
-        source = _MODULE if case == "modules" else "output value string = 'hello'\n"
+        source = (
+            _MODULE if case in {"modules", "closed-modules"} else "output value string = 'hello'\n"
+        )
         if case == "diagnostics":
             source = "output value string = missingValue\n"
         store = InMemoryStore(
@@ -99,10 +101,15 @@ def test_validation_leaves_nothing_behind_and_reuses_the_sandbox(case: str, monk
                 result = await tool.func(files=["main.bicepparam", "nested/main.bicep"])
                 report = str(result[0].text)
                 assert "Error:" not in report, report
-                assert "MODULE RESTORE FAILED" not in report, report
-                if case == "diagnostics":
+                if case == "closed-modules":
+                    assert "MODULE RESTORE FAILED" in report, report
+                    assert "INCOMPLETE" in report, report
+                    assert "BCP190" in report, report
+                elif case == "diagnostics":
+                    assert "MODULE RESTORE FAILED" not in report, report
                     assert "BCP057" in report, report
                 else:
+                    assert "MODULE RESTORE FAILED" not in report, report
                     assert "[error]" not in report, report
                     for name in ("main.bicepparam", "nested/main.bicep"):
                         for phase in ("build", "lint"):

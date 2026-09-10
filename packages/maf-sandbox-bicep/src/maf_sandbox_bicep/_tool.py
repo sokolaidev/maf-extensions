@@ -103,8 +103,8 @@ BICEP_KIND = "bicep"
 #: on its own answers with a `Location` header pointing at a host that is still denied.
 #: The fetch belongs to `OciArtifactRegistry.OnRestoreArtifacts`, not to the analyzer —
 #: deliberately, so that lint rules never download during analysis — so it is attempted on
-#: every `bicep build` and every `bicep lint` regardless of which rules are enabled, and the
-#: only switch that stops it, `--no-restore`, is the one that would cost us module types.
+#: every restore-enabled `bicep build` and `bicep lint` regardless of which rules are enabled.
+#: `CLOSED` uses `--no-restore`; the other modes retain restore to load module types.
 #: Blocked, the compiler does not go quiet: `use-recent-module-versions` reports "Could not
 #: download available module versions" once per file, a warning that reads like a finding
 #: about the source while the check it stands for — outdated `br/public:avm/...` pins —
@@ -476,6 +476,8 @@ def _bicep_validate_tool(
                 ("build", _build_command_for(name)),
                 ("lint", _LINT_CMD),
             ):
+                if session.spec.egress is Egress.CLOSED:
+                    template = template.replace("{path}", "{path} --no-restore")
                 results.append(
                     await _run_phase(
                         sandbox,
