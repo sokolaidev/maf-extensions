@@ -1,11 +1,12 @@
-"""Guest-path arithmetic for the protocol's one path grammar, shared by kinds and backends,
+"""POSIX guest-path arithmetic, shared by kinds and backends,
 the confinement rule written on top of it, and the tar-header stat a container backend reads
 off its copy stream.
 
-A guest path is POSIX whatever the host runs, so everything here goes through ``posixpath``,
+The POSIX helpers use ``posixpath`` whatever the host runs,
 never ``os.path``, and a backslash is refused rather than read as a separator.  For a *host*
 filesystem path this module is the wrong answer — use :meth:`pathlib.Path.resolve` and
 :meth:`pathlib.Path.is_relative_to`, which know the host's grammar and follow its symlinks.
+The acquire helper delegates path resolution to its backend; ``work_dir`` remains guest-native.
 
 Confinement has two halves and one function each, and the names are worth keeping straight.
 **The file name check** is :func:`confine_resolve_guest_path`: text arithmetic over a whole
@@ -65,6 +66,7 @@ __all__ = [
     "guest_path_and_ancestors",
     "guest_path_relative_to",
     "path_ancestors_are_host_owned",
+    "posix_work_dir_ancestors",
     "refuse_symlinked_ancestors",
     "sandbox_entry_from_tar_header",
     "stat_by_asking_the_guest",
@@ -77,11 +79,14 @@ async def ensure_guest_work_dir(
     spec: SandboxSpec,
     stat: Callable[[str], Awaitable[SandboxEntry | None]],
     create: Callable[[tuple[str, ...]], Awaitable[None]],
+    *,
+    resolve: Callable[[str], tuple[str, ...]],
 ) -> None:
     """Prepare a spec's base using a backend's no-follow stat and directory creation.
 
-    ``create`` receives only missing directories, outermost first. Existing directories keep
-    their permissions; the backend supplies creation ownership and bounds the operation.
+    ``resolve`` validates the guest-native base and returns its directories, outermost first,
+    excluding the filesystem root. ``create`` receives only the missing suffix; existing
+    directories keep their permissions. The backend owns creation and bounds the operation.
     """
     if not spec.required_capabilities.intersection(
         {
@@ -93,10 +98,7 @@ async def ensure_guest_work_dir(
         }
     ):
         return
-    if not spec.work_dir.startswith("/") or "\0" in spec.work_dir:
-        raise ValueError("work_dir must be an absolute guest path without NUL bytes")
-    guest = confine_resolve_guest_path(spec.work_dir, spec.work_dir)
-    directories = guest_path_and_ancestors(guest, guest)
+    directories = resolve(spec.work_dir)
     for index, directory in enumerate(directories):
         entry = await stat(directory)
         if entry is None:
@@ -106,6 +108,14 @@ async def ensure_guest_work_dir(
             raise ValueError(f"working directory passes through a link: {directory!r}")
         if entry.kind is not EntryKind.DIRECTORY:
             raise NotADirectoryError(f"{directory!r} is not a directory")
+
+
+def posix_work_dir_ancestors(guest_work_dir: str) -> tuple[str, ...]:
+    """Validate an absolute POSIX base and list its directories, excluding the root."""
+    if not guest_work_dir.startswith("/") or "\0" in guest_work_dir:
+        raise ValueError("work_dir must be an absolute guest path without NUL bytes")
+    guest = confine_resolve_guest_path(guest_work_dir, guest_work_dir)
+    return guest_path_and_ancestors(guest, guest)
 
 
 def confine_resolve_guest_path(path: str, working_directory: str) -> str:

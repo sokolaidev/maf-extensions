@@ -6,10 +6,70 @@ import asyncio
 
 import pytest
 
-from maf_sandbox import Capability, SandboxKey, SandboxSpec
+from maf_sandbox import Capability, EntryKind, SandboxEntry, SandboxKey, SandboxSpec
+from maf_sandbox.paths import ensure_guest_work_dir
 from maf_sandbox.testing import InProcessSandbox, InProcessSandboxBackend
 
 _KEY = SandboxKey("work-dir", "thread", "agent")
+
+
+@pytest.mark.parametrize("path", ["C:/agent/work", r"D:\agent\work", r"\\server\share\agent\work"])
+def test_native_work_dir_is_prepared_repaired_and_retained_by_reset(path):
+    async def scenario():
+        backend = InProcessSandboxBackend()
+        spec = SandboxSpec(kind="native", work_dir=path, requires=frozenset({Capability.EXEC}))
+        sandbox = await backend.acquire(_KEY, spec)
+        assert path in sandbox.directories
+        assert sandbox.commands == []
+        sandbox.directories.remove(path)
+        assert await backend.acquire(_KEY, spec) is sandbox
+        assert path in sandbox.directories
+        await sandbox.reset(timeout=1)
+        assert path in sandbox.directories
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("kind", [EntryKind.SYMLINK, EntryKind.FILE])
+def test_native_work_dir_refuses_an_obstructed_parent(kind):
+    sandbox = InProcessSandbox(
+        seed_files={r"D:\agent": kind if kind is EntryKind.SYMLINK else b"keep"}
+    )
+    before = sandbox._snapshot()
+    spec = SandboxSpec(kind="native", work_dir=r"D:\agent\work")
+    with pytest.raises(ValueError if kind is EntryKind.SYMLINK else NotADirectoryError):
+        asyncio.run(InProcessSandboxBackend(sandbox).acquire(_KEY, spec))
+    assert sandbox._snapshot() == before
+
+
+def test_the_backend_resolves_its_own_path_grammar():
+    resolved: list[str] = []
+    inspected: list[str] = []
+    created: list[tuple[str, ...]] = []
+
+    def resolve(path):
+        resolved.append(path)
+        return ("volume", "volume|agent", "volume|agent|work")
+
+    async def stat(path):
+        inspected.append(path)
+        return (
+            SandboxEntry(path=path, kind=EntryKind.DIRECTORY, size_bytes=None)
+            if path == "volume"
+            else None
+        )
+
+    async def create(directories):
+        created.append(directories)
+
+    asyncio.run(
+        ensure_guest_work_dir(
+            SandboxSpec(kind="native", work_dir="volume|agent|work"), stat, create, resolve=resolve
+        )
+    )
+    assert resolved == ["volume|agent|work"]
+    assert inspected == ["volume", "volume|agent"]
+    assert created == [("volume|agent", "volume|agent|work")]
 
 
 @pytest.mark.parametrize(

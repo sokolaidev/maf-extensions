@@ -17,6 +17,7 @@ a call names, the same rule a real backend enforces against its own guest filesy
 
 from __future__ import annotations
 
+import ntpath
 import posixpath
 import shlex
 from collections.abc import Mapping, Sequence
@@ -52,6 +53,7 @@ from .paths import (
     confine_resolve_guest_write_path,
     ensure_guest_work_dir,
     guest_path_relative_to,
+    posix_work_dir_ancestors,
 )
 
 __all__ = [
@@ -211,7 +213,24 @@ class InProcessSandbox:
             self.directories.update(directories)
             self._baseline[3].update(directories)
 
-        await ensure_guest_work_dir(spec, self._stat_unconfined, create)
+        await ensure_guest_work_dir(
+            spec, self._stat_unconfined, create, resolve=self._work_dir_ancestors
+        )
+
+    @staticmethod
+    def _work_dir_ancestors(guest_work_dir: str) -> tuple[str, ...]:
+        """Model POSIX and Windows bases without using the host's path grammar."""
+        if not ntpath.splitdrive(guest_work_dir)[0]:
+            return posix_work_dir_ancestors(guest_work_dir)
+        if not ntpath.isabs(guest_work_dir) or "\0" in guest_work_dir:
+            raise ValueError("work_dir must be an absolute guest path without NUL bytes")
+        separator = "\\" if "\\" in guest_work_dir else "/"
+        directory = ntpath.normpath(guest_work_dir)
+        directories: list[str] = []
+        while (parent := ntpath.dirname(directory)) != directory:
+            directories.append(directory.replace("\\", separator))
+            directory = parent
+        return tuple(reversed(directories))
 
     async def reset(self, *, timeout: float) -> None:
         """Restore the initial filesystem and process state; timeout is accepted but unused."""

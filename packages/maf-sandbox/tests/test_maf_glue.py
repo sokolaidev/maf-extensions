@@ -32,7 +32,6 @@ from maf_sandbox import (
     DeclaredOutput,
     DisposalFailure,
     Egress,
-    EntryKind,
     FailedReclaimPolicy,
     FileStoreProvenance,
     Isolation,
@@ -2410,16 +2409,10 @@ class TestAWorkDirThatIsNotPosixShaped:
     def test_the_call_is_still_reclaimed(self):
         heard: list[ReclaimFailure] = []
 
-        class NativeSandbox(InProcessSandbox):
-            async def prepare_work_dir(self, spec):
-                assert spec.work_dir in self.directories
-
         async def on_failure(failure: ReclaimFailure) -> None:
             heard.append(failure)
 
-        backend = InProcessSandboxBackend(
-            NativeSandbox(seed_files={self._WINDOWS.work_dir: EntryKind.DIRECTORY})
-        )
+        backend = InProcessSandboxBackend()
         tool = _attach_with(
             _reclaiming_body, _router(backend), spec=self._WINDOWS, on_reclaim_failure=on_failure
         )[0]

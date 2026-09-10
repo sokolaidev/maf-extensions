@@ -79,6 +79,7 @@ from maf_sandbox.paths import (
     ensure_guest_work_dir,
     guest_path_and_ancestors,
     path_ancestors_are_host_owned,
+    posix_work_dir_ancestors,
     sandbox_entry_from_tar_header,
     tar_header_from_block,
 )
@@ -660,7 +661,10 @@ class _DockerSandbox:
     async def prepare_work_dir(self, spec: SandboxSpec) -> None:
         """Establish the spec's base through the container file plane."""
         await ensure_guest_work_dir(
-            spec, lambda path: self._stat_guest(path, path), self._create_directories
+            spec,
+            lambda path: self._stat_guest(path, path),
+            self._create_directories,
+            resolve=posix_work_dir_ancestors,
         )
 
     async def _create_directories(self, directories: tuple[str, ...]) -> None:

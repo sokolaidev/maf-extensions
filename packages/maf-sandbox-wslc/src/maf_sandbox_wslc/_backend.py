@@ -63,6 +63,7 @@ from maf_sandbox.paths import (
     confine_resolve_guest_write_path,
     ensure_guest_work_dir,
     guest_path_and_ancestors,
+    posix_work_dir_ancestors,
     sandbox_entry_from_tar_header,
     stat_by_asking_the_guest_as_root,
     tar_header_from_block,
@@ -443,7 +444,10 @@ class _WslcSandbox:
     async def prepare_work_dir(self, spec: SandboxSpec) -> None:
         """Establish the spec's base through the container file plane."""
         await ensure_guest_work_dir(
-            spec, lambda path: self._stat_guest(path, path), self._create_directories
+            spec,
+            lambda path: self._stat_guest(path, path),
+            self._create_directories,
+            resolve=posix_work_dir_ancestors,
         )
 
     async def _create_directories(self, directories: tuple[str, ...]) -> None:

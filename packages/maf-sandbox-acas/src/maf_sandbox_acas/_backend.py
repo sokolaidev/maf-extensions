@@ -55,6 +55,7 @@ from maf_sandbox.paths import (
     confine_resolve_guest_write_path,
     ensure_guest_work_dir,
     guest_path_relative_to,
+    posix_work_dir_ancestors,
 )
 
 from ._config import AcasSandboxConfig
@@ -422,7 +423,9 @@ class _AcasSandbox:
 
     async def prepare_work_dir(self, spec: SandboxSpec) -> None:
         """Establish the spec's base through the data plane."""
-        await ensure_guest_work_dir(spec, self._unconfined_stat, self._create_directories)
+        await ensure_guest_work_dir(
+            spec, self._unconfined_stat, self._create_directories, resolve=posix_work_dir_ancestors
+        )
 
     async def _create_directories(self, directories: tuple[str, ...]) -> None:
         """Create each missing parent through the data plane."""
