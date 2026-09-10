@@ -119,7 +119,7 @@ Give the image a numeric `uid:gid`, readable account files, or an `id` it can ru
 
 ## Proving a kind's confinement claim
 
-Docker declares `RECLAIM` over its existing acquire-time reach check. Warm reuse additionally requires the kind to declare `confined_to_guest_call_path=True`; workloads that make no claim still use disposal. In a kind's tests, run its real call and cleanup through the shared probe on a fresh acquired sandbox:
+Docker declares `RECLAIM` over its existing acquire-time reach check. With core 0.38, cleanup defaults to disposal; warm reuse requires explicit host opt-in through `Cleanup.RECLAIM` and a workload cleanup floor that permits it. Kind confinement metadata is advisory, so a host may also accept reuse of an unconfined workload with possible residual state. Core 0.37 requires `confined_to_guest_call_path=True` for reclamation-based reuse; [#1091](https://github.com/sokolaidev/maf-extensions/pull/1091) records the transition. In a kind's tests, run its real call and cleanup through the shared probe on a fresh acquired sandbox:
 
 ```python
 from maf_sandbox.conformance import assert_nothing_left_behind
