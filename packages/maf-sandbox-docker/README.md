@@ -81,6 +81,8 @@ backend = DockerSandboxBackend(DockerSandboxConfig())
 
 **The declaration is a snapshot, so a cold acquire re-asks.** The client resolves `DOCKER_HOST` and the active context on *every* call, so switching Docker Desktop to Windows containers moves the engine under a running backend. The router matched the old answer when your tool was attached and cannot ask again — so an `acquire` that is about to create *or restart* a container reads the daemon once more, ahead of the container and its network, and raises `SandboxOsFamilyNotSupported` if the answer changed. A restart counts because one that fails falls through to a create, and one that succeeds hands out a container from whichever daemon is answering now. Reusing an already-running container does not re-ask — that would cost a round trip on every tool call — and a backend built by the plain constructor never asks at all.
 
+Egress decisions are read before proxy removal and reported only once that removal succeeds or confirms absence. Failed or cancelled removals publish no egress event; a retry reads the surviving proxy again. Without a successful retry, that window remains unreported. See the [egress observation contract](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/observability.md) for attribution and delivery limits.
+
 ## The backend
 
 `DockerSandboxBackend` implements `maf_sandbox.SandboxBackend`:

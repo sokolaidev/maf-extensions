@@ -47,6 +47,8 @@ print(f"wslc build -t maf-egress-proxy:local {proxy_build_context()}")  # run th
 config = WslcSandboxConfig(egress_proxy_image="maf-egress-proxy:local")
 ```
 
+Egress decisions are read before proxy removal and reported only once that removal succeeds or confirms absence. Failed or cancelled removals publish no egress event; a retry reads the surviving proxy again. Without a successful retry, that window remains unreported. See the [egress observation contract](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/observability.md) for attribution and delivery limits.
+
 ## The backend
 
 `WslcSandboxBackend` implements `maf_sandbox.SandboxBackend`:

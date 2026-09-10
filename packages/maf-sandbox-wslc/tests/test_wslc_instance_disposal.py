@@ -132,3 +132,65 @@ def test_a_name_or_short_id_is_not_an_instance_selector():
     engine.add("a" * 64, "first")
     assert asyncio.run(_backend(engine).dispose(KEY, instance_id="first")) is not None
     assert not engine.removed
+
+
+@pytest.mark.parametrize("failure", ["refused", "exception", "cancelled"])
+@pytest.mark.parametrize("observed", [False, True])
+def test_proxy_failure_preserves_instance_for_retry(failure, observed):
+    engine = _Engine()
+    workload_id, proxy_id, sibling_id = ("a" * 64, "b" * 64, "c" * 64)
+    engine.add(workload_id, "first")
+    engine.add(proxy_id, "first-proxy")
+    engine.add(sibling_id, "sibling")
+    engine.rows[proxy_id]["Config"]["Labels"]["maf-sandbox.role"] = "proxy"
+    engine.rows[workload_id]["NetworkSettings"] = {
+        "Networks": {"first-net": {"NetworkID": "network-id"}}
+    }
+    backend = _backend(engine)
+    backend._acquired["first"] = (KEY.scope, KEY.thread_id, KEY.agent_dir)
+    events = []
+    if observed:
+        backend.observe_egress(events.append)
+    calls = []
+    failed = True
+
+    async def command(*args, **kwargs):
+        calls.append(args)
+        if args[:2] in (("container", "stop"), ("container", "logs")):
+            return _WslcResult(0, b"ALLOW example.com:443\n", b"")
+        if args[:2] == ("container", "remove") and args[-1] == proxy_id and failed:
+            if failure == "exception":
+                raise RuntimeError("engine unavailable")
+            if failure == "cancelled":
+                raise asyncio.CancelledError
+            return _WslcResult(1, b"", b"permission denied")
+        if args[:2] == ("network", "remove"):
+            assert workload_id not in engine.rows and proxy_id not in engine.rows
+            return _WslcResult(0, b"", b"")
+        return await engine.command(*args, **kwargs)
+
+    backend._wslc = command
+    if failure == "cancelled":
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(backend.dispose(KEY, kind=SPEC.kind, instance_id=workload_id))
+    else:
+        result = asyncio.run(backend.dispose(KEY, kind=SPEC.kind, instance_id=workload_id))
+        assert result is not None
+        assert result.code == ("refused" if failure == "refused" else "unreachable")
+    assert set(engine.rows) == {workload_id, proxy_id, sibling_id}
+    assert engine.removed == []
+    assert not any(args[:2] == ("network", "remove") for args in calls)
+    assert "first" in backend._acquired
+    assert events == []
+
+    failed = False
+    assert asyncio.run(backend.dispose(KEY, kind=SPEC.kind, instance_id=workload_id)) is None
+    assert set(engine.rows) == {sibling_id}
+    assert engine.removed == [proxy_id, workload_id]
+    assert "first" not in backend._acquired
+    assert len(events) == int(observed)
+    if observed:
+        assert [decision.host for decision in events[0].decisions] == ["example.com"]
+    assert asyncio.run(backend.dispose(KEY, kind=SPEC.kind, instance_id=workload_id)) is None
+    assert engine.removed == [proxy_id, workload_id]
+    assert len(events) == int(observed)
