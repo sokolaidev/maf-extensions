@@ -3066,9 +3066,6 @@ class _ResumingSandboxClient(_FakeSandboxClient):
 
 
 class _CreatedSandbox(_FakeSandboxClient):
-    def __init__(self, sandbox_id: str) -> None:
-        super().__init__(sandbox_id)
-
     async def set_lifecycle_policy(self, policy) -> None:
         await asyncio.sleep(0)
 
@@ -3234,9 +3231,6 @@ class TestErrorDetailAdoption:
                 raise _HttpError()
 
         class _CreatedSandbox(_FakeSandboxClient):
-            def __init__(self, sandbox_id: str) -> None:
-                super().__init__(sandbox_id)
-
             async def set_lifecycle_policy(self, policy) -> None:
                 return None
 
