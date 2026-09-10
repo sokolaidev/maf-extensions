@@ -132,8 +132,8 @@ async def assert_storage_base_conformance(
 
     Run with both ``work_dir=None`` and an explicit image base. EXEC probes need POSIX
     ``pwd`` and ``cat``; file probes require no guest utilities. Dispose after the suite.
-    Read-only probes inspect the base and reject escapes; file round trips and cleanup
-    require ``FILES_IN`` to plant their contents.
+    Declared read and removal boundaries are checked without writes; successful file round
+    trips and cleanup require ``FILES_IN`` to plant their contents.
     """
     if Capability.EXEC in capabilities:
         result = await sandbox.exec(["pwd"], working_directory=".", timeout=60)
@@ -175,6 +175,20 @@ async def assert_storage_base_conformance(
                 ValueError,
                 f"listing of escaping path {path!r} from {cwd!r}",
                 sandbox.list_dir(path, working_directory=cwd),
+            )
+    for path, cwd in (("escape", "../outside"), ("../escape", "."), (".", ".")):
+        if Capability.FILES_DELETE in capabilities:
+            for recursive in (False, True):
+                await _refused_with(
+                    ValueError,
+                    f"removal of unsafe path {path!r} from {cwd!r} ({recursive=})",
+                    sandbox.remove(path, working_directory=cwd, recursive=recursive),
+                )
+        if Capability.RECLAIM in capabilities:
+            await _refused_with(
+                ValueError,
+                f"reclamation of unsafe path {path!r} from {cwd!r}",
+                sandbox.reclaim(path, working_directory=cwd, timeout=60),
             )
     if Capability.FILES_IN not in capabilities:
         return
