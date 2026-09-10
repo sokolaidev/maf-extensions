@@ -210,6 +210,8 @@ def _machine(
                 0, json.dumps([{"Id": args[-1], "Config": {"Labels": labels}}]).encode(), b""
             )
         if args[:2] == ("container", "inspect"):
+            if args[-1] not in storage_labels:
+                return _WslcResult(1, b"", b"WSLC_E_CONTAINER_NOT_FOUND")
             return _WslcResult(
                 0,
                 json.dumps(
@@ -255,9 +257,14 @@ def _backend_with(responder=None, config=None) -> tuple[WslcSandboxBackend, _Fak
 @pytest.mark.parametrize("failure", ["status", "json", "shape", "empty", "raise"])
 def test_failed_instance_inspection_disposes_the_container(warm, failure):
     machine = _machine(running=[_NAME] if warm else [])
+    binding_checked = False
 
     def respond(args):
+        nonlocal binding_checked
         if args[:2] == ("container", "inspect"):
+            if not binding_checked:
+                binding_checked = True
+                return machine(args)
             if failure == "raise":
                 raise TimeoutError("inspection timed out")
             output = {"status": b"", "json": b"{", "shape": b"{}", "empty": b"[{}]"}
@@ -638,7 +645,7 @@ class TestAcquireRecoversFromANameConflict:
                 if running_after_the_conflict:
                     present.append(_NAME)
                 return _WslcResult(1, b"", b"Error code: ERROR_ALREADY_EXISTS")
-            return _machine()(args)
+            return _machine(running=present)(args)
 
         return _backend_with(respond)
 
@@ -918,7 +925,7 @@ class TestWriteFile:
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         assert sandbox.instance_id == instance_id
-        assert len(fake.matching("container", "inspect")) == 1
+        assert len(fake.matching("container", "inspect")) == 2
         asyncio.run(sandbox.write_file("nested/input", b"data", working_directory=_WORK))
         archive = tarfile.open(fileobj=io.BytesIO(fake.only("container", "cp").stdin))
         assert archive.getnames() == [
@@ -1015,6 +1022,7 @@ class TestWriteFile:
                 ),
             ]
         )
+        answers = iter([answer for answer in answers for _ in range(2)])
         machine = _machine(running=[_NAME])
 
         def respond(args):
@@ -2381,6 +2389,7 @@ class TestAllowlistTopology:
 
     def test_create_waits_until_the_proxy_listens(self):
         logs_seen = 0
+        machine = _machine()
 
         def respond(args):
             nonlocal logs_seen
@@ -2388,7 +2397,7 @@ class TestAllowlistTopology:
                 logs_seen += 1
                 if logs_seen < 3:
                     return _WslcResult(0, b"", b"")
-            return _machine()(args)
+            return machine(args)
 
         backend, fake = _backend_with(respond, config=_ALLOW_CONFIG)
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
@@ -3011,3 +3020,54 @@ def test_unrecorded_storage_binding_is_refused_without_disposal(labels):
     with pytest.raises(ValueError, match="storage base"):
         asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
     assert not fake.matching("container", "rm")
+
+
+@pytest.mark.parametrize(("running", "allowlisted"), [(False, False), (False, True), (True, True)])
+@pytest.mark.parametrize("binding", ["different", "missing", "unreadable"])
+def test_storage_binding_precedes_lifecycle_changes(running, allowlisted, binding):
+    spec = replace(_ALLOW_SPEC if allowlisted else _METHOD_SPEC, work_dir="/other/base")
+    name = _AL if allowlisted else _NAME
+    labels = {"maf-sandbox.work-dir.v1": _WORK} if binding == "different" else {}
+    metadata = [{"Id": f"id-{name}", "Labels": labels, "Config": {"User": ""}}]
+    overrides = {
+        ("container", "start"): _WslcResult(1, b"", b"start failed"),
+        ("container", "inspect"): _WslcResult(
+            1 if binding == "unreadable" else 0,
+            json.dumps(metadata).encode(),
+            b"engine unavailable",
+        ),
+    }
+    backend, fake = _backend_with(
+        _machine(
+            running=[name] if running else [],
+            stopped=[] if running else [name],
+            overrides=overrides,
+        ),
+        config=_ALLOW_CONFIG if allowlisted else None,
+    )
+    with pytest.raises((ValueError, RuntimeError)):
+        asyncio.run(backend.acquire(_KEY, spec))
+    assert all(call.args[1] in {"inspect", "list"} for call in fake.calls)
+
+
+def test_storage_binding_precedes_adoption_of_a_name_conflict():
+    present = False
+    spec = replace(_METHOD_SPEC, work_dir="/other/base")
+    absent = _machine()
+    stopped = _machine(stopped=[_NAME])
+
+    def respond(args):
+        nonlocal present
+        if args[:2] == ("container", "run"):
+            present = True
+            return _WslcResult(1, b"", b"ERROR_ALREADY_EXISTS")
+        if args[:2] == ("container", "start"):
+            return _WslcResult(1, b"", b"start failed")
+        if not present and args[:2] == ("container", "inspect"):
+            return _WslcResult(1, b"", b"WSLC_E_CONTAINER_NOT_FOUND")
+        return (stopped if present else absent)(args)
+
+    backend, fake = _backend_with(respond)
+    with pytest.raises(ValueError, match="storage base"):
+        asyncio.run(backend.acquire(_KEY, spec))
+    assert not any(call.args[1] in {"start", "rm", "remove"} for call in fake.calls)

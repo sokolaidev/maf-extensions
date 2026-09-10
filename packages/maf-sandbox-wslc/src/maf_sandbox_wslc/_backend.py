@@ -199,6 +199,22 @@ def _sandbox_labels(key: SandboxKey, spec: SandboxSpec) -> dict[str, str]:
     }
 
 
+def _check_storage_base(row: dict[str, object], spec: SandboxSpec) -> None:
+    config = row.get("Config")
+    labels = row.get("Labels")
+    if labels is None and isinstance(config, dict):
+        labels = cast("dict[str, object]", config).get("Labels")
+    work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
+    if (
+        not isinstance(labels, dict)
+        or cast("dict[str, object]", labels).get(_LABEL_WORK_DIR) != work_dir
+    ):
+        raise ValueError(
+            "the container has a different or unrecorded storage base; "
+            "dispose it before requesting another base"
+        )
+
+
 def _key_label(key: SandboxKey) -> str:
     """Encode the key within the attribution budget; empty explicitly disables recovery."""
     fields = [key.scope, key.thread_id, key.agent_dir, key.call_id]
@@ -941,6 +957,7 @@ class WslcSandboxBackend:
         egress_id = self._egress_id(spec)
         name = _container_name(key, spec.kind, egress_id)
         async with self._acquire_lock(key, spec.kind):
+            await self._verify_storage_base(name, spec, missing_ok=True)
             running = await self._is_listed(name, all_states=False)
             stopped = not running and await self._is_listed(name, all_states=True)
             if egress_id:
@@ -995,19 +1012,7 @@ class WslcSandboxBackend:
                 except Exception as failure:
                     logger.warning("sandbox identity refusal cleanup raised: %s", failure)
                 raise
-            config = cast("dict[str, object]", row).get("Config")
-            labels = cast("dict[str, object]", row).get("Labels")
-            if labels is None and isinstance(config, dict):
-                labels = cast("dict[str, object]", config).get("Labels")
-            work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
-            if (
-                not isinstance(labels, dict)
-                or cast("dict[str, object]", labels).get(_LABEL_WORK_DIR) != work_dir
-            ):
-                raise ValueError(
-                    "the container has a different or unrecorded storage base; "
-                    "dispose it before requesting another base"
-                )
+            _check_storage_base(cast("dict[str, object]", row), spec)
             guest_uid = await self._probe_guest_uid(name)
             guest_identity = await self._write_identity(
                 name, guest_uid, cast("dict[str, object]", row)
@@ -1035,6 +1040,16 @@ class WslcSandboxBackend:
             )
             await sandbox.prepare_work_dir(spec)
             return sandbox
+
+    async def _verify_storage_base(
+        self, target: str, spec: SandboxSpec, *, missing_ok: bool = False
+    ) -> None:
+        row = await self._inspect_disposal_target(target)
+        if row is None:
+            if missing_ok:
+                return
+            raise RuntimeError("wslc could not read the sandbox storage base")
+        _check_storage_base(row, spec)
 
     async def _probe_commands(self, name: str, instance_id: str, spec: SandboxSpec) -> None:
         cached_id, verified = self._command_probes.get(name, (instance_id, set[str]()))
@@ -1640,7 +1655,7 @@ class WslcSandboxBackend:
 
         result = await self._wslc(*args, timeout=self._config.command_timeout_seconds)
         if result.returncode != 0:
-            if _ALREADY_EXISTS in result.stderr_text and await self._adopt(name):
+            if _ALREADY_EXISTS in result.stderr_text and await self._adopt(name, spec):
                 logger.info("container %s already existed; adopted it instead of creating", name)
                 return image
             raise RuntimeError(
@@ -1744,7 +1759,7 @@ class WslcSandboxBackend:
             await asyncio.sleep(_PROXY_READY_DELAY_S)
         raise RuntimeError(f"egress proxy {proxy} never reported listening")
 
-    async def _adopt(self, name: str) -> bool:
+    async def _adopt(self, name: str, spec: SandboxSpec) -> bool:
         """Whether an existing ``name`` is running, or could be started — the reuse path again.
 
         The listing that sent ``acquire`` down the create branch can be out of date by the time
@@ -1752,6 +1767,7 @@ class WslcSandboxBackend:
         container that is right there.  Without this the name stays taken and every acquire for
         that key fails from then on.
         """
+        await self._verify_storage_base(name, spec, missing_ok=True)
         if await self._is_listed(name, all_states=False):
             return True
         return await self._is_listed(name, all_states=True) and await self._restart(name)

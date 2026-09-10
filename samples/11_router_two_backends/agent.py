@@ -470,10 +470,10 @@ async def act_six_the_spec_picks() -> None:
         await sandbox.write_file(
             "marker",
             "routed per spec\n",
-            working_directory=spec.work_dir or ".",
+            working_directory=needs_files_out.work_dir or ".",
         )
         result = await sandbox.exec(
-            "cat marker", working_directory=spec.work_dir or ".", timeout=60
+            "cat marker", working_directory=needs_files_out.work_dir or ".", timeout=60
         )
         print(f"{MEASURED}the routed backend runs: {result.stdout.strip()!r}")
     finally:

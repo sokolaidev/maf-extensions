@@ -1966,9 +1966,12 @@ def test_relative_storage_base_conformance(override):
         first = await backend.acquire(_key(scope), spec)
         await assert_storage_base_conformance(first, backend.declarations.capabilities)
         await first.write_file("kept", b"warm", working_directory=".")
+        stopped = await backend._docker("stop", first.instance_id, timeout=30)
+        assert stopped.returncode == 0
         resumed = DockerSandboxBackend(DockerSandboxConfig())
         with pytest.raises(ValueError, match="storage base"):
             await resumed.acquire(_key(scope), replace(spec, work_dir="/other/base"))
+        assert not await resumed._is_running(first.container_name)
         second = await resumed.acquire(_key(scope), spec)
         assert first.instance_id == second.instance_id
         assert await second.read_file("kept", working_directory=".", max_bytes=4) == b"warm"

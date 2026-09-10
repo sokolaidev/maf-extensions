@@ -445,6 +445,11 @@ def _machine(
         if args[:3] == ("inspect", "-f", "{{.Id}}"):
             return _DockerResult(0, f"id-{args[-1]}\n".encode(), "")
         if args[:3] == ("inspect", "-f", "{{json .Config.Labels}}"):
+            if (
+                args[-1].startswith("maf-sandbox-docker-")
+                and args[-1] not in live_running | live_stopped
+            ):
+                return _DockerResult(1, b"", f"Error: No such container: {args[-1]}")
             return _DockerResult(
                 0,
                 json.dumps(
@@ -1752,7 +1757,7 @@ class TestExecDiscardsATimedOutSandbox:
                 raise TimeoutError
             if args[:2] == ("image", "inspect"):
                 return _DockerResult(0, b"", "")
-            if args[0] == "inspect" and args[-1] == _NAME:
+            if args[0] == "inspect" and ".State." in args[2] and args[-1] == _NAME:
                 return _DockerResult(0, b"true\n", "")
             return _DockerResult(0, b"", "")
 
@@ -1772,7 +1777,7 @@ class TestExecDiscardsATimedOutSandbox:
                 return _DockerResult(0, b"0:0", "")
             if args[:2] == ("image", "inspect"):
                 return _DockerResult(0, b"", "")
-            if args[0] == "inspect" and args[-1] == _NAME:
+            if args[0] == "inspect" and ".State." in args[2] and args[-1] == _NAME:
                 return _DockerResult(0, b"true\n", "")
             return _DockerResult(0, b"", "")
 
@@ -1793,7 +1798,7 @@ class TestExecDiscardsATimedOutSandbox:
                 raise TimeoutError("a daemon too slow to answer inspect")
             if args[:2] == ("image", "inspect"):
                 return _DockerResult(0, b"", "")
-            if args[0] == "inspect" and args[-1] == _NAME:
+            if args[0] == "inspect" and ".State." in args[2] and args[-1] == _NAME:
                 return _DockerResult(0, b"true", "")
             return _DockerResult(0, b"", "")
 
@@ -1818,7 +1823,7 @@ class TestExecDiscardsATimedOutSandbox:
                 raise TimeoutError
             if args[:2] == ("image", "inspect"):
                 return _DockerResult(0, b"", "")
-            if args[0] == "inspect" and args[-1] == _NAME:
+            if args[0] == "inspect" and ".State." in args[2] and args[-1] == _NAME:
                 return _DockerResult(0, b"true\n", "")
             if args[:3] == ("inspect", "-f", "{{.Config.User}}"):
                 return _DockerResult(0, b"10001\n", "")
@@ -3983,6 +3988,10 @@ class TestAllowlistReuse:
             if args[0] == "inspect" and args[-1] == _AL:
                 if not appeared:
                     return _DockerResult(1, b"", f"error: no such object: {_AL}")
+                if args[2] == "{{json .Config.Labels}}":
+                    return _DockerResult(
+                        0, json.dumps({"maf-sandbox.work-dir.v1": _WORK}).encode(), ""
+                    )
                 state = b"true\n" if "Running" in args[2] else b"running\n"
                 return _DockerResult(0, state, "")
             return base(args)
@@ -4971,3 +4980,54 @@ def test_unrecorded_storage_binding_is_refused_without_disposal(labels):
     with pytest.raises(ValueError, match="storage base"):
         asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
     assert not fake.matching("rm")
+
+
+@pytest.mark.parametrize(("running", "allowlisted"), [(False, False), (False, True), (True, True)])
+@pytest.mark.parametrize("binding", ["different", "missing", "unreadable"])
+def test_storage_binding_precedes_lifecycle_changes(running, allowlisted, binding):
+    spec = replace(_ALLOW_SPEC if allowlisted else _METHOD_SPEC, work_dir="/other/base")
+    name = _AL if allowlisted else _NAME
+    labels = {"maf-sandbox.work-dir.v1": _WORK} if binding == "different" else {}
+    metadata = labels
+    overrides = {
+        ("start",): _DockerResult(1, b"", "start failed"),
+        ("inspect", "-f", "{{json .Config.Labels}}"): _DockerResult(
+            1 if binding == "unreadable" else 0,
+            json.dumps(metadata).encode(),
+            "engine unavailable",
+        ),
+    }
+    backend, fake = _backend_with(
+        _machine(
+            running=[name] if running else [],
+            stopped=[] if running else [name],
+            overrides=overrides,
+        ),
+        config=_ALLOW_CONFIG if allowlisted else None,
+    )
+    with pytest.raises((ValueError, RuntimeError)):
+        asyncio.run(backend.acquire(_KEY, spec))
+    assert all(call.args[0] in {"inspect", "ps", "version"} for call in fake.calls)
+
+
+def test_storage_binding_precedes_adoption_of_a_name_conflict():
+    present = False
+    spec = replace(_METHOD_SPEC, work_dir="/other/base")
+    absent = _machine()
+    stopped = _machine(stopped=[_NAME])
+
+    def respond(args):
+        nonlocal present
+        if args[:1] == ("run",):
+            present = True
+            return _DockerResult(1, b"", "already in use")
+        if args[:1] == ("start",):
+            return _DockerResult(1, b"", "start failed")
+        if not present and args[:3] == ("inspect", "-f", "{{json .Config.Labels}}"):
+            return _DockerResult(1, b"", f"Error: No such container: {_NAME}")
+        return (stopped if present else absent)(args)
+
+    backend, fake = _backend_with(respond)
+    with pytest.raises(ValueError, match="storage base"):
+        asyncio.run(backend.acquire(_KEY, spec))
+    assert not any(call.args[0] in {"start", "rm", "remove"} for call in fake.calls)

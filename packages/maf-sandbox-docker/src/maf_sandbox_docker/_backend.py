@@ -1444,6 +1444,7 @@ class DockerSandboxBackend:
         egress_id = self._egress_id(spec)
         name = _container_name(key, spec.kind, egress_id)
         async with self._acquire_lock(key, spec.kind):
+            await self._verify_storage_base(name, spec, missing_ok=True)
             if egress_id:
                 # Before the reuse decision reads it: this can remove the very container the
                 # reads below would otherwise find warm.
@@ -1506,25 +1507,7 @@ class DockerSandboxBackend:
                 except Exception as failure:
                     logger.warning("sandbox identity refusal cleanup raised: %s", failure)
                 raise
-            bound = await self._docker(
-                "inspect",
-                "-f",
-                "{{json .Config.Labels}}",
-                instance_id,
-                timeout=self._config.command_timeout_seconds,
-            )
-            if bound.returncode:
-                raise RuntimeError("docker could not read the sandbox storage base")
-            labels: object = json.loads(bound.stdout)
-            work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
-            if (
-                not isinstance(labels, dict)
-                or cast("dict[str, object]", labels).get(_LABEL_WORK_DIR) != work_dir
-            ):
-                raise ValueError(
-                    "the container has a different or unrecorded storage base; "
-                    "dispose it before requesting another base"
-                )
+            await self._verify_storage_base(instance_id, spec)
             facts = await self._container_facts(name, spec, instance_id=instance_id)
             refuse_capabilities_the_guest_cannot_back(
                 spec,
@@ -1548,6 +1531,31 @@ class DockerSandboxBackend:
             )
             await sandbox.prepare_work_dir(spec)
             return sandbox
+
+    async def _verify_storage_base(
+        self, target: str, spec: SandboxSpec, *, missing_ok: bool = False
+    ) -> None:
+        bound = await self._docker(
+            "inspect",
+            "-f",
+            "{{json .Config.Labels}}",
+            target,
+            timeout=self._config.command_timeout_seconds,
+        )
+        if bound.returncode:
+            if missing_ok and _reads_as_absent(bound.stderr, target):
+                return
+            raise RuntimeError("docker could not read the sandbox storage base")
+        labels: object = json.loads(bound.stdout)
+        work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
+        if (
+            not isinstance(labels, dict)
+            or cast("dict[str, object]", labels).get(_LABEL_WORK_DIR) != work_dir
+        ):
+            raise ValueError(
+                "the container has a different or unrecorded storage base; "
+                "dispose it before requesting another base"
+            )
 
     async def _probe_commands(self, name: str, instance_id: str, spec: SandboxSpec) -> None:
         cached_id, verified = self._command_probes.get(name, (instance_id, set[str]()))
@@ -2567,7 +2575,7 @@ class DockerSandboxBackend:
 
         result = await self._docker(*args, timeout=self._config.command_timeout_seconds)
         if result.returncode != 0:
-            if _ALREADY_IN_USE in result.stderr.lower() and await self._adopt(name):
+            if _ALREADY_IN_USE in result.stderr.lower() and await self._adopt(name, spec):
                 logger.info("container %s already existed; adopted it instead of creating", name)
                 return image
             raise RuntimeError(f"docker could not create container {name}: {result.stderr.strip()}")
@@ -2858,7 +2866,7 @@ class DockerSandboxBackend:
             await asyncio.sleep(_PROXY_READY_DELAY_S)
         raise RuntimeError(f"egress proxy {proxy} never reported listening")
 
-    async def _adopt(self, name: str) -> bool:
+    async def _adopt(self, name: str, spec: SandboxSpec) -> bool:
         """Whether an existing ``name`` is running, or could be started — the reuse path again.
 
         The check that sent ``acquire`` down the create branch can be out of date by the time
@@ -2870,6 +2878,7 @@ class DockerSandboxBackend:
         the name is derived from the key and salted per installation, so placing one under it
         deliberately means holding the daemon socket, which is already root on the host.
         """
+        await self._verify_storage_base(name, spec, missing_ok=True)
         usable = await self._is_running(name)
         if not usable:
             usable = await self._exists(name) and await self._restart(name)
