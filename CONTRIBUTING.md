@@ -4,6 +4,16 @@ Thanks for looking. These packages are early (`0.x`) and the API may still move,
 
 ## Getting set up
 
+On Windows, use PowerShell 7 (`pwsh`) and a native Python; the workflow behavior checks need neither WSL nor Git Bash:
+
+```powershell
+uv sync --locked
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+./scripts/check_workflows.ps1 -Python "$PWD/.venv/Scripts/python.exe" -TestArgs '-q', '-ra'
+```
+
+The wrapper discovers tests marked `workflow` under `tests/`, runs the release and retry behavior shared with the production workflows, and preserves Python's exit status. Mark new workflow-behavior test modules with `pytestmark = pytest.mark.workflow` so they join the Windows and Linux checks automatically. The full local gate is `uv run poe gate`, also run from PowerShell. Bash integration checks run only on Linux and skip explicitly on Windows, even when a WSL launcher is on `PATH`. The portable workflow CI runs these checks on Windows and Linux.
+
 ```bash
 uv sync            # one workspace, one lock, every package editable
 uv run pytest -q   # the whole suite, about half a minute

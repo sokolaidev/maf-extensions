@@ -1,0 +1,70 @@
+name: Portable workflow tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workflow-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: What affects workflow behavior
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Classify the changed paths
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --name-only "$BASE_SHA" HEAD |
+            python3 scripts/changed_paths.py --workflows >> "$GITHUB_OUTPUT"
+
+  portable:
+    name: Workflow behavior on ${{ matrix.os }}
+    needs: changes
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        if: needs.changes.outputs.code == 'true'
+        with:
+          python-version: '3.12'
+      - name: Sync workspace
+        if: needs.changes.outputs.code == 'true'
+        run: |
+          uv sync --locked
+          exit $LASTEXITCODE
+      - name: Run shared behavior and platform shell checks
+        if: needs.changes.outputs.code == 'true'
+        run: |
+          $python = uv python find
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/check_workflows.ps1 -Python $python -TestArgs '-q', '-ra'
