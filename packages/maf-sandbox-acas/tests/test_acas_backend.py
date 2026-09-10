@@ -59,6 +59,30 @@ def _disk_image(image_id: str, reference: str):
     return DiskImage(id=image_id, image=DiskImageSpec(base=reference))
 
 
+def test_acquire_creates_and_repairs_the_base_through_the_data_plane():
+    async def scenario():
+        client = _GuestGroupClient(_guest_removing(True))
+        backend = _backend_with(client)
+        key = SandboxKey("work-dir", "thread", "agent")
+        spec = _spec_requiring(Capability.EXEC)
+        first = await backend.acquire(key, spec)
+        assert client.created_directories == ["/maf-sandbox", "/maf-sandbox/work"]
+        client.files[first.instance_id][spec.work_dir + "/keep"] = b"keep"
+        second = await backend.acquire(key, spec)
+        assert first.instance_id == second.instance_id
+        assert len(client.created_directories) == 2
+        assert client.files[first.instance_id][spec.work_dir + "/keep"] == b"keep"
+        del client.files[first.instance_id][spec.work_dir]
+        await backend.acquire(key, spec)
+        assert client.created_directories == [
+            "/maf-sandbox",
+            "/maf-sandbox/work",
+            "/maf-sandbox/work",
+        ]
+
+    asyncio.run(scenario())
+
+
 class _FakePager:
     """Stands in for AsyncItemPaged."""
 
@@ -87,6 +111,11 @@ class _FakeSandboxClient:
         self.sandbox_id = sandbox_id
         self.deleted = False
         self.resumed = False
+        self._sbx_path = "/sandboxes/" + sandbox_id
+        self._api_version = "test"
+
+    async def _dp_get(self, route, *, params):
+        return {"isDir": True, "isSymlink": False}
 
     async def begin_delete(self) -> _CompletedDeletion:
         self.deleted = True
@@ -725,6 +754,10 @@ class _GuestSandboxClient(_FakeSandboxClient):
         self.files = owner.files.setdefault(sandbox_id, {})
         self.cleanups = owner.cleanups
 
+    async def mkdir(self, path):
+        self._owner.created_directories.append(path)
+        self.files[path] = None
+
     async def write_file(self, path, content, *, create_dirs):
         assert create_dirs
         self.files[posixpath.dirname(path)] = None
@@ -784,6 +817,7 @@ class _GuestGroupClient:
         self.clients: list[_GuestSandboxClient] = []
         self.files: dict[str, dict[str, bytes | None]] = {}
         self.cleanups: list[str] = []
+        self.created_directories: list[str] = []
 
     def get_sandbox_client(self, sandbox_id: str) -> _GuestSandboxClient:
         return self._client(sandbox_id)
@@ -1001,7 +1035,9 @@ class TestAnImageWhoseGuestIsNotRoot:
 
         assert all("id -u" not in command for command, _ in client.probes)
         assert len(client.cleanups) == 1
-        assert not any(client.files.values())
+        assert all(
+            set(files) <= {"/maf-sandbox", "/maf-sandbox/work"} for files in client.files.values()
+        )
         assert client.deleted == ["sbx-1"]
 
     @pytest.mark.parametrize("exit_code", [0, 1])
@@ -1039,7 +1075,9 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert asyncio.run(backend.acquire(self._key(), _spec_requiring(Capability.FILES_DELETE)))
         assert backend._guest_removals[("pinned-id", "python-nonroot:3.13")].removal is True
         assert len(client.cleanups) == 1
-        assert not any(client.files.values())
+        assert all(
+            set(files) <= {"/maf-sandbox", "/maf-sandbox/work"} for files in client.files.values()
+        )
 
     def test_a_missing_scratch_directory_is_not_evidence_of_a_guest_removal(self, monkeypatch):
         from maf_sandbox import SandboxCapabilityNotSupported
@@ -1077,7 +1115,10 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert client.create_calls == 2
         if phase != "delete_file":
             assert len(client.cleanups) == 2
-            assert not any(client.files.values())
+            assert all(
+                set(files) <= {"/maf-sandbox", "/maf-sandbox/work"}
+                for files in client.files.values()
+            )
 
     @pytest.mark.parametrize("cleanup_fails", [False, True])
     def test_cancellation_attempts_cleanup_and_never_records_a_verdict(
@@ -2891,8 +2932,9 @@ class TestLifecycleLogging:
         assert len(released) == 2, caplog.text
 
     def test_failed_lifecycle_configuration_does_not_promise_auto_delete(self, caplog):
-        class _CreatedSandbox:
-            sandbox_id = "sbx-1"
+        class _CreatedSandbox(_FakeSandboxClient):
+            def __init__(self):
+                super().__init__("sbx-1")
 
             async def set_lifecycle_policy(self, policy) -> None:
                 raise RuntimeError("HTTP 400 invalid policy")
@@ -2965,9 +3007,9 @@ class _ResumingSandboxClient(_FakeSandboxClient):
         await super().ensure_running(timeout)
 
 
-class _CreatedSandbox:
+class _CreatedSandbox(_FakeSandboxClient):
     def __init__(self, sandbox_id: str) -> None:
-        self.sandbox_id = sandbox_id
+        super().__init__(sandbox_id)
 
     async def set_lifecycle_policy(self, policy) -> None:
         await asyncio.sleep(0)
@@ -3133,9 +3175,9 @@ class TestErrorDetailAdoption:
             async def ensure_running(self, timeout: float | None = None) -> None:
                 raise _HttpError()
 
-        class _CreatedSandbox:
+        class _CreatedSandbox(_FakeSandboxClient):
             def __init__(self, sandbox_id: str) -> None:
-                self.sandbox_id = sandbox_id
+                super().__init__(sandbox_id)
 
             async def set_lifecycle_policy(self, policy) -> None:
                 return None

@@ -6,6 +6,8 @@
 
 This package is not affiliated with, endorsed by, or a product of Microsoft — it is a third-party reference implementation of [microsoft/agent-framework#7568](https://github.com/microsoft/agent-framework/issues/7568), written for use with [Microsoft Agent Framework](https://aka.ms/AgentFramework) but with no dependency on it in its protocol layer.
 
+For workloads requiring `EXEC` or any `FILES_*` capability, `acquire` ensures `spec.work_dir` exists, including on warm reuse. Existing directories retain their contents, ownership and modes; an unreadable path, a symlink or a non-directory fails acquire. This guarantees the base's existence on return, not additional guest permissions or the creation of per-call children. Runtime-only workloads require no directory.
+
 ## Quickstart
 
 ```bash

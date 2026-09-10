@@ -124,7 +124,7 @@ A per-call path is tidiness, not isolation. Two calls in one conversation share 
 
 ## Where the base comes from
 
-A guest path is relative to something, and today that something is owned by nobody: a workload declares `work_dir` in its spec, no backend reads it, no backend creates it, and the protocol does not promise it exists. The decided rule is that **a backend allocates the storage base and resolves every path against it**, with a spec-level override for an image that pre-populates a fixed root — the only shape that also serves a backend whose store has no filesystem under it. [`hosts.md`](hosts.md) owns the question and what a host configures today.
+A workload names `work_dir` in its spec, and a backend prepares that base at acquire for workloads requiring exec or file capabilities. The broader decided rule is that **a backend allocates the storage base and resolves every path against it**, with a spec-level override for an image that pre-populates a fixed root. That allocation and relative addressing also serve a backend whose store has no filesystem under it. [`hosts.md`](hosts.md) owns the question and what a host configures today.
 
 ## Status
 

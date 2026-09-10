@@ -261,7 +261,7 @@ If either result declaration is absent or invalid, core leaves derived items unl
 
 ## Where the storage base comes from
 
-A guest path is relative to something, and today that something is owned by nobody. A workload declares `work_dir` in its spec, no backend reads it, no backend creates it, and the protocol does not promise it exists. Every kind then composes absolute paths from a base the stack only hopes is there.
+A workload names `work_dir` in its spec. A backend prepares that base at acquire for workloads requiring exec or file capabilities, while kinds still compose absolute paths from it. Existence is established; allocating the base and resolving relative workload paths remain the backend-owned storage design below.
 
 > **A backend allocates the storage base and resolves every path against it. Kinds address everything relative to that base and never compose an absolute path.**
 

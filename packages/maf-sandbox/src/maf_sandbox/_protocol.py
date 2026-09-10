@@ -1406,6 +1406,14 @@ class SandboxBackend(Protocol):
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> Sandbox:
         """Return a running sandbox for ``key``, creating one if needed.
 
+        For a spec requiring EXEC or any FILES_* capability, ``spec.work_dir`` exists as a
+        directory on return, including warm reuse. Create missing parents, refuse links and
+        non-directories, and preserve existing contents, ownership and permissions. Failure
+        to prepare it fails acquire. This promises existence, not additional guest permissions
+        or persistence after guest mutation; callers still prepare per-call subdirectories.
+        A spec requiring only runtime capabilities such as RUN_CODE owes no directory.
+        A snapshot-capable backend includes the prepared base in its reset baseline.
+
         Two acquires for one key can be in flight at once: the function calls in a single
         assistant message are executed concurrently, so a workload's tool body runs twice
         over.  An unguarded read-then-create then hands out two sandboxes where the caller

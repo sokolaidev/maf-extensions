@@ -12,6 +12,8 @@ app  ->  maf_sandbox  ->  maf_sandbox_docker  ->  the container
 
 The sandbox backend for everyone `wslc` leaves out: plain Docker containers, driven through the `docker` command-line client, on any machine with a Docker-compatible engine — macOS, Linux, Windows with WSL 2, and every GitHub Actions `ubuntu-latest` runner. No subscription, no login, and no dependency but [`maf-sandbox`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox) itself. A workload written against the protocol runs here unchanged, which is what makes it a workload rather than an integration.
 
+For workloads requiring `EXEC` or any `FILES_*` capability, `acquire` ensures `spec.work_dir` exists, including on warm reuse. Existing directories retain their contents, ownership and modes; an unreadable path, a symlink or a non-directory fails acquire. This guarantees the base's existence on return, not additional guest permissions or the creation of per-call children. Runtime-only workloads require no directory. Missing directories are sent through the Docker tar file plane: ancestors are root-owned and the base uses the resolved image uid/gid (the existing root fallback applies to unresolved identities). No guest `mkdir` is needed; the file plane's documented concurrent-redirection residual also applies to creation.
+
 ## Quickstart
 
 ```bash

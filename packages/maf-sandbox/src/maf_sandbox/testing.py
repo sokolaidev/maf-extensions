@@ -50,6 +50,7 @@ from .paths import (
     confine_resolve_guest_list_path,
     confine_resolve_guest_read_path,
     confine_resolve_guest_write_path,
+    ensure_guest_work_dir,
     guest_path_relative_to,
 )
 
@@ -202,6 +203,15 @@ class InProcessSandbox:
             set(self.directories),
             set(self.running),
         )
+
+    async def prepare_work_dir(self, spec: SandboxSpec) -> None:
+        """Include the host's base directories in the state restored by reset."""
+
+        async def create(directories: tuple[str, ...]) -> None:
+            self.directories.update(directories)
+            self._baseline[3].update(directories)
+
+        await ensure_guest_work_dir(spec, self._stat_unconfined, create)
 
     async def reset(self, *, timeout: float) -> None:
         """Restore the initial filesystem and process state; timeout is accepted but unused."""
@@ -529,9 +539,7 @@ class InProcessSandboxBackend:
             raise self.acquire_error
         self.keys.append(key)
         self.specs.append(spec)
-        if not self.sandbox_per_key:
-            return self.sandbox
-        held = self.sandboxes.get((key, spec.kind))
+        held = self.sandboxes.get((key, spec.kind)) if self.sandbox_per_key else self.sandbox
         if held is None:
             # The one this was constructed with serves the first acquire, so a test that
             # scripted its outputs still gets them. Once, not once per empty map: a key whose
@@ -540,6 +548,8 @@ class InProcessSandboxBackend:
             self._handed_out = True
             self.sandboxes[(key, spec.kind)] = held
             self._instances[(key, spec.kind)] = held._instance  # pyright: ignore[reportPrivateUsage]
+
+        await held.prepare_work_dir(spec)
         return held
 
     async def dispose(

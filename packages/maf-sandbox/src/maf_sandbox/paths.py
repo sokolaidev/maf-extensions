@@ -53,7 +53,7 @@ import posixpath
 import tarfile
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 
-from ._protocol import EntryKind, SandboxEntry
+from ._protocol import Capability, EntryKind, SandboxEntry, SandboxSpec
 
 __all__ = [
     "confine_resolve_guest_delete_path",
@@ -61,6 +61,7 @@ __all__ = [
     "confine_resolve_guest_path",
     "confine_resolve_guest_read_path",
     "confine_resolve_guest_write_path",
+    "ensure_guest_work_dir",
     "guest_path_and_ancestors",
     "guest_path_relative_to",
     "path_ancestors_are_host_owned",
@@ -70,6 +71,41 @@ __all__ = [
     "stat_by_asking_the_guest_as_root",
     "tar_header_from_block",
 ]
+
+
+async def ensure_guest_work_dir(
+    spec: SandboxSpec,
+    stat: Callable[[str], Awaitable[SandboxEntry | None]],
+    create: Callable[[tuple[str, ...]], Awaitable[None]],
+) -> None:
+    """Prepare a spec's base using a backend's no-follow stat and directory creation.
+
+    ``create`` receives only missing directories, outermost first. Existing directories keep
+    their permissions; the backend supplies creation ownership and bounds the operation.
+    """
+    if not spec.required_capabilities.intersection(
+        {
+            Capability.EXEC,
+            Capability.FILES_IN,
+            Capability.FILES_OUT,
+            Capability.FILES_LIST,
+            Capability.FILES_DELETE,
+        }
+    ):
+        return
+    if not spec.work_dir.startswith("/") or "\0" in spec.work_dir:
+        raise ValueError("work_dir must be an absolute guest path without NUL bytes")
+    guest = confine_resolve_guest_path(spec.work_dir, spec.work_dir)
+    directories = guest_path_and_ancestors(guest, guest)
+    for index, directory in enumerate(directories):
+        entry = await stat(directory)
+        if entry is None:
+            await create(directories[index:])
+            return
+        if entry.kind is EntryKind.SYMLINK:
+            raise ValueError(f"working directory passes through a link: {directory!r}")
+        if entry.kind is not EntryKind.DIRECTORY:
+            raise NotADirectoryError(f"{directory!r} is not a directory")
 
 
 def confine_resolve_guest_path(path: str, working_directory: str) -> str:

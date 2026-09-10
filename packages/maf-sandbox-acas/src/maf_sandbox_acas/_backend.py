@@ -53,6 +53,7 @@ from maf_sandbox.paths import (
     confine_resolve_guest_path,
     confine_resolve_guest_read_path,
     confine_resolve_guest_write_path,
+    ensure_guest_work_dir,
     guest_path_relative_to,
 )
 
@@ -418,6 +419,15 @@ class _AcasSandbox:
     @property
     def instance_id(self) -> str:
         return self.sandbox_id
+
+    async def prepare_work_dir(self, spec: SandboxSpec) -> None:
+        """Establish the spec's base through the data plane."""
+        await ensure_guest_work_dir(spec, self._unconfined_stat, self._create_directories)
+
+    async def _create_directories(self, directories: tuple[str, ...]) -> None:
+        """Create each missing parent through the data plane."""
+        for directory in directories:
+            await self._sc.mkdir(directory)
 
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
         """Write ``content`` at ``path`` through the data plane, which lands it as ``0:0``.
@@ -839,7 +849,10 @@ class AcasSandboxBackend:
         """
         _sandbox_labels(key, spec)
         async with self._acquire_lock((key.scope, key.thread_id, key.agent_dir, spec.kind)):
-            return await self._get_or_create(key, spec)
+            sandbox = await self._get_or_create(key, spec)
+            async with asyncio.timeout(self._config.read_timeout_seconds):
+                await sandbox.prepare_work_dir(spec)
+            return sandbox
 
     def _acquire_lock(self, registry_key: tuple[str, str, str, str]) -> asyncio.Lock:
         """The get-or-create lock for one key on the running loop.

@@ -109,6 +109,56 @@ pytestmark = pytest.mark.skipif(
 _WORK = "/maf-sandbox/work"
 
 
+@pytest.mark.parametrize("image", [_IMAGE, _ABSENT_WORK_IMAGE], ids=["root", "nonroot"])
+def test_acquire_prepares_base_before_exec_and_repairs_warm_reuse(image):
+    if not image:
+        pytest.skip("needs the corresponding Docker E2E image")
+
+    async def scenario():
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+        key = _key("acquire-work-dir-" + uuid.uuid4().hex[:10])
+        spec = SandboxSpec(
+            kind="base",
+            image=image,
+            work_dir="/maf-sandbox/acquire-test",
+            requires=frozenset({Capability.EXEC}),
+        )
+        try:
+            sandbox = await backend.acquire(key, spec)
+            first_id = sandbox.instance_id
+            for state in ("cold", "warm", "repaired", "restarted"):
+                if state == "repaired":
+                    removed = await backend._docker(
+                        "exec",
+                        "--user",
+                        "0",
+                        sandbox.container_name,
+                        "rm",
+                        "-rf",
+                        "--",
+                        spec.work_dir,
+                        timeout=30,
+                    )
+                    assert removed.returncode == 0
+                if state == "restarted":
+                    stopped = await backend._docker("stop", sandbox.container_name, timeout=30)
+                    assert stopped.returncode == 0
+                if state != "cold":
+                    sandbox = await backend.acquire(key, spec)
+                assert sandbox.instance_id == first_id
+                result = await sandbox.exec(
+                    "printf ok > marker; cat marker",
+                    working_directory=spec.work_dir,
+                    timeout=30,
+                )
+                assert result.exit_code == 0, (state, result)
+                assert result.stdout == "ok"
+        finally:
+            assert await backend.dispose(key, kind=spec.kind) is None
+
+    asyncio.run(scenario())
+
+
 def _spec(**kw) -> SandboxSpec:
     return SandboxSpec(kind="e2e", image=_IMAGE, work_dir=_WORK, **kw)
 
