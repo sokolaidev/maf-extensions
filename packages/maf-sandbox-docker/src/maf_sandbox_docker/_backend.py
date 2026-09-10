@@ -1808,9 +1808,11 @@ class DockerSandboxBackend:
             return DisposalFailure("unlisted", f"could not select the sandbox instance: {exc}")
         if proxy_id is not None:
             event = await self._drain_the_proxy(name, key, proxy_id=proxy_id)
-            if (await self._remove(proxy_id)).failure is None:
-                self._report_proxy_drain(event)
-                self._forget_attribution(name, key.thread_id)
+            proxy_removal = await self._remove(proxy_id)
+            if proxy_removal.failure is not None:
+                return proxy_removal.failure
+            self._report_proxy_drain(event)
+            self._forget_attribution(name, key.thread_id)
         self._forget_facts(name)
         removal = await self._remove(instance_id)
         if removal.failure is None:
