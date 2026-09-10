@@ -1,0 +1,259 @@
+{
+  "image": "python-3.13",
+  "cases": [
+    {
+      "name": "binary-argv",
+      "seconds": 0.1,
+      "stdout": {
+        "expected_bytes": 277,
+        "received_bytes": 277,
+        "sha256": "bbfed0ab7c6f8821da87cc8252189403c0797ed434204d7f3de5929bc255d23d",
+        "exact": true
+      },
+      "stderr": {
+        "expected_bytes": 277,
+        "received_bytes": 277,
+        "sha256": "1ebc3d46464285709ee90c835154056041bc21509f26a2949e53edb76988044a",
+        "exact": true
+      },
+      "exit_code": 7,
+      "passed": true
+    },
+    {
+      "name": "binary-shell",
+      "seconds": 0.091,
+      "stdout": {
+        "expected_bytes": 277,
+        "received_bytes": 277,
+        "sha256": "bbfed0ab7c6f8821da87cc8252189403c0797ed434204d7f3de5929bc255d23d",
+        "exact": true
+      },
+      "stderr": {
+        "expected_bytes": 277,
+        "received_bytes": 277,
+        "sha256": "1ebc3d46464285709ee90c835154056041bc21509f26a2949e53edb76988044a",
+        "exact": true
+      },
+      "exit_code": 7,
+      "passed": true
+    },
+    {
+      "name": "empty",
+      "seconds": 0.091,
+      "stdout": {
+        "expected_bytes": 0,
+        "received_bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exact": true
+      },
+      "stderr": {
+        "expected_bytes": 0,
+        "received_bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exact": true
+      },
+      "exit_code": 0,
+      "passed": true
+    },
+    {
+      "name": "quoted-argv",
+      "seconds": 0.168,
+      "stdout": {
+        "expected_bytes": 32,
+        "received_bytes": 32,
+        "sha256": "63b53fb3b7ed871e4e4c73a23886ca1aa57b1d826e5c4bbf27c4e59ed9979edd",
+        "exact": true
+      },
+      "stderr": {
+        "expected_bytes": 0,
+        "received_bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exact": true
+      },
+      "exit_code": 0,
+      "passed": true
+    },
+    {
+      "name": "large-65536-each-stream",
+      "seconds": 0.2,
+      "stdout": {
+        "expected_bytes": 65536,
+        "received_bytes": 65536,
+        "sha256": "7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2",
+        "exact": true
+      },
+      "stderr": {
+        "expected_bytes": 65536,
+        "received_bytes": 65536,
+        "sha256": "7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2",
+        "exact": true
+      },
+      "exit_code": 7,
+      "passed": true
+    },
+    {
+      "name": "large-1048576-each-stream",
+      "seconds": 0.295,
+      "passed": false,
+      "error": "ValueError",
+      "received_text_characters": 1048576,
+      "transport_stderr": "\n[adc] output exceeded 1048576 bytes and was truncated; process terminated\n",
+      "framed_exit_code": "7",
+      "exit_code": 137
+    },
+    {
+      "name": "concurrent-1",
+      "seconds": 0.135,
+      "stdout": {
+        "expected_bytes": 1024,
+        "received_bytes": 1024,
+        "sha256": "f7d304252836f7ad54269f3ef3741fa412758fb914b301815b91d1a15ad98b97",
+        "exact": true
+      },
+      "stderr": {
+        "expected_bytes": 1024,
+        "received_bytes": 1024,
+        "sha256": "a9721b901d786b17d9c872a53cb4c7e4f2073f3a30642222fac6985ff8aa7f17",
+        "exact": true
+      },
+      "exit_code": 7,
+      "passed": true
+    },
+    {
+      "name": "concurrent-2",
+      "seconds": 0.293,
+      "stdout": {
+        "expected_bytes": 1024,
+        "received_bytes": 1024,
+        "sha256": "10791fe6d6ba851af4bb51c8c85100b9f9ba526cc820d517b6162a78f8a30d09",
+        "exact": true
+      },
+      "stderr": {
+        "expected_bytes": 1024,
+        "received_bytes": 1024,
+        "sha256": "08a5c039af73119ec81292246c87786337c85b73a993db98490289630a8dde08",
+        "exact": true
+      },
+      "exit_code": 7,
+      "passed": true
+    },
+    {
+      "name": "concurrent-0",
+      "seconds": 0.3,
+      "stdout": {
+        "expected_bytes": 1024,
+        "received_bytes": 1024,
+        "sha256": "f991acb1e5897fe61be2decbf1d1b41b165ec8c2317284f8e3d8322c4d052e21",
+        "exact": true
+      },
+      "stderr": {
+        "expected_bytes": 1024,
+        "received_bytes": 1024,
+        "sha256": "170f7cda96fb902c69f45e0e3da8f75d3c6fea7f675e746d8ed806721d1c8aa4",
+        "exact": true
+      },
+      "exit_code": 7,
+      "passed": true
+    }
+  ],
+  "service_baseline": {
+    "stdout_codepoints": [
+      "0x6f",
+      "0x6b",
+      "0xfffd"
+    ],
+    "stderr_codepoints": [
+      "0x65",
+      "0x72",
+      "0x72",
+      "0xfffd"
+    ],
+    "exit_code": 7,
+    "http_payload_has_replacement_utf8": true
+  },
+  "file_capture": {
+    "stdout": {
+      "expected_bytes": 1048576,
+      "received_bytes": 1048576,
+      "sha256": "fbbab289f7f94b25736c58be46a994c441fd02552cc6022352e3d86d2fab7c83",
+      "exact": true
+    },
+    "stderr": {
+      "expected_bytes": 1048576,
+      "received_bytes": 1048576,
+      "sha256": "fbbab289f7f94b25736c58be46a994c441fd02552cc6022352e3d86d2fab7c83",
+      "exact": true
+    },
+    "exit_code": 7
+  },
+  "file_capture_cleanup_succeeded": true,
+  "background_writer": {
+    "direct": "beforeafter",
+    "wrapped": "before"
+  },
+  "pipe_file_capture": [
+    {
+      "name": "background-writer",
+      "stdout": {
+        "expected_bytes": 11,
+        "received_bytes": 11,
+        "sha256": "31c2400e49aa9f4e10264dc2a73542ad7ce327c1ee55b29af1164b2acbc01b42",
+        "exact": true
+      },
+      "stderr": {
+        "expected_bytes": 0,
+        "received_bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exact": true
+      },
+      "exit_code": 0,
+      "passed": true
+    },
+    {
+      "name": "large-concurrent-0",
+      "stdout": {
+        "expected_bytes": 1048576,
+        "received_bytes": 1048576,
+        "sha256": "fbbab289f7f94b25736c58be46a994c441fd02552cc6022352e3d86d2fab7c83",
+        "exact": true
+      },
+      "stderr": {
+        "expected_bytes": 1048576,
+        "received_bytes": 1048576,
+        "sha256": "fbbab289f7f94b25736c58be46a994c441fd02552cc6022352e3d86d2fab7c83",
+        "exact": true
+      },
+      "exit_code": 7,
+      "passed": true
+    },
+    {
+      "name": "large-concurrent-1",
+      "stdout": {
+        "expected_bytes": 1048576,
+        "received_bytes": 1048576,
+        "sha256": "fbbab289f7f94b25736c58be46a994c441fd02552cc6022352e3d86d2fab7c83",
+        "exact": true
+      },
+      "stderr": {
+        "expected_bytes": 1048576,
+        "received_bytes": 1048576,
+        "sha256": "fbbab289f7f94b25736c58be46a994c441fd02552cc6022352e3d86d2fab7c83",
+        "exact": true
+      },
+      "exit_code": 7,
+      "passed": true
+    }
+  ],
+  "missing_helper_refuses_before_program": true,
+  "timeout": {
+    "host_outcome": "TimeoutError",
+    "guest_continued": true
+  },
+  "cancellation": {
+    "host_outcome": "CancelledError",
+    "guest_continued": true
+  },
+  "capture_directories_remaining": 0,
+  "cleanup_refused": false,
+  "scope_confirmed_empty": true
+}
