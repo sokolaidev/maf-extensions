@@ -13,6 +13,47 @@ from maf_sandbox.testing import InProcessSandbox, InProcessSandboxBackend
 _KEY = SandboxKey("work-dir", "thread", "agent")
 
 
+@pytest.mark.parametrize("path", ["/", "//", "///"])
+def test_posix_root_base_exists_through_acquire_and_reset(path):
+    async def scenario():
+        backend = InProcessSandboxBackend()
+        spec = SandboxSpec(kind="root", work_dir=path)
+        sandbox = await backend.acquire(_KEY, spec)
+        for _ in range(2):
+            entry = await sandbox.stat_file(path, working_directory=path)
+            assert entry is not None and entry.kind is EntryKind.DIRECTORY
+            with pytest.raises(IsADirectoryError):
+                await sandbox.read_file(path, working_directory=path, max_bytes=1)
+            assert sandbox.directories == set()
+            assert sandbox.contents == {}
+            assert await backend.acquire(_KEY, spec) is sandbox
+            await sandbox.reset(timeout=1)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("path", ["C:/", "D:\\", r"\\server\share", "\\\\server\\share\\"])
+def test_native_root_base_is_intrinsic_to_the_store(path):
+    async def scenario():
+        backend = InProcessSandboxBackend()
+        spec = SandboxSpec(kind="root", work_dir=path)
+        sandbox = await backend.acquire(_KEY, spec)
+        for _ in range(2):
+            entry = await sandbox._stat_unconfined(path)
+            assert entry is not None and entry.kind is EntryKind.DIRECTORY
+            assert sandbox.directories == set()
+            assert sandbox.contents == {}
+            assert await backend.acquire(_KEY, spec) is sandbox
+            await sandbox.reset(timeout=1)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("path", ["C:", "C:work", "//workspace", r"\\server\share\missing"])
+def test_non_root_paths_are_not_intrinsic_to_the_store(path):
+    assert asyncio.run(InProcessSandbox()._stat_unconfined(path)) is None
+
+
 @pytest.mark.parametrize("path", ["C:/agent/work", r"D:\agent\work", r"\\server\share\agent\work"])
 def test_native_work_dir_is_prepared_repaired_and_retained_by_reset(path):
     async def scenario():

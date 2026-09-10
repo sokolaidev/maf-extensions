@@ -330,11 +330,18 @@ class InProcessSandbox:
         return any(p.startswith(prefix) for p in self._stored())
 
     def _kind_at(self, full_path: str) -> tuple[EntryKind, int | None] | None:
-        """What is stored at an absolute guest path, unconfined and following nothing.
+        """Classify a guest path, including intrinsic roots, without following links.
 
         Unconfined because the filesystem path check classifies the working directory's own
         ancestors, which sit outside it by definition.
         """
+        if full_path.startswith("/"):
+            if not full_path.strip("/"):
+                return EntryKind.DIRECTORY, None
+        else:
+            drive, tail = ntpath.splitdrive(full_path)
+            if drive and ntpath.isabs(full_path) and not tail.strip("\\/"):
+                return EntryKind.DIRECTORY, None
         if full_path in self.contents:
             return EntryKind.FILE, len(self.contents[full_path])
         if full_path in self.symlinks:
@@ -368,6 +375,9 @@ class InProcessSandbox:
         full_path = await confine_resolve_guest_read_path(
             self._stat_unconfined, path, working_directory
         )
+        found = self._kind_at(full_path)
+        if found is not None and found[0] is EntryKind.DIRECTORY:
+            raise IsADirectoryError(f"{path!r} is a directory")
         if full_path in self.contents:
             content = self.contents[full_path]
             if len(content) > max_bytes:
@@ -379,8 +389,6 @@ class InProcessSandbox:
             return content
         if full_path in self.symlinks or full_path in self.non_regular:
             raise OSError(f"{path!r} is not a regular file and is refused")
-        if full_path in self.directories or self._has_children(full_path):
-            raise IsADirectoryError(f"{path!r} is a directory")
         raise FileNotFoundError(f"no such file: {path!r}")
 
     async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
