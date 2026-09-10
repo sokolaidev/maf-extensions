@@ -4,6 +4,30 @@ All notable changes to `maf-sandbox-acas` are documented here. The format follow
 
 Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, and the entries below name it as it was — their tags and compare links point at real history and are left as they were written. `maf-sandbox-aca` is not maintained past `0.2.3`; PyPI names cannot be reused, so the rename is a new distribution rather than a continuation of that one.
 
+## [0.21.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.20.0...maf-sandbox-acas-v0.21.0) (2026-09-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* target cleanup and retries at the physical sandbox instance ([#1060](https://github.com/sokolaidev/maf-extensions/issues/1060))
+* **sandbox:** clean unfamiliar sandbox instances before serving calls ([#1045](https://github.com/sokolaidev/maf-extensions/issues/1045))
+
+### Features
+
+* **acas:** recover sandboxes whose auto-delete policy was never installed ([#1022](https://github.com/sokolaidev/maf-extensions/issues/1022)) ([306b574](https://github.com/sokolaidev/maf-extensions/commit/306b57458ef8e556689bad16d996856a367583e4))
+* accept method-scoped egress policies and refuse unsupported backends ([#1063](https://github.com/sokolaidev/maf-extensions/issues/1063)) ([39fd53b](https://github.com/sokolaidev/maf-extensions/commit/39fd53b457a301d59a646d815e717b8e61b6d698))
+* **sandbox:** clean unfamiliar sandbox instances before serving calls ([#1045](https://github.com/sokolaidev/maf-extensions/issues/1045)) ([333e6f9](https://github.com/sokolaidev/maf-extensions/commit/333e6f9e1267f3ec53f3b61477b9ea745827528a))
+* target cleanup and retries at the physical sandbox instance ([#1060](https://github.com/sokolaidev/maf-extensions/issues/1060)) ([50a123f](https://github.com/sokolaidev/maf-extensions/commit/50a123f15b0e1e358a9c5d191aafb56ac6a5dcf6))
+
+
+### Fixes
+
+* **acas:** accept registry tokens and reject duplicate image references ([#1056](https://github.com/sokolaidev/maf-extensions/issues/1056)) ([7d94059](https://github.com/sokolaidev/maf-extensions/commit/7d940593b18f2a9706b303f3b12aa9b199830809))
+* **acas:** keep file removals within guest authority ([#1029](https://github.com/sokolaidev/maf-extensions/issues/1029)) ([eb41202](https://github.com/sokolaidev/maf-extensions/commit/eb41202392db4969b5c5982f5e6bf602be193cd9))
+* **acas:** recognize lifecycle metadata when recovering auto-delete ([#1038](https://github.com/sokolaidev/maf-extensions/issues/1038)) ([1af2fc1](https://github.com/sokolaidev/maf-extensions/commit/1af2fc1c8a66cfb61a9250a2b86a77e19d4caa35))
+* **acas:** retry cached capability refusals after 60 seconds ([#1050](https://github.com/sokolaidev/maf-extensions/issues/1050)) ([33694b4](https://github.com/sokolaidev/maf-extensions/commit/33694b403e3c03cb7da0a3036a566436dca9b4b9))
+* **acas:** stop repeated creates after an inconclusive image probe ([#1049](https://github.com/sokolaidev/maf-extensions/issues/1049)) ([3bb6d8a](https://github.com/sokolaidev/maf-extensions/commit/3bb6d8a6b1744c8a22afff4f78ca844857cd97f4))
+
 ## [0.20.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.19.0...maf-sandbox-acas-v0.20.0) (2026-09-08)
 
 
