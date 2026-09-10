@@ -38,7 +38,9 @@ shares one, and the cold-refusal probe creates a second that the backend under t
 acquired by a module-scoped fixture and disposed at the end; the lifecycle test needs its own
 because it disposes as the thing under test; the prebuilt-image test needs its own because a
 bare catalogue name is only evidence if it boots one; the egress leg needs its own because only
-an ``ALLOWLIST`` sandbox has a host it may reach and a host it may not. Everything runs on one
+an ``ALLOWLIST`` sandbox has a host it may reach and a host it may not. Three more isolate the
+command compatibility checks, including two guests whose executables are deliberately removed.
+Everything runs on one
 event loop, deliberately: the backend caches its group client per loop, so a second loop would
 build a second transport against the same sandbox.
 """
@@ -62,6 +64,7 @@ from maf_sandbox import (
     Egress,
     EntryKind,
     OsFamily,
+    SandboxCapabilityNotSupported,
     SandboxKey,
     SandboxRouter,
     SandboxSpec,
@@ -285,6 +288,65 @@ class TestALiveSandbox:
         finally:
             loop.run_until_complete(backend.dispose_scope(scope, "thread-1"))
             loop.run_until_complete(backend.aclose())
+
+
+class TestImageCommandProbes:
+    """Exercise real guest commands; every mutation stays in a disposable sandbox."""
+
+    def test_requested_commands_work_and_the_same_sandbox_is_reused(self, loop):
+        backend = AcasSandboxBackend(_config())
+        key = _key(f"e2e-command-{uuid.uuid4()}")
+        spec = _spec(requires=frozenset({Capability.EXEC, Capability.HOST_TOOLS}))
+
+        async def scenario():
+            try:
+                sandbox = await backend.acquire(key, spec)
+                ran = await sandbox.exec("printf ready", working_directory="/", timeout=30)
+                assert ran.exit_code == 0 and ran.stdout == "ready", ran.stderr
+                assert (await backend.acquire(key, spec)).instance_id == sandbox.instance_id
+            finally:
+                await _drains_to_empty(backend, key.scope)
+                await backend.aclose()
+
+        loop.run_until_complete(scenario())
+
+    @pytest.mark.parametrize(
+        "command,capability", [("sh", Capability.EXEC), ("nohup", Capability.HOST_TOOLS)]
+    )
+    def test_missing_commands_refuse_a_stronger_warm_request(self, loop, command, capability):
+        backend = AcasSandboxBackend(_config())
+        key = _key(f"e2e-command-{uuid.uuid4()}")
+        # Establish the independent removal observation before taking away any shell.
+        spec = _spec(requires=frozenset({Capability.FILES_DELETE}))
+        required = _spec(requires=frozenset({capability}))
+
+        async def scenario():
+            try:
+                sandbox = await backend.acquire(key, spec)
+                changed = await sandbox.exec(
+                    f"cp /bin/{command} /tmp/maf-command-backup && "
+                    f"rm -f /bin/{command} /usr/bin/{command}",
+                    working_directory="/",
+                    timeout=30,
+                )
+                assert changed.exit_code == 0, changed.stderr
+                for _ in range(2):
+                    with pytest.raises(SandboxCapabilityNotSupported, match=str(capability)):
+                        await backend.acquire(key, required)
+                assert (await backend.acquire(key, spec)).instance_id == sandbox.instance_id
+                if command == "nohup":
+                    restored = await sandbox.exec(
+                        ["cp", "/tmp/maf-command-backup", "/bin/nohup"],
+                        working_directory="/",
+                        timeout=30,
+                    )
+                    assert restored.exit_code == 0, restored.stderr
+                    assert (await backend.acquire(key, required)).instance_id == sandbox.instance_id
+            finally:
+                await _drains_to_empty(backend, key.scope)
+                await backend.aclose()
+
+        loop.run_until_complete(scenario())
 
 
 class TestTheDeclaredGuestFamilyAgainstTheRealService:

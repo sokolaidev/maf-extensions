@@ -311,10 +311,15 @@ class _FakeDocker:
         return [call.args for call in self.calls[self._marked :] if call.args[:1] == ("cp",)]
 
     def matching(self, *prefix: str) -> list[_Recorded]:
-        return [c for c in self.calls if c.args[: len(prefix)] == prefix]
+        return [
+            c
+            for c in self.calls
+            if c.args[: len(prefix)] == prefix
+            and not (c.args[0] == "exec" and c.read_limit == 1024)
+        ]
 
     def only(self, *prefix: str) -> _Recorded:
-        found = self.matching(*prefix)
+        found = [c for c in self.matching(*prefix) if c.read_limit != 1024]
         assert len(found) == 1, [c.args for c in self.calls]
         return found[0]
 
@@ -1123,7 +1128,7 @@ class TestExecArgv:
         assert fake.only("exec").timeout == 42
 
     def test_stdout_stderr_and_exit_code_are_mapped(self):
-        overrides = {("exec",): _DockerResult(7, b"out\n", "err\n")}
+        overrides = {("exec", "-w", _WORK): _DockerResult(7, b"out\n", "err\n")}
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         result = asyncio.run(sandbox.exec(["x"], working_directory=_WORK, timeout=5))
@@ -1188,13 +1193,13 @@ class TestRemove:
         sandbox, fake = self._sandbox()
         with pytest.raises(ValueError):
             asyncio.run(sandbox.remove(".", working_directory=_WORK, recursive=True))
-        assert [call for call in fake.calls if call.args[:1] == ("exec",)] == []
+        assert fake.matching("exec") == []
 
     def test_a_path_outside_the_working_directory_is_refused(self):
         sandbox, fake = self._sandbox()
         with pytest.raises(ValueError):
             asyncio.run(sandbox.remove("../../etc", working_directory=_WORK, recursive=True))
-        assert [call for call in fake.calls if call.args[:1] == ("exec",)] == []
+        assert fake.matching("exec") == []
 
 
 class TestReclaim:
@@ -1230,7 +1235,7 @@ class TestReclaim:
         `ReclaimFailure.reason` and hands that to `on_reclaim_failure`. A read-only
         filesystem, a full disk and a permission denial are told apart only by these two.
         """
-        overrides = {("exec",): _DockerResult(1, b"", "rm: permission denied")}
+        overrides = {("exec", "--user", "0"): _DockerResult(1, b"", "rm: permission denied")}
         sandbox, fake = self._sandbox(overrides)
         with pytest.raises(OSError, match=r"rm exited 1.*rm: permission denied"):
             asyncio.run(sandbox.reclaim(f"{_WORK}/x", working_directory=_WORK, timeout=30))
@@ -1271,6 +1276,7 @@ class TestWhichPrincipalACommandCarries:
             **_WORK_IS_A_DIRECTORY,
             **(_CAPS_DROPPED if capabilities_dropped else {}),
             **(overrides or {}),
+            ("exec", "-w", "/", f"id-{_NAME}"): _DockerResult(0, b"", ""),
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=merged))
         return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
@@ -1723,6 +1729,8 @@ class TestExecDiscardsATimedOutSandbox:
 
         def responder(args):
             if args[0] == "exec":
+                if args[-3:] == ("sh", "-c", "exit 0"):
+                    return _DockerResult(0, b"", "")
                 if len(args) > 4 and args[4] == "id":
                     return _DockerResult(0, b"20001\n", "")
                 raise TimeoutError

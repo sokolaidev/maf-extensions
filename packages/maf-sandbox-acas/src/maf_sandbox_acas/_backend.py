@@ -17,7 +17,7 @@ import posixpath
 import shlex
 import threading
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha256
 from time import monotonic
 from typing import TYPE_CHECKING, Any, cast
@@ -65,6 +65,7 @@ from ._images import (
     resolve_disk_image_id,
     resolve_prebuilt_image_name,
 )
+from ._probes import probe_commands
 
 logger = logging.getLogger(__name__)
 
@@ -383,6 +384,7 @@ class _Held:
     sandbox_id: str
     removal: bool | None = None
     probed: bool = False
+    commands: set[str] = field(default_factory=set[str])
 
 
 @dataclass(frozen=True)
@@ -897,6 +899,7 @@ class AcasSandboxBackend:
                 # replacement create. Before the log, so a refused acquire does not report one
                 # of the three outcomes `acquire` promises to name.
                 await self._refuse_or_warn_on_guest_removal(spec, reused, held=held)
+                await self._probe_commands(spec, reused, held)
                 logger.info(
                     "sandbox reused: id=%s kind=%s thread=%s agent=%s",
                     sandbox_id,
@@ -960,11 +963,27 @@ class AcasSandboxBackend:
             await self._refuse_or_warn_on_guest_removal(
                 spec, created, held=held, freshly_created=True
             )
+            await self._probe_commands(spec, created, held)
         except SandboxCapabilityNotSupported:
             self._registry.pop(registry_key, None)
             await self._release_the_refused(gc, key, sc.sandbox_id, kind=spec.kind)
             raise
         return created
+
+    async def _probe_commands(self, spec: SandboxSpec, sandbox: _AcasSandbox, held: _Held) -> None:
+        deadline = asyncio.get_running_loop().time() + min(10.0, self._config.read_timeout_seconds)
+
+        async def run(argv: tuple[str, ...], as_root: bool) -> int:
+            assert not as_root
+            async with asyncio.timeout_at(deadline):
+                result = await sandbox.exec(
+                    argv,
+                    working_directory="/",
+                    timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+                )
+            return result.exit_code
+
+        await probe_commands(spec, held.commands, run)
 
     def _retain_disposals(
         self, prefix: tuple[str, str, str], names: Sequence[str], kinds: Mapping[str, str]

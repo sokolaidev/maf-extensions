@@ -4,6 +4,8 @@
 
 ## What it declares
 
+Acquire also checks shell invocation for `EXEC` and batches the shell, `mkdir`, `mv` and `nohup` prerequisites for `HOST_TOOLS`. Successful checks are kept with the sandbox's registry entry; failed checks are retryable. A new sandbox refused for missing commands is disposed, while a warm one keeps its identity and existing results. These command checks supplement the observed-removal gate below and do not change its inconclusive-result policy. Neither gate grants deletion authority. See [the ceiling and probe contract](../guest-platform-and-commands.md#decision-3--a-static-ceiling-matched-at-attach-and-a-probe-at-acquire).
+
 The four below `isolation` are fields of this backend's `declarations`.
 
 | Declaration | Value |

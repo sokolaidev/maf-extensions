@@ -13,6 +13,7 @@ import posixpath
 import shlex
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
 from maf_sandbox import (
@@ -23,6 +24,7 @@ from maf_sandbox import (
     Isolation,
     OsFamily,
     SandboxBackend,
+    SandboxCapabilityNotSupported,
     SandboxKey,
     SandboxOsFamilyNotSupported,
     SandboxRouter,
@@ -120,6 +122,9 @@ class _FakeSandboxClient:
     async def begin_delete(self) -> _CompletedDeletion:
         self.deleted = True
         return _CompletedDeletion()
+
+    async def exec(self, command: str, *, working_directory: str):
+        return SimpleNamespace(exit_code=0, stdout="", stderr="")
 
     async def ensure_running(self, timeout: float | None = None) -> None:
         """The resume path `acquire` takes when it finds a registered sandbox."""
@@ -795,6 +800,8 @@ class _GuestSandboxClient(_FakeSandboxClient):
         return None
 
     async def exec(self, command: str, *, working_directory: str):
+        if shlex.split(command)[:2] == ["sh", "-c"]:
+            return SimpleNamespace(exit_code=0, stdout="", stderr="")
         self.execs.append((command, working_directory))
         if isinstance(self._answer, Exception):
             raise self._answer
@@ -863,6 +870,60 @@ def _spec_requiring(*capabilities):
         image_id="pinned-id",
         requires=frozenset(capabilities),
     )
+
+
+class TestImageCommandProbes:
+    @pytest.mark.parametrize("warm", [False, True])
+    def test_missing_shell_is_refused_even_when_removal_works(self, monkeypatch, warm):
+        original = _GuestSandboxClient.exec
+        shell_status = [0]
+
+        async def exec_command(client, command, *, working_directory):
+            if shlex.split(command)[:2] == ["sh", "-c"]:
+                return SimpleNamespace(exit_code=shell_status[0], stdout="", stderr="")
+            return await original(client, command, working_directory=working_directory)
+
+        monkeypatch.setattr(_GuestSandboxClient, "exec", exec_command)
+        client = _GuestGroupClient(_guest_removing(True))
+        backend = _backend_with(client)
+        key = SandboxKey(scope="command-probes", thread_id="thread", agent_dir="agent")
+
+        async def scenario():
+            if warm:
+                await backend.acquire(key, _spec_requiring(Capability.FILES_IN))
+            shell_status[0] = 127
+            with pytest.raises(SandboxCapabilityNotSupported, match="exec.*sh"):
+                await backend.acquire(key, _spec_requiring(Capability.EXEC))
+            assert bool(backend._registry) is warm
+            assert bool(client.deleted) is (not warm)
+
+        asyncio.run(scenario())
+
+    def test_successful_command_probe_is_kept_with_its_sandbox(self, monkeypatch):
+        original = _GuestSandboxClient.exec
+        shells = []
+
+        async def exec_command(client, command, *, working_directory):
+            if shlex.split(command)[:2] == ["sh", "-c"]:
+                shells.append(client.sandbox_id)
+            return await original(client, command, working_directory=working_directory)
+
+        monkeypatch.setattr(_GuestSandboxClient, "exec", exec_command)
+        client = _GuestGroupClient(_guest_removing(True))
+        backend = _backend_with(client)
+        key = SandboxKey(scope="command-probes", thread_id="thread", agent_dir="agent")
+
+        async def scenario():
+            spec = _spec_requiring(Capability.EXEC)
+            first = await backend.acquire(key, spec)
+            await backend.acquire(key, spec)
+            assert shells == [first.instance_id]
+            await backend.dispose(key)
+            second = await backend.acquire(key, spec)
+            assert second.instance_id != first.instance_id
+            assert shells == [first.instance_id, second.instance_id]
+
+        asyncio.run(scenario())
 
 
 class TestAnImageWhoseGuestIsNotRoot:
@@ -2933,15 +2994,12 @@ class TestLifecycleLogging:
 
     def test_failed_lifecycle_configuration_does_not_promise_auto_delete(self, caplog):
         class _CreatedSandbox(_FakeSandboxClient):
-            def __init__(self):
-                super().__init__("sbx-1")
-
             async def set_lifecycle_policy(self, policy) -> None:
                 raise RuntimeError("HTTP 400 invalid policy")
 
         class _Poller:
             async def result(self):
-                return _CreatedSandbox()
+                return _CreatedSandbox("sbx-1")
 
         class _LifecycleFailsGroupClient:
             async def begin_create_sandbox(self, *, disk_id, labels, egress_policy):
@@ -3008,9 +3066,6 @@ class _ResumingSandboxClient(_FakeSandboxClient):
 
 
 class _CreatedSandbox(_FakeSandboxClient):
-    def __init__(self, sandbox_id: str) -> None:
-        super().__init__(sandbox_id)
-
     async def set_lifecycle_policy(self, policy) -> None:
         await asyncio.sleep(0)
 
@@ -3049,7 +3104,7 @@ class TestConcurrentAcquire:
         assert first.sandbox_id == second.sandbox_id == "sbx-1"
         assert first.instance_id == second.instance_id == "sbx-1"
         assert backend._registry == {
-            ("scope-a", "thread-1", "devops-engineer", "bicep"): _Held("sbx-1")
+            ("scope-a", "thread-1", "devops-engineer", "bicep"): _Held("sbx-1", commands={"sh"})
         }
 
     def test_a_second_key_is_not_held_up_behind_the_first(self):
@@ -3176,9 +3231,6 @@ class TestErrorDetailAdoption:
                 raise _HttpError()
 
         class _CreatedSandbox(_FakeSandboxClient):
-            def __init__(self, sandbox_id: str) -> None:
-                super().__init__(sandbox_id)
-
             async def set_lifecycle_policy(self, policy) -> None:
                 return None
 

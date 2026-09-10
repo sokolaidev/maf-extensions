@@ -27,6 +27,7 @@ from maf_sandbox import (
     Egress,
     Isolation,
     OsFamily,
+    SandboxCapabilityNotSupported,
     SandboxKey,
     SandboxRouter,
     SandboxSpec,
@@ -137,6 +138,52 @@ def _names_on_the_machine(name: str) -> list[str]:
     ).stdout
     rows = json.loads(listing) if listing.strip() else []
     return [row["Name"] for row in rows if row.get("Name") == name]
+
+
+@pytest.mark.parametrize(
+    "command,capability", [("sh", Capability.EXEC), ("test", Capability.FILES_IN)]
+)
+def test_command_probe_refusal_retries_after_the_guest_command_is_restored(command, capability):
+    backend = WslcSandboxBackend(WslcSandboxConfig())
+    key = _key(f"e2e-command-{uuid.uuid4()}")
+    spec = replace(_spec(), requires=frozenset())
+    required = replace(spec, requires=frozenset({capability}))
+    backup = "/tmp/maf-command-backup"
+
+    async def scenario():
+        try:
+            sandbox = await backend.acquire(key, spec)
+            changed = await sandbox.exec(
+                f"cp /bin/{command} {backup} && rm -f /bin/{command} /usr/bin/{command}",
+                working_directory="/",
+                timeout=30,
+            )
+            assert changed.exit_code == 0, changed.stderr
+            for _ in range(2):
+                with pytest.raises(SandboxCapabilityNotSupported, match=command):
+                    await backend.acquire(key, required)
+            weaker = await backend.acquire(key, spec)
+            assert weaker.instance_id == sandbox.instance_id
+
+            # WSLC argv execution can restore sh even while string execution is unavailable.
+            restored = await sandbox.exec(
+                ["cp", backup, f"/bin/{command}"], working_directory="/", timeout=30
+            )
+            assert restored.exit_code == 0, restored.stderr
+            recovered = await backend.acquire(key, required)
+            assert recovered.instance_id == sandbox.instance_id
+            assert (await backend.acquire(key, required)).instance_id == sandbox.instance_id
+            if capability == Capability.FILES_IN:
+                await recovered.write_file("marker", b"restored", working_directory=_WORK)
+                ran = await recovered.exec(["cat", "marker"], working_directory=_WORK, timeout=30)
+            else:
+                ran = await recovered.exec("printf restored", working_directory="/", timeout=30)
+            assert ran.exit_code == 0 and ran.stdout == "restored", ran.stderr
+        finally:
+            assert await backend.dispose(key) is None
+
+    asyncio.run(scenario())
+    assert not _names_on_the_machine(_container_name(key, spec.kind))
 
 
 @pytest.mark.parametrize("confined", [False, True])
