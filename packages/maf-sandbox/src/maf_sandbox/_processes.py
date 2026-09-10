@@ -23,6 +23,13 @@ _TIMEOUT = 3.0
 _BYTES = 1024 * 1024
 
 
+def _remaining(until: float | None) -> float:
+    remaining = _TIMEOUT if until is None else min(_TIMEOUT, until - time.monotonic())
+    if remaining <= 0:
+        raise TimeoutError("process operation deadline expired")
+    return remaining
+
+
 @cache
 def _probe() -> str:
     return Path(__file__).with_name("_process_probe.py").read_text(encoding="utf-8")
@@ -140,7 +147,7 @@ class ProcessTracker:
             for p in processes
         )
 
-    async def snapshot(self, phase: ProcessPhase) -> None:
+    async def snapshot(self, phase: ProcessPhase, *, until: float | None = None) -> None:
         self.phase = phase
         started = time.monotonic()
         timestamp = time.time()
@@ -150,11 +157,12 @@ class ProcessTracker:
         try:
             if self.sandbox.instance_id != self.instance_id:
                 raise ValueError("sandbox instance changed")
-            async with asyncio.timeout(_TIMEOUT):
+            remaining = _remaining(until)
+            async with asyncio.timeout(remaining):
                 result = await self.sandbox.exec(
                     f"{shlex.quote(self.interpreter)} -I -S -c {shlex.quote(_probe())}",
                     working_directory=self.directory,
-                    timeout=_TIMEOUT,
+                    timeout=remaining,
                 )
             if result.exit_code != 0:
                 raise ValueError("process collector failed")
@@ -237,7 +245,7 @@ class ProcessTracker:
     def survivors(self) -> tuple[ProcessInfo, ...]:
         return tuple(p for p in self.latest or () if p.running and p.identity in self.known)
 
-    async def stop_descendants(self) -> bool:
+    async def stop_descendants(self, *, until: float | None = None) -> bool:
         """Signal observed descendants outside the launcher's group; never signal mere additions."""
         targets = [p for p in self.survivors() if p.pid != self.pid and p.pgid != self.pgid]
         if not targets:
@@ -246,12 +254,13 @@ class ProcessTracker:
         outcomes: dict[int, str] = {}
         try:
             identities = json.dumps([p.identity for p in targets])
-            async with asyncio.timeout(_TIMEOUT):
+            remaining = _remaining(until)
+            async with asyncio.timeout(remaining):
                 result = await self.sandbox.exec(
                     f"{shlex.quote(self.interpreter)} -I -S -c {shlex.quote(_probe())} "
                     f"--signal {shlex.quote(identities)}",
                     working_directory=self.directory,
-                    timeout=_TIMEOUT,
+                    timeout=remaining,
                 )
             if result.exit_code == 0 and len(result.stdout) <= _BYTES:
                 raw: Any = json.loads(result.stdout)

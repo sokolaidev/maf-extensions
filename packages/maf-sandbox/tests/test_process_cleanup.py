@@ -3,6 +3,7 @@
 import asyncio
 import dataclasses
 import json
+import time
 
 import pytest
 
@@ -14,11 +15,13 @@ from maf_sandbox import (
     Isolation,
     ProcessInfo,
     SandboxObserver,
+    SandboxProgramTimeout,
     SandboxRouter,
     SandboxSpec,
     guest_run_layout,
     host_tool_calls_over_exec,
 )
+from maf_sandbox import _host_tools_over_exec as transport
 from maf_sandbox._processes import ProcessTracker, _decode
 from maf_sandbox._reclaim import close_unclean_notes, open_unclean_notes
 from maf_sandbox.testing import InProcessSandbox, InProcessSandboxBackend
@@ -110,6 +113,98 @@ def test_success_cleans_from_the_receipt_and_audits_all_four_phases():
     assert observer.snapshots[-1].processes[0].attribution == "preexisting"
     assert observer.cleanups[0].outcome == "sent"
     assert guest.reclaims
+
+
+def test_before_launch_observation_spends_the_run_budget():
+    class SlowBaseline(Guest):
+        async def exec(self, command, *, working_directory, timeout):
+            if " -I -S -c " in str(command) and self.scan == 0:
+                try:
+                    await asyncio.sleep(0.3)
+                finally:
+                    await asyncio.sleep(0.02)
+            return await super().exec(command, working_directory=working_directory, timeout=timeout)
+
+    guest, observer = SlowBaseline(), Recorder()
+    with pytest.raises(SandboxProgramTimeout) as expired:
+        asyncio.run(
+            host_tool_calls_over_exec(
+                guest, HostToolRun(HostToolRegistry(observer=observer)), LAYOUT, timeout=0.05
+            )
+        )
+    assert expired.value.signal == "absent"
+    assert not guest.signals and guest.reclaims
+    assert observer.snapshots[0].unavailable == "TimeoutError"
+
+
+def test_after_launch_observation_cannot_turn_a_late_exit_into_success():
+    class LateExit(Guest):
+        async def exec(self, command, *, working_directory, timeout):
+            if " -I -S -c " in str(command) and self.scan == 1:
+                self.scan += 1
+                await asyncio.sleep(0.3)
+                self.contents[LAYOUT.exit_code] = b"0"
+            result = await super().exec(
+                command, working_directory=working_directory, timeout=timeout
+            )
+            if str(command).startswith("sh "):
+                self.contents.pop(LAYOUT.exit_code)
+            return result
+
+    guest, observer = LateExit(), Recorder()
+    with pytest.raises(SandboxProgramTimeout):
+        asyncio.run(
+            host_tool_calls_over_exec(
+                guest, HostToolRun(HostToolRegistry(observer=observer)), LAYOUT, timeout=0.05
+            )
+        )
+    assert guest.signals and guest.reclaims
+    assert observer.snapshots[1].phase == "after_launch"
+    assert observer.snapshots[1].unavailable == "TimeoutError"
+    assert observer.snapshots[1].incomplete
+
+
+@pytest.mark.parametrize("slow_step", ["before_cleanup", "signal", "descendants", "after_cleanup"])
+def test_process_cleanup_steps_share_one_deadline_and_reserve_a_signal_attempt(slow_step):
+    async def scenario():
+        observer, operations = Recorder(), []
+        child = process(82, ppid=81, pgid=82, start=101)
+
+        class SlowCleanup(Guest):
+            async def exec(self, command, *, working_directory, timeout):
+                if " --signal " in str(command):
+                    step = "descendants"
+                    stdout = json.dumps([{"pid": 82, "outcome": "sent"}])
+                elif " -I -S -c " in str(command):
+                    self.scan += 1
+                    step = "before_cleanup" if self.scan == 1 else "after_cleanup"
+                    stdout = payload([self.program, child] if self.scan == 1 else [])
+                else:
+                    step, stdout = "signal", ""
+                operations.append((step, timeout))
+                if step == slow_step:
+                    await asyncio.sleep(0.3)
+                return ExecResult(stdout=stdout, exit_code=0)
+
+        guest = SlowCleanup()
+        tracked = ProcessTracker(
+            guest, HostToolRun(HostToolRegistry(observer=observer)), "python3", LAYOUT.directory
+        )
+        tracked.pid, tracked.pgid = 81, 80
+        tracked.latest = tracked.attribute((guest.program, child))
+        tracked.phase = "after_launch"
+        launcher = transport._WhatTheLauncherSaid(tracker=tracked, pid=81, pgid=80, executed=True)
+        started = time.monotonic()
+        await transport._stop_the_program(guest, LAYOUT, until=started + 0.08, launcher=launcher)
+        elapsed = time.monotonic() - started
+        assert elapsed < 0.2, (slow_step, elapsed, operations)
+        assert any(step == "signal" for step, _ in operations)
+        assert all(timeout <= 0.08 for _, timeout in operations)
+        assert [event.phase for event in observer.snapshots] == ["before_cleanup", "after_cleanup"]
+        if slow_step != "before_cleanup":
+            assert observer.snapshots[-1].unavailable == "TimeoutError"
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize(

@@ -100,7 +100,7 @@ def add(left: int, right: int) -> int:
 
 @pytest.fixture(autouse=True)
 def _process_observations_are_tested_separately(monkeypatch):
-    async def snapshot(self, phase):
+    async def snapshot(self, phase, *, until=None):
         self.latest = None
         self.incomplete = False
 
@@ -2245,20 +2245,14 @@ class TestWhatSurvivesTheDeadline:
         assert json.loads(written)["value"] == "late"
 
     def test_the_documented_overhead_is_what_the_constants_add_up_to(self):
-        """The README quotes a total, and prose cannot notice a constant moving under it.
-
-        Five graces stack on the worst path: the response write above, the shared last look at
-        the marker and the output, the pid lookup, the signal, and the reclaim. A host sizes an
-        outer deadline from that number, and one set too tight loses the
-        `SandboxProgramTimeout` and cancels whatever dispatch is in flight — so a constant
-        changed without the sentence is a caller's bug, not a stale document.
-        """
+        """A host sizing an outer deadline needs the README's transport overhead to stay current."""
         worst = (
             host_tools_over_exec._RESPONSE_WRITE_GRACE
-            + 3 * host_tools_over_exec._FINAL_READ_GRACE
+            + 2 * host_tools_over_exec._FINAL_READ_GRACE
+            + host_tools_over_exec._PROCESS_CLEANUP_GRACE
             + host_tools_over_exec._RECLAIM_GRACE
         )
-        assert worst == 18.0, "the README's `timeout + 18s` no longer matches the constants"
+        assert worst == 21.0, "the README's `timeout + 21s` no longer matches the constants"
 
 
 class TestTheLayoutsOwnPromise:

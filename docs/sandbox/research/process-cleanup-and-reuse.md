@@ -8,6 +8,8 @@ The host therefore disposes after each call by default. `SandboxRouter(min_clean
 
 Reuse never skips cleanup. The transport collects the result, checks and attempts to stop its recorded processes on success, timeout, error and cancellation, and independently attempts removal of its transport directory. The call wrapper reclaims the call directory on the RECLAIM path. Actual cleanup failures reach the existing failure policy; successful best-effort cleanup still carries uncertainty.
 
+Launch observations share the run deadline. Process cleanup has one five-second budget for observation, signalling and verification; pre-signal observation can spend at most one quarter of it. Expired observations remain visible as unavailable audit records. Directory reclamation has its own bound and still runs after the process budget expires.
+
 The launcher reports the program PID and optional dedicated PGID directly through its output. The host retains the receipt in memory. Guest-writable PID and session files never select a signal target. Numeric identifiers are not stable handles, so observations retain process start ticks with each PID and refuse an observed replacement. A remaining check-to-signal race is explicitly accepted by a host choosing reuse.
 
 Process snapshots are taken before launch, after the launcher receipt, before cleanup and after cleanup. They retain observed ancestry even if a process is later reparented, distinguish preexisting processes and new unattributed processes, and identify zombies separately from running survivors. New processes alone are never authority to kill: concurrent calls and sandbox services can create them. An escaped descendant whose ancestry was never observed cannot reliably be attributed.

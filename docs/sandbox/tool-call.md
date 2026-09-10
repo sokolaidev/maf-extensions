@@ -118,6 +118,8 @@ A failed directory reclamation, an unusable launcher receipt, a refused signal, 
 
 The transport captures bounded Linux `/proc` snapshots before launch, after launch, before cleanup and after cleanup, through `python -I -S` using the configured interpreter. These are explicitly guest-observed diagnostics. It retains observed `(PID, start ticks)` identities for this run and physical instance, tracks observed descendants across reparenting, distinguishes preexisting and new unattributed processes, and excludes zombies from running survivors. An observed replacement is refused. Observed descendants outside the original group receive separate identity-checked signal attempts. A process appearing between snapshots is not, by itself, a signal target.
 
+Launch observations share the run deadline. Process cleanup has one five-second budget for observation, signalling and verification; pre-signal observation can spend at most one quarter of it. Expired observations remain visible as unavailable audit records. Directory reclamation has its own bound and still runs after the process budget expires.
+
 Four snapshots cannot find every descendant: an intermediate parent can exit before a scan, a guest can alter the collector, and numeric IDs can be reused between checking and signalling. A successful group signal or empty final snapshot is therefore not a clean-sandbox guarantee. Cgroups and stable kernel process handles are outside this design. See the [decision record](research/process-cleanup-and-reuse.md) and [process audit events](observability.md#process-observations).
 
 ## Concurrency, as the other consequence

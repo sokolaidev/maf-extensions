@@ -149,7 +149,7 @@ def signal_processes(targets: list[list[int]]) -> list[dict[str, Any]]:
             except (FileNotFoundError, ProcessLookupError):
                 outcome = "absent"
             except (OSError, ValueError, IndexError):
-                pass
+                outcome = "refused"
         outcomes.append({"pid": pid, "start_ticks": start, "outcome": outcome})
     return outcomes
 

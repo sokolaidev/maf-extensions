@@ -372,10 +372,8 @@ class SandboxProgramTimeout(TimeoutError):
     effort applies its own policy on top, and disposing the sandbox is what that policy has to
     reach for.
 
-    ``signal`` defaults to ``"unknown"``, and deliberately: the exception is public, so code
-    raising it for a transport of its own passes a message and no fate at all. The default
-    answers for those, and ``"absent"`` — the one value a host may act on by walking away — is
-    not a claim anything should make by omission.
+    ``signal`` defaults to ``"unknown"`` because a caller constructing this exception may
+    have no process observations to report.
 
     ``output`` is what the program had printed when the run was given up on, already capped —
     empty on the two starting legs, where there is nothing to have read yet. An attribute
@@ -399,22 +397,13 @@ class SandboxProgramTimeout(TimeoutError):
         super().__init__(message)
         self.output = output
         self.output_reason = output_reason
-        #: What the signal reached, where one was sent. ``"program"`` means the children
-        #: it spawned are still running and disposal is the only thing that stops them.
+        #: Reach of the launcher's recorded target; separate descendant attempts are audited.
         self.reach = reach
         self.signal = signal
 
 
 class _TheRunsOwnTimeout(SandboxProgramTimeout):
-    """The timeout this supervisor raised, told apart from one it merely caught.
-
-    :class:`SandboxProgramTimeout` is public and documented as constructible elsewhere, so a
-    :class:`~maf_sandbox.Sandbox` implementation may raise one from a call of its own. Deciding
-    on the type alone would read that as this run's own bound — already stopped and reported —
-    and the cleanup would skip the signal, then remove the pid that was the only handle on a
-    program still going. Callers catch the public type and are never handed this name; it
-    exists so the cleanup can tell whose timeout it is holding.
-    """
+    """A timeout raised by this supervisor, distinct from a backend's public exception."""
 
 
 #: What reading the last of a run may spend once its own bound is gone: the output a timeout
@@ -428,6 +417,9 @@ _FINAL_READ_GRACE = 2.0
 #: next run in the same sandbox. Longer than the final read because a recursive delete of a
 #: run that wrote a lot is slower than one stat.
 _RECLAIM_GRACE = 10.0
+
+#: One shared budget keeps process diagnostics from adding serial graces to every call.
+_PROCESS_CLEANUP_GRACE = 5.0
 
 #: What writing one answer may spend when the run's own bound has already passed. Small, and
 #: not the run's remainder: a call may finish after the deadline by design, and the answer
@@ -792,11 +784,10 @@ async def host_tool_calls_over_exec(
             which is why no capability beyond the ones this transport already needs is
             involved. Neither half is a guarantee the program is gone: the signal may not have
             been sent at all (no pid was recorded, or the ``exec`` carrying it failed), and a
-            sent one may be discarded by the kernel or aimed at a number the program
-            rewrote, and ``reach`` says how wide it went: ``"group"`` took the program's
-            process group with it, ``"program"`` reached one pid and left anything it
-            spawned running. The message says which of the two happened, and disposing
-            of the sandbox is what stops what remains. On the two starting legs, the launcher
+            sent one may be discarded by the kernel or aimed at a recycled number. Targets
+            come from the host-retained launcher receipt. ``reach`` describes the signal to
+            that recorded group or PID; observed escaped descendants may be signalled
+            separately. No outcome proves complete cleanup. On the two starting legs, the launcher
             upload and the ``exec`` that runs it, ``output`` is empty instead: the output file
             does not exist yet, and on a backend that began the command before its own call
             returned there may be output nobody read — so the kill is attempted on the second
@@ -888,7 +879,10 @@ async def host_tool_calls_over_exec(
         try:
             if launcher.executed and not launcher.stopped:
                 fate, reach = await _stop_the_program(
-                    sandbox, layout, until=_a_grace_from_now(), launcher=launcher
+                    sandbox,
+                    layout,
+                    until=time.monotonic() + _PROCESS_CLEANUP_GRACE,
+                    launcher=launcher,
                 )
                 _note_unclean_stop(sandbox, fate, reach)
         finally:
@@ -927,8 +921,8 @@ async def _supervise(
     output_limit: int | None,
 ) -> ExecResult:
     """The body of :func:`host_tool_calls_over_exec`, minus the cleanup that wraps it."""
-    await launcher.tracker.snapshot("before_launch")
     deadline = time.monotonic() + timeout
+    await launcher.tracker.snapshot("before_launch", until=deadline)
     try:
         await _within(
             deadline,
@@ -939,6 +933,8 @@ async def _supervise(
                 working_directory=layout.directory,
             ),
         )
+        if time.monotonic() >= deadline:
+            raise _DeadlineExpired("the run's starting budget was spent")
     except _DeadlineExpired as gone:
         # The one `_within` outside the supervisor loop, so nothing else converts what it
         # raises, and a module-private type would otherwise cross the public boundary.
@@ -989,7 +985,7 @@ async def _supervise(
         )
         # A grace of its own, measured after the marker read rather than shared with it.
         fate, reach = await _stop_the_program(
-            sandbox, layout, until=_a_grace_from_now(), launcher=launcher
+            sandbox, layout, until=time.monotonic() + _PROCESS_CLEANUP_GRACE, launcher=launcher
         )
         fate = _nothing_is_proven(fate)
         _note_unclean_stop(sandbox, fate, reach)
@@ -1012,7 +1008,7 @@ async def _supervise(
         if 1 < pid <= 2147483647 and (pgid == 0 or 1 < pgid <= 2147483647):
             launcher.pid, launcher.pgid = pid, pgid or None
             launcher.tracker.pid, launcher.tracker.pgid = launcher.pid, launcher.pgid
-    await launcher.tracker.snapshot("after_launch")
+    await launcher.tracker.snapshot("after_launch", until=deadline)
 
     if started.exit_code != 0:
         # No program ran on this leg, so `stdout` — the program's field — has nothing to hold.
@@ -1052,7 +1048,7 @@ async def _supervise(
             # on a fresh grace, because the reads above can spend `giving_up` entirely and a
             # kill with nothing left to spend is the runaway this path exists to stop.
             fate, reach = await _stop_the_program(
-                sandbox, layout, until=_a_grace_from_now(), launcher=launcher
+                sandbox, layout, until=time.monotonic() + _PROCESS_CLEANUP_GRACE, launcher=launcher
             )
             _note_unclean_stop(sandbox, fate, reach)
             raise _TheRunsOwnTimeout(
@@ -1140,7 +1136,7 @@ async def _supervise(
             # `TimeoutError` is deliberately not caught here — see `_within`.
             printed, note = await _final_output(sandbox, run, layout, giving_up, output_limit)
             fate, reach = await _stop_the_program(
-                sandbox, layout, until=_a_grace_from_now(), launcher=launcher
+                sandbox, layout, until=time.monotonic() + _PROCESS_CLEANUP_GRACE, launcher=launcher
             )
             _note_unclean_stop(sandbox, fate, reach)
             failure = f"{stalled}{_clause_after_the_launcher_started(fate, reach)}"
@@ -1390,7 +1386,7 @@ async def _reclaim_the_transports_own(
 
 
 def _a_grace_from_now() -> float:
-    """A deadline for stopping a run, independent of what the diagnostics have spent."""
+    """A fresh bound for one final read or signal."""
     return time.monotonic() + _FINAL_READ_GRACE
 
 
@@ -1398,30 +1394,31 @@ async def _stop_the_program(
     sandbox: Sandbox, layout: GuestRunLayout, *, until: float, launcher: _WhatTheLauncherSaid
 ) -> tuple[_Fate, _Reach]:
     """Attempt cleanup from the host-retained receipt; never read guest PID files."""
-    del until
     try:
-        return await _stop_recorded_processes(sandbox, layout, launcher)
+        return await _stop_recorded_processes(sandbox, layout, launcher, until=until)
     except (asyncio.CancelledError, GeneratorExit):
         note_unclean(sandbox, "process cleanup was interrupted")
         raise
 
 
 async def _stop_recorded_processes(
-    sandbox: Sandbox, layout: GuestRunLayout, launcher: _WhatTheLauncherSaid
+    sandbox: Sandbox, layout: GuestRunLayout, launcher: _WhatTheLauncherSaid, *, until: float
 ) -> tuple[_Fate, _Reach]:
     started = time.monotonic()
     tracker = launcher.tracker
+    # Reserve most of the stop budget for signals when collection stalls.
+    observing = started + max(0.0, until - started) / 4
     if tracker.phase == "before_launch":
-        await tracker.snapshot("after_launch")
-    await tracker.snapshot("before_cleanup")
+        await tracker.snapshot("after_launch", until=observing)
+    await tracker.snapshot("before_cleanup", until=observing)
     fate: _Fate = "unrecorded"
     reach: _Reach = "nothing"
     try:
         if tracker.replaced():
             fate = "refused"
-        elif launcher.pid is not None:
+        elif launcher.pid is not None and time.monotonic() < until:
             target = -launcher.pgid if launcher.pgid is not None else launcher.pid
-            sending = _a_grace_from_now()
+            sending = min(until, _a_grace_from_now())
             try:
                 fate = "unknown"
                 killed = await _within(
@@ -1440,11 +1437,13 @@ async def _stop_recorded_processes(
             except Exception as error:  # noqa: BLE001 - cleanup must preserve the call's result
                 logger.warning("host tools: process signal failed: %s", error_detail(error))
                 fate = "refused"
+        elif launcher.pid is not None:
+            fate = "unknown"
     finally:
         launcher.stopped = True
-        if not await tracker.stop_descendants():
+        if not await tracker.stop_descendants(until=until):
             note_unclean(sandbox, "observed descendants could not be stopped")
-        await tracker.snapshot("after_cleanup")
+        await tracker.snapshot("after_cleanup", until=until)
         if tracker.incomplete:
             note_unclean(sandbox, "process cleanup verification was unavailable or incomplete")
         if tracker.latest is not None and not tracker.incomplete and not tracker.survivors():

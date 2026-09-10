@@ -178,7 +178,7 @@ class Cleanup(StrEnum):
     RESET = "reset"
     #: Delete the sandbox; the conversation's next call creates one.  Established by
     #: construction everywhere, which is what makes the resolution below total and what makes
-    #: this the honest default for a workload that claims nothing.
+    #: this the default unless the host explicitly accepts reuse.
     DISPOSE = "dispose"
 
 
