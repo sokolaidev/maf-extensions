@@ -3,6 +3,7 @@
 import asyncio
 import dataclasses
 import json
+import logging
 import shlex
 import time
 
@@ -497,16 +498,34 @@ def test_start_gate_upload_spends_the_run_budget_and_still_cleans():
     assert guest.signals and guest.reclaims
 
 
-def test_an_observed_pid_replacement_is_not_signalled():
+@pytest.mark.parametrize("replacement_pid", [81, 80], ids=["program", "group"])
+@pytest.mark.parametrize("final_snapshot", ["present", "gone", "unavailable"])
+def test_an_observed_pid_replacement_is_not_signalled(replacement_pid, final_snapshot, caplog):
     class Replaced(Guest):
         async def exec(self, command, *, working_directory, timeout):
-            if " -I -S -c " in str(command) and self.scan == 2:
-                self.program = dataclasses.replace(self.program, start_ticks=200)
-            return await super().exec(command, working_directory=working_directory, timeout=timeout)
+            result = await super().exec(
+                command, working_directory=working_directory, timeout=timeout
+            )
+            if " -I -S -c " not in str(command):
+                return result
+            if self.scan == 4 and final_snapshot == "unavailable":
+                raise PermissionError("snapshot unavailable")
+            rows = [self.victim]
+            if self.scan in (2, 3) or (self.scan == 4 and final_snapshot == "present"):
+                rows.extend((self.program, process(80)))
+            if self.scan >= 3:
+                rows = [
+                    dataclasses.replace(p, start_ticks=200) if p.pid == replacement_pid else p
+                    for p in rows
+                ]
+            return ExecResult(stdout=payload(rows), exit_code=0)
 
     guest, observer = Replaced(), Recorder()
-    assert run(guest, observer).exit_code == 0
-    assert observer.cleanups[0].signal is None
+    with caplog.at_level(logging.INFO, logger="maf_sandbox._processes"):
+        assert run(guest, observer).exit_code == 0
+    event = observer.cleanups[0]
+    assert (event.outcome, event.reach, event.signal) == ("replaced", "nothing", None)
+    assert any("outcome=replaced reach=nothing" in record.message for record in caplog.records)
     assert not guest.signals
     assert guest.reclaims
 

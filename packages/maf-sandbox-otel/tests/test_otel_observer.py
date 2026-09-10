@@ -11,6 +11,7 @@ import asyncio
 import dataclasses
 import json
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -1385,3 +1386,62 @@ def test_cleanup_signal_attribute_requires_a_recorded_attempt(outcome, signal):
         assert "maf_sandbox.process.signal" not in attributes
     else:
         assert attributes["maf_sandbox.process.signal"] == signal
+
+
+@pytest.mark.parametrize("sampled", [False, True])
+def test_launcher_pid_replacement_reaches_otel_after_the_replacement_disappears(sampled):
+    from maf_sandbox import _host_tools_over_exec as transport
+    from maf_sandbox._processes import ProcessTracker
+    from maf_sandbox.testing import InProcessSandbox
+
+    recorded = build(sampled=sampled)
+    original = ProcessInfo(81, 80, 80, 80, 100, "S")
+    replacement = dataclasses.replace(original, start_ticks=200)
+
+    class Guest(InProcessSandbox):
+        scans = 0
+
+        async def exec(self, command, *, working_directory, timeout):
+            assert " -I -S -c " in command, "a replacement must never be signalled"
+            self.scans += 1
+            row = dataclasses.asdict(replacement)
+            row.pop("attribution")
+            return maf_sandbox.ExecResult(
+                stdout=json.dumps(
+                    {"processes": [row] if self.scans == 1 else [], "incomplete": False}
+                ),
+                exit_code=0,
+            )
+
+    async def scenario():
+        guest = Guest()
+        run = maf_sandbox.HostToolRun(maf_sandbox.HostToolRegistry(observer=recorded.observer))
+        layout = maf_sandbox.guest_run_layout("/work/run")
+        tracker = ProcessTracker(guest, run, "python3", layout.directory)
+        tracker.pid, tracker.pgid, tracker.phase = 81, 80, "after_launch"
+        tracker.attribute((original,))
+        launcher = transport._WhatTheLauncherSaid(tracker=tracker, pid=81, pgid=80, executed=True)
+        assert await transport._stop_the_program(
+            guest, layout, until=time.monotonic() + 2, launcher=launcher
+        ) == ("absent", "nothing")
+
+    asyncio.run(scenario())
+    attributes = recorded.log_attributes("sandbox.process.cleanup")
+    assert attributes["maf_sandbox.process.outcome"] == "replaced"
+    assert attributes["maf_sandbox.process.reach"] == "nothing"
+    assert "maf_sandbox.process.signal" not in attributes
+    logs = [
+        item.log_record
+        for item in recorded.logs.get_finished_logs()
+        if item.log_record.event_name == "sandbox.process.cleanup"
+    ]
+    assert len(logs) == 1 and logs[0].severity_text == "WARN"
+    assert recorded.counter("maf_sandbox.process.cleanups") == 1
+    spans = recorded.spans.get_finished_spans()
+    if sampled:
+        cleanup = [span for span in spans if span.name == "sandbox.process.cleanup"]
+        assert len(cleanup) == 1
+        assert cleanup[0].status.status_code is StatusCode.ERROR
+        assert cleanup[0].status.description == "replaced"
+    else:
+        assert not spans

@@ -1509,11 +1509,13 @@ async def _stop_recorded_processes(
     fate: _Fate = "unknown" if launcher.pid is not None else "unrecorded"
     reach: _Reach = "nothing"
     signal: str | None = None
+    replacement_observed = False
     try:
         if tracker.phase == "before_launch":
             await tracker.snapshot("after_launch", until=observing)
         await tracker.snapshot("before_cleanup", until=observing)
-        if tracker.replaced():
+        replacement_observed = tracker.replaced()
+        if replacement_observed:
             fate = "refused"
         elif launcher.pid is not None and time.monotonic() < until:
             target = -launcher.pgid if launcher.pgid is not None else launcher.pid
@@ -1553,7 +1555,12 @@ async def _stop_recorded_processes(
             if tracker.latest is not None and not tracker.incomplete and not tracker.survivors():
                 if fate == "refused" and launcher.pid is not None and not tracker.replaced():
                     fate = "absent"
-            tracker.report_stop(fate, reach, time.monotonic() - started, signal=signal)
+            tracker.report_stop(
+                "replaced" if replacement_observed else fate,
+                reach,
+                time.monotonic() - started,
+                signal=signal,
+            )
             if tracker.survivors():
                 note_unclean(
                     sandbox,
