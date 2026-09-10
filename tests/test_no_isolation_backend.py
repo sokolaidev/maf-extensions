@@ -221,8 +221,13 @@ def test_the_translation_covers_the_root_as_the_operating_system_resolves_it(tmp
     assert sandbox._to_guest(printed) == f"{_GUEST_WORK_DIR}/main.bicep"  # noqa: SLF001
 
 
-def test_exec_sequence_runs_relative_to_the_allocated_directory():
-    """The backend supplies cwd while leaving relative argv entries untouched."""
+@pytest.mark.parametrize("legacy_core", [False, True])
+def test_exec_sequence_runs_relative_to_the_allocated_directory(monkeypatch, legacy_core):
+    """Both the current relative contract and the sample's older floor run a written program."""
+    if legacy_core:
+        from maf_sandbox import paths
+
+        monkeypatch.delattr(paths, "resolve_guest_working_directory")
 
     async def body() -> None:
         backend, sandbox = await _fresh()
@@ -232,12 +237,30 @@ def test_exec_sequence_runs_relative_to_the_allocated_directory():
                 guest_script, 'print("argv-pinned")\n', working_directory=_GUEST_WORK_DIR
             )
             result = await sandbox.exec(
-                [sys.executable, "echo.py"],
+                [sys.executable, guest_script if legacy_core else "echo.py"],
                 working_directory=_GUEST_WORK_DIR,
                 timeout=10,
             )
             assert result.exit_code == 0, result.stderr
             assert "argv-pinned" in result.stdout
+        finally:
+            await _drop(backend)
+
+    asyncio.run(body())
+
+
+def test_current_core_leaves_absolute_looking_arguments_opaque():
+    async def body() -> None:
+        backend, sandbox = await _fresh()
+        try:
+            literal = f"{_GUEST_WORK_DIR}/literal"
+            result = await sandbox.exec(
+                [sys.executable, "-c", "import sys; print(sys.argv[1].encode().hex())", literal],
+                working_directory="call",
+                timeout=10,
+            )
+            assert result.exit_code == 0, result.stderr
+            assert result.stdout.strip() == literal.encode().hex()
         finally:
             await _drop(backend)
 

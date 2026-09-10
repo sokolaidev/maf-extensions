@@ -71,8 +71,8 @@ def spec() -> SandboxSpec:
 async def one_turn(router: SandboxRouter, key: SandboxKey) -> None:
     """A turn: acquire, use, return. It does not dispose — that is the host's decision."""
     sandbox = await router.acquire(key, spec())
-    await sandbox.write_file("turn", "worked\n", working_directory=".")
-    await sandbox.exec("cat turn", working_directory=".", timeout=60)
+    await sandbox.write_file("turn", "worked\n", working_directory=spec().work_dir or ".")
+    await sandbox.exec("cat turn", working_directory=spec().work_dir or ".", timeout=60)
 
 
 async def act_one_reuse_within_a_turn(router: SandboxRouter) -> None:
@@ -87,11 +87,13 @@ async def act_one_reuse_within_a_turn(router: SandboxRouter) -> None:
     await first.write_file(
         "from-first-acquire",
         "still here\n",
-        working_directory=".",
+        working_directory=spec().work_dir or ".",
     )
 
     second = await router.acquire(key, spec())
-    read_back = await second.exec("cat from-first-acquire", working_directory=".", timeout=60)
+    read_back = await second.exec(
+        "cat from-first-acquire", working_directory=spec().work_dir or ".", timeout=60
+    )
 
     print("  wrote a file through the first acquire, read it through the second:")
     print(f"    {read_back.stdout.strip()!r}")

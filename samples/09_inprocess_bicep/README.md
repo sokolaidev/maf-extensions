@@ -11,7 +11,7 @@ app  ->  maf_sandbox (router)  ->  NoIsolationBackend (this sample)  ->  bicep, 
 
 This is the fourth comparable Bicep sample (01, 02, 05, 09): one compiler, one lint rule set (the repo [`bicepconfig.json`](bicepconfig.json) seeded into the work directory the way the images bake it in), a different backend underneath. The protocol's central claim — a workload written against `maf_sandbox` runs unchanged on another backend — is shown rather than asserted, at the weakest boundary that can still run it.
 
-`NoIsolationSandbox` allocates a host temp directory and resolves relative working directories beneath it. Bicep passes relative filenames to its compiler, so the backend leaves commands and argv untouched. Legacy absolute file-plane paths under the spec's `work_dir` retain their mapping, and output translation preserves the sample's guest-path presentation.
+`NoIsolationSandbox` allocates a host temp directory and resolves relative working directories beneath it. Bicep passes relative filenames to its compiler, so the backend leaves commands and argv untouched. Legacy absolute file-plane paths under the spec's `work_dir` retain their mapping, and output translation preserves the sample's guest-path presentation. Until the automated sample floor update reaches the relative-path core, the sample retains command translation for the older Bicep kind it installs.
 
 ## Honest about what it cannot confine
 

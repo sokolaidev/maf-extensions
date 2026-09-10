@@ -182,15 +182,13 @@ class TestTheToolDeclaresItsResultUntrusted:
 
 class TestTheCallWritesInsideItsOwnDirectory:
     def test_the_renderer_was_given_paths_below_the_work_directory(self, out_dir: Path):
-        """The `dot` command names both files, so the argv is where the choice is visible —
-        `work_dir/diagram.dot` would be the fixed path this sample used to write."""
+        """The renderer addresses both files relative to this call's working directory."""
         sandbox = _Renderer()
         _render(sandbox, out_dir)
 
         rendered = [command for command, _, _ in sandbox.commands if command.startswith("dot ")]
         assert len(rendered) == 1
-        assert f"{_WORK_DIR}/diagram.dot" not in rendered[0]
-        assert f"{_WORK_DIR}/diagram.png" not in rendered[0]
+        assert rendered[0] == "dot -Tpng diagram.dot -o diagram.png"
 
     def test_both_files_sit_under_one_directory_below_the_work_directory(self, out_dir: Path):
         sandbox = _Renderer()
@@ -214,8 +212,6 @@ class TestTheCallWritesInsideItsOwnDirectory:
 
         rendered = [command for command, _, _ in sandbox.commands if command.startswith("dot ")]
         assert len(rendered) == 2
-        assert rendered[0] != rendered[1]
-
         guest_first, guest_second = _guest_call_directories(sandbox)
         assert guest_first != guest_second
         assert not guest_first.startswith(f"{guest_second}/")

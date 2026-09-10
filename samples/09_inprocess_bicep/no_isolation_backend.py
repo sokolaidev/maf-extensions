@@ -31,6 +31,9 @@ from maf_sandbox import (
     SandboxSpec,
     ScopePurge,
 )
+from maf_sandbox import (
+    paths as sandbox_paths,
+)
 
 
 def _refused(problems: list[str]) -> DisposalFailure | None:
@@ -54,6 +57,7 @@ class NoIsolationSandbox:
     Relative working directories resolve under the allocated host temp directory. Commands
     and argv stay opaque; the kind addresses files relative to the requested working directory.
     Legacy absolute file-plane paths under the spec's base retain their mapping.
+    On the sample's older core floor, commands also retain the legacy path translation.
 
     Only ``write_file`` and ``exec`` are implemented meaningfully. The pull surface
     (``stat_file`` / ``read_file`` / ``list_dir``) raises :exc:`NotImplementedError`: this
@@ -66,6 +70,7 @@ class NoIsolationSandbox:
     def __init__(self, host_root: Path, guest_work_dir: str | None) -> None:
         self._host_root = host_root
         self._guest_work_dir = guest_work_dir or "/maf-sandbox/work"
+        self._legacy_paths = not hasattr(sandbox_paths, "resolve_guest_working_directory")
         self.instance_id = uuid4().hex
 
     def destroy(self) -> str | None:
@@ -137,6 +142,13 @@ class NoIsolationSandbox:
     ) -> ExecResult:
         host_cwd = self._host_path(working_directory)
         host_cwd.mkdir(parents=True, exist_ok=True)
+        # The declared sample floor still has kinds that embed absolute paths in commands.
+        if self._legacy_paths:
+            command = (
+                command.replace(self._guest_work_dir, str(self._host_root))
+                if isinstance(command, str)
+                else [part.replace(self._guest_work_dir, str(self._host_root)) for part in command]
+            )
         if isinstance(command, str):
             cmd: str | list[str] = command
             shell = True

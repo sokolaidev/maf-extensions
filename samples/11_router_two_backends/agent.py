@@ -423,8 +423,10 @@ async def act_five_disposal_reaches_everyone() -> tuple[int, int]:
         print(f"  acquired on {local.name!r} (not serving — a leftover from an earlier config)")
         sandbox = await router.acquire(KEY, spec)
         print(f"  acquired on {serving(router)!r} (serving)")
-        await sandbox.write_file("marker", "routed\n", working_directory=".")
-        result = await sandbox.exec("cat marker", working_directory=".", timeout=60)
+        await sandbox.write_file("marker", "routed\n", working_directory=spec.work_dir or ".")
+        result = await sandbox.exec(
+            "cat marker", working_directory=spec.work_dir or ".", timeout=60
+        )
         print(f"{MEASURED}it runs: {result.stdout.strip()!r}\n")
     finally:
         purge = await router.dispose_scope(KEY.scope, KEY.thread_id)
@@ -468,9 +470,11 @@ async def act_six_the_spec_picks() -> None:
         await sandbox.write_file(
             "marker",
             "routed per spec\n",
-            working_directory=".",
+            working_directory=spec.work_dir or ".",
         )
-        result = await sandbox.exec("cat marker", working_directory=".", timeout=60)
+        result = await sandbox.exec(
+            "cat marker", working_directory=spec.work_dir or ".", timeout=60
+        )
         print(f"{MEASURED}the routed backend runs: {result.stdout.strip()!r}")
     finally:
         # Both halves, and neither is enough alone. `dispose_scope` reports a failure rather
