@@ -1,6 +1,6 @@
 [project]
 name = "maf-sandbox-otel"
-version = "0.3.0"
+version = "0.4.0"
 description = "OpenTelemetry records of what a maf-sandbox sandbox did — egress posture, host-tool calls, files in and out, integrity labels and disposal — as spans, log records and metrics."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
@@ -34,7 +34,7 @@ dependencies = [
     # maf-sandbox base that does not export it, which fails at import. The number itself is
     # below, and `scripts/set_dependents_range.py` moves it — so this says which release the
     # floor is for, never which release that is.
-    "maf-sandbox>=0.36.0,<0.37",
+    "maf-sandbox>=0.37.0,<0.38",
     # The OpenTelemetry **API**, never the SDK: which exporter runs, and whether one runs at
     # all, belongs to the application. A host with no SDK installed gets the API's no-op
     # implementations and pays nothing.

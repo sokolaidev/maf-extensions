@@ -188,7 +188,7 @@ class TestNamesAreWholeWords:
 
     @pytest.mark.parametrize("wrong", ["not-summary.md", "summary.md.bak"])
     def test_a_delivery_line_naming_a_lookalike_fails(self, wrong: str):
-        """The pairing that matters: an earlier run's `summary.md` still on disk, and this
+        """The pairing that matters: an earlier execution's `summary.md` still on disk, and this
         turn delivering something whose name merely contains the declared one."""
         reported = _HEALTHY.replace('["summary.md"]', json.dumps([wrong]))
         assert any(
@@ -288,7 +288,7 @@ class TestTheRunThatAnsweredAndSavedNothing:
         assert any("empty" in reason for reason in check.assess(_HEALTHY, "   \n"))
 
     def test_a_turn_that_delivered_nothing_fails_even_with_a_file_on_disk(self):
-        """The stale-artifact case: `out/` holds an earlier run's summary, and the host's
+        """The stale-artifact case: `out/` holds an earlier execution's summary, and the host's
         record of *this* turn is what settles it."""
         nothing = _tampered_text('["summary.md"]', "[]")
         assert any("did not reach the sink this turn" in r for r in check.assess(nothing, _SUMMARY))

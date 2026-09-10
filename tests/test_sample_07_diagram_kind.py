@@ -13,7 +13,7 @@ import struct
 import sys
 import zlib
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 import pytest
 from maf_sandbox import (
@@ -68,6 +68,8 @@ class _Renderer(InProcessSandbox):
     collects an image and every test here stays green.
     """
 
+    image_bytes = _png(24, 16)
+
     async def exec(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float
     ) -> ExecResult:
@@ -78,7 +80,7 @@ class _Renderer(InProcessSandbox):
         source = argv[argv.index("-Tpng") + 1]
         if source not in self.contents:
             return ExecResult(stdout="", stderr=f"dot: can't open {source}", exit_code=2)
-        self.contents[argv[argv.index("-o") + 1]] = _png(24, 16)
+        self.contents[argv[argv.index("-o") + 1]] = self.image_bytes
         return result
 
 
@@ -101,15 +103,9 @@ def _guest_call_directories(sandbox: InProcessSandbox) -> list[str]:
 def _tools(
     sandbox: InProcessSandbox,
     out_dir: Path,
-    existing: Literal["refuse", "replace"] = "refuse",
     **kwargs,
 ):
-    """The sample's own factory, wired to the in-process backend instead of docker.
-
-    ``existing`` is the sink's, not the kind's: the sample passes nothing and so takes the
-    default, and what it will pass once its floor names the release carrying the parameter is
-    #926.  The tests below drive both, because the two answer the second render differently.
-    """
+    """The sample's own factory and replacement policy, with an in-process backend."""
     backend = InProcessSandboxBackend(
         sandbox,
         declarations=dataclasses.replace(
@@ -123,7 +119,7 @@ def _tools(
         router,
         "diagram-designer",
         make_caller_context(list_no_files, lambda: "samples", lambda: "07-test"),
-        make_file_system_sink(out_dir, existing=existing),
+        make_file_system_sink(out_dir, existing="replace"),
         image=_IMAGE,
         **kwargs,
     )
@@ -252,24 +248,23 @@ class TestTheArtifactLandsUnderTheNameTheSampleChose:
 
         assert (out_dir / "diagram.png").read_bytes() == _png(24, 16)
 
-    def test_a_second_render_finds_its_own_name_taken(self, out_dir: Path):
-        """One stable name is what the separation between guest paths does not buy.
-
-        Two renders share the landed name, so the second meets the sink's default refusal and
-        the kind tells the model the diagram did not come back, while `out/` keeps the first.
-        `existing="replace"` is the answer the sample's README describes and #926 will pass;
-        neither is the sink's to choose.
-        """
+    def test_a_second_render_replaces_the_first_image(self, out_dir: Path):
+        """The sample keeps one landed name and the latest render's bytes."""
         sandbox = _Renderer()
-        assert "diagram.png" in _render(sandbox, out_dir)
+        [tool] = _tools(sandbox, out_dir)
+        render = _fn(tool)
 
-        refused = _render(sandbox, out_dir)
+        async def twice() -> None:
+            assert "diagram.png" in await render(dot=_DOT)
+            assert (out_dir / "diagram.png").read_bytes() == _png(24, 16)
+            sandbox.image_bytes = _png(48, 32)
+            reply = await render(dot="digraph { load -> report }")
+            assert "diagram.png" in reply
+            assert "Error:" not in reply
 
-        assert "could not be saved" in refused
-        assert (out_dir / "diagram.png").read_bytes() == _png(24, 16), "the first render stands"
+        asyncio.run(twice())
+        assert (out_dir / "diagram.png").read_bytes() == _png(48, 32)
         assert sorted(path.name for path in out_dir.iterdir()) == ["diagram.png"]
-
-        assert "diagram.png" in _render(_Renderer(), out_dir, existing="replace")
 
     def test_the_model_is_told_where_it_went_and_not_what_it_is(self, out_dir: Path):
         """The sink's one line, and no run id in it."""

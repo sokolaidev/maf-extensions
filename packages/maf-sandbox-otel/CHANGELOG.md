@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-otel-v0.3.0...maf-sandbox-otel-v0.4.0) (2026-09-10)
+
+
+### Features
+
+* accept method-scoped egress policies and refuse unsupported backends ([#1063](https://github.com/sokolaidev/maf-extensions/issues/1063)) ([39fd53b](https://github.com/sokolaidev/maf-extensions/commit/39fd53b457a301d59a646d815e717b8e61b6d698))
+
+
+### Fixes
+
+* require maf-sandbox 0.37.0 in the dependents, and admit the 0.37 line ([#1075](https://github.com/sokolaidev/maf-extensions/issues/1075)) ([8eb88fd](https://github.com/sokolaidev/maf-extensions/commit/8eb88fdfc706da4fe820a8388698dc37cb0b05f0))
+
 ## [0.3.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-otel-v0.2.0...maf-sandbox-otel-v0.3.0) (2026-09-08)
 
 
