@@ -22,6 +22,7 @@ on:
       - "maf-sandbox-acas-v*"
       - "maf-sandbox-bicep-v*"
       - "maf-sandbox-codeact-v*"
+      - "maf-sandbox-deepagents-v*"
       - "maf-sandbox-docker-v*"
       - "maf-sandbox-otel-v*"
       - "maf-sandbox-wslc-v*"
@@ -37,6 +38,7 @@ on:
           - maf-sandbox-acas
           - maf-sandbox-bicep
           - maf-sandbox-codeact
+          - maf-sandbox-deepagents
           - maf-sandbox-docker
           - maf-sandbox-otel
           - maf-sandbox-wslc

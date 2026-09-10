@@ -64,7 +64,7 @@ class TestTheGate:
         """The same discovery the workflow's loop performs, so the two cannot drift apart.
 
         `tests/test_pr_gate_enumerates.py` pins that CI loops; this pins that the loop and the
-        local task enumerate the same set — seven packages today, and the eighth on the commit
+        local task enumerate the same set — eight packages today, and the ninth on the commit
         that adds it.
         """
         found = sorted(path.name for path in packages_with_pyright())
@@ -73,6 +73,7 @@ class TestTheGate:
             "maf-sandbox-acas",
             "maf-sandbox-bicep",
             "maf-sandbox-codeact",
+            "maf-sandbox-deepagents",
             "maf-sandbox-docker",
             "maf-sandbox-otel",
             "maf-sandbox-wslc",
