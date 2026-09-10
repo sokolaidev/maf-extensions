@@ -287,17 +287,14 @@ class TestALiveSandbox:
 
 
 class TestTheDeclaredGuestFamilyAgainstTheRealService:
-    """The constant `os_families` states, backed by a sandbox rather than matched on paper.
-
-    Costs no sandbox of its own: the acquire reuses the module's shared one, keyed and kinded
-    the same, so what the router adds here is the family match and nothing else.
-    """
+    """Verify the guest family and retain the router's adopted sandbox for the shared probes."""
 
     def test_a_workload_requiring_posix_is_served_and_runs(self, live):
         spec = _spec(requires_os_family=OsFamily.POSIX)
         router = SandboxRouter([live.backend])
         router.ensure_can_serve(spec)
         sandbox = live.run(router.acquire(live.key, spec))
+        live.sandbox = sandbox
         # At `/` rather than `_WORK`: what this asserts is the guest's grammar and argv, which
         # every Linux image answers for, not a directory some of them carry.
         ran = live.run(
