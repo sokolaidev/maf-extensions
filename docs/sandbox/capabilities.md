@@ -104,7 +104,7 @@ class Sandbox(Protocol):
 ```python
 @dataclass(frozen=True)
 class DeclaredOutput:
-    path: str                                            # literal, relative to call directory; no globs
+    path: str                                            # literal, relative to storage base; no globs
     disposition: OutputDisposition = OutputDisposition.LAND
     media_type: str | None = None                        # declared by the kind, never sniffed
     required: bool = True                                # missing required is an error

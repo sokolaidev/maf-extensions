@@ -941,14 +941,10 @@ class _DockerSandbox:
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
         """Remove ``directory`` with ``rm -rf``, through :meth:`_removal`.
 
-        Runs from ``/`` because ``working_directory`` may not exist, and takes no confinement
-        check: the caller made ``directory``, and :func:`~maf_sandbox.reclaim_guest_path` is
-        where that policy lives.  The floor below re-refuses a subset of it, because this
-        command runs from ``/`` and can carry root's authority.
-
-        Why root is allowed without the filesystem path check — the file name check still runs,
-        in :func:`~maf_sandbox.reclaim_guest_path` — and which half of the argument is settled at
-        acquire rather than asserted: ``docs/sandbox/backends/docker.md``.
+        Relative targets must resolve to a child of ``working_directory``. Every resolved
+        target, including a legacy absolute one, must be at least two components from root.
+        Runs from ``/`` because the target's parent may be absent; permission to raise authority
+        is established at acquire, as described in ``docs/sandbox/backends/docker.md``.
         """
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         if not posixpath.isabs(directory):

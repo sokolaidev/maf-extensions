@@ -539,7 +539,7 @@ class DeclaredOutput:
     names are not knowable then passes the same type to ``collect_outputs(outputs=...)``, which
     for a guest-authored manifest is after the run that produced them.
 
-    ``path`` is **literal** and relative to the sandbox's working directory.  A glob would
+    ``path`` is **literal** and relative to the acquired sandbox's storage base. A glob would
     have to be resolved by enumerating a directory, which is the primitive
     :data:`Capability.FILES_LIST` exists to gate, so patterns belong to a kind that requires
     that capability and nowhere else.
@@ -1177,11 +1177,9 @@ class Sandbox(Protocol):
 
         Raises:
             NotImplementedError: The backend cannot offer safe reclamation.
-            ValueError: A path that is not absolute, or fewer than two components from the
-                root — a backend refusing a path it cannot place. The guards in this module
-                refuse the same shapes, and a backend that repeats them stands on its own:
-                this removal is recursive and irreversible, and neither guard should depend
-                on the caller having derived the path correctly.
+            ValueError: Unsafe placement: a relative target escapes the working directory or
+                names that directory itself, or the resolved target violates the backend's
+                native placement guards, such as a minimum distance from the filesystem root.
             OSError: The removal was refused or failed.
             TimeoutError: ``timeout`` expired. A subclass of :class:`OSError`.
         """

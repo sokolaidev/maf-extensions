@@ -1715,7 +1715,7 @@ class TestAContainerThatVanishedBehindThisBackend:
 
 
 class TestReclaimKeepsAFloorUnderRoot:
-    """`maf_sandbox.reclaim_guest_path` holds the policy; this is the subset kept here."""
+    """Reclamation checks child placement and root distance before running a command."""
 
     def _sandbox(self):
         backend, fake = _backend_with(_machine(running=[_NAME]))
