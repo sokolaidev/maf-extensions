@@ -48,7 +48,7 @@ from _scaffold import (
 from agent_framework import Agent, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
-from maf_sandbox import SandboxRouter
+from maf_sandbox import Egress, SandboxRouter
 from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 from maf_sandbox_bicep import make_bicep_tools
@@ -113,8 +113,8 @@ async def run() -> int:
     # enabled and quietly unsafe.
     #
     # A swapped backend has a second way to be refused, one call further down:
-    # `make_bicep_tools` checks it can confine egress to the hosts the workload
-    # names.  Separate rules because they have separate owners — the boundary is
+    # `make_bicep_tools` checks it can enforce the workload's closed egress.
+    # Separate rules because they have separate owners — the boundary is
     # this host's policy, what the sandbox may reach is the workload's.
     router = SandboxRouter([backend])
 
@@ -143,6 +143,7 @@ async def run() -> int:
         AGENT_DIR,
         context,
         image=env["BICEP_SANDBOX_IMAGE"],
+        egress=Egress.CLOSED,
     )
     if not tools:
         # Unreachable with the checks above, and printed rather than asserted

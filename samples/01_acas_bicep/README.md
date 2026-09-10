@@ -2,6 +2,8 @@
 
 A one-turn agent. It puts `main.bicep` into a file store, hands the agent the `bicep_validate` tool, asks it to validate the file once, prints the answer, and deletes the sandbox.
 
+The template has no external modules, so the sandbox runs with `egress=Egress.CLOSED`. Bicep skips module restore; a template needing an uncached external module reports an incomplete validation.
+
 ```
 app  ->  maf_sandbox (router)  ->  maf_sandbox_acas  ->  the sandbox
               ^ maf_sandbox_bicep calls the router

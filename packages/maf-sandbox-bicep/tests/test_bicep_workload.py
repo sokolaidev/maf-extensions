@@ -1612,13 +1612,14 @@ class TestRestoreFailureBanner:
     """
 
     @pytest.mark.parametrize("rule", ["BCP190", "BCP191", "BCP192"])
-    def test_a_restore_failure_gets_the_incomplete_validation_banner(self, rule):
+    @pytest.mark.parametrize("egress", [Egress.CLOSED, Egress.ALLOWLIST])
+    def test_a_restore_failure_gets_the_incomplete_validation_banner(self, rule, egress):
         store = InMemoryStore({"main.bicep": "x"})
         sandbox = _KeepsWhatItWrote(
             outputs={"bicep build": _sarif(rule=rule, message="Unable to restore …: 403")},
             default_stdout=_EMPTY_SARIF,
         )
-        out = _run(_tool(store, _fake_backend(sandbox=sandbox)), ["main.bicep"])
+        out = _run(_tool(store, _fake_backend(sandbox=sandbox), egress=egress), ["main.bicep"])
 
         assert "MODULE RESTORE FAILED" in out
         assert "INCOMPLETE" in out
@@ -1662,6 +1663,35 @@ class TestCommandTemplates:
         assert "2>&1" in _BUILD_CMD, (
             "bicep build emits SARIF on stderr; without 2>&1 the parser sees an empty stdout"
         )
+
+    @pytest.mark.parametrize("egress", [Egress.CLOSED, Egress.ALLOWLIST, Egress.UNRESTRICTED])
+    def test_every_compiler_phase_disables_restore_only_when_closed(self, egress):
+        import shlex
+        from dataclasses import replace
+
+        from maf_sandbox.testing import FAKE_BACKEND_DECLARATIONS
+
+        store = InMemoryStore(
+            {
+                "main.bicep": "output value string = 'hello'",
+                "main.bicepparam": "using './main.bicep'",
+            }
+        )
+        backend = InProcessSandboxBackend(
+            _KeepsWhatItWrote(default_stdout=_EMPTY_SARIF),
+            declarations=replace(FAKE_BACKEND_DECLARATIONS, egress_modes=frozenset({egress})),
+        )
+        _run(_tool(store, backend, egress=egress), ["main.bicep", "main.bicepparam"])
+
+        commands = [shlex.split(command) for command, *_ in _commands(backend)]
+        assert [command[command.index("bicep") + 1] for command in commands] == [
+            "build",
+            "lint",
+            "build-params",
+            "lint",
+        ]
+        for command in commands:
+            assert command.count("--no-restore") == (1 if egress is Egress.CLOSED else 0)
 
     def test_both_templates_request_sarif(self):
         assert "--diagnostics-format sarif" in _BUILD_CMD
