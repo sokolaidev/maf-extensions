@@ -1,12 +1,4 @@
-"""Pin the invariants that let `tests.yml` sit behind two required contexts while its work is
-sharded across parallel jobs.
-
-`main`'s ruleset names exactly two contexts, and a context that stops reporting leaves every
-open pull request unmergeable against a check nobody can produce. So the shard *names* are free
-to change and these two are not: the join job's `name:`, and `docker-e2e`'s. What the join
-does — refuse unless every shard succeeded — is pinned here too, because a join that passed on
-a failed shard would turn the required check into decoration.
-"""
+"""Keep the required Python join reporting and refusing any unsuccessful shard."""
 
 from __future__ import annotations
 
@@ -23,7 +15,6 @@ JOBS = WORKFLOW["jobs"]
 
 #: The join job, keyed by the name `main` requires rather than by its job id.
 _REQUIRED_CONTEXT = "Python (pytest + ruff + pyright)"
-_LIVE_CONTEXT = "Docker backend live tests"
 
 
 def _job_named(display_name: str) -> dict:
@@ -40,23 +31,13 @@ class TestTheRequiredContextsStillReport:
     def test_the_join_job_keeps_the_required_name(self):
         _job_named(_REQUIRED_CONTEXT)
 
-    def test_the_live_job_keeps_the_required_name(self):
-        _job_named(_LIVE_CONTEXT)
-
-    def test_the_live_job_is_not_behind_the_join(self):
-        """It is a required context in its own right, so joining it would hide its verdict."""
-        join = _job_named(_REQUIRED_CONTEXT)
-        live_id = next(key for key, job in JOBS.items() if job.get("name") == _LIVE_CONTEXT)
-        assert live_id not in join["needs"]
-
 
 class TestTheJoinRefusesAnythingButSuccess:
     def test_it_waits_for_every_other_job(self):
         """A shard nobody joined is a check whose failure the required context never sees."""
         join_id = next(key for key, job in JOBS.items() if job.get("name") == _REQUIRED_CONTEXT)
-        live_id = next(key for key, job in JOBS.items() if job.get("name") == _LIVE_CONTEXT)
         joined = set(JOBS[join_id]["needs"])
-        unjoined = set(JOBS) - joined - {join_id, live_id}
+        unjoined = set(JOBS) - joined - {join_id}
         assert not unjoined, (
             f"these jobs are in no required context: {sorted(unjoined)}. Add them to the join's "
             "`needs`, or their failures cannot block a merge."

@@ -1,7 +1,7 @@
 name: Conformance (live)
 
 # The daily leg of issue #450: "a conformance suite nobody triggers is documentation."
-# `tests.yml` holds docker's conformance to a real engine on every pull request; this workflow
+# `docker-live.yml` exercises Docker after merge and daily; this workflow
 # holds maf-sandbox-acas's to the real service on a schedule, so a drift between the backend
 # and the service is found in days rather than at the next manual dispatch.
 #
