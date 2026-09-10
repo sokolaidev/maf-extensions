@@ -60,6 +60,7 @@ from maf_sandbox import (
     error_detail,
     fold_disposal_failures,
 )
+from maf_sandbox.bounded_exec import read_bounded_process_output
 from maf_sandbox.paths import (
     confine_resolve_guest_write_path,
     ensure_guest_work_dir,
@@ -409,6 +410,7 @@ class _WslcRunner(Protocol):
         stdin: bytes | None = None,
         timeout: float | None = None,
         read_limit: int | None = None,
+        max_output_bytes: int | None = None,
     ) -> _WslcResult: ...
 
 
@@ -593,6 +595,39 @@ class _WslcSandbox:
         """
         argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
         return await self._exec(argv, working_directory=working_directory, timeout=timeout)
+
+    async def exec_bounded(
+        self,
+        command: str | Sequence[str],
+        *,
+        working_directory: str,
+        timeout: float,
+        max_output_bytes: int,
+    ) -> ExecResult:
+        """Execute with a host-enforced combined stdout/stderr byte budget."""
+        if type(max_output_bytes) is not int or max_output_bytes <= 0:
+            raise ValueError("max_output_bytes must be a positive integer")
+        argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
+        try:
+            result = await self._run(
+                "container",
+                "exec",
+                "-w",
+                working_directory,
+                self._name,
+                *argv,
+                timeout=timeout,
+                max_output_bytes=max_output_bytes,
+            )
+        except TimeoutError:
+            with contextlib.suppress(Exception):
+                await self._run(
+                    "container", "remove", "-f", self._name, timeout=self._command_timeout
+                )
+            raise
+        return ExecResult(
+            stdout=result.stdout_text, stderr=result.stderr_text, exit_code=result.returncode
+        )
 
     async def _exec(
         self,
@@ -1459,6 +1494,7 @@ class WslcSandboxBackend:
         stdin: bytes | None = None,
         timeout: float | None = None,
         read_limit: int | None = None,
+        max_output_bytes: int | None = None,
     ) -> _WslcResult:
         """Run one ``wslc`` command — the single seam every invocation goes through.
 
@@ -1466,6 +1502,8 @@ class WslcSandboxBackend:
         reaps it before the exception propagates, so a command that stopped answering, or one
         whose caller went away, cannot outlive the call that made it.
         """
+        if max_output_bytes is not None and (stdin is not None or read_limit is not None):
+            raise ValueError("bounded execution does not accept stdin or read_limit")
         try:
             process = await asyncio.create_subprocess_exec(
                 self._config.wslc_path,
@@ -1480,6 +1518,11 @@ class WslcSandboxBackend:
                 "the wslc backend needs an event loop that can spawn subprocesses — on Windows "
                 "that is asyncio's default Proactor loop"
             ) from exc
+        if max_output_bytes is not None:
+            stdout, stderr = await read_bounded_process_output(
+                process, max_output_bytes=max_output_bytes, timeout=timeout
+            )
+            return _WslcResult(process.returncode or 0, stdout, stderr)
         try:
             if read_limit is None:
                 stdout, stderr = await asyncio.wait_for(process.communicate(stdin), timeout=timeout)

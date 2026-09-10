@@ -219,8 +219,11 @@ from ._router import (
     Selection,
 )
 from ._shim import host_tool_shim
+from .bounded_exec import BoundedExec, SandboxExecOutputLimitExceeded
 
 __all__ = [
+    "BoundedExec",
+    "SandboxExecOutputLimitExceeded",
     "ProcessAttribution",
     "ProcessCleanup",
     "ProcessCleanupOutcome",

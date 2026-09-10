@@ -24,6 +24,7 @@ from ._observer import (
 )
 from ._process_info import ProcessAttribution, ProcessInfo, ProcessPhase
 from ._protocol import Sandbox
+from .bounded_exec import BoundedExec
 
 logger = logging.getLogger(__name__)
 _TIMEOUT = 3.0
@@ -169,12 +170,15 @@ class ProcessTracker:
         try:
             if self.sandbox.instance_id != self.instance_id:
                 raise ValueError("sandbox instance changed")
+            if not isinstance(self.sandbox, BoundedExec):
+                raise NotImplementedError("process observations require bounded execution")
             remaining = _remaining(until)
             async with asyncio.timeout(remaining):
-                result = await self.sandbox.exec(
+                result = await self.sandbox.exec_bounded(
                     f"{shlex.quote(self.interpreter)} -I -S -c {shlex.quote(_probe())}",
                     working_directory=self.directory,
                     timeout=remaining,
+                    max_output_bytes=_BYTES,
                 )
             if result.exit_code != 0:
                 raise ValueError("process collector failed")
@@ -283,19 +287,22 @@ class ProcessTracker:
         outcomes: dict[tuple[int, int], ProcessCleanupOutcome] = {}
         signals: dict[tuple[int, int], str | None] = {}
         try:
+            if not isinstance(self.sandbox, BoundedExec):
+                raise NotImplementedError("descendant cleanup requires bounded execution")
             for offset in range(0, len(targets), _PROCESSES):
                 if self.sandbox.instance_id != self.instance_id:
                     raise ValueError("sandbox instance changed")
                 identities = json.dumps([p.identity for p in targets[offset : offset + _PROCESSES]])
                 remaining = _remaining(until)
                 async with asyncio.timeout(remaining):
-                    result = await self.sandbox.exec(
+                    result = await self.sandbox.exec_bounded(
                         f"{shlex.quote(self.interpreter)} -I -S -c {shlex.quote(_probe())} "
                         f"--signal {shlex.quote(identities)}",
                         working_directory=self.directory,
                         timeout=remaining,
+                        max_output_bytes=_BYTES,
                     )
-                if result.exit_code == 0 and len(result.stdout) <= _BYTES:
+                if result.exit_code == 0 and len(result.stdout.encode("utf-8")) <= _BYTES:
                     raw: Any = json.loads(result.stdout)
                     if isinstance(raw, list):
                         for row in cast(list[Any], raw):

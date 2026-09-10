@@ -101,9 +101,13 @@ def test_forged_files_do_not_redirect_cleanup_and_observed_escapees_are_stopped(
             target = int(victim.stdout)
             layout = maf_sandbox.guest_run_layout("/tmp/process-test/run")
             execute = sandbox.exec
+            assert isinstance(sandbox, maf_sandbox.BoundedExec)
+            bounded_execute = sandbox.exec_bounded
             scans = 0
 
-            async def check_launcher_close(command, *, working_directory, timeout):
+            async def check_launcher_close(
+                command, *, working_directory, timeout, max_output_bytes=None
+            ):
                 nonlocal scans
                 if " -I -S -c " in str(command) and " --signal " not in str(command):
                     scans += 1
@@ -140,9 +144,17 @@ else: raise RuntimeError('guest did not create its witness')
                         "assert os.readlink('/proc/'+parent+'/fd/1') == '/dev/null'"
                     )
                     command += " && python3 -c " + shlex.quote(check_closed)
+                if max_output_bytes is not None:
+                    return await bounded_execute(
+                        command,
+                        working_directory=working_directory,
+                        timeout=timeout,
+                        max_output_bytes=max_output_bytes,
+                    )
                 return await execute(command, working_directory=working_directory, timeout=timeout)
 
             monkeypatch.setattr(sandbox, "exec", check_launcher_close)
+            monkeypatch.setattr(sandbox, "exec_bounded", check_launcher_close)
             prepared = await sandbox.exec(
                 ["mkdir", "-p", layout.work, posixpath.dirname(layout.program)],
                 working_directory="/tmp",

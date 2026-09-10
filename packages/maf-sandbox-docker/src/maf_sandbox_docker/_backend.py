@@ -70,6 +70,7 @@ from maf_sandbox import (
     error_detail,
     fold_disposal_failures,
 )
+from maf_sandbox.bounded_exec import read_bounded_process_output
 from maf_sandbox.guest_access import refuse_capabilities_the_guest_cannot_back
 from maf_sandbox.paths import (
     confine_resolve_guest_delete_path,
@@ -627,6 +628,7 @@ class _DockerRunner(Protocol):
         stdin: bytes | None = None,
         timeout: float | None = None,
         read_limit: int | None = None,
+        max_output_bytes: int | None = None,
     ) -> _DockerResult: ...
 
 
@@ -766,6 +768,38 @@ class _DockerSandbox:
         """
         argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
         return await self._exec(argv, working_directory=working_directory, timeout=timeout)
+
+    async def exec_bounded(
+        self,
+        command: str | Sequence[str],
+        *,
+        working_directory: str,
+        timeout: float,
+        max_output_bytes: int,
+    ) -> ExecResult:
+        """Execute with a host-enforced combined stdout/stderr byte budget."""
+        if type(max_output_bytes) is not int or max_output_bytes <= 0:
+            raise ValueError("max_output_bytes must be a positive integer")
+        argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
+        try:
+            result = await self._run(
+                "exec",
+                "-w",
+                working_directory,
+                self._name,
+                *argv,
+                timeout=timeout,
+                max_output_bytes=max_output_bytes,
+            )
+        except TimeoutError:
+            with contextlib.suppress(Exception):
+                await self._run("rm", "-f", self._name, timeout=self._command_timeout)
+            raise
+        return ExecResult(
+            stdout=result.stdout.decode("utf-8", errors="replace"),
+            stderr=result.stderr,
+            exit_code=result.returncode,
+        )
 
     async def _exec(
         self,
@@ -2316,6 +2350,7 @@ class DockerSandboxBackend:
         stdin: bytes | None = None,
         timeout: float | None = None,
         read_limit: int | None = None,
+        max_output_bytes: int | None = None,
     ) -> _DockerResult:
         """Run one ``docker`` command — the single seam every invocation goes through.
 
@@ -2329,6 +2364,8 @@ class DockerSandboxBackend:
         whole untrusted output just to read its tar header or to enforce a byte cap, so an
         oversized file costs ``read_limit`` bytes and no more.
         """
+        if max_output_bytes is not None and (stdin is not None or read_limit is not None):
+            raise ValueError("bounded execution does not accept stdin or read_limit")
         try:
             process = await asyncio.create_subprocess_exec(
                 self._config.docker_path,
@@ -2350,6 +2387,13 @@ class DockerSandboxBackend:
                 f"the docker client {self._config.docker_path!r} was not found on PATH; set "
                 "DockerSandboxConfig.docker_path to the client binary (or 'podman')"
             ) from exc
+        if max_output_bytes is not None:
+            stdout, stderr = await read_bounded_process_output(
+                process, max_output_bytes=max_output_bytes, timeout=timeout
+            )
+            return _DockerResult(
+                process.returncode or 0, stdout, stderr.decode("utf-8", errors="replace")
+            )
         if read_limit is not None:
             return await self._read_bounded(process, read_limit, timeout)
         try:
