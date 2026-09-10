@@ -138,10 +138,12 @@ def signal_processes(targets: list[list[int]]) -> list[dict[str, Any]]:
     outcomes: list[dict[str, Any]] = []
     for pid, start in targets[:MAX_PROCESSES]:
         outcome = "refused"
+        signal = None
         if pid > 1:
             try:
                 stat = (Path("/proc") / str(pid) / "stat").read_bytes()
                 if int(stat.rsplit(b")", 1)[1].split()[19]) == start:
+                    signal = "SIGKILL"
                     os.kill(pid, 9)
                     outcome = "sent"
                 else:
@@ -150,7 +152,7 @@ def signal_processes(targets: list[list[int]]) -> list[dict[str, Any]]:
                 outcome = "absent"
             except (OSError, ValueError, IndexError):
                 outcome = "refused"
-        outcomes.append({"pid": pid, "start_ticks": start, "outcome": outcome})
+        outcomes.append({"pid": pid, "start_ticks": start, "outcome": outcome, "signal": signal})
     return outcomes
 
 

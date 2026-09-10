@@ -598,7 +598,10 @@ class ProcessesObserved(SandboxEvent):
 
 @dataclass(frozen=True)
 class ProcessCleanup(SandboxEvent):
-    """A signal attempt using host-retained launcher identifiers, not proof of termination."""
+    """A cleanup decision for a retained identity, not proof of termination.
+
+    ``signal`` names a recorded attempt; ``None`` also covers unavailable signal results.
+    """
 
     key: SandboxKey | None
     instance_id: str
@@ -610,6 +613,7 @@ class ProcessCleanup(SandboxEvent):
     seconds: float
     call: str | None = None
     start_ticks: int | None = None
+    signal: str | None = None
 
     def deliver_to(self, observer: SandboxObserver) -> None:
         observer.process_cleanup(self)

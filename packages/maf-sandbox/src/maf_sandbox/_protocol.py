@@ -277,8 +277,8 @@ class Capability(StrEnum):
     #: A platform-attached identity scoped to the sandbox itself.
     ATTACHED_IDENTITY = "attached_identity"
     #: Backend evidence for :data:`Cleanup.RECLAIM`; forbidden in :attr:`SandboxSpec.requires`.
-    #: Reuse also requires workload confinement. Without this declaration, cleanup resolves
-    #: to RESET where SNAPSHOT is available, otherwise DISPOSE.
+    #: Reuse requires explicit host opt-in; workload confinement is advisory. Without this
+    #: declaration, cleanup resolves to RESET where permitted and available, otherwise DISPOSE.
     RECLAIM = "reclaim"
     #: Enforce literal HTTP methods on allowlist entries, within ``egress_method_tokens``.
     EGRESS_METHODS = "egress_methods"

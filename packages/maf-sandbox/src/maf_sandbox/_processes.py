@@ -176,41 +176,45 @@ class ProcessTracker:
                 self.baseline = {p.identity for p in processes}
             processes = self.attribute(processes)
             self.latest = processes
-        except Exception as error:  # noqa: BLE001 - diagnostics must not prevent cleanup
+        except BaseException as error:  # diagnostics must not suppress cancellation
             unavailable = type(error).__name__
             self.latest = None
             incomplete = True
+            if not isinstance(error, Exception):
+                raise
         finally:
             self._ever_incomplete |= incomplete
             self.incomplete = self._ever_incomplete
-        event = ProcessesObserved(
-            key=self.run.key,
-            instance_id=self.instance_id,
-            run_id=self.run.run_id,
-            snapshot_id=uuid4().hex,
-            phase=phase,
-            timestamp=timestamp,
-            seconds=time.monotonic() - started,
-            processes=processes,
-            incomplete=incomplete,
-            unavailable=unavailable,
-            call=recorded_call(),
-        )
-        record(self.run.registry.observer, event, logger)
-        logger.info(
-            "host tools: process snapshot run=%s instance=%s call=%s phase=%s pids=%s "
-            "count=%d incomplete=%s unavailable=%s",
-            self.run.run_id,
-            self.instance_id,
-            recorded_call(),
-            phase,
-            [p.pid for p in processes],
-            len(processes),
-            incomplete,
-            unavailable,
-        )
+            event = ProcessesObserved(
+                key=self.run.key,
+                instance_id=self.instance_id,
+                run_id=self.run.run_id,
+                snapshot_id=uuid4().hex,
+                phase=phase,
+                timestamp=timestamp,
+                seconds=time.monotonic() - started,
+                processes=processes,
+                incomplete=incomplete,
+                unavailable=unavailable,
+                call=recorded_call(),
+            )
+            record(self.run.registry.observer, event, logger)
+            logger.info(
+                "host tools: process snapshot run=%s instance=%s call=%s phase=%s pids=%s "
+                "count=%d incomplete=%s unavailable=%s",
+                self.run.run_id,
+                self.instance_id,
+                recorded_call(),
+                phase,
+                [p.pid for p in processes],
+                len(processes),
+                incomplete,
+                unavailable,
+            )
 
-    def report_stop(self, outcome: str, reach: str, seconds: float) -> None:
+    def report_stop(
+        self, outcome: str, reach: str, seconds: float, *, signal: str | None = None
+    ) -> None:
         record(
             self.run.registry.observer,
             ProcessCleanup(
@@ -221,6 +225,7 @@ class ProcessTracker:
                 pgid=self.pgid,
                 outcome=outcome,
                 reach=reach,
+                signal=signal,
                 seconds=seconds,
                 call=recorded_call(),
             ),
@@ -264,6 +269,7 @@ class ProcessTracker:
             return True
         started = time.monotonic()
         outcomes: dict[tuple[int, int], str] = {}
+        signals: dict[tuple[int, int], str | None] = {}
         try:
             for offset in range(0, len(targets), _PROCESSES):
                 if self.sandbox.instance_id != self.instance_id:
@@ -289,31 +295,37 @@ class ProcessTracker:
                                     and entry.get("outcome")
                                     in {"sent", "absent", "replaced", "refused"}
                                 ):
-                                    outcomes[entry["pid"], entry["start_ticks"]] = entry["outcome"]
+                                    identity = entry["pid"], entry["start_ticks"]
+                                    outcomes[identity] = entry["outcome"]
+                                    signals[identity] = (
+                                        "SIGKILL" if entry.get("signal") == "SIGKILL" else None
+                                    )
         except Exception:  # noqa: BLE001 - continue to verification and directory reclamation
             pass
-        for process in targets:
-            outcome = outcomes.get(process.identity, "unknown")
-            record(
-                self.run.registry.observer,
-                ProcessCleanup(
-                    key=self.run.key,
-                    instance_id=self.instance_id,
-                    run_id=self.run.run_id,
-                    pid=process.pid,
-                    pgid=None,
-                    outcome=outcome,
-                    reach="program" if outcome == "sent" else "nothing",
-                    seconds=time.monotonic() - started,
-                    call=recorded_call(),
-                    start_ticks=process.start_ticks,
-                ),
-                logger,
-            )
-            logger.info(
-                "host tools: descendant cleanup run=%s pid=%s outcome=%s",
-                self.run.run_id,
-                process.pid,
-                outcome,
-            )
+        finally:
+            for process in targets:
+                outcome = outcomes.get(process.identity, "unknown")
+                record(
+                    self.run.registry.observer,
+                    ProcessCleanup(
+                        key=self.run.key,
+                        instance_id=self.instance_id,
+                        run_id=self.run.run_id,
+                        pid=process.pid,
+                        pgid=None,
+                        outcome=outcome,
+                        signal=signals.get(process.identity),
+                        reach="program" if outcome == "sent" else "nothing",
+                        seconds=time.monotonic() - started,
+                        call=recorded_call(),
+                        start_ticks=process.start_ticks,
+                    ),
+                    logger,
+                )
+                logger.info(
+                    "host tools: descendant cleanup run=%s pid=%s outcome=%s",
+                    self.run.run_id,
+                    process.pid,
+                    outcome,
+                )
         return all(outcomes.get(p.identity) in {"sent", "absent"} for p in targets)

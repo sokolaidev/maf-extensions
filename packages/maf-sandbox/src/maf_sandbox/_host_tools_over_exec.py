@@ -1469,12 +1469,13 @@ async def _stop_recorded_processes(
     tracker = launcher.tracker
     # Reserve most of the stop budget for signals when collection stalls.
     observing = started + max(0.0, until - started) / 4
-    if tracker.phase == "before_launch":
-        await tracker.snapshot("after_launch", until=observing)
-    await tracker.snapshot("before_cleanup", until=observing)
-    fate: _Fate = "unrecorded"
+    fate: _Fate = "unknown" if launcher.pid is not None else "unrecorded"
     reach: _Reach = "nothing"
+    signal: str | None = None
     try:
+        if tracker.phase == "before_launch":
+            await tracker.snapshot("after_launch", until=observing)
+        await tracker.snapshot("before_cleanup", until=observing)
         if tracker.replaced():
             fate = "refused"
         elif launcher.pid is not None and time.monotonic() < until:
@@ -1482,6 +1483,7 @@ async def _stop_recorded_processes(
             sending = min(until, _a_grace_from_now())
             try:
                 fate = "unknown"
+                signal = "SIGKILL"
                 killed = await _within(
                     sending,
                     "the kill",
@@ -1502,21 +1504,25 @@ async def _stop_recorded_processes(
             fate = "unknown"
     finally:
         launcher.stopped = True
-        if not await tracker.stop_descendants(until=until):
-            note_unclean(sandbox, "observed descendants could not be stopped")
-        await tracker.snapshot("after_cleanup", until=until)
-        if tracker.incomplete:
-            note_unclean(sandbox, "process cleanup verification was unavailable or incomplete")
-        if tracker.latest is not None and not tracker.incomplete and not tracker.survivors():
-            if fate == "refused" and launcher.pid is not None and not tracker.replaced():
-                fate = "absent"
-        tracker.report_stop(fate, reach, time.monotonic() - started)
-        if tracker.survivors():
-            note_unclean(
-                sandbox,
-                "observed surviving guest processes: "
-                + ",".join(str(p.pid) for p in tracker.survivors()),
-            )
+        try:
+            try:
+                if not await tracker.stop_descendants(until=until):
+                    note_unclean(sandbox, "observed descendants could not be stopped")
+            finally:
+                await tracker.snapshot("after_cleanup", until=until)
+        finally:
+            if tracker.incomplete:
+                note_unclean(sandbox, "process cleanup verification was unavailable or incomplete")
+            if tracker.latest is not None and not tracker.incomplete and not tracker.survivors():
+                if fate == "refused" and launcher.pid is not None and not tracker.replaced():
+                    fate = "absent"
+            tracker.report_stop(fate, reach, time.monotonic() - started, signal=signal)
+            if tracker.survivors():
+                note_unclean(
+                    sandbox,
+                    "observed surviving guest processes: "
+                    + ",".join(str(p.pid) for p in tracker.survivors()),
+                )
     return fate, reach
 
 

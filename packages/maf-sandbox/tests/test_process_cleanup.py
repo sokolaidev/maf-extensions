@@ -19,6 +19,7 @@ from maf_sandbox import (
     SandboxProgramTimeout,
     SandboxRouter,
     SandboxSpec,
+    _process_probe,
     guest_run_layout,
     host_tool_calls_over_exec,
 )
@@ -113,6 +114,7 @@ def test_success_cleans_from_the_receipt_and_audits_all_four_phases():
     assert observed.attribution == "program"
     assert observer.snapshots[-1].processes[0].attribution == "preexisting"
     assert observer.cleanups[0].outcome == "sent"
+    assert observer.cleanups[0].signal == "SIGKILL"
     assert guest.reclaims
 
 
@@ -175,7 +177,9 @@ def test_process_cleanup_steps_share_one_deadline_and_reserve_a_signal_attempt(s
             async def exec(self, command, *, working_directory, timeout):
                 if " --signal " in str(command):
                     step = "descendants"
-                    stdout = json.dumps([{"pid": 82, "start_ticks": 101, "outcome": "sent"}])
+                    stdout = json.dumps(
+                        [{"pid": 82, "start_ticks": 101, "outcome": "sent", "signal": "SIGKILL"}]
+                    )
                 elif " -I -S -c " in str(command):
                     self.scan += 1
                     step = "before_cleanup" if self.scan == 1 else "after_cleanup"
@@ -219,9 +223,10 @@ def test_process_cleanup_steps_share_one_deadline_and_reserve_a_signal_attempt(s
     ],
 )
 def test_missing_or_invalid_receipt_never_falls_back_to_guest_files(receipt):
-    guest = Guest(receipt=receipt)
-    result = run(guest)
+    guest, observer = Guest(receipt=receipt), Recorder()
+    result = run(guest, observer)
     assert result.exit_code != 0 and result.producer_owns_stderr
+    assert observer.cleanups[0].signal is None
     assert LAYOUT.launcher + ".start" not in guest.contents
     assert not guest.signals
     assert guest.reclaims
@@ -330,7 +335,12 @@ def test_degraded_cleanup_snapshot_still_signals_previously_observed_escapees(fa
                 return ExecResult(
                     stdout=json.dumps(
                         [
-                            {"pid": pid, "start_ticks": start, "outcome": "sent"}
+                            {
+                                "pid": pid,
+                                "start_ticks": start,
+                                "outcome": "sent",
+                                "signal": "SIGKILL",
+                            }
                             for pid, start in self.targets
                         ]
                     ),
@@ -365,6 +375,7 @@ def test_degraded_cleanup_snapshot_still_signals_previously_observed_escapees(fa
     assert child.pid not in [p.pid for p in observer.snapshots[3].processes]
     cleanup = next(e for e in observer.cleanups if e.pid == child.pid)
     assert cleanup.start_ticks == child.start_ticks and cleanup.outcome == "sent"
+    assert cleanup.signal == "SIGKILL"
 
 
 def test_retained_cleanup_candidates_use_latest_metadata_and_identity_scoped_outcomes():
@@ -377,7 +388,7 @@ def test_retained_cleanup_candidates_use_latest_metadata_and_identity_scoped_out
                     stdout=json.dumps(
                         [
                             {"pid": 82, "start_ticks": 101, "outcome": "replaced"},
-                            {"pid": 82, "start_ticks": 201, "outcome": "sent"},
+                            {"pid": 82, "start_ticks": 201, "outcome": "sent", "signal": "SIGKILL"},
                         ]
                     ),
                     exit_code=0,
@@ -399,6 +410,7 @@ def test_retained_cleanup_candidates_use_latest_metadata_and_identity_scoped_out
         )
         tracked.latest = None
         assert not await tracked.stop_descendants()
+        assert [e.signal for e in observer.cleanups] == [None, "SIGKILL"]
         assert [(e.start_ticks, e.outcome) for e in observer.cleanups] == [
             (101, "replaced"),
             (201, "sent"),
@@ -487,8 +499,9 @@ def test_an_observed_pid_replacement_is_not_signalled():
                 self.program = dataclasses.replace(self.program, start_ticks=200)
             return await super().exec(command, working_directory=working_directory, timeout=timeout)
 
-    guest = Replaced()
-    assert run(guest).exit_code == 0
+    guest, observer = Replaced(), Recorder()
+    assert run(guest, observer).exit_code == 0
+    assert observer.cleanups[0].signal is None
     assert not guest.signals
     assert guest.reclaims
 
@@ -580,3 +593,127 @@ def test_reuse_requires_host_opt_in_even_for_a_confined_kind(confined):
         ).effective_cleanup(spec)
         is Cleanup.RECLAIM
     )
+
+
+@pytest.mark.parametrize(
+    "phase", ["before_launch", "after_launch", "before_cleanup", "after_cleanup", "descendants"]
+)
+def test_cancellation_records_the_interrupted_phase_and_preserves_cleanup(phase):
+    async def scenario():
+        entered = asyncio.Event()
+        phases = ["before_launch", "after_launch", "before_cleanup", "after_cleanup"]
+        child = process(82, ppid=81, pgid=82, start=101)
+
+        class CancelledCollector(Guest):
+            async def exec(self, command, *, working_directory, timeout):
+                if " --signal " in str(command):
+                    assert phase == "descendants"
+                    entered.set()
+                    await asyncio.Event().wait()
+                if " -I -S -c " in str(command):
+                    if phases[self.scan] == phase:
+                        self.scan += 1
+                        entered.set()
+                        await asyncio.Event().wait()
+                    result = await super().exec(
+                        command, working_directory=working_directory, timeout=timeout
+                    )
+                    if phase == "descendants" and self.scan in (2, 3):
+                        return dataclasses.replace(result, stdout=payload([self.program, child]))
+                    return result
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        guest, observer = CancelledCollector(), Recorder()
+        notes, token = open_unclean_notes()
+        try:
+            task = asyncio.create_task(
+                host_tool_calls_over_exec(
+                    guest, HostToolRun(HostToolRegistry(observer=observer)), LAYOUT, timeout=2
+                )
+            )
+            await asyncio.wait_for(entered.wait(), timeout=2)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            close_unclean_notes(token)
+        assert guest.reclaims
+        assert [event.phase for event in observer.snapshots] == (
+            phases[:1] if phase == "before_launch" else phases
+        )
+        if phase != "descendants":
+            cancelled = next(event for event in observer.snapshots if event.phase == phase)
+            assert cancelled.unavailable == "CancelledError" and cancelled.incomplete
+            assert cancelled.processes == ()
+        if phase == "before_launch":
+            assert not guest.signals and not observer.cleanups
+        else:
+            assert notes
+            group = next(event for event in observer.cleanups if event.pid == 81)
+            assert group.signal == (None if phase == "before_cleanup" else "SIGKILL")
+            if phase == "descendants":
+                stopped = next(event for event in observer.cleanups if event.pid == child.pid)
+                assert stopped.outcome == "unknown" and stopped.signal is None
+
+    asyncio.run(scenario())
+
+
+def test_expired_cleanup_budget_records_no_signal_attempt():
+    async def scenario():
+        guest, observer = Guest(), Recorder()
+        tracked = ProcessTracker(
+            guest, HostToolRun(HostToolRegistry(observer=observer)), "python3", LAYOUT.directory
+        )
+        tracked.pid, tracked.pgid, tracked.phase = 81, 80, "after_launch"
+        tracked.attribute((guest.program, process(82, ppid=81, pgid=82, start=101)))
+        launcher = transport._WhatTheLauncherSaid(tracker=tracked, pid=81, pgid=80, executed=True)
+        await transport._stop_the_program(guest, LAYOUT, until=time.monotonic(), launcher=launcher)
+        assert not guest.signals and guest.scan == 0
+        assert len(observer.cleanups) == 2
+        assert all(
+            event.signal is None and event.outcome == "unknown" for event in observer.cleanups
+        )
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "condition,outcome,signal",
+    [
+        ("sent", "sent", "SIGKILL"),
+        ("kill_refused", "refused", "SIGKILL"),
+        ("kill_absent", "absent", "SIGKILL"),
+        ("stat_absent", "absent", None),
+        ("stat_refused", "refused", None),
+        ("replaced", "replaced", None),
+    ],
+)
+def test_descendant_probe_reports_only_actual_signal_attempts(
+    monkeypatch, condition, outcome, signal
+):
+    attempts = []
+
+    def stat_bytes(path):
+        if condition == "stat_absent":
+            raise FileNotFoundError
+        if condition == "stat_refused":
+            raise PermissionError
+        fields = ["0"] * 20
+        fields[19] = "101" if condition == "replaced" else "100"
+        return ("82 (child) " + " ".join(fields)).encode()
+
+    def kill(pid, number):
+        attempts.append((pid, number))
+        if condition == "kill_refused":
+            raise PermissionError
+        if condition == "kill_absent":
+            raise ProcessLookupError
+
+    monkeypatch.setattr("maf_sandbox._process_probe.Path.read_bytes", stat_bytes)
+    monkeypatch.setattr("maf_sandbox._process_probe.os.kill", kill)
+    assert _process_probe.signal_processes([[82, 100]]) == [
+        {"pid": 82, "start_ticks": 100, "outcome": outcome, "signal": signal}
+    ]
+    assert attempts == ([(82, 9)] if signal else [])

@@ -1352,3 +1352,36 @@ class TestARecordNamesTheCallItCameFrom:
             "call-one",
             "call-two",
         }
+
+
+@pytest.mark.parametrize(
+    "outcome,signal",
+    [
+        ("sent", "SIGKILL"),
+        ("refused", "SIGKILL"),
+        ("refused", None),
+        ("unrecorded", None),
+        ("unknown", None),
+    ],
+)
+def test_cleanup_signal_attribute_requires_a_recorded_attempt(outcome, signal):
+    recorded = build(sampled=False)
+    recorded.observer.process_cleanup(
+        ProcessCleanup(
+            key=KEY,
+            instance_id="instance",
+            run_id="run",
+            pid=123,
+            pgid=100,
+            outcome=outcome,
+            reach="group" if outcome == "sent" else "nothing",
+            signal=signal,
+            seconds=0.1,
+        )
+    )
+    attributes = recorded.log_attributes("sandbox.process.cleanup")
+    assert attributes["maf_sandbox.process.outcome"] == outcome
+    if signal is None:
+        assert "maf_sandbox.process.signal" not in attributes
+    else:
+        assert attributes["maf_sandbox.process.signal"] == signal

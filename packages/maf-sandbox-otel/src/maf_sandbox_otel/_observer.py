@@ -617,7 +617,7 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             )
 
     def process_cleanup(self, event: ProcessCleanup) -> None:
-        """Record the signal attempt and its result without asserting termination."""
+        """Record a cleanup decision and any signal attempt without asserting termination."""
         attributes: dict[str, AttributeValue] = {
             **self._redaction.key(event.key),
             **without_none(
@@ -631,8 +631,12 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             "maf_sandbox.run_id": event.run_id,
             "maf_sandbox.process.outcome": event.outcome,
             "maf_sandbox.process.reach": event.reach,
-            "maf_sandbox.process.signal": "SIGKILL",
-            **without_none({"process.start_ticks": event.start_ticks}),
+            **without_none(
+                {
+                    "process.start_ticks": event.start_ticks,
+                    "maf_sandbox.process.signal": event.signal,
+                }
+            ),
         }
         self._emit(
             "sandbox.process.cleanup",

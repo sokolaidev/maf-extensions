@@ -216,6 +216,8 @@ print(json.dumps(dict(program=state(w['program']),child=state(w['child']),victim
                 for p in s.processes
             )
             assert all(s.pid != target and s.pgid != target for s in records.signals)
+            assert len(records.signals) == 2
+            assert all(s.signal == "SIGKILL" for s in records.signals)
         finally:
             removed = await backend._docker("rm", "-f", name, timeout=30)
             assert removed.returncode == 0, removed.stderr
