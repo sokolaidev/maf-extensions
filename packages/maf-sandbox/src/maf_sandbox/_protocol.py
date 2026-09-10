@@ -943,7 +943,7 @@ class ExecResult:
         ):
             if raw is not None and text:
                 raise ValueError(f"supply either {name} or its text, not both")
-            if raw is not None and not isinstance(raw, bytes):
+            if raw is not None and not isinstance(cast(object, raw), bytes):
                 raise TypeError(f"{name} must be bytes")
             object.__setattr__(self, name, text.encode("utf-8") if raw is None else raw)
         object.__setattr__(self, "exit_code", exit_code)

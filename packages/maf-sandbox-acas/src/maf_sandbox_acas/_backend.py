@@ -571,6 +571,20 @@ class _AcasSandbox:
         except ResourceNotFoundError:
             pass
 
+    async def probe_command(
+        self, command: tuple[str, ...], *, timeout: float, owns_capture: bool
+    ) -> int:
+        """Check a guest prerequisite, disposing any capture that cannot complete."""
+        try:
+            result = await self._exec_text(command, working_directory="/", timeout=timeout)
+        except BaseException as failure:
+            if owns_capture:
+                await self._invalidate_after_exec(failure)
+            raise
+        if owns_capture and result.exit_code:
+            await self._invalidate_after_exec(SandboxOutputError("exec capture probe failed"))
+        return result.exit_code
+
     async def _exec_text(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float
     ) -> ExecResult:
@@ -1179,22 +1193,12 @@ class AcasSandboxBackend:
 
         async def run(argv: tuple[str, ...], as_root: bool, owns_capture: bool) -> int:
             assert not as_root
-            try:
-                async with asyncio.timeout_at(deadline):
-                    result = await sandbox._exec_text(
-                        argv,
-                        working_directory="/",
-                        timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
-                    )
-            except BaseException as failure:
-                if owns_capture:
-                    await sandbox._invalidate_after_exec(failure)
-                raise
-            if owns_capture and result.exit_code:
-                await sandbox._invalidate_after_exec(
-                    SandboxOutputError("exec capture probe failed")
+            async with asyncio.timeout_at(deadline):
+                return await sandbox.probe_command(
+                    argv,
+                    timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+                    owns_capture=owns_capture,
                 )
-            return result.exit_code
 
         await probe_commands(spec, held.commands, run)
 

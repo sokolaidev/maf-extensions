@@ -11,7 +11,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
-from maf_sandbox import ExecResult, SandboxOutputError
+from maf_sandbox import Egress, ExecResult, SandboxOutputError
 
 from maf_sandbox_acas._backend import _AcasSandbox, _Held
 from maf_sandbox_acas._exec_capture import (
@@ -78,7 +78,7 @@ def test_timeout_and_cancellation_invalidate_shared_instance_and_attempt_disposa
 ):
     async def scenario():
         client = _StalledClient(delete_fails=delete_fails)
-        held = _Held(client.sandbox_id)
+        held = _Held(client.sandbox_id, egress=(Egress.CLOSED, frozenset()))
         sandbox = _AcasSandbox(client, 1, held=held)
         other = _AcasSandbox(client, 1, held=held)
         task = asyncio.create_task(sandbox.exec("sleep 10", working_directory="/", timeout=0.05))
