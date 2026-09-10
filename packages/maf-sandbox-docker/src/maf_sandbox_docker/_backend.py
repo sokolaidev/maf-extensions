@@ -117,6 +117,8 @@ _LABEL_PREFIX = "maf-sandbox.label."
 #: Marks the egress proxy so a purge can tell it from the sandboxes it counts.
 _LABEL_ROLE = "maf-sandbox.role"
 _LABEL_KEY = "maf-sandbox.key.v1"
+# Optional attribution must leave command-line space for the proxy's required configuration.
+_KEY_LABEL_MAX = 4096
 
 _LABEL_VALUE_MAX = 63
 _LABEL_VALUE_SAFE = re.compile(r"[A-Za-z0-9._-]+")
@@ -347,12 +349,14 @@ def _sandbox_labels(key: SandboxKey, spec: SandboxSpec) -> dict[str, str]:
 
 
 def _key_label(key: SandboxKey) -> str:
-    """Encode arbitrary key strings as one ASCII label value."""
-    return base64.urlsafe_b64encode(
-        json.dumps(
-            [key.scope, key.thread_id, key.agent_dir, key.call_id], ensure_ascii=True
-        ).encode()
-    ).decode("ascii")
+    """Encode the key within the attribution budget; empty explicitly disables recovery."""
+    fields = [key.scope, key.thread_id, key.agent_dir, key.call_id]
+    if sum(map(len, fields)) > _KEY_LABEL_MAX:
+        return ""
+    encoded = base64.urlsafe_b64encode(json.dumps(fields, ensure_ascii=True).encode()).decode(
+        "ascii"
+    )
+    return encoded if len(encoded) <= _KEY_LABEL_MAX else ""
 
 
 def _key_from_labels(labels: object) -> SandboxKey | None:
@@ -2193,7 +2197,6 @@ class DockerSandboxBackend:
         names = [*listed, *stranded]
 
         drained: dict[str, EgressObserved | None] = {}
-        # Include orphan proxies and deduplicate each workload/proxy pair.
         for workload in dict.fromkeys(n.removesuffix(_PROXY_SUFFIX) for n in names):
             attributed = drain_key(workload) if drain_key is not None else None
             if attributed is not None:
@@ -2703,7 +2706,15 @@ class DockerSandboxBackend:
         args += ["-e", f"{_ALLOW_ENV}={','.join(map(str, spec.egress_allow))}"]
         for label, value in _sandbox_labels(key, spec).items():
             args += ["--label", f"{label}={value}"]
-        args += ["--label", f"{_LABEL_KEY}={_key_label(key)}"]
+        attribution = _key_label(key)
+        if not attribution:
+            logger.warning(
+                "proxy %s: encoded key exceeds the %d-byte attribution limit; "
+                "a drain requires a caller-supplied key",
+                proxy,
+                _KEY_LABEL_MAX,
+            )
+        args += ["--label", f"{_LABEL_KEY}={attribution}"]
         args += ["--label", f"{_LABEL_ROLE}=proxy", proxy_image]
 
         result = await self._docker(*args, timeout=self._config.command_timeout_seconds)

@@ -484,6 +484,35 @@ class TestAllowlistEgress:
     def _config(self) -> WslcSandboxConfig:
         return WslcSandboxConfig(egress_proxy_image=_PROXY_IMAGE)
 
+    def test_oversized_keys_acquire_and_drain_with_the_callers_key(self):
+        key = SandboxKey(scope=f"e2e-{uuid.uuid4()}", thread_id="thread", agent_dir="x" * 150_000)
+        creator = WslcSandboxBackend(self._config())
+        reader = WslcSandboxBackend(self._config())
+        events = []
+        reader.observe_egress(events.append)
+
+        async def scenario():
+            try:
+                sandbox = await creator.acquire(
+                    key, replace(_spec(), egress=Egress.ALLOWLIST, egress_allow=("example.com",))
+                )
+                result = await sandbox.exec(
+                    ["curl", "-I", "--max-time", "10", "https://blocked.invalid"],
+                    working_directory="/",
+                    timeout=20,
+                )
+                assert result.exit_code != 0
+                await reader._drain_attributed_proxy(sandbox.container_name)
+                assert events == []
+                creator.observe_egress(events.append)
+                assert (await creator.dispose(key)) is None
+                assert [event.key for event in events] == [key]
+                assert [d.host for event in events for d in event.decisions] == ["blocked.invalid"]
+            finally:
+                await creator.dispose_scope(key.scope, key.thread_id)
+
+        asyncio.run(scenario())
+
     @pytest.mark.parametrize("orphan", [False, True])
     def test_a_fresh_backend_reports_proxy_decisions_with_lossless_attribution(self, orphan):
         key = SandboxKey(

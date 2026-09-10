@@ -325,8 +325,8 @@ async def reap(
                     if not is_proxy or await sweep.inspect("container", target.name) is not None:
                         break
                 if is_proxy:
-                    forget(target.workload)
                     proxies += int(outcome == "removed")
+                    forget(target.workload)
                 elif target.resource == "network":
                     networks += 1
                 else:

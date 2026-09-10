@@ -4,6 +4,8 @@ import asyncio
 import base64
 import importlib
 import json
+import sys
+from dataclasses import replace
 
 import pytest
 from maf_sandbox import Egress, SandboxKey, SandboxSpec
@@ -111,6 +113,59 @@ def test_lossless_proxy_labels_round_trip_without_changing_selectors(engine, key
         assert "maf-sandbox.key.v1" not in engine.module._sandbox_labels(key, _SPEC)
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("field", ["scope", "thread_id", "agent_dir", "call_id"])
+@pytest.mark.parametrize(
+    "value", ["x" * 150_000, "\u2603" * 1000], ids=["long-ascii", "escaped-unicode"]
+)
+def test_oversized_attribution_keeps_proxy_creation_within_argument_limits(
+    engine, field, value, caplog
+):
+    key = replace(
+        SandboxKey(scope="scope", thread_id="thread", agent_dir="agent"), **{field: value}
+    )
+
+    async def scenario():
+        backend = engine.backend()
+
+        async def launch(*args, **kwargs):
+            if "run" in args:
+                process = await asyncio.create_subprocess_exec(sys.executable, "-c", "pass", *args)
+                assert await process.wait() == 0
+            return await engine.command(*args, **kwargs)
+
+        setattr(backend, "_" + engine.name, launch)
+        await backend._ensure_proxy("workload", key, _SPEC)
+        labels = next(iter(engine.rows.values()))["Config"]["Labels"]
+        assert labels["maf-sandbox.key.v1"] == ""
+        assert engine.module._key_from_labels(labels) is None
+        events = []
+        backend.observe_egress(events.append)
+        event = await backend._drain_the_proxy("workload", key)
+        assert event is not None and event.key == key
+        assert events == []
+        reader = engine.backend()
+        reader.observe_egress(events.append)
+        await reader.dispose_scope(key.scope, key.thread_id)
+        assert events == []
+        assert not engine.rows
+
+    asyncio.run(scenario())
+    assert "exceeds the 4096-byte attribution limit" in caplog.text
+
+
+@pytest.mark.parametrize("length,attributable", [(3056, True), (3057, False)])
+def test_the_encoded_attribution_budget_is_inclusive(engine, length, attributable):
+    key = SandboxKey(scope="x" * length, thread_id="", agent_dir="")
+    encoded = engine.module._key_label(key)
+    labels = {**engine.module._sandbox_labels(key, _SPEC), "maf-sandbox.key.v1": encoded}
+    if attributable:
+        assert len(encoded) == 4096
+        assert engine.module._key_from_labels(labels) == key
+    else:
+        assert encoded == ""
+        assert engine.module._key_from_labels(labels) is None
 
 
 @pytest.mark.parametrize(
@@ -284,9 +339,7 @@ def test_a_confirmed_instance_disappearing_during_drain_reports_its_lost_window(
         event = await backend._drain_attributed_proxy("workload")
         assert events == []
         assert event is not None and event.key == _KEY
-        assert (
-            event.unreadable == "the inspected proxy disappeared before its log could be read"
-        )
+        assert event.unreadable == "the inspected proxy disappeared before its log could be read"
 
     asyncio.run(scenario())
 
