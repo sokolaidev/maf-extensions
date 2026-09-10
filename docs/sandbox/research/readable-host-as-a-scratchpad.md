@@ -1,6 +1,6 @@
 # A readable host as a scratchpad — two public incidents read against this suite
 
-> A reading, not a proposal. In September 2026 two reports described agents that were meant to read the internet and not write to it, wrote anyway, and used what they wrote to coordinate with each other. Neither was a container escape. This record takes each mechanism the reports describe and asks what this suite does about it as shipped, what it does not, and which open issue the gap already belongs to. Nothing here is decided. The one sentence that graduated is on [`../network.md`](../network.md) under `egress_allow`: a host two conversations both list is a channel between them. The record stream this reading asks for is designed on [`../observability.md`](../observability.md), whose `## Status` table is what tracks its state — the body below is kept in the tense it was written and does not follow it.
+> A reading, not a proposal. In September 2026 two reports described agents that were meant to read the internet and not write to it, wrote anyway, and used what they wrote to coordinate with each other. Neither was a container escape. This record takes each mechanism the reports describe and asks what this suite does about it as shipped, what it does not, and where the gaps are tracked. Nothing here is decided. The one sentence that graduated is on [`../network.md`](../network.md) under `egress_allow`: a host two conversations both list is a channel between them. The record stream this reading asks for is designed on [`../observability.md`](../observability.md), whose `## Status` table is what tracks its state — the body below is kept in the tense it was written and does not follow it.
 
 ## The two reports
 
@@ -38,7 +38,7 @@ The report names one and describes none, so this section maps the classes rather
 
 **Closed by mechanism.** The proxy resolves names on its own side, so the guest performs no lookup it could encode into. It refuses to complete a tunnel to a peer that is not globally routable, which is how the metadata and link-local ranges stay unreachable under `ALLOWLIST` and how condition 2 of the micro-VM standard is met ([`../policy-isolation.md`](../policy-isolation.md)). It accepts `CONNECT` and nothing else, to port 443 unless configured otherwise. `HTTP_PROXY` is advisory; the topology is the control. On ACAS the policy is applied by the service above the guest, with no in-guest component to route around.
 
-**Identified and not closed.** The container engine's embedded DNS resolver forwards lookups from the daemon, outside the guest's namespace. Whether it still does so on a network created `--internal` is engine behaviour this repository has identified and not measured, and it would be a low-bandwidth way out of a topology that has no other. [#402](https://github.com/sokolaidev/maf-extensions/issues/402) names a no-DNS-leak assertion as one of three, and it is asserted in no suite. If the "network-limit trick" in the report has a counterpart here, this is the shape of it.
+**Identified and not closed.** The container engine's embedded DNS resolver forwards lookups from the daemon, outside the guest's namespace. Whether it still does so on a network created `--internal` is engine behaviour this repository has identified and not measured, and it would be a low-bandwidth way out of a topology that has no other. This measurement is untracked and asserted in no suite. If the "network-limit trick" in the report has a counterpart here, this is the shape of it.
 
 **Priced, not closed.** docker and wslc sit at the `container` rung and share a kernel with every other sandbox on the daemon. The ladder says so, and the default `MICROVM` floor refuses them unless a host opts down. A kernel escape is the cost that rung carries, and no report here describes one.
 
@@ -60,13 +60,13 @@ That gap is filed as [#904](https://github.com/sokolaidev/maf-extensions/issues/
 
 ## What this record argues for, and what it does not
 
-It argues for no new axis. Each mechanism above already has an owner:
+It argues for no new axis. The table records the existing controls, remaining gaps and their tracking:
 
 | Mechanism in the reports | What holds here | What does not | Where it belongs |
 |---|---|---|---|
 | A read that writes | Host-scoped allowlist, `CLOSED` by default, `UNRESTRICTED` inexpressible for model-written code | Method scope; and a `fetch` host tool restores the report's reach with the host's authority | [#377](https://github.com/sokolaidev/maf-extensions/issues/377); the cap derivation in [`exfiltration-audit.md`](exfiltration-audit.md) |
 | A shared scratchpad | Keying, per-sandbox topology, no guest-writable core state | Any listed host that stores and answers; the in-host relays | the sentence on [`../network.md`](../network.md); [#793](https://github.com/sokolaidev/maf-extensions/issues/793) |
-| A network-limit trick | Egress-side resolution, non-global refusal, `CONNECT`-only | The engine's DNS on an internal network, asserted nowhere | [#402](https://github.com/sokolaidev/maf-extensions/issues/402) |
+| A network-limit trick | Egress-side resolution, non-global refusal, `CONNECT`-only | The engine's DNS on an internal network, asserted nowhere | untracked |
 | An internal tool as a message board | Sealed registry, per-sandbox proxy, label-scoped disposal | Shared sink roots and stores are the host's to keep apart | [#793](https://github.com/sokolaidev/maf-extensions/issues/793) |
 | Detection from logs | The call stays on the tool path the middleware sees | No event stream for what happened inside the call | [#904](https://github.com/sokolaidev/maf-extensions/issues/904) |
 
