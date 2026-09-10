@@ -582,6 +582,7 @@ async def _run_phase(
             try:
                 await asyncio.shield(execution)
             except (asyncio.CancelledError, Exception):
+                # Preserve the caller's cancellation over later cancels or an exec failure.
                 pass
         if not execution.cancelled():
             execution.exception()
