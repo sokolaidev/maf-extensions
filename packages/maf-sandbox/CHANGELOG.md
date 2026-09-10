@@ -2,6 +2,29 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.37.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.36.0...maf-sandbox-v0.37.0) (2026-09-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** drain concurrent calls before cleaning each sandbox instance ([#1065](https://github.com/sokolaidev/maf-extensions/issues/1065))
+* target cleanup and retries at the physical sandbox instance ([#1060](https://github.com/sokolaidev/maf-extensions/issues/1060))
+* let core label guidance and weaken results from file reads ([#1054](https://github.com/sokolaidev/maf-extensions/issues/1054))
+* **sandbox:** clean unfamiliar sandbox instances before serving calls ([#1045](https://github.com/sokolaidev/maf-extensions/issues/1045))
+
+### Features
+
+* accept method-scoped egress policies and refuse unsupported backends ([#1063](https://github.com/sokolaidev/maf-extensions/issues/1063)) ([39fd53b](https://github.com/sokolaidev/maf-extensions/commit/39fd53b457a301d59a646d815e717b8e61b6d698))
+* gate reclamation conformance and refuse unsafe WSLC cleanup ([#1036](https://github.com/sokolaidev/maf-extensions/issues/1036)) ([55fb81a](https://github.com/sokolaidev/maf-extensions/commit/55fb81a8f925c878699d23d1caa8b487b465e8f1))
+* let core label guidance and weaken results from file reads ([#1054](https://github.com/sokolaidev/maf-extensions/issues/1054)) ([afcd44d](https://github.com/sokolaidev/maf-extensions/commit/afcd44d061f94c5d9060de14a6321a7299cc67a3))
+* **sandbox:** clean unfamiliar sandbox instances before serving calls ([#1045](https://github.com/sokolaidev/maf-extensions/issues/1045)) ([333e6f9](https://github.com/sokolaidev/maf-extensions/commit/333e6f9e1267f3ec53f3b61477b9ea745827528a))
+* **sandbox:** detect path and process residue after a confined call ([#1027](https://github.com/sokolaidev/maf-extensions/issues/1027)) ([2ae8d20](https://github.com/sokolaidev/maf-extensions/commit/2ae8d20b9ed430e121da9151205def58ad7fe756))
+* **sandbox:** drain concurrent calls before cleaning each sandbox instance ([#1065](https://github.com/sokolaidev/maf-extensions/issues/1065)) ([191a7a6](https://github.com/sokolaidev/maf-extensions/commit/191a7a687dc896c47f39b9f9ff5d2bbd04680dcf))
+* **sandbox:** let hosts dispose one kind while retaining the others ([#1028](https://github.com/sokolaidev/maf-extensions/issues/1028)) ([7fcae68](https://github.com/sokolaidev/maf-extensions/commit/7fcae6882238b14f31742e6178653b654340c634))
+* **sandbox:** refuse store files below the host's required integrity ([#1066](https://github.com/sokolaidev/maf-extensions/issues/1066)) ([db294f2](https://github.com/sokolaidev/maf-extensions/commit/db294f2a710b126f537004d23f16f3ff0aa04f6a))
+* target cleanup and retries at the physical sandbox instance ([#1060](https://github.com/sokolaidev/maf-extensions/issues/1060)) ([50a123f](https://github.com/sokolaidev/maf-extensions/commit/50a123f15b0e1e358a9c5d191aafb56ac6a5dcf6))
+* verify Docker confinement and share guest file-access refusals ([#1037](https://github.com/sokolaidev/maf-extensions/issues/1037)) ([ad59f43](https://github.com/sokolaidev/maf-extensions/commit/ad59f4305d119e86d4f57a583c04775ae257e9a0))
+
 ## [0.36.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.35.0...maf-sandbox-v0.36.0) (2026-09-08)
 
 
