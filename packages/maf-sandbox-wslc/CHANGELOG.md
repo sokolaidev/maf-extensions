@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.19.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.18.0...maf-sandbox-wslc-v0.19.0) (2026-09-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* target cleanup and retries at the physical sandbox instance ([#1060](https://github.com/sokolaidev/maf-extensions/issues/1060))
+* **sandbox:** clean unfamiliar sandbox instances before serving calls ([#1045](https://github.com/sokolaidev/maf-extensions/issues/1045))
+
+### Features
+
+* accept method-scoped egress policies and refuse unsupported backends ([#1063](https://github.com/sokolaidev/maf-extensions/issues/1063)) ([39fd53b](https://github.com/sokolaidev/maf-extensions/commit/39fd53b457a301d59a646d815e717b8e61b6d698))
+* gate reclamation conformance and refuse unsafe WSLC cleanup ([#1036](https://github.com/sokolaidev/maf-extensions/issues/1036)) ([55fb81a](https://github.com/sokolaidev/maf-extensions/commit/55fb81a8f925c878699d23d1caa8b487b465e8f1))
+* **sandbox:** clean unfamiliar sandbox instances before serving calls ([#1045](https://github.com/sokolaidev/maf-extensions/issues/1045)) ([333e6f9](https://github.com/sokolaidev/maf-extensions/commit/333e6f9e1267f3ec53f3b61477b9ea745827528a))
+* target cleanup and retries at the physical sandbox instance ([#1060](https://github.com/sokolaidev/maf-extensions/issues/1060)) ([50a123f](https://github.com/sokolaidev/maf-extensions/commit/50a123f15b0e1e358a9c5d191aafb56ac6a5dcf6))
+
+
+### Fixes
+
+* **wslc:** let non-root guests modify inputs and create outputs ([#1053](https://github.com/sokolaidev/maf-extensions/issues/1053)) ([7618803](https://github.com/sokolaidev/maf-extensions/commit/761880392f49f527d855d0aaf178bff52b5827d8))
+
 ## [0.18.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.17.0...maf-sandbox-wslc-v0.18.0) (2026-09-08)
 
 
