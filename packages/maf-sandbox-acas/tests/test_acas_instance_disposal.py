@@ -5,7 +5,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
-from maf_sandbox import SandboxKey, SandboxSpec
+from maf_sandbox import Egress, SandboxKey, SandboxSpec
 from maf_sandbox.conformance import assert_instance_disposal_conformance
 
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
@@ -104,7 +104,9 @@ def test_failures_retain_exact_ids_and_retry_without_deleting_replacements(failu
     service.add("target")
     service.add("sibling", spec=replace(SPEC, kind="other"))
     backend = _backend(service)
-    backend._registry[(KEY.scope, KEY.thread_id, KEY.agent_dir, SPEC.kind)] = _Held("target")
+    backend._registry[(KEY.scope, KEY.thread_id, KEY.agent_dir, SPEC.kind)] = _Held(
+        "target", egress=(Egress.CLOSED, frozenset())
+    )
     service.failure = failure
     pending = backend.dispose(KEY, kind=SPEC.kind, instance_id="target")
     if failure == "cancel":

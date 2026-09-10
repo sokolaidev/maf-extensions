@@ -16,7 +16,9 @@ import logging
 import posixpath
 import shlex
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
+from concurrent.futures import Future
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from hashlib import sha256
 from time import monotonic
@@ -35,6 +37,7 @@ from maf_sandbox import (
     Sandbox,
     SandboxBackend,
     SandboxCapabilityNotSupported,
+    SandboxEgressNotEnforced,
     SandboxEntry,
     SandboxKey,
     SandboxLimits,
@@ -70,7 +73,12 @@ from ._probes import probe_commands
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["BACKEND_NAME", "AcasEntryPayloadIncomplete", "AcasSandboxBackend"]
+__all__ = [
+    "BACKEND_NAME",
+    "AcasEgressPolicyConflict",
+    "AcasEntryPayloadIncomplete",
+    "AcasSandboxBackend",
+]
 
 #: The name :attr:`AcasSandboxBackend.name` answers to, and the value
 #: :class:`~maf_sandbox.SandboxRouter`'s ``selected=`` matches on.
@@ -87,6 +95,10 @@ __all__ = ["BACKEND_NAME", "AcasEntryPayloadIncomplete", "AcasSandboxBackend"]
 #: `maf_sandbox_acas.BACKEND_NAME`, or alias at the import:
 #: `from maf_sandbox_acas import BACKEND_NAME as ACAS_BACKEND`.
 BACKEND_NAME = "acas"
+
+
+class AcasEgressPolicyConflict(SandboxEgressNotEnforced):
+    """This key and kind hold a sandbox created with a different egress policy."""
 
 
 class AcasEntryPayloadIncomplete(SandboxOutputError):
@@ -386,7 +398,18 @@ class _Held:
     removal: bool | None = None
     probed: bool = False
     commands: set[str] = field(default_factory=set[str])
+    egress: tuple[Egress, frozenset[str]] = field(kw_only=True)
     work_dir: str = "/maf-sandbox/work"
+
+
+def _egress_key(spec: SandboxSpec) -> tuple[Egress, frozenset[str]]:
+    """The supported policy's identity, independent of host spelling and order."""
+    if Capability.EGRESS_METHODS in spec.required_capabilities:
+        raise SandboxCapabilityNotSupported(
+            "ACAS cannot enforce literal, case-sensitive egress methods; "
+            "method-scoped policy is refused."
+        )
+    return spec.egress, frozenset(str(host).lower() for host in spec.egress_allow)
 
 
 @dataclass(frozen=True)
@@ -786,10 +809,8 @@ class AcasSandboxBackend:
         #: Which (image, kind) pairs have already been warned about. `acquire` runs on every
         #: tool call, and a warning per call is noise rather than a signal.
         self._warned_about_the_guest: set[tuple[tuple[str, str], str]] = set()
-        # One get-or-create lock per (loop, registry key) — see `_acquire_lock`.
-        self._acquire_locks: dict[
-            tuple[asyncio.AbstractEventLoop, tuple[str, str, str, str]], asyncio.Lock
-        ] = {}
+        self._acquisitions: dict[tuple[str, str, str, str], Future[None]] = {}
+        self._acquire_guard = threading.Lock()
 
     @property
     def name(self) -> str:
@@ -853,8 +874,8 @@ class AcasSandboxBackend:
         several; none of that is visible in the tool's output, which reports compiler
         diagnostics either way.
 
-        Get-or-create is serialised per key, because a create names no sandbox and the
-        service therefore has nothing to recognise a duplicate by.  The function calls in one
+        Get-or-create is serialised per key and kind across event loops. A create names no
+        sandbox, so the service has nothing to recognise a duplicate by. The function calls in one
         assistant message are executed concurrently, so two acquires for one key can be in
         flight at once; unserialised, both miss the registry and each is handed a running,
         billable sandbox, of which only one stays registered.
@@ -864,7 +885,11 @@ class AcasSandboxBackend:
                 ``HOST_TOOLS`` and the removal compatibility probe completed with failure,
                 or ``FILES_DELETE`` without a successful removal observation. An inconclusive
                 probe serves the writing capabilities but refuses deletion; a successful
-                probe does not establish that the guest is root.
+                probe does not establish that the guest is root. Method-scoped egress
+                is also refused because the service matches methods case-insensitively.
+            AcasEgressPolicyConflict: when this key and kind already hold a different
+                egress policy. Successfully dispose the kind through the router or this
+                backend before changing it, or use another key.
         """
         _sandbox_labels(key, spec)
         async with self._acquire_lock((key.scope, key.thread_id, key.agent_dir, spec.kind)):
@@ -873,26 +898,41 @@ class AcasSandboxBackend:
                 await sandbox.prepare_work_dir(spec)
             return sandbox
 
-    def _acquire_lock(self, registry_key: tuple[str, str, str, str]) -> asyncio.Lock:
-        """The get-or-create lock for one key on the running loop.
-
-        Per loop as well as per key: an :class:`asyncio.Lock` binds to the first loop a
-        caller has to *wait* on it and raises on every other one after that, and this backend
-        is reachable from more than one loop (see ``_clients``).  Per key rather than one lock
-        for the backend, so a cold create for one conversation never queues behind another's.
-        """
-        lock_key = (asyncio.get_running_loop(), registry_key)
-        lock = self._acquire_locks.get(lock_key)
-        if lock is None:
-            lock = self._acquire_locks[lock_key] = asyncio.Lock()
-        return lock
+    @asynccontextmanager
+    async def _acquire_lock(
+        self, registry_key: tuple[str, str, str, str]
+    ) -> AsyncGenerator[None, None]:
+        """Serialize one registry key across event loops without blocking their threads."""
+        while True:
+            with self._acquire_guard:
+                active = self._acquisitions.get(registry_key)
+                if active is None:
+                    owned: Future[None] = Future()
+                    self._acquisitions[registry_key] = owned
+                    break
+            # A cancelled waiter must not cancel the owner's shared completion signal.
+            await asyncio.shield(asyncio.wrap_future(active))
+        try:
+            yield
+        finally:
+            with self._acquire_guard:
+                del self._acquisitions[registry_key]
+            owned.set_result(None)
 
     async def _get_or_create(self, key: SandboxKey, spec: SandboxSpec) -> _AcasSandbox:
         """:meth:`acquire`'s body, run under that key's lock."""
-        gc = self._group_client()
+        egress = _egress_key(spec)
         registry_key = (key.scope, key.thread_id, key.agent_dir, spec.kind)
         work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
         held = self._registry.get(registry_key)
+        if held is not None and held.egress != egress:
+            # Replacement could delete an instance another caller is still using.
+            raise AcasEgressPolicyConflict(
+                "ACAS already holds a different egress policy for this key and kind. "
+                "Successfully dispose the kind with SandboxRouter.dispose_kind or "
+                "AcasSandboxBackend.dispose before changing policy, or use a different key."
+            )
+        gc = self._group_client()
         if held is not None:
             sandbox_id = held.sandbox_id
             try:
@@ -963,7 +1003,7 @@ class AcasSandboxBackend:
             key.agent_dir,
         )
         # Register immediately, so the sandbox is reachable by purge even if configure fails.
-        held = self._registry[registry_key] = _Held(sc.sandbox_id, work_dir=work_dir)
+        held = self._registry[registry_key] = _Held(sc.sandbox_id, egress=egress, work_dir=work_dir)
         try:
             await self._configure(sc)
         except Exception as exc:  # noqa: BLE001
@@ -1409,6 +1449,7 @@ class AcasSandboxBackend:
         """Deny by default, allow only the hosts the spec names."""
         from azure.containerapps.sandbox import EgressHostRule, EgressPolicy
 
+        _egress_key(spec)
         return EgressPolicy(
             default_action="Deny",
             traffic_inspection="Full",
