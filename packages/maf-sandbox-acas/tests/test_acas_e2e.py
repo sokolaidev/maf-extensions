@@ -31,7 +31,8 @@ what this package believes, and #139 and #142 were both the package believing wr
 :class:`TestFilesOutAgainstTheRealService` asserts that none of them skipped here, because a
 suite that quietly skips a third of itself is the shape of a green run that attacked nothing.
 
-**Cost discipline.** Four sandboxes for the whole module, and two more only where
+**Cost discipline.** The acquire-directory probe adds one sandbox per configured image to the
+four sandboxes used by the other probes, and two more only where
 ``MAF_SANDBOX_ACAS_E2E_NONROOT_IMAGE`` names one whose guest is not root — the non-root class
 shares one, and the cold-refusal probe creates a second that the backend under test deletes. The probes and refusals share one,
 acquired by a module-scoped fixture and disposed at the end; the lifecycle test needs its own
@@ -919,6 +920,55 @@ class TestMissingLifecycleRecovery:
 #: deployment, and the leg skips: every sample and every other sandbox in this module runs a
 #: root image, which is why nothing surfaced #722 until a probe went looking for it.
 _NONROOT_IMAGE = os.environ.get("MAF_SANDBOX_ACAS_E2E_NONROOT_IMAGE")
+
+
+@pytest.mark.parametrize(
+    "image", [_PREBUILT, _IMAGE, _NONROOT_IMAGE], ids=["prebuilt", "imported", "nonroot"]
+)
+def test_acquire_prepares_base_before_exec_and_repairs_warm_reuse(loop, image):
+    if not image:
+        pytest.skip("needs the corresponding ACAS E2E image")
+
+    backend = AcasSandboxBackend(_config())
+    scope = f"e2e-acquire-work-dir-{uuid.uuid4()}"
+    key = _key(scope)
+    spec = SandboxSpec(
+        kind="e2e-acquire-work-dir",
+        image=image,
+        work_dir=f"/maf-sandbox/acquire-{uuid.uuid4().hex}/nested",
+        requires=frozenset({Capability.EXEC}),
+    )
+
+    async def scenario() -> None:
+        sandbox = await backend.acquire(key, spec)
+        ran = await sandbox.exec("pwd", working_directory=spec.work_dir, timeout=_EXEC_TIMEOUT)
+        assert ran.exit_code == 0, ran.stderr
+        assert ran.stdout.strip() == spec.work_dir
+
+        await sandbox.write_file(f"{spec.work_dir}/marker", "kept", working_directory=spec.work_dir)
+        warm = await backend.acquire(key, spec)
+        assert warm.instance_id == sandbox.instance_id
+        kept = await warm.exec("cat marker", working_directory=spec.work_dir, timeout=_EXEC_TIMEOUT)
+        assert kept.exit_code == 0, kept.stderr
+        assert kept.stdout == "kept"
+
+        sc = backend._group_client().get_sandbox_client(sandbox.sandbox_id)
+        await sc.delete_file(spec.work_dir, recursive=True)
+        assert await warm.stat_file(spec.work_dir, working_directory=spec.work_dir) is None
+
+        repaired = await backend.acquire(key, spec)
+        assert repaired.instance_id == sandbox.instance_id
+        ran = await repaired.exec("pwd", working_directory=spec.work_dir, timeout=_EXEC_TIMEOUT)
+        assert ran.exit_code == 0, ran.stderr
+        assert ran.stdout.strip() == spec.work_dir
+
+    try:
+        loop.run_until_complete(scenario())
+    finally:
+        try:
+            loop.run_until_complete(_drains_to_empty(backend, scope))
+        finally:
+            loop.run_until_complete(backend.aclose())
 
 
 class TestAnImageWhoseGuestIsNotRoot:
