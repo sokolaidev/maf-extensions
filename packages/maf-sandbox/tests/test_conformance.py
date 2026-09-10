@@ -690,7 +690,21 @@ class _SimulatedGuest:
         return resolved
 
     async def exec(self, command, *, working_directory: str, timeout: float) -> ExecResult:
-        argv = [command] if isinstance(command, str) else list(command)
+        argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
+        if (
+            len(argv) == 3
+            and argv[:2] == ["sh", "-c"]
+            and "exit 7" in argv[2]
+            and "\\000" in argv[2]
+        ):
+            encoded = re.findall(r"printf '([^']*)'", argv[2])
+            out, err = (
+                bytes(int(o, 8) for o in re.findall(r"\\([0-7]{3})", stream)) for stream in encoded
+            )
+            if self._streams == "merged":
+                return ExecResult(stdout_bytes=out + err, exit_code=7, producer_owns_stderr=True)
+            return ExecResult(stdout_bytes=out, stderr_bytes=err, exit_code=7)
+
         # `ln -sfn target path`, which PosixGuestSubject plants links with.
         if argv[0:1] == ["ln"] and argv[1:2] == ["-sfn"] and len(argv) == 4:
             self.symlinks[argv[3]] = argv[2]
@@ -782,7 +796,7 @@ class _SimulatedGuest:
                 return ExecResult(stdout="", stderr="no such file", exit_code=1)
             content = self.contents[operand]
             return ExecResult(
-                stdout=content.decode("utf-8", errors="surrogateescape"),
+                stdout_bytes=content,
             )
         if argv[0:1] == ["printf"]:
             return ExecResult(stdout=argv[1])
@@ -1068,7 +1082,7 @@ class TestFilesDeleteConformance:
             run_exec_probes,
         )
         assert failures["a-timeout-raises-timeout-error"] is not None
-        assert "ignored the caller's timeout" in failures["a-timeout-raises-timeout-error"]
+        assert "cleanup allowance" in failures["a-timeout-raises-timeout-error"]
 
     def test_a_non_idempotent_removal_fails_the_missing_path_probe(self):
         """Succeeds on never-seen paths, raises on the repeat — the finally-breaker."""

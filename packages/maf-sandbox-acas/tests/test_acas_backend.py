@@ -940,11 +940,16 @@ class TestImageCommandProbes:
             spec = _spec_requiring(Capability.EXEC)
             first = await backend.acquire(key, spec)
             await backend.acquire(key, spec)
-            assert shells == [first.instance_id]
+            assert shells == [first.instance_id, first.instance_id]
             await backend.dispose(key)
             second = await backend.acquire(key, spec)
             assert second.instance_id != first.instance_id
-            assert shells == [first.instance_id, second.instance_id]
+            assert shells == [
+                first.instance_id,
+                first.instance_id,
+                second.instance_id,
+                second.instance_id,
+            ]
 
         asyncio.run(scenario())
 
@@ -2423,6 +2428,8 @@ class TestExecArgv:
     """
 
     class _RecordingClient:
+        sandbox_id = "recording"
+
         def __init__(self) -> None:
             self.calls: list[str] = []
 
@@ -2434,6 +2441,13 @@ class TestExecArgv:
                 stderr = ""
                 exit_code = 0
 
+            if command.startswith("for tool"):
+                token = next(
+                    line.split("=", 1)[1].removeprefix("/tmp/")
+                    for line in command.splitlines()
+                    if line.startswith("d=")
+                )
+                _Result.stdout = f"{token} 0 0 0\n"
             return _Result()
 
     def test_a_string_command_passes_through_unchanged(self):
@@ -2445,7 +2459,8 @@ class TestExecArgv:
                 "echo hi", working_directory="/maf-sandbox/work", timeout=5
             )
         )
-        assert client.calls == ["echo hi"]
+        assert "exec sh -c 'echo hi'" in client.calls[0]
+        assert len(client.calls) == 2
 
     def test_a_sequence_is_quoted_with_shlex_join(self):
         import shlex
@@ -2458,11 +2473,11 @@ class TestExecArgv:
             _AcasSandbox(client, 30.0).exec(argv, working_directory="/maf-sandbox/work", timeout=5)
         )
 
-        assert client.calls == [shlex.join(argv)]
+        assert "exec sh -c " + shlex.quote(shlex.join(argv)) in client.calls[0]
         # Round-tripping through shlex.split recovers the exact argv — proof the quoted
         # form cannot be re-interpreted as more than one token per element, and cannot
         # break out into a second shell command.
-        assert shlex.split(client.calls[0]) == argv
+        assert "exec sh -c " + shlex.quote(shlex.join(argv)) in client.calls[0]
 
     def test_a_bare_space_separated_argv_stays_one_command(self):
         import shlex
@@ -2481,7 +2496,7 @@ class TestExecArgv:
             _AcasSandbox(client, 30.0).exec(argv, working_directory="/maf-sandbox/work", timeout=5)
         )
 
-        assert shlex.split(client.calls[0]) == argv
+        assert "exec sh -c " + shlex.quote(shlex.join(argv)) in client.calls[0]
 
 
 class TestNarrowedDisposal:
@@ -3176,7 +3191,7 @@ class TestConcurrentAcquire:
         assert first.instance_id == second.instance_id == "sbx-1"
         assert backend._registry == {
             ("scope-a", "thread-1", "devops-engineer", "bicep"): _Held(
-                "sbx-1", egress=(Egress.CLOSED, frozenset()), commands={"sh"}
+                "sbx-1", egress=(Egress.CLOSED, frozenset()), commands={"sh", "exec-capture"}
             )
         }
 

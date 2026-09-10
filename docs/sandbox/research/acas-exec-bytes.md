@@ -1,4 +1,4 @@
-> Exploration for [#465](https://github.com/sokolaidev/maf-extensions/issues/465): whether ACAS can return exact exec bytes before choosing a public result representation. These are feasibility measurements, not the shipped backend contract.
+> Historical feasibility measurements for [#465](https://github.com/sokolaidev/maf-extensions/issues/465): whether ACAS can return exact exec bytes before choosing a public result representation. These measurements precede the implementation in [#1100](https://github.com/sokolaidev/maf-extensions/pull/1100); the [current output contract](../exec-output.md) describes bounded capture and guest-authority chunk retrieval.
 
 # Lossless ACAS exec output
 
@@ -28,7 +28,7 @@ The large envelope received exactly 1,048,576 text characters and this service d
 
 There is a second reason to reject simple redirection as the final design. For `printf before; (sleep 2; printf after) &`, ordinary ACAS exec returned `beforeafter`; the temporary-file/base64 wrapper returned only `before`. The inner shell exited before its descendant finished writing, so reading the file then lost output that the ordinary pipe reader awaited. `file_capture_command` instead creates two FIFOs, starts a reader for each, runs the program with those pipes, and waits for both readers before returning the program's status. The live background-writer probe recovered all eleven bytes. Plain file redirection alone does not have that EOF wait.
 
-## Requirements that remain before backend integration
+## Requirements identified before backend integration
 
 The file strategy needs `sh`, `mkdir`, `mkfifo`, `cat`, `rm`, and `rmdir`, a writable guest directory, and working binary file APIs. The corpus generator additionally uses Python, but the capture wrapper itself does not. Each concurrent capture needs its own directory. These are new requirements for an exec-only caller; the existing ACAS backend can currently serve commands that need no writable guest directory. Refusing or provisioning missing prerequisites needs a deliberate acquisition contract.
 
@@ -50,4 +50,12 @@ uv run python scripts/probe_acas_exec_bytes.py --live --output acas-exec-bytes.j
 
 `--live` is mandatory because the probe creates one billable sandbox. It uses only its generated scope, attempts disposal even when acquisition or a measurement fails, and checks the service's label listing afterward. It does not change the existing group. The three investigation runs each confirmed their scope empty; the final run also confirmed no base64 capture directories remained and successful cleanup of the binary capture files.
 
-The command exits nonzero when a candidate fails byte fidelity or cleanup. On the measured service, the base64 limit case intentionally exposes a failure, so exit 1 is the recorded research finding rather than a green production acceptance result. The thirteen offline tests check that incomplete, malformed, and status-inconsistent envelopes cannot be reported as exact output. The current package implementation and its published result contract are unchanged.
+The command exits nonzero when a candidate fails byte fidelity or cleanup. On the measured service, the base64 limit case intentionally exposes a failure, so exit 1 is the recorded research finding rather than a green production acceptance result. The thirteen offline tests check that incomplete, malformed, and status-inconsistent envelopes cannot be reported as exact output. At the time of these measurements, no package implementation or published result contract had changed.
+
+## Implementation validation
+
+The implementation keeps bounded FIFO capture and retrieves 48 KiB base64 chunks through guest exec, avoiding privileged file reads and the single-response base64 limit. Fresh live ACAS validation preserved the malformed-byte corpus in argv and shell forms, quoted arguments, delayed background output, and two concurrent 1 MiB-per-stream commands with exit 7. Successful captures left no scratch directories. Overflow, timeout and cancellation invalidated and deleted their sandbox; a one-second command timeout returned after 7.67 seconds including deletion. Independent server listing confirmed all validation scopes empty.
+
+The capture scripts also passed as root and uid 65534 in a disposable local Linux container: concurrent byte fidelity, inherited writers, original umask, overflow refusal, symlink replacement, failed readers and unwritable scratch. The live probe's earlier base64-envelope failures remain historical results; its raw-service control calls bypass production capture so those measurements remain reproducible.
+
+The committed live regression passed on both the public Python prebuilt image and the existing non-root Python test image. Each exercised concurrent byte capture, background output, overflow refusal, timeout and cancellation, and confirmed its scope empty. Direct Docker EXEC and FILES_IN conformance also passed with the widened byte corpus. WSLC's raw adapter is covered offline; this implementation was not exercised on a live WSLC engine.

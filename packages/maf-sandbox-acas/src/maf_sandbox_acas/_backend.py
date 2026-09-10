@@ -65,6 +65,7 @@ from maf_sandbox.paths import (
 )
 
 from ._config import AcasSandboxConfig
+from ._exec_capture import capture
 from ._images import (
     names_a_prebuilt_image,
     qualify_image_reference,
@@ -400,6 +401,7 @@ class _Held:
     removal: bool | None = None
     probed: bool = False
     commands: set[str] = field(default_factory=set[str])
+    unusable: bool = False
     egress: tuple[Egress, frozenset[str]] = field(kw_only=True)
     work_dir: str = "/maf-sandbox/work"
 
@@ -438,9 +440,18 @@ class _Deletion:
 class _AcasSandbox:
     """A running ACA sandbox, narrowed to what a workload is allowed to do with it."""
 
-    def __init__(self, sandbox_client: Any, read_timeout: float) -> None:
+    def __init__(
+        self,
+        sandbox_client: Any,
+        read_timeout: float,
+        *,
+        held: _Held | None = None,
+        exec_output_limit: int = 1 << 20,
+    ) -> None:
         self._sc = sandbox_client
         self._read_timeout = read_timeout
+        self._held = held if held is not None else _Held("", egress=(Egress.CLOSED, frozenset()))
+        self._exec_output_limit = exec_output_limit
         self._work_dir = "/maf-sandbox/work"
 
     @property
@@ -499,16 +510,71 @@ class _AcasSandbox:
     async def exec(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float
     ) -> ExecResult:
-        """Run ``command``, bounded by ``timeout``.
+        """Return exact bounded streams, with one deadline for capture, retrieval and cleanup.
 
-        The bound is applied here rather than left to the SDK: a sandbox that stops
-        answering would otherwise hold the caller's turn open indefinitely.  ``TimeoutError``
-        propagates so the workload can report it as a diagnostic rather than as a hang.
-
-        The SDK's own ``exec`` takes a string only, so a sequence is quoted into one with
-        :func:`shlex.join` first — POSIX quoting, which is the guest shape this backend
-        declares in ``declarations.os_families`` and the router matches a spec against.
+        Timeout, cancellation or capture failure invalidates and disposes this entire sandbox,
+        including concurrent commands. Deletion has its own bounded cleanup allowance.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
+        if self._held.unusable:
+            raise SandboxOutputError(
+                "ACAS sandbox was invalidated by an earlier exec failure; reacquire it"
+            )
+
+        async def run(script: str) -> ExecResult:
+            return await self._exec_text(
+                script, working_directory=working_directory, timeout=timeout
+            )
+
+        try:
+            async with asyncio.timeout(timeout):
+                result = await capture(command, run, self._exec_output_limit)
+                if self._held.unusable:
+                    raise SandboxOutputError(
+                        "ACAS sandbox was invalidated by a concurrent exec failure"
+                    )
+                return result
+        except BaseException as failure:
+            await self._invalidate_after_exec(failure)
+            raise
+
+    async def _invalidate_after_exec(self, failure: BaseException) -> None:
+        self._held.unusable = True
+        cleanup = asyncio.create_task(self._discard_after_exec())
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        try:
+            cleanup.result()
+        except Exception as deletion_failed:
+            failure.add_note(
+                "ACAS sandbox deletion failed; disposal must be retried: "
+                + error_detail(deletion_failed)
+            )
+            logger.warning(
+                "acas: could not dispose invalidated sandbox %s: %s",
+                self.sandbox_id,
+                error_detail(deletion_failed),
+            )
+
+    async def _discard_after_exec(self) -> None:
+        from azure.core.exceptions import ResourceNotFoundError
+
+        try:
+            async with asyncio.timeout(min(30.0, self._read_timeout)):
+                poller = await self._sc.begin_delete()
+                await poller.result()
+        except ResourceNotFoundError:
+            pass
+
+    async def _exec_text(
+        self, command: str | Sequence[str], *, working_directory: str, timeout: float
+    ) -> ExecResult:
+        """Run backend control commands; these never supply program-output bytes."""
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         cmd = command if isinstance(command, str) else shlex.join(command)
         result = await asyncio.wait_for(
@@ -594,7 +660,7 @@ class _AcasSandbox:
                 planted = await self.stat_file(guest_file, working_directory="/")
                 if planted is None or planted.kind is not EntryKind.FILE:
                     raise OSError("the file plane did not create the removal probe file")
-                answered = await self.exec(
+                answered = await self._exec_text(
                     ["rm", "--", guest_file],
                     working_directory=_GUEST_PROBE_WORKING_DIRECTORY,
                     timeout=_PROBE_TIMEOUT_S,
@@ -695,7 +761,7 @@ class _AcasSandbox:
                     return
                 if planted.kind is EntryKind.DIRECTORY and not recursive:
                     raise OSError(f"refusing to remove a directory without recursive: {path}")
-                answered = await self.exec(
+                answered = await self._exec_text(
                     ["rm", "-rf" if recursive else "-f", "--", guest],
                     working_directory="/",
                     timeout=self._read_timeout,
@@ -995,12 +1061,26 @@ class AcasSandboxBackend:
                 "AcasSandboxBackend.dispose before changing policy, or use a different key."
             )
         gc = self._group_client()
+        if held is not None and held.unusable:
+            deletion = await self._delete(gc, held.sandbox_id)
+            if deletion.failure is not None:
+                raise SandboxOutputError(
+                    "ACAS could not dispose an invalidated sandbox; "
+                    "retry disposal before reacquiring"
+                )
+            self._registry.pop(registry_key, None)
+            held = None
         if held is not None:
             sandbox_id = held.sandbox_id
             try:
                 sc = gc.get_sandbox_client(sandbox_id)
                 await sc.ensure_running(timeout=_RESUME_TIMEOUT_S)
-                reused = _AcasSandbox(sc, self._config.read_timeout_seconds)
+                reused = _AcasSandbox(
+                    sc,
+                    self._config.read_timeout_seconds,
+                    held=held,
+                    exec_output_limit=self._config.exec_output_limit_bytes,
+                )
             except Exception as exc:  # noqa: BLE001 - a dead sandbox is replaced, not reported
                 # Not a warning: a sandbox reclaimed by its auto-delete timer between rounds
                 # is the expected path, not a fault. But it does mean the next call pays for
@@ -1077,7 +1157,12 @@ class AcasSandboxBackend:
                 sc.sandbox_id,
                 error_detail(exc),
             )
-        created = _AcasSandbox(sc, self._config.read_timeout_seconds)
+        created = _AcasSandbox(
+            sc,
+            self._config.read_timeout_seconds,
+            held=held,
+            exec_output_limit=self._config.exec_output_limit_bytes,
+        )
         try:
             await self._refuse_or_warn_on_guest_removal(
                 spec, created, held=held, freshly_created=True
@@ -1092,13 +1177,22 @@ class AcasSandboxBackend:
     async def _probe_commands(self, spec: SandboxSpec, sandbox: _AcasSandbox, held: _Held) -> None:
         deadline = asyncio.get_running_loop().time() + min(10.0, self._config.read_timeout_seconds)
 
-        async def run(argv: tuple[str, ...], as_root: bool) -> int:
+        async def run(argv: tuple[str, ...], as_root: bool, owns_capture: bool) -> int:
             assert not as_root
-            async with asyncio.timeout_at(deadline):
-                result = await sandbox.exec(
-                    argv,
-                    working_directory="/",
-                    timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+            try:
+                async with asyncio.timeout_at(deadline):
+                    result = await sandbox._exec_text(
+                        argv,
+                        working_directory="/",
+                        timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+                    )
+            except BaseException as failure:
+                if owns_capture:
+                    await sandbox._invalidate_after_exec(failure)
+                raise
+            if owns_capture and result.exit_code:
+                await sandbox._invalidate_after_exec(
+                    SandboxOutputError("exec capture probe failed")
                 )
             return result.exit_code
 

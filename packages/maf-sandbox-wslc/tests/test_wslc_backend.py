@@ -717,6 +717,15 @@ class TestExecArgv:
 
 
 class TestExecResult:
+    def test_both_raw_streams_survive_the_adapter(self):
+        raw = bytes(range(256))
+        overrides = {("container", "exec", "-w", "/w"): _WslcResult(7, raw, raw[::-1])}
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
+        result = asyncio.run(sandbox.exec(["x"], working_directory="/w", timeout=5))
+        assert result.stdout_bytes == raw
+        assert result.stderr_bytes == raw[::-1]
+
     def test_stdout_stderr_and_exit_code_are_mapped_verbatim(self):
         overrides = {("container", "exec", "-w", "/w"): _WslcResult(7, b"out\n", b"err\n")}
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))

@@ -147,3 +147,7 @@ Maintained by [SOKOLAI BV](https://www.sokol.ai).
 `limits` is not in that table because this backend never declared one — the router read its silence as `DEFAULT_SANDBOX_LIMITS`, and there was no `backend.limits` to read. `backend.declarations.limits` now answers with that same constant, so the ceiling is unchanged and the value is newly *reachable* rather than renamed.
 
 Nothing about what this backend declares changed — the values, and how they are derived from the config, are exactly as they were. `maf-sandbox`'s own README carries the reasoning and what a backend author has to do.
+
+## Exec bytes and text views
+
+`ExecResult.stdout_bytes` and `stderr_bytes` preserve returned program bytes; `stdout_text` and `stderr_text` (also `stdout` and `stderr`) are UTF-8 display views with replacement decoding. Use the byte fields for artifacts and byte counts, and the text views for model or JSON display. See the [output contract, ACAS prerequisites and release migration](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/exec-output.md).

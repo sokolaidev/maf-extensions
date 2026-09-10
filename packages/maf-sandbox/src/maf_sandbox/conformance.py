@@ -266,12 +266,8 @@ _INSIDE = b"a legitimate output\n"
 _ON_STDOUT = "conformance-wrote-this-to-stdout"
 _ON_STDERR = "conformance-wrote-this-to-stderr"
 
-#: High codepoints and no NUL: a payload every UTF-8 decoder agrees on, so the probe asserts
-#: what the protocol states (``stdout: str``) and nothing further. The bytes that *cannot*
-#: survive a decode — the ones a ``errors="replace"`` transport turns into U+FFFD — are a
-#: contract the protocol does not state yet; the issue filed alongside this suite carries the
-#: proposal to state it, and the probe narrows rather than guesses.
-_BINARY = "ünïcödé→payload".encode() + bytes(range(1, 128))
+#: Every byte, valid multibyte text, a genuine replacement character and an incomplete sequence.
+_BINARY = bytes(range(256)) + "ünïcödé→payload\ufffd\r\n".encode() + b"\xe2\x82"
 
 
 class ConformanceSubject(Protocol):
@@ -373,6 +369,8 @@ class PosixGuestSubject:
     working_directory: str
     capabilities: frozenset[Capability]
     exec_timeout: float = 60.0
+    #: A documented backend allowance for stopping remote work after the command's timeout.
+    exec_cleanup_timeout: float = 0.0
 
     async def plant_file(self, path: str, content: bytes) -> None:
         """Plant through the path's parent so the guest can plant outside the work directory."""
@@ -1056,14 +1054,7 @@ async def _probe_bytes_survive_the_round_trip(
     back = await subject.sandbox.exec(
         ["cat", "binary.bin"], working_directory=subject.working_directory, timeout=60
     )
-    # What is asserted is the protocol's own promise — `stdout: str` — over a payload every
-    # UTF-8 decoder agrees on: multi-byte sequences and control bytes that a text-shaped hop
-    # in the transport (CRLF translation, a decode/encode pair, a truncation) would alter.
-    # Non-UTF-8 bytes are deliberately out of scope: whether exec must carry them losslessly
-    # (surrogateescape) is a contract the protocol does not state, backends disagree on today,
-    # and the issue filed with this suite proposes to state.
-    decoded = _BINARY.decode("utf-8")
-    if back.stdout != decoded:
+    if back.stdout_bytes != _BINARY:
         raise AssertionError(
             f"{len(_BINARY)} bytes went in and came back altered — a text-shaped hop in the "
             "transport translated or truncated them"
@@ -1262,7 +1253,7 @@ FILES_IN_PROBES: tuple[Probe, ...] = (
             "FILES_IN carries bytes — an in-door with a PNG or a spreadsheet — and any "
             "text-shaped hop in the transport corrupts them in ways a caller cannot detect: "
             "half a PNG returned as success is indistinguishable from a whole one. Asserted "
-            "over UTF-8-representable bytes, which is the protocol's stated `stdout: str`; "
+            "over arbitrary bytes, through the result's authoritative `stdout_bytes` field; "
             "whether exec must carry non-UTF-8 bytes losslessly is an unstated contract, "
             "proposed separately rather than guessed here."
         ),
@@ -1477,6 +1468,26 @@ async def _probe_the_streams_stay_separate(
         )
 
 
+async def _probe_exec_bytes(subject: ConformanceSubject, paths: ConformancePaths) -> None:
+    out, err = b"OUT:" + _BINARY, b"ERR:" + _BINARY[::-1]
+
+    def escaped(raw: bytes) -> str:
+        return "".join(f"\\{byte:03o}" for byte in raw)
+
+    script = f"printf '{escaped(out)}'; printf '{escaped(err)}' >&2; exit 7"
+    for command in (script, ["sh", "-c", script]):
+        result = await subject.sandbox.exec(
+            command, working_directory=subject.working_directory, timeout=60
+        )
+        expected_out = out + err if result.producer_owns_stderr else out
+        if result.exit_code != 7 or result.stdout_bytes != expected_out:
+            raise AssertionError("exec altered stdout bytes or the exit code")
+        if not result.producer_owns_stderr and result.stderr_bytes != err:
+            raise AssertionError("exec altered stderr bytes")
+        result.stdout_text.encode("utf-8")
+        result.stderr_text.encode("utf-8")
+
+
 async def _probe_a_timeout_raises_timeout_error(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
@@ -1501,11 +1512,13 @@ async def _probe_a_timeout_raises_timeout_error(
                 "TimeoutError arrived in under half the bound — it is the backend's own "
                 "ceiling firing, not the caller's timeout expiring"
             ) from None
-        if elapsed > 4.0:
+        cleanup = getattr(subject, "exec_cleanup_timeout", 0.0)
+        if not isinstance(cleanup, (int, float)) or not 0 <= cleanup <= 30:
+            raise AssertionError("exec cleanup allowance must be between 0 and 30 seconds")
+        if elapsed > 4.0 + cleanup:
             raise AssertionError(
                 f"TimeoutError arrived after {elapsed:.1f}s against a 1s bound — the backend "
-                "ignored the caller's timeout and fired its own, so the call was not bounded "
-                "by the argument as exec promises"
+                f"exceeded its documented {cleanup:g}s cleanup allowance as well"
             ) from None
         return
     except Exception as wrong:
@@ -1567,6 +1580,12 @@ EXEC_PROBES: tuple[Probe, ...] = (
         ),
         requires=frozenset({Capability.EXEC}),
         run=_probe_the_streams_stay_separate,
+    ),
+    Probe(
+        name="exec-byte-fidelity",
+        why="Both streams preserve every returned byte, independently of file transfer support.",
+        requires=frozenset({Capability.EXEC}),
+        run=_probe_exec_bytes,
     ),
     Probe(
         name="a-timeout-raises-timeout-error",

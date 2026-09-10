@@ -242,6 +242,7 @@ def _subject(live: _Live) -> PosixGuestSubject:
         # probes that matter and reports success anyway.
         capabilities=live.backend.declarations.capabilities,
         exec_timeout=_EXEC_TIMEOUT,
+        exec_cleanup_timeout=30.0,
     )
 
 

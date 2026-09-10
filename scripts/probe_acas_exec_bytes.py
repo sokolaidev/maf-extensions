@@ -171,7 +171,9 @@ async def measure(output: Path) -> dict[str, Any]:
             name: str, command: str | list[str], out: bytes, err: bytes, status: int = 7
         ) -> None:
             started = time.monotonic()
-            result = await sandbox.exec(wrap_command(command), working_directory=work, timeout=60)
+            result = await sandbox._exec_text(
+                wrap_command(command), working_directory=work, timeout=60
+            )
             case: dict[str, Any] = {"name": name, "seconds": round(time.monotonic() - started, 3)}
             try:
                 captured = decode_envelope(result.stdout, result.stderr, result.exit_code)
@@ -241,7 +243,7 @@ async def measure(output: Path) -> dict[str, Any]:
             "import sys; p=bytes(range(256))*4096; sys.stdout.buffer.write(p); sys.stderr.buffer.write(p); sys.exit(7)",
         ]
         try:
-            result = await sandbox.exec(
+            result = await sandbox._exec_text(
                 f"mkdir -m 700 {shlex.quote(directory)} && sh -c {shlex.quote(shlex.join(command))} > {shlex.quote(paths[0])} 2> {shlex.quote(paths[1])}",
                 working_directory=work,
                 timeout=30,
@@ -256,15 +258,17 @@ async def measure(output: Path) -> dict[str, Any]:
                 "exit_code": result.exit_code,
             }
         finally:
-            removed = await sandbox.exec(
+            removed = await sandbox._exec_text(
                 f"rm -f {shlex.join(paths)} && rmdir {shlex.quote(directory)}",
                 working_directory=work,
                 timeout=20,
             )
             report["file_capture_cleanup_succeeded"] = removed.exit_code == 0
         background = "printf before; (sleep 2; printf after) &"
-        direct = await sandbox.exec(background, working_directory=work, timeout=20)
-        wrapped = await sandbox.exec(wrap_command(background), working_directory=work, timeout=20)
+        direct = await sandbox._exec_text(background, working_directory=work, timeout=20)
+        wrapped = await sandbox._exec_text(
+            wrap_command(background), working_directory=work, timeout=20
+        )
         try:
             captured = decode_envelope(wrapped.stdout, wrapped.stderr, wrapped.exit_code)
             report["background_writer"] = {
@@ -280,7 +284,7 @@ async def measure(output: Path) -> dict[str, Any]:
         ) -> None:
             directory = f"{work}/pipes-{uuid.uuid4().hex}"
             try:
-                result = await sandbox.exec(
+                result = await sandbox._exec_text(
                     file_capture_command(command, directory), working_directory=work, timeout=30
                 )
                 streams = [
@@ -302,7 +306,7 @@ async def measure(output: Path) -> dict[str, Any]:
                 )
                 print(name + ": pipe/file capture measured", flush=True)
             finally:
-                removed = await sandbox.exec(
+                removed = await sandbox._exec_text(
                     "rm -f "
                     + shlex.join(
                         [
@@ -322,12 +326,12 @@ async def measure(output: Path) -> dict[str, Any]:
             *(pipe_case(f"large-concurrent-{i}", command, payload, payload, 7) for i in range(2))
         )
         save()
-        missing = await sandbox.exec(
+        missing = await sandbox._exec_text(
             wrap_command("touch should-not-exist", helper="maf-no-such-encoder"),
             working_directory=work,
             timeout=20,
         )
-        marker = await sandbox.exec(
+        marker = await sandbox._exec_text(
             "test ! -e should-not-exist", working_directory=work, timeout=20
         )
         report["missing_helper_refuses_before_program"] = (
@@ -338,7 +342,7 @@ async def measure(output: Path) -> dict[str, Any]:
             stamp = "cancel-completed" if cancel else "timeout-completed"
             command = f"sleep 6; printf finished > {stamp}"
             task = asyncio.create_task(
-                sandbox.exec(
+                sandbox._exec_text(
                     wrap_command(command), working_directory=work, timeout=1 if not cancel else 30
                 )
             )
@@ -353,13 +357,15 @@ async def measure(output: Path) -> dict[str, Any]:
             except asyncio.CancelledError:
                 outcome = "CancelledError"
             await asyncio.sleep(7)
-            marker = await sandbox.exec(f"test -f {stamp}", working_directory=work, timeout=20)
+            marker = await sandbox._exec_text(
+                f"test -f {stamp}", working_directory=work, timeout=20
+            )
             report["cancellation" if cancel else "timeout"] = {
                 "host_outcome": outcome,
                 "guest_continued": marker.exit_code == 0,
             }
             save()
-        leftovers = await sandbox.exec(
+        leftovers = await sandbox._exec_text(
             "find /tmp -maxdepth 1 -type d -name 'maf-exec-bytes-*' -print",
             working_directory=work,
             timeout=20,
