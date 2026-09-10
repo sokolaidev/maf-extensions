@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.18.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.17.0...maf-sandbox-docker-v0.18.0) (2026-09-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* target cleanup and retries at the physical sandbox instance ([#1060](https://github.com/sokolaidev/maf-extensions/issues/1060))
+* **sandbox:** clean unfamiliar sandbox instances before serving calls ([#1045](https://github.com/sokolaidev/maf-extensions/issues/1045))
+
+### Features
+
+* accept method-scoped egress policies and refuse unsupported backends ([#1063](https://github.com/sokolaidev/maf-extensions/issues/1063)) ([39fd53b](https://github.com/sokolaidev/maf-extensions/commit/39fd53b457a301d59a646d815e717b8e61b6d698))
+* **sandbox:** clean unfamiliar sandbox instances before serving calls ([#1045](https://github.com/sokolaidev/maf-extensions/issues/1045)) ([333e6f9](https://github.com/sokolaidev/maf-extensions/commit/333e6f9e1267f3ec53f3b61477b9ea745827528a))
+* target cleanup and retries at the physical sandbox instance ([#1060](https://github.com/sokolaidev/maf-extensions/issues/1060)) ([50a123f](https://github.com/sokolaidev/maf-extensions/commit/50a123f15b0e1e358a9c5d191aafb56ac6a5dcf6))
+* verify Docker confinement and share guest file-access refusals ([#1037](https://github.com/sokolaidev/maf-extensions/issues/1037)) ([ad59f43](https://github.com/sokolaidev/maf-extensions/commit/ad59f4305d119e86d4f57a583c04775ae257e9a0))
+
+
+### Fixes
+
+* **docker:** accept unchanged network files after file-plane reads ([#1046](https://github.com/sokolaidev/maf-extensions/issues/1046)) ([766d8c5](https://github.com/sokolaidev/maf-extensions/commit/766d8c522eb34aa9087b8b76f1f68b93d63cbb63))
+* **docker:** explain the subtree transfer cost when refusing file listing ([#1059](https://github.com/sokolaidev/maf-extensions/issues/1059)) ([d998c7a](https://github.com/sokolaidev/maf-extensions/commit/d998c7af518f7ba5773beb970c9582722073744d))
+* **docker:** refuse writing workloads when the guest user cannot be resolved ([#1031](https://github.com/sokolaidev/maf-extensions/issues/1031)) ([6587694](https://github.com/sokolaidev/maf-extensions/commit/65876947b4dd081c5ef452881134845b67536c98))
+
+
+### Documentation
+
+* **docker:** clarify that output reads require rootfs paths ([#1034](https://github.com/sokolaidev/maf-extensions/issues/1034)) ([c92dacb](https://github.com/sokolaidev/maf-extensions/commit/c92dacbe7dff10ddb68a86caf9d443a4339d42ff))
+* **docker:** disclose root-authority writes through swapped parents ([#1048](https://github.com/sokolaidev/maf-extensions/issues/1048)) ([91384a6](https://github.com/sokolaidev/maf-extensions/commit/91384a63551d2670a254786b566ea594214a2dae))
+
 ## [0.17.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.16.0...maf-sandbox-docker-v0.17.0) (2026-09-08)
 
 
