@@ -57,6 +57,8 @@ class _Engine:
         if args[1] == "inspect":
             if args[-1] not in self.resources:
                 return _DockerResult(1, b"", f"No such {args[0]}: {args[-1]}")
+            if len(args) == 3:
+                return _DockerResult(0, json.dumps([self.resources[args[-1]]]).encode(), "")
             if args[3] == "{{.Id}}":
                 return _DockerResult(0, args[-1].encode(), "")
             return _DockerResult(0, json.dumps(self.resources[args[-1]]).encode(), "")
@@ -373,11 +375,10 @@ def test_a_failed_young_network_uses_its_own_age_on_a_fresh_sweep():
 
 
 @pytest.mark.parametrize("outcome", ["removed", "absent", "refused"])
-def test_proxy_attribution_is_retained_only_when_removal_fails(outcome):
+def test_a_fresh_backend_attributes_a_proxy_and_retries_failed_removal(outcome):
     proxy = _resource(1, suffix="-proxy")
     engine = _Engine(proxy)
     backend = _backend(engine)
-    backend._acquired[_NAME] = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
     events = []
     backend.observe_egress(events.append)
     if outcome == "absent":
@@ -387,13 +388,11 @@ def test_proxy_attribution_is_retained_only_when_removal_fails(outcome):
 
     result = asyncio.run(backend.reap(timedelta(days=1)))
     assert result.proxies_removed == (outcome == "removed")
-    assert (_NAME in backend._acquired) == (outcome == "refused")
     assert len(events) == (outcome != "refused")
     if outcome == "refused":
         assert result.failures[0].code == "refused"
         engine.failures.clear()
         assert asyncio.run(backend.reap(timedelta(days=1))).proxies_removed == 1
-        assert _NAME not in backend._acquired
         assert len(events) == 1
     else:
         assert result.failures == ()
@@ -406,7 +405,6 @@ def test_a_proxy_drain_uses_the_same_id_as_its_removal():
     proxy = _resource(1, suffix="-proxy")
     engine = _Engine(proxy)
     backend = _backend(engine)
-    backend._acquired[_NAME] = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
     events = []
     backend.observe_egress(events.append)
     result = asyncio.run(backend.reap(timedelta(days=1)))
