@@ -9,12 +9,16 @@ import time
 import pytest
 
 from maf_sandbox import (
+    CallerContext,
     Cleanup,
     ExecResult,
+    FailedReclaimPolicy,
     HostToolRegistry,
     HostToolRun,
     Isolation,
     ProcessInfo,
+    ReclaimConfig,
+    SandboxKey,
     SandboxObserver,
     SandboxProgramTimeout,
     SandboxRouter,
@@ -26,7 +30,8 @@ from maf_sandbox import (
 from maf_sandbox import _host_tools_over_exec as transport
 from maf_sandbox._processes import ProcessTracker, _decode
 from maf_sandbox._reclaim import close_unclean_notes, open_unclean_notes
-from maf_sandbox.testing import InProcessSandbox, InProcessSandboxBackend
+from maf_sandbox.maf import sandboxed_tool
+from maf_sandbox.testing import InMemoryStore, InProcessSandbox, InProcessSandboxBackend
 
 LAYOUT = guest_run_layout("/work/call/run")
 
@@ -647,6 +652,7 @@ def test_cancellation_records_the_interrupted_phase_and_preserves_cleanup(phase)
             cancelled = next(event for event in observer.snapshots if event.phase == phase)
             assert cancelled.unavailable == "CancelledError" and cancelled.incomplete
             assert cancelled.processes == ()
+        assert notes
         if phase == "before_launch":
             assert not guest.signals and not observer.cleanups
         else:
@@ -717,3 +723,96 @@ def test_descendant_probe_reports_only_actual_signal_attempts(
         {"pid": 82, "start_ticks": 100, "outcome": outcome, "signal": signal}
     ]
     assert attempts == ([(82, 9)] if signal else [])
+
+
+@pytest.mark.parametrize("failure", ["cancel", "timeout", "unavailable", "incomplete", "clean"])
+@pytest.mark.parametrize("keep", [False, True])
+def test_prelaunch_collection_failure_reaches_the_hosts_reuse_policy(failure, keep):
+    async def scenario():
+        entered = asyncio.Event()
+
+        class BaselineGuest(Guest):
+            async def exec(self, command, *, working_directory, timeout):
+                assert " -I -S -c " in str(command)
+                self.scan += 1
+                if failure != "clean":
+                    self.running.add("collector")
+                entered.set()
+                if failure in {"cancel", "timeout"}:
+                    await asyncio.Event().wait()
+                if failure == "unavailable":
+                    raise PermissionError("collector unavailable")
+                return ExecResult(
+                    stdout=payload([], incomplete=failure == "incomplete"), exit_code=0
+                )
+
+            async def write_file(self, path, content, *, working_directory):
+                if path == LAYOUT.launcher and failure in {"unavailable", "incomplete", "clean"}:
+                    raise PermissionError("launcher upload refused")
+                await super().write_file(path, content, working_directory=working_directory)
+
+        guest, observer, heard = BaselineGuest(), Recorder(), []
+        backend = InProcessSandboxBackend(guest)
+        router = SandboxRouter(
+            [backend],
+            min_isolation=Isolation.NONE,
+            min_cleanup=Cleanup.RECLAIM,
+            reclaim=ReclaimConfig(
+                failed_reclaim_policy=FailedReclaimPolicy.KEEP
+                if keep
+                else FailedReclaimPolicy.DISPOSE
+            ),
+        )
+        spec = SandboxSpec(kind="process", work_dir="/work")
+        key = SandboxKey(scope="s", thread_id="t", agent_dir="a")
+        router._seen[(key, spec.kind, id(backend))] = {guest.instance_id}
+        assert router.effective_cleanup(spec) is Cleanup.RECLAIM
+
+        async def report(event):
+            heard.append(event)
+
+        def build(session):
+            async def probe() -> str:
+                acquired = await session.acquire(key)
+                assert acquired is guest
+                session.guest_call_path()
+                result = await host_tool_calls_over_exec(
+                    acquired,
+                    HostToolRun(HostToolRegistry(observer=observer)),
+                    LAYOUT,
+                    timeout=0.03 if failure == "timeout" else 2,
+                )
+                return result.stdout
+
+            return probe
+
+        tool = sandboxed_tool(
+            build,
+            router=router,
+            context=CallerContext(lambda: "s", lambda: "t", InMemoryStore.list),
+            agent_dir="a",
+            spec=spec,
+            name="probe",
+            on_reclaim_failure=report,
+        )[0]
+        task = asyncio.create_task(tool.func())
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        if failure == "cancel":
+            task.cancel()
+        expected = asyncio.CancelledError if failure == "cancel" else PermissionError
+        if failure == "timeout":
+            expected = SandboxProgramTimeout
+        with pytest.raises(expected):
+            await task
+        assert guest.scan == 1 and not guest.signals
+        assert guest.reclaims
+        assert [event.phase for event in observer.snapshots] == ["before_launch"]
+        if failure == "clean":
+            assert not heard and not backend.disposed
+        else:
+            assert observer.snapshots[0].incomplete
+            assert len(heard) == 1
+            assert "process cleanup verification was unavailable or incomplete" in heard[0].reason
+            assert backend.disposed == ([] if keep else [key])
+
+    asyncio.run(scenario())

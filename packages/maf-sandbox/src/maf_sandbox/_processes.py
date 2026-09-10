@@ -14,7 +14,14 @@ from typing import Any, cast
 from uuid import uuid4
 
 from ._host_tools import HostToolRun
-from ._observer import ProcessCleanup, ProcessesObserved, record, recorded_call
+from ._observer import (
+    ProcessCleanup,
+    ProcessCleanupOutcome,
+    ProcessCleanupReach,
+    ProcessesObserved,
+    record,
+    recorded_call,
+)
 from ._process_info import ProcessAttribution, ProcessInfo, ProcessPhase
 from ._protocol import Sandbox
 
@@ -176,7 +183,7 @@ class ProcessTracker:
                 self.baseline = {p.identity for p in processes}
             processes = self.attribute(processes)
             self.latest = processes
-        except BaseException as error:  # diagnostics must not suppress cancellation
+        except (Exception, asyncio.CancelledError, GeneratorExit) as error:
             unavailable = type(error).__name__
             self.latest = None
             incomplete = True
@@ -213,7 +220,12 @@ class ProcessTracker:
             )
 
     def report_stop(
-        self, outcome: str, reach: str, seconds: float, *, signal: str | None = None
+        self,
+        outcome: ProcessCleanupOutcome,
+        reach: ProcessCleanupReach,
+        seconds: float,
+        *,
+        signal: str | None = None,
     ) -> None:
         record(
             self.run.registry.observer,
@@ -268,7 +280,7 @@ class ProcessTracker:
         if not targets:
             return True
         started = time.monotonic()
-        outcomes: dict[tuple[int, int], str] = {}
+        outcomes: dict[tuple[int, int], ProcessCleanupOutcome] = {}
         signals: dict[tuple[int, int], str | None] = {}
         try:
             for offset in range(0, len(targets), _PROCESSES):
@@ -296,7 +308,9 @@ class ProcessTracker:
                                     in {"sent", "absent", "replaced", "refused"}
                                 ):
                                     identity = entry["pid"], entry["start_ticks"]
-                                    outcomes[identity] = entry["outcome"]
+                                    outcomes[identity] = cast(
+                                        ProcessCleanupOutcome, entry["outcome"]
+                                    )
                                     signals[identity] = (
                                         "SIGKILL" if entry.get("signal") == "SIGKILL" else None
                                     )

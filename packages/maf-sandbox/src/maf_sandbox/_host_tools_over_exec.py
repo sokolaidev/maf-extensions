@@ -917,6 +917,12 @@ async def host_tool_calls_over_exec(
                     launcher=launcher,
                 )
                 _note_unclean_stop(sandbox, fate, reach)
+            elif (
+                not launcher.executed
+                and launcher.tracker.phase == "before_launch"
+                and launcher.tracker.incomplete
+            ):
+                note_unclean(sandbox, "process cleanup verification was unavailable or incomplete")
         finally:
             await _reclaim_the_transports_own(
                 sandbox, layout, until=time.monotonic() + _RECLAIM_GRACE

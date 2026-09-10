@@ -83,6 +83,8 @@ __all__ = [
     "OutputsCollected",
     "ProcessesObserved",
     "ProcessCleanup",
+    "ProcessCleanupOutcome",
+    "ProcessCleanupReach",
     "SandboxAcquired",
     "SandboxDisposed",
     "SandboxEvent",
@@ -596,6 +598,13 @@ class ProcessesObserved(SandboxEvent):
         observer.processes_observed(self)
 
 
+#: A recorded cleanup result, including skipped actions and unavailable observations.
+ProcessCleanupOutcome = Literal["sent", "absent", "refused", "replaced", "unrecorded", "unknown"]
+
+#: The target a signal reached; success does not establish that its descendants terminated.
+ProcessCleanupReach = Literal["group", "program", "nothing"]
+
+
 @dataclass(frozen=True)
 class ProcessCleanup(SandboxEvent):
     """A cleanup decision for a retained identity, not proof of termination.
@@ -608,8 +617,8 @@ class ProcessCleanup(SandboxEvent):
     run_id: str
     pid: int | None
     pgid: int | None
-    outcome: str
-    reach: str
+    outcome: ProcessCleanupOutcome
+    reach: ProcessCleanupReach
     seconds: float
     call: str | None = None
     start_ticks: int | None = None

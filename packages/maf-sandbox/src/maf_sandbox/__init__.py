@@ -113,6 +113,8 @@ from ._observer import (
     ObservesEgress,
     OutputsCollected,
     ProcessCleanup,
+    ProcessCleanupOutcome,
+    ProcessCleanupReach,
     ProcessesObserved,
     SandboxAcquired,
     SandboxDisposed,
@@ -221,6 +223,8 @@ from ._shim import host_tool_shim
 __all__ = [
     "ProcessAttribution",
     "ProcessCleanup",
+    "ProcessCleanupOutcome",
+    "ProcessCleanupReach",
     "ProcessInfo",
     "ProcessPhase",
     "ProcessesObserved",
