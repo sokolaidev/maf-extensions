@@ -11,6 +11,7 @@ from maf_sandbox import (
     BackendDeclarations,
     Capability,
     EntryKind,
+    ExecResult,
     SandboxEntry,
     SandboxKey,
     SandboxSpec,
@@ -125,6 +126,47 @@ def test_relative_storage_contract_without_a_filesystem(allocated, override):
         await sandbox.reset(timeout=1)
         assert base in sandbox.directories and sandbox.contents == {}
         assert sandbox.commands == []
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("override", [None, "/image/configured-base"])
+@pytest.mark.parametrize("defect", [None, "accepts_escape", "wrong_error"])
+def test_storage_conformance_checks_exec_only_escapes(override, defect, monkeypatch):
+    async def scenario():
+        base = override or "/runtime/private-prefix"
+        sandbox = InProcessSandbox(storage_base=base, default_stdout=f"{base}\n")
+        capabilities = frozenset({Capability.EXEC})
+        await InProcessSandboxBackend(sandbox).acquire(
+            _KEY, SandboxSpec(kind="runtime", work_dir=override, requires=capabilities)
+        )
+        original = sandbox.exec
+
+        async def execute(command, *, working_directory, timeout):
+            if working_directory.startswith("../"):
+                if defect == "accepts_escape":
+                    return ExecResult(stdout="/outside\n")
+                if defect == "wrong_error":
+                    raise FileNotFoundError("outside directory is missing")
+            return await original(command, working_directory=working_directory, timeout=timeout)
+
+        probe = AsyncMock(wraps=execute)
+        monkeypatch.setattr(sandbox, "exec", probe)
+        for name in ("write_file", "stat_file", "read_file", "list_dir", "remove", "reclaim"):
+            monkeypatch.setattr(
+                sandbox,
+                name,
+                AsyncMock(side_effect=AssertionError(f"undeclared operation: {name}")),
+            )
+        if defect is None:
+            await assert_storage_base_conformance(sandbox, capabilities)
+            assert [call.kwargs["working_directory"] for call in probe.await_args_list] == [
+                ".",
+                "../outside",
+            ]
+        else:
+            with pytest.raises(AssertionError):
+                await assert_storage_base_conformance(sandbox, capabilities)
 
     asyncio.run(scenario())
 

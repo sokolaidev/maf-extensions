@@ -4,7 +4,7 @@
 
 ## The guest, and who supplies it
 
-**The guest is whatever sits on the far side of a backend's boundary — the environment a workload's commands actually execute in.** `Sandbox.exec` runs there, `write_file` writes there, and `work_dir` is a path in its namespace rather than the host's. `Isolation` ranks the boundary; the guest is what that boundary encloses.
+**The guest is whatever sits on the far side of a backend's boundary — the environment a workload's commands actually execute in.** `Sandbox.exec` runs there, `write_file` writes there, and an explicit `work_dir` names a path in its namespace rather than the host's. `Isolation` ranks the boundary; the guest is what that boundary encloses.
 
 **A backend owns the boundary. It does not necessarily author what is inside it.** That distinction is the reason this document exists, and the backends shipping today split three ways on it:
 
@@ -50,11 +50,11 @@ Two of the four candidate axes below dissolve under this rule. That is the point
 
 ### What is already platform-neutral, and stays that way
 
-The protocol has been kept deliberately additive on this axis, and the neutrality is pinned rather than assumed.
+Guest OS matching remains independent of path spelling. Storage-base allocation changes the path contract while preserving that separation.
 
-- **`work_dir` is guest-native and untranslated.** `SandboxSpec.work_dir` defaults to `/maf-sandbox/work`, and its docstring records that translating it is *"not possible — a kind derives absolute paths from this field and passes them into `Sandbox.exec`'s argv, and a backend cannot find a path inside an opaque argv without parsing arbitrary command lines. An argv sequence protects against quoting, not against paths within the arguments."* The default is a default, not a requirement.
-- **Nothing infers a guest OS from a path.** The same docstring states the rule directly: *"A workload must not read the guest's platform out of this field, and nothing here validates it against one."*
-- **The neutrality is a test, not an intention.** `TestWorkDirStaysGuestNative`, in `maf-sandbox`'s router tests, accepts `C:/agent/maf-sandbox/work` and a backslash-spelled Windows path, and asserts that a backend declaring no platform still serves. It matters more now that something else *is* a platform claim, so it also pins the inference the protocol refuses to make: a drive-rooted `work_dir` against a `POSIX`-only backend is **served**, because the path was never the ask. That is what makes everything below an additive change rather than a breaking one.
+- **An explicit `work_dir` is guest-native and preserved.** `SandboxSpec.work_dir=None` delegates allocation to the backend; `/maf-sandbox/work` remains the default explicit override. Kinds use relative call paths and filenames, and backends resolve relative `working_directory` values beneath their bound base. Commands and argv remain opaque, including any paths embedded in them.
+- **Nothing infers a guest OS from a path.** Routing matches `requires_os_family` against backend declarations. The selected backend validates a supplied override using its own path grammar when it prepares the base.
+- **The neutrality is a test, not an intention.** `TestWorkDirStaysGuestNative`, in `maf-sandbox`'s router tests, accepts `C:/agent/maf-sandbox/work` and a backslash-spelled Windows path during matching. A drive-rooted `work_dir` also passes the router's match against a `POSIX`-only backend: the path is not an OS-family requirement, and this static match does not promise that the backend can prepare it.
 - **Declared output paths are POSIX-shaped and the names are conservative.** [`capabilities.md`](capabilities.md) fixes one path grammar for declared outputs, always UTF-8, with no newline translation — and explicitly retracts an earlier claim that backends would translate. In `_outputs.py`, `_nfc` composes to NFC, `_collision_key` keys on `str.lower` rather than `str.casefold`, and `_check_declared_names` is what refuses a case-only collision — with the reason recorded beside it. `portable_file_name` does none of those: it rewrites the segments Windows will not accept, and nothing else.
 - **`EntryKind` was designed for guests that are not POSIX.** A junction or a reparse point maps to `SYMLINK`, so the vocabulary does not have to grow for a Windows guest.
 

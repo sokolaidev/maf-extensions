@@ -138,6 +138,11 @@ async def assert_storage_base_conformance(
     if Capability.EXEC in capabilities:
         result = await sandbox.exec(["pwd"], working_directory=".", timeout=60)
         assert result.exit_code == 0 and result.stdout.strip(), "the allocated cwd is absent"
+        await _refused_with(
+            ValueError,
+            "exec with an escaping working directory",
+            sandbox.exec(["pwd"], working_directory="../outside", timeout=60),
+        )
     if Capability.FILES_OUT in capabilities:
         entry = await sandbox.stat_file(".", working_directory=".")
         assert entry is not None and entry.kind is EntryKind.DIRECTORY, "the base is absent"
