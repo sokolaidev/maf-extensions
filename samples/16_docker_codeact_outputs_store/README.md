@@ -17,6 +17,8 @@ Three arguments and one extra pair of tools:
 
 The withheld result then names the folder instead of listing which declared names landed, and the model goes and reads it.
 
+The task explicitly asks the model to read the complete `summary.md` from that folder before answering, so the read-back contains both the regional totals and the grand total that the live checker verifies.
+
 ## What to watch
 
 **The grand total in the reply, beside a read that returned the landed file, is proof of the whole path.** Nothing the program printed comes back, so the total did not come from `stdout`. What says it came out of the file is the pair: the check requires a read whose result *was* the bytes the sink landed under this call's folder, and the total in the answer. The total alone would not say it — whether the program exited cleanly is a bit the *program* chooses, and repeated calls make that a channel, which is why withholding is a narrower road rather than no road ([`../../docs/sandbox/kinds/codeact.md`](../../docs/sandbox/kinds/codeact.md)). It is still a stronger claim than sample 08's, where a right answer only proves the program ran.

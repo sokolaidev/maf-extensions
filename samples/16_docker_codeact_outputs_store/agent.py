@@ -82,7 +82,10 @@ TASK = (
     "row's revenue as units * unit_price, total it by region, and also compute the "
     f"grand total across all regions. Write both into {SUMMARY_FILE} — a Markdown table "
     "with the region in the first column and its revenue in the second, and a final "
-    "line reading 'grand total: N'. Then tell me the grand total."
+    "line reading 'grand total: N'. Declare that file as your output. After the program "
+    f"finishes, use {OUTPUTS_TOOL_PREFIX}_read to read {SUMMARY_FILE} from the output "
+    "folder named in the tool result, using its full path. Read the complete file, "
+    "including every region's total and the grand total, before telling me the grand total."
 )
 
 MODEL_VARS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_MODEL")
