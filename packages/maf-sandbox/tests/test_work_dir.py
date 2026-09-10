@@ -14,6 +14,81 @@ from maf_sandbox.testing import InProcessSandbox, InProcessSandboxBackend
 _KEY = SandboxKey("work-dir", "thread", "agent")
 
 
+@pytest.mark.parametrize("existing", ["explicit", "implicit", "parent"])
+def test_preparing_a_warm_base_retains_only_its_directories_on_reset(existing):
+    async def scenario():
+        sandbox = InProcessSandbox(seed_files={"/seed.txt": b"original"})
+        backend = InProcessSandboxBackend(sandbox)
+        runtime = SandboxSpec(kind="test", work_dir="/session/work", requires=frozenset())
+        assert await backend.acquire(_KEY, runtime) is sandbox
+        if existing == "explicit":
+            sandbox.directories.update({"/session", "/session/work"})
+        elif existing == "implicit":
+            sandbox.contents["/session/work/marker"] = b"guest"
+        else:
+            sandbox.directories.add("/session")
+        sandbox.directories.add("/other")
+        sandbox.contents["/other/marker"] = b"guest"
+        before_contents = dict(sandbox.contents)
+
+        spec = SandboxSpec(
+            kind="test", work_dir=runtime.work_dir, requires=frozenset({Capability.EXEC})
+        )
+        assert await backend.acquire(_KEY, spec) is sandbox
+        assert sandbox.contents == before_contents
+        prepared_are_clean = not {"/session", spec.work_dir}.intersection(sandbox.changed_paths())
+        await sandbox.reset(timeout=1)
+        assert spec.work_dir is not None
+        entry = await sandbox.stat_file(spec.work_dir, working_directory=spec.work_dir)
+        assert entry is not None and entry.kind is EntryKind.DIRECTORY
+        assert sandbox.directories == {"/session", spec.work_dir}
+        assert sandbox.contents == {"/seed.txt": b"original"}
+        assert prepared_are_clean
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("path", ["/", "//", "///"])
+def test_posix_root_base_exists_through_acquire_and_reset(path):
+    async def scenario():
+        backend = InProcessSandboxBackend()
+        spec = SandboxSpec(kind="root", work_dir=path)
+        sandbox = await backend.acquire(_KEY, spec)
+        for _ in range(2):
+            entry = await sandbox.stat_file(path, working_directory=path)
+            assert entry is not None and entry.kind is EntryKind.DIRECTORY
+            with pytest.raises(IsADirectoryError):
+                await sandbox.read_file(path, working_directory=path, max_bytes=1)
+            assert sandbox.directories == set()
+            assert sandbox.contents == {}
+            assert await backend.acquire(_KEY, spec) is sandbox
+            await sandbox.reset(timeout=1)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("path", ["C:/", "D:\\", r"\\server\share", "\\\\server\\share\\"])
+def test_native_root_base_is_intrinsic_to_the_store(path):
+    async def scenario():
+        backend = InProcessSandboxBackend()
+        spec = SandboxSpec(kind="root", work_dir=path)
+        sandbox = await backend.acquire(_KEY, spec)
+        for _ in range(2):
+            entry = await sandbox._stat_unconfined(path)
+            assert entry is not None and entry.kind is EntryKind.DIRECTORY
+            assert sandbox.directories == set()
+            assert sandbox.contents == {}
+            assert await backend.acquire(_KEY, spec) is sandbox
+            await sandbox.reset(timeout=1)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("path", ["C:", "C:work", "//workspace", r"\\server\share\missing"])
+def test_non_root_paths_are_not_intrinsic_to_the_store(path):
+    assert asyncio.run(InProcessSandbox()._stat_unconfined(path)) is None
+
+
 @pytest.mark.parametrize("allocated", ["/runtime/private-prefix", "/another/store"])
 @pytest.mark.parametrize("override", [None, "/image/configured-base"])
 def test_relative_storage_contract_without_a_filesystem(allocated, override):
@@ -211,56 +286,3 @@ def test_an_existing_base_keeps_contents_and_creates_no_child():
     assert sandbox.contents == before
     assert sandbox.directories == {"/maf-sandbox", "/maf-sandbox/work"}
     assert not sandbox.changed_paths()
-
-
-@pytest.mark.parametrize("existing", ["explicit", "implicit", "parent"])
-def test_preparing_a_warm_base_retains_only_its_directories_on_reset(existing):
-    async def scenario():
-        sandbox = InProcessSandbox(seed_files={"/seed.txt": b"original"})
-        backend = InProcessSandboxBackend(sandbox)
-        runtime = SandboxSpec(kind="test", work_dir="/session/work", requires=frozenset())
-        assert await backend.acquire(_KEY, runtime) is sandbox
-        if existing == "explicit":
-            sandbox.directories.update({"/session", "/session/work"})
-        elif existing == "implicit":
-            sandbox.contents["/session/work/marker"] = b"guest"
-        else:
-            sandbox.directories.add("/session")
-        sandbox.directories.add("/other")
-        sandbox.contents["/other/marker"] = b"guest"
-        before_contents = dict(sandbox.contents)
-
-        spec = SandboxSpec(
-            kind="test", work_dir=runtime.work_dir, requires=frozenset({Capability.EXEC})
-        )
-        assert await backend.acquire(_KEY, spec) is sandbox
-        assert sandbox.contents == before_contents
-        prepared_are_clean = not {"/session", spec.work_dir}.intersection(sandbox.changed_paths())
-        await sandbox.reset(timeout=1)
-        assert spec.work_dir is not None
-        entry = await sandbox.stat_file(spec.work_dir, working_directory=spec.work_dir)
-        assert entry is not None and entry.kind is EntryKind.DIRECTORY
-        assert sandbox.directories == {"/session", spec.work_dir}
-        assert sandbox.contents == {"/seed.txt": b"original"}
-        assert prepared_are_clean
-
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize("path", ["/", "//", "///"])
-def test_posix_root_base_exists_through_acquire_and_reset(path):
-    async def scenario():
-        backend = InProcessSandboxBackend()
-        spec = SandboxSpec(kind="root", work_dir=path)
-        sandbox = await backend.acquire(_KEY, spec)
-        for _ in range(2):
-            entry = await sandbox.stat_file(path, working_directory=path)
-            assert entry is not None and entry.kind is EntryKind.DIRECTORY
-            with pytest.raises(IsADirectoryError):
-                await sandbox.read_file(path, working_directory=path, max_bytes=1)
-            assert sandbox.directories == set()
-            assert sandbox.contents == {}
-            assert await backend.acquire(_KEY, spec) is sandbox
-            await sandbox.reset(timeout=1)
-
-    asyncio.run(scenario())

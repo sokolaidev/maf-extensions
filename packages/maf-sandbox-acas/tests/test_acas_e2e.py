@@ -1229,6 +1229,10 @@ class TestExecAgainstTheRealService:
     """
 
     def test_the_exec_probes_come_back_clean(self, live):
+        # The shared sandbox can suspend while the other image fixtures run.
+        instance_id = live.sandbox.instance_id
+        live.sandbox = live.run(live.backend.acquire(live.key, _spec()))
+        assert live.sandbox.instance_id == instance_id
         results = live.run(assert_exec_conformance(_subject(live)))
         assert results, "the EXEC conformance run returned no results"
         skipped = {result.probe.name: result.skipped for result in results if result.skipped}

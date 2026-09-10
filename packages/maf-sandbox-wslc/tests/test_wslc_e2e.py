@@ -859,10 +859,8 @@ class TestAGuestThatIsNotRoot:
 
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), self._spec())
-            absent = await sandbox.exec(
-                ["test", "!", "-e", _WORK], working_directory="/", timeout=60
-            )
-            assert absent.exit_code == 0, "the non-root fixture must not already carry work_dir"
+            prepared = await sandbox.exec(["test", "-d", _WORK], working_directory="/", timeout=60)
+            assert prepared.exit_code == 0, "acquire must prepare work_dir before writing inputs"
             planted = f"{_WORK}/call-a1b2c3/host_note"
             await sandbox.write_file(planted, "# the host wrote this\n", working_directory=_WORK)
             result = await sandbox.exec(
