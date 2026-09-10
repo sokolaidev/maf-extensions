@@ -220,8 +220,12 @@ class InProcessSandbox:
     @staticmethod
     def _work_dir_ancestors(guest_work_dir: str) -> tuple[str, ...]:
         """Model POSIX and Windows bases without using the host's path grammar."""
-        if not ntpath.splitdrive(guest_work_dir)[0]:
-            return posix_work_dir_ancestors(guest_work_dir)
+        if guest_work_dir.startswith("/") or not ntpath.splitdrive(guest_work_dir)[0]:
+            posix_directories = posix_work_dir_ancestors(guest_work_dir)
+            # The store distinguishes POSIX's double-rooted spelling, unlike a Linux engine.
+            if posixpath.normpath(guest_work_dir).startswith("//"):
+                return tuple("/" + directory for directory in posix_directories)
+            return posix_directories
         if not ntpath.isabs(guest_work_dir) or "\0" in guest_work_dir:
             raise ValueError("work_dir must be an absolute guest path without NUL bytes")
         separator = "\\" if "\\" in guest_work_dir else "/"

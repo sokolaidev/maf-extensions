@@ -30,6 +30,29 @@ def test_native_work_dir_is_prepared_repaired_and_retained_by_reset(path):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("path", ["//workspace", "//workspace/nested", "///workspace"])
+def test_slash_rooted_base_is_visible_to_file_methods_after_acquire_and_repair(path):
+    async def scenario():
+        backend = InProcessSandboxBackend()
+        spec = SandboxSpec(kind="posix", work_dir=path)
+        sandbox = await backend.acquire(_KEY, spec)
+        for _ in range(2):
+            entry = await sandbox.stat_file(path, working_directory=path)
+            assert entry is not None and entry.kind is EntryKind.DIRECTORY
+            await sandbox.write_file("marker", "keep", working_directory=path)
+            assert await backend.acquire(_KEY, spec) is sandbox
+            assert await sandbox.read_file("marker", working_directory=path, max_bytes=4) == b"keep"
+            sandbox.contents.clear()
+            sandbox.directories.clear()
+            assert await sandbox.stat_file(path, working_directory=path) is None
+            assert await backend.acquire(_KEY, spec) is sandbox
+        await sandbox.reset(timeout=1)
+        entry = await sandbox.stat_file(path, working_directory=path)
+        assert entry is not None and entry.kind is EntryKind.DIRECTORY
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("kind", [EntryKind.SYMLINK, EntryKind.FILE])
 def test_native_work_dir_refuses_an_obstructed_parent(kind):
     sandbox = InProcessSandbox(
