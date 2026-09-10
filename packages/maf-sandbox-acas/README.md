@@ -50,7 +50,7 @@ Acquire checks `sh` for `EXEC` and the shell, `mkdir`, `mv` and `nohup` for `HOS
 
 | | |
 |---|---|
-| `acquire(key, spec)` | get-or-create, keyed `(scope, thread, agent)`. A warm sandbox is resumed rather than replaced, so a fix-round loop does not pay a cold start per iteration. |
+| `acquire(key, spec)` | get-or-create, keyed `(scope, thread, agent, kind)`. Equivalent egress policies reuse a warm sandbox; changed hosts or mode raise `SandboxEgressNotEnforced`. Dispose the kind before changing policy, or use another key. |
 | `dispose(key, *, kind=None)` | Deletes the selected kind, or every kind when omitted; retained failures keep their kind for retries; reaches sandboxes known to this process |
 | `dispose_scope(scope, thread)` | delete every sandbox for a conversation — **from the service, by label**, not from process memory |
 | `stat_file` / `read_file` / `list_dir` | the pull surface — reads confined to the call's `working_directory`, symlinks and directories refused, a size over the caller's cap refused rather than truncated. Regularity itself cannot be proven here — see below |
@@ -95,6 +95,10 @@ A completed removal failure refuses `FILES_OUT` and `HOST_TOOLS` and warns an `E
 That `dispose_scope` detail is the one worth reading twice. A multi-replica host serves a conversation delete wherever it lands, so the replica that created a sandbox is usually not the one deleting it. A backend that consults only its own registry leaves billable sandboxes running, and the bug is invisible on a single-replica dev box. Sandboxes are labelled at create time so the service can answer the question instead.
 
 Egress comes from the **spec**, not from configuration: `default_action: Deny` plus one `Allow` rule per host the kind declares. A deployment that could widen a kind's egress could undo the containment its design rests on.
+
+Warm reuse compares the mode and case-insensitive host set with the policy used to create that sandbox. Host order and equivalent spelling do not force a new sandbox. A mismatch refuses while retaining the original instance for its existing users and disposal; it never replaces a live instance automatically. Coordinate active calls, await `router.dispose_kind(key, spec.kind, timeout=60)` and require `True` before acquiring a changed policy, or choose a different key.
+
+`EGRESS_METHODS` remains unsupported. The live service matches methods case-insensitively, including custom verbs, so it cannot enforce core's literal method contract. Both router matching and direct backend acquisition refuse method-scoped rules with `SandboxCapabilityNotSupported`. A GET-only rule also permits request content; it is not a body-free or read-only channel. The [live measurements](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/research/acas-egress-methods.md) record the distinction.
 
 ## Upgrading to 0.15
 

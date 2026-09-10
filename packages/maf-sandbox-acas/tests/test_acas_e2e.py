@@ -40,6 +40,7 @@ because it disposes as the thing under test; the prebuilt-image test needs its o
 bare catalogue name is only evidence if it boots one; the egress leg needs its own because only
 an ``ALLOWLIST`` sandbox has a host it may reach and a host it may not. Three more isolate the
 command compatibility checks, including two guests whose executables are deliberately removed.
+Two policy-reuse sandboxes verify disposal between different policies.
 Everything runs on one
 event loop, deliberately: the backend caches its group client per loop, so a second loop would
 build a second transport against the same sandbox.
@@ -65,6 +66,7 @@ from maf_sandbox import (
     EntryKind,
     OsFamily,
     SandboxCapabilityNotSupported,
+    SandboxEgressNotEnforced,
     SandboxKey,
     SandboxRouter,
     SandboxSpec,
@@ -1262,8 +1264,8 @@ class TestEgressAgainstTheRealService:
 
     The deny is L7 here — a TLS-terminating proxy answers a denied host rather than the network
     being severed — so the shared probe asserts only the outcome an L3 and an L7 backend must
-    share: the guest reaches an allowed host and not a denied one. The proxy's `x-deny-reason`
-    and the method scoping it hints at are #377's, not asserted here.
+    share: the guest reaches an allowed host and not a denied one. Changed-policy checks own
+    their acquisitions and assert the service's denial after explicit disposal and recreation.
     """
 
     def test_the_shared_egress_probe_comes_back_clean(self, live_allowlist):
@@ -1277,6 +1279,63 @@ class TestEgressAgainstTheRealService:
         )
         assert results, "the egress conformance run returned no results"
         assert all(r.passed for r in results), [r.failure for r in results if r.failure]
+
+    def test_policy_changes_refuse_until_the_kind_is_disposed(self, loop):
+        from dataclasses import replace
+
+        backend = AcasSandboxBackend(_config())
+        router = SandboxRouter([backend])
+        key = _key(f"e2e-egress-reuse-{uuid.uuid4()}")
+        spec = _spec(
+            requires=frozenset({Capability.EXEC}),
+            egress=Egress.ALLOWLIST,
+            egress_allow=(_EGRESS_ALLOWED_HOST,),
+        )
+        closed = replace(spec, egress=Egress.CLOSED, egress_allow=())
+
+        async def request(sandbox):
+            result = await sandbox.exec(
+                [
+                    "curl",
+                    "-sS",
+                    "-D",
+                    "-",
+                    "-o",
+                    "/dev/null",
+                    "-w",
+                    "status:%{http_code}",
+                    "--max-time",
+                    "20",
+                    f"https://{_EGRESS_ALLOWED_HOST}/v2/",
+                ],
+                working_directory="/",
+                timeout=30,
+            )
+            assert result.exit_code == 0, result.stderr
+            return result.stdout
+
+        async def scenario():
+            first = await router.acquire(key, spec)
+            assert "status:200" in await request(first)
+            equivalent = replace(spec, egress_allow=(_EGRESS_ALLOWED_HOST.upper(),))
+            assert (await router.acquire(key, equivalent)).instance_id == first.instance_id
+            for changed in (replace(spec, egress_allow=("pypi.org",)), closed):
+                with pytest.raises(SandboxEgressNotEnforced, match="dispose_kind"):
+                    await router.acquire(key, changed)
+            assert (await router.acquire(key, spec)).instance_id == first.instance_id
+            assert "status:200" in await request(first)
+            assert await router.dispose_kind(key, spec.kind, timeout=60)
+            replacement = await router.acquire(key, closed)
+            assert replacement.instance_id != first.instance_id
+            response = await request(replacement)
+            assert "status:403" in response
+            assert "x-deny-reason:" in response.lower()
+
+        try:
+            loop.run_until_complete(scenario())
+        finally:
+            loop.run_until_complete(_drains_to_empty(backend, key.scope))
+            loop.run_until_complete(backend.aclose())
 
 
 def test_instance_disposal_conforms_against_the_service(loop):

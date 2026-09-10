@@ -13,6 +13,7 @@ import posixpath
 import shlex
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -21,10 +22,12 @@ from maf_sandbox import (
     Cleanup,
     DisposalFailure,
     Egress,
+    EgressRule,
     Isolation,
     OsFamily,
     SandboxBackend,
     SandboxCapabilityNotSupported,
+    SandboxEgressNotEnforced,
     SandboxKey,
     SandboxOsFamilyNotSupported,
     SandboxRouter,
@@ -3309,6 +3312,130 @@ class TestErrorDetailAdoption:
 
 
 class TestEgressPolicy:
+    @pytest.mark.parametrize("methods", [("GET",), ("get",), ("PROPFIND",)])
+    def test_method_policy_refuses_before_reaching_the_service(self, methods, monkeypatch):
+        backend = AcasSandboxBackend(_config())
+        monkeypatch.setattr(backend, "_group_client", lambda: pytest.fail("contacted service"))
+        scoped = SandboxSpec(
+            kind="t",
+            egress=Egress.ALLOWLIST,
+            egress_allow=(EgressRule("api.example", methods),),
+        )
+        router = SandboxRouter([backend])
+        assert Capability.EGRESS_METHODS not in backend.declarations.capabilities
+        for acquire in (backend.acquire, router.acquire):
+            with pytest.raises(SandboxCapabilityNotSupported):
+                asyncio.run(acquire(SandboxKey("s", "t", "a"), scoped))
+        with pytest.raises(SandboxCapabilityNotSupported):
+            router.ensure_can_serve(scoped)
+        with pytest.raises(SandboxCapabilityNotSupported):
+            backend._egress_policy(scoped)
+
+    def test_equivalent_host_policies_reuse_the_same_instance(self):
+        client = _SlowCreateGroupClient()
+        backend = _backend_with(client)
+        key = SandboxKey("s", "t", "a")
+        first = replace(
+            _spec(), egress=Egress.ALLOWLIST, egress_allow=("api.example", "other.example")
+        )
+        equivalent = replace(
+            first, egress_allow=("OTHER.example", EgressRule("API.example"), "api.example")
+        )
+
+        async def scenario():
+            original = await backend.acquire(key, first)
+            warm = await backend.acquire(key, equivalent)
+            assert original.instance_id == warm.instance_id
+            assert client.create_calls == 1
+
+        asyncio.run(scenario())
+
+    @pytest.mark.parametrize(
+        ("first_mode", "first_hosts", "next_mode", "next_hosts"),
+        [
+            (Egress.ALLOWLIST, ("a.example",), Egress.ALLOWLIST, ("b.example",)),
+            (Egress.ALLOWLIST, ("a.example",), Egress.ALLOWLIST, ("a.example", "b.example")),
+            (Egress.ALLOWLIST, ("a.example", "b.example"), Egress.ALLOWLIST, ("a.example",)),
+            (Egress.ALLOWLIST, ("a.example",), Egress.CLOSED, ()),
+            (Egress.CLOSED, (), Egress.ALLOWLIST, ("a.example",)),
+            (Egress.ALLOWLIST, (), Egress.CLOSED, ()),
+        ],
+    )
+    def test_changed_policy_refuses_without_touching_the_original(
+        self, first_mode, first_hosts, next_mode, next_hosts
+    ):
+        client = _SlowCreateGroupClient()
+        backend = _backend_with(client)
+        key = SandboxKey("s", "t", "a")
+        original = replace(_spec(), egress=first_mode, egress_allow=first_hosts)
+        changed = replace(original, egress=next_mode, egress_allow=next_hosts)
+
+        async def scenario():
+            first = await backend.acquire(key, original)
+            held = backend._registry[("s", "t", "a", original.kind)]
+            with pytest.raises(SandboxEgressNotEnforced, match="dispose_kind"):
+                await backend.acquire(key, changed)
+            assert backend._registry[("s", "t", "a", original.kind)] is held
+            assert not client.resumed and client.create_calls == 1
+            assert (await backend.acquire(key, original)).instance_id == first.instance_id
+
+        asyncio.run(scenario())
+
+    def test_concurrent_different_policies_do_not_share_or_replace_an_instance(self):
+        client = _SlowCreateGroupClient()
+        backend = _backend_with(client)
+        key = SandboxKey("s", "t", "a")
+        first = replace(_spec(), egress=Egress.ALLOWLIST, egress_allow=("a.example",))
+        second = replace(first, egress_allow=("b.example",))
+
+        async def scenario():
+            results = await asyncio.gather(
+                backend.acquire(key, first), backend.acquire(key, second), return_exceptions=True
+            )
+            assert sum(isinstance(r, SandboxEgressNotEnforced) for r in results) == 1
+            assert sum(hasattr(r, "instance_id") for r in results) == 1
+            assert client.create_calls == 1
+
+        asyncio.run(scenario())
+
+    @pytest.mark.parametrize("delete_failed", [False, True])
+    def test_explicit_disposal_allows_a_new_policy_and_retains_failed_targets(
+        self, monkeypatch, delete_failed
+    ):
+        client = _SlowCreateGroupClient()
+        backend = _backend_with(client)
+        key = SandboxKey("s", "t", "a")
+        original = replace(_spec(), egress=Egress.ALLOWLIST, egress_allow=("a.example",))
+        closed = replace(original, egress=Egress.CLOSED, egress_allow=())
+        from maf_sandbox_acas._backend import _Deletion
+
+        async def failure(group, sandbox_id):
+            if delete_failed:
+                return _Deletion(False, DisposalFailure("unreachable", "offline"))
+            return _Deletion(True)
+
+        monkeypatch.setattr(
+            client, "list_sandboxes", lambda **kwargs: _FakePager([]), raising=False
+        )
+        monkeypatch.setattr(backend, "_delete", failure)
+
+        async def scenario():
+            first = await backend.acquire(key, original)
+            with pytest.raises(SandboxEgressNotEnforced):
+                await backend.acquire(key, closed)
+            assert (await backend.dispose(key, kind=original.kind) is not None) == delete_failed
+            assert (
+                first.instance_id in backend._undeleted.get(("s", "t", "a"), set())
+            ) == delete_failed
+            replacement = await backend.acquire(key, closed)
+            assert replacement.instance_id != first.instance_id
+            assert (
+                first.instance_id in backend._undeleted.get(("s", "t", "a"), set())
+            ) == delete_failed
+            assert client.create_calls == 2
+
+        asyncio.run(scenario())
+
     def test_denies_by_default_and_allows_only_the_named_hosts(self):
         """Patterns pass through verbatim — including wildcards, which the Bicep spec's
         `*.data.mcr.microsoft.com` (MCR's blob endpoint) depends on."""

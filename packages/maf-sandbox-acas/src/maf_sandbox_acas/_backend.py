@@ -35,6 +35,7 @@ from maf_sandbox import (
     Sandbox,
     SandboxBackend,
     SandboxCapabilityNotSupported,
+    SandboxEgressNotEnforced,
     SandboxEntry,
     SandboxKey,
     SandboxLimits,
@@ -385,6 +386,17 @@ class _Held:
     removal: bool | None = None
     probed: bool = False
     commands: set[str] = field(default_factory=set[str])
+    egress: tuple[Egress, frozenset[str]] = (Egress.CLOSED, frozenset())
+
+
+def _egress_key(spec: SandboxSpec) -> tuple[Egress, frozenset[str]]:
+    """The supported policy's identity, independent of host spelling and order."""
+    if Capability.EGRESS_METHODS in spec.required_capabilities:
+        raise SandboxCapabilityNotSupported(
+            "ACAS cannot enforce literal, case-sensitive egress methods; "
+            "method-scoped policy is refused."
+        )
+    return spec.egress, frozenset(str(host).lower() for host in spec.egress_allow)
 
 
 @dataclass(frozen=True)
@@ -850,8 +862,12 @@ class AcasSandboxBackend:
                 ``HOST_TOOLS`` and the removal compatibility probe completed with failure,
                 or ``FILES_DELETE`` without a successful removal observation. An inconclusive
                 probe serves the writing capabilities but refuses deletion; a successful
-                probe does not establish that the guest is root.
+                probe does not establish that the guest is root. Method-scoped egress
+                is also refused because the service matches methods case-insensitively.
+            SandboxEgressNotEnforced: when this key and kind already hold a different
+                egress policy. Dispose the kind before changing it, or use another key.
         """
+        _egress_key(spec)
         _sandbox_labels(key, spec)
         async with self._acquire_lock((key.scope, key.thread_id, key.agent_dir, spec.kind)):
             sandbox = await self._get_or_create(key, spec)
@@ -875,9 +891,17 @@ class AcasSandboxBackend:
 
     async def _get_or_create(self, key: SandboxKey, spec: SandboxSpec) -> _AcasSandbox:
         """:meth:`acquire`'s body, run under that key's lock."""
-        gc = self._group_client()
+        egress = _egress_key(spec)
         registry_key = (key.scope, key.thread_id, key.agent_dir, spec.kind)
         held = self._registry.get(registry_key)
+        if held is not None and held.egress != egress:
+            # Replacement could delete an instance another caller is still using.
+            raise SandboxEgressNotEnforced(
+                "ACAS already holds a different egress policy for this key and kind. "
+                "Dispose the kind with SandboxRouter.dispose_kind before changing policy, "
+                "or use a different key."
+            )
+        gc = self._group_client()
         if held is not None:
             sandbox_id = held.sandbox_id
             try:
@@ -946,7 +970,7 @@ class AcasSandboxBackend:
             key.agent_dir,
         )
         # Register immediately, so the sandbox is reachable by purge even if configure fails.
-        held = self._registry[registry_key] = _Held(sc.sandbox_id)
+        held = self._registry[registry_key] = _Held(sc.sandbox_id, egress=egress)
         try:
             await self._configure(sc)
         except Exception as exc:  # noqa: BLE001
@@ -1392,6 +1416,7 @@ class AcasSandboxBackend:
         """Deny by default, allow only the hosts the spec names."""
         from azure.containerapps.sandbox import EgressHostRule, EgressPolicy
 
+        _egress_key(spec)
         return EgressPolicy(
             default_action="Deny",
             traffic_inspection="Full",
