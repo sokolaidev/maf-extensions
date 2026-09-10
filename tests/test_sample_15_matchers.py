@@ -81,7 +81,7 @@ def test_act_five_reports_zero_leftovers_when_reacquired_sandboxes_have_no_work_
     assert sandbox.list_dir.await_count == 2
     for call in sandbox.list_dir.await_args_list:
         assert call.args == (".",)
-        assert call.kwargs == {"working_directory": "/maf-sandbox/work"}
+        assert call.kwargs == {"working_directory": "."}
 
 
 @pytest.mark.parametrize("error", [PermissionError("denied"), RuntimeError("service unavailable")])

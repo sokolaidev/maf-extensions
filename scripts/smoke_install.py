@@ -324,7 +324,8 @@ def _smoke_maf_sandbox_codeact() -> str:
     program_path, source = landed_program[0]
     if not program_path.endswith("/program.py") or source != "print(3 + 4)":
         raise SystemExit(f"FAIL: the program landed at {program_path!r} as {source!r}")
-    if backend.sandbox.commands[0][0] != f"python3 {program_path}":
+    command, working_directory, _ = backend.sandbox.commands[0]
+    if command != "python3 program.py" or working_directory != program_path.rsplit("/", 1)[0]:
         raise SystemExit(f"FAIL: unexpected command {backend.sandbox.commands[0]!r}")
 
     # Files in: the caller's listing is the authority, and it has to travel in the wheel.
@@ -362,7 +363,7 @@ def _smoke_maf_sandbox_codeact() -> str:
             result = await super().exec(
                 command, working_directory=working_directory, timeout=timeout
             )
-            self.contents[f"{working_directory}/report.csv"] = b"1,2\n"
+            await self.write_file("report.csv", b"1,2\n", working_directory=working_directory)
             return result
 
     producing = InProcessSandboxBackend(

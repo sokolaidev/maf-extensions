@@ -558,3 +558,14 @@ print("the host said", maf_host_tools.call("_round_half_up", value=3.6))
         event = recorder.one(HostToolCalled)
         assert event.key == recorder.one(SandboxAcquired).key
         assert (event.tool, event.refusal) == ("_round_half_up", None)
+
+
+def test_host_tools_remain_importable_after_the_program_changes_directory():
+    recorder = _Recorder()
+    answer = _run_in_a_container(
+        "import os\nos.chdir('/tmp')\nimport maf_host_tools\n"
+        "print('after chdir', maf_host_tools.call('_round_half_up', value=3.6))",
+        host_tools=_registry_recording_into(recorder),
+    )
+    assert "after chdir 4" in answer, answer
+    assert recorder.one(HostToolCalled).refusal is None

@@ -423,13 +423,10 @@ async def act_five_disposal_reaches_everyone() -> tuple[int, int]:
         print(f"  acquired on {local.name!r} (not serving — a leftover from an earlier config)")
         sandbox = await router.acquire(KEY, spec)
         print(f"  acquired on {serving(router)!r} (serving)")
-        # `write_file` before `exec`, and not only to have something to echo: a container starts
-        # with nothing at `work_dir`, and `exec` would fail to chdir into a directory that does
-        # not exist. Writing creates the parents, which is why a kind pushes its inputs first.
-        await sandbox.write_file(
-            f"{spec.work_dir}/marker", "routed\n", working_directory=spec.work_dir
+        await sandbox.write_file("marker", "routed\n", working_directory=spec.work_dir or ".")
+        result = await sandbox.exec(
+            "cat marker", working_directory=spec.work_dir or ".", timeout=60
         )
-        result = await sandbox.exec("cat marker", working_directory=spec.work_dir, timeout=60)
         print(f"{MEASURED}it runs: {result.stdout.strip()!r}\n")
     finally:
         purge = await router.dispose_scope(KEY.scope, KEY.thread_id)
@@ -471,12 +468,12 @@ async def act_six_the_spec_picks() -> None:
         # reason: one of these is a Docker container with no auto-delete timer behind it.
         sandbox = await router.acquire(KEY, needs_files_out)
         await sandbox.write_file(
-            f"{needs_files_out.work_dir}/marker",
+            "marker",
             "routed per spec\n",
-            working_directory=needs_files_out.work_dir,
+            working_directory=needs_files_out.work_dir or ".",
         )
         result = await sandbox.exec(
-            "cat marker", working_directory=needs_files_out.work_dir, timeout=60
+            "cat marker", working_directory=needs_files_out.work_dir or ".", timeout=60
         )
         print(f"{MEASURED}the routed backend runs: {result.stdout.strip()!r}")
     finally:

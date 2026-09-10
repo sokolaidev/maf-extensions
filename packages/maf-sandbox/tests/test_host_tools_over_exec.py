@@ -2244,14 +2244,18 @@ class TestWhatSurvivesTheDeadline:
 
 
 class TestTheLayoutsOwnPromise:
-    @pytest.mark.parametrize("directory", ["work/run-1", "", "run-1"])
-    def test_a_run_directory_that_is_not_absolute_is_refused(self, directory: str):
-        """`confine_resolve_guest_path` joins a relative one against itself, and nothing looks wrong.
+    @pytest.mark.parametrize("directory", ["work/run-1", "run-1"])
+    def test_a_relative_run_directory_addresses_files_once(self, directory: str):
+        layout = guest_run_layout(directory)
+        assert layout.directory == directory
+        assert host_tools_over_exec._layout_path(layout, layout.program) == "host_tools/program.py"
+        assert (
+            host_tools_over_exec._layout_path(layout, layout.calls) == "host_tools/host_tool_calls"
+        )
 
-        The requests then land under `work/run-1/work/run-1/`, where the supervisor is not
-        polling — a run that simply never sees a call, with no error anywhere.
-        """
-        with pytest.raises(ValueError, match="absolute"):
+    @pytest.mark.parametrize("directory", ["", ".", "..", "../run-1"])
+    def test_a_relative_run_directory_must_be_a_child(self, directory: str):
+        with pytest.raises(ValueError):
             guest_run_layout(directory)
 
     @pytest.mark.parametrize("program", ["/etc/passwd", "sub/dir/p.py", "..", ""])
@@ -4315,7 +4319,7 @@ class TestWhatIsTooBroadToDelete:
         [
             "/",
             "/tmp",
-            "relative/run",
+            "../run",
             "",
             "/runs/../..",
             # Two components as written, one as meant. `rm` happens to refuse a `.` operand,
