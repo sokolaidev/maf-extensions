@@ -40,6 +40,7 @@ because it disposes as the thing under test; the prebuilt-image test needs its o
 bare catalogue name is only evidence if it boots one; the egress leg needs its own because only
 an ``ALLOWLIST`` sandbox has a host it may reach and a host it may not. Three more isolate the
 command compatibility checks, including two guests whose executables are deliberately removed.
+Two policy-reuse sandboxes verify disposal between different policies.
 Everything runs on one
 event loop, deliberately: the backend caches its group client per loop, so a second loop would
 build a second transport against the same sandbox.
@@ -91,7 +92,7 @@ try:
 except ImportError:
     assert_reclaim_conformance = None
 
-from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
+from maf_sandbox_acas import AcasEgressPolicyConflict, AcasSandboxBackend, AcasSandboxConfig
 
 _ROOT = Path(__file__).resolve().parents[1]
 _RECOVERY_SPEC = importlib.util.spec_from_file_location(
@@ -1229,6 +1230,10 @@ class TestExecAgainstTheRealService:
     """
 
     def test_the_exec_probes_come_back_clean(self, live):
+        # The shared sandbox can suspend while the other image fixtures run.
+        instance_id = live.sandbox.instance_id
+        live.sandbox = live.run(live.backend.acquire(live.key, _spec()))
+        assert live.sandbox.instance_id == instance_id
         results = live.run(assert_exec_conformance(_subject(live)))
         assert results, "the EXEC conformance run returned no results"
         skipped = {result.probe.name: result.skipped for result in results if result.skipped}
@@ -1262,8 +1267,8 @@ class TestEgressAgainstTheRealService:
 
     The deny is L7 here — a TLS-terminating proxy answers a denied host rather than the network
     being severed — so the shared probe asserts only the outcome an L3 and an L7 backend must
-    share: the guest reaches an allowed host and not a denied one. The proxy's `x-deny-reason`
-    and the method scoping it hints at are #377's, not asserted here.
+    share: the guest reaches an allowed host and not a denied one. Changed-policy checks own
+    their acquisitions and assert the service's denial after explicit disposal and recreation.
     """
 
     def test_the_shared_egress_probe_comes_back_clean(self, live_allowlist):
@@ -1277,6 +1282,63 @@ class TestEgressAgainstTheRealService:
         )
         assert results, "the egress conformance run returned no results"
         assert all(r.passed for r in results), [r.failure for r in results if r.failure]
+
+    def test_policy_changes_refuse_until_the_kind_is_disposed(self, loop):
+        from dataclasses import replace
+
+        backend = AcasSandboxBackend(_config())
+        router = SandboxRouter([backend])
+        key = _key(f"e2e-egress-reuse-{uuid.uuid4()}")
+        spec = _spec(
+            requires=frozenset({Capability.EXEC}),
+            egress=Egress.ALLOWLIST,
+            egress_allow=(_EGRESS_ALLOWED_HOST,),
+        )
+        closed = replace(spec, egress=Egress.CLOSED, egress_allow=())
+
+        async def request(sandbox):
+            result = await sandbox.exec(
+                [
+                    "curl",
+                    "-sS",
+                    "-D",
+                    "-",
+                    "-o",
+                    "/dev/null",
+                    "-w",
+                    "status:%{http_code}",
+                    "--max-time",
+                    "20",
+                    f"https://{_EGRESS_ALLOWED_HOST}/v2/",
+                ],
+                working_directory="/",
+                timeout=30,
+            )
+            assert result.exit_code == 0, result.stderr
+            return result.stdout
+
+        async def scenario():
+            first = await router.acquire(key, spec)
+            assert "status:200" in await request(first)
+            equivalent = replace(spec, egress_allow=(_EGRESS_ALLOWED_HOST.upper(),))
+            assert (await router.acquire(key, equivalent)).instance_id == first.instance_id
+            for changed in (replace(spec, egress_allow=("pypi.org",)), closed):
+                with pytest.raises(AcasEgressPolicyConflict, match="dispose_kind"):
+                    await router.acquire(key, changed)
+            assert (await router.acquire(key, spec)).instance_id == first.instance_id
+            assert "status:200" in await request(first)
+            assert await router.dispose_kind(key, spec.kind, timeout=60)
+            replacement = await router.acquire(key, closed)
+            assert replacement.instance_id != first.instance_id
+            response = await request(replacement)
+            assert "status:403" in response
+            assert "x-deny-reason:" in response.lower()
+
+        try:
+            loop.run_until_complete(scenario())
+        finally:
+            loop.run_until_complete(_drains_to_empty(backend, key.scope))
+            loop.run_until_complete(backend.aclose())
 
 
 def test_instance_disposal_conforms_against_the_service(loop):
@@ -1325,3 +1387,26 @@ def test_instance_disposal_conforms_against_the_service(loop):
                     await backend.aclose()
 
     loop.run_until_complete(scenario())
+
+
+@pytest.mark.parametrize("override", [None, "/image/custom-base"])
+def test_relative_storage_base_conformance(loop, override):
+    from dataclasses import replace
+
+    from maf_sandbox.conformance import assert_storage_base_conformance
+
+    backend = AcasSandboxBackend(_config())
+    scope = f"e2e-storage-base-{uuid.uuid4()}"
+    spec = replace(_spec(), work_dir=override)
+
+    async def scenario():
+        sandbox = await backend.acquire(_key(scope), spec)
+        await assert_storage_base_conformance(sandbox, backend.declarations.capabilities)
+
+    try:
+        loop.run_until_complete(scenario())
+    finally:
+        try:
+            loop.run_until_complete(_drains_to_empty(backend, scope))
+        finally:
+            loop.run_until_complete(backend.aclose())

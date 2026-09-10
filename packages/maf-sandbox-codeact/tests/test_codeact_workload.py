@@ -92,7 +92,6 @@ from maf_sandbox_codeact._tool import (
     _SMALLEST_MANIFEST,
     _WITHHELD_OUTPUTS_FOLDER,
     _WITHHELD_ROUTE,
-    _WORK_DIR,
     _format_landed,
     _format_withheld,
     _standing_guidance,
@@ -103,6 +102,7 @@ _PULLS = DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
 
 #: And before a program may reach a host tool: a host-tool call carries its requests over the
 #: same pull surface, so it needs everything a collection needs and the capability besides.
+_WORK_DIR = "/maf-sandbox/work"
 _CALLS = _PULLS | {Capability.HOST_TOOLS}
 
 #: What a call's own directory costs a declared artifact name — the id plus its separator.
@@ -170,6 +170,7 @@ class _ScriptedSandbox(InProcessSandbox):
         return MappingProxyType({p: c.decode("utf-8") for p, c in self.written.items()})
 
     async def exec(self, command, *, working_directory, timeout):
+        working_directory = self._working_directory(working_directory)
         if not _is_core_removal(command):
             self.raw_commands.append(command)
         answer = await super().exec(command, working_directory=working_directory, timeout=timeout)
@@ -198,6 +199,7 @@ class _ProducingSandbox(_ScriptedSandbox):
         return working_directory
 
     async def exec(self, command, *, working_directory, timeout):
+        working_directory = self._working_directory(working_directory)
         result = await super().exec(command, working_directory=working_directory, timeout=timeout)
         cwd = self._program_cwd(working_directory)
         for name, content in self.produces.items():
@@ -249,6 +251,7 @@ class _CallingSandbox(_ScriptedSandbox):
     async def exec(self, command, *, working_directory, timeout):
         if " -I -S -c " in str(command):
             return ExecResult(stdout='{"processes": [], "incomplete": false}', exit_code=0)
+        working_directory = self._working_directory(working_directory)
         result = await super().exec(command, working_directory=working_directory, timeout=timeout)
         if str(command).startswith("kill") or _is_core_removal(command):
             # Neither starts a program, so neither is a run this fake should record.
@@ -297,6 +300,7 @@ class _FinishingSandbox(_ProducingSandbox):
     async def exec(self, command, *, working_directory, timeout):
         if " -I -S -c " in str(command):
             return ExecResult(stdout='{"processes": [], "incomplete": false}', exit_code=0)
+        working_directory = self._working_directory(working_directory)
         result = await super().exec(command, working_directory=working_directory, timeout=timeout)
         if str(command).startswith("kill") or _is_core_removal(command):
             # Neither starts a program, so neither is a run this fake should record.
@@ -634,7 +638,7 @@ class TestCodeactSandboxSpec:
         assert codeact_sandbox_spec().kind == CODEACT_KIND == "codeact"
 
     def test_work_dir_is_the_programs_own_root(self):
-        assert codeact_sandbox_spec().work_dir == _WORK_DIR == "/maf-sandbox/work"
+        assert codeact_sandbox_spec().work_dir is None
 
     @pytest.mark.parametrize("outputs", list(CodeactOutputs))
     @pytest.mark.parametrize("with_host_tools", [False, True])
@@ -666,6 +670,7 @@ class TestCodeactSandboxSpec:
 
         class _CleanupRecordingSandbox(_ScriptedSandbox):
             async def exec(self, command, *, working_directory, timeout):
+                working_directory = self._working_directory(working_directory)
                 cleanups_at_exec.append((len(self.resets), len(backend.disposed)))
                 return await super().exec(
                     command, working_directory=working_directory, timeout=timeout
@@ -922,7 +927,7 @@ class TestTheProgramIsWrittenThenRun:
         argv = sandbox.raw_commands[0]
         assert not isinstance(argv, str)
         (run_dir,) = _run_dirs(sandbox)
-        assert list(argv) == ["python3", f"{run_dir}/{_PROGRAM_FILENAME}"]
+        assert list(argv) == ["python3", _PROGRAM_FILENAME]
 
     def test_the_command_never_carries_the_model_written_source(self):
         code = "import os; os.system('id'); print('$(whoami)`id`; rm -rf /')"
@@ -3097,6 +3102,7 @@ class _StallingSandbox(_ScriptedSandbox):
         self.printed = printed
 
     async def exec(self, command, *, working_directory, timeout):
+        working_directory = self._working_directory(working_directory)
         result = await super().exec(command, working_directory=working_directory, timeout=timeout)
         if not str(command).startswith("sh "):
             # Neither starts a program, so neither is a run this fake should record.
@@ -3818,7 +3824,7 @@ class TestWithoutARegistry:
         (run_dir,) = _run_dirs(sandbox)
         (argv,) = sandbox.raw_commands
         assert not isinstance(argv, str)
-        assert list(argv) == ["python3", f"{run_dir}/{_PROGRAM_FILENAME}"]
+        assert list(argv) == ["python3", _PROGRAM_FILENAME]
         assert set(sandbox.written) == {f"{run_dir}/{_PROGRAM_FILENAME}"}
 
 

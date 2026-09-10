@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
-from maf_sandbox import Capability, EntryKind, SandboxEntry, SandboxKey, SandboxSpec
+from maf_sandbox import (
+    BackendDeclarations,
+    Capability,
+    EntryKind,
+    ExecResult,
+    SandboxEntry,
+    SandboxKey,
+    SandboxSpec,
+)
+from maf_sandbox.conformance import assert_storage_base_conformance
 from maf_sandbox.paths import ensure_guest_work_dir
 from maf_sandbox.testing import InProcessSandbox, InProcessSandboxBackend
 
@@ -37,6 +47,7 @@ def test_preparing_a_warm_base_retains_only_its_directories_on_reset(existing):
         assert sandbox.contents == before_contents
         prepared_are_clean = not {"/session", spec.work_dir}.intersection(sandbox.changed_paths())
         await sandbox.reset(timeout=1)
+        assert spec.work_dir is not None
         entry = await sandbox.stat_file(spec.work_dir, working_directory=spec.work_dir)
         assert entry is not None and entry.kind is EntryKind.DIRECTORY
         assert sandbox.directories == {"/session", spec.work_dir}
@@ -85,6 +96,259 @@ def test_native_root_base_is_intrinsic_to_the_store(path):
 @pytest.mark.parametrize("path", ["C:", "C:work", "//workspace", r"\\server\share\missing"])
 def test_non_root_paths_are_not_intrinsic_to_the_store(path):
     assert asyncio.run(InProcessSandbox()._stat_unconfined(path)) is None
+
+
+@pytest.mark.parametrize("allocated", ["/runtime/private-prefix", "/another/store"])
+@pytest.mark.parametrize("override", [None, "/image/configured-base"])
+def test_relative_storage_contract_without_a_filesystem(allocated, override):
+    async def scenario():
+        sandbox = InProcessSandbox(storage_base=allocated)
+        backend = InProcessSandboxBackend(sandbox)
+        capabilities = frozenset(
+            {
+                Capability.FILES_IN,
+                Capability.FILES_OUT,
+                Capability.FILES_LIST,
+                Capability.FILES_DELETE,
+                Capability.RECLAIM,
+            }
+        )
+        spec = SandboxSpec(
+            kind="store", work_dir=override, requires=capabilities - {Capability.RECLAIM}
+        )
+        await backend.acquire(_KEY, spec)
+        base = override if override is not None else allocated
+        assert base in sandbox.directories
+        await assert_storage_base_conformance(sandbox, capabilities)
+        await sandbox.write_file("kept", b"warm", working_directory=".")
+        assert await backend.acquire(_KEY, spec) is sandbox
+        assert await sandbox.read_file("kept", working_directory=".", max_bytes=4) == b"warm"
+        await sandbox.reset(timeout=1)
+        assert base in sandbox.directories and sandbox.contents == {}
+        assert sandbox.commands == []
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("override", [None, "/image/configured-base"])
+@pytest.mark.parametrize("defect", [None, "accepts_escape", "wrong_error"])
+def test_storage_conformance_checks_exec_only_escapes(override, defect, monkeypatch):
+    async def scenario():
+        base = override or "/runtime/private-prefix"
+        sandbox = InProcessSandbox(storage_base=base, default_stdout=f"{base}\n")
+        capabilities = frozenset({Capability.EXEC})
+        await InProcessSandboxBackend(sandbox).acquire(
+            _KEY, SandboxSpec(kind="runtime", work_dir=override, requires=capabilities)
+        )
+        original = sandbox.exec
+
+        async def execute(command, *, working_directory, timeout):
+            if working_directory.startswith("../"):
+                if defect == "accepts_escape":
+                    return ExecResult(stdout="/outside\n")
+                if defect == "wrong_error":
+                    raise FileNotFoundError("outside directory is missing")
+            return await original(command, working_directory=working_directory, timeout=timeout)
+
+        probe = AsyncMock(wraps=execute)
+        monkeypatch.setattr(sandbox, "exec", probe)
+        for name in ("write_file", "stat_file", "read_file", "list_dir", "remove", "reclaim"):
+            monkeypatch.setattr(
+                sandbox,
+                name,
+                AsyncMock(side_effect=AssertionError(f"undeclared operation: {name}")),
+            )
+        if defect is None:
+            await assert_storage_base_conformance(sandbox, capabilities)
+            assert [call.kwargs["working_directory"] for call in probe.await_args_list] == [
+                ".",
+                "../outside",
+            ]
+        else:
+            with pytest.raises(AssertionError):
+                await assert_storage_base_conformance(sandbox, capabilities)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("override", [None, "/image/configured-base"])
+@pytest.mark.parametrize(
+    "capabilities",
+    [
+        frozenset({Capability.FILES_OUT}),
+        frozenset({Capability.FILES_LIST}),
+        frozenset({Capability.FILES_OUT, Capability.FILES_LIST}),
+    ],
+)
+def test_storage_conformance_exercises_read_only_capabilities(capabilities, override, monkeypatch):
+    async def scenario():
+        base = override or "/runtime/private-prefix"
+        sandbox = InProcessSandbox(storage_base=base, seed_files={f"{base}/kept": b"original"})
+        backend = InProcessSandboxBackend(
+            sandbox, declarations=BackendDeclarations(capabilities=capabilities)
+        )
+        await backend.acquire(
+            _KEY, SandboxSpec(kind="store", work_dir=override, requires=capabilities)
+        )
+        before = sandbox._snapshot()
+        declared = {
+            "stat_file": Capability.FILES_OUT,
+            "read_file": Capability.FILES_OUT,
+            "list_dir": Capability.FILES_LIST,
+        }
+        probes = {}
+        for name in (*declared, "write_file", "exec", "remove", "reclaim"):
+            probe = (
+                AsyncMock(wraps=getattr(sandbox, name))
+                if declared.get(name) in capabilities
+                else AsyncMock(side_effect=AssertionError(f"undeclared operation: {name}"))
+            )
+            monkeypatch.setattr(sandbox, name, probe)
+            probes[name] = probe
+        await assert_storage_base_conformance(sandbox, capabilities)
+        for name, capability in declared.items():
+            if capability in capabilities:
+                calls = probes[name].await_args_list
+                assert any(call.kwargs["working_directory"] == "." for call in calls)
+                assert any(call.kwargs["working_directory"].startswith("../") for call in calls)
+                assert any(call.args[0].startswith("../") for call in calls)
+        assert sandbox._snapshot() == before
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("method", ["stat_file", "read_file", "list_dir"])
+@pytest.mark.parametrize("defect", ["relative", "cwd_escape", "path_escape"])
+def test_storage_conformance_rejects_broken_read_only_addressing(method, defect, monkeypatch):
+    async def scenario():
+        capability = Capability.FILES_LIST if method == "list_dir" else Capability.FILES_OUT
+        capabilities = frozenset({capability})
+        sandbox = await InProcessSandboxBackend().acquire(
+            _KEY, SandboxSpec(kind="store", work_dir=None, requires=capabilities)
+        )
+        original = getattr(sandbox, method)
+
+        async def broken(path, *, working_directory, **kwargs):
+            violates = {
+                "relative": working_directory == "." and path == ".",
+                "cwd_escape": working_directory.startswith("../"),
+                "path_escape": path.startswith("../"),
+            }[defect]
+            if violates:
+                return {
+                    "stat_file": None,
+                    "read_file": b"outside",
+                    "list_dir": (
+                        SandboxEntry(path="/leaked/base/file", kind=EntryKind.FILE, size_bytes=1),
+                    ),
+                }[method]
+            return await original(path, working_directory=working_directory, **kwargs)
+
+        monkeypatch.setattr(sandbox, method, broken)
+        with pytest.raises(AssertionError):
+            await assert_storage_base_conformance(sandbox, capabilities)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("override", [None, "/image/configured-base"])
+@pytest.mark.parametrize(
+    "capabilities",
+    [
+        frozenset({Capability.FILES_DELETE}),
+        frozenset({Capability.RECLAIM}),
+        frozenset({Capability.FILES_DELETE, Capability.RECLAIM}),
+    ],
+)
+def test_storage_conformance_checks_removal_without_writes(capabilities, override, monkeypatch):
+    async def scenario():
+        base = override or "/runtime/private-prefix"
+        sandbox = InProcessSandbox(storage_base=base, seed_files={f"{base}/kept": b"original"})
+        backend = InProcessSandboxBackend(
+            sandbox, declarations=BackendDeclarations(capabilities=capabilities)
+        )
+        await backend.acquire(
+            _KEY,
+            SandboxSpec(
+                kind="store", work_dir=override, requires=capabilities - {Capability.RECLAIM}
+            ),
+        )
+        before = sandbox._snapshot()
+        declared = {"remove": Capability.FILES_DELETE, "reclaim": Capability.RECLAIM}
+        probes = {}
+        for name in (*declared, "write_file", "exec", "stat_file", "read_file", "list_dir"):
+            probe = (
+                AsyncMock(wraps=getattr(sandbox, name))
+                if declared.get(name) in capabilities
+                else AsyncMock(side_effect=AssertionError(f"undeclared operation: {name}"))
+            )
+            monkeypatch.setattr(sandbox, name, probe)
+            probes[name] = probe
+        await assert_storage_base_conformance(sandbox, capabilities)
+        for name, capability in declared.items():
+            if capability in capabilities:
+                calls = probes[name].await_args_list
+                assert any(call.kwargs["working_directory"].startswith("../") for call in calls)
+                assert any(call.args[0].startswith("../") for call in calls)
+                assert any(
+                    call.args[0] == call.kwargs["working_directory"] == "." for call in calls
+                )
+                if name == "remove":
+                    assert {call.kwargs["recursive"] for call in calls} == {False, True}
+        assert sandbox._snapshot() == before
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("override", [None, "/image/configured-base"])
+@pytest.mark.parametrize(
+    "method, recursive", [("remove", False), ("remove", True), ("reclaim", None)]
+)
+@pytest.mark.parametrize("boundary", ["cwd_escape", "path_escape", "self"])
+@pytest.mark.parametrize("defect", ["accepts", "wrong_error"])
+def test_storage_conformance_rejects_broken_removal(
+    method, recursive, boundary, defect, override, monkeypatch
+):
+    async def scenario():
+        capability = Capability.FILES_DELETE if method == "remove" else Capability.RECLAIM
+        capabilities = frozenset({capability})
+        sandbox = await InProcessSandboxBackend().acquire(
+            _KEY,
+            SandboxSpec(
+                kind="store", work_dir=override, requires=capabilities - {Capability.RECLAIM}
+            ),
+        )
+        original = getattr(sandbox, method)
+
+        async def broken(path, *, working_directory, **kwargs):
+            violates = {
+                "cwd_escape": working_directory.startswith("../"),
+                "path_escape": path.startswith("../"),
+                "self": path == working_directory == ".",
+            }[boundary]
+            if violates and kwargs.get("recursive") == recursive:
+                if defect == "wrong_error":
+                    raise FileNotFoundError("target is missing")
+                return None
+            return await original(path, working_directory=working_directory, **kwargs)
+
+        monkeypatch.setattr(sandbox, method, broken)
+        with pytest.raises(AssertionError, match="instead of raising ValueError|not ValueError"):
+            await assert_storage_base_conformance(sandbox, capabilities)
+
+    asyncio.run(scenario())
+
+
+def test_a_later_acquire_cannot_retarget_a_held_sandbox():
+    async def scenario():
+        backend = InProcessSandboxBackend()
+        sandbox = await backend.acquire(_KEY, SandboxSpec(kind="store", work_dir=None))
+        await sandbox.write_file("kept", b"data", working_directory=".")
+        with pytest.raises(ValueError, match="storage base"):
+            await backend.acquire(_KEY, SandboxSpec(kind="store", work_dir="/elsewhere"))
+        assert await sandbox.read_file("kept", working_directory=".", max_bytes=4) == b"data"
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("path", ["C:/agent/work", r"D:\agent\work", r"\\server\share\agent\work"])

@@ -468,8 +468,10 @@ class TestEndToEnd:
         _run(_tool(store, backend), ["main.bicep"])
 
         (path,) = _written(backend)
-        commands = [c for c, _, _ in _commands(backend)]
-        assert commands == [_BUILD_CMD.format(path=path), _LINT_CMD.format(path=path)]
+        commands = _commands(backend)
+        for (command, cwd, _), template in zip(commands, (_BUILD_CMD, _LINT_CMD), strict=True):
+            assert command == template.format(path="main.bicep")
+            assert f"{cwd}/main.bicep" == path
 
     def test_renders_diagnostics_from_sarif(self):
         store = InMemoryStore({"main.bicep": "x"})
@@ -679,8 +681,8 @@ class TestConcurrentRounds:
         # be compiled — a sibling wipe would leave one of these commands with no source.
         for command, working_directory, _ in _commands(backend):
             compiled = command.split(" bicep ", 1)[1].split(" ")[1]
-            assert compiled.startswith(f"{working_directory}/")
-            assert compiled in _written(backend)
+            assert not compiled.startswith("/")
+            assert f"{working_directory}/{compiled}" in _written(backend)
 
     def test_both_calls_report_their_own_diagnostics(self):
         store = InMemoryStore({"a.bicep": "x", "b.bicep": "y"})
@@ -2131,3 +2133,13 @@ class TestNoDirectAzureImport:
             f"the bicep workload imports Azure directly: {offenders}. "
             "It must reach a sandbox through maf_sandbox, or it stops being portable."
         )
+
+
+@pytest.mark.parametrize("base", ["/engine/private", "C:/runtime/temp"])
+def test_native_sarif_locations_match_the_relative_call_directory(base):
+    raw = _sarif().replace("main.bicep", f"file://{base}/call-unique/main.bicep")
+    diagnostics = parse_sarif(raw)
+    assert diagnostics is not None
+    rendered = format_diagnostics(diagnostics, "lint", strip_prefix="call-unique")
+    assert "@ main.bicep:5:7" in rendered
+    assert base not in rendered

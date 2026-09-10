@@ -110,6 +110,7 @@ __all__ = [
     "assert_nothing_left_behind",
     "assert_reach_conformance",
     "assert_reclaim_conformance",
+    "assert_storage_base_conformance",
     "measure_files_delete_probes",
     "plant_layout",
     "run_call_scope_probes",
@@ -122,6 +123,105 @@ __all__ = [
     "run_reach_probes",
     "run_reclaim_probes",
 ]
+
+
+async def assert_storage_base_conformance(
+    sandbox: Sandbox, capabilities: frozenset[Capability]
+) -> None:
+    """Exercise relative addressing on a freshly acquired sandbox without knowing its base.
+
+    Run with both ``work_dir=None`` and an explicit image base. EXEC probes need POSIX
+    ``pwd`` and ``cat``; file probes require no guest utilities. Dispose after the suite.
+    Declared read and removal boundaries are checked without writes; successful file round
+    trips and cleanup require ``FILES_IN`` to plant their contents.
+    """
+    if Capability.EXEC in capabilities:
+        result = await sandbox.exec(["pwd"], working_directory=".", timeout=60)
+        assert result.exit_code == 0 and result.stdout.strip(), "the allocated cwd is absent"
+        await _refused_with(
+            ValueError,
+            "exec with an escaping working directory",
+            sandbox.exec(["pwd"], working_directory="../outside", timeout=60),
+        )
+    if Capability.FILES_OUT in capabilities:
+        entry = await sandbox.stat_file(".", working_directory=".")
+        assert entry is not None and entry.kind is EntryKind.DIRECTORY, "the base is absent"
+        assert entry.path in ("", "."), "stat leaked its storage base"
+        await _refused_with(
+            OSError,
+            "reading the storage base as a file",
+            sandbox.read_file(".", working_directory=".", max_bytes=1),
+        )
+    if Capability.FILES_LIST in capabilities:
+        entries = await sandbox.list_dir(".", working_directory=".")
+        assert all(
+            entry.path not in ("", ".", "..") and "/" not in entry.path and "\\" not in entry.path
+            for entry in entries
+        ), "listing leaked its storage base"
+    for path, cwd in (("escape", "../outside"), ("../escape", ".")):
+        if Capability.FILES_OUT in capabilities:
+            await _refused_with(
+                ValueError,
+                f"stat of escaping path {path!r} from {cwd!r}",
+                sandbox.stat_file(path, working_directory=cwd),
+            )
+            await _refused_with(
+                ValueError,
+                f"read of escaping path {path!r} from {cwd!r}",
+                sandbox.read_file(path, working_directory=cwd, max_bytes=1),
+            )
+        if Capability.FILES_LIST in capabilities:
+            await _refused_with(
+                ValueError,
+                f"listing of escaping path {path!r} from {cwd!r}",
+                sandbox.list_dir(path, working_directory=cwd),
+            )
+    for path, cwd in (("escape", "../outside"), ("../escape", "."), (".", ".")):
+        if Capability.FILES_DELETE in capabilities:
+            for recursive in (False, True):
+                await _refused_with(
+                    ValueError,
+                    f"removal of unsafe path {path!r} from {cwd!r} ({recursive=})",
+                    sandbox.remove(path, working_directory=cwd, recursive=recursive),
+                )
+        if Capability.RECLAIM in capabilities:
+            await _refused_with(
+                ValueError,
+                f"reclamation of unsafe path {path!r} from {cwd!r}",
+                sandbox.reclaim(path, working_directory=cwd, timeout=60),
+            )
+    if Capability.FILES_IN not in capabilities:
+        return
+    child = "storage-base-probe"
+    await sandbox.write_file(f"{child}/value", b"first", working_directory=".")
+    await sandbox.write_file("value", b"second", working_directory=child)
+    if Capability.EXEC in capabilities:
+        result = await sandbox.exec(["cat", "value"], working_directory=child, timeout=60)
+        assert result.exit_code == 0 and result.stdout == "second", "exec and writes disagree"
+    if Capability.FILES_OUT in capabilities:
+        for path, cwd in ((f"{child}/value", "."), ("value", child)):
+            entry = await sandbox.stat_file(path, working_directory=cwd)
+            assert entry is not None and entry.path == path and entry.kind is EntryKind.FILE
+            assert await sandbox.read_file(path, working_directory=cwd, max_bytes=6) == b"second"
+    if Capability.FILES_LIST in capabilities:
+        entries = await sandbox.list_dir(".", working_directory=child)
+        assert [entry.path for entry in entries] == ["value"], "listing leaked its storage base"
+    for path, cwd in (("escape", "../outside"), ("../escape", child)):
+        try:
+            await sandbox.write_file(path, b"no", working_directory=cwd)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"write accepted an escaping path: {path!r} from {cwd!r}")
+    if Capability.FILES_DELETE in capabilities:
+        await sandbox.remove("value", working_directory=child)
+        if Capability.FILES_OUT in capabilities:
+            assert await sandbox.stat_file(f"{child}/value", working_directory=".") is None
+    if Capability.RECLAIM in capabilities:
+        await sandbox.write_file("value", b"reclaim", working_directory=child)
+        await sandbox.reclaim(child, working_directory=".", timeout=60)
+        if Capability.FILES_OUT in capabilities:
+            assert await sandbox.stat_file(child, working_directory=".") is None
 
 
 async def assert_instance_disposal_conformance(

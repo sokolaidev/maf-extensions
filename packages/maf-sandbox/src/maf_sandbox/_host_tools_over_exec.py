@@ -457,7 +457,7 @@ _NOT_JSON = "Error: this host-tool request is not valid JSON"
 
 @dataclass(frozen=True)
 class GuestRunLayout:
-    """Where one run's files live inside the guest, as absolute guest paths.
+    """Where one run's files live, relative to the storage base or as legacy absolute paths.
 
     Two directories under one run, and which file goes in which is the whole defence against
     a guest-supplied name colliding with the machinery serving its own call:
@@ -492,7 +492,8 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
 
     A kind writes ``program`` and :attr:`GuestRunLayout.shim`; everything else is written here.
 
-    ``run_directory`` must be absolute, free of backslashes — the grammar
+    ``run_directory`` must name a child of the storage base (or a legacy absolute path),
+    free of backslashes — the grammar
     :func:`~maf_sandbox.paths.confine_resolve_guest_path` enforces on every pull call —
     free of ``:``,
     which ``PYTHONPATH`` uses to separate entries and cannot quote, and fresh per run, on which
@@ -510,10 +511,9 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
     exit marker ends the next run on its first poll.
     """
     if not posixpath.isabs(run_directory):
-        raise ValueError(
-            f"run_directory must be an absolute guest path, not {run_directory!r}: every path "
-            "in the layout is joined onto it and resolved against it again by the pull calls"
-        )
+        run_directory = confine_resolve_guest_path(run_directory, ".")
+        if run_directory == ".":
+            raise ValueError("run_directory must name a child of the storage base")
     if ":" in run_directory:
         # `PYTHONPATH` has no escape for its own separator, and the launcher puts the shim's
         # directory there. Under `/runs/job:slot` the interpreter reads two entries — `/runs/job`
@@ -526,9 +526,8 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
             "directory is passed to the guest through PYTHONPATH, which uses ':' to separate "
             "entries and offers no way to quote one"
         )
-    # Twice on purpose: containment against itself is trivially true, so only the spelling
-    # is under test.
-    run_directory = confine_resolve_guest_path(run_directory, run_directory)
+    if posixpath.isabs(run_directory):
+        run_directory = confine_resolve_guest_path(run_directory, run_directory)
     if program != posixpath.basename(program) or program in {"", ".", ".."}:
         raise ValueError(
             f"program must be a plain file name, not {program!r}: it is written beside the "
@@ -587,6 +586,16 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
     )
 
 
+def _layout_path(layout: GuestRunLayout, path: str) -> str:
+    """Address a layout file from the run's working directory."""
+    if posixpath.isabs(path):
+        return path
+    relative = guest_path_relative_to(path, layout.directory)
+    if relative is None:
+        raise ValueError(f"layout path {path!r} escapes {layout.directory!r}")
+    return relative or "."
+
+
 def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str:
     """Start a detached program, retaining PID/session files for diagnostics.
 
@@ -634,6 +643,21 @@ def _launcher_script(
     #     A symlink into the tree needs a `realpath` POSIX `sh` does not have and is not
     #     caught; `PYTHONHOME` pointed here breaks the guest outright rather than substituting
     #     anything, so it is left alone. The README's upgrade note has what this costs an image.
+    relative = not posixpath.isabs(layout.directory)
+
+    def quote_path(path: str, *, outer: bool = False) -> str:
+        if not relative:
+            return _quote(path)
+        root = '"$maf_run_root"' if outer else '"$0"'
+        return root + "/" + _quote(_layout_path(layout, path))
+
+    bootstrap = (
+        "unset maf_run_root\nmaf_run_root=$(pwd -P) || exit 1\n"
+        'case "$maf_run_root" in *:*) exit 1;; esac\n'
+        if relative
+        else ""
+    )
+    argument = ' "$maf_run_root"' if relative else ""
     staged = f"{layout.exit_code}.part"
     staged_pid = f"{layout.pid}.part"
     staged_session = f"{layout.session}.part"
@@ -643,7 +667,7 @@ def _launcher_script(
     # Quoting is what stops a run directory containing `*` or `?` from matching more than
     # itself; stripping the separator keeps the two patterns below from becoming `//*`, and
     # collapses a run directory of `/` to `''|/*`, dropping every absolute entry.
-    enclosing = _quote(layout.directory.rstrip("/"))
+    enclosing = '"$maf_run_root"' if relative else _quote(layout.directory.rstrip("/"))
     # `$$` from inside the shell `setsid` runs, not the outer `$!`: `setsid` execs in place or
     # forks depending on its caller, and only the process it ends up exec'ing leads the
     # session either way.
@@ -652,45 +676,48 @@ def _launcher_script(
     # own work directory — the one a kind collects from — and fail into a discarded stderr.
     record_session = (
         (
-            f"printf %s $$ > {_quote(staged_session)}; "
-            f"mv {_quote(staged_session)} {_quote(layout.session)}; "
+            f"printf %s $$ > {quote_path(staged_session)}; "
+            f"mv {quote_path(staged_session)} {quote_path(layout.session)}; "
         )
         if layout.session
         else ""
     )
-    program = f"{_quote(interpreter)} {_quote(layout.program)}"
+    program = f"{_quote(interpreter)} {quote_path(layout.program)}"
     receipt = ""
     closed = ""
     wait_closed = ""
     if start_token is not None:
         # No guest code runs while any ancestor can still expose the receipt stream via /proc.
-        gate = _quote(layout.launcher + ".start")
+        gate = quote_path(layout.launcher + ".start")
+        outer_gate = quote_path(layout.launcher + ".start", outer=True)
         gated = (
             f"while ! {{ IFS= read -r maf_start < {gate}; "
             f'[ "$maf_start" = {_quote(start_token)} ]; }} 2>/dev/null; '
             "do sleep .01 || exit 125; done; "
             f"unset maf_start; exec {program}"
         )
-        program = f"sh -c {_quote(gated)}"
+        program = f"sh -c {_quote(gated)}" + (' "$0"' if relative else "")
         receipt = 'printf \'maf-host-tools: process-v1 %s %s\\n\' "$maf_pid" "$maf_group"; '
         closed = f"printf '%s\\n' {_quote('closed-' + start_token)} > {gate}; "
         # The backend may return when the outer shell exits, without waiting for inherited FDs.
         wait_closed = (
-            f"while ! {{ IFS= read -r maf_closed < {gate}; "
+            f"while ! {{ IFS= read -r maf_closed < {outer_gate}; "
             f'[ "$maf_closed" = {_quote("closed-" + start_token)} ]; }} 2>/dev/null; '
             "do sleep .01 || exit 1; done\n"
         )
     inner = (
         f"PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 {program} "
-        f"> {_quote(layout.output)} 2>&1 & "
-        f"printf %s $! > {_quote(staged_pid)}; mv {_quote(staged_pid)} {_quote(layout.pid)}; "
+        f"> {quote_path(layout.output)} 2>&1 & "
+        f"printf %s $! > {quote_path(staged_pid)}; "
+        f"mv {quote_path(staged_pid)} {quote_path(layout.pid)}; "
         f"maf_pid=$!; {receipt}"
         f"exec >/dev/null 2>&1; {closed}wait $maf_pid; "
-        f"printf %s $? > {_quote(staged)}; mv {_quote(staged)} {_quote(layout.exit_code)}"
+        f"printf %s $? > {quote_path(staged)}; "
+        f"mv {quote_path(staged)} {quote_path(layout.exit_code)}"
     )
     script = (
-        "#!/bin/sh\n"
-        f"mkdir -p {_quote(layout.work)} && cd {_quote(layout.work)} || exit 1\n"
+        "#!/bin/sh\n" + bootstrap + f"mkdir -p {quote_path(layout.work, outer=True)} "
+        f"&& cd {quote_path(layout.work, outer=True)} || exit 1\n"
         "maf_kept=''\n"
         # `set -f` because the expansion below is deliberately unquoted, for the word splitting
         # `IFS=:` gives it — and an unquoted word is globbed as well as split. The guest owns
@@ -711,7 +738,7 @@ def _launcher_script(
         "done\n"
         "unset IFS\n"
         "set +f\n"
-        f'PYTHONPATH={_quote(importable)}"${{maf_kept:+:$maf_kept}}"\n'
+        f'PYTHONPATH={quote_path(importable, outer=True)}"${{maf_kept:+:$maf_kept}}"\n'
         "export PYTHONPATH\n"
         # Prefixed, then removed: a bare `kept` or `entry` collides with an image that exports
         # one, and an exported name stays exported — the guest would read the launcher's
@@ -724,11 +751,11 @@ def _launcher_script(
         # Which path ran is reported on the launcher's own stdout, not inferred from the file
         # it writes — a claim that varies by image, reported rather than hidden.
         "if command -v setsid >/dev/null 2>&1; then\n"
-        f"  setsid nohup sh -c {_quote('maf_group=$$; ' + record_session + inner)} "
+        f"  setsid nohup sh -c {_quote('maf_group=$$; ' + record_session + inner)}{argument} "
         "</dev/null 2>/dev/null &\n"
         f"  printf '%s\\n' {_quote(SESSION_MADE)}\n"
         "else\n"
-        f"  nohup sh -c {_quote('maf_group=0; ' + inner)} </dev/null 2>/dev/null &\n"
+        f"  nohup sh -c {_quote('maf_group=0; ' + inner)}{argument} </dev/null 2>/dev/null &\n"
         "fi\n"
         f"{wait_closed}"
     )
@@ -967,7 +994,7 @@ async def _supervise(
             deadline,
             "the launcher upload",
             sandbox.write_file(
-                layout.launcher,
+                _layout_path(layout, layout.launcher),
                 _launcher_script(layout, interpreter, start_token=start_token),
                 working_directory=layout.directory,
             ),
@@ -987,7 +1014,7 @@ async def _supervise(
     launcher.executed = True
     try:
         started = await sandbox.exec(
-            f"sh {_quote(layout.launcher)}",
+            f"sh {_quote(_layout_path(layout, layout.launcher))}",
             working_directory=layout.directory,
             # What is left after writing the launcher, not another full bound: on a remote
             # backend that upload is a round trip, and handing `exec` the original would add
@@ -1052,7 +1079,7 @@ async def _supervise(
                 deadline,
                 "the program start gate",
                 sandbox.write_file(
-                    layout.launcher + ".start",
+                    _layout_path(layout, layout.launcher + ".start"),
                     start_token + "\n",
                     working_directory=layout.directory,
                 ),
@@ -1256,19 +1283,21 @@ def _sent_clause(reach: _Reach) -> str:
 def _removable(directory: str) -> bool:
     """Is ``directory`` specific enough to hand to a recursive removal?
 
-    The paths here come from :func:`guest_run_layout`, which already refuses a relative one —
-    so this is not the primary defence, it is the one that still holds if a caller builds a
-    layout by hand. An irreversible recursive delete gets a guard that does not depend on
-    something else having run.
+    Validate independently of :func:`guest_run_layout`, since callers can build layouts
+    by hand.
 
-    Two components at minimum, because ``/`` and ``/tmp`` are the shapes that turn a cleanup
-    into an outage, and no run directory this transport is given looks like either.
+    A relative child stays under the storage base. Legacy absolute targets need two
+    components, so neither the guest root nor its immediate children can be removed.
     """
-    if not posixpath.isabs(directory) or ".." in directory.split("/"):
+    if ".." in directory.split("/") or "\\" in directory:
         return False
     # Counted on the normalised path: `/tmp/.` is two components as written and one as meant,
     # and the guard has to answer for what the directory *is*.
-    return len([part for part in posixpath.normpath(directory).split("/") if part]) >= 2
+    return (
+        len([part for part in posixpath.normpath(directory).split("/") if part]) >= 2
+        if posixpath.isabs(directory)
+        else posixpath.normpath(directory) not in {".", ""}
+    )
 
 
 async def _remove_tree(
@@ -1291,7 +1320,9 @@ async def _remove_tree(
             "the cleanup",
             sandbox.reclaim(
                 directory,
-                working_directory=posixpath.dirname(directory) or "/",
+                working_directory=posixpath.dirname(directory) or "/"
+                if posixpath.isabs(directory)
+                else ".",
                 timeout=max(0.0, until - time.monotonic()),
             ),
         )
@@ -1629,7 +1660,7 @@ async def _stat_if_present(
     entry = await _within(
         deadline,
         f"stat {posixpath.basename(path)}",
-        sandbox.stat_file(path, working_directory=layout.directory),
+        sandbox.stat_file(_layout_path(layout, path), working_directory=layout.directory),
     )
     if entry is None or entry.kind is not EntryKind.FILE:
         return False
@@ -1760,7 +1791,9 @@ async def _serve_request_probes(
             await _within(
                 max(deadline, time.monotonic() + _RESPONSE_WRITE_GRACE),
                 f"write the answer to {id_str}",
-                sandbox.write_file(response_path, answer, working_directory=layout.directory),
+                sandbox.write_file(
+                    _layout_path(layout, response_path), answer, working_directory=layout.directory
+                ),
             )
             served += 1
         return served, full_prefix
@@ -1802,7 +1835,7 @@ async def _skip_dead_claim_hole(
         deadline,
         f"stat {served + 1:04d}.claim",
         sandbox.stat_file(
-            posixpath.join(layout.calls, f"{served + 1:04d}.claim"),
+            _layout_path(layout, posixpath.join(layout.calls, f"{served + 1:04d}.claim")),
             working_directory=layout.directory,
         ),
     )
@@ -1813,7 +1846,7 @@ async def _skip_dead_claim_hole(
         deadline,
         f"stat {served + 2:04d}.request.json",
         sandbox.stat_file(
-            posixpath.join(layout.calls, f"{served + 2:04d}.request.json"),
+            _layout_path(layout, posixpath.join(layout.calls, f"{served + 2:04d}.request.json")),
             working_directory=layout.directory,
         ),
     )
@@ -1829,7 +1862,7 @@ async def _skip_dead_claim_hole(
         deadline,
         f"stat {served + 1:04d}.request.json",
         sandbox.stat_file(
-            posixpath.join(layout.calls, f"{served + 1:04d}.request.json"),
+            _layout_path(layout, posixpath.join(layout.calls, f"{served + 1:04d}.request.json")),
             working_directory=layout.directory,
         ),
     )
@@ -1980,7 +2013,7 @@ async def _read_if_present(
     entry = await _within(
         deadline,
         f"stat {posixpath.basename(path)}",
-        sandbox.stat_file(path, working_directory=layout.directory),
+        sandbox.stat_file(_layout_path(layout, path), working_directory=layout.directory),
     )
     if entry is None or entry.kind is not EntryKind.FILE:
         return None
@@ -2002,7 +2035,9 @@ async def _read_if_present(
         raw = await _within(
             deadline,
             f"read {posixpath.basename(path)}",
-            sandbox.read_file(path, working_directory=layout.directory, max_bytes=cap),
+            sandbox.read_file(
+                _layout_path(layout, path), working_directory=layout.directory, max_bytes=cap
+            ),
         )
     except SandboxTransferCapExceeded as refused:
         # The backend refusing after the fact, which the pull surface says is how a client

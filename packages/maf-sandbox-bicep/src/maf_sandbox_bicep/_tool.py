@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import posixpath
 from collections.abc import Mapping
 from time import perf_counter
 from typing import TYPE_CHECKING, Any
@@ -433,7 +434,11 @@ def _bicep_validate_tool(
                 continue
 
             try:
-                await sandbox.write_file(sandbox_path, content, working_directory=call_directory)
+                await sandbox.write_file(
+                    posixpath.relpath(sandbox_path, call_directory),
+                    content,
+                    working_directory=call_directory,
+                )
             except Exception as exc:  # noqa: BLE001
                 # Detail, not just str(): a live run produced `Operation returned an invalid
                 # status 'Conflict'` for four files at once, and that sentence alone cannot
@@ -570,7 +575,7 @@ async def _run_phase(
     started = perf_counter()
     execution = asyncio.create_task(
         sandbox.exec(
-            template.format(path=sandbox_path),
+            template.format(path=posixpath.relpath(sandbox_path, working_directory)),
             working_directory=working_directory,
             timeout=timeout,
         )

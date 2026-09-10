@@ -16,7 +16,7 @@ An agent that writes code should not be the thing that runs it. This package giv
 
 This package is the backend only, with no sandbox kind of its own. [`maf-sandbox-bicep`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox-bicep) is the first kind that runs on it, written against [`maf-sandbox`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox)'s protocol rather than against this backend.
 
-For workloads requiring `EXEC` or any `FILES_*` capability, `acquire` ensures `spec.work_dir` exists, including on warm reuse. Existing directories retain their contents, ownership and modes; an unreadable path, a symlink or a non-directory fails acquire. This guarantees the base's existence on return, not additional guest permissions or the creation of per-call children. Runtime-only workloads require no directory. Missing parents are created through the SDK's data-plane `mkdir`, without a guest command. Ownership follows the service's file plane; its documented concurrent-redirection residual also applies to creation.
+For workloads requiring `EXEC` or any `FILES_*` capability, `acquire` ensures the bound storage base exists, including on warm reuse. `spec.work_dir=None` lets this backend allocate `/maf-sandbox/work`; an explicit value requires that exact guest-native base. Relative working directories resolve beneath it, with `"."` naming the base; commands and argv remain untouched. Existing directories retain their contents, ownership and modes; an unreadable path, a symlink or a non-directory fails acquire. This guarantees the base's existence on return, not additional guest permissions or the creation of per-call children. Runtime-only workloads require no directory. Missing parents are created through the SDK's data-plane `mkdir`, without a guest command. Ownership follows the service's file plane; its documented concurrent-redirection residual also applies to creation.
 
 ## Quickstart
 
@@ -50,7 +50,7 @@ Acquire checks `sh` for `EXEC` and the shell, `mkdir`, `mv` and `nohup` for `HOS
 
 | | |
 |---|---|
-| `acquire(key, spec)` | get-or-create, keyed `(scope, thread, agent)`. A warm sandbox is resumed rather than replaced, so a fix-round loop does not pay a cold start per iteration. |
+| `acquire(key, spec)` | get-or-create, keyed `(scope, thread, agent, kind)`. Equivalent egress policies reuse a warm sandbox; changed hosts or mode raise `AcasEgressPolicyConflict`. Dispose the kind before changing policy, or use another key. |
 | `dispose(key, *, kind=None)` | Deletes the selected kind, or every kind when omitted; retained failures keep their kind for retries; reaches sandboxes known to this process |
 | `dispose_scope(scope, thread)` | delete every sandbox for a conversation — **from the service, by label**, not from process memory |
 | `stat_file` / `read_file` / `list_dir` | the pull surface — reads confined to the call's `working_directory`, symlinks and directories refused, a size over the caller's cap refused rather than truncated. Regularity itself cannot be proven here — see below |
@@ -95,6 +95,10 @@ A completed removal failure refuses `FILES_OUT` and `HOST_TOOLS` and warns an `E
 That `dispose_scope` detail is the one worth reading twice. A multi-replica host serves a conversation delete wherever it lands, so the replica that created a sandbox is usually not the one deleting it. A backend that consults only its own registry leaves billable sandboxes running, and the bug is invisible on a single-replica dev box. Sandboxes are labelled at create time so the service can answer the question instead.
 
 Egress comes from the **spec**, not from configuration: `default_action: Deny` plus one `Allow` rule per host the kind declares. A deployment that could widen a kind's egress could undo the containment its design rests on.
+
+`AcasEgressPolicyConflict` subclasses `SandboxEgressNotEnforced`, so callers can distinguish a held-policy conflict from an unsupported mode while existing catches still work. Warm reuse compares the mode and case-insensitive host set with the policy used to create that sandbox. Acquisition for the same key and kind is serialized across event loops; unrelated keys and kinds can progress concurrently. Host order and equivalent spelling do not force a new sandbox. A mismatch refuses while retaining the original instance for its existing users and disposal; it never replaces a live instance automatically. Coordinate active calls, await `router.dispose_kind(key, spec.kind, timeout=60)` and require `True` before acquiring a changed policy, or choose a different key. Direct backend callers can await `backend.dispose(key, kind=spec.kind)` and require `None` (no disposal failure) before changing policy. A stale held record also requires explicit disposal; a failed resume would not prove the instance is gone.
+
+`EGRESS_METHODS` remains unsupported. The live service matches methods case-insensitively, including custom verbs, so it cannot enforce core's literal method contract. Both router matching and direct backend acquisition refuse method-scoped rules with `SandboxCapabilityNotSupported`. A GET-only rule also permits request content; it is not a body-free or read-only channel. The [live measurements](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/research/acas-egress-methods.md) record the distinction.
 
 ## Upgrading to 0.15
 

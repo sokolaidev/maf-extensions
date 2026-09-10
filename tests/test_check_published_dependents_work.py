@@ -39,7 +39,7 @@ _ARGV0 = "scripts/check_published_dependents_work.py"
 _PUBLISH = yaml.safe_load(
     (_SCRIPTS.parent / ".github" / "workflows" / "publish-packages.yml").read_text("utf-8")
 )
-#: The post-upload dispatch step, the one call site that redirects this script's stderr.
+#: The post-upload dispatch step reports import failures through the shared release wrapper.
 _DISPATCH = next(
     step
     for job in _PUBLISH["jobs"].values()
@@ -1078,33 +1078,25 @@ class TestMain:
         assert "usage:" in capsys.readouterr().err
 
 
-class TestTheDispatchStepDoesNotSwallowARefusal:
-    """A refusal reaches the checks page only if that step replays the stderr it redirects.
+class TestTheDispatchStepUsesTheSharedReporter:
+    """The production checker and its dispatch reporter must remain wired together."""
 
-    `--dispatch` exits 0 on a break, so a non-zero status is this script unable to answer at
-    all — an unreachable index above the rest. The reason for that, `run_check`'s annotation
-    included, goes to stderr, and this step sends stderr to a file so the break lines can be
-    replayed into the job summary. Left to `set -e`, the assignment ends the step before
-    anything reads that file, and a red arrives carrying nothing at all.
-    """
+    def test_the_dispatch_wraps_the_checker_with_its_snapshot_and_mode(self):
+        from _workflow_commands import command_arguments
 
-    def test_the_redirect_is_still_what_makes_this_necessary(self):
-        assert "2>dispatch-break.txt" in _DISPATCH, (
-            "the step no longer redirects stderr; this class guards a hazard that redirect "
-            "creates, and it should be revisited rather than deleted"
+        arguments = command_arguments(
+            _DISPATCH, "release_workflow.py", {"PACKAGE": "maf-sandbox", "VERSION": "0.13.0"}
         )
-
-    def test_the_status_is_captured_rather_than_left_to_errexit(self):
-        assert "set -euo pipefail" in _DISPATCH
-        assert "|| status=$?" in _DISPATCH, (
-            "under `set -e` the assignment's own failure ends the step, so nothing below runs"
-        )
-
-    def test_a_refusal_replays_the_redirected_stderr_before_the_verdict_is_read(self):
-        replay = _DISPATCH.find("cat dispatch-break.txt >&2")
-        assert replay != -1, "a non-zero status has to put the reason back on stderr"
-        assert _DISPATCH.find('exit "$status"', replay) != -1
-        assert replay < _DISPATCH.find('verdict="$('), (
-            "the replay has to happen before the verdict is parsed out of stdout the refusal "
-            "never produced"
-        )
+        assert arguments == [
+            "dispatch",
+            "maf-sandbox",
+            "0.13.0",
+            "--",
+            "python3",
+            "release-guard/scripts/check_published_dependents_work.py",
+            "0.13.0",
+            "dist/maf_sandbox-0.13.0-py3-none-any.whl",
+            "--since-snapshot",
+            "admitting-snapshot.json",
+            "--dispatch",
+        ]

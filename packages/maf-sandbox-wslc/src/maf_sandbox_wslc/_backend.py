@@ -66,6 +66,7 @@ from maf_sandbox.paths import (
     ensure_guest_work_dir,
     guest_path_and_ancestors,
     posix_work_dir_ancestors,
+    resolve_guest_working_directory,
     sandbox_entry_from_tar_header,
     stat_by_asking_the_guest_as_root,
     tar_header_from_block,
@@ -131,6 +132,7 @@ _NETWORK_NOT_FOUND = "not found"
 #: Marks the egress proxy so a purge can tell it from the sandboxes it counts.
 _LABEL_ROLE = "maf-sandbox.role"
 _LABEL_KEY = "maf-sandbox.key.v1"
+_LABEL_WORK_DIR = "maf-sandbox.work-dir.v1"
 # Optional attribution must leave command-line space for the proxy's required configuration.
 _KEY_LABEL_MAX = 4096
 
@@ -196,6 +198,22 @@ def _sandbox_labels(key: SandboxKey, spec: SandboxSpec) -> dict[str, str]:
         _LABEL_KIND: _label_value(spec.kind),
         **{f"{_LABEL_PREFIX}{k}": _label_value(v) for k, v in spec.labels.items()},
     }
+
+
+def _check_storage_base(row: dict[str, object], spec: SandboxSpec) -> None:
+    config = row.get("Config")
+    labels = row.get("Labels")
+    if labels is None and isinstance(config, dict):
+        labels = cast("dict[str, object]", config).get("Labels")
+    work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
+    if (
+        not isinstance(labels, dict)
+        or cast("dict[str, object]", labels).get(_LABEL_WORK_DIR) != work_dir
+    ):
+        raise ValueError(
+            "the container has a different or unrecorded storage base; "
+            "dispose it before requesting another base"
+        )
 
 
 def _key_label(key: SandboxKey) -> str:
@@ -433,6 +451,7 @@ class _WslcSandbox:
         self.instance_id = instance_id
         self._guest_uid = guest_uid
         self._guest_identity = guest_identity
+        self._work_dir = "/maf-sandbox/work"
 
     @property
     def guest_principal(self) -> str:
@@ -447,11 +466,13 @@ class _WslcSandbox:
 
     async def prepare_work_dir(self, spec: SandboxSpec) -> None:
         """Establish the spec's base through the container file plane."""
+        self._work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
         await ensure_guest_work_dir(
             spec,
             lambda path: self._stat_guest(path, path),
             self._create_directories,
             resolve=posix_work_dir_ancestors,
+            base=self._work_dir,
         )
 
     async def _create_directories(self, directories: tuple[str, ...]) -> None:
@@ -485,6 +506,7 @@ class _WslcSandbox:
         guest's ownership; existing directories must keep their modes and owners. An
         unresolved image identity refuses the write rather than planting root-owned inputs.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         if self._guest_identity is None:
             raise RuntimeError("wslc could not resolve the image user for write_file")
         existing: set[str] = set()
@@ -593,6 +615,7 @@ class _WslcSandbox:
         acquire pays a fresh create.  A **cancelled** call still reaps the host-side process
         but keeps the sandbox: the in-container command runs on until the sandbox is disposed.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
         return await self._exec(argv, working_directory=working_directory, timeout=timeout)
 
@@ -607,6 +630,7 @@ class _WslcSandbox:
         """Execute with a host-enforced combined stdout/stderr byte budget."""
         if type(max_output_bytes) is not int or max_output_bytes <= 0:
             raise ValueError("max_output_bytes must be a positive integer")
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
         try:
             result = await self._run(
@@ -969,6 +993,7 @@ class WslcSandboxBackend:
         egress_id = self._egress_id(spec)
         name = _container_name(key, spec.kind, egress_id)
         async with self._acquire_lock(key, spec.kind):
+            await self._verify_storage_base(name, spec, missing_ok=True)
             running = await self._is_listed(name, all_states=False)
             stopped = not running and await self._is_listed(name, all_states=True)
             if egress_id:
@@ -1023,6 +1048,7 @@ class WslcSandboxBackend:
                 except Exception as failure:
                     logger.warning("sandbox identity refusal cleanup raised: %s", failure)
                 raise
+            _check_storage_base(cast("dict[str, object]", row), spec)
             guest_uid = await self._probe_guest_uid(name)
             guest_identity = await self._write_identity(
                 name, guest_uid, cast("dict[str, object]", row)
@@ -1050,6 +1076,16 @@ class WslcSandboxBackend:
             )
             await sandbox.prepare_work_dir(spec)
             return sandbox
+
+    async def _verify_storage_base(
+        self, target: str, spec: SandboxSpec, *, missing_ok: bool = False
+    ) -> None:
+        row = await self._inspect_disposal_target(target)
+        if row is None:
+            if missing_ok:
+                return
+            raise RuntimeError("wslc could not read the sandbox storage base")
+        _check_storage_base(row, spec)
 
     async def _probe_commands(self, name: str, instance_id: str, spec: SandboxSpec) -> None:
         cached_id, verified = self._command_probes.get(name, (instance_id, set[str]()))
@@ -1657,11 +1693,13 @@ class WslcSandboxBackend:
             args += ["--network", "none"]
         for label, value in _sandbox_labels(key, spec).items():
             args += ["-l", f"{label}={value}"]
+        work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
+        args += ["-l", f"{_LABEL_WORK_DIR}={work_dir}"]
         args += [image, "sleep", "infinity"]
 
         result = await self._wslc(*args, timeout=self._config.command_timeout_seconds)
         if result.returncode != 0:
-            if _ALREADY_EXISTS in result.stderr_text and await self._adopt(name):
+            if _ALREADY_EXISTS in result.stderr_text and await self._adopt(name, spec):
                 logger.info("container %s already existed; adopted it instead of creating", name)
                 return image
             raise RuntimeError(
@@ -1765,7 +1803,7 @@ class WslcSandboxBackend:
             await asyncio.sleep(_PROXY_READY_DELAY_S)
         raise RuntimeError(f"egress proxy {proxy} never reported listening")
 
-    async def _adopt(self, name: str) -> bool:
+    async def _adopt(self, name: str, spec: SandboxSpec) -> bool:
         """Whether an existing ``name`` is running, or could be started — the reuse path again.
 
         The listing that sent ``acquire`` down the create branch can be out of date by the time
@@ -1773,6 +1811,7 @@ class WslcSandboxBackend:
         container that is right there.  Without this the name stays taken and every acquire for
         that key fails from then on.
         """
+        await self._verify_storage_base(name, spec, missing_ok=True)
         if await self._is_listed(name, all_states=False):
             return True
         return await self._is_listed(name, all_states=True) and await self._restart(name)

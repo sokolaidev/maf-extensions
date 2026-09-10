@@ -14,7 +14,8 @@ from maf_sandbox_wslc._backend import _WslcSandbox
 
 @pytest.mark.parametrize("engine", ["docker", "wslc"])
 @pytest.mark.parametrize("channel", [1, 2])
-def test_backend_exec_caps_live_output_before_a_result_exists(engine, channel):
+@pytest.mark.parametrize("directory", ["/work", "child"])
+def test_backend_exec_caps_live_output_before_a_result_exists(engine, channel, directory):
     async def scenario():
         if engine == "docker":
             backend = DockerSandboxBackend(DockerSandboxConfig(docker_path=sys.executable))
@@ -26,13 +27,16 @@ def test_backend_exec_caps_live_output_before_a_result_exists(engine, channel):
         async def run(*args, **kwargs):
             assert "exec" in args
             assert args[-1] == "probe"
+            assert args[args.index("-w") + 1] == (
+                "/work" if directory == "/work" else "/maf-sandbox/work/child"
+            )
             script = f"import os,time; os.write({channel}, b'x'*65536); time.sleep(30)"
             return await invoke("-c", script, **kwargs)
 
         sandbox = sandbox_class(cast(Any, run), "one", 5, instance_id="one")
         with pytest.raises(SandboxExecOutputLimitExceeded):
             await sandbox.exec_bounded(
-                "probe", working_directory="/work", timeout=5, max_output_bytes=1024
+                "probe", working_directory=directory, timeout=5, max_output_bytes=1024
             )
 
     asyncio.run(scenario())

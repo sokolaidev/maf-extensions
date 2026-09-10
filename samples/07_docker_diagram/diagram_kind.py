@@ -197,13 +197,8 @@ def _render_diagram_tool(
         # What `collect_outputs` resolves is relative to `work_dir`, and the call directory sits
         # directly under it, so its last component is the whole of the prefix.
         call_id = guest_call_directory.rsplit("/", 1)[-1]
-        guest_source_path = f"{guest_call_directory}/{_SOURCE_FILENAME}"
-        guest_output_path = f"{guest_call_directory}/{_OUTPUT_FILENAME}"
-
         try:
-            await sandbox.write_file(
-                guest_source_path, dot, working_directory=session.spec.work_dir
-            )
+            await sandbox.write_file(_SOURCE_FILENAME, dot, working_directory=guest_call_directory)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "render_diagram: could not write the DOT source into the sandbox: %s",
@@ -215,8 +210,8 @@ def _render_diagram_tool(
             # An argv sequence, never a command line: the source is a written file and the
             # renderer's arguments are fixed, so nothing the model wrote reaches a shell.
             result = await sandbox.exec(
-                [_RENDERER, _FORMAT_FLAG, guest_source_path, _OUTPUT_FLAG, guest_output_path],
-                working_directory=session.spec.work_dir,
+                [_RENDERER, _FORMAT_FLAG, _SOURCE_FILENAME, _OUTPUT_FLAG, _OUTPUT_FILENAME],
+                working_directory=guest_call_directory,
                 timeout=timeout,
             )
         except TimeoutError:

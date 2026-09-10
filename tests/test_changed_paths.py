@@ -100,3 +100,24 @@ class TestTheOutputLine:
 
     def test_an_argument_is_refused(self, capsys):
         assert changed.main(["changed_paths.py", "extra"]) == 2
+
+
+@pytest.mark.parametrize(
+    ("paths", "expected"),
+    [
+        (["docs/sandbox/architecture.md", "CONTRIBUTING.md"], False),
+        (["RELEASING.md"], True),
+        (["samples/13_bicep_fix_loop/README.md"], True),
+        (["scripts/templates/range-body.md"], True),
+        (["scripts\\templates\\samples-body.md"], True),
+        (["packages/maf-sandbox/pyproject.toml"], True),
+        (["tests/test_new_workflow.py"], True),
+        ([".github/workflows/workflow-tests.yml"], True),
+        (["uv.lock"], True),
+        ([], True),
+    ],
+)
+def test_workflow_checks_include_their_markdown_inputs(paths, expected, monkeypatch, capsys):
+    monkeypatch.setattr(changed.sys, "stdin", io.StringIO("\n".join(paths)))
+    assert changed.main(["changed_paths.py", "--workflows"]) == 0
+    assert capsys.readouterr().out == f"code={str(expected).lower()}\n"

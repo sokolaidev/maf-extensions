@@ -81,6 +81,7 @@ from maf_sandbox.paths import (
     guest_path_and_ancestors,
     path_ancestors_are_host_owned,
     posix_work_dir_ancestors,
+    resolve_guest_working_directory,
     sandbox_entry_from_tar_header,
     tar_header_from_block,
 )
@@ -121,6 +122,7 @@ _LABEL_PREFIX = "maf-sandbox.label."
 #: Marks the egress proxy so a purge can tell it from the sandboxes it counts.
 _LABEL_ROLE = "maf-sandbox.role"
 _LABEL_KEY = "maf-sandbox.key.v1"
+_LABEL_WORK_DIR = "maf-sandbox.work-dir.v1"
 # Optional attribution must leave command-line space for the proxy's required configuration.
 _KEY_LABEL_MAX = 4096
 
@@ -655,6 +657,7 @@ class _DockerSandbox:
         self._cap_drop_all = cap_drop_all
         self._guest_uid = guest_uid
         self._guest_gid = guest_gid
+        self._work_dir = "/maf-sandbox/work"
         self.instance_id = instance_id
 
     @property
@@ -663,11 +666,13 @@ class _DockerSandbox:
 
     async def prepare_work_dir(self, spec: SandboxSpec) -> None:
         """Establish the spec's base through the container file plane."""
+        self._work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
         await ensure_guest_work_dir(
             spec,
             lambda path: self._stat_guest(path, path),
             self._create_directories,
             resolve=posix_work_dir_ancestors,
+            base=self._work_dir,
         )
 
     async def _create_directories(self, directories: tuple[str, ...]) -> None:
@@ -710,6 +715,7 @@ class _DockerSandbox:
         Stamping guest ownership does not bound placement authority; the REACH write probe
         checks what lands, not the authority that resolved its path.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         walked: dict[str, tuple[int, int]] = {}
         guest = await confine_resolve_guest_write_path(
             lambda p: self._stat_guest(p, p, walked), path, working_directory
@@ -766,6 +772,7 @@ class _DockerSandbox:
         acquire pays a fresh create.  A **cancelled** call still reaps the host-side process but
         keeps the sandbox: the in-container command runs on until the sandbox is disposed.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
         return await self._exec(argv, working_directory=working_directory, timeout=timeout)
 
@@ -780,6 +787,7 @@ class _DockerSandbox:
         """Execute with a host-enforced combined stdout/stderr byte budget."""
         if type(max_output_bytes) is not int or max_output_bytes <= 0:
             raise ValueError("max_output_bytes must be a positive integer")
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
         try:
             result = await self._run(
@@ -896,6 +904,7 @@ class _DockerSandbox:
         The **final** component is described rather than refused: a link reported as
         :data:`~maf_sandbox.EntryKind.SYMLINK` is how a caller learns it is one.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         guest = await confine_resolve_guest_read_path(
             lambda p: self._stat_guest(p, p), path, working_directory
         )
@@ -932,6 +941,7 @@ class _DockerSandbox:
         """
         # Ahead of the root probe below, so a path resolving outside is refused without
         # spending a subprocess on it. The bundle checks it again, which is string work.
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         confine_resolve_guest_path(path, working_directory)
         walked: dict[str, tuple[int, int]] = {}
         try:
@@ -966,16 +976,16 @@ class _DockerSandbox:
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
         """Remove ``directory`` with ``rm -rf``, through :meth:`_removal`.
 
-        Runs from ``/`` because ``working_directory`` may not exist, and takes no confinement
-        check: the caller made ``directory``, and :func:`~maf_sandbox.reclaim_guest_path` is
-        where that policy lives.  The floor below re-refuses a subset of it, because this
-        command runs from ``/`` and can carry root's authority.
-
-        Why root is allowed without the filesystem path check — the file name check still runs,
-        in :func:`~maf_sandbox.reclaim_guest_path` — and which half of the argument is settled at
-        acquire rather than asserted: ``docs/sandbox/backends/docker.md``.
+        Relative targets must resolve to a child of ``working_directory``. Every resolved
+        target, including a legacy absolute one, must be at least two components from root.
+        Runs from ``/`` because the target's parent may be absent; permission to raise authority
+        is established at acquire, as described in ``docs/sandbox/backends/docker.md``.
         """
-        del working_directory
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
+        if not posixpath.isabs(directory):
+            directory = confine_resolve_guest_path(directory, working_directory)
+            if directory == posixpath.normpath(working_directory):
+                raise ValueError("reclaim must name a child of the working directory")
         if not directory.startswith("/"):
             raise ValueError(f"refusing to reclaim a path that is not absolute: {directory}")
         if len([part for part in posixpath.normpath(directory).split("/") if part]) < 2:
@@ -1050,6 +1060,7 @@ class _DockerSandbox:
         The residual that the check cannot close: a guest that turns a stat-ed component into a link
         between the check and the read wins, since ``docker cp`` has no no-follow form.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         guest = await confine_resolve_guest_read_path(
             lambda p: self._stat_guest(p, p), path, working_directory
         )
@@ -1464,6 +1475,7 @@ class DockerSandboxBackend:
         egress_id = self._egress_id(spec)
         name = _container_name(key, spec.kind, egress_id)
         async with self._acquire_lock(key, spec.kind):
+            await self._verify_storage_base(name, spec, missing_ok=True)
             if egress_id:
                 # Before the reuse decision reads it: this can remove the very container the
                 # reads below would otherwise find warm.
@@ -1526,6 +1538,7 @@ class DockerSandboxBackend:
                 except Exception as failure:
                     logger.warning("sandbox identity refusal cleanup raised: %s", failure)
                 raise
+            await self._verify_storage_base(instance_id, spec)
             facts = await self._container_facts(name, spec, instance_id=instance_id)
             refuse_capabilities_the_guest_cannot_back(
                 spec,
@@ -1549,6 +1562,31 @@ class DockerSandboxBackend:
             )
             await sandbox.prepare_work_dir(spec)
             return sandbox
+
+    async def _verify_storage_base(
+        self, target: str, spec: SandboxSpec, *, missing_ok: bool = False
+    ) -> None:
+        bound = await self._docker(
+            "inspect",
+            "-f",
+            "{{json .Config.Labels}}",
+            target,
+            timeout=self._config.command_timeout_seconds,
+        )
+        if bound.returncode:
+            if missing_ok and _reads_as_absent(bound.stderr, target):
+                return
+            raise RuntimeError("docker could not read the sandbox storage base")
+        labels: object = json.loads(bound.stdout)
+        work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
+        if (
+            not isinstance(labels, dict)
+            or cast("dict[str, object]", labels).get(_LABEL_WORK_DIR) != work_dir
+        ):
+            raise ValueError(
+                "the container has a different or unrecorded storage base; "
+                "dispose it before requesting another base"
+            )
 
     async def _probe_commands(self, name: str, instance_id: str, spec: SandboxSpec) -> None:
         cached_id, verified = self._command_probes.get(name, (instance_id, set[str]()))
@@ -1781,7 +1819,8 @@ class DockerSandboxBackend:
         per call.  **Fails closed** — an unreadable component leaves removals at the guest's
         authority.  See ``docs/sandbox/backends/docker.md``.
         """
-        key = (name, _image_reference(spec), spec.work_dir)
+        work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
+        key = (name, _image_reference(spec), work_dir)
         cached = self._facts.get(key)
         if cached is not None:
             return cached
@@ -1789,7 +1828,7 @@ class DockerSandboxBackend:
             self._docker, name, self._config.command_timeout_seconds, instance_id=instance_id
         )
         try:
-            answer = await probe.ancestors_are_the_hosts(spec.work_dir)
+            answer = await probe.ancestors_are_the_hosts(work_dir)
         except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
             logger.debug("docker: could not read %s's work dir ancestors (%s)", name, unreadable)
             answer = False
@@ -1798,7 +1837,7 @@ class DockerSandboxBackend:
                 "docker: %s has a directory above %s the guest may write, so removals run as "
                 "the guest rather than as root",
                 name,
-                spec.work_dir,
+                work_dir,
             )
         try:
             identity = await self._guest_identity(name, probe)
@@ -2571,11 +2610,13 @@ class DockerSandboxBackend:
             args += ["--network", "none"]
         for label, value in _sandbox_labels(key, spec).items():
             args += ["--label", f"{label}={value}"]
+        work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
+        args += ["--label", f"{_LABEL_WORK_DIR}={work_dir}"]
         args += [image, "sleep", "infinity"]
 
         result = await self._docker(*args, timeout=self._config.command_timeout_seconds)
         if result.returncode != 0:
-            if _ALREADY_IN_USE in result.stderr.lower() and await self._adopt(name):
+            if _ALREADY_IN_USE in result.stderr.lower() and await self._adopt(name, spec):
                 logger.info("container %s already existed; adopted it instead of creating", name)
                 return image
             raise RuntimeError(f"docker could not create container {name}: {result.stderr.strip()}")
@@ -2866,7 +2907,7 @@ class DockerSandboxBackend:
             await asyncio.sleep(_PROXY_READY_DELAY_S)
         raise RuntimeError(f"egress proxy {proxy} never reported listening")
 
-    async def _adopt(self, name: str) -> bool:
+    async def _adopt(self, name: str, spec: SandboxSpec) -> bool:
         """Whether an existing ``name`` is running, or could be started — the reuse path again.
 
         The check that sent ``acquire`` down the create branch can be out of date by the time
@@ -2878,6 +2919,7 @@ class DockerSandboxBackend:
         the name is derived from the key and salted per installation, so placing one under it
         deliberately means holding the daemon socket, which is already root on the host.
         """
+        await self._verify_storage_base(name, spec, missing_ok=True)
         usable = await self._is_running(name)
         if not usable:
             usable = await self._exists(name) and await self._restart(name)

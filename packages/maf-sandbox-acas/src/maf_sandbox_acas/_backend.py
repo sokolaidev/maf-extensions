@@ -17,7 +17,9 @@ import logging
 import posixpath
 import shlex
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
+from concurrent.futures import Future
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from hashlib import sha256
 from time import monotonic
@@ -36,6 +38,7 @@ from maf_sandbox import (
     Sandbox,
     SandboxBackend,
     SandboxCapabilityNotSupported,
+    SandboxEgressNotEnforced,
     SandboxEntry,
     SandboxExecOutputLimitExceeded,
     SandboxKey,
@@ -58,6 +61,7 @@ from maf_sandbox.paths import (
     ensure_guest_work_dir,
     guest_path_relative_to,
     posix_work_dir_ancestors,
+    resolve_guest_working_directory,
 )
 
 from ._config import AcasSandboxConfig
@@ -71,7 +75,12 @@ from ._probes import probe_commands
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["BACKEND_NAME", "AcasEntryPayloadIncomplete", "AcasSandboxBackend"]
+__all__ = [
+    "BACKEND_NAME",
+    "AcasEgressPolicyConflict",
+    "AcasEntryPayloadIncomplete",
+    "AcasSandboxBackend",
+]
 
 #: The name :attr:`AcasSandboxBackend.name` answers to, and the value
 #: :class:`~maf_sandbox.SandboxRouter`'s ``selected=`` matches on.
@@ -88,6 +97,10 @@ __all__ = ["BACKEND_NAME", "AcasEntryPayloadIncomplete", "AcasSandboxBackend"]
 #: `maf_sandbox_acas.BACKEND_NAME`, or alias at the import:
 #: `from maf_sandbox_acas import BACKEND_NAME as ACAS_BACKEND`.
 BACKEND_NAME = "acas"
+
+
+class AcasEgressPolicyConflict(SandboxEgressNotEnforced):
+    """This key and kind hold a sandbox created with a different egress policy."""
 
 
 class AcasEntryPayloadIncomplete(SandboxOutputError):
@@ -387,6 +400,18 @@ class _Held:
     removal: bool | None = None
     probed: bool = False
     commands: set[str] = field(default_factory=set[str])
+    egress: tuple[Egress, frozenset[str]] = field(kw_only=True)
+    work_dir: str = "/maf-sandbox/work"
+
+
+def _egress_key(spec: SandboxSpec) -> tuple[Egress, frozenset[str]]:
+    """The supported policy's identity, independent of host spelling and order."""
+    if Capability.EGRESS_METHODS in spec.required_capabilities:
+        raise SandboxCapabilityNotSupported(
+            "ACAS cannot enforce literal, case-sensitive egress methods; "
+            "method-scoped policy is refused."
+        )
+    return spec.egress, frozenset(str(host).lower() for host in spec.egress_allow)
 
 
 @dataclass(frozen=True)
@@ -416,6 +441,7 @@ class _AcasSandbox:
     def __init__(self, sandbox_client: Any, read_timeout: float) -> None:
         self._sc = sandbox_client
         self._read_timeout = read_timeout
+        self._work_dir = "/maf-sandbox/work"
 
     @property
     def sandbox_id(self) -> str:
@@ -427,8 +453,13 @@ class _AcasSandbox:
 
     async def prepare_work_dir(self, spec: SandboxSpec) -> None:
         """Establish the spec's base through the data plane."""
+        self._work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
         await ensure_guest_work_dir(
-            spec, self._unconfined_stat, self._create_directories, resolve=posix_work_dir_ancestors
+            spec,
+            self._unconfined_stat,
+            self._create_directories,
+            resolve=posix_work_dir_ancestors,
+            base=self._work_dir,
         )
 
     async def _create_directories(self, directories: tuple[str, ...]) -> None:
@@ -459,6 +490,7 @@ class _AcasSandbox:
         # parent. The file API docs do not mention the behaviour at all, so it is the SDK
         # signature that is load-bearing here; relying silently on a `0.1.0bN` default is how
         # `DiskImage.image` got missed. Stating it costs nothing and pins the intent.
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         guest = await confine_resolve_guest_write_path(
             self._unconfined_stat, path, working_directory
         )
@@ -477,6 +509,7 @@ class _AcasSandbox:
         :func:`shlex.join` first — POSIX quoting, which is the guest shape this backend
         declares in ``declarations.os_families`` and the router matches a spec against.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         cmd = command if isinstance(command, str) else shlex.join(command)
         result = await asyncio.wait_for(
             self._sc.exec(cmd, working_directory=working_directory), timeout=timeout
@@ -501,6 +534,7 @@ class _AcasSandbox:
 
         if type(max_output_bytes) is not int or max_output_bytes <= 0:
             raise ValueError("max_output_bytes must be a positive integer")
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         sc = self._sc
         request = HttpRequest(
             "POST",
@@ -622,6 +656,7 @@ class _AcasSandbox:
         The **final** component is described rather than refused: a link reported as
         :data:`~maf_sandbox.EntryKind.SYMLINK` is how a caller learns it is one.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         guest = await confine_resolve_guest_read_path(
             self._unconfined_stat, path, working_directory
         )
@@ -649,6 +684,7 @@ class _AcasSandbox:
         The image controls its commands, so a successful probe cannot authorize a host-plane
         delete. Parent checks are not held; a redirected command still runs as the guest.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         async with asyncio.timeout(self._read_timeout):
             try:
                 guest = await confine_resolve_guest_delete_path(
@@ -727,6 +763,7 @@ class _AcasSandbox:
         no no-follow read.  An atomic no-follow read, or a frozen guest filesystem, would close
         it; nothing available here does.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         from azure.core.exceptions import ResourceNotFoundError
 
         guest = await confine_resolve_guest_read_path(
@@ -784,6 +821,7 @@ class _AcasSandbox:
         listed included — the service enumerates through a symlinked directory as readily as it
         reads through one.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         from azure.core.exceptions import ResourceNotFoundError
 
         guest = await confine_resolve_guest_list_path(
@@ -833,10 +871,8 @@ class AcasSandboxBackend:
         #: Which (image, kind) pairs have already been warned about. `acquire` runs on every
         #: tool call, and a warning per call is noise rather than a signal.
         self._warned_about_the_guest: set[tuple[tuple[str, str], str]] = set()
-        # One get-or-create lock per (loop, registry key) — see `_acquire_lock`.
-        self._acquire_locks: dict[
-            tuple[asyncio.AbstractEventLoop, tuple[str, str, str, str]], asyncio.Lock
-        ] = {}
+        self._acquisitions: dict[tuple[str, str, str, str], Future[None]] = {}
+        self._acquire_guard = threading.Lock()
 
     @property
     def name(self) -> str:
@@ -900,8 +936,8 @@ class AcasSandboxBackend:
         several; none of that is visible in the tool's output, which reports compiler
         diagnostics either way.
 
-        Get-or-create is serialised per key, because a create names no sandbox and the
-        service therefore has nothing to recognise a duplicate by.  The function calls in one
+        Get-or-create is serialised per key and kind across event loops. A create names no
+        sandbox, so the service has nothing to recognise a duplicate by. The function calls in one
         assistant message are executed concurrently, so two acquires for one key can be in
         flight at once; unserialised, both miss the registry and each is handed a running,
         billable sandbox, of which only one stays registered.
@@ -911,7 +947,11 @@ class AcasSandboxBackend:
                 ``HOST_TOOLS`` and the removal compatibility probe completed with failure,
                 or ``FILES_DELETE`` without a successful removal observation. An inconclusive
                 probe serves the writing capabilities but refuses deletion; a successful
-                probe does not establish that the guest is root.
+                probe does not establish that the guest is root. Method-scoped egress
+                is also refused because the service matches methods case-insensitively.
+            AcasEgressPolicyConflict: when this key and kind already hold a different
+                egress policy. Successfully dispose the kind through the router or this
+                backend before changing it, or use another key.
         """
         _sandbox_labels(key, spec)
         async with self._acquire_lock((key.scope, key.thread_id, key.agent_dir, spec.kind)):
@@ -920,25 +960,41 @@ class AcasSandboxBackend:
                 await sandbox.prepare_work_dir(spec)
             return sandbox
 
-    def _acquire_lock(self, registry_key: tuple[str, str, str, str]) -> asyncio.Lock:
-        """The get-or-create lock for one key on the running loop.
-
-        Per loop as well as per key: an :class:`asyncio.Lock` binds to the first loop a
-        caller has to *wait* on it and raises on every other one after that, and this backend
-        is reachable from more than one loop (see ``_clients``).  Per key rather than one lock
-        for the backend, so a cold create for one conversation never queues behind another's.
-        """
-        lock_key = (asyncio.get_running_loop(), registry_key)
-        lock = self._acquire_locks.get(lock_key)
-        if lock is None:
-            lock = self._acquire_locks[lock_key] = asyncio.Lock()
-        return lock
+    @asynccontextmanager
+    async def _acquire_lock(
+        self, registry_key: tuple[str, str, str, str]
+    ) -> AsyncGenerator[None, None]:
+        """Serialize one registry key across event loops without blocking their threads."""
+        while True:
+            with self._acquire_guard:
+                active = self._acquisitions.get(registry_key)
+                if active is None:
+                    owned: Future[None] = Future()
+                    self._acquisitions[registry_key] = owned
+                    break
+            # A cancelled waiter must not cancel the owner's shared completion signal.
+            await asyncio.shield(asyncio.wrap_future(active))
+        try:
+            yield
+        finally:
+            with self._acquire_guard:
+                del self._acquisitions[registry_key]
+            owned.set_result(None)
 
     async def _get_or_create(self, key: SandboxKey, spec: SandboxSpec) -> _AcasSandbox:
         """:meth:`acquire`'s body, run under that key's lock."""
-        gc = self._group_client()
+        egress = _egress_key(spec)
         registry_key = (key.scope, key.thread_id, key.agent_dir, spec.kind)
+        work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
         held = self._registry.get(registry_key)
+        if held is not None and held.egress != egress:
+            # Replacement could delete an instance another caller is still using.
+            raise AcasEgressPolicyConflict(
+                "ACAS already holds a different egress policy for this key and kind. "
+                "Successfully dispose the kind with SandboxRouter.dispose_kind or "
+                "AcasSandboxBackend.dispose before changing policy, or use a different key."
+            )
+        gc = self._group_client()
         if held is not None:
             sandbox_id = held.sandbox_id
             try:
@@ -955,6 +1011,8 @@ class AcasSandboxBackend:
                     error_detail(exc),
                 )
             else:
+                if work_dir != held.work_dir:
+                    raise ValueError("a held sandbox cannot change its storage base")
                 # Outside the `try`, because a refusal is this acquire's answer rather than a
                 # sandbox that failed to resume, and the handler above would swallow it into a
                 # replacement create. Before the log, so a refused acquire does not report one
@@ -1007,7 +1065,7 @@ class AcasSandboxBackend:
             key.agent_dir,
         )
         # Register immediately, so the sandbox is reachable by purge even if configure fails.
-        held = self._registry[registry_key] = _Held(sc.sandbox_id)
+        held = self._registry[registry_key] = _Held(sc.sandbox_id, egress=egress, work_dir=work_dir)
         try:
             await self._configure(sc)
         except Exception as exc:  # noqa: BLE001
@@ -1453,6 +1511,7 @@ class AcasSandboxBackend:
         """Deny by default, allow only the hosts the spec names."""
         from azure.containerapps.sandbox import EgressHostRule, EgressPolicy
 
+        _egress_key(spec)
         return EgressPolicy(
             default_action="Deny",
             traffic_inspection="Full",

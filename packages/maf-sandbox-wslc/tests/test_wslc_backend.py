@@ -75,7 +75,19 @@ def test_acquire_creates_missing_base_as_guest_without_mkdir(state):
         overrides={
             ("container", "cp", f"{_NAME}:/maf-sandbox"): _WslcResult(1, b"", b"no such file"),
             ("container", "inspect"): _WslcResult(
-                0, json.dumps([{"Id": "instance", "Config": {"User": "10001:20001"}}]).encode(), b""
+                0,
+                json.dumps(
+                    [
+                        {
+                            "Id": "instance",
+                            "Config": {
+                                "User": "10001:20001",
+                                "Labels": {"maf-sandbox.work-dir.v1": _WORK},
+                            },
+                        }
+                    ]
+                ).encode(),
+                b"",
             ),
         },
     )
@@ -123,7 +135,16 @@ class _FakeWslc:
         result = self._responder(args)
         if args[:2] == ("container", "inspect") and result == _WslcResult(0, b"", b""):
             result = _WslcResult(
-                0, json.dumps([{"Id": f"id-{args[-1]}", "Config": {"User": ""}}]).encode(), b""
+                0,
+                json.dumps(
+                    [
+                        {
+                            "Id": f"id-{args[-1]}",
+                            "Config": {"User": "", "Labels": {"maf-sandbox.work-dir.v1": _WORK}},
+                        }
+                    ]
+                ).encode(),
+                b"",
             )
         if (
             args[:2] == ("container", "cp")
@@ -154,10 +175,12 @@ def _machine(
     running: Sequence[str] = (),
     stopped: Sequence[str] = (),
     overrides: dict[tuple[str, ...], _WslcResult] | None = None,
+    work_dir: str = _WORK,
 ):
     """A responder describing which containers exist, and how a command answers."""
 
     proxy_labels = {}
+    storage_labels = {name: {"maf-sandbox.work-dir.v1": work_dir} for name in (*running, *stopped)}
 
     def respond(args: tuple[str, ...]) -> _WslcResult:
         for prefix, result in (overrides or {}).items():
@@ -173,6 +196,10 @@ def _machine(
             proxy_labels[args[4]] = dict(
                 args[i + 1].split("=", 1) for i, arg in enumerate(args) if arg == "-l"
             )
+        if args[:2] == ("container", "run"):
+            storage_labels[args[4]] = dict(
+                args[i + 1].split("=", 1) for i, arg in enumerate(args) if arg == "-l"
+            )
         if args[:2] == ("container", "inspect") and args[-1].endswith("-proxy"):
             from maf_sandbox_wslc._backend import _sandbox_labels
 
@@ -183,8 +210,22 @@ def _machine(
                 0, json.dumps([{"Id": args[-1], "Config": {"Labels": labels}}]).encode(), b""
             )
         if args[:2] == ("container", "inspect"):
+            if args[-1] not in storage_labels:
+                return _WslcResult(1, b"", b"WSLC_E_CONTAINER_NOT_FOUND")
             return _WslcResult(
-                0, json.dumps([{"Id": f"id-{args[-1]}", "Config": {"User": ""}}]).encode(), b""
+                0,
+                json.dumps(
+                    [
+                        {
+                            "Id": f"id-{args[-1]}",
+                            "Config": {"User": ""},
+                            "Labels": storage_labels.get(
+                                args[-1], {"maf-sandbox.work-dir.v1": work_dir}
+                            ),
+                        }
+                    ]
+                ).encode(),
+                b"",
             )
         if args[:2] == ("container", "logs"):
             return _WslcResult(0, b"listening on 3128\n", b"")
@@ -216,9 +257,14 @@ def _backend_with(responder=None, config=None) -> tuple[WslcSandboxBackend, _Fak
 @pytest.mark.parametrize("failure", ["status", "json", "shape", "empty", "raise"])
 def test_failed_instance_inspection_disposes_the_container(warm, failure):
     machine = _machine(running=[_NAME] if warm else [])
+    binding_checked = False
 
     def respond(args):
+        nonlocal binding_checked
         if args[:2] == ("container", "inspect"):
+            if not binding_checked:
+                binding_checked = True
+                return machine(args)
             if failure == "raise":
                 raise TimeoutError("inspection timed out")
             output = {"status": b"", "json": b"{", "shape": b"{}", "empty": b"[{}]"}
@@ -239,7 +285,16 @@ def test_instance_id_comes_from_the_engine_on_every_acquire():
     def respond(args):
         if args[:2] == ("container", "inspect"):
             return _WslcResult(
-                0, json.dumps([{"Id": ids[0], "Config": {"User": ""}}]).encode(), b""
+                0,
+                json.dumps(
+                    [
+                        {
+                            "Id": ids[0],
+                            "Config": {"User": "", "Labels": {"maf-sandbox.work-dir.v1": _WORK}},
+                        }
+                    ]
+                ).encode(),
+                b"",
             )
         return machine(args)
 
@@ -487,6 +542,7 @@ class TestAcquireCreatesClosed:
             "maf-sandbox.agent=devops-engineer",
             "maf-sandbox.kind=bicep",
             "maf-sandbox.label.kind=bicep",
+            "maf-sandbox.work-dir.v1=/maf-sandbox/work",
         ]
 
     def test_label_values_are_sanitized_at_create(self):
@@ -589,7 +645,7 @@ class TestAcquireRecoversFromANameConflict:
                 if running_after_the_conflict:
                     present.append(_NAME)
                 return _WslcResult(1, b"", b"Error code: ERROR_ALREADY_EXISTS")
-            return _machine()(args)
+            return _machine(running=present)(args)
 
         return _backend_with(respond)
 
@@ -809,11 +865,23 @@ class TestGuestPrincipal:
 class TestWriteFile:
     @pytest.mark.parametrize("work", ["workspace", "./workspace", "/workspace", "//workspace"])
     def test_work_dir_spellings_stamp_every_missing_directory(self, work):
-        spec = replace(_METHOD_SPEC, work_dir=work)
+        spec = replace(_METHOD_SPEC, work_dir=work if work.startswith("/") else "/")
         name = _container_name(_KEY, spec.kind)
         overrides = {
             ("container", "inspect"): _WslcResult(
-                0, b'[{"Id":"instance","Config":{"User":"10001:20001"}}]', b""
+                0,
+                json.dumps(
+                    [
+                        {
+                            "Id": "instance",
+                            "Config": {
+                                "Labels": {"maf-sandbox.work-dir.v1": spec.work_dir},
+                                "User": "10001:20001",
+                            },
+                        }
+                    ]
+                ).encode(),
+                b"",
             ),
         }
         backend, fake = _backend_with(_machine(running=[name], overrides=overrides))
@@ -845,7 +913,10 @@ class TestWriteFile:
     def test_files_and_missing_parents_belong_to_the_image_user(
         self, user, uid, gid, expected, instance_id
     ):
-        inspected = {"Id": instance_id, "Config": {"User": user}}
+        inspected = {
+            "Id": instance_id,
+            "Config": {"User": user, "Labels": {"maf-sandbox.work-dir.v1": _WORK}},
+        }
         overrides = {
             ("container", "inspect"): _WslcResult(0, json.dumps([inspected]).encode(), b""),
             ("container", "exec", "-w", "/", _NAME, "id", "-u"): _WslcResult(0, uid, b""),
@@ -854,7 +925,7 @@ class TestWriteFile:
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         assert sandbox.instance_id == instance_id
-        assert len(fake.matching("container", "inspect")) == 1
+        assert len(fake.matching("container", "inspect")) == 2
         asyncio.run(sandbox.write_file("nested/input", b"data", working_directory=_WORK))
         archive = tarfile.open(fileobj=io.BytesIO(fake.only("container", "cp").stdin))
         assert archive.getnames() == [
@@ -873,9 +944,21 @@ class TestWriteFile:
             _WslcResult(0, b"not json", b""),
             _WslcResult(0, b"[]", b""),
             _WslcResult(0, b"{}", b""),
-            _WslcResult(0, b'[{"Id":"instance","Config":{"User":null}}]', b""),
-            _WslcResult(0, b'[{"Id":"instance","Config":{"User":"worker"}}]', b""),
-            _WslcResult(0, b'[{"Id":"instance","Config":{"User":"4294967295:0"}}]', b""),
+            _WslcResult(
+                0,
+                b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"},"User":null}}]',
+                b"",
+            ),
+            _WslcResult(
+                0,
+                b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"},"User":"worker"}}]',
+                b"",
+            ),
+            _WslcResult(
+                0,
+                b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"},"User":"4294967295:0"}}]',
+                b"",
+            ),
         ],
     )
     def test_unresolved_identity_refuses_before_copying(self, inspection):
@@ -907,7 +990,9 @@ class TestWriteFile:
     def test_a_named_user_with_no_valid_group_cannot_write(self, gid):
         overrides = {
             ("container", "inspect"): _WslcResult(
-                0, b'[{"Id":"instance","Config":{"User":"worker"}}]', b""
+                0,
+                b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"},"User":"worker"}}]',
+                b"",
             ),
             ("container", "exec", "-w", "/", _NAME, "id", "-u"): _WslcResult(0, b"10001", b""),
             ("container", "exec", "-w", "/", _NAME, "id", "-g"): _WslcResult(0, gid, b""),
@@ -920,11 +1005,24 @@ class TestWriteFile:
     def test_each_acquire_resolves_write_ownership_again(self):
         answers = iter(
             [
-                _WslcResult(0, b'[{"Id":"instance"}]', b""),
-                _WslcResult(0, b'[{"Id":"instance","Config":{"User":"10001:20001"}}]', b""),
-                _WslcResult(0, b'[{"Id":"instance","Config":{"User":"10002:20002"}}]', b""),
+                _WslcResult(
+                    0,
+                    b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"}}}]',
+                    b"",
+                ),
+                _WslcResult(
+                    0,
+                    b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"},"User":"10001:20001"}}]',
+                    b"",
+                ),
+                _WslcResult(
+                    0,
+                    b'[{"Id":"instance","Config":{"Labels":{"maf-sandbox.work-dir.v1":"/maf-sandbox/work"},"User":"10002:20002"}}]',
+                    b"",
+                ),
             ]
         )
+        answers = iter([answer for answer in answers for _ in range(2)])
         machine = _machine(running=[_NAME])
 
         def respond(args):
@@ -2291,6 +2389,7 @@ class TestAllowlistTopology:
 
     def test_create_waits_until_the_proxy_listens(self):
         logs_seen = 0
+        machine = _machine()
 
         def respond(args):
             nonlocal logs_seen
@@ -2298,7 +2397,7 @@ class TestAllowlistTopology:
                 logs_seen += 1
                 if logs_seen < 3:
                     return _WslcResult(0, b"", b"")
-            return _machine()(args)
+            return machine(args)
 
         backend, fake = _backend_with(respond, config=_ALLOW_CONFIG)
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
@@ -2836,3 +2935,139 @@ def test_proxy_removal_retry_publishes_only_the_successful_window(
     assert seen[0].key == _KEY
     assert len(seen[0].decisions) == (0 if unreadable else 2)
     assert bool(seen[0].unreadable) == unreadable
+
+
+@pytest.mark.parametrize("override", [None, "/image/base"])
+def test_relative_working_directory_is_resolved_and_argv_is_opaque(override):
+    backend, fake = _backend_with(_machine(running=[_NAME], work_dir=override or _WORK))
+    spec = replace(_METHOD_SPEC, work_dir=override)
+    base = override if override is not None else _WORK
+
+    async def scenario():
+        sandbox = await backend.acquire(_KEY, spec)
+        await sandbox.exec(["echo", "/opaque/argument"], working_directory="call", timeout=10)
+        with pytest.raises(ValueError):
+            await sandbox.exec(["true"], working_directory="../escape", timeout=10)
+        await sandbox.write_file("input", b"bytes", working_directory="call")
+
+    asyncio.run(scenario())
+    command = fake.matching("container", "exec", "-w")[-1].args
+    assert command[3] == f"{base}/call"
+    assert command[-2:] == ("echo", "/opaque/argument")
+    transfer = [call for call in fake.matching("container", "cp") if call.stdin][-1]
+    with tarfile.open(fileobj=io.BytesIO(transfer.stdin)) as archive:
+        assert f"{base.lstrip('/')}/call/input" in archive.getnames()
+
+
+@pytest.mark.parametrize("override", [None, "/image/base"])
+@pytest.mark.parametrize("restart_host", [False, True])
+@pytest.mark.parametrize("state", ["warm", "stopped"])
+def test_warm_storage_binding_refuses_retargeting(override, restart_host, state):
+    base = override or _WORK
+    machine = _machine(
+        running=[_NAME] if state == "warm" else [],
+        stopped=[_NAME] if state == "stopped" else [],
+        work_dir=base,
+    )
+    backend, fake = _backend_with(machine)
+    spec = replace(_METHOD_SPEC, work_dir=override)
+
+    async def scenario():
+        first = await backend.acquire(_KEY, spec)
+        if restart_host:
+            current, calls = _backend_with(machine)
+        else:
+            current, calls = backend, fake
+        before = len(calls.calls)
+        with pytest.raises(ValueError, match="storage base"):
+            await current.acquire(_KEY, replace(spec, work_dir="/other/base"))
+        refused = calls.calls[before:]
+        assert not any(call.args[1] in {"cp", "exec", "run", "rm"} for call in refused)
+        again = await current.acquire(_KEY, spec)
+        assert again.instance_id == first.instance_id
+        await again.exec(["true"], working_directory=".", timeout=10)
+        command = calls.matching("container", "exec", "-w")[-1].args
+        assert command[3] == base
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("override", [None, "/image/base with spaces"])
+def test_created_storage_binding_is_persisted_in_engine_labels(override):
+    backend, fake = _backend_with(_machine())
+    asyncio.run(backend.acquire(_KEY, replace(_METHOD_SPEC, work_dir=override)))
+    args = fake.only("container", "run").args
+    labels = dict(args[i + 1].split("=", 1) for i, arg in enumerate(args) if arg == "-l")
+    assert labels["maf-sandbox.work-dir.v1"] == (override or _WORK)
+
+
+@pytest.mark.parametrize("labels", [None, {}, [], {"maf-sandbox.work-dir.v1": None}])
+def test_unrecorded_storage_binding_is_refused_without_disposal(labels):
+    backend, fake = _backend_with(
+        _machine(
+            running=[_NAME],
+            overrides={
+                ("container", "inspect"): _WslcResult(
+                    0,
+                    json.dumps(
+                        [{"Id": "instance", "Config": {"User": "", "Labels": labels}}]
+                    ).encode(),
+                    b"",
+                )
+            },
+        )
+    )
+    with pytest.raises(ValueError, match="storage base"):
+        asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
+    assert not fake.matching("container", "rm")
+
+
+@pytest.mark.parametrize(("running", "allowlisted"), [(False, False), (False, True), (True, True)])
+@pytest.mark.parametrize("binding", ["different", "missing", "unreadable"])
+def test_storage_binding_precedes_lifecycle_changes(running, allowlisted, binding):
+    spec = replace(_ALLOW_SPEC if allowlisted else _METHOD_SPEC, work_dir="/other/base")
+    name = _AL if allowlisted else _NAME
+    labels = {"maf-sandbox.work-dir.v1": _WORK} if binding == "different" else {}
+    metadata = [{"Id": f"id-{name}", "Labels": labels, "Config": {"User": ""}}]
+    overrides = {
+        ("container", "start"): _WslcResult(1, b"", b"start failed"),
+        ("container", "inspect"): _WslcResult(
+            1 if binding == "unreadable" else 0,
+            json.dumps(metadata).encode(),
+            b"engine unavailable",
+        ),
+    }
+    backend, fake = _backend_with(
+        _machine(
+            running=[name] if running else [],
+            stopped=[] if running else [name],
+            overrides=overrides,
+        ),
+        config=_ALLOW_CONFIG if allowlisted else None,
+    )
+    with pytest.raises((ValueError, RuntimeError)):
+        asyncio.run(backend.acquire(_KEY, spec))
+    assert all(call.args[1] in {"inspect", "list"} for call in fake.calls)
+
+
+def test_storage_binding_precedes_adoption_of_a_name_conflict():
+    present = False
+    spec = replace(_METHOD_SPEC, work_dir="/other/base")
+    absent = _machine()
+    stopped = _machine(stopped=[_NAME])
+
+    def respond(args):
+        nonlocal present
+        if args[:2] == ("container", "run"):
+            present = True
+            return _WslcResult(1, b"", b"ERROR_ALREADY_EXISTS")
+        if args[:2] == ("container", "start"):
+            return _WslcResult(1, b"", b"start failed")
+        if not present and args[:2] == ("container", "inspect"):
+            return _WslcResult(1, b"", b"WSLC_E_CONTAINER_NOT_FOUND")
+        return (stopped if present else absent)(args)
+
+    backend, fake = _backend_with(respond)
+    with pytest.raises(ValueError, match="storage base"):
+        asyncio.run(backend.acquire(_KEY, spec))
+    assert not any(call.args[1] in {"start", "rm", "remove"} for call in fake.calls)

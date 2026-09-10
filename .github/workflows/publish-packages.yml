@@ -129,23 +129,8 @@ jobs:
           PACKAGE: ${{ steps.resolve.outputs.package }}
           VERSION: ${{ steps.resolve.outputs.version }}
         run: |
-          set -euo pipefail
-          verdict=false
-          if answer="$(python3 scripts/check_release_is_breaking.py "$PACKAGE" "$VERSION")"; then
-            if [ "$answer" = "breaking=true" ]; then
-              verdict=true
-            fi
-          else
-            echo "::warning::could not read whether ${PACKAGE} ${VERSION} declares breaking changes; the dispatch is unaffected"
-          fi
-          echo "breaking=${verdict}" >> "$GITHUB_OUTPUT"
-          if [ "$verdict" = true ]; then
-            {
-              echo "### This release declares breaking changes"
-              echo
-              echo "\`${PACKAGE}\` ${VERSION} declares breaking changes in its changelog. Whether that strands the published dependents is a separate question the work check in this job answers; if they still import, the live check runs all the same. See [#337](https://github.com/sokolaidev/maf-extensions/issues/337)."
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
+          python3 scripts/release_workflow.py breaking "$PACKAGE" "$VERSION" -- \
+            python3 scripts/check_release_is_breaking.py "$PACKAGE" "$VERSION"
 
       # Fails the run rather than the release: PyPI uploads are immutable, so a mismatched
       # tag can't be corrected after the fact.
@@ -235,32 +220,12 @@ jobs:
           steps.resolve.outputs.package == 'maf-sandbox'
           && steps.resolve.outputs.target == 'pypi'
         env:
+          PACKAGE: ${{ steps.resolve.outputs.package }}
           VERSION: ${{ steps.resolve.outputs.version }}
         run: |
-          set -euo pipefail
-          output="$(python3 scripts/check_published_dependents_work.py "$VERSION" \
-            dist/maf_sandbox-${VERSION}-py3-none-any.whl \
-            --emit-snapshot admitting-snapshot.json)"
-          echo "$output"
-          # The script prints `live_check=run` when it tested at least one admitting dependent
-          # and every one imported, or `live_check=skip` when none admits the candidate yet — the
-          # #273 window. This is the build-time reading only; the post-upload dispatch job emits
-          # the dispatch verdict, because the `pypi` environment can hold while the index moves
-          # and the upload itself is a window, so a `skip` reached here can be stale by the time
-          # the core is public (#337, #443). A break exits 1 and fails this step before the
-          # dispatch is decided.
-          verdict="$(printf '%s\n' "$output" | grep -m1 '^live_check=' || true)"
-          case "$verdict" in
-            live_check=run|live_check=skip) ;;
-            *) echo "::error::work check printed no live_check verdict" >&2; exit 1 ;;
-          esac
-          if [ "$verdict" = "live_check=skip" ]; then
-            {
-              echo "### No published dependent admits \`maf-sandbox\` ${VERSION} yet (build-time reading)"
-              echo
-              echo "The post-upload dispatch job decides whether the live check runs, because a dependent can admit in the approval window or during the upload. If one does, the check runs; otherwise it is skipped, and the dependents' own publishes dispatch it. See [#273](https://github.com/sokolaidev/maf-extensions/issues/273), [#337](https://github.com/sokolaidev/maf-extensions/issues/337) and [#443](https://github.com/sokolaidev/maf-extensions/issues/443)."
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
+          python3 scripts/release_workflow.py build "$PACKAGE" "$VERSION" -- \
+            python3 scripts/check_published_dependents_work.py "$VERSION" \
+            "dist/maf_sandbox-${VERSION}-py3-none-any.whl" --emit-snapshot admitting-snapshot.json
 
       # The snapshot of (distribution, version) pairs this build tested, for the upload job to
       # diff against. Only the core on the real index emits one, matching the gated check above.
@@ -515,12 +480,12 @@ jobs:
           needs.build.outputs.package == 'maf-sandbox'
           && needs.build.outputs.target == 'pypi'
         env:
+          PACKAGE: ${{ needs.build.outputs.package }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
-          set -euo pipefail
-          python3 release-guard/scripts/check_published_dependents_work.py "$VERSION" \
-            dist/maf_sandbox-${VERSION}-py3-none-any.whl \
-            --since-snapshot admitting-snapshot.json
+          python3 release-guard/scripts/release_workflow.py pre-upload "$PACKAGE" "$VERSION" -- \
+            python3 release-guard/scripts/check_published_dependents_work.py "$VERSION" \
+            "dist/maf_sandbox-${VERSION}-py3-none-any.whl" --since-snapshot admitting-snapshot.json
 
       - name: Publish
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
@@ -596,57 +561,12 @@ jobs:
           needs.build.outputs.package == 'maf-sandbox'
           && needs.build.outputs.target == 'pypi'
         env:
+          PACKAGE: ${{ needs.build.outputs.package }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
-          set -euo pipefail
-          status=0
-          output="$(python3 release-guard/scripts/check_published_dependents_work.py "$VERSION" \
-            dist/maf_sandbox-${VERSION}-py3-none-any.whl \
-            --since-snapshot admitting-snapshot.json --dispatch 2>dispatch-break.txt)" || status=$?
-          echo "$output"
-          # A break exits 0 under `--dispatch`, so a non-zero status is the check unable to
-          # answer at all — an unreachable index, a missing wheel, an unreadable snapshot.
-          # Its reason is on stderr, which this step redirects into the file below, so
-          # replaying it is all that stands between that red and a step failing silently.
-          if [ "$status" -ne 0 ]; then
-            cat dispatch-break.txt >&2
-            exit "$status"
-          fi
-          verdict="$(printf '%s\n' "$output" | grep -m1 '^live_check=' || true)"
-          case "$verdict" in
-            live_check=run|live_check=skip) ;;
-            *) echo "::error::post-upload dispatch check printed no live_check verdict" >&2; exit 1 ;;
-          esac
-          echo "$verdict" >> "$GITHUB_OUTPUT"
-          if [ -s dispatch-break.txt ]; then
-            # A dependent admitted and broke during the upload window. The upload is immutable, so
-            # the release ships; surface the break as a red annotation and dispatch the live check
-            # (the verdict is run). See #443.
-            while IFS= read -r line; do
-              if [ -n "$line" ]; then
-                echo "::error::${line}"
-              fi
-            done < dispatch-break.txt
-            {
-              echo "### A dependent broke after the upload"
-              echo
-              echo "A published dependent that admitted \`maf-sandbox\` ${VERSION} during the upload window breaks at import time. The upload is immutable, so the release ships and the live check is dispatched rather than the release refused. The break is real and needs a follow-up release that keeps the dependent importing. See [#443](https://github.com/sokolaidev/maf-extensions/issues/443)."
-              echo
-              echo '<details><summary>The import failures</summary>'
-              echo
-              echo '```'
-              cat dispatch-break.txt
-              echo '```'
-              echo '</details>'
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
-          if [ "$verdict" = "live_check=skip" ]; then
-            {
-              echo "### The live check is being skipped"
-              echo
-              echo "No published dependent admits \`maf-sandbox\` ${VERSION} after the upload, so a live run would go red for the ordering of the release train rather than for the code. The dependents' own publishes dispatch it, which is when its answer starts meaning something. See [#273](https://github.com/sokolaidev/maf-extensions/issues/273)."
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
+          python3 release-guard/scripts/release_workflow.py dispatch "$PACKAGE" "$VERSION" -- \
+            python3 release-guard/scripts/check_published_dependents_work.py "$VERSION" \
+            "dist/maf_sandbox-${VERSION}-py3-none-any.whl" --since-snapshot admitting-snapshot.json --dispatch
 
   # Only reached by a hand-pushed tag: an automated release already has its Release, made by
   # release-please when its PR merged. See docs/maintainers.md for why that order is forced.
@@ -671,32 +591,7 @@ jobs:
           PACKAGE: ${{ needs.build.outputs.package }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
-          set -euo pipefail
-          changelog="packages/${PACKAGE}/CHANGELOG.md"
-          # From this version's heading up to (not including) the next one. release-please
-          # links the heading to a compare view — `## [0.2.0](…)` — only when there is an
-          # earlier tag to compare against, so a package's first release carries a bare
-          # `## 0.1.0 (date)` and matches neither the linked shape nor an exact line. Each
-          # shape is anchored on its own delimiter, `]` or the space before the date, because
-          # a prefix test alone would read `## 0.1.10` as `0.1.1`.
-          section="$(awk -v version="${VERSION}" '
-            index($0, "## [" version "]") == 1 { capture = 1; next }
-            index($0, "## " version " ") == 1 { capture = 1; next }
-            $0 == "## " version { capture = 1; next }
-            capture && /^## / { exit }
-            capture { print }
-          ' "$changelog")"
-          if [ -z "$(echo "$section" | tr -d '[:space:]')" ]; then
-            echo "::error::no '## [${VERSION}]' or '## ${VERSION}' section in ${changelog} — add the entry before tagging"
-            exit 1
-          fi
-          {
-            echo "body<<CHANGELOG_EOF"
-            echo "$section"
-            echo "Install: \`pip install ${PACKAGE}==${VERSION}\`"
-            echo "PyPI: https://pypi.org/project/${PACKAGE}/${VERSION}/"
-            echo "CHANGELOG_EOF"
-          } >> "$GITHUB_OUTPUT"
+          python3 scripts/release_workflow.py notes "$PACKAGE" "$VERSION"
 
       # Idempotent on purpose: create the Release if this tag has none, and otherwise bring
       # its notes in line with the changelog rather than failing on the one that exists.

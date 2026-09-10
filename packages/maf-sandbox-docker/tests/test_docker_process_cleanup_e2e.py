@@ -36,8 +36,9 @@ class Records(maf_sandbox.SandboxObserver):
 
 @pytest.mark.parametrize("finish", [True, False], ids=["success", "timeout"])
 @pytest.mark.parametrize("degraded", [None, "unavailable", "incomplete"])
+@pytest.mark.parametrize("relative", [False, True], ids=["absolute", "relative"])
 def test_forged_files_do_not_redirect_cleanup_and_observed_escapees_are_stopped(
-    finish, degraded, monkeypatch
+    finish, degraded, relative, monkeypatch
 ):
     generate = transport._launcher_script
 
@@ -83,6 +84,7 @@ def test_forged_files_do_not_redirect_cleanup_and_observed_escapees_are_stopped(
             guest_gid=65534,
             instance_id=created.stdout.decode().strip(),
         )
+        sandbox._work_dir = "/tmp"
         try:
             victim = await sandbox.exec(
                 [
@@ -99,7 +101,10 @@ def test_forged_files_do_not_redirect_cleanup_and_observed_escapees_are_stopped(
             )
             assert victim.exit_code == 0, victim.stderr
             target = int(victim.stdout)
-            layout = maf_sandbox.guest_run_layout("/tmp/process-test/run")
+            layout = maf_sandbox.guest_run_layout(
+                "process-test/run" if relative else "/tmp/process-test/run"
+            )
+            physical = maf_sandbox.guest_run_layout("/tmp/process-test/run")
             execute = sandbox.exec
             assert isinstance(sandbox, maf_sandbox.BoundedExec)
             bounded_execute = sandbox.exec_bounded
@@ -135,11 +140,11 @@ else: raise RuntimeError('guest did not create its witness')
                             stdout='{"processes": [], "incomplete": true}', exit_code=0
                         )
                 if command == f"sh {shlex.quote(layout.launcher)}" or command == (
-                    f"sh {transport._quote(layout.launcher)}"
+                    f"sh {transport._quote(transport._layout_path(layout, layout.launcher))}"
                 ):
                     check_closed = (
                         "import os; from pathlib import Path; "
-                        f"pid=Path({layout.pid!r}).read_text(); "
+                        f"pid=Path({physical.pid!r}).read_text(); "
                         "parent=Path('/proc/'+pid+'/stat').read_text().rsplit(')',1)[1].split()[1]; "
                         "assert os.readlink('/proc/'+parent+'/fd/1') == '/dev/null'"
                     )
@@ -168,10 +173,11 @@ with open('/proc/' + str(os.getppid()) + '/fd/1', 'w') as control:
     control.flush()
 child = subprocess.Popen(['sleep', '90'], start_new_session=True)
 Path('/tmp/process-witness').write_text(json.dumps(dict(program=os.getpid(), child=child.pid)))
-while not Path({layout.pid!r}).exists():
+while not Path({physical.pid!r}).exists():
     time.sleep(.01)
-Path({layout.pid!r}).write_text({str(target)!r})
-Path({layout.session!r}).write_text({str(target)!r})
+Path({physical.pid!r}).write_text({str(target)!r})
+Path({physical.session!r}).write_text({str(target)!r})
+assert os.getcwd() == {physical.work!r}
 print('ready', flush=True)
 time.sleep(2 if {finish!r} else 90)
 """

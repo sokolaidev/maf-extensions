@@ -683,7 +683,7 @@ async def _what_one_sandbox_holds(
     spec = codeact_sandbox_spec(image=CODEACT_IMAGE, host_tools=registry)
     sandbox = await router.acquire(SandboxKey(SCOPE, thread, AGENT_DIR), spec)
     try:
-        runs = await sandbox.list_dir(".", working_directory=spec.work_dir)
+        runs = await sandbox.list_dir(".", working_directory=spec.work_dir or ".")
     except FileNotFoundError:
         return 0, 0, 0, 0
     # Kind *and* name, because the guest can write here: a program that walks up out of its
@@ -699,7 +699,9 @@ async def _what_one_sandbox_holds(
     called_a_host_tool, left, answered = 0, 0, 0
     for run in directories:
         try:
-            entries = await sandbox.list_dir(f"{run}/host_tools", working_directory=spec.work_dir)
+            entries = await sandbox.list_dir(
+                f"{run}/host_tools", working_directory=spec.work_dir or "."
+            )
         except FileNotFoundError:
             # A run that called no host tool. Without a registry the kind uses the flat run
             # directory it always has, so there is no `host_tools/` and nothing was left.
@@ -711,7 +713,7 @@ async def _what_one_sandbox_holds(
             continue
         called_a_host_tool += 1
         files = await sandbox.list_dir(
-            f"{run}/host_tools/{CALLS_DIRECTORY}", working_directory=spec.work_dir
+            f"{run}/host_tools/{CALLS_DIRECTORY}", working_directory=spec.work_dir or "."
         )
         left += len(files)
         answered += sum(1 for entry in files if entry.path.endswith(_RESPONSE_SUFFIX))

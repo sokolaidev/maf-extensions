@@ -37,6 +37,7 @@ def test_cap_is_enforced_before_decoding_and_response_is_closed(stream):
         async def send(request, **kwargs):
             assert kwargs == {"stream": True, "auto_decompress": False}
             assert request.headers["Accept-Encoding"] == "identity"
+            assert json.loads(request.content)["workingDirectory"] == "/maf-sandbox/work/child"
             return SimpleNamespace(http_response=response)
 
         client = SimpleNamespace(
@@ -45,11 +46,11 @@ def test_cap_is_enforced_before_decoding_and_response_is_closed(stream):
             _api_version="test",
             _pipeline=SimpleNamespace(run=send),
         )
-        sandbox = object.__new__(_AcasSandbox)
+        sandbox = _AcasSandbox(None, 1)
         sandbox._sc = client
         with pytest.raises(SandboxExecOutputLimitExceeded):
             await sandbox.exec_bounded(
-                "probe", working_directory="/work", timeout=1, max_output_bytes=250
+                "probe", working_directory="child", timeout=1, max_output_bytes=250
             )
         assert pulled == 3 and response.closed
 
@@ -75,7 +76,7 @@ def test_small_complete_response_preserves_result_or_http_failure(status):
         async def send(request, **kwargs):
             return SimpleNamespace(http_response=response)
 
-        sandbox = object.__new__(_AcasSandbox)
+        sandbox = _AcasSandbox(None, 1)
         sandbox._sc = SimpleNamespace(
             _endpoint="https://sandbox.example",
             _sbx_path="/sandboxes/one",
@@ -128,6 +129,7 @@ def test_sdk_pipeline_does_not_buffer_the_http_body(channel, monkeypatch):
                     await writer.drain()
                     await asyncio.sleep(0.001)
             except (ConnectionError, asyncio.IncompleteReadError):
+                # The bounded reader closes the connection before the producer finishes.
                 pass
             finally:
                 writer.close()

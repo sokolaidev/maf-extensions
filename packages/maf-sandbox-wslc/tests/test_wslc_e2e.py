@@ -859,10 +859,8 @@ class TestAGuestThatIsNotRoot:
 
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), self._spec())
-            absent = await sandbox.exec(
-                ["test", "!", "-e", _WORK], working_directory="/", timeout=60
-            )
-            assert absent.exit_code == 0, "the non-root fixture must not already carry work_dir"
+            prepared = await sandbox.exec(["test", "-d", _WORK], working_directory="/", timeout=60)
+            assert prepared.exit_code == 0, "acquire must prepare work_dir before writing inputs"
             planted = f"{_WORK}/call-a1b2c3/host_note"
             await sandbox.write_file(planted, "# the host wrote this\n", working_directory=_WORK)
             result = await sandbox.exec(
@@ -1054,5 +1052,33 @@ def test_instance_disposal_conforms_against_engine_inventory(network):
                         _network_name(_container_name(key, kind, variant))
                     )
             assert failure is None
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("override", [None, "/image/custom-base"])
+def test_relative_storage_base_conformance(override):
+    from maf_sandbox.conformance import assert_storage_base_conformance
+
+    async def scenario():
+        backend = WslcSandboxBackend(WslcSandboxConfig())
+        key = _key("storage-base-" + uuid.uuid4().hex[:10])
+        spec = SandboxSpec(kind="storage", image=_IMAGE, work_dir=override)
+        try:
+            sandbox = await backend.acquire(key, spec)
+            await assert_storage_base_conformance(sandbox, backend.declarations.capabilities)
+            await sandbox.write_file("kept", b"warm", working_directory=".")
+            stopped = await backend._wslc("container", "stop", sandbox.instance_id, timeout=30)
+            assert stopped.returncode == 0
+            resumed = WslcSandboxBackend(WslcSandboxConfig())
+            with pytest.raises(ValueError, match="storage base"):
+                await resumed.acquire(key, replace(spec, work_dir="/other/base"))
+            assert not await resumed._is_listed(sandbox.container_name, all_states=False)
+            second = await resumed.acquire(key, spec)
+            assert second.instance_id == sandbox.instance_id
+            kept = await second.exec(["cat", "kept"], working_directory=".", timeout=10)
+            assert kept.exit_code == 0 and kept.stdout == "warm"
+        finally:
+            assert await backend.dispose(key, kind=spec.kind) is None
 
     asyncio.run(scenario())

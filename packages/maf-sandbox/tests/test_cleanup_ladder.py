@@ -37,6 +37,10 @@ _DECLARATIONS = dataclasses.replace(
 )
 
 
+def _stored(path):
+    return f"/maf-sandbox/work/{path}"
+
+
 def _tool(router, spec, use):
     def build(session):
         async def run(target: str) -> str:
@@ -103,7 +107,7 @@ def test_rungs_remove_call_state_and_preserve_a_warm_sibling(spec, rung):
 
     async def use(sandbox, guest_path, target):
         served.append((sandbox, len(sandbox.resets)))
-        assert sandbox.contents[f"{guest_path}/payload"] == b"data"
+        assert sandbox.contents[_stored(f"{guest_path}/payload")] == b"data"
         if rung is Cleanup.RESET:
             sandbox.contents["/outside-call"] = b"residue"
             sandbox.running.add("background-program")
@@ -125,8 +129,8 @@ def test_rungs_remove_call_state_and_preserve_a_warm_sibling(spec, rung):
                 assert backend.disposed == [_KEY]
             assert len(backend.sandboxes) == 1
         else:
-            assert f"{guest_path}/payload" not in sandbox.contents
-            assert guest_path not in sandbox.directories
+            assert _stored(f"{guest_path}/payload") not in sandbox.contents
+            assert _stored(guest_path) not in sandbox.directories
             assert not backend.disposed
             assert await router.acquire(_KEY, spec) is sandbox
         if rung is Cleanup.RESET:
@@ -175,9 +179,9 @@ def test_concurrent_bodies_drain_before_cleanup_and_block_a_third(rung, expire, 
         if target == "first":
             first_entered.set()
             await release_first.wait()
-            assert sandbox.contents[f"{guest_path}/payload"] == b"first"
+            assert sandbox.contents[_stored(f"{guest_path}/payload")] == b"first"
         else:
-            assert sandbox.contents[f"{guest_paths['first']}/payload"] == b"first"
+            assert sandbox.contents[_stored(f"{guest_paths['first']}/payload")] == b"first"
             second_entered.set()
 
     async def scenario():
@@ -191,7 +195,7 @@ def test_concurrent_bodies_drain_before_cleanup_and_block_a_third(rung, expire, 
         assert served["first"] is served["second"]
         if rung is Cleanup.RECLAIM:
             assert await second == guest_paths["second"]
-            assert f"{guest_paths['second']}/payload" not in served["first"].contents
+            assert _stored(f"{guest_paths['second']}/payload") not in served["first"].contents
         else:
             assert router._slots._slots[(_KEY, spec.kind)].state == "draining"
             assert not second.done()
@@ -269,7 +273,7 @@ def test_failed_reset_escalates_and_failed_disposal_obeys_host_policy(
             assert not backend.sandboxes
             assert await router.acquire(_KEY, spec) is not backend.sandbox
         else:
-            assert backend.sandbox.contents[f"{guest_path}/payload"] == b"data"
+            assert backend.sandbox.contents[_stored(f"{guest_path}/payload")] == b"data"
             if policy is FailedReclaimPolicy.KEEP:
                 assert await router.acquire(_KEY, spec) is backend.sandbox
             else:
@@ -313,7 +317,7 @@ def test_failed_reclaim_waits_for_running_sibling_and_reports_after_cleanup(poli
         if target == "first":
             entered.set()
             await release.wait()
-            assert sandbox.contents[f"{guest_path}/payload"] == b"first"
+            assert sandbox.contents[_stored(f"{guest_path}/payload")] == b"first"
         else:
             sandbox.refused_path = guest_path
             if delete_fails:
