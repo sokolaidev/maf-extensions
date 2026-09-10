@@ -9,6 +9,7 @@ import shutil
 import uuid
 
 import maf_sandbox
+import maf_sandbox._host_tools_over_exec as transport
 import pytest
 
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
@@ -34,11 +35,10 @@ class Records(maf_sandbox.SandboxObserver):
 
 
 @pytest.mark.parametrize("finish", [True, False], ids=["success", "timeout"])
+@pytest.mark.parametrize("degraded", [None, "unavailable", "incomplete"])
 def test_forged_files_do_not_redirect_cleanup_and_observed_escapees_are_stopped(
-    finish, monkeypatch
+    finish, degraded, monkeypatch
 ):
-    from maf_sandbox import _host_tools_over_exec as transport
-
     generate = transport._launcher_script
 
     def delayed_receipt(*args, **kwargs):
@@ -101,8 +101,35 @@ def test_forged_files_do_not_redirect_cleanup_and_observed_escapees_are_stopped(
             target = int(victim.stdout)
             layout = maf_sandbox.guest_run_layout("/tmp/process-test/run")
             execute = sandbox.exec
+            scans = 0
 
             async def check_launcher_close(command, *, working_directory, timeout):
+                nonlocal scans
+                if " -I -S -c " in str(command) and " --signal " not in str(command):
+                    scans += 1
+                    if scans == 2:
+                        ready = await execute(
+                            [
+                                "python3",
+                                "-c",
+                                """import time
+from pathlib import Path
+for _ in range(100):
+    if Path('/tmp/process-witness').exists(): break
+    time.sleep(.01)
+else: raise RuntimeError('guest did not create its witness')
+""",
+                            ],
+                            working_directory=working_directory,
+                            timeout=timeout,
+                        )
+                        assert ready.exit_code == 0, ready.stderr
+                    if scans == 3 and degraded:
+                        if degraded == "unavailable":
+                            raise PermissionError("process snapshot unavailable")
+                        return maf_sandbox.ExecResult(
+                            stdout='{"processes": [], "incomplete": true}', exit_code=0
+                        )
                 if command == f"sh {shlex.quote(layout.launcher)}" or command == (
                     f"sh {transport._quote(layout.launcher)}"
                 ):
@@ -175,7 +202,14 @@ print(json.dumps(dict(program=state(w['program']),child=state(w['child']),victim
                 "before_cleanup",
                 "after_cleanup",
             ]
-            assert all(s.unavailable is None for s in records.snapshots)
+            if degraded == "unavailable":
+                assert records.snapshots[2].unavailable == "PermissionError"
+            else:
+                assert all(s.unavailable is None for s in records.snapshots)
+            if degraded:
+                assert records.snapshots[2].incomplete
+                assert not records.snapshots[2].processes
+            assert any(p.attribution == "descendant" for p in records.snapshots[1].processes)
             assert any(
                 p.uid == 65534 and p.argv and p.attribution == "program"
                 for s in records.snapshots

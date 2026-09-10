@@ -3,6 +3,7 @@
 import asyncio
 import dataclasses
 import json
+import shlex
 import time
 
 import pytest
@@ -174,7 +175,7 @@ def test_process_cleanup_steps_share_one_deadline_and_reserve_a_signal_attempt(s
             async def exec(self, command, *, working_directory, timeout):
                 if " --signal " in str(command):
                     step = "descendants"
-                    stdout = json.dumps([{"pid": 82, "outcome": "sent"}])
+                    stdout = json.dumps([{"pid": 82, "start_ticks": 101, "outcome": "sent"}])
                 elif " -I -S -c " in str(command):
                     self.scan += 1
                     step = "before_cleanup" if self.scan == 1 else "after_cleanup"
@@ -311,6 +312,141 @@ def test_earlier_snapshot_failures_still_mark_cleanup_unclean(failed_scan, failu
     assert observer.snapshots[failed_scan - 1].incomplete
     assert not observer.snapshots[-1].incomplete
     assert observer.snapshots[-1].unavailable is None
+
+
+@pytest.mark.parametrize("failure", ["unavailable", "incomplete"])
+def test_degraded_cleanup_snapshot_still_signals_previously_observed_escapees(failure):
+    child = process(82, ppid=81, pgid=82, start=101, uid=1000, command="sleep 90")
+    unrelated = process(91, pgid=91, start=110)
+
+    class Degraded(Guest):
+        def __init__(self):
+            super().__init__()
+            self.targets = []
+
+        async def exec(self, command, *, working_directory, timeout):
+            if " --signal " in str(command):
+                self.targets = json.loads(shlex.split(command)[-1])
+                return ExecResult(
+                    stdout=json.dumps(
+                        [
+                            {"pid": pid, "start_ticks": start, "outcome": "sent"}
+                            for pid, start in self.targets
+                        ]
+                    ),
+                    exit_code=0,
+                )
+            result = await super().exec(
+                command, working_directory=working_directory, timeout=timeout
+            )
+            if " -I -S -c " in str(command):
+                if self.scan == 2:
+                    return dataclasses.replace(
+                        result, stdout=payload([self.program, child, unrelated])
+                    )
+                if self.scan == 3:
+                    if failure == "unavailable":
+                        raise PermissionError("proc unavailable")
+                    return dataclasses.replace(result, stdout=payload([unrelated], incomplete=True))
+            return result
+
+    guest, observer = Degraded(), Recorder()
+    notes, token = open_unclean_notes()
+    try:
+        assert run(guest, observer).exit_code == 0
+    finally:
+        close_unclean_notes(token)
+    assert guest.targets == [[82, 101]]
+    assert guest.reclaims and notes
+    observed = observer.snapshots[1].processes[1]
+    assert observed.uid == 1000 and observed.command == "sleep 90"
+    assert observed.attribution == "descendant"
+    assert child.pid not in [p.pid for p in observer.snapshots[2].processes]
+    assert child.pid not in [p.pid for p in observer.snapshots[3].processes]
+    cleanup = next(e for e in observer.cleanups if e.pid == child.pid)
+    assert cleanup.start_ticks == child.start_ticks and cleanup.outcome == "sent"
+
+
+def test_retained_cleanup_candidates_use_latest_metadata_and_identity_scoped_outcomes():
+    async def scenario():
+        class SignallingGuest(Guest):
+            async def exec(self, command, *, working_directory, timeout):
+                targets = json.loads(shlex.split(command)[-1])
+                assert targets == [[82, 101], [82, 201]]
+                return ExecResult(
+                    stdout=json.dumps(
+                        [
+                            {"pid": 82, "start_ticks": 101, "outcome": "replaced"},
+                            {"pid": 82, "start_ticks": 201, "outcome": "sent"},
+                        ]
+                    ),
+                    exit_code=0,
+                )
+
+        observer = Recorder()
+        tracked = ProcessTracker(
+            SignallingGuest(),
+            HostToolRun(HostToolRegistry(observer=observer)),
+            "python3",
+            LAYOUT.directory,
+        )
+        tracked.pid, tracked.pgid = 81, 80
+        parent = process(81)
+        gone = process(83, ppid=81, pgid=83, start=102)
+        tracked.attribute((parent, process(82, ppid=81, pgid=82, start=101), gone))
+        tracked.attribute(
+            (parent, process(82, ppid=81, pgid=82, start=201), dataclasses.replace(gone, state="Z"))
+        )
+        tracked.latest = None
+        assert not await tracked.stop_descendants()
+        assert [(e.start_ticks, e.outcome) for e in observer.cleanups] == [
+            (101, "replaced"),
+            (201, "sent"),
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_retained_candidates_are_batched_within_one_deadline_and_instance():
+    async def scenario():
+        class BatchedGuest(Guest):
+            def __init__(self):
+                super().__init__()
+                self.batches = []
+
+            async def exec(self, command, *, working_directory, timeout):
+                targets = json.loads(shlex.split(command)[-1])
+                self.batches.append((targets, timeout))
+                return ExecResult(
+                    stdout=json.dumps(
+                        [
+                            {"pid": pid, "start_ticks": start, "outcome": "absent"}
+                            for pid, start in targets
+                        ]
+                    ),
+                    exit_code=0,
+                )
+
+        guest = BatchedGuest()
+        tracked = ProcessTracker(
+            guest, HostToolRun(HostToolRegistry()), "python3", LAYOUT.directory
+        )
+        tracked.pid, tracked.pgid = 81, 80
+        parent = process(81)
+        for start in (1000, 1255):
+            tracked.attribute(
+                (parent, *(process(pid, ppid=81, pgid=pid) for pid in range(start, start + 255)))
+            )
+        tracked.latest = None
+        assert await tracked.stop_descendants(until=time.monotonic() + 0.1)
+        assert [len(targets) for targets, _ in guest.batches] == [256, 254]
+        assert guest.batches[1][1] <= guest.batches[0][1] <= 0.1
+        guest.batches.clear()
+        guest.instance_id = "replacement-instance"
+        assert not await tracked.stop_descendants()
+        assert not guest.batches
+
+    asyncio.run(scenario())
 
 
 def test_guest_start_is_released_only_after_receipt_validation():

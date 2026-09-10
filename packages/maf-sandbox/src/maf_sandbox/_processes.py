@@ -21,6 +21,7 @@ from ._protocol import Sandbox
 logger = logging.getLogger(__name__)
 _TIMEOUT = 3.0
 _BYTES = 1024 * 1024
+_PROCESSES = 256
 
 
 def _remaining(until: float | None) -> float:
@@ -45,7 +46,7 @@ def _decode(stdout: str) -> tuple[tuple[ProcessInfo, ...], bool]:
     if not isinstance(payload.get("processes"), list):
         raise ValueError("invalid process snapshot")
     raw: list[Any] = payload["processes"]
-    if len(raw) > 256:
+    if len(raw) > _PROCESSES:
         raise ValueError("process snapshot exceeds count limit")
     allowed = {f.name for f in fields(ProcessInfo)} - {"attribution"}
     result: list[ProcessInfo] = []
@@ -110,6 +111,7 @@ class ProcessTracker:
         self.pgid: int | None = None
         self.baseline: set[tuple[int, int]] = set()
         self.known: dict[tuple[int, int], ProcessAttribution] = {}
+        self.observed: dict[tuple[int, int], ProcessInfo] = {}
         self.latest: tuple[ProcessInfo, ...] | None = None
         self.incomplete = True
         self._ever_incomplete = False
@@ -138,7 +140,7 @@ class ProcessTracker:
                 ):
                     self.known[process.identity] = "descendant"
                     changed = True
-        return tuple(
+        attributed = tuple(
             replace(
                 p,
                 attribution=self.known.get(
@@ -147,6 +149,8 @@ class ProcessTracker:
             )
             for p in processes
         )
+        self.observed.update((p.identity, p) for p in attributed if p.identity in self.known)
+        return attributed
 
     async def snapshot(self, phase: ProcessPhase, *, until: float | None = None) -> None:
         self.phase = phase
@@ -251,38 +255,45 @@ class ProcessTracker:
 
     async def stop_descendants(self, *, until: float | None = None) -> bool:
         """Signal observed descendants outside the launcher's group; never signal mere additions."""
-        targets = [p for p in self.survivors() if p.pid != self.pid and p.pgid != self.pgid]
+        targets = [
+            p
+            for p in self.observed.values()
+            if p.running and p.pid != self.pid and p.pgid != self.pgid
+        ]
         if not targets:
             return True
         started = time.monotonic()
-        outcomes: dict[int, str] = {}
+        outcomes: dict[tuple[int, int], str] = {}
         try:
-            identities = json.dumps([p.identity for p in targets])
-            remaining = _remaining(until)
-            async with asyncio.timeout(remaining):
-                result = await self.sandbox.exec(
-                    f"{shlex.quote(self.interpreter)} -I -S -c {shlex.quote(_probe())} "
-                    f"--signal {shlex.quote(identities)}",
-                    working_directory=self.directory,
-                    timeout=remaining,
-                )
-            if result.exit_code == 0 and len(result.stdout) <= _BYTES:
-                raw: Any = json.loads(result.stdout)
-                if isinstance(raw, list):
-                    for row in cast(list[Any], raw):
-                        if isinstance(row, dict):
-                            entry = cast(dict[str, Any], row)
-                            if type(entry.get("pid")) is int and entry.get("outcome") in {
-                                "sent",
-                                "absent",
-                                "replaced",
-                                "refused",
-                            }:
-                                outcomes[entry["pid"]] = entry["outcome"]
+            for offset in range(0, len(targets), _PROCESSES):
+                if self.sandbox.instance_id != self.instance_id:
+                    raise ValueError("sandbox instance changed")
+                identities = json.dumps([p.identity for p in targets[offset : offset + _PROCESSES]])
+                remaining = _remaining(until)
+                async with asyncio.timeout(remaining):
+                    result = await self.sandbox.exec(
+                        f"{shlex.quote(self.interpreter)} -I -S -c {shlex.quote(_probe())} "
+                        f"--signal {shlex.quote(identities)}",
+                        working_directory=self.directory,
+                        timeout=remaining,
+                    )
+                if result.exit_code == 0 and len(result.stdout) <= _BYTES:
+                    raw: Any = json.loads(result.stdout)
+                    if isinstance(raw, list):
+                        for row in cast(list[Any], raw):
+                            if isinstance(row, dict):
+                                entry = cast(dict[str, Any], row)
+                                if (
+                                    type(entry.get("pid")) is int
+                                    and type(entry.get("start_ticks")) is int
+                                    and entry.get("outcome")
+                                    in {"sent", "absent", "replaced", "refused"}
+                                ):
+                                    outcomes[entry["pid"], entry["start_ticks"]] = entry["outcome"]
         except Exception:  # noqa: BLE001 - continue to verification and directory reclamation
             pass
         for process in targets:
-            outcome = outcomes.get(process.pid, "unknown")
+            outcome = outcomes.get(process.identity, "unknown")
             record(
                 self.run.registry.observer,
                 ProcessCleanup(
@@ -305,4 +316,4 @@ class ProcessTracker:
                 process.pid,
                 outcome,
             )
-        return all(outcomes.get(p.pid) in {"sent", "absent"} for p in targets)
+        return all(outcomes.get(p.identity) in {"sent", "absent"} for p in targets)
