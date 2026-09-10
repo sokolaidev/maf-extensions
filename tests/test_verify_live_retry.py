@@ -149,13 +149,13 @@ class TestARetryIsNeverSilent:
         note = next(line for line in finished.stdout.splitlines() if line.startswith("::warning"))
         assert "model's half" in note, note
 
-    def test_the_annotation_namesretry_step_it_came_from(self, tmp_path: Path, retrying: Retrying):
+    def test_the_annotation_names_the_step_it_came_from(self, tmp_path: Path, retrying: Retrying):
         """Their warnings land in one log."""
         finished = _run(tmp_path, [retrying.check.MODEL_DID_NOT_CONVERGE, 0], retrying=retrying)
         note = next(line for line in finished.stdout.splitlines() if line.startswith("::warning"))
         assert f"title={retrying.label} retried" in note, note
 
-    def test_the_attempt_count_reachesretry_step_summary(self, tmp_path: Path, retrying: Retrying):
+    def test_the_attempt_count_reaches_the_step_summary(self, tmp_path: Path, retrying: Retrying):
         finished = _run(tmp_path, [retrying.check.MODEL_DID_NOT_CONVERGE, 0], retrying=retrying)
         assert "2 attempt(s)" in finished.summary, finished.summary
 
@@ -170,7 +170,7 @@ class TestARetryIsNeverSilent:
         finished = _run(tmp_path, [1], retrying=retrying)
         assert "exit 1 after 1 attempt(s)" in finished.summary, finished.summary
 
-    def test_the_summary_namesretry_step_it_describes(self, tmp_path: Path, retrying: Retrying):
+    def test_the_summary_names_the_step_it_describes(self, tmp_path: Path, retrying: Retrying):
         """One summary carries all of them, so an unattributed line describes nobody."""
         finished = _run(tmp_path, [0], retrying=retrying)
         assert finished.summary.startswith("samples/"), finished.summary
