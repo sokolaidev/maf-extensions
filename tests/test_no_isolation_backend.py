@@ -7,8 +7,7 @@ by putting the sample directory on ``sys.path``:
 
 * ``exec`` runs a real subprocess off the event loop (a worker thread), so concurrent tool
   calls do not serialize on one ``subprocess.run`` blocking the loop.
-* the guest ``work_dir`` a kind embeds in its command is rewritten to the host root, in **both**
-  forms the protocol permits — the string form a kind builds, and the argv list a caller passes.
+* relative working directories resolve under the host root while command arguments stay opaque.
 * ``acquire`` is get-or-create keyed by ``(SandboxKey, spec.kind)``, and ``dispose_scope`` tears
   the host directories down.
 
@@ -143,19 +142,15 @@ def test_write_file_refuses_symlinked_parents_and_destinations():
 
 
 def test_exec_translates_the_host_root_back_to_the_guest_work_dir():
-    """The command is rewritten guest→host so the binary runs, then the output is reversed.
-
-    A ``file://`` URI (or any path the binary prints) would carry the host temp root, which the
-    workload cannot strip — it strips the *guest* ``work_dir``. So both output streams are
-    translated host→guest before return. ``echo {guest_work_dir}`` becomes ``echo {host_root}``
-    to the shell, and the host root it prints comes back as the guest work_dir.
-    """
+    """Native paths printed by the process retain the sample's guest-path presentation."""
 
     async def body() -> None:
         backend, sandbox = await _fresh()
         try:
             result = await sandbox.exec(
-                f"echo {_GUEST_WORK_DIR}", working_directory=_GUEST_WORK_DIR, timeout=10
+                [sys.executable, "-c", "import os; print(os.getcwd())"],
+                working_directory=".",
+                timeout=10,
             )
             assert result.exit_code == 0
             assert _GUEST_WORK_DIR in result.stdout
@@ -226,13 +221,8 @@ def test_the_translation_covers_the_root_as_the_operating_system_resolves_it(tmp
     assert sandbox._to_guest(printed) == f"{_GUEST_WORK_DIR}/main.bicep"  # noqa: SLF001
 
 
-def test_exec_sequence_form_translates_each_argv_element():
-    """The argv form rewrites the guest work_dir in *each* element and runs without a shell.
-
-    A script is written at a guest path, then run as ``[sys.executable, <guest path>]``. The
-    element is rewritten to the host path (else the file is not found), proving the translation
-    a kind that embeds ``work_dir`` in an argv list relies on.
-    """
+def test_exec_sequence_runs_relative_to_the_allocated_directory():
+    """The backend supplies cwd while leaving relative argv entries untouched."""
 
     async def body() -> None:
         backend, sandbox = await _fresh()
@@ -242,7 +232,7 @@ def test_exec_sequence_form_translates_each_argv_element():
                 guest_script, 'print("argv-pinned")\n', working_directory=_GUEST_WORK_DIR
             )
             result = await sandbox.exec(
-                [sys.executable, guest_script],
+                [sys.executable, "echo.py"],
                 working_directory=_GUEST_WORK_DIR,
                 timeout=10,
             )

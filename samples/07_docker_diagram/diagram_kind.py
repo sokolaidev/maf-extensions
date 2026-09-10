@@ -201,9 +201,7 @@ def _render_diagram_tool(
         guest_output_path = f"{guest_call_directory}/{_OUTPUT_FILENAME}"
 
         try:
-            await sandbox.write_file(
-                guest_source_path, dot, working_directory=session.spec.work_dir
-            )
+            await sandbox.write_file(guest_source_path, dot, working_directory=".")
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "render_diagram: could not write the DOT source into the sandbox: %s",
@@ -216,7 +214,7 @@ def _render_diagram_tool(
             # renderer's arguments are fixed, so nothing the model wrote reaches a shell.
             result = await sandbox.exec(
                 [_RENDERER, _FORMAT_FLAG, guest_source_path, _OUTPUT_FLAG, guest_output_path],
-                working_directory=session.spec.work_dir,
+                working_directory=".",
                 timeout=timeout,
             )
         except TimeoutError:

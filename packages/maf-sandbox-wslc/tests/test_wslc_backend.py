@@ -809,7 +809,7 @@ class TestGuestPrincipal:
 class TestWriteFile:
     @pytest.mark.parametrize("work", ["workspace", "./workspace", "/workspace", "//workspace"])
     def test_work_dir_spellings_stamp_every_missing_directory(self, work):
-        spec = replace(_METHOD_SPEC, work_dir=work)
+        spec = replace(_METHOD_SPEC, work_dir=work if work.startswith("/") else "/")
         name = _container_name(_KEY, spec.kind)
         overrides = {
             ("container", "inspect"): _WslcResult(
@@ -2836,3 +2836,25 @@ def test_proxy_removal_retry_publishes_only_the_successful_window(
     assert seen[0].key == _KEY
     assert len(seen[0].decisions) == (0 if unreadable else 2)
     assert bool(seen[0].unreadable) == unreadable
+
+
+@pytest.mark.parametrize("override", [None, "/image/base"])
+def test_relative_working_directory_is_resolved_and_argv_is_opaque(override):
+    backend, fake = _backend_with(_machine(running=[_NAME]))
+    spec = replace(_METHOD_SPEC, work_dir=override)
+    base = override if override is not None else _WORK
+
+    async def scenario():
+        sandbox = await backend.acquire(_KEY, spec)
+        await sandbox.exec(["echo", "/opaque/argument"], working_directory="call", timeout=10)
+        with pytest.raises(ValueError):
+            await sandbox.exec(["true"], working_directory="../escape", timeout=10)
+        await sandbox.write_file("input", b"bytes", working_directory="call")
+
+    asyncio.run(scenario())
+    command = fake.matching("container", "exec", "-w")[-1].args
+    assert command[3] == f"{base}/call"
+    assert command[-2:] == ("echo", "/opaque/argument")
+    transfer = [call for call in fake.matching("container", "cp") if call.stdin][-1]
+    with tarfile.open(fileobj=io.BytesIO(transfer.stdin)) as archive:
+        assert f"{base.lstrip('/')}/call/input" in archive.getnames()

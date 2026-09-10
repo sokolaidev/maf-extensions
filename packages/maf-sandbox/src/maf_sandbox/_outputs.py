@@ -670,7 +670,7 @@ async def _stat_and_cap(
     present: list[tuple[DeclaredOutput, int]] = []
     for declared in declared_outputs:
         with _backend_refusals(declared.path):
-            entry = await sandbox.stat_file(declared.path, working_directory=spec.work_dir)
+            entry = await sandbox.stat_file(declared.path, working_directory=".")
         if entry is None:
             if declared.required:
                 raise SandboxOutputMissing(
@@ -723,7 +723,7 @@ async def _read_all(
         with _backend_refusals(declared.path):
             content = await sandbox.read_file(
                 declared.path,
-                working_directory=spec.work_dir,
+                working_directory=".",
                 max_bytes=min(stat_bytes, tally.remaining_bytes),
             )
         tally.add(declared.path, len(content))
@@ -767,7 +767,7 @@ async def collect_outputs(
 
     Args:
         sandbox: The running sandbox to pull from.
-        spec: The workload's spec. ``work_dir``, ``files_out`` and ``kind`` all come from it,
+        spec: The workload's spec. ``files_out`` and ``kind`` come from it,
             so no caller can pair one workload's outputs with another's caps.
         sink: Where landing artifacts go. Required as soon as any output declares
             :data:`~maf_sandbox.OutputDisposition.LAND`, because a tool that declares something
@@ -801,7 +801,7 @@ async def collect_outputs(
             when a ``per_call`` sink is given nothing to name a folder with.
         SandboxOutputSinkRequired: when an output lands and no sink was supplied.
         SandboxOutputMissing: when a ``required`` output is not there, naming it.
-        SandboxOutputNotConfined: when a declared path resolves outside ``spec.work_dir``.
+        SandboxOutputNotConfined: when a declared path escapes the acquired storage base.
         SandboxOutputNotRegular: when a declared output is not a regular file.
         SandboxOutputSizeUnknown: when a declared output's size could not be determined.
         SandboxOutputUnreachable: when an output, or the sandbox, went away mid-collection.

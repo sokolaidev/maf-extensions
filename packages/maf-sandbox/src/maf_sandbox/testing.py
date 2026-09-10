@@ -49,11 +49,13 @@ from .conformance import SandboxFingerprint
 from .paths import (
     confine_resolve_guest_delete_path,
     confine_resolve_guest_list_path,
+    confine_resolve_guest_path,
     confine_resolve_guest_read_path,
     confine_resolve_guest_write_path,
     ensure_guest_work_dir,
     guest_path_relative_to,
     posix_work_dir_ancestors,
+    resolve_guest_working_directory,
 )
 
 __all__ = [
@@ -110,6 +112,8 @@ class InProcessSandbox:
             :data:`~maf_sandbox.EntryKind.OTHER` any other non-regular entry — neither has
             content, neither is readable, and only a link is refused as an escape.
 
+    ``storage_base`` chooses the private base used when a spec sets ``work_dir=None``.
+
     Storage is bytes, and :attr:`contents` **is** that store, keyed by normalised absolute guest
     paths — the place a caller reading or
     seeding binary content looks. ``write_file`` UTF-8-encodes ``str`` content on the way in.
@@ -152,6 +156,7 @@ class InProcessSandbox:
         *,
         default_stdout: str = "",
         seed_files: Mapping[str, str | bytes | EntryKind] | None = None,
+        storage_base: str = "/maf-sandbox/work",
     ) -> None:
         self.contents: dict[str, bytes] = {}
         self.symlinks: set[str] = set()
@@ -193,6 +198,9 @@ class InProcessSandbox:
         #: because a baseline taken after a call has served preserves the residue the reset
         #: exists to remove. Last in this constructor, so it sees every store above it.
         self._baseline = self._snapshot()
+        self._allocated_work_dir = storage_base
+        self._work_dir = storage_base
+        self._bound_work_dir: str | None = None
         self._instance = _InstanceIdentity(uuid4().hex)
         self.instance_id = self._instance.value
 
@@ -208,6 +216,9 @@ class InProcessSandbox:
 
     async def prepare_work_dir(self, spec: SandboxSpec) -> None:
         """Include the host's base directories in the state restored by reset."""
+        work_dir = spec.work_dir if spec.work_dir is not None else self._allocated_work_dir
+        if self._bound_work_dir is not None and work_dir != self._bound_work_dir:
+            raise ValueError("a held sandbox cannot change its storage base")
         prepared: set[str] = set()
 
         async def stat(directory: str) -> SandboxEntry | None:
@@ -219,9 +230,22 @@ class InProcessSandbox:
         async def create(directories: tuple[str, ...]) -> None:
             prepared.update(directories)
 
-        await ensure_guest_work_dir(spec, stat, create, resolve=self._work_dir_ancestors)
+        await ensure_guest_work_dir(
+            spec,
+            stat,
+            create,
+            resolve=self._work_dir_ancestors,
+            base=work_dir,
+        )
         self.directories.update(prepared)
         self._baseline[3].update(prepared)
+        self._work_dir = self._bound_work_dir = work_dir
+
+    def _working_directory(self, directory: str) -> str:
+        """Resolve logical POSIX children, retaining legacy native absolute directories."""
+        if ntpath.splitdrive(self._work_dir)[0] and ntpath.isabs(directory):
+            return directory
+        return resolve_guest_working_directory(directory, self._work_dir)
 
     @staticmethod
     def _work_dir_ancestors(guest_work_dir: str) -> tuple[str, ...]:
@@ -290,6 +314,7 @@ class InProcessSandbox:
         )
 
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
+        working_directory = self._working_directory(working_directory)
         full_path = await confine_resolve_guest_write_path(
             self._stat_unconfined, path, working_directory
         )
@@ -298,6 +323,7 @@ class InProcessSandbox:
     async def exec(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float
     ) -> ExecResult:
+        working_directory = self._working_directory(working_directory)
         joined = command if isinstance(command, str) else shlex.join(command)
         self.commands.append((joined, working_directory, timeout))
         if self._raises is not None:
@@ -366,6 +392,7 @@ class InProcessSandbox:
         return SandboxEntry(path=full_path, kind=kind, size_bytes=size_bytes)
 
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
+        working_directory = self._working_directory(working_directory)
         full_path = await confine_resolve_guest_read_path(
             self._stat_unconfined, path, working_directory
         )
@@ -378,6 +405,7 @@ class InProcessSandbox:
         return SandboxEntry(path=rel, kind=kind, size_bytes=size_bytes)
 
     async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
+        working_directory = self._working_directory(working_directory)
         full_path = await confine_resolve_guest_read_path(
             self._stat_unconfined, path, working_directory
         )
@@ -398,6 +426,7 @@ class InProcessSandbox:
         raise FileNotFoundError(f"no such file: {path!r}")
 
     async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
+        working_directory = self._working_directory(working_directory)
         full_path = await confine_resolve_guest_delete_path(
             self._stat_unconfined, path, working_directory
         )
@@ -423,9 +452,15 @@ class InProcessSandbox:
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
         """Remove the directory for real, and record the call.
 
-        No confinement check and no depth guard: the contract leaves both with the caller.
-        ``directory`` is absolute, so ``working_directory`` plays no part.
+        Relative targets must be children of the resolved working directory. Legacy absolute
+        targets retain the caller's confinement and depth policy.
         """
+        working_directory = self._working_directory(working_directory)
+        native_absolute = bool(ntpath.splitdrive(self._work_dir)[0]) and ntpath.isabs(directory)
+        if not posixpath.isabs(directory) and not native_absolute:
+            directory = confine_resolve_guest_path(directory, working_directory)
+            if directory == posixpath.normpath(working_directory):
+                raise ValueError("reclaim must name a child of the working directory")
         self.reclaims.append((directory, working_directory, timeout))
         if self._raises is not None:
             raise self._raises
@@ -439,6 +474,7 @@ class InProcessSandbox:
             self.directories.discard(stored)
 
     async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
+        working_directory = self._working_directory(working_directory)
         full_path = await confine_resolve_guest_list_path(
             self._stat_unconfined, path, working_directory
         )

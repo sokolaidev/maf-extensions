@@ -1704,14 +1704,11 @@ class TestReclaimKeepsAFloorUnderRoot:
             asyncio.run(sandbox.reclaim(directory, working_directory=_WORK, timeout=30))
         assert fake.matching("exec") == []
 
-    @pytest.mark.parametrize("directory", ["etc/ssh", "a/b", "./x/y", "../../etc/ssh"])
-    def test_a_relative_path_runs_no_command(self, directory):
-        """The removal runs from `/`, so a relative path resolves against the filesystem root:
-        `etc/ssh` would be `rm -rf /etc/ssh`, as root.
-        """
+    @pytest.mark.parametrize("directory", [".", "../outside", "../../etc/ssh"])
+    def test_a_relative_reclaim_must_stay_below_the_base(self, directory):
         sandbox, fake = self._sandbox()
-        with pytest.raises(ValueError, match="not absolute"):
-            asyncio.run(sandbox.reclaim(directory, working_directory=_WORK, timeout=30))
+        with pytest.raises(ValueError):
+            asyncio.run(sandbox.reclaim(directory, working_directory=".", timeout=30))
         assert fake.matching("exec") == []
 
     def test_a_call_directory_two_components_deep_is_allowed(self):
@@ -1955,7 +1952,7 @@ class TestWriteFile:
         back to docker to create as root.
         """
         work = "workspace"
-        spec = SandboxSpec(requires=frozenset(), kind="e2e", image="img", work_dir=work)
+        spec = SandboxSpec(requires=frozenset(), kind="e2e", image="img", work_dir="/")
         overrides = {
             ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001:20001\n", ""),
         }
@@ -4874,3 +4871,25 @@ def test_proxy_removal_retry_publishes_only_the_successful_window(
     assert seen[0].key == _KEY
     assert len(seen[0].decisions) == (0 if unreadable else 2)
     assert bool(seen[0].unreadable) == unreadable
+
+
+@pytest.mark.parametrize("override", [None, "/image/base"])
+def test_relative_working_directory_is_resolved_and_argv_is_opaque(override):
+    backend, fake = _backend_with(_machine(running=[_NAME]))
+    spec = replace(_METHOD_SPEC, work_dir=override)
+    base = override if override is not None else _WORK
+
+    async def scenario():
+        sandbox = await backend.acquire(_KEY, spec)
+        await sandbox.exec(["echo", "/opaque/argument"], working_directory="call", timeout=10)
+        with pytest.raises(ValueError):
+            await sandbox.exec(["true"], working_directory="../escape", timeout=10)
+        await sandbox.write_file("input", b"bytes", working_directory="call")
+
+    asyncio.run(scenario())
+    command = fake.matching("exec", "-w")[-1].args
+    assert command[2] == f"{base}/call"
+    assert command[-2:] == ("echo", "/opaque/argument")
+    transfer = fake.matching("cp", "-")[-1]
+    with tarfile.open(fileobj=io.BytesIO(transfer.stdin)) as archive:
+        assert f"{base.lstrip('/')}/call/input" in archive.getnames()

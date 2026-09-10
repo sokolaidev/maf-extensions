@@ -128,7 +128,7 @@ class ReclaimFailure:
     #: The sandbox it is in. Always set: nothing is reported for a call that acquired none,
     #: because such a call wrote nothing.
     key: SandboxKey
-    #: The absolute guest path the call left behind — its *affected* path, not one guaranteed
+    #: The call path relative to the storage base — its affected path, not one guaranteed
     #: to still exist: a landed disposal (``disposal == "disposed"``) took the whole sandbox,
     #: and a stop-only note names a path a successful reclaim already removed.
     path: str
@@ -163,7 +163,7 @@ async def reclaim_guest_path(
     # components at minimum: `/` and `/tmp` are the shapes that turn a cleanup into an outage.
     if resolved == posixpath.normpath(working_directory):
         return f"{resolved!r} is the working directory itself"
-    if len([part for part in resolved.split("/") if part]) < 2:
+    if posixpath.isabs(resolved) and len([part for part in resolved.split("/") if part]) < 2:
         return f"{resolved!r} is too close to the root to remove recursively"
     try:
         # Inside the `try`, so a proxy whose attribute lookup raises is a reason below, not
@@ -176,7 +176,7 @@ async def reclaim_guest_path(
                 "when safe reclamation is established. "
                 "`maf_sandbox.conformance.assert_reclaim_conformance` checks that declaration"
             )
-        await sandbox.reclaim(resolved, working_directory=working_directory, timeout=timeout)
+        await sandbox.reclaim(path, working_directory=working_directory, timeout=timeout)
     except Exception as refused:  # noqa: BLE001 — an unreclaimed path is a leak, not a fault
         # Only `Exception`. A `CancelledError` here is the caller's own deadline arriving at
         # this await, and answering with a reason would let the call return past it; the caller

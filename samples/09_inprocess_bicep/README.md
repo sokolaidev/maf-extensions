@@ -11,7 +11,7 @@ app  ->  maf_sandbox (router)  ->  NoIsolationBackend (this sample)  ->  bicep, 
 
 This is the fourth comparable Bicep sample (01, 02, 05, 09): one compiler, one lint rule set (the repo [`bicepconfig.json`](bicepconfig.json) seeded into the work directory the way the images bake it in), a different backend underneath. The protocol's central claim — a workload written against `maf_sandbox` runs unchanged on another backend — is shown rather than asserted, at the weakest boundary that can still run it.
 
-One accommodation a host backend makes, and it is named in the code: the bicep kind fixes a guest `work_dir` (an absolute guest path, set on the spec) and builds its `bicep build` / `bicep lint` commands under it. That path is not a real path on this host, so `NoIsolationSandbox` maps the spec's `work_dir` to a host temp directory — every guest path is rewritten under it, and `exec` substitutes it into the command. The mapping is honest because `work_dir` is known from the spec, not parsed out of an opaque argv — the narrow version of what the protocol otherwise leaves to a kind.
+`NoIsolationSandbox` allocates a host temp directory and resolves relative working directories beneath it. Bicep passes relative filenames to its compiler, so the backend leaves commands and argv untouched. Legacy absolute file-plane paths under the spec's `work_dir` retain their mapping, and output translation preserves the sample's guest-path presentation.
 
 ## Honest about what it cannot confine
 

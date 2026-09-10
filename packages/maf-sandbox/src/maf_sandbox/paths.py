@@ -67,6 +67,7 @@ __all__ = [
     "guest_path_relative_to",
     "path_ancestors_are_host_owned",
     "posix_work_dir_ancestors",
+    "resolve_guest_working_directory",
     "refuse_symlinked_ancestors",
     "sandbox_entry_from_tar_header",
     "stat_by_asking_the_guest",
@@ -81,6 +82,7 @@ async def ensure_guest_work_dir(
     create: Callable[[tuple[str, ...]], Awaitable[None]],
     *,
     resolve: Callable[[str], tuple[str, ...]],
+    base: str | None = None,
 ) -> None:
     """Prepare a spec's base using a backend's no-follow stat and directory creation.
 
@@ -98,7 +100,10 @@ async def ensure_guest_work_dir(
         }
     ):
         return
-    directories = resolve(spec.work_dir)
+    work_dir = spec.work_dir if spec.work_dir is not None else base
+    if work_dir is None:
+        raise ValueError("the backend must allocate a storage base")
+    directories = resolve(work_dir)
     for index, directory in enumerate(directories):
         entry = await stat(directory)
         if entry is None:
@@ -116,6 +121,17 @@ def posix_work_dir_ancestors(guest_work_dir: str) -> tuple[str, ...]:
         raise ValueError("work_dir must be an absolute guest path without NUL bytes")
     guest = confine_resolve_guest_path(guest_work_dir, guest_work_dir)
     return guest_path_and_ancestors(guest, guest)
+
+
+def resolve_guest_working_directory(working_directory: str, base: str) -> str:
+    """Resolve a logical working directory against a backend's private POSIX base.
+
+    Absolute directories retain the legacy guest-native addressing contract. Relative
+    directories cannot escape the allocated base; file operations also confine to that cwd.
+    """
+    if posixpath.isabs(working_directory):
+        return working_directory
+    return confine_resolve_guest_path(working_directory, base)
 
 
 def confine_resolve_guest_path(path: str, working_directory: str) -> str:
@@ -387,6 +403,10 @@ def guest_path_relative_to(path: str, base: str) -> str | None:
     root = posixpath.normpath(base)
     if resolved == root:
         return ""
+    if root == ".":
+        if posixpath.isabs(resolved) or resolved == ".." or resolved.startswith("../"):
+            return None
+        return resolved
     prefix = root if root.endswith("/") else root + "/"
     if not resolved.startswith(prefix):
         return None

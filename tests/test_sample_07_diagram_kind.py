@@ -77,10 +77,11 @@ class _Renderer(InProcessSandbox):
         if isinstance(command, str) or list(command[:1]) != ["dot"]:
             return result
         argv = list(command)
-        source = argv[argv.index("-Tpng") + 1]
+        cwd = self._working_directory(working_directory)
+        source = f"{cwd}/{argv[argv.index('-Tpng') + 1]}"
         if source not in self.contents:
             return ExecResult(stdout="", stderr=f"dot: can't open {source}", exit_code=2)
-        self.contents[argv[argv.index("-o") + 1]] = self.image_bytes
+        self.contents[f"{cwd}/{argv[argv.index('-o') + 1]}"] = self.image_bytes
         return result
 
 
@@ -94,8 +95,8 @@ _BACKENDS: dict[InProcessSandbox, InProcessSandboxBackend] = {}
 
 def _guest_call_directories(sandbox: InProcessSandbox) -> list[str]:
     return [
-        shlex.split(command)[2].rsplit("/", 1)[0]
-        for command, _, _ in sandbox.commands
+        f"{cwd}/{shlex.split(command)[2]}".rsplit("/", 1)[0]
+        for command, cwd, _ in sandbox.commands
         if command.startswith("dot ")
     ]
 

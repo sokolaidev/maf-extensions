@@ -717,18 +717,13 @@ class SandboxSpec:
     them on is incoherent, not resolved into a surprise.  The ``CLOSED`` default keeps the
     fail-closed property: a spec that says nothing about egress gets no network.
 
-    ``work_dir`` is the guest-side directory a workload's paths resolve against, and it is
-    **guest-native**: the host states it to suit the image it configured, and nothing rewrites
-    it.  Not because translating would be undesirable but because it is not possible — a kind
-    derives absolute paths from this field and passes them into :meth:`Sandbox.exec`'s argv,
-    and a backend cannot find a path inside an opaque argv without parsing arbitrary command
-    lines.  An argv *sequence* protects against quoting, not against paths within the
-    arguments.  ``/maf-sandbox/work`` is a default, not a requirement.  A workload must not read the
-    guest's platform *out* of this field, and nothing here validates it against one: the axis
-    that declares and matches a guest's shape is :class:`OsFamily`, stated by a spec in
-    :attr:`requires_os_family` and by a backend in ``os_families``.  Reading it out of a path
-    instead would infer a fact the field never promised — a ``/``-rooted ``work_dir`` says
-    nothing about the guest, because the host typed it.
+    ``work_dir`` overrides the backend's storage base for an image with a fixed layout.
+    ``None`` lets the backend allocate its own base; the existing default is retained for
+    compatibility. An override is guest-native and must be honored exactly or refused.
+    Workloads address the base as ``working_directory="."`` and its children relatively,
+    without reading a native path from this spec or embedding it in command arguments.
+    The backend resolves those directories; command arguments remain opaque. Guest platform
+    requirements belong to :attr:`requires_os_family`, never to a path spelling.
 
     ``requires_os_family`` is the shape this workload's commands and scripts are written for,
     and the router refuses a backend whose ``os_families`` does not hold it.  ``None`` — the
@@ -793,7 +788,7 @@ class SandboxSpec:
     image: str | None = None
     image_id: str | None = None
     egress_allow: tuple[str | EgressRule, ...] = ()
-    work_dir: str = "/maf-sandbox/work"
+    work_dir: str | None = "/maf-sandbox/work"
     # `dict[str, str]` rather than a bare `dict` as the factory: the bare builtin gives a
     # strict type checker `dict[Unknown, Unknown]` to work with, and this package's own
     # pyright config is strict. The subscripted form is callable and constructs the
@@ -959,12 +954,11 @@ class Sandbox(Protocol):
     reporting. :meth:`reclaim` remains a required method, but may refuse when safety cannot
     be established; :data:`Capability.RECLAIM` admits it for router-managed cleanup.
 
-    ``working_directory`` is a parameter on those four — the pull surface and :meth:`remove` —
-    exactly as it is on :meth:`exec`,
-    because no sandbox object knows the spec's ``work_dir``: it arrives per call or not at all,
-    and a pull surface without it would assign the confinement duty to a layer with no way to
-    discharge it.  Their ``path`` is POSIX-shaped and relative to it, and one resolving outside it
-    is refused.
+    The acquired sandbox owns its storage base. A relative ``working_directory`` addresses
+    that base (``"."``) or a child, and cannot escape it. File ``path`` arguments are relative
+    to that directory and retain their own confinement boundary. Legacy absolute working
+    directories remain guest-native; an absolute file path is accepted only within the
+    supplied working directory. Backends do not rewrite paths embedded in commands.
 
     **Confinement is a duty of all five, and it is not a check on the argument string.**  A
     path whose *parent* is a link passes the file name check and still reads outside: with
@@ -1175,8 +1169,10 @@ class Sandbox(Protocol):
         For a removal that can safely be attempted, an absent directory is success; other
         failures raise.
 
-        ``directory`` is absolute. A guest command must not depend on ``working_directory``
-        existing; it can run from ``/``. Unlike :meth:`remove`, this method does not take a
+        A relative ``directory`` is resolved inside ``working_directory`` by the backend;
+        it must name a child, never that directory itself. Legacy absolute targets retain
+        their native placement guards. A guest command must not depend on the target's
+        parent existing. Unlike :meth:`remove`, this method does not take a
         model-supplied path or inherit its :data:`Capability.FILES_DELETE` confinement duty.
 
         Raises:
@@ -1406,8 +1402,11 @@ class SandboxBackend(Protocol):
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> Sandbox:
         """Return a running sandbox for ``key``, creating one if needed.
 
-        For a spec requiring EXEC or any FILES_* capability, ``spec.work_dir`` exists as a
-        directory on return, including warm reuse. Create missing parents, refuse links and
+        Bind the returned sandbox to a backend-allocated storage base, using ``spec.work_dir``
+        exactly when an override is supplied. Preserve the allocation across warm reuse and
+        recover it on restart. A filesystem-backed EXEC or FILES_* implementation ensures
+        the base exists as a directory on return; other stores prepare their own namespace.
+        Create missing parents, refuse links and
         non-directories, and preserve existing contents, ownership and permissions. Failure
         to prepare it fails acquire. This promises existence, not additional guest permissions
         or persistence after guest mutation; callers still prepare per-call subdirectories.

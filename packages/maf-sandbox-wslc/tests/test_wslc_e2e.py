@@ -1056,3 +1056,20 @@ def test_instance_disposal_conforms_against_engine_inventory(network):
             assert failure is None
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("override", [None, "/image/custom-base"])
+def test_relative_storage_base_conformance(override):
+    from maf_sandbox.conformance import assert_storage_base_conformance
+
+    async def scenario():
+        backend = WslcSandboxBackend(WslcSandboxConfig())
+        key = _key("storage-base-" + uuid.uuid4().hex[:10])
+        spec = SandboxSpec(kind="storage", image=_IMAGE, work_dir=override)
+        try:
+            sandbox = await backend.acquire(key, spec)
+            await assert_storage_base_conformance(sandbox, backend.declarations.capabilities)
+        finally:
+            assert await backend.dispose(key, kind=spec.kind) is None
+
+    asyncio.run(scenario())

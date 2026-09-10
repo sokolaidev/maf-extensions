@@ -905,9 +905,7 @@ def _body(session: SandboxToolSession):
         sandbox = await session.acquire(key)
         if isinstance(sandbox, str):
             return sandbox
-        result = await sandbox.exec(
-            ["echo", target], working_directory=session.spec.work_dir, timeout=5
-        )
+        result = await sandbox.exec(["echo", target], working_directory=".", timeout=5)
         return result.stdout
 
     return widget_run
@@ -1146,7 +1144,8 @@ def _reclaimed(sandbox):
     Read from ``reclaims`` rather than ``commands``: the removal is a dispatched protocol
     member, so a command recording would answer the same whether it ran or never happened.
     """
-    return [directory for directory, _, _ in sandbox.reclaims]
+    base = sandbox._work_dir.replace("\\", "/").rstrip("/") + "/"
+    return [directory.replace("\\", "/").removeprefix(base) for directory, _, _ in sandbox.reclaims]
 
 
 class _RefusesToRemove(InProcessSandbox):
@@ -1217,7 +1216,7 @@ class TestTheCallOwnsAGuestPath:
     def test_it_sits_under_the_specs_work_dir(self):
         tool = _reclaiming(InProcessSandboxBackend())
         path = _call(tool, target="x")
-        assert path.startswith("/maf-sandbox/work/")
+        assert path.isalnum()
         assert path.removeprefix("/maf-sandbox/work/")
 
     def test_asking_twice_in_one_call_answers_once(self):
@@ -1309,7 +1308,7 @@ class TestACallScopedWorkloadGetsItsOwnSandbox:
         """One id, so the sandbox and the directory inside it do not claim to be two calls."""
         backend = _per_call_backend()
         path = _call(_reclaiming(backend, spec=_CALL_SCOPED_SPEC), target="x")
-        assert path == f"/maf-sandbox/work/{backend.keys[0].call_id}"
+        assert path == backend.keys[0].call_id
 
     def test_the_call_id_is_a_whole_uuid(self):
         """It is key material, so shortening it trades the boundary for a tidier path.
@@ -1899,7 +1898,7 @@ class TestTwoConcurrentCallsAtCallScope:
                 assert not isinstance(sandbox, str)
                 served.append(id(sandbox))
                 await sandbox.write_file(
-                    f"{session.guest_call_path()}/mine.txt", target, working_directory="/"
+                    f"{session.guest_call_path()}/mine.txt", target, working_directory="."
                 )
                 await barrier.wait()
                 return key.call_id
@@ -1977,7 +1976,7 @@ class TestTheFinallyReclaims:
             return widget_run
 
         backend = InProcessSandboxBackend()
-        assert _call(_reclaiming(backend, build), target="x").startswith("/maf-sandbox/work/")
+        assert _call(_reclaiming(backend, build), target="x").isalnum()
         assert backend.sandbox.reclaims == []
 
 
@@ -2022,7 +2021,7 @@ class TestAReclaimThatDidNotHappen:
         backend = InProcessSandboxBackend(_RefusesToRemove())
         tool = _reclaiming(backend, on_reclaim_failure=on_failure)
         with caplog.at_level(logging.WARNING, logger="test_workload"):
-            assert _call(tool, target="x").startswith("/maf-sandbox/work/")
+            assert _call(tool, target="x").isalnum()
         assert any("on_reclaim_failure raised" in r.message for r in caplog.records)
 
     def test_a_callback_cancelled_mid_dispose_lets_the_cancellation_through(self, caplog):
@@ -2055,7 +2054,7 @@ class TestAReclaimThatDidNotHappen:
         backend = InProcessSandboxBackend(_RefusesToRemove())
         tool = _reclaiming(backend, on_reclaim_failure=on_failure, reclaim_timeout=0.05)
         with caplog.at_level(logging.WARNING, logger="test_workload"):
-            assert _call(tool, target="x").startswith("/maf-sandbox/work/")
+            assert _call(tool, target="x").isalnum()
         assert any("did not finish within" in record.message for record in caplog.records)
 
     def test_a_removal_the_backend_cannot_even_attempt_is_reported(self):
@@ -2175,7 +2174,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
         )
         tool = _attach_with(_reclaiming_body, router)[0]
         with caplog.at_level(logging.WARNING, logger="test_workload"):
-            assert _call(tool, target="x").startswith("/maf-sandbox/work/")
+            assert _call(tool, target="x").isalnum()
         assert [f.disposal for f in heard] == ["failed"]
         assert any("did not finish within" in r.message for r in caplog.records)
 
@@ -2192,7 +2191,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
         )
         tool = _attach_with(_reclaiming_body, router, reclaim_timeout=0.05)[0]
         with caplog.at_level(logging.WARNING, logger="test_workload"):
-            assert _call(tool, target="x").startswith("/maf-sandbox/work/")
+            assert _call(tool, target="x").isalnum()
         assert [f.disposal for f in heard] == ["failed"]
         assert any("did not finish within" in r.message for r in caplog.records)
 
@@ -2204,7 +2203,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
         router, tool = self._attach(backend, heard=heard)
         with caplog.at_level(logging.WARNING, logger="test_workload"):
             first = _call(tool, target="x")
-        assert first.startswith("/maf-sandbox/work/")
+        assert first.isalnum()
         assert [f.disposal for f in heard] == ["failed"]
         assert any("could not be disposed" in r.message for r in caplog.records)
         # The next call in the conversation is refused, not served the leftovers — through
@@ -2245,7 +2244,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
         _call(tool, target="x")
         backend.dispose_error = None
         asyncio.run(router.dispose(_KEY))
-        assert _call(tool, target="y").startswith("/maf-sandbox/work/")
+        assert _call(tool, target="y").isalnum()
 
     def test_a_scope_purge_that_lands_reopens_every_key_under_it(self):
         backend = InProcessSandboxBackend(
@@ -2257,7 +2256,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
         # The purge landed even though per-key disposal is still broken on this backend.
         assert not router._unclean
         backend.dispose_error = None
-        assert _call(tool, target="y").startswith("/maf-sandbox/work/")
+        assert _call(tool, target="y").isalnum()
 
     def test_a_disposal_that_never_returns_is_bounded_and_counts_as_failed(self, caplog):
         class _HangsOnDispose(InProcessSandboxBackend):
@@ -2273,7 +2272,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
             reclaim_timeout=0.05,
         )[0]
         with caplog.at_level(logging.WARNING, logger="test_workload"):
-            assert _call(tool, target="x").startswith("/maf-sandbox/work/")
+            assert _call(tool, target="x").isalnum()
         assert [f.disposal for f in heard] == ["failed"]
         assert any("did not finish within" in r.message for r in caplog.records)
 
@@ -2417,9 +2416,11 @@ class TestAWorkDirThatIsNotPosixShaped:
             _reclaiming_body, _router(backend), spec=self._WINDOWS, on_reclaim_failure=on_failure
         )[0]
         path = _call(tool, target="x")
-        assert path.startswith(r"D:\agent\work" + "/")
+        assert path.isalnum()
         assert _reclaimed(backend.sandbox) == [path]
         assert heard == []
+        assert backend.sandbox.contents == {}
+        assert not any(path in child for child in backend.sandbox.directories)
 
 
 class TestACancelledBodyDoesNotExtendTheDeadline:

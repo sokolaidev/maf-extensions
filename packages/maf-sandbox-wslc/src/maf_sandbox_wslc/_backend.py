@@ -65,6 +65,7 @@ from maf_sandbox.paths import (
     ensure_guest_work_dir,
     guest_path_and_ancestors,
     posix_work_dir_ancestors,
+    resolve_guest_working_directory,
     sandbox_entry_from_tar_header,
     stat_by_asking_the_guest_as_root,
     tar_header_from_block,
@@ -431,6 +432,7 @@ class _WslcSandbox:
         self.instance_id = instance_id
         self._guest_uid = guest_uid
         self._guest_identity = guest_identity
+        self._work_dir = "/maf-sandbox/work"
 
     @property
     def guest_principal(self) -> str:
@@ -445,11 +447,13 @@ class _WslcSandbox:
 
     async def prepare_work_dir(self, spec: SandboxSpec) -> None:
         """Establish the spec's base through the container file plane."""
+        self._work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
         await ensure_guest_work_dir(
             spec,
             lambda path: self._stat_guest(path, path),
             self._create_directories,
             resolve=posix_work_dir_ancestors,
+            base=self._work_dir,
         )
 
     async def _create_directories(self, directories: tuple[str, ...]) -> None:
@@ -483,6 +487,7 @@ class _WslcSandbox:
         guest's ownership; existing directories must keep their modes and owners. An
         unresolved image identity refuses the write rather than planting root-owned inputs.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         if self._guest_identity is None:
             raise RuntimeError("wslc could not resolve the image user for write_file")
         existing: set[str] = set()
@@ -591,6 +596,7 @@ class _WslcSandbox:
         acquire pays a fresh create.  A **cancelled** call still reaps the host-side process
         but keeps the sandbox: the in-container command runs on until the sandbox is disposed.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
         return await self._exec(argv, working_directory=working_directory, timeout=timeout)
 

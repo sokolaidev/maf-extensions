@@ -80,6 +80,7 @@ from maf_sandbox.paths import (
     guest_path_and_ancestors,
     path_ancestors_are_host_owned,
     posix_work_dir_ancestors,
+    resolve_guest_working_directory,
     sandbox_entry_from_tar_header,
     tar_header_from_block,
 )
@@ -653,6 +654,7 @@ class _DockerSandbox:
         self._cap_drop_all = cap_drop_all
         self._guest_uid = guest_uid
         self._guest_gid = guest_gid
+        self._work_dir = "/maf-sandbox/work"
         self.instance_id = instance_id
 
     @property
@@ -661,11 +663,13 @@ class _DockerSandbox:
 
     async def prepare_work_dir(self, spec: SandboxSpec) -> None:
         """Establish the spec's base through the container file plane."""
+        self._work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
         await ensure_guest_work_dir(
             spec,
             lambda path: self._stat_guest(path, path),
             self._create_directories,
             resolve=posix_work_dir_ancestors,
+            base=self._work_dir,
         )
 
     async def _create_directories(self, directories: tuple[str, ...]) -> None:
@@ -708,6 +712,7 @@ class _DockerSandbox:
         Stamping guest ownership does not bound placement authority; the REACH write probe
         checks what lands, not the authority that resolved its path.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         walked: dict[str, tuple[int, int]] = {}
         guest = await confine_resolve_guest_write_path(
             lambda p: self._stat_guest(p, p, walked), path, working_directory
@@ -764,6 +769,7 @@ class _DockerSandbox:
         acquire pays a fresh create.  A **cancelled** call still reaps the host-side process but
         keeps the sandbox: the in-container command runs on until the sandbox is disposed.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
         return await self._exec(argv, working_directory=working_directory, timeout=timeout)
 
@@ -862,6 +868,7 @@ class _DockerSandbox:
         The **final** component is described rather than refused: a link reported as
         :data:`~maf_sandbox.EntryKind.SYMLINK` is how a caller learns it is one.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         guest = await confine_resolve_guest_read_path(
             lambda p: self._stat_guest(p, p), path, working_directory
         )
@@ -898,6 +905,7 @@ class _DockerSandbox:
         """
         # Ahead of the root probe below, so a path resolving outside is refused without
         # spending a subprocess on it. The bundle checks it again, which is string work.
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         confine_resolve_guest_path(path, working_directory)
         walked: dict[str, tuple[int, int]] = {}
         try:
@@ -941,7 +949,11 @@ class _DockerSandbox:
         in :func:`~maf_sandbox.reclaim_guest_path` — and which half of the argument is settled at
         acquire rather than asserted: ``docs/sandbox/backends/docker.md``.
         """
-        del working_directory
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
+        if not posixpath.isabs(directory):
+            directory = confine_resolve_guest_path(directory, working_directory)
+            if directory == posixpath.normpath(working_directory):
+                raise ValueError("reclaim must name a child of the working directory")
         if not directory.startswith("/"):
             raise ValueError(f"refusing to reclaim a path that is not absolute: {directory}")
         if len([part for part in posixpath.normpath(directory).split("/") if part]) < 2:
@@ -1016,6 +1028,7 @@ class _DockerSandbox:
         The residual that the check cannot close: a guest that turns a stat-ed component into a link
         between the check and the read wins, since ``docker cp`` has no no-follow form.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         guest = await confine_resolve_guest_read_path(
             lambda p: self._stat_guest(p, p), path, working_directory
         )
@@ -1747,7 +1760,8 @@ class DockerSandboxBackend:
         per call.  **Fails closed** — an unreadable component leaves removals at the guest's
         authority.  See ``docs/sandbox/backends/docker.md``.
         """
-        key = (name, _image_reference(spec), spec.work_dir)
+        work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
+        key = (name, _image_reference(spec), work_dir)
         cached = self._facts.get(key)
         if cached is not None:
             return cached
@@ -1755,7 +1769,7 @@ class DockerSandboxBackend:
             self._docker, name, self._config.command_timeout_seconds, instance_id=instance_id
         )
         try:
-            answer = await probe.ancestors_are_the_hosts(spec.work_dir)
+            answer = await probe.ancestors_are_the_hosts(work_dir)
         except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
             logger.debug("docker: could not read %s's work dir ancestors (%s)", name, unreadable)
             answer = False
@@ -1764,7 +1778,7 @@ class DockerSandboxBackend:
                 "docker: %s has a directory above %s the guest may write, so removals run as "
                 "the guest rather than as root",
                 name,
-                spec.work_dir,
+                work_dir,
             )
         try:
             identity = await self._guest_identity(name, probe)

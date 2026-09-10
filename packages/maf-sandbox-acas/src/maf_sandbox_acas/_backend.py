@@ -56,6 +56,7 @@ from maf_sandbox.paths import (
     ensure_guest_work_dir,
     guest_path_relative_to,
     posix_work_dir_ancestors,
+    resolve_guest_working_directory,
 )
 
 from ._config import AcasSandboxConfig
@@ -414,6 +415,7 @@ class _AcasSandbox:
     def __init__(self, sandbox_client: Any, read_timeout: float) -> None:
         self._sc = sandbox_client
         self._read_timeout = read_timeout
+        self._work_dir = "/maf-sandbox/work"
 
     @property
     def sandbox_id(self) -> str:
@@ -425,8 +427,13 @@ class _AcasSandbox:
 
     async def prepare_work_dir(self, spec: SandboxSpec) -> None:
         """Establish the spec's base through the data plane."""
+        self._work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
         await ensure_guest_work_dir(
-            spec, self._unconfined_stat, self._create_directories, resolve=posix_work_dir_ancestors
+            spec,
+            self._unconfined_stat,
+            self._create_directories,
+            resolve=posix_work_dir_ancestors,
+            base=self._work_dir,
         )
 
     async def _create_directories(self, directories: tuple[str, ...]) -> None:
@@ -457,6 +464,7 @@ class _AcasSandbox:
         # parent. The file API docs do not mention the behaviour at all, so it is the SDK
         # signature that is load-bearing here; relying silently on a `0.1.0bN` default is how
         # `DiskImage.image` got missed. Stating it costs nothing and pins the intent.
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         guest = await confine_resolve_guest_write_path(
             self._unconfined_stat, path, working_directory
         )
@@ -475,6 +483,7 @@ class _AcasSandbox:
         :func:`shlex.join` first — POSIX quoting, which is the guest shape this backend
         declares in ``declarations.os_families`` and the router matches a spec against.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         cmd = command if isinstance(command, str) else shlex.join(command)
         result = await asyncio.wait_for(
             self._sc.exec(cmd, working_directory=working_directory), timeout=timeout
@@ -561,6 +570,7 @@ class _AcasSandbox:
         The **final** component is described rather than refused: a link reported as
         :data:`~maf_sandbox.EntryKind.SYMLINK` is how a caller learns it is one.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         guest = await confine_resolve_guest_read_path(
             self._unconfined_stat, path, working_directory
         )
@@ -588,6 +598,7 @@ class _AcasSandbox:
         The image controls its commands, so a successful probe cannot authorize a host-plane
         delete. Parent checks are not held; a redirected command still runs as the guest.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         async with asyncio.timeout(self._read_timeout):
             try:
                 guest = await confine_resolve_guest_delete_path(
@@ -666,6 +677,7 @@ class _AcasSandbox:
         no no-follow read.  An atomic no-follow read, or a frozen guest filesystem, would close
         it; nothing available here does.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         from azure.core.exceptions import ResourceNotFoundError
 
         guest = await confine_resolve_guest_read_path(
@@ -723,6 +735,7 @@ class _AcasSandbox:
         listed included — the service enumerates through a symlinked directory as readily as it
         reads through one.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         from azure.core.exceptions import ResourceNotFoundError
 
         guest = await confine_resolve_guest_list_path(

@@ -71,10 +71,8 @@ def spec() -> SandboxSpec:
 async def one_turn(router: SandboxRouter, key: SandboxKey) -> None:
     """A turn: acquire, use, return. It does not dispose — that is the host's decision."""
     sandbox = await router.acquire(key, spec())
-    await sandbox.write_file(
-        f"{spec().work_dir}/turn", "worked\n", working_directory=spec().work_dir
-    )
-    await sandbox.exec("cat turn", working_directory=spec().work_dir, timeout=60)
+    await sandbox.write_file("turn", "worked\n", working_directory=".")
+    await sandbox.exec("cat turn", working_directory=".", timeout=60)
 
 
 async def act_one_reuse_within_a_turn(router: SandboxRouter) -> None:
@@ -87,15 +85,13 @@ async def act_one_reuse_within_a_turn(router: SandboxRouter) -> None:
     # not the same object, and the docker backend hands back a fresh handle over one container.
     first = await router.acquire(key, spec())
     await first.write_file(
-        f"{spec().work_dir}/from-first-acquire",
+        "from-first-acquire",
         "still here\n",
-        working_directory=spec().work_dir,
+        working_directory=".",
     )
 
     second = await router.acquire(key, spec())
-    read_back = await second.exec(
-        "cat from-first-acquire", working_directory=spec().work_dir, timeout=60
-    )
+    read_back = await second.exec("cat from-first-acquire", working_directory=".", timeout=60)
 
     print("  wrote a file through the first acquire, read it through the second:")
     print(f"    {read_back.stdout.strip()!r}")

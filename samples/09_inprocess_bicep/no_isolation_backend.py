@@ -51,13 +51,9 @@ class NoIsolationSandbox:
     written against :class:`~maf_sandbox.Sandbox` runs here unchanged, against a backend with
     no boundary.
 
-    A kind fixes a guest ``work_dir`` (an absolute guest path) and may embed that literal path
-    in its command templates. A host backend cannot make an arbitrary absolute guest path real
-    on the host, so this sandbox maps the spec's ``work_dir`` to a host temp directory: every
-    guest path is rewritten under it, and ``exec`` substitutes it into the command. The mapping
-    is honest because ``work_dir`` is known from the spec, not parsed out of an opaque argv —
-    the one accommodation a host backend makes, narrower than what the protocol otherwise
-    leaves to a kind.
+    Relative working directories resolve under the allocated host temp directory. Commands
+    and argv stay opaque; the kind addresses files relative to the requested working directory.
+    Legacy absolute file-plane paths under the spec's base retain their mapping.
 
     Only ``write_file`` and ``exec`` are implemented meaningfully. The pull surface
     (``stat_file`` / ``read_file`` / ``list_dir``) raises :exc:`NotImplementedError`: this
@@ -67,9 +63,9 @@ class NoIsolationSandbox:
     serves.
     """
 
-    def __init__(self, host_root: Path, guest_work_dir: str) -> None:
+    def __init__(self, host_root: Path, guest_work_dir: str | None) -> None:
         self._host_root = host_root
-        self._guest_work_dir = guest_work_dir
+        self._guest_work_dir = guest_work_dir or "/maf-sandbox/work"
         self.instance_id = uuid4().hex
 
     def destroy(self) -> str | None:
@@ -98,7 +94,11 @@ class NoIsolationSandbox:
         and any symlink in the path; the lexical path is still returned, so the host root's string
         form matches what the subprocess prints — the output translation in ``exec`` depends on it.
         """
-        rel = PurePosixPath(guest_path).relative_to(self._guest_work_dir)
+        rel = (
+            PurePosixPath(guest_path).relative_to(self._guest_work_dir)
+            if PurePosixPath(guest_path).is_absolute()
+            else PurePosixPath(guest_path)
+        )
         host_path = self._host_root.joinpath(*rel.parts)
         if not host_path.resolve().is_relative_to(self._host_root.resolve()):
             raise ValueError(f"guest path {guest_path!r} escapes the work directory")
@@ -108,6 +108,8 @@ class NoIsolationSandbox:
         if "\\" in path:
             raise ValueError(f"guest path {path!r} contains a backslash")
         base = posixpath.normpath(working_directory)
+        if not posixpath.isabs(base):
+            base = posixpath.normpath(posixpath.join(self._guest_work_dir, base))
         guest_path = posixpath.normpath(posixpath.join(base, path))
         if guest_path == base:
             raise ValueError(f"refusing to write over the working directory itself: {guest_path!r}")
@@ -135,19 +137,11 @@ class NoIsolationSandbox:
     ) -> ExecResult:
         host_cwd = self._host_path(working_directory)
         host_cwd.mkdir(parents=True, exist_ok=True)
-        # The protocol's string form is for commands that need shell operators (`2>&1`,
-        # `|| true`), so it runs through a shell; a sequence is an argv list and runs without
-        # one. Either way, a guest work-directory path embedded in the command must be rewritten
-        # to the host root, or the binary runs against a path that does not exist here. A string
-        # command is the kind's to build — what it interpolates, and whether that is safe under a
-        # shell, is the kind's responsibility, not the backend's.
         if isinstance(command, str):
-            cmd: str | list[str] = command.replace(self._guest_work_dir, str(self._host_root))
+            cmd: str | list[str] = command
             shell = True
         else:
-            guest = str(self._guest_work_dir)
-            host = str(self._host_root)
-            cmd = [arg.replace(guest, host) for arg in command]
+            cmd = list(command)
             shell = False
         # `subprocess.run` blocks, so run it in a worker thread and keep the event loop free
         # for the concurrent tool calls the protocol permits.
@@ -192,8 +186,7 @@ class NoIsolationSandbox:
     def _to_guest(self, text: str) -> str:
         """Rewrite the host root back to the guest ``work_dir``, in every spelling of it.
 
-        The command was rewritten guest→host, so the binary ran against the host root and prints
-        it back: bicep's SARIF carries `file://` URIs for the host path, and every diagnostic
+        The binary ran under the host root and prints it back: bicep's SARIF carries `file://` URIs for the host path, and every diagnostic
         would render with `no-isolation-…` where the workload expects to strip the guest
         `work_dir` and leave `main.bicep`.
 
