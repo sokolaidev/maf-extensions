@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.15.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.14.1...maf-sandbox-codeact-v0.15.0) (2026-09-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* let core label guidance and weaken results from file reads ([#1054](https://github.com/sokolaidev/maf-extensions/issues/1054))
+
+### Features
+
+* accept method-scoped egress policies and refuse unsupported backends ([#1063](https://github.com/sokolaidev/maf-extensions/issues/1063)) ([39fd53b](https://github.com/sokolaidev/maf-extensions/commit/39fd53b457a301d59a646d815e717b8e61b6d698))
+* **codeact:** start every call from a clean sandbox ([#1039](https://github.com/sokolaidev/maf-extensions/issues/1039)) ([9a89bbb](https://github.com/sokolaidev/maf-extensions/commit/9a89bbb24ec213e887d50dc0b8fe17366e3f37da))
+* let core label guidance and weaken results from file reads ([#1054](https://github.com/sokolaidev/maf-extensions/issues/1054)) ([afcd44d](https://github.com/sokolaidev/maf-extensions/commit/afcd44d061f94c5d9060de14a6321a7299cc67a3))
+
 ## [0.14.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.14.0...maf-sandbox-codeact-v0.14.1) (2026-09-08)
 
 
