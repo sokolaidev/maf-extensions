@@ -112,6 +112,7 @@ class ProcessTracker:
         self.known: dict[tuple[int, int], ProcessAttribution] = {}
         self.latest: tuple[ProcessInfo, ...] | None = None
         self.incomplete = True
+        self._ever_incomplete = False
         self.phase: ProcessPhase | None = None
 
     def attribute(self, processes: tuple[ProcessInfo, ...]) -> tuple[ProcessInfo, ...]:
@@ -174,7 +175,10 @@ class ProcessTracker:
         except Exception as error:  # noqa: BLE001 - diagnostics must not prevent cleanup
             unavailable = type(error).__name__
             self.latest = None
-        self.incomplete = incomplete
+            incomplete = True
+        finally:
+            self._ever_incomplete |= incomplete
+            self.incomplete = self._ever_incomplete
         event = ProcessesObserved(
             key=self.run.key,
             instance_id=self.instance_id,

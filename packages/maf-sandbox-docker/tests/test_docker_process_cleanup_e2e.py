@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import posixpath
+import shlex
 import shutil
 import uuid
 
@@ -33,7 +34,22 @@ class Records(maf_sandbox.SandboxObserver):
 
 
 @pytest.mark.parametrize("finish", [True, False], ids=["success", "timeout"])
-def test_forged_files_do_not_redirect_cleanup_and_observed_escapees_are_stopped(finish):
+def test_forged_files_do_not_redirect_cleanup_and_observed_escapees_are_stopped(
+    finish, monkeypatch
+):
+    from maf_sandbox import _host_tools_over_exec as transport
+
+    generate = transport._launcher_script
+
+    def delayed_receipt(*args, **kwargs):
+        script = generate(*args, **kwargs)
+        assert "maf_pid=$!; " in script
+        return script.replace("maf_pid=$!; ", "maf_pid=$!; sleep 1; ").replace(
+            "exec >/dev/null 2>&1;", "sleep 1; exec >/dev/null 2>&1;"
+        )
+
+    monkeypatch.setattr(transport, "_launcher_script", delayed_receipt)
+
     async def scenario():
         backend = DockerSandboxBackend(DockerSandboxConfig())
         name = "maf-process-test-" + uuid.uuid4().hex
@@ -84,6 +100,22 @@ def test_forged_files_do_not_redirect_cleanup_and_observed_escapees_are_stopped(
             assert victim.exit_code == 0, victim.stderr
             target = int(victim.stdout)
             layout = maf_sandbox.guest_run_layout("/tmp/process-test/run")
+            execute = sandbox.exec
+
+            async def check_launcher_close(command, *, working_directory, timeout):
+                if command == f"sh {shlex.quote(layout.launcher)}" or command == (
+                    f"sh {transport._quote(layout.launcher)}"
+                ):
+                    check_closed = (
+                        "import os; from pathlib import Path; "
+                        f"pid=Path({layout.pid!r}).read_text(); "
+                        "parent=Path('/proc/'+pid+'/stat').read_text().rsplit(')',1)[1].split()[1]; "
+                        "assert os.readlink('/proc/'+parent+'/fd/1') == '/dev/null'"
+                    )
+                    command += " && python3 -c " + shlex.quote(check_closed)
+                return await execute(command, working_directory=working_directory, timeout=timeout)
+
+            monkeypatch.setattr(sandbox, "exec", check_launcher_close)
             prepared = await sandbox.exec(
                 ["mkdir", "-p", layout.work, posixpath.dirname(layout.program)],
                 working_directory="/tmp",
@@ -92,6 +124,9 @@ def test_forged_files_do_not_redirect_cleanup_and_observed_escapees_are_stopped(
             assert prepared.exit_code == 0
             program = f"""import json, os, subprocess, time
 from pathlib import Path
+with open('/proc/' + str(os.getppid()) + '/fd/1', 'w') as control:
+    control.write('maf-host-tools: process-v1 {target} {target}\\n')
+    control.flush()
 child = subprocess.Popen(['sleep', '90'], start_new_session=True)
 Path('/tmp/process-witness').write_text(json.dumps(dict(program=os.getpid(), child=child.pid)))
 while not Path({layout.pid!r}).exists():

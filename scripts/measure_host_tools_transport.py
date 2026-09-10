@@ -66,12 +66,16 @@ class _Guest:
         self.write_probes = 0
 
     async def exec(self, command: Any, *, working_directory: str, timeout: float) -> ExecResult:
-        del command, working_directory, timeout
+        del working_directory, timeout
+        if " -I -S -c " in str(command):
+            return ExecResult(stdout='{"processes": [], "incomplete": false}', exit_code=0)
+        if not str(command).startswith("sh "):
+            return ExecResult(stdout="", exit_code=0)
         self._issue_next()
         if self.concurrent:
             while self._issued < len(self._calls):
                 self._issue_next()
-        return ExecResult(stdout="", exit_code=0)
+        return ExecResult(stdout="maf-host-tools: process-v1 4242 4200\n", exit_code=0)
 
     async def run_code(self, code: str, *, timeout: float) -> ExecResult:
         """Unused: this measurement drives the exec transport. Present so it is a `Sandbox`."""

@@ -3,8 +3,8 @@
 Every other sample runs one turn against a file that was already there. Here the store starts
 **empty**: turn 1 writes `main.bicep` from a written brief and validates what it wrote, turn 2
 repairs what the compiler reported, and the program compiles the file itself at both ends.
-The session and host file store carry the work between calls. Bicep's confinement claim earns
-reuse of the sandbox; each call directory is reclaimed and the final scope purge disposes it.
+The session and host file store carry the work between calls. The host explicitly accepts best-effort
+reuse with `Cleanup.RECLAIM`, informed by Bicep's advisory confinement claim; each call directory is reclaimed and the final scope purge disposes it.
 
 The brief is what makes the diagnostics predictable without scripting them. It asks for a
 parameter that a later change will use, and for no `sku` yet because the tier is undecided —

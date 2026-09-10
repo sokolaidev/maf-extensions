@@ -55,6 +55,7 @@ import re
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
+from uuid import uuid4
 
 from ._error_detail import error_detail
 from ._outputs import SandboxTransferCapExceeded
@@ -82,6 +83,7 @@ logger = logging.getLogger(__name__)
 #: shell template plus the run's paths, kept well above any real one so the fold need not rebuild
 #: it, and negligible beside a response's byte cap.
 _LAUNCHER_CEILING = 64 * 1024
+_START_GATE_BYTES = 33
 
 #: What a marker read asks for: the pid, the session id, and the exit code are each a handful of
 #: digits. Shared by every such read *and* by the fold, so the bytes the transport asks a backend
@@ -144,10 +146,11 @@ def fold_host_tool_call_transfer_limits(
             max_total_bytes=(
                 files_in.max_total_bytes
                 + _LAUNCHER_CEILING
+                + _START_GATE_BYTES
                 + response_limits.max_total_bytes
                 + serves * _REFUSAL_CEILING
             ),
-            max_files=files_in.max_files + 1 + serves,
+            max_files=files_in.max_files + 2 + serves,
         ),
         files_out=TransferLimits(
             max_bytes_per_file=max(
@@ -212,6 +215,7 @@ _TRANSPORT_FILENAMES = frozenset(
     {
         SHIM_MODULE,
         _LAUNCHER,
+        _LAUNCHER + ".start",
         OUTPUT_FILE,
         EXIT_FILE,
         _STAGED_EXIT_FILE,
@@ -584,12 +588,17 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
 
 
 def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str:
-    """Start a detached program and report its PID and dedicated PGID through launcher stdout.
+    """Start a detached program, retaining PID/session files for diagnostics.
 
-    The inner shell closes that stream after the receipt; program output goes to its own file.
-    PID/session files are retained for diagnostics, never read as signal authority.
+    Standalone launchers provide no signal authority; the transport uses a host-released gate.
     Requires POSIX sh and nohup; setsid is used when available.
     """
+    return _launcher_script(layout, interpreter)
+
+
+def _launcher_script(
+    layout: GuestRunLayout, interpreter: str, *, start_token: str | None = None
+) -> str:
     # The command is built whole so `_quote` applies to finished strings rather than to
     # fragments nested inside an already quoted `sh -c '…'`. What it has to preserve:
     #
@@ -649,12 +658,34 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
         if layout.session
         else ""
     )
+    program = f"{_quote(interpreter)} {_quote(layout.program)}"
+    receipt = ""
+    closed = ""
+    wait_closed = ""
+    if start_token is not None:
+        # No guest code runs while any ancestor can still expose the receipt stream via /proc.
+        gate = _quote(layout.launcher + ".start")
+        gated = (
+            f"while ! {{ IFS= read -r maf_start < {gate}; "
+            f'[ "$maf_start" = {_quote(start_token)} ]; }} 2>/dev/null; '
+            "do sleep .01 || exit 125; done; "
+            f"unset maf_start; exec {program}"
+        )
+        program = f"sh -c {_quote(gated)}"
+        receipt = 'printf \'maf-host-tools: process-v1 %s %s\\n\' "$maf_pid" "$maf_group"; '
+        closed = f"printf '%s\\n' {_quote('closed-' + start_token)} > {gate}; "
+        # The backend may return when the outer shell exits, without waiting for inherited FDs.
+        wait_closed = (
+            f"while ! {{ IFS= read -r maf_closed < {gate}; "
+            f'[ "$maf_closed" = {_quote("closed-" + start_token)} ]; }} 2>/dev/null; '
+            "do sleep .01 || exit 1; done\n"
+        )
     inner = (
-        f"PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 {_quote(interpreter)} {_quote(layout.program)} "
+        f"PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 {program} "
         f"> {_quote(layout.output)} 2>&1 & "
         f"printf %s $! > {_quote(staged_pid)}; mv {_quote(staged_pid)} {_quote(layout.pid)}; "
-        'maf_pid=$!; printf \'maf-host-tools: process-v1 %s %s\\n\' "$maf_pid" "$maf_group"; '
-        f"exec >/dev/null 2>&1; wait $maf_pid; "
+        f"maf_pid=$!; {receipt}"
+        f"exec >/dev/null 2>&1; {closed}wait $maf_pid; "
         f"printf %s $? > {_quote(staged)}; mv {_quote(staged)} {_quote(layout.exit_code)}"
     )
     script = (
@@ -699,6 +730,7 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
         "else\n"
         f"  nohup sh -c {_quote('maf_group=0; ' + inner)} </dev/null 2>/dev/null &\n"
         "fi\n"
+        f"{wait_closed}"
     )
     if len(script.encode("utf-8")) > _LAUNCHER_CEILING:
         # The router promised a backend this ceiling for the upload (see
@@ -922,6 +954,7 @@ async def _supervise(
 ) -> ExecResult:
     """The body of :func:`host_tool_calls_over_exec`, minus the cleanup that wraps it."""
     deadline = time.monotonic() + timeout
+    start_token = uuid4().hex
     await launcher.tracker.snapshot("before_launch", until=deadline)
     try:
         await _within(
@@ -929,15 +962,14 @@ async def _supervise(
             "the launcher upload",
             sandbox.write_file(
                 layout.launcher,
-                launcher_script(layout, interpreter),
+                _launcher_script(layout, interpreter, start_token=start_token),
                 working_directory=layout.directory,
             ),
         )
         if time.monotonic() >= deadline:
             raise _DeadlineExpired("the run's starting budget was spent")
     except _DeadlineExpired as gone:
-        # The one `_within` outside the supervisor loop, so nothing else converts what it
-        # raises, and a module-private type would otherwise cross the public boundary.
+        # Convert the upload timeout before the launcher exists to need cleanup.
         raise _TheRunsOwnTimeout(
             f"the run's {timeout:g}s were gone before the program was started — {gone}",
             # Explicit, though it is also what a bare construction would say least of: this is
@@ -1008,6 +1040,27 @@ async def _supervise(
         if 1 < pid <= 2147483647 and (pgid == 0 or 1 < pgid <= 2147483647):
             launcher.pid, launcher.pgid = pid, pgid or None
             launcher.tracker.pid, launcher.tracker.pgid = launcher.pid, launcher.pgid
+    if started.exit_code == 0 and launcher.pid is not None:
+        try:
+            await _within(
+                deadline,
+                "the program start gate",
+                sandbox.write_file(
+                    layout.launcher + ".start",
+                    start_token + "\n",
+                    working_directory=layout.directory,
+                ),
+            )
+        except _DeadlineExpired as gone:
+            fate, reach = await _stop_the_program(
+                sandbox, layout, until=time.monotonic() + _PROCESS_CLEANUP_GRACE, launcher=launcher
+            )
+            _note_unclean_stop(sandbox, fate, reach)
+            raise _TheRunsOwnTimeout(
+                f"the run's {timeout:g}s were gone while releasing the program",
+                signal=fate,
+                reach=reach,
+            ) from gone
     await launcher.tracker.snapshot("after_launch", until=deadline)
 
     if started.exit_code != 0:
@@ -1021,6 +1074,14 @@ async def _supervise(
             stdout="",
             stderr=said or "the launcher did not start the program",
             exit_code=started.exit_code,
+            producer_owns_stderr=True,
+        )
+
+    if launcher.pid is None:
+        return ExecResult(
+            stdout="",
+            stderr="the launcher did not provide a valid process receipt",
+            exit_code=1,
             producer_owns_stderr=True,
         )
 

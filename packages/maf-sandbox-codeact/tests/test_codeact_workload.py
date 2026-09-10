@@ -3098,12 +3098,12 @@ class _StallingSandbox(_ScriptedSandbox):
 
     async def exec(self, command, *, working_directory, timeout):
         result = await super().exec(command, working_directory=working_directory, timeout=timeout)
-        if str(command).startswith("kill") or _is_core_removal(command):
+        if not str(command).startswith("sh "):
             # Neither starts a program, so neither is a run this fake should record.
             return result
         layout = guest_run_layout(working_directory, program=_PROGRAM_FILENAME)
         self.contents[layout.output] = self.printed
-        return result
+        return ExecResult(stdout="maf-host-tools: process-v1 4242 4200\n", exit_code=0)
 
 
 class _SlowToTakeTheLauncherSandbox(_ScriptedSandbox):

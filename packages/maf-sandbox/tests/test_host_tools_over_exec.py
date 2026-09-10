@@ -575,7 +575,7 @@ class TestSpeculativeRequestDiscovery:
             ) -> ExecResult:
                 del command, working_directory, timeout
                 self.started = True
-                return ExecResult(stdout="", exit_code=0)
+                return ExecResult(stdout="maf-host-tools: process-v1 4242 4200\n", exit_code=0)
 
             async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
                 entry = await super().stat_file(path, working_directory=working_directory)
@@ -735,7 +735,7 @@ class _DeadWorkerGuest(_ScriptedGuest):
         self.files[posixpath.join(_LAYOUT.calls, "0002.request.json")] = json.dumps(
             {"id": "0002", "name": "add", "arguments": {"left": 2, "right": 3}}
         ).encode()
-        return ExecResult(stdout="", exit_code=0)
+        return ExecResult(stdout="maf-host-tools: process-v1 4242 4200\n", exit_code=0)
 
     async def stat_file(self, path: str, *, working_directory: str):
         await asyncio.sleep(0)  # as everywhere: a bound only bites a call that yields
@@ -3626,9 +3626,10 @@ class TestStoppingTakesTheChildrenWhereItCan:
     def test_reach_is_nothing_when_no_signal_was_sent(self):
         """The default, and what an unsignalled program is owed: no claim at all."""
         guest = _GuestThatRecordsTheKill([], finish=False, pid=None)
-        with pytest.raises(SandboxProgramTimeout) as expired:
-            _run(guest, HostToolRun(_registry()), timeout=0.2)
-        assert expired.value.reach == "nothing"
+        result = _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert result.exit_code != 0 and result.producer_owns_stderr
+        assert _LAYOUT.launcher + ".start" not in guest.files
+        assert not guest.kills
 
     def test_the_message_says_the_group_went(self):
         guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session="4200")
@@ -3712,9 +3713,13 @@ class TestAStopThatDidNotReachEverythingNotesTheCall:
 
     def test_a_signal_that_could_not_be_sent_notes_it(self):
         guest = _GuestThatRecordsTheKill([], finish=False, pid=None)
-        notes = self._noted(guest)
+        notes, token = open_unclean_notes()
+        try:
+            assert _run(guest, HostToolRun(_registry()), timeout=0.2).exit_code != 0
+        finally:
+            close_unclean_notes(token)
         assert len(notes) == 1
-        assert "could not be signalled" in notes[0]
+        assert "could not be signalled" in notes[0][1]
 
     def test_outside_a_call_the_note_goes_nowhere(self):
         """A transport driven directly has no call to note, and must not fail for it."""
@@ -3785,22 +3790,19 @@ class TestStoppingARunThatOverran:
             _run(guest, HostToolRun(_registry()), timeout=0.2)
         assert "may still be running" in str(expired.value)
 
-    def test_no_pid_hedges_rather_than_going_quiet(self):
-        """The launcher returned 0, so something started; a missing pid does not say otherwise.
-
-        The hedge errs towards a needless disposal rather than a silent leak: a caller told
-        that nothing is running has no way back, while one told to check does.
-        """
+    def test_no_pid_refuses_startup(self):
         guest = _GuestThatRecordsTheKill([], finish=False, pid=None)
-        with pytest.raises(SandboxProgramTimeout) as expired:
-            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        result = _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert result.exit_code != 0 and result.producer_owns_stderr
+        assert _LAYOUT.launcher + ".start" not in guest.files
         assert guest.kills == [], "a kill was issued with no pid to aim it at"
-        assert "may still be running" in str(expired.value)
+        assert "valid process receipt" in result.stderr
 
     def test_a_pid_that_is_not_a_number_is_never_spliced_into_a_kill(self):
         guest = _GuestThatRecordsTheKill([], finish=False, pid="; rm -rf /")
-        with pytest.raises(SandboxProgramTimeout):
-            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        result = _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert result.exit_code != 0 and result.producer_owns_stderr
+        assert _LAYOUT.launcher + ".start" not in guest.files
         assert guest.kills == [], f"a non-numeric pid reached a command: {guest.commands}"
 
     def test_the_exit_marker_is_read_before_anything_is_killed(self):
@@ -4508,8 +4510,9 @@ class TestWhatIsNotAPidWorthSignalling:
     )
     def test_it_never_reaches_a_command(self, recorded: str):
         guest = _GuestThatRecordsTheKill([], finish=False, pid=recorded)
-        with pytest.raises(SandboxProgramTimeout):
-            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        result = _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert result.exit_code != 0 and result.producer_owns_stderr
+        assert _LAYOUT.launcher + ".start" not in guest.files
         assert guest.kills == [], f"{recorded!r} reached a kill: {guest.commands}"
 
     def test_a_real_pid_still_does(self):
@@ -4982,6 +4985,11 @@ class TestWhatACallerCanBranchOn:
     )
     def test_the_outcome_reaches_the_caller(self, pid, kill_exit_code, expected):
         guest = _GuestThatRecordsTheKill([], finish=False, pid=pid, kill_exit_code=kill_exit_code)
+        if pid is None:
+            result = _run(guest, HostToolRun(_registry()), timeout=0.2)
+            assert result.exit_code != 0 and result.producer_owns_stderr
+            assert not guest.kills
+            return
         with pytest.raises(SandboxProgramTimeout) as expired:
             _run(guest, HostToolRun(_registry()), timeout=0.2)
         assert expired.value.signal == expected
@@ -5120,6 +5128,7 @@ class TestFoldDispatchTransferLimits:
         assert inn.max_total_bytes == (
             self._WL.max_total_bytes
             + _LAUNCHER
+            + 33
             + self._RL.max_total_bytes
             + self._SERVES * _REFUSAL
         )
@@ -5127,7 +5136,7 @@ class TestFoldDispatchTransferLimits:
     def test_files_in_count_holds_the_launcher_and_every_answer(self):
         """`max_files` is a transfer ceiling like the byte legs: a backend allowing exactly the
         workload's count would pass attach and then be handed the transport's own files."""
-        assert self._folded().files_in.max_files == self._WL.max_files + 1 + self._SERVES
+        assert self._folded().files_in.max_files == self._WL.max_files + 2 + self._SERVES
 
     def test_files_out_total_holds_the_output_every_request_and_the_markers(self):
         """Request bytes are deliberately not charged to the response ledger (`_request_cap`), so

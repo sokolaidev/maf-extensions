@@ -219,7 +219,9 @@ def test_process_cleanup_steps_share_one_deadline_and_reserve_a_signal_attempt(s
 )
 def test_missing_or_invalid_receipt_never_falls_back_to_guest_files(receipt):
     guest = Guest(receipt=receipt)
-    assert run(guest).exit_code == 0
+    result = run(guest)
+    assert result.exit_code != 0 and result.producer_owns_stderr
+    assert LAYOUT.launcher + ".start" not in guest.contents
     assert not guest.signals
     assert guest.reclaims
 
@@ -282,6 +284,64 @@ def test_a_failed_final_snapshot_is_reported_without_skipping_reclamation():
     assert guest.reclaims and notes
     assert observer.snapshots[-1].unavailable == "PermissionError"
     assert observer.snapshots[-1].incomplete
+
+
+@pytest.mark.parametrize("failed_scan", [1, 2, 3])
+@pytest.mark.parametrize("failure", ["unavailable", "incomplete"])
+def test_earlier_snapshot_failures_still_mark_cleanup_unclean(failed_scan, failure):
+    class FailedSnapshot(Guest):
+        async def exec(self, command, *, working_directory, timeout):
+            result = await super().exec(
+                command, working_directory=working_directory, timeout=timeout
+            )
+            if " -I -S -c " in str(command) and self.scan == failed_scan:
+                if failure == "unavailable":
+                    raise PermissionError("proc unavailable")
+                return dataclasses.replace(result, stdout=payload([], incomplete=True))
+            return result
+
+    guest, observer = FailedSnapshot(), Recorder()
+    notes, token = open_unclean_notes()
+    try:
+        assert run(guest, observer).exit_code == 0
+    finally:
+        close_unclean_notes(token)
+    assert guest.reclaims and guest.signals
+    assert any("verification was unavailable or incomplete" in reason for _, reason in notes)
+    assert observer.snapshots[failed_scan - 1].incomplete
+    assert not observer.snapshots[-1].incomplete
+    assert observer.snapshots[-1].unavailable is None
+
+
+def test_guest_start_is_released_only_after_receipt_validation():
+    class GatedGuest(Guest):
+        async def write_file(self, path, content, *, working_directory):
+            if path == LAYOUT.launcher + ".start":
+                assert self.scan == 1
+                assert isinstance(content, str)
+                assert len(content) == transport._START_GATE_BYTES
+                assert content.strip() in self.contents[LAYOUT.launcher].decode()
+                self.released = True
+            await super().write_file(path, content, working_directory=working_directory)
+
+    guest = GatedGuest()
+    assert run(guest).exit_code == 0
+    assert guest.released
+
+
+def test_start_gate_upload_spends_the_run_budget_and_still_cleans():
+    class SlowGate(Guest):
+        async def write_file(self, path, content, *, working_directory):
+            if path == LAYOUT.launcher + ".start":
+                await asyncio.sleep(0.3)
+            await super().write_file(path, content, working_directory=working_directory)
+
+    guest = SlowGate()
+    with pytest.raises(SandboxProgramTimeout, match="releasing the program"):
+        asyncio.run(
+            host_tool_calls_over_exec(guest, HostToolRun(HostToolRegistry()), LAYOUT, timeout=0.05)
+        )
+    assert guest.signals and guest.reclaims
 
 
 def test_an_observed_pid_replacement_is_not_signalled():
