@@ -29,7 +29,7 @@ SARIF rather than the plain format for a measured reason: with an error in the f
 
   It carries the Bicep CLI and `bicepconfig.json` and **no Python**. Deep Agents' `ls`, `read_file`, `write_file`, `edit_file`, `glob` and `grep` tools run `python3` inside the guest, so on this image only `execute` works, and the system prompt tells the model so. The host puts `main.bicep` in the sandbox with the adapter's own `upload_files`, which goes through the backend's file plane and needs nothing in the image.
 
-- **An OpenAI-compatible chat endpoint** whose model can call a tool: OpenAI itself, or a local server (Ollama, vLLM, LM Studio) — the same road samples 02 and 04 take.
+- **An OpenAI-compatible chat endpoint** whose model can call a tool: OpenAI itself, a router such as OpenRouter (`OPENAI_BASE_URL=https://openrouter.ai/api/v1`, a model name like `openai/gpt-4o-mini`), or a local server (Ollama, vLLM, LM Studio) — the same road samples 02 and 04 take.
 
 ## Install
 
@@ -39,7 +39,11 @@ Dependencies are declared in `agent.py` itself, in a [PEP 723](https://peps.pyth
 uv run agent.py
 ```
 
-`maf-sandbox-deepagents` is not published yet. Until it is, run the sample from this workspace instead, where the block's dependencies resolve to the checked-out packages: `uv run --project ../.. agent.py` from this directory.
+`maf-sandbox-deepagents` is not published yet, so that command cannot resolve the block until it is. Until then run the file with the workspace's own interpreter from this directory, which ignores the block and uses the checked-out packages:
+
+```bash
+uv run --project ../.. python agent.py
+```
 
 ## Environment
 
@@ -76,7 +80,7 @@ The first command pays for creating the container. The model writes its own summ
   [measured] Disposed 1 sandbox(es).
 ```
 
-Only the prose above the heading is the model's; the block under it is the tool's own output, and the `[measured]` lines are the sample vouching for a number. Bicep writes its diagnostics to `stderr`, which the adapter prefixes so the model can tell the two streams apart. The three diagnostics are sample 05's: `BCP035` for the missing `sku`, `no-unused-params` as an **error**, and `use-recent-api-versions` — the second printing as an error rather than its built-in warning is the visible proof that `bicepconfig.json` at `/maf-sandbox/work` was found.
+Only the prose above the heading is the model's; the block under it is the tool's own output, and the `[measured]` lines are the sample vouching for a number. That split earned its keep on the first live run: `gpt-4o-mini` through OpenRouter ran both commands and listed all three diagnostics, and reported every one of them as an error — the SARIF under its prose shows two of them carry no level, which means warning. The block is what to read. Bicep writes its diagnostics to `stderr`, which the adapter prefixes so the model can tell the two streams apart. The three diagnostics are sample 05's: `BCP035` for the missing `sku`, `no-unused-params` as an **error**, and `use-recent-api-versions` — the second printing as an error rather than its built-in warning is the visible proof that `bicepconfig.json` at `/maf-sandbox/work` was found.
 
 ## Troubleshooting
 
