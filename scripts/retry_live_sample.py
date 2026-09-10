@@ -7,40 +7,64 @@ import os
 import subprocess
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
+from io import BufferedReader
 from pathlib import Path
 
 from check_live_fix_loop_sample import MODEL_DID_NOT_CONVERGE as FIX_LOOP_RETRY
 from check_live_host_tools_call_sample import MODEL_DID_NOT_CONVERGE as HOST_TOOLS_RETRY
 
-# The budget belongs to each workflow step; the checker owns the retryable status.
+
+@dataclass(frozen=True)
+class Profile:
+    """Commands and reporting for one live sample route; the workflow owns its budget."""
+
+    label: str
+    directory: str
+    checker: str
+    retryable: int
+    action: str
+    suffix: str = ""
+    checker_args: tuple[str, ...] = ()
+
+
 PROFILES = {
-    "sample13": ("sample 13", "13_bicep_fix_loop", "check_live_fix_loop_sample.py", FIX_LOOP_RETRY),
-    "sample15": (
+    "sample13": Profile(
+        "sample 13",
+        "13_bicep_fix_loop",
+        "check_live_fix_loop_sample.py",
+        FIX_LOOP_RETRY,
+        "two-turn loop",
+    ),
+    "sample15": Profile(
         "sample 15",
         "15_acas_codeact_host_tools",
         "check_live_host_tools_call_sample.py",
         HOST_TOOLS_RETRY,
+        "walk",
     ),
-    "sample15-docker": (
+    "sample15-docker": Profile(
         "sample 15 on docker",
         "15_acas_codeact_host_tools",
         "check_live_host_tools_call_sample.py",
         HOST_TOOLS_RETRY,
+        "walk",
+        " on docker",
+        ("--docker",),
     ),
 }
 
 
 def run_sample(command: list[str], output: Path) -> int:
-    """Tee stdout to a UTF-8 log while preserving the sample's exit status."""
-    with output.open("w", encoding="utf-8", newline="\n") as log:
-        with subprocess.Popen(
-            command, stdout=subprocess.PIPE, text=True, encoding="utf-8"
-        ) as process:
-            assert process.stdout is not None
-            for line in process.stdout:
-                sys.stdout.write(line)
-                sys.stdout.flush()
-                log.write(line)
+    """Tee stdout byte-for-byte while preserving the sample's exit status."""
+    sys.stdout.flush()
+    with output.open("wb") as log:
+        with subprocess.Popen(command, stdout=subprocess.PIPE) as process:
+            assert isinstance(process.stdout, BufferedReader)
+            while chunk := process.stdout.read1(65536):
+                sys.stdout.buffer.write(chunk)
+                sys.stdout.buffer.flush()
+                log.write(chunk)
             return process.wait()
 
 
@@ -54,7 +78,7 @@ def retry(
     """Spend the attempt budget only on checker verdicts about the model's half."""
     if allowed < 1:
         raise ValueError("allowed must be positive")
-    label, directory, _, retryable = PROFILES[profile]
+    config = PROFILES[profile]
     attempts = 0
     status = 0
     while attempts < allowed:
@@ -68,7 +92,7 @@ def retry(
             status = 128 - status
         if status:
             print(
-                f"::error title={label} did not run::the sample exited {status}, so the check saw nothing"
+                f"::error title={config.label} did not run::the sample exited {status}, so the check saw nothing"
             )
             break
         try:
@@ -78,17 +102,15 @@ def retry(
             status = 127 if isinstance(error, FileNotFoundError) else 126
         if status < 0:
             status = 128 - status
-        if status != retryable:
+        if status != config.retryable:
             break
         if attempts < allowed:
-            action = "two-turn loop" if profile == "sample13" else "walk"
             print(
-                f"::warning title={label} retried::the model's half did not converge on "
+                f"::warning title={config.label} retried::the model's half did not converge on "
                 f"attempt {attempts} of {allowed} and every other measurement passed, "
-                f"so the {action} runs again (#421)"
+                f"so the {config.action} runs again (#421)"
             )
-    suffix = " on docker" if profile == "sample15-docker" else ""
-    said = f"samples/{directory}{suffix}: exit {status} after {attempts} attempt(s), {allowed} allowed."
+    said = f"samples/{config.directory}{config.suffix}: exit {status} after {attempts} attempt(s), {allowed} allowed."
     print(said)
     with summary.open("a", encoding="utf-8", newline="\n") as stream:
         stream.write(said + "\n")
@@ -104,12 +126,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.allowed < 1:
         parser.error("--allowed must be positive")
-    _, directory, checker, _ = PROFILES[args.profile]
-    sample_command = ["uv", "run", "--no-project", f"samples/{directory}/agent.py"]
-    check_command = [sys.executable, str(Path(__file__).with_name(checker))]
-    if args.profile == "sample15-docker":
-        check_command.append("--docker")
-    check_command.append(str(args.output))
+    config = PROFILES[args.profile]
+    sample_command = ["uv", "run", "--no-project", f"samples/{config.directory}/agent.py"]
+    check_command = [
+        sys.executable,
+        str(Path(__file__).with_name(config.checker)),
+        *config.checker_args,
+        str(args.output),
+    ]
     return retry(
         args.profile,
         args.allowed,

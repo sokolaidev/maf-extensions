@@ -118,6 +118,7 @@ executionEnvironments = [
 # round-trip) and so cost seconds each; they stay on by default, and `-m "not slow"`
 # drops them for a fast local loop.
 markers = [
+    "workflow: portable release and retry behavior, with platform-specific shell integration",
     "slow: spawns pyright per block — keep on by default, deselect with -m 'not slow'",
 ]
 testpaths = [

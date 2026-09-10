@@ -52,12 +52,21 @@ def runs_code_checks(paths: Iterable[str]) -> bool:
     return any(not is_documentation(path) for path in listed)
 
 
+def runs_workflow_checks(paths: Iterable[str]) -> bool:
+    """Include the Markdown templates and release prose consumed by workflow tests."""
+    listed = [path.strip().replace("\\", "/") for path in paths if path.strip()]
+    return runs_code_checks(listed) or any(
+        path.startswith(("scripts/", "samples/")) or path == "RELEASING.md" for path in listed
+    )
+
+
 def main(argv: list[str]) -> int:
     """CLI entry: read changed paths on stdin, print ``code=true`` or ``code=false``."""
-    if len(argv) != 1:
-        print(f"usage: git diff --name-only <base> HEAD | {argv[0]}", file=sys.stderr)
+    if argv[1:] not in ([], ["--workflows"]):
+        print(f"usage: git diff --name-only <base> HEAD | {argv[0]} [--workflows]", file=sys.stderr)
         return 2
-    print(f"code={'true' if runs_code_checks(sys.stdin) else 'false'}")
+    classify = runs_workflow_checks if argv[1:] else runs_code_checks
+    print(f"code={'true' if classify(sys.stdin) else 'false'}")
     return 0
 
 

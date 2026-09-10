@@ -12,7 +12,7 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 ./scripts/check_workflows.ps1 -Python "$PWD/.venv/Scripts/python.exe" -TestArgs '-q', '-ra'
 ```
 
-The wrapper runs the release and retry behavior shared with the production workflows and preserves Python's exit status. The full local gate is `uv run poe gate`, also run from PowerShell. Bash integration checks run only on Linux and skip explicitly on Windows, even when a WSL launcher is on `PATH`. The portable workflow CI runs these checks on Windows and Linux.
+The wrapper discovers tests marked `workflow` under `tests/`, runs the release and retry behavior shared with the production workflows, and preserves Python's exit status. Mark new workflow-behavior test modules with `pytestmark = pytest.mark.workflow` so they join the Windows and Linux checks automatically. The full local gate is `uv run poe gate`, also run from PowerShell. Bash integration checks run only on Linux and skip explicitly on Windows, even when a WSL launcher is on `PATH`. The portable workflow CI runs these checks on Windows and Linux.
 
 ```bash
 uv sync            # one workspace, one lock, every package editable

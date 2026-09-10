@@ -12,9 +12,18 @@ from pathlib import Path
 
 import pytest
 import yaml
-from _workflow_commands import ROOT
-from test_release_config import PUBLISH_WORKFLOW, _execute_step, _step_outputs, run_block
-from test_verify_live_retry import _RETRYING, _the_step
+from _workflow_commands import (
+    PUBLISH_WORKFLOW,
+    RETRYING,
+    ROOT,
+    execute_release_step,
+    isolated_retry_block,
+    release_outputs,
+    run_block,
+    run_release,
+)
+
+pytestmark = pytest.mark.workflow
 
 linux_bash = pytest.mark.skipif(
     sys.platform != "linux", reason="production Bash integration runs only on Linux"
@@ -44,15 +53,15 @@ def test_missing_or_invalid_release_verdict_fails_closed(tmp_path: Path, mode: s
         if mode == "build"
         else "Decide the live-check dispatch after the upload"
     )
-    result = _execute_step(tmp_path, step, verdict)
+    result = execute_release_step(tmp_path, step, verdict)
     assert result.returncode == 1
     assert b"::error::" in result.stderr
-    assert _step_outputs(tmp_path) == ("", "")
+    assert release_outputs(tmp_path) == ("", "")
 
 
 @pytest.mark.parametrize("status", [1, 2, 7])
 def test_dispatch_refusal_replays_stderr_and_preserves_status(tmp_path: Path, status: int):
-    result = _execute_step(
+    result = execute_release_step(
         tmp_path,
         "Decide the live-check dispatch after the upload",
         "live_check=run\n",
@@ -61,7 +70,45 @@ def test_dispatch_refusal_replays_stderr_and_preserves_status(tmp_path: Path, st
     )
     assert result.returncode == status
     assert "index unavailable — café" in result.stderr.decode("utf-8")
-    assert _step_outputs(tmp_path) == ("", "")
+    assert release_outputs(tmp_path) == ("", "")
+
+
+@pytest.mark.parametrize("mode", ["breaking", "build", "pre-upload", "dispatch"])
+@pytest.mark.parametrize("status", [0, 7])
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_non_utf8_checker_diagnostics_preserve_release_decisions(
+    tmp_path: Path,
+    mode: str,
+    status: int,
+    stream: str,
+):
+    answer = b"breaking=true\n" if mode == "breaking" else b"live_check=run\n"
+    diagnostic = b"native diagnostic: \xff\n"
+    stdout = diagnostic + answer if stream == "stdout" else answer
+    stderr = diagnostic if stream == "stderr" else b""
+    program = (
+        f"import sys; sys.stdout.buffer.write({stdout!r}); "
+        f"sys.stderr.buffer.write({stderr!r}); sys.exit({status})"
+    )
+    result = run_release(
+        tmp_path, [mode, "maf-sandbox", "1.2.3", "--", sys.executable, "-c", program]
+    )
+    assert result.returncode == (0 if mode == "breaking" else status), result.stderr
+    assert b"Traceback" not in result.stderr
+    output, summary = release_outputs(tmp_path)
+    if mode == "breaking":
+        assert output == f"breaking={str(status == 0 and stream == 'stderr').lower()}\n"
+        if status:
+            assert b"::warning::" in result.stdout
+    elif mode == "dispatch" and status == 0:
+        assert output == "live_check=run\n"
+        if stderr:
+            assert "::error::native diagnostic: �" in result.stdout.decode("utf-8")
+            assert "native diagnostic: �" in summary
+    else:
+        assert output == ""
+    if mode != "breaking" or stream == "stderr":
+        assert "native diagnostic: �" in (result.stdout + result.stderr).decode("utf-8")
 
 
 @pytest.fixture(scope="module")
@@ -90,7 +137,7 @@ def test_powershell_preserves_paths_arguments_utf8_and_native_failures(
     module = tmp_path / "pytest.py"
     module.write_text(
         "import json, os, sys\n"
-        "print(json.dumps({'args': sys.argv[1:], 'cwd': os.getcwd(), 'utf8': sys.flags.utf8_mode}, ensure_ascii=False))\n"
+        "sys.stdout.buffer.write(json.dumps({'args': sys.argv[1:], 'cwd': os.getcwd()}, ensure_ascii=False).encode('utf-8'))\n"
         f"raise SystemExit({status})\n",
         encoding="utf-8",
     )
@@ -119,13 +166,12 @@ def test_powershell_preserves_paths_arguments_utf8_and_native_failures(
     assert result.returncode == status, result.stderr
     output = json.loads(result.stdout)
     assert output["args"] == [
-        "tests/test_release_config.py",
-        "tests/test_verify_live_retry.py",
-        "tests/test_workflow_shells.py",
+        "tests",
+        "-m",
+        "workflow",
         *arguments,
     ]
     assert Path(output["cwd"]) == checkout
-    assert output["utf8"] == 1
 
 
 @linux_bash
@@ -182,7 +228,7 @@ def test_linux_executes_the_production_release_bash_command(
 
 
 @linux_bash
-@pytest.mark.parametrize("retrying", _RETRYING, ids=lambda r: r.label)
+@pytest.mark.parametrize("retrying", RETRYING, ids=lambda r: r.label)
 @pytest.mark.parametrize("sample_status", [0, 3, 7])
 def test_linux_executes_the_production_retry_bash_command(
     tmp_path: Path, retrying, sample_status: int
@@ -210,8 +256,17 @@ def test_linux_executes_the_production_retry_bash_command(
     )
     stub.chmod(0o755)
     summary = tmp_path / "summary.md"
+    output = tmp_path / "sample output.bin"
     result = subprocess.run(
-        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", _the_step(retrying)["run"]],
+        [
+            "bash",
+            "--noprofile",
+            "--norc",
+            "-eo",
+            "pipefail",
+            "-c",
+            isolated_retry_block(retrying, output),
+        ],
         cwd=tmp_path,
         capture_output=True,
         env=os.environ
@@ -225,4 +280,5 @@ def test_linux_executes_the_production_retry_bash_command(
     assert result.returncode == sample_status, result.stderr
     attempts = 2 if sample_status == 0 else 1
     assert len(tally.read_text()) == attempts
+    assert output.read_bytes() == b"sample output\n"
     assert f"exit {sample_status} after {attempts} attempt(s)" in summary.read_text("utf-8")

@@ -4,91 +4,35 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
-import importlib.util
 import io
 import subprocess
 import sys
 from pathlib import Path
-from types import ModuleType
 
 import pytest
 import yaml
-from _workflow_commands import command_arguments
+from _workflow_commands import RETRYING, Retrying, command_arguments, retry_step
+
+pytestmark = pytest.mark.workflow
 
 _ROOT = Path(__file__).resolve().parent.parent
 _WORKFLOW = _ROOT / ".github" / "workflows" / "verify-live.yml"
 
 
-def _load(name: str) -> ModuleType:
-    spec = importlib.util.spec_from_file_location(name, _ROOT / "scripts" / f"{name}.py")
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+_search_path = sys.path.copy()
+try:
+    sys.path.insert(0, str(_ROOT / "scripts"))
+    import retry_live_sample as runner
+finally:
+    sys.path[:] = _search_path
+
+check = RETRYING[0].check
+_EACH = pytest.mark.parametrize("retrying", RETRYING, ids=lambda r: r.label)
 
 
-check = _load("check_live_fix_loop_sample")
-_HOST_TOOLS = _load("check_live_host_tools_call_sample")
-
-sys.path.insert(0, str(_ROOT / "scripts"))
-import retry_live_sample as runner  # noqa: E402
-
-
-@dataclasses.dataclass(frozen=True)
-class _Retrying:
-    """A live step that spends a second attempt on its model, and the check it keys on.
-
-    `marks` finds the step by its profile: sample 15 has two backend legs.
-    """
-
-    label: str
-    marks: str
-    check: ModuleType
-    readme: Path
-
-
-#: Every step allowed to loop, and the claim `test_no_other_live_sample_retries` holds the
-#: workflow to.
-_RETRYING = (
-    _Retrying(
-        "sample 13",
-        "retry_live_sample.py sample13 ",
-        check,
-        _ROOT / "samples" / "13_bicep_fix_loop" / "README.md",
-    ),
-    _Retrying(
-        "sample 15",
-        "retry_live_sample.py sample15 ",
-        _HOST_TOOLS,
-        _ROOT / "samples" / "15_acas_codeact_host_tools" / "README.md",
-    ),
-    _Retrying(
-        "sample 15 on docker",
-        "retry_live_sample.py sample15-docker ",
-        _HOST_TOOLS,
-        _ROOT / "samples" / "15_acas_codeact_host_tools" / "README.md",
-    ),
-)
-
-_EACH = pytest.mark.parametrize("retrying", _RETRYING, ids=lambda r: r.label)
-
-
-def _the_step(retrying: _Retrying = _RETRYING[0]) -> dict:
-    """The step that runs a sample, found by what it runs rather than by its name."""
-    workflow = yaml.safe_load(_WORKFLOW.read_text("utf-8"))
-    steps = [
-        step
-        for job in workflow["jobs"].values()
-        for step in job.get("steps", [])
-        if retrying.marks in step.get("run", "")
-    ]
-    assert len(steps) == 1, f"expected one step for {retrying.label}, found {len(steps)}"
-    return steps[0]
-
-
-def _budget(retrying: _Retrying = _RETRYING[0]) -> int:
+def _budget(retrying: Retrying = RETRYING[0]) -> int:
     """The attempt ceiling, read off the step so a deliberate change does not red these tests."""
-    arguments = command_arguments(_the_step(retrying)["run"], "retry_live_sample.py", {})
+    arguments = command_arguments(retry_step(retrying)["run"], "retry_live_sample.py", {})
     return int(arguments[arguments.index("--allowed") + 1])
 
 
@@ -103,7 +47,7 @@ def _looping(workflow: dict) -> list[str]:
 
 
 def _declared() -> list[str]:
-    return sorted(_the_step(retrying)["name"] for retrying in _RETRYING)
+    return sorted(retry_step(retrying)["name"] for retrying in RETRYING)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -122,11 +66,11 @@ def _run(
     codes: list[int],
     *,
     sample_status: int = 0,
-    retrying: _Retrying = _RETRYING[0],
+    retrying: Retrying = RETRYING[0],
     allowed: int | None = None,
 ) -> _Ran:
     """Drive the production retry policy with controlled sample and checker results."""
-    arguments = command_arguments(_the_step(retrying)["run"], "retry_live_sample.py", {})
+    arguments = command_arguments(retry_step(retrying)["run"], "retry_live_sample.py", {})
     attempts = 0
     checks = iter(codes)
     summary = tmp_path / "summary.md"
@@ -151,26 +95,24 @@ def _run(
 
 @_EACH
 class TestTheLoopRetriesTheModelAndNothingElse:
-    def test_a_first_attempt_that_passes_is_the_whole_job(
-        self, tmp_path: Path, retrying: _Retrying
-    ):
+    def test_a_first_attempt_that_passes_is_the_whole_job(self, tmp_path: Path, retrying: Retrying):
         finished = _run(tmp_path, [0], retrying=retrying)
         assert finished.status == 0, finished.stderr
         assert finished.attempts == 1
         assert "::warning" not in finished.stdout
 
-    def test_the_model_half_earns_a_second_loop(self, tmp_path: Path, retrying: _Retrying):
+    def test_the_model_half_earns_a_second_loop(self, tmp_path: Path, retrying: Retrying):
         finished = _run(tmp_path, [retrying.check.MODEL_DID_NOT_CONVERGE, 0], retrying=retrying)
         assert finished.status == 0, finished.stderr
         assert finished.attempts == 2
 
-    def test_a_failure_this_suite_owns_is_not_retried(self, tmp_path: Path, retrying: _Retrying):
+    def test_a_failure_this_suite_owns_is_not_retried(self, tmp_path: Path, retrying: Retrying):
         """1 is "something here is broken", and a second live model cannot mend it."""
         finished = _run(tmp_path, [1, 0], retrying=retrying)
         assert finished.status == 1
         assert finished.attempts == 1, "a plumbing failure must not spend a second container"
 
-    def test_the_budget_is_the_ceiling(self, tmp_path: Path, retrying: _Retrying):
+    def test_the_budget_is_the_ceiling(self, tmp_path: Path, retrying: Retrying):
         """Every attempt fails, so the loop stops on the budget rather than on a verdict."""
         allowed = _budget(retrying)
         gave_up = [retrying.check.MODEL_DID_NOT_CONVERGE] * (allowed + 1)
@@ -179,7 +121,7 @@ class TestTheLoopRetriesTheModelAndNothingElse:
         assert finished.attempts == allowed
 
     def test_the_budget_is_spent_only_as_far_as_it_has_to_be(
-        self, tmp_path: Path, retrying: _Retrying
+        self, tmp_path: Path, retrying: Retrying
     ):
         """A pass on the last allowed attempt is still a pass, and costs no more than it took."""
         allowed = _budget(retrying)
@@ -193,7 +135,7 @@ class TestTheLoopRetriesTheModelAndNothingElse:
 class TestARetryIsNeverSilent:
     """A retry nobody can see is how a sample that fails half the time reads as healthy."""
 
-    def test_the_retry_is_annotated(self, tmp_path: Path, retrying: _Retrying):
+    def test_the_retry_is_annotated(self, tmp_path: Path, retrying: Retrying):
         finished = _run(tmp_path, [retrying.check.MODEL_DID_NOT_CONVERGE, 0], retrying=retrying)
         annotations = [
             line for line in finished.stdout.splitlines() if line.startswith("::warning")
@@ -201,36 +143,34 @@ class TestARetryIsNeverSilent:
         assert len(annotations) == 1, finished.stdout
         assert "attempt 1" in annotations[0]
 
-    def test_the_annotation_names_the_half_it_is_retrying(
-        self, tmp_path: Path, retrying: _Retrying
-    ):
+    def test_the_annotation_names_the_half_it_is_retrying(self, tmp_path: Path, retrying: Retrying):
         """A bare "retried" leaves a reader to guess what earned it."""
         finished = _run(tmp_path, [retrying.check.MODEL_DID_NOT_CONVERGE, 0], retrying=retrying)
         note = next(line for line in finished.stdout.splitlines() if line.startswith("::warning"))
         assert "model's half" in note, note
 
-    def test_the_annotation_names_the_step_it_came_from(self, tmp_path: Path, retrying: _Retrying):
+    def test_the_annotation_namesretry_step_it_came_from(self, tmp_path: Path, retrying: Retrying):
         """Their warnings land in one log."""
         finished = _run(tmp_path, [retrying.check.MODEL_DID_NOT_CONVERGE, 0], retrying=retrying)
         note = next(line for line in finished.stdout.splitlines() if line.startswith("::warning"))
         assert f"title={retrying.label} retried" in note, note
 
-    def test_the_attempt_count_reaches_the_step_summary(self, tmp_path: Path, retrying: _Retrying):
+    def test_the_attempt_count_reachesretry_step_summary(self, tmp_path: Path, retrying: Retrying):
         finished = _run(tmp_path, [retrying.check.MODEL_DID_NOT_CONVERGE, 0], retrying=retrying)
         assert "2 attempt(s)" in finished.summary, finished.summary
 
-    def test_a_run_that_needed_one_attempt_says_so_too(self, tmp_path: Path, retrying: _Retrying):
+    def test_a_run_that_needed_one_attempt_says_so_too(self, tmp_path: Path, retrying: Retrying):
         """Otherwise its absence is what a reader has to notice."""
         finished = _run(tmp_path, [0], retrying=retrying)
         assert "1 attempt(s)" in finished.summary, finished.summary
 
     def test_the_summary_is_written_even_when_the_job_fails(
-        self, tmp_path: Path, retrying: _Retrying
+        self, tmp_path: Path, retrying: Retrying
     ):
         finished = _run(tmp_path, [1], retrying=retrying)
         assert "exit 1 after 1 attempt(s)" in finished.summary, finished.summary
 
-    def test_the_summary_names_the_step_it_describes(self, tmp_path: Path, retrying: _Retrying):
+    def test_the_summary_namesretry_step_it_describes(self, tmp_path: Path, retrying: Retrying):
         """One summary carries all of them, so an unattributed line describes nobody."""
         finished = _run(tmp_path, [0], retrying=retrying)
         assert finished.summary.startswith("samples/"), finished.summary
@@ -249,17 +189,17 @@ class TestTheFixLoopAnnotationDoesNotBlameOneTurn:
 class TestASampleThatNeverRanIsNotTheModelsHalf:
     """A crash before the check measured nothing, so it neither retries nor goes unrecorded."""
 
-    def test_a_crashing_sample_is_not_retried(self, tmp_path: Path, retrying: _Retrying):
+    def test_a_crashing_sample_is_not_retried(self, tmp_path: Path, retrying: Retrying):
         finished = _run(tmp_path, [0], sample_status=7, retrying=retrying)
         assert finished.attempts == 1
         assert finished.status == 7
 
-    def test_the_attempt_count_survives_it(self, tmp_path: Path, retrying: _Retrying):
+    def test_the_attempt_count_survives_it(self, tmp_path: Path, retrying: Retrying):
         finished = _run(tmp_path, [0], sample_status=7, retrying=retrying)
         assert "exit 7 after 1 attempt(s)" in finished.summary, finished.summary
 
     def test_the_run_says_the_sample_never_reached_the_check(
-        self, tmp_path: Path, retrying: _Retrying
+        self, tmp_path: Path, retrying: Retrying
     ):
         finished = _run(tmp_path, [0], sample_status=7, retrying=retrying)
         errors = [line for line in finished.stdout.splitlines() if line.startswith("::error")]
@@ -267,7 +207,7 @@ class TestASampleThatNeverRanIsNotTheModelsHalf:
         assert "exited 7" in errors[0], errors
 
     def test_a_sample_exiting_the_retryable_status_still_does_not_retry(
-        self, tmp_path: Path, retrying: _Retrying
+        self, tmp_path: Path, retrying: Retrying
     ):
         """3 from the *sample* is a crash that shares a number, not a verdict about a repair."""
         status = retrying.check.MODEL_DID_NOT_CONVERGE
@@ -283,7 +223,7 @@ class TestTheBudgetIsWrittenOnce:
     def test_budget_changes_drive_the_loop_notice_and_summary(
         self,
         tmp_path: Path,
-        retrying: _Retrying,
+        retrying: Retrying,
         allowed: int,
     ):
         finished = _run(
@@ -299,11 +239,11 @@ class TestTheBudgetIsWrittenOnce:
         for attempt, line in enumerate(warnings, 1):
             assert f"attempt {attempt} of {allowed}" in line
 
-    def test_a_budget_of_one_is_the_retry_removed(self, retrying: _Retrying):
+    def test_a_budget_of_one_is_the_retry_removed(self, retrying: Retrying):
         """That is #421 undone rather than tuned, and it would pass every test above."""
         assert _budget(retrying) >= 2
 
-    def test_the_sample_readme_states_the_number_the_workflow_allows(self, retrying: _Retrying):
+    def test_the_sample_readme_states_the_number_the_workflow_allows(self, retrying: Retrying):
         """Raising one without the other leaves the documented behaviour disagreeing here."""
         words = {
             2: "twice",
@@ -325,13 +265,13 @@ class TestTheBudgetIsWrittenOnce:
 
 class TestTheTwoFilesAgreeOnWhatIsRetryable:
     @_EACH
-    def test_the_workflow_keys_on_the_status_the_check_returns(self, retrying: _Retrying):
+    def test_the_workflow_keys_on_the_status_the_check_returns(self, retrying: Retrying):
         """Renumbering `MODEL_DID_NOT_CONVERGE` would otherwise disable the retry in silence."""
-        arguments = command_arguments(_the_step(retrying)["run"], "retry_live_sample.py", {})
-        assert runner.PROFILES[arguments[0]][3] == retrying.check.MODEL_DID_NOT_CONVERGE
+        arguments = command_arguments(retry_step(retrying)["run"], "retry_live_sample.py", {})
+        assert runner.PROFILES[arguments[0]].retryable == retrying.check.MODEL_DID_NOT_CONVERGE
 
     @_EACH
-    def test_that_status_is_not_one_the_check_uses_for_anything_else(self, retrying: _Retrying):
+    def test_that_status_is_not_one_the_check_uses_for_anything_else(self, retrying: Retrying):
         assert retrying.check.MODEL_DID_NOT_CONVERGE not in (0, 1, 2)
 
     def test_no_other_live_sample_retries(self):
@@ -341,12 +281,12 @@ class TestTheTwoFilesAgreeOnWhatIsRetryable:
     def test_a_copied_loop_reusing_an_existing_step_name_is_still_caught(self):
         """Step names need not be unique, so a set would collapse the copy and pass."""
         workflow = yaml.safe_load(_WORKFLOW.read_text("utf-8"))
-        workflow["jobs"]["invented"] = {"steps": [dict(_the_step(_RETRYING[1]))]}
+        workflow["jobs"]["invented"] = {"steps": [dict(retry_step(RETRYING[1]))]}
         assert _looping(workflow) != _declared()
 
     def test_each_retrying_step_is_a_distinct_step(self):
         """Two entries resolving to one step would leave a real one undriven."""
-        names = [_the_step(r)["name"] for r in _RETRYING]
+        names = [retry_step(r)["name"] for r in RETRYING]
         assert len(set(names)) == len(names), names
 
 
@@ -354,9 +294,9 @@ class TestTheTwoFilesAgreeOnWhatIsRetryable:
 def test_the_entry_point_runs_the_samples_and_checkers_from_the_workflow(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    retrying: _Retrying,
+    retrying: Retrying,
 ):
-    arguments = command_arguments(_the_step(retrying)["run"], "retry_live_sample.py", {})
+    arguments = command_arguments(retry_step(retrying)["run"], "retry_live_sample.py", {})
     output = tmp_path / "sample output café.txt"
     arguments[arguments.index("--output") + 1] = str(output)
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary.md"))
@@ -405,7 +345,7 @@ def test_sample_stdout_is_teed_and_its_native_status_is_preserved(
     output = tmp_path / "output with spaces.txt"
     assert runner.run_sample([sys.executable, "-X", "utf8", str(script)], output) == status
     assert output.read_text("utf-8") == "café 🌻\n"
-    assert capsys.readouterr().out == "café 🌻\n"
+    assert capsys.readouterr().out.splitlines() == ["café 🌻"]
 
 
 @pytest.mark.parametrize("phase", ["sample", "check"])
@@ -435,3 +375,113 @@ def test_a_missing_command_fails_once_and_still_writes_the_summary(tmp_path: Pat
     )
     assert result == 127
     assert "exit 127 after 1 attempt(s)" in summary.read_text("utf-8")
+
+
+@pytest.mark.parametrize("payload", [b"sample\xff output\n", b"prefix\r  [measured] value\r\n"])
+@pytest.mark.parametrize("status", [0, 7])
+def test_sample_bytes_survive_tee_and_failure_reporting(
+    tmp_path: Path,
+    capsysbinary: pytest.CaptureFixture[bytes],
+    payload: bytes,
+    status: int,
+):
+    output, summary = tmp_path / "sample.bin", tmp_path / "summary.md"
+    command = [
+        sys.executable,
+        "-c",
+        f"import sys; sys.stdout.buffer.write({payload!r}); sys.exit({status})",
+    ]
+
+    def check_bytes():
+        assert output.read_bytes() == payload
+        return 0
+
+    assert (
+        runner.retry(
+            "sample13",
+            6,
+            summary,
+            lambda: runner.run_sample(command, output),
+            check_bytes,
+        )
+        == status
+    )
+    assert output.read_bytes() == payload
+    captured = capsysbinary.readouterr().out
+    assert captured.startswith(payload)
+    assert f"exit {status} after 1 attempt(s)" in summary.read_text("utf-8")
+    if status:
+        assert b"::error title=sample 13 did not run::" in captured
+
+
+def test_new_profile_supplies_commands_and_reporting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    monkeypatch.setitem(
+        runner.PROFILES,
+        "custom",
+        runner.Profile(
+            "custom sample",
+            "custom_directory",
+            "custom_checker.py",
+            9,
+            "custom action",
+            " on custom",
+            ("--custom",),
+        ),
+    )
+    summary = tmp_path / "summary.md"
+    output = tmp_path / "sample.bin"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    samples, checks = [], []
+
+    def sample(command, destination):
+        samples.append((command, destination))
+        return 0
+
+    def check_command(command):
+        checks.append(command)
+        return subprocess.CompletedProcess(command, 9 if len(checks) == 1 else 0)
+
+    monkeypatch.setattr(runner, "run_sample", sample)
+    monkeypatch.setattr(runner.subprocess, "run", check_command)
+    assert runner.main(["custom", "--allowed", "2", "--output", str(output)]) == 0
+    assert (
+        samples
+        == [(["uv", "run", "--no-project", "samples/custom_directory/agent.py"], output)] * 2
+    )
+    assert len(checks) == 2
+    assert Path(checks[0][1]).name == "custom_checker.py"
+    assert checks[0][2:] == ["--custom", str(output)]
+    assert "custom action runs again" in capsys.readouterr().out
+    assert "samples/custom_directory on custom: exit 0 after 2 attempt(s)" in summary.read_text(
+        "utf-8"
+    )
+
+
+def test_invalid_budget_is_rejected_before_running_anything(tmp_path: Path):
+    def unexpected():
+        pytest.fail("invalid configuration must not execute a command")
+
+    summary = tmp_path / "summary.md"
+    with pytest.raises(ValueError, match="allowed must be positive"):
+        runner.retry("sample13", 0, summary, unexpected, unexpected)
+    with pytest.raises(SystemExit) as error:
+        runner.main(["sample13", "--allowed", "0", "--output", str(tmp_path / "output")])
+    assert error.value.code == 2
+    assert not summary.exists()
+
+
+def test_sample_bytes_follow_preceding_retry_messages(tmp_path: Path):
+    driver = tmp_path / "driver.py"
+    driver.write_text(
+        "import sys\nfrom pathlib import Path\n"
+        f"sys.path.insert(0, {str(_ROOT / 'scripts')!r})\n"
+        "from retry_live_sample import run_sample\n"
+        "print('retry annotation')\n"
+        "run_sample([sys.executable, '-c', \"print('sample output')\"], Path('output.bin'))\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run([sys.executable, str(driver)], cwd=tmp_path, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [b"retry annotation", b"sample output"]

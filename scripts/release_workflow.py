@@ -61,7 +61,9 @@ def notes(package: str, version: str) -> int:
 def gate(mode: str, package: str, version: str, command: list[str]) -> int:
     """Run a checker and report its verdict at the appropriate release phase."""
     try:
-        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8")
+        result = subprocess.run(
+            command, capture_output=True, text=True, encoding="utf-8", errors="replace"
+        )
     except OSError as error:
         result = subprocess.CompletedProcess(
             command, 127 if isinstance(error, FileNotFoundError) else 126, "", str(error) + "\n"

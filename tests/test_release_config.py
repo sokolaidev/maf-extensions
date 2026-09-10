@@ -18,7 +18,6 @@ from __future__ import annotations
 import fnmatch
 import json
 import re
-import subprocess
 import sys
 import tomllib
 import urllib.error
@@ -27,7 +26,15 @@ from pathlib import Path
 
 import pytest
 from _version_prose import release_named_in
-from _workflow_commands import command_arguments, run_release
+from _workflow_commands import (
+    command_arguments,
+    execute_release_step,
+    release_outputs,
+    run_block,
+    run_release,
+)
+
+pytestmark = pytest.mark.workflow
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = REPO_ROOT / "release-please-config.json"
@@ -107,27 +114,6 @@ def publish_tag_globs() -> list[str]:
     block = re.search(r"^ *tags:\n((?: *- *\"[^\"]+\"\n)+)", workflow, re.MULTILINE)
     assert block is not None, f"no `on.push.tags` block found in {PUBLISH_WORKFLOW.name}"
     return re.findall(r"\"([^\"]+)\"", block.group(1))
-
-
-def run_block(workflow: Path, step_name: str) -> str:
-    """A step's `run:` script, dedented — the same text the runner's shell receives.
-
-    Read as text rather than through a YAML parser, for the reason the module docstring gives:
-    these tests carry no YAML dependency, and a block scalar is unambiguous enough to slice on
-    indentation.
-    """
-    lines = workflow.read_text(encoding="utf-8").splitlines()
-    start = next(
-        index for index, line in enumerate(lines) if line.strip() == f"- name: {step_name}"
-    )
-    run = next(index for index, line in enumerate(lines[start:], start) if line.strip() == "run: |")
-    indent = len(lines[run]) - len(lines[run].lstrip()) + 2
-    body: list[str] = []
-    for line in lines[run + 1 :]:
-        if line.strip() and not line.startswith(" " * indent):
-            break
-        body.append(line[indent:])
-    return "\n".join(body)
 
 
 def condition_after(workflow: Path, anchor: str) -> str:
@@ -705,37 +691,6 @@ class TestReadingAGateOutOfTheWorkflow:
         )
 
 
-def _execute_step(
-    tmp_path: Path,
-    step: str,
-    stdout: str,
-    *,
-    stderr: str = "",
-    status: int = 0,
-) -> subprocess.CompletedProcess[bytes]:
-    """Run the production release wrapper against a controlled native checker process."""
-    arguments = command_arguments(
-        run_block(PUBLISH_WORKFLOW, step),
-        "release_workflow.py",
-        {"PACKAGE": "maf-sandbox", "VERSION": "0.13.0"},
-    )
-    stub = tmp_path / "checker with spaces.py"
-    stub.write_text(
-        f"import sys\nsys.stdout.write({stdout!r})\nsys.stderr.write({stderr!r})\n"
-        f"raise SystemExit({status})\n",
-        encoding="utf-8",
-    )
-    arguments = arguments[: arguments.index("--") + 1] + [sys.executable, str(stub)]
-    return run_release(tmp_path, arguments)
-
-
-def _step_outputs(tmp_path: Path) -> tuple[str, str]:
-    return (
-        (tmp_path / "out.txt").read_text("utf-8"),
-        (tmp_path / "summary.md").read_text("utf-8"),
-    )
-
-
 class TestTheBreakingDetectorIsInformational:
     """The changelog flag is reported as context but does not control live-check dispatch.
 
@@ -745,9 +700,9 @@ class TestTheBreakingDetectorIsInformational:
     _STEP = "Check whether this release is breaking"
 
     def test_a_breaking_release_is_reported_without_claiming_a_skip(self, tmp_path: Path):
-        result = _execute_step(tmp_path, self._STEP, "breaking=true\n")
+        result = execute_release_step(tmp_path, self._STEP, "breaking=true\n")
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
-        output, summary = _step_outputs(tmp_path)
+        output, summary = release_outputs(tmp_path)
         assert output.strip() == "breaking=true"
         assert "maf-sandbox" in summary and "0.13.0" in summary
         # The skip rationale belongs to the work check now; this note only flags the release.
@@ -755,22 +710,24 @@ class TestTheBreakingDetectorIsInformational:
         assert "273" not in summary
 
     def test_an_ordinary_release_stays_quiet(self, tmp_path: Path):
-        result = _execute_step(tmp_path, self._STEP, "breaking=false\n")
+        result = execute_release_step(tmp_path, self._STEP, "breaking=false\n")
         assert result.returncode == 0, (
             "the step ended non-zero on the ordinary answer, which fails the release over a "
             f"context note: {result.stderr.decode('utf-8', 'replace')}"
         )
-        output, summary = _step_outputs(tmp_path)
+        output, summary = release_outputs(tmp_path)
         assert output.strip() == "breaking=false"
         assert summary == "", "nothing was reported, so the summary has nothing to say"
 
     def test_a_detector_that_cannot_answer_does_not_fail_the_release(self, tmp_path: Path):
-        result = _execute_step(tmp_path, self._STEP, "", stderr="no section for 0.13.0\n", status=1)
+        result = execute_release_step(
+            tmp_path, self._STEP, "", stderr="no section for 0.13.0\n", status=1
+        )
         assert result.returncode == 0, (
             "an unanswerable question must not fail the release: the dispatch is not this "
             f"step's to make: {result.stderr.decode('utf-8', 'replace')}"
         )
-        output, summary = _step_outputs(tmp_path)
+        output, summary = release_outputs(tmp_path)
         assert output.strip() == "breaking=false"
         assert "::warning::" in result.stdout.decode("utf-8", "replace")
         assert summary == ""
@@ -795,24 +752,24 @@ class TestTheBuildWorkCheckIsEarlyValidation:
     _STEP = "Verify the published dependents import against this core"
 
     def test_a_pass_writes_no_skip_summary(self, tmp_path: Path):
-        result = _execute_step(
+        result = execute_release_step(
             tmp_path,
             self._STEP,
             "every published dependent that admits maf-sandbox 0.13.0 imports against it (maf-sandbox-bicep==0.5.6)\nlive_check=run\n",
         )
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
-        output, summary = _step_outputs(tmp_path)
+        output, summary = release_outputs(tmp_path)
         assert output.strip() == "", "the build step is early validation, not the dispatch"
         assert summary == "", "the live check runs, so the summary has nothing to report"
 
     def test_nothing_admitting_writes_a_provisional_summary(self, tmp_path: Path):
-        result = _execute_step(
+        result = execute_release_step(
             tmp_path,
             self._STEP,
             "no published dependent admits maf-sandbox 0.13.0; nothing to verify\nlive_check=skip\n",
         )
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
-        output, summary = _step_outputs(tmp_path)
+        output, summary = release_outputs(tmp_path)
         assert output.strip() == "", "the build step is early validation, not the dispatch"
         assert "273" in summary, "a provisional skip has to point at the reason"
         assert "maf-sandbox" in summary and "0.13.0" in summary
@@ -820,7 +777,7 @@ class TestTheBuildWorkCheckIsEarlyValidation:
     def test_a_break_fails_the_step(self, tmp_path: Path):
         # A break refuses the release before dispatch: the wrapper preserves the checker's
         # failure and writes no verdict.
-        result = _execute_step(
+        result = execute_release_step(
             tmp_path,
             self._STEP,
             "",
@@ -828,7 +785,7 @@ class TestTheBuildWorkCheckIsEarlyValidation:
             status=1,
         )
         assert result.returncode != 0, "a break must fail the step, not dispatch on a guess"
-        output, _summary = _step_outputs(tmp_path)
+        output, _summary = release_outputs(tmp_path)
         assert output.strip() == ""
 
     def test_the_work_check_only_runs_for_a_real_core_release(self):
@@ -844,32 +801,32 @@ class TestThePreUploadRecheckIsBreakRefusalOnly:
     _STEP = "Re-verify only newly admitting published versions import against this core"
 
     def test_a_pass_writes_no_dispatch_output(self, tmp_path: Path):
-        result = _execute_step(
+        result = execute_release_step(
             tmp_path,
             self._STEP,
             "every published dependent newly admitting maf-sandbox 0.13.0 imports against it (maf-sandbox-bicep==0.5.6)\nlive_check=run\n",
         )
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
-        output, summary = _step_outputs(tmp_path)
+        output, summary = release_outputs(tmp_path)
         assert output.strip() == "", "break refusal owns no dispatch output"
         assert summary == "", "the dispatch verdict is the post-upload step's, not this one's"
 
     def test_nothing_admitting_writes_no_dispatch_output(self, tmp_path: Path):
         # The provisional `skip` is not the dispatch verdict: a dependent can still admit during
         # the upload window, so this step forwards nothing and writes no summary.
-        result = _execute_step(
+        result = execute_release_step(
             tmp_path,
             self._STEP,
             "no published dependent admits maf-sandbox 0.13.0; nothing to verify\nlive_check=skip\n",
         )
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
-        output, summary = _step_outputs(tmp_path)
+        output, summary = release_outputs(tmp_path)
         assert output.strip() == "", "the upload window is still open; this is not the dispatch"
         assert summary == "", "no provisional summary — the post-upload step writes the final one"
 
     def test_a_break_fails_the_step(self, tmp_path: Path):
         # A break refuses the upload before the core ships, without writing a dispatch verdict.
-        result = _execute_step(
+        result = execute_release_step(
             tmp_path,
             self._STEP,
             "",
@@ -877,7 +834,7 @@ class TestThePreUploadRecheckIsBreakRefusalOnly:
             status=1,
         )
         assert result.returncode != 0, "a break must refuse the upload, not ship on a guess"
-        output, _summary = _step_outputs(tmp_path)
+        output, _summary = release_outputs(tmp_path)
         assert output.strip() == ""
 
     def test_the_recheck_only_runs_for_a_real_core_release(self):
@@ -900,24 +857,24 @@ class TestThePostUploadDispatchGatesTheLiveCheck:
     _GATED_JOBS = ("wait-for-propagation:", "verify:")
 
     def test_a_pass_emits_run_and_no_skip_summary(self, tmp_path: Path):
-        result = _execute_step(
+        result = execute_release_step(
             tmp_path,
             self._STEP,
             "every published dependent newly admitting maf-sandbox 0.13.0 imports against it (maf-sandbox-bicep==0.5.6)\nlive_check=run\n",
         )
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
-        output, summary = _step_outputs(tmp_path)
+        output, summary = release_outputs(tmp_path)
         assert output.strip() == "live_check=run"
         assert summary == "", "the live check runs, so the summary has nothing to report"
 
     def test_nothing_admitting_after_upload_emits_skip_and_says_why(self, tmp_path: Path):
-        result = _execute_step(
+        result = execute_release_step(
             tmp_path,
             self._STEP,
             "no published dependent admits maf-sandbox 0.13.0; nothing to verify\nlive_check=skip\n",
         )
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
-        output, summary = _step_outputs(tmp_path)
+        output, summary = release_outputs(tmp_path)
         assert output.strip() == "live_check=skip"
         assert "273" in summary, "a skipped run has to point at the reason it was skipped"
         assert "maf-sandbox" in summary and "0.13.0" in summary
@@ -927,7 +884,7 @@ class TestThePostUploadDispatchGatesTheLiveCheck:
         # exit 0: the upload is immutable, so the live check is dispatched and the break surfaced
         # as `::error::` rather than the release refused (#443). The step must not fail — a failed
         # dispatch job would suppress the very live check it just decided to dispatch.
-        result = _execute_step(
+        result = execute_release_step(
             tmp_path,
             self._STEP,
             "live_check=run\n",
@@ -937,7 +894,7 @@ class TestThePostUploadDispatchGatesTheLiveCheck:
             "a break after the upload must dispatch, not fail the job and suppress the live check: "
             f"{result.stderr.decode('utf-8', 'replace')}"
         )
-        output, summary = _step_outputs(tmp_path)
+        output, summary = release_outputs(tmp_path)
         assert output.strip() == "live_check=run", "an admitting dependent exists, so dispatch"
         stdout = result.stdout.decode("utf-8", "replace")
         assert "::error::maf-sandbox-docker==0.7.0" in stdout, (
