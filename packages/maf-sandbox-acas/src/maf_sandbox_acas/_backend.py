@@ -386,6 +386,7 @@ class _Held:
     removal: bool | None = None
     probed: bool = False
     commands: set[str] = field(default_factory=set[str])
+    work_dir: str = "/maf-sandbox/work"
 
 
 @dataclass(frozen=True)
@@ -890,6 +891,7 @@ class AcasSandboxBackend:
         """:meth:`acquire`'s body, run under that key's lock."""
         gc = self._group_client()
         registry_key = (key.scope, key.thread_id, key.agent_dir, spec.kind)
+        work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
         held = self._registry.get(registry_key)
         if held is not None:
             sandbox_id = held.sandbox_id
@@ -907,6 +909,8 @@ class AcasSandboxBackend:
                     error_detail(exc),
                 )
             else:
+                if work_dir != held.work_dir:
+                    raise ValueError("a held sandbox cannot change its storage base")
                 # Outside the `try`, because a refusal is this acquire's answer rather than a
                 # sandbox that failed to resume, and the handler above would swallow it into a
                 # replacement create. Before the log, so a refused acquire does not report one
@@ -959,7 +963,7 @@ class AcasSandboxBackend:
             key.agent_dir,
         )
         # Register immediately, so the sandbox is reachable by purge even if configure fails.
-        held = self._registry[registry_key] = _Held(sc.sandbox_id)
+        held = self._registry[registry_key] = _Held(sc.sandbox_id, work_dir=work_dir)
         try:
             await self._configure(sc)
         except Exception as exc:  # noqa: BLE001

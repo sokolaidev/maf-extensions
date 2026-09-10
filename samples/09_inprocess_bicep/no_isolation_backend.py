@@ -358,6 +358,8 @@ class NoIsolationBackend:
                     raise
                 sandbox = NoIsolationSandbox(host_root, spec.work_dir)
                 self._sandboxes[ident] = sandbox
+            elif (spec.work_dir or "/maf-sandbox/work") != sandbox._guest_work_dir:
+                raise ValueError("a held sandbox cannot change its storage base")
             return sandbox
 
     def _remove(

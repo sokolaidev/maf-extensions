@@ -1067,6 +1067,14 @@ def test_relative_storage_base_conformance(override):
         try:
             sandbox = await backend.acquire(key, spec)
             await assert_storage_base_conformance(sandbox, backend.declarations.capabilities)
+            await sandbox.write_file("kept", b"warm", working_directory=".")
+            resumed = WslcSandboxBackend(WslcSandboxConfig())
+            with pytest.raises(ValueError, match="storage base"):
+                await resumed.acquire(key, replace(spec, work_dir="/other/base"))
+            second = await resumed.acquire(key, spec)
+            assert second.instance_id == sandbox.instance_id
+            kept = await second.exec(["cat", "kept"], working_directory=".", timeout=10)
+            assert kept.exit_code == 0 and kept.stdout == "warm"
         finally:
             assert await backend.dispose(key, kind=spec.kind) is None
 

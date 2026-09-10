@@ -4618,3 +4618,25 @@ def test_relative_storage_contract_through_the_data_plane(override):
         await assert_storage_base_conformance(sandbox, capabilities)
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("override", [None, "/image/base"])
+def test_warm_storage_binding_refuses_retargeting(override):
+    from dataclasses import replace
+
+    async def scenario():
+        client = _GuestGroupClient(_guest_removing(True))
+        backend = _backend_with(client)
+        key = SandboxKey("storage", "thread", "agent")
+        spec = replace(_spec_requiring(Capability.FILES_OUT), work_dir=override)
+        first = await backend.acquire(key, spec)
+        await first.write_file("keep", b"keep", working_directory=".")
+        before = list(client.created_directories)
+        with pytest.raises(ValueError, match="storage base"):
+            await backend.acquire(key, replace(spec, work_dir="/other/base"))
+        assert client.created_directories == before
+        again = await backend.acquire(key, spec)
+        assert again.instance_id == first.instance_id
+        assert await again.read_file("keep", working_directory=".", max_bytes=100) == b"keep"
+
+    asyncio.run(scenario())

@@ -299,6 +299,10 @@ class _FakeDocker:
             result = _DockerResult(0, _owned_directory_tar("work", 0, 0o755), "")
         if args[:3] == ("inspect", "-f", "{{.Id}}") and result == _DockerResult(0, b"", ""):
             result = _DockerResult(0, f"id-{args[-1]}\n".encode(), "")
+        if args[:3] == ("inspect", "-f", "{{json .Config.Labels}}") and result == _DockerResult(
+            0, b"", ""
+        ):
+            result = _DockerResult(0, json.dumps({"maf-sandbox.work-dir.v1": _WORK}).encode(), "")
         if read_limit is not None and len(result.stdout) > read_limit:
             result = _DockerResult(result.returncode, result.stdout[:read_limit], result.stderr)
         return result
@@ -330,6 +334,7 @@ def _machine(
     images: Sequence[str] = ("bicep-sandbox:local",),
     overrides: dict[tuple[str, ...], _DockerResult] | None = None,
     networks: Mapping[str, str] | None = None,
+    work_dir: str = _WORK,
 ):
     """A responder describing which containers and images exist, and how a command answers.
 
@@ -352,6 +357,7 @@ def _machine(
     """
     live_running = set(running)
     live_stopped = set(stopped)
+    storage_labels = {name: {"maf-sandbox.work-dir.v1": work_dir} for name in (*running, *stopped)}
     live_networks = dict(networks or {})
     # Who is on each network, so `network rm` can refuse while an endpoint is still attached,
     # the way a real engine does.
@@ -382,6 +388,9 @@ def _machine(
             # given, which the reads after it are entitled to find.
             name = args[3]
             live_running.add(name)
+            storage_labels[name] = dict(
+                args[i + 1].split("=", 1) for i, arg in enumerate(args) if arg == "--label"
+            )
             if "--network" in args:
                 net = args[args.index("--network") + 1]
                 live_endpoints.setdefault(net, set()).add(name)
@@ -435,6 +444,16 @@ def _machine(
             return _DockerResult(0, b"\n", "")
         if args[:3] == ("inspect", "-f", "{{.Id}}"):
             return _DockerResult(0, f"id-{args[-1]}\n".encode(), "")
+        if args[:3] == ("inspect", "-f", "{{json .Config.Labels}}"):
+            return _DockerResult(
+                0,
+                json.dumps(
+                    storage_labels.get(
+                        args[-1].removeprefix("id-"), {"maf-sandbox.work-dir.v1": work_dir}
+                    )
+                ).encode(),
+                "",
+            )
         if args[0] == "cp" and args[1].endswith(":/"):
             # Every walk now stats the root, and a real engine answers it with the root
             # directory's own header — root's, writable by nobody else on any sane image.
@@ -1516,7 +1535,7 @@ class TestTheAncestorsAboveTheWorkDirAreChecked:
                 raise RuntimeError("the daemon said no")
             if args[:2] == ("cp", f"{_NAME}:/"):
                 return _DockerResult(0, _owned_directory_tar(".", 0, 0o755), "")
-            return _machine(running=[_NAME])(args)
+            return _machine(running=[_NAME], work_dir="/work")(args)
 
         backend, fake = _backend_with(root_only)
         spec = SandboxSpec(
@@ -1650,7 +1669,7 @@ class TestAContainerThatVanishedBehindThisBackend:
                 return _DockerResult(0, hardening[0], "")
             if args[:3] == ("run", "-d", "--name"):
                 present.add(args[3])
-            if args[0] == "inspect" and args[-1] not in present:
+            if args[0] == "inspect" and args[-1].removeprefix("id-") not in present:
                 return _DockerResult(1, b"", f"Error: No such object: {args[-1]}")
             return base(args)
 
@@ -4875,7 +4894,7 @@ def test_proxy_removal_retry_publishes_only_the_successful_window(
 
 @pytest.mark.parametrize("override", [None, "/image/base"])
 def test_relative_working_directory_is_resolved_and_argv_is_opaque(override):
-    backend, fake = _backend_with(_machine(running=[_NAME]))
+    backend, fake = _backend_with(_machine(running=[_NAME], work_dir=override or _WORK))
     spec = replace(_METHOD_SPEC, work_dir=override)
     base = override if override is not None else _WORK
 
@@ -4893,3 +4912,62 @@ def test_relative_working_directory_is_resolved_and_argv_is_opaque(override):
     transfer = fake.matching("cp", "-")[-1]
     with tarfile.open(fileobj=io.BytesIO(transfer.stdin)) as archive:
         assert f"{base.lstrip('/')}/call/input" in archive.getnames()
+
+
+@pytest.mark.parametrize("override", [None, "/image/base"])
+@pytest.mark.parametrize("restart_host", [False, True])
+@pytest.mark.parametrize("state", ["warm", "stopped"])
+def test_warm_storage_binding_refuses_retargeting(override, restart_host, state):
+    base = override or _WORK
+    machine = _machine(
+        running=[_NAME] if state == "warm" else [],
+        stopped=[_NAME] if state == "stopped" else [],
+        work_dir=base,
+    )
+    backend, fake = _backend_with(machine)
+    spec = replace(_METHOD_SPEC, work_dir=override)
+
+    async def scenario():
+        first = await backend.acquire(_KEY, spec)
+        if restart_host:
+            current, calls = _backend_with(machine)
+        else:
+            current, calls = backend, fake
+        before = len(calls.calls)
+        with pytest.raises(ValueError, match="storage base"):
+            await current.acquire(_KEY, replace(spec, work_dir="/other/base"))
+        refused = calls.calls[before:]
+        assert not any(call.args[0] in {"cp", "exec", "run", "rm"} for call in refused)
+        again = await current.acquire(_KEY, spec)
+        assert again.instance_id == first.instance_id
+        await again.exec(["true"], working_directory=".", timeout=10)
+        command = calls.matching("exec", "-w")[-1].args
+        assert command[2] == base
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("override", [None, "/image/base with spaces"])
+def test_created_storage_binding_is_persisted_in_engine_labels(override):
+    backend, fake = _backend_with(_machine())
+    asyncio.run(backend.acquire(_KEY, replace(_METHOD_SPEC, work_dir=override)))
+    args = fake.only("run").args
+    labels = dict(args[i + 1].split("=", 1) for i, arg in enumerate(args) if arg == "--label")
+    assert labels["maf-sandbox.work-dir.v1"] == (override or _WORK)
+
+
+@pytest.mark.parametrize("labels", [None, {}, [], {"maf-sandbox.work-dir.v1": None}])
+def test_unrecorded_storage_binding_is_refused_without_disposal(labels):
+    backend, fake = _backend_with(
+        _machine(
+            running=[_NAME],
+            overrides={
+                ("inspect", "-f", "{{json .Config.Labels}}"): _DockerResult(
+                    0, json.dumps(labels).encode(), ""
+                )
+            },
+        )
+    )
+    with pytest.raises(ValueError, match="storage base"):
+        asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
+    assert not fake.matching("rm")

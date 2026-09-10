@@ -564,3 +564,24 @@ def test_acquire_removes_the_host_root_when_seeding_fails(monkeypatch, tmp_path)
         assert not captured.exists()
 
     asyncio.run(body())
+
+
+@pytest.mark.parametrize("override", [None, "/image/base"])
+def test_warm_storage_binding_refuses_retargeting(override):
+    from dataclasses import replace
+
+    async def scenario():
+        backend = NoIsolationBackend()
+        spec = replace(_spec(), work_dir=override)
+        try:
+            first = await backend.acquire(_key(), spec)
+            await first.write_file("keep", b"keep", working_directory=".")
+            with pytest.raises(ValueError, match="storage base"):
+                await backend.acquire(_key(), replace(spec, work_dir="/other/base"))
+            again = await backend.acquire(_key(), spec)
+            assert again is first
+            assert (again._host_root / "keep").read_bytes() == b"keep"
+        finally:
+            await _drop(backend)
+
+    asyncio.run(scenario())

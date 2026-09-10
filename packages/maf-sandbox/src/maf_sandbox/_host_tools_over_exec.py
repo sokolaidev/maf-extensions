@@ -1265,10 +1265,8 @@ def _sent_clause(reach: _Reach) -> str:
 def _removable(directory: str) -> bool:
     """Is ``directory`` specific enough to hand to a recursive removal?
 
-    The paths here come from :func:`guest_run_layout`, which already refuses a relative one —
-    so this is not the primary defence, it is the one that still holds if a caller builds a
-    layout by hand. An irreversible recursive delete gets a guard that does not depend on
-    something else having run.
+    Validate independently of :func:`guest_run_layout`, since callers can build layouts
+    by hand.
 
     A relative child stays under the storage base. Legacy absolute targets need two
     components, so neither the guest root nor its immediate children can be removed.

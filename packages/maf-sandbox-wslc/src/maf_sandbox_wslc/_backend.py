@@ -131,6 +131,7 @@ _NETWORK_NOT_FOUND = "not found"
 #: Marks the egress proxy so a purge can tell it from the sandboxes it counts.
 _LABEL_ROLE = "maf-sandbox.role"
 _LABEL_KEY = "maf-sandbox.key.v1"
+_LABEL_WORK_DIR = "maf-sandbox.work-dir.v1"
 # Optional attribution must leave command-line space for the proxy's required configuration.
 _KEY_LABEL_MAX = 4096
 
@@ -994,6 +995,19 @@ class WslcSandboxBackend:
                 except Exception as failure:
                     logger.warning("sandbox identity refusal cleanup raised: %s", failure)
                 raise
+            config = cast("dict[str, object]", row).get("Config")
+            labels = cast("dict[str, object]", row).get("Labels")
+            if labels is None and isinstance(config, dict):
+                labels = cast("dict[str, object]", config).get("Labels")
+            work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
+            if (
+                not isinstance(labels, dict)
+                or cast("dict[str, object]", labels).get(_LABEL_WORK_DIR) != work_dir
+            ):
+                raise ValueError(
+                    "the container has a different or unrecorded storage base; "
+                    "dispose it before requesting another base"
+                )
             guest_uid = await self._probe_guest_uid(name)
             guest_identity = await self._write_identity(
                 name, guest_uid, cast("dict[str, object]", row)
@@ -1620,6 +1634,8 @@ class WslcSandboxBackend:
             args += ["--network", "none"]
         for label, value in _sandbox_labels(key, spec).items():
             args += ["-l", f"{label}={value}"]
+        work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
+        args += ["-l", f"{_LABEL_WORK_DIR}={work_dir}"]
         args += [image, "sleep", "infinity"]
 
         result = await self._wslc(*args, timeout=self._config.command_timeout_seconds)
