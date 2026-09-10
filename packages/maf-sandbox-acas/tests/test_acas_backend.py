@@ -3182,13 +3182,7 @@ class TestConcurrentAcquire:
         assert {first.sandbox_id, second.sandbox_id} == {"sbx-1", "sbx-2"}
 
     def test_a_second_event_loop_can_wait_on_the_same_key(self):
-        """An `asyncio.Lock` binds to the loop that first had to wait on it.
-
-        This backend is reachable from more than one loop — the same reason its group clients
-        are cached per loop — so a lock kept per key alone raises ``RuntimeError`` the first
-        time two calls contend on a second loop. `SandboxToolSession.acquire` reports that as
-        "sandbox unavailable", so the run degrades to T0 with nothing naming the cause.
-        """
+        """Successive event loops can each contend for the same key."""
         client = _SlowCreateGroupClient()
         backend = _backend_with(client)
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
@@ -3202,6 +3196,126 @@ class TestConcurrentAcquire:
         asyncio.run(both())
 
         assert client.create_calls == 1
+
+    @pytest.mark.parametrize("different_policy", [False, True])
+    def test_overlapping_event_loops_do_not_create_competing_sandboxes(self, different_policy):
+        creating, attempted, release = (threading.Event() for _ in range(3))
+
+        class PausedCreate(_SlowCreateGroupClient):
+            async def begin_create_sandbox(self, **kwargs):
+                poller = await super().begin_create_sandbox(**kwargs)
+
+                class PausedPoller:
+                    async def result(self):
+                        creating.set()
+                        assert await asyncio.to_thread(release.wait, 5)
+                        return await poller.result()
+
+                return PausedPoller()
+
+        client = PausedCreate()
+        backend = _backend_with(client)
+        key = SandboxKey("s", "t", "a")
+        original = replace(_spec(), egress=Egress.ALLOWLIST, egress_allow=("api.example",))
+        changed = replace(original, egress=Egress.CLOSED, egress_allow=())
+
+        def acquire(spec, signal=None):
+            async def run():
+                task = asyncio.create_task(backend.acquire(key, spec))
+                if signal is not None:
+                    await asyncio.sleep(0)
+                    signal.set()
+                try:
+                    return await task
+                except AcasEgressPolicyConflict as conflict:
+                    return conflict
+
+            return asyncio.run(run())
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(acquire, original)
+            try:
+                assert creating.wait(5)
+                second = pool.submit(acquire, changed if different_policy else original, attempted)
+                assert attempted.wait(5)
+                concurrent_creates = client.create_calls
+            finally:
+                release.set()
+            original_sandbox = first.result(timeout=5)
+            other = second.result(timeout=5)
+
+        assert concurrent_creates == client.create_calls == 1
+        assert not isinstance(original_sandbox, AcasEgressPolicyConflict)
+        if different_policy:
+            assert isinstance(other, AcasEgressPolicyConflict)
+        else:
+            assert not isinstance(other, AcasEgressPolicyConflict)
+            assert original_sandbox.instance_id == other.instance_id
+        held = backend._registry[("s", "t", "a", original.kind)]
+        assert held.sandbox_id == original_sandbox.instance_id
+        assert held.egress == (Egress.ALLOWLIST, frozenset({"api.example"}))
+
+    def test_cancelling_a_waiter_preserves_exclusion_for_other_waiters(self):
+        backend = _backend_with(_SlowCreateGroupClient())
+        identity = ("s", "t", "a", "kind")
+        entered = []
+
+        async def wait_for_owner(name):
+            async with backend._acquire_lock(identity):
+                entered.append(name)
+
+        async def scenario():
+            async with backend._acquire_lock(identity):
+                cancelled = asyncio.create_task(wait_for_owner("cancelled"))
+                follower = asyncio.create_task(wait_for_owner("follower"))
+                await asyncio.sleep(0)
+                cancelled.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await cancelled
+                await asyncio.sleep(0)
+                assert not follower.done()
+                assert entered == []
+            await asyncio.wait_for(follower, timeout=1)
+            assert entered == ["follower"]
+            assert backend._acquisitions == {}
+
+        asyncio.run(scenario())
+
+    @pytest.mark.parametrize("cancel_owner", [False, True])
+    def test_an_interrupted_owner_releases_waiters(self, cancel_owner):
+        backend = _backend_with(_SlowCreateGroupClient())
+        identity = ("s", "t", "a", "kind")
+
+        async def scenario():
+            entered = asyncio.Event()
+            fail = asyncio.Event()
+
+            async def owner():
+                async with backend._acquire_lock(identity):
+                    entered.set()
+                    await fail.wait()
+                    raise RuntimeError("create failed")
+
+            async def follower():
+                async with backend._acquire_lock(identity):
+                    return "acquired"
+
+            task = asyncio.create_task(owner())
+            await entered.wait()
+            waiting = asyncio.create_task(follower())
+            await asyncio.sleep(0)
+            if cancel_owner:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            else:
+                fail.set()
+                with pytest.raises(RuntimeError, match="create failed"):
+                    await task
+            assert await asyncio.wait_for(waiting, timeout=1) == "acquired"
+            assert backend._acquisitions == {}
+
+        asyncio.run(scenario())
 
 
 class TestKindIdentity:

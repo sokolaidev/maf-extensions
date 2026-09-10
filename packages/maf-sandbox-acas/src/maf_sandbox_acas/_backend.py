@@ -16,7 +16,9 @@ import logging
 import posixpath
 import shlex
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
+from concurrent.futures import Future
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from hashlib import sha256
 from time import monotonic
@@ -793,10 +795,8 @@ class AcasSandboxBackend:
         #: Which (image, kind) pairs have already been warned about. `acquire` runs on every
         #: tool call, and a warning per call is noise rather than a signal.
         self._warned_about_the_guest: set[tuple[tuple[str, str], str]] = set()
-        # One get-or-create lock per (loop, registry key) — see `_acquire_lock`.
-        self._acquire_locks: dict[
-            tuple[asyncio.AbstractEventLoop, tuple[str, str, str, str]], asyncio.Lock
-        ] = {}
+        self._acquisitions: dict[tuple[str, str, str, str], Future[None]] = {}
+        self._acquire_guard = threading.Lock()
 
     @property
     def name(self) -> str:
@@ -860,8 +860,8 @@ class AcasSandboxBackend:
         several; none of that is visible in the tool's output, which reports compiler
         diagnostics either way.
 
-        Get-or-create is serialised per key, because a create names no sandbox and the
-        service therefore has nothing to recognise a duplicate by.  The function calls in one
+        Get-or-create is serialised per key and kind across event loops. A create names no
+        sandbox, so the service has nothing to recognise a duplicate by. The function calls in one
         assistant message are executed concurrently, so two acquires for one key can be in
         flight at once; unserialised, both miss the registry and each is handed a running,
         billable sandbox, of which only one stays registered.
@@ -884,19 +884,26 @@ class AcasSandboxBackend:
                 await sandbox.prepare_work_dir(spec)
             return sandbox
 
-    def _acquire_lock(self, registry_key: tuple[str, str, str, str]) -> asyncio.Lock:
-        """The get-or-create lock for one key on the running loop.
-
-        Per loop as well as per key: an :class:`asyncio.Lock` binds to the first loop a
-        caller has to *wait* on it and raises on every other one after that, and this backend
-        is reachable from more than one loop (see ``_clients``).  Per key rather than one lock
-        for the backend, so a cold create for one conversation never queues behind another's.
-        """
-        lock_key = (asyncio.get_running_loop(), registry_key)
-        lock = self._acquire_locks.get(lock_key)
-        if lock is None:
-            lock = self._acquire_locks[lock_key] = asyncio.Lock()
-        return lock
+    @asynccontextmanager
+    async def _acquire_lock(
+        self, registry_key: tuple[str, str, str, str]
+    ) -> AsyncGenerator[None, None]:
+        """Serialize one registry key across event loops without blocking their threads."""
+        while True:
+            with self._acquire_guard:
+                active = self._acquisitions.get(registry_key)
+                if active is None:
+                    owned: Future[None] = Future()
+                    self._acquisitions[registry_key] = owned
+                    break
+            # A cancelled waiter must not cancel the owner's shared completion signal.
+            await asyncio.shield(asyncio.wrap_future(active))
+        try:
+            yield
+        finally:
+            with self._acquire_guard:
+                del self._acquisitions[registry_key]
+            owned.set_result(None)
 
     async def _get_or_create(self, key: SandboxKey, spec: SandboxSpec) -> _AcasSandbox:
         """:meth:`acquire`'s body, run under that key's lock."""
