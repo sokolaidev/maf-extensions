@@ -30,11 +30,11 @@ Everything else is sample 06 unchanged: the same image, the same backend, the sa
 
 **The summary lands as `summary.md`, not `<run-id>/summary.md`.** Inside the sandbox the file lives under the run directory; the delivered name is a separate field. This is the one place that distinction is visible from outside — on disk, in `out/`.
 
-**The last line of output is the host's, not the model's.** The model is told a sentence by the sink; the sample prints, as JSON, what the sink actually took *this turn* — JSON because a comma is legal in an artifact name, so a comma-joined list would read one delivery back as two. That distinction is the whole value of the line: `out/` may still hold a summary an earlier run left there, so listing the directory would report a delivery that did not happen. A turn that computes the right total and writes nothing is exactly the failure this sample exists to make visible, and it is not visible from the transcript alone.
+**The last line of output is the host's, not the model's.** The model is told a sentence by the sink; the sample prints, as JSON, what the sink actually took *this turn* — JSON because a comma is legal in an artifact name, so a comma-joined list would read one delivery back as two. That distinction is the whole value of the line: names not delivered this turn remain in `out/`, including an old summary if no new one lands, so listing the directory cannot prove delivery. A turn that computes the right total and writes nothing is exactly the failure this sample exists to make visible, and it is not visible from the transcript alone.
 
 ## Where the sink points, and why it is the interesting decision
 
-`make_recording_sink` writes under this directory's `out/`. The agent's file store is a separate `InMemoryAgentFileStore`, and **the two are deliberately not the same place**.
+`make_recording_sink` writes under this directory's `out/` and explicitly chooses `make_file_system_sink(existing="replace")`, so a corrected program or a later local execution landing `summary.md` replaces the earlier file. The agent's file store is a separate `InMemoryAgentFileStore`, and **the two are deliberately not the same place**.
 
 That matters more here than for any other kind, because these bytes were authored by model-written code. A host that points the sink at the store the agent's own file tools write to has handed that code an unapproved `file_access_write`; one that lets it overwrite has given it a way to influence a *different* tool on the next call. Point the sink somewhere the agent cannot otherwise reach — which is what this sample does, and the reason `out/` is a plain directory on the host rather than the **working** store.
 
