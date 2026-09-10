@@ -66,7 +66,6 @@ from maf_sandbox import (
     EntryKind,
     OsFamily,
     SandboxCapabilityNotSupported,
-    SandboxEgressNotEnforced,
     SandboxKey,
     SandboxRouter,
     SandboxSpec,
@@ -93,7 +92,7 @@ try:
 except ImportError:
     assert_reclaim_conformance = None
 
-from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
+from maf_sandbox_acas import AcasEgressPolicyConflict, AcasSandboxBackend, AcasSandboxConfig
 
 _ROOT = Path(__file__).resolve().parents[1]
 _RECOVERY_SPEC = importlib.util.spec_from_file_location(
@@ -1320,7 +1319,7 @@ class TestEgressAgainstTheRealService:
             equivalent = replace(spec, egress_allow=(_EGRESS_ALLOWED_HOST.upper(),))
             assert (await router.acquire(key, equivalent)).instance_id == first.instance_id
             for changed in (replace(spec, egress_allow=("pypi.org",)), closed):
-                with pytest.raises(SandboxEgressNotEnforced, match="dispose_kind"):
+                with pytest.raises(AcasEgressPolicyConflict, match="dispose_kind"):
                     await router.acquire(key, changed)
             assert (await router.acquire(key, spec)).instance_id == first.instance_id
             assert "status:200" in await request(first)

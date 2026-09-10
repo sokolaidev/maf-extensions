@@ -70,7 +70,12 @@ from ._probes import probe_commands
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["BACKEND_NAME", "AcasEntryPayloadIncomplete", "AcasSandboxBackend"]
+__all__ = [
+    "BACKEND_NAME",
+    "AcasEgressPolicyConflict",
+    "AcasEntryPayloadIncomplete",
+    "AcasSandboxBackend",
+]
 
 #: The name :attr:`AcasSandboxBackend.name` answers to, and the value
 #: :class:`~maf_sandbox.SandboxRouter`'s ``selected=`` matches on.
@@ -87,6 +92,10 @@ __all__ = ["BACKEND_NAME", "AcasEntryPayloadIncomplete", "AcasSandboxBackend"]
 #: `maf_sandbox_acas.BACKEND_NAME`, or alias at the import:
 #: `from maf_sandbox_acas import BACKEND_NAME as ACAS_BACKEND`.
 BACKEND_NAME = "acas"
+
+
+class AcasEgressPolicyConflict(SandboxEgressNotEnforced):
+    """This key and kind hold a sandbox created with a different egress policy."""
 
 
 class AcasEntryPayloadIncomplete(SandboxOutputError):
@@ -386,7 +395,7 @@ class _Held:
     removal: bool | None = None
     probed: bool = False
     commands: set[str] = field(default_factory=set[str])
-    egress: tuple[Egress, frozenset[str]] = (Egress.CLOSED, frozenset())
+    egress: tuple[Egress, frozenset[str]] = field(kw_only=True)
 
 
 def _egress_key(spec: SandboxSpec) -> tuple[Egress, frozenset[str]]:
@@ -864,10 +873,10 @@ class AcasSandboxBackend:
                 probe serves the writing capabilities but refuses deletion; a successful
                 probe does not establish that the guest is root. Method-scoped egress
                 is also refused because the service matches methods case-insensitively.
-            SandboxEgressNotEnforced: when this key and kind already hold a different
-                egress policy. Dispose the kind before changing it, or use another key.
+            AcasEgressPolicyConflict: when this key and kind already hold a different
+                egress policy. Successfully dispose the kind through the router or this
+                backend before changing it, or use another key.
         """
-        _egress_key(spec)
         _sandbox_labels(key, spec)
         async with self._acquire_lock((key.scope, key.thread_id, key.agent_dir, spec.kind)):
             sandbox = await self._get_or_create(key, spec)
@@ -896,10 +905,10 @@ class AcasSandboxBackend:
         held = self._registry.get(registry_key)
         if held is not None and held.egress != egress:
             # Replacement could delete an instance another caller is still using.
-            raise SandboxEgressNotEnforced(
+            raise AcasEgressPolicyConflict(
                 "ACAS already holds a different egress policy for this key and kind. "
-                "Dispose the kind with SandboxRouter.dispose_kind before changing policy, "
-                "or use a different key."
+                "Successfully dispose the kind with SandboxRouter.dispose_kind or "
+                "AcasSandboxBackend.dispose before changing policy, or use a different key."
             )
         gc = self._group_client()
         if held is not None:
