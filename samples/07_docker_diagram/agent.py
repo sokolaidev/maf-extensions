@@ -152,6 +152,7 @@ async def run() -> int:
     # which this kind phrases with a verb because nothing introduces the line for it.
     sink = make_file_system_sink(
         OUTPUT_DIR,
+        existing="replace",
         display=lambda artifact, _destination: (
             f"Rendered {artifact.name} ({artifact.media_type}); saved under {OUTPUT_DIR.name}/."
         ),
