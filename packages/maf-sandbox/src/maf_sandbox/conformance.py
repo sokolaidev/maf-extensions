@@ -1958,8 +1958,7 @@ async def _probe_a_missing_directory_is_success(
 async def _probe_an_absent_working_directory_still_succeeds(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
-    # A call that wrote nothing leaves the work dir absent. A backend that moves there first
-    # fails here.
+    # Cleanup must not depend on changing into a caller's uncreated child directory.
     await subject.sandbox.reclaim(
         f"{paths.work}/absent-work/call-a1b2c3",
         working_directory=f"{paths.work}/absent-work",

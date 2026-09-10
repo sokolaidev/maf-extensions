@@ -36,12 +36,7 @@ class TestARemovalThatRuns:
         assert f"{_WORK}/abc123/program.py" not in sandbox.contents
 
     def test_the_working_directory_says_where_the_call_directory_sits(self):
-        """It is passed through as the spec's own, not rewritten into somewhere to run from.
-
-        No backend creates a spec's work dir, so a removal that moved there first would fail
-        for a call that took a path and wrote nothing. That duty is the backend's now — the
-        reclaim contract states it, and `an-absent-working-directory-still-succeeds` asks it.
-        """
+        """The spec's base is passed through without choosing the cleanup command's cwd."""
         sandbox = InProcessSandbox()
         _reclaim(sandbox, f"{_WORK}/abc123")
         assert sandbox.reclaims[0][1] == _WORK

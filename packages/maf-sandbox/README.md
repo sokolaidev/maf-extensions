@@ -385,7 +385,7 @@ async def reclaim(self, directory: str, *, working_directory: str, timeout: floa
 
 The caller supplies a directory it created under `working_directory`, but the guest can replace that path or an ancestor before cleanup. The **reach rule** still applies: removal must not delete anything the guest program could not have deleted itself. The backend owns the mechanism and any checks needed to establish safety, and refuses if it cannot. A framework-chosen name does not license an absent check. For removal that can safely be attempted, an absent directory is success and other failures raise so the caller can escalate.
 
-`working_directory` says where the directory sits; it is **not** a directory to run the removal from. No backend creates a spec's `work_dir`, so a call that wrote nothing leaves it absent, and a removal that moved there first would fail over a directory that is already gone. The target is absolute, so cwd decides nothing.
+`working_directory` says where the directory sits; it is **not** a directory to run the removal from. Acquire prepares the spec's base, but a caller's child directory may never have been created, and the guest can remove a directory before cleanup. The absolute removal target must not depend on changing into that directory first.
 
 Docker implements reclamation through `rm -rf`, as root when its acquire-time reach check permits it and otherwise as the image's user. ACAS uses the data plane's `delete_file`. Both currently withhold `RECLAIM`, so router-managed cleanup disposes their sandboxes. WSLC refuses direct reclamation and also uses disposal. The in-process fake declares `RECLAIM`, removes entries from its store, and records the call.
 
