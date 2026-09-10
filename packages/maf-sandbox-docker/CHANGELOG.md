@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.18.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.18.0...maf-sandbox-docker-v0.18.1) (2026-09-10)
+
+
+### Fixes
+
+* **docker+wslc:** avoid double-counting egress decisions after failed proxy removal ([#1070](https://github.com/sokolaidev/maf-extensions/issues/1070)) ([9daf1d3](https://github.com/sokolaidev/maf-extensions/commit/9daf1d394190040293628df02d072ff3c7287b2f))
+* **docker+wslc:** preserve proxy attribution across restarts and concurrent cleanup ([#1071](https://github.com/sokolaidev/maf-extensions/issues/1071)) ([b22bfd8](https://github.com/sokolaidev/maf-extensions/commit/b22bfd865e3cae3429907e98d2bc42b263352348))
+
 ## [0.18.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.17.0...maf-sandbox-docker-v0.18.0) (2026-09-10)
 
 
