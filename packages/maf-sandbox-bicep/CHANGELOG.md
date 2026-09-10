@@ -2,6 +2,23 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.15.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.14.2...maf-sandbox-bicep-v0.15.0) (2026-09-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* let core label guidance and weaken results from file reads ([#1054](https://github.com/sokolaidev/maf-extensions/issues/1054))
+
+### Features
+
+* **bicep:** keep confined validation sandboxes warm between calls ([#1068](https://github.com/sokolaidev/maf-extensions/issues/1068)) ([f14fb1c](https://github.com/sokolaidev/maf-extensions/commit/f14fb1c93ec75d942d56b50945a26393523ae6c6))
+* let core label guidance and weaken results from file reads ([#1054](https://github.com/sokolaidev/maf-extensions/issues/1054)) ([afcd44d](https://github.com/sokolaidev/maf-extensions/commit/afcd44d061f94c5d9060de14a6321a7299cc67a3))
+
+
+### Fixes
+
+* **bicep:** keep caches and temporary profiles inside each call directory ([#1042](https://github.com/sokolaidev/maf-extensions/issues/1042)) ([658ec43](https://github.com/sokolaidev/maf-extensions/commit/658ec43448e6cb11f4422ea7eabc1324dffa6869))
+
 ## [0.14.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.14.1...maf-sandbox-bicep-v0.14.2) (2026-09-08)
 
 
