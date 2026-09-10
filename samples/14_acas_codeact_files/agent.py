@@ -161,7 +161,7 @@ async def run() -> int:
     context = make_caller_context(list_all_files, lambda: SCOPE, lambda: THREAD_ID)
 
     # This turn's deliveries, recorded by the sink as they arrive. Not the same as the
-    # contents of `out/`, which also holds whatever an earlier run left there.
+    # contents of `out/`, which also holds files not delivered this turn.
     delivered: list[str] = []
 
     tools = make_codeact_tools(
