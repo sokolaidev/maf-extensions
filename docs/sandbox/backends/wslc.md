@@ -4,6 +4,8 @@
 
 ## What it declares
 
+The declared capabilities are a ceiling for a conforming image. Acquire checks `sh` for `EXEC` and the external `test` command for `FILES_IN`, including its true and false exit statuses as the root principal the write-path check uses. A shell builtin cannot satisfy that external-command check. Unresolved write ownership also refuses `FILES_IN` at acquire. Successful command checks are cached per engine instance ID; failed checks are retried, and a refused container stays tracked for host disposal. The checks do not strengthen guest-answered path checks or enable reclamation. See [the ceiling and probe contract](../guest-platform-and-commands.md#decision-3--a-static-ceiling-matched-at-attach-and-a-probe-at-acquire).
+
 The four below `isolation` are fields of this backend's `declarations`.
 
 | Declaration | Value |

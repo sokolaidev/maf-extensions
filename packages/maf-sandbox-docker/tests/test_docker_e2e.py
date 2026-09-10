@@ -44,6 +44,7 @@ from maf_sandbox import (
     HostToolRun,
     Isolation,
     OsFamily,
+    SandboxCapabilityNotSupported,
     SandboxKey,
     SandboxProgramTimeout,
     SandboxRouter,
@@ -98,6 +99,7 @@ _NAMED_USER_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_NAMED_USER_IMAGE")
 #: The same named user, but carrying `/maf-sandbox` with no `work_dir` under it: the one shape
 #: where `write_file` has to send `work_dir` itself as an entry rather than let docker make it.
 _ABSENT_WORK_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_ABSENT_WORK_IMAGE")
+_COMMAND_PROBE_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_COMMAND_PROBE_IMAGE")
 #: What the images above put in `work_dir` at build time: the control for a reclaim.
 _CARRIED = "carried.json"
 
@@ -157,6 +159,61 @@ def test_acquire_prepares_base_before_exec_and_repairs_warm_reuse(image):
             assert await backend.dispose(key, kind=spec.kind) is None
 
     asyncio.run(scenario())
+
+
+@pytest.mark.skipif(not _COMMAND_PROBE_IMAGE, reason="needs the missing-commands fixture image")
+class TestCommandProbes:
+    @pytest.mark.parametrize(
+        "capability", [Capability.EXEC, Capability.FILES_DELETE, Capability.HOST_TOOLS]
+    )
+    def test_missing_commands_are_refused_at_acquire(self, capability):
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+        router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
+        key = _key(f"e2e-command-{uuid.uuid4()}")
+        spec = SandboxSpec(
+            kind="commands", image=_COMMAND_PROBE_IMAGE, requires=frozenset({capability})
+        )
+
+        async def scenario():
+            router.ensure_can_serve(spec)
+            try:
+                with pytest.raises(SandboxCapabilityNotSupported, match=str(capability)):
+                    await router.acquire(key, spec)
+            finally:
+                await router.dispose(key)
+
+        asyncio.run(scenario())
+        assert not _names_on_the_machine(_container_name(key, spec.kind))
+
+    def test_file_transfers_work_and_a_stronger_warm_request_is_refused(self):
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+        key = _key(f"e2e-command-{uuid.uuid4()}")
+        spec = SandboxSpec(
+            kind="commands",
+            image=_COMMAND_PROBE_IMAGE,
+            requires=frozenset({Capability.FILES_IN, Capability.FILES_OUT}),
+        )
+
+        async def scenario():
+            try:
+                sandbox = await backend.acquire(key, spec)
+                await sandbox.write_file("marker", b"bytes", working_directory=spec.work_dir)
+                assert (
+                    await sandbox.read_file("marker", working_directory=spec.work_dir, max_bytes=10)
+                    == b"bytes"
+                )
+                stronger = SandboxSpec(
+                    kind=spec.kind, image=spec.image, requires=frozenset({Capability.EXEC})
+                )
+                with pytest.raises(SandboxCapabilityNotSupported, match="sh"):
+                    await backend.acquire(key, stronger)
+                reused = await backend.acquire(key, spec)
+                assert reused.instance_id == sandbox.instance_id
+            finally:
+                await backend.dispose(key)
+
+        asyncio.run(scenario())
+        assert not _names_on_the_machine(_container_name(key, spec.kind))
 
 
 def _spec(**kw) -> SandboxSpec:

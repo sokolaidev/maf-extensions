@@ -44,6 +44,8 @@ router = SandboxRouter([backend])  # microVM isolation meets the router's defaul
 
 ## The backend
 
+Acquire checks `sh` for `EXEC` and the shell, `mkdir`, `mv` and `nohup` for `HOST_TOOLS`, alongside the existing observed-removal gate. Missing prerequisites raise `SandboxCapabilityNotSupported`; successful command checks are cached with that sandbox, and failed checks are retryable. The interpreter remains the workload's choice, and `setsid` stays optional. See the [image command contract](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/guest-platform-and-commands.md#decision-3--a-static-ceiling-matched-at-attach-and-a-probe-at-acquire).
+
 `AcasSandboxBackend` implements `maf_sandbox.SandboxBackend`:
 
 | | |

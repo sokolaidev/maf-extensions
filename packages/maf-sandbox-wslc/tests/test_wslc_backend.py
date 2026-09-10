@@ -36,6 +36,7 @@ from maf_sandbox import (
     OsFamily,
     SandboxBackend,
     SandboxBackendNotPermitted,
+    SandboxCapabilityNotSupported,
     SandboxKey,
     SandboxOsFamilyNotSupported,
     SandboxRouter,
@@ -115,13 +116,7 @@ class _FakeWslc:
 
     def __init__(self, responder=None) -> None:
         self.calls: list[_Recorded] = []
-        self._responder = responder or (
-            lambda args: (
-                _WslcResult(1, b"", b"no such file")
-                if args[:2] == ("container", "cp") and args[2] != "-"
-                else _WslcResult(0, b"", b"")
-            )
-        )
+        self._responder = responder or _machine()
 
     async def __call__(self, *args: str, stdin=None, timeout=None, read_limit=None) -> _WslcResult:
         self.calls.append(_Recorded(args, stdin, timeout, read_limit))
@@ -147,6 +142,7 @@ class _FakeWslc:
             c
             for c in self.matching(*prefix)
             if not (c.args[-2:] in (("id", "-u"), ("id", "-g")) and c.read_limit == 64)
+            and c.read_limit != 1024
         ]
         if prefix == ("container", "cp"):
             found = [call for call in found if len(call.args) > 2 and call.args[2] == "-"]
@@ -192,6 +188,8 @@ def _machine(
             )
         if args[:2] == ("container", "logs"):
             return _WslcResult(0, b"listening on 3128\n", b"")
+        if args[-2:-1] == ("-e",) and args[-1].startswith("/.maf-command-probe-"):
+            return _WslcResult(1, b"", b"")
         return _WslcResult(0, b"", b"")
 
     return respond
@@ -254,6 +252,56 @@ def test_instance_id_comes_from_the_engine_on_every_acquire():
     replacement = asyncio.run(backend.acquire(_KEY, _SPEC))
     assert replacement.instance_id == "b" * 64
     assert first.instance_id == "a" * 64
+
+
+class TestImageCommandProbes:
+    @pytest.mark.parametrize(
+        "capability,command,privilege",
+        [
+            (Capability.EXEC, "sh", ()),
+            (Capability.FILES_IN, "test", ("--user", "0")),
+        ],
+    )
+    def test_missing_commands_refuse_acquire_and_can_be_retried(
+        self, capability, command, privilege
+    ):
+        prefix = ("container", "exec", *privilege, "-w", "/", f"id-{_NAME}", command)
+        backend, fake = _backend_with(
+            _machine(
+                running=[_NAME],
+                overrides={
+                    prefix: _WslcResult(127, b"", b"missing executable"),
+                },
+            )
+        )
+        spec = replace(_SPEC, requires=frozenset({capability}))
+        router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
+        router.ensure_can_serve(spec)
+        with pytest.raises(SandboxCapabilityNotSupported, match=command):
+            asyncio.run(router.acquire(_KEY, spec))
+        assert not fake.matching("container", "remove")
+        fake._responder = _machine(running=[_NAME])
+        assert asyncio.run(backend.acquire(_KEY, spec)).instance_id == f"id-{_NAME}"
+
+    def test_concurrent_acquires_share_the_successful_command_checks(self):
+        backend, fake = _backend_with(_machine(running=[_NAME]))
+
+        async def yielding_engine(*args, **kwargs):
+            await asyncio.sleep(0)
+            return await fake(*args, **kwargs)
+
+        backend._wslc = yielding_engine
+
+        async def scenario():
+            first, second = await asyncio.gather(
+                backend.acquire(_KEY, _SPEC),
+                backend.acquire(_KEY, _SPEC),
+            )
+            assert first.instance_id == second.instance_id
+            probes = [call for call in fake.calls if call.read_limit == 1024]
+            assert len(probes) == 3
+
+        asyncio.run(scenario())
 
 
 class TestBackendIdentity:
@@ -541,7 +589,7 @@ class TestAcquireRecoversFromANameConflict:
                 if running_after_the_conflict:
                     present.append(_NAME)
                 return _WslcResult(1, b"", b"Error code: ERROR_ALREADY_EXISTS")
-            return _WslcResult(0, b"", b"")
+            return _machine()(args)
 
         return _backend_with(respond)
 
@@ -614,7 +662,7 @@ class TestExecArgv:
 
 class TestExecResult:
     def test_stdout_stderr_and_exit_code_are_mapped_verbatim(self):
-        overrides = {("container", "exec"): _WslcResult(7, b"out\n", b"err\n")}
+        overrides = {("container", "exec", "-w", "/w"): _WslcResult(7, b"out\n", b"err\n")}
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         result = asyncio.run(sandbox.exec(["false"], working_directory="/w", timeout=5))
@@ -634,7 +682,7 @@ class TestExecDiscardsATimedOutSandbox:
         base = _machine(running=[_NAME])
 
         def respond(args: tuple[str, ...]) -> _WslcResult:
-            if args[:2] == ("container", "exec"):
+            if args[:4] == ("container", "exec", "-w", "/w"):
                 raise TimeoutError("wslc exec did not answer")
             return base(args)
 
@@ -661,7 +709,7 @@ class TestExecDiscardsATimedOutSandbox:
         base = _machine(running=[_NAME])
 
         def respond(args: tuple[str, ...]) -> _WslcResult:
-            if args[:2] in (("container", "exec"), ("container", "remove")):
+            if args[:4] == ("container", "exec", "-w", "/w") or args[:2] == ("container", "remove"):
                 raise TimeoutError("wslc is not answering at all")
             return base(args)
 
@@ -865,9 +913,8 @@ class TestWriteFile:
             ("container", "exec", "-w", "/", _NAME, "id", "-g"): _WslcResult(0, gid, b""),
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
-        with pytest.raises(RuntimeError, match="resolve the image user"):
-            asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
+        with pytest.raises(SandboxCapabilityNotSupported, match="image user is unresolved"):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
         assert not fake.matching("container", "cp")
 
     def test_each_acquire_resolves_write_ownership_again(self):
@@ -884,9 +931,8 @@ class TestWriteFile:
             return next(answers) if args[:2] == ("container", "inspect") else machine(args)
 
         backend, fake = _backend_with(respond)
-        first = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
-        with pytest.raises(RuntimeError, match="resolve the image user"):
-            asyncio.run(first.write_file("input", b"data", working_directory=_WORK))
+        with pytest.raises(SandboxCapabilityNotSupported, match="image user is unresolved"):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
         for expected in ((10001, 20001), (10002, 20002)):
             sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
             asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
@@ -1132,7 +1178,7 @@ class TestStatGuestTarHeader:
         overrides = {
             (*_PROBE, "-e", "/w"): _WslcResult(0, b"", b""),
             (*_PROBE, "-x", "/w"): _WslcResult(0, b"", b""),
-            ("container", "exec"): _WslcResult(1, b"", b""),
+            _PROBE: _WslcResult(1, b"", b""),
             ("container", "cp"): _WslcResult(0, b"x", b""),
         }
         sandbox = self._sandbox(overrides=overrides)
@@ -1145,7 +1191,7 @@ class TestStatGuestTarHeader:
             ("container", "cp"): _WslcResult(0, b"x", b""),
             # The responder takes the first prefix that matches, so the narrow key leads.
             (*_PROBE, "-e"): _WslcResult(0, b"", b""),
-            ("container", "exec"): _WslcResult(1, b"", b""),
+            _PROBE: _WslcResult(1, b"", b""),
         }
         sandbox = self._sandbox(overrides=overrides)
         result = asyncio.run(sandbox._stat_guest("/w/pipe", "pipe"))
@@ -1157,7 +1203,7 @@ class TestStatGuestTarHeader:
         end the check, so it raises instead."""
         overrides = {
             ("container", "cp"): _WslcResult(0, b"x", b""),
-            ("container", "exec"): _WslcResult(126, b"", b"exec user process failed"),
+            _PROBE: _WslcResult(126, b"", b"exec user process failed"),
         }
         sandbox = self._sandbox(overrides=overrides)
         with pytest.raises(RuntimeError, match="exit 126"):

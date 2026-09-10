@@ -8,6 +8,8 @@ A `docker`-compatible command-line client talking to a Docker-API-compatible soc
 
 ## What it declares
 
+Capabilities are a static ceiling for a conforming image. Acquire checks `sh` for `EXEC`, a no-operand `rm -rf --` for `FILES_DELETE`, and the shell, `mkdir`, `mv` and `nohup` for `HOST_TOOLS`. Only requested checks run, and successful results follow the engine instance ID across warm acquires. Missing commands are refused with `SandboxCapabilityNotSupported`; failed checks are retryable and the container stays tracked for disposal. These invocation checks establish neither deletion authority nor general command correctness. File-only workloads need no guest command. See [the ceiling and probe contract](../guest-platform-and-commands.md#decision-3--a-static-ceiling-matched-at-attach-and-a-probe-at-acquire).
+
 The four below `isolation` are fields of this backend's `declarations`. Three are settled by the constructor; `os_families` is the one the daemon has to be asked for, and only `create` asks.
 
 | Declaration | Value |

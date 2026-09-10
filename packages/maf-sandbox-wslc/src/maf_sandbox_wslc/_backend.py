@@ -52,6 +52,7 @@ from maf_sandbox import (
     OsFamily,
     Sandbox,
     SandboxBackend,
+    SandboxCapabilityNotSupported,
     SandboxEntry,
     SandboxKey,
     SandboxSpec,
@@ -70,6 +71,7 @@ from maf_sandbox.paths import (
 )
 
 from ._config import WslcSandboxConfig
+from ._probes import probe_commands
 from ._proxy import build_context
 from ._reap import NETWORK_CREATED_LABEL, WslcReapResult, reap
 
@@ -740,6 +742,7 @@ class WslcSandboxBackend:
         # fails, never the truth. Holds the last name acquired per key and kind, which is
         # enough to reclaim them.
         self._registry: dict[tuple[str, str, str, str], str] = {}
+        self._command_probes: dict[str, tuple[str, set[str]]] = {}
         # Retry records do not refuse serving; the router owns that decision.
         self._undeleted: dict[tuple[str, str, str], set[str]] = {}
         self._undeleted_kinds: dict[tuple[str, str, str], dict[str, str]] = {}
@@ -989,6 +992,13 @@ class WslcSandboxBackend:
             guest_identity = await self._write_identity(
                 name, guest_uid, cast("dict[str, object]", row)
             )
+            if Capability.FILES_IN in spec.required_capabilities and guest_identity is None:
+                raise SandboxCapabilityNotSupported(
+                    f"sandbox backend 'wslc' cannot serve files_in to {spec.kind!r} from "
+                    f"image {spec.image_id or spec.image!r}: the image user is unresolved. "
+                    "Use a numeric uid:gid or working id commands. The next acquire retries."
+                )
+            await self._probe_commands(name, instance_id, spec)
             sandbox = _WslcSandbox(
                 self._wslc,
                 name,
@@ -1005,6 +1015,38 @@ class WslcSandboxBackend:
             )
             await sandbox.prepare_work_dir(spec)
             return sandbox
+
+    async def _probe_commands(self, name: str, instance_id: str, spec: SandboxSpec) -> None:
+        cached_id, verified = self._command_probes.get(name, (instance_id, set[str]()))
+        if cached_id != instance_id:
+            verified = set[str]()
+        self._command_probes[name] = (instance_id, verified)
+        deadline = asyncio.get_running_loop().time() + min(
+            10.0, self._config.command_timeout_seconds
+        )
+
+        async def run(argv: tuple[str, ...], as_root: bool) -> int:
+            privilege = ("--user", "0") if as_root else ()
+            async with asyncio.timeout_at(deadline):
+                result = await self._wslc(
+                    "container",
+                    "exec",
+                    *privilege,
+                    "-w",
+                    "/",
+                    instance_id,
+                    *argv,
+                    timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+                    read_limit=1024,
+                )
+            return result.returncode
+
+        await probe_commands(spec, verified, run)
+
+    def _forget_command_probes(self, target: str) -> None:
+        for name, (instance_id, _) in list(self._command_probes.items()):
+            if target in (name, instance_id):
+                self._command_probes.pop(name, None)
 
     async def _write_identity(
         self, name: str, guest_uid: int | None, inspected: dict[str, object]
@@ -1190,6 +1232,9 @@ class WslcSandboxBackend:
         Labels reach unregistered containers; retained names cover a failed listing.
         Failed deletions are retained per kind for retries and reported without raising."""
         if instance_id is not None:
+            for name, (cached_id, _) in list(self._command_probes.items()):
+                if cached_id == instance_id:
+                    self._command_probes.pop(name, None)
             return await self._dispose_instance(key, kind, instance_id)
         prefix = (key.scope, key.thread_id, key.agent_dir)
         with self._disposal_guard:
@@ -1202,6 +1247,7 @@ class WslcSandboxBackend:
             remembered: list[str] = []
             for entry in mine:
                 name = self._registry.pop(entry)
+                self._command_probes.pop(name, None)
                 remembered.append(name)
                 attributed[name] = entry[3]
             retained = sorted(
@@ -1261,6 +1307,7 @@ class WslcSandboxBackend:
             remembered: list[str] = []
             for entry in mine:
                 name = self._registry.pop(entry)
+                self._command_probes.pop(name, None)
                 prefix = entry[:3]
                 remembered.append(name)
                 self._undeleted.setdefault(prefix, set()).add(name)
@@ -1310,6 +1357,8 @@ class WslcSandboxBackend:
         """
 
         async def command(*args: str) -> _WslcResult:
+            if args[:3] == ("container", "remove", "-f"):
+                self._forget_command_probes(args[-1])
             return await self._wslc(*args, timeout=self._config.command_timeout_seconds)
 
         drained: dict[str, EgressObserved | None] = {}
@@ -1692,6 +1741,7 @@ class WslcSandboxBackend:
         failure: the sweep tries names the registry remembers, and one already gone is the
         ordinary case.
         """
+        self._forget_command_probes(target)
         try:
             result = await self._wslc(
                 "container", "remove", "-f", target, timeout=self._config.command_timeout_seconds

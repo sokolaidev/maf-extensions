@@ -44,6 +44,7 @@ jobs:
       MAF_SANDBOX_DOCKER_E2E_LOOSE_PARENT_IMAGE: maf-sandbox-docker-loose-parent:ci
       MAF_SANDBOX_DOCKER_E2E_NAMED_USER_IMAGE: maf-sandbox-docker-named-user:ci
       MAF_SANDBOX_DOCKER_E2E_ABSENT_WORK_IMAGE: maf-sandbox-docker-absent-work:ci
+      MAF_SANDBOX_DOCKER_E2E_COMMAND_PROBE_IMAGE: maf-sandbox-docker-missing-commands:ci
       # The CodeAct kind runs a Python program in the guest, so it needs an interpreter the
       # backend suite's image does not carry. Same registry for the same reason — MCR rather
       # than Docker Hub, whose unauthenticated pull limit is per shared-runner IP — and the
@@ -69,6 +70,9 @@ jobs:
           # Explicitly, because the proxy image above is pinned by digest and the two builds
           # below are otherwise the first thing in this job to resolve the tag.
           docker pull "$MAF_SANDBOX_DOCKER_E2E_IMAGE"
+          docker build --build-arg BASE_IMAGE="$MAF_SANDBOX_DOCKER_E2E_IMAGE" \
+            -t "$MAF_SANDBOX_DOCKER_E2E_COMMAND_PROBE_IMAGE" \
+            packages/maf-sandbox-docker/tests/fixtures/missing-commands
           # Five non-root guests off that base, so each build adds a layer and no download.
           # They vary along two axes. **How `USER` is spelled**: a numeric pair is taken from
           # `Config.User` as-is, while a name has to be resolved against the container's own

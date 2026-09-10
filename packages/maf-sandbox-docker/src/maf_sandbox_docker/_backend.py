@@ -85,6 +85,7 @@ from maf_sandbox.paths import (
 )
 
 from ._config import DockerSandboxConfig
+from ._probes import probe_commands
 from ._proxy import build_context
 
 logger = logging.getLogger(__name__)
@@ -1125,6 +1126,7 @@ class DockerSandboxBackend:
         # (container, image, work_dir) -> what the container itself says. Keyed on the image
         # because a container name is not, so one name can come back carrying a different one.
         self._facts: dict[tuple[str, str, str], _ContainerFacts] = {}
+        self._command_probes: dict[str, tuple[str, set[str]]] = {}
 
     @classmethod
     async def create(cls, config: DockerSandboxConfig) -> DockerSandboxBackend:
@@ -1500,6 +1502,7 @@ class DockerSandboxBackend:
                     "or an `id` it can run. Unresolved identities are retried on the next acquire."
                 ),
             )
+            await self._probe_commands(name, instance_id, spec)
             sandbox = _DockerSandbox(
                 self._docker,
                 name,
@@ -1512,6 +1515,32 @@ class DockerSandboxBackend:
             )
             await sandbox.prepare_work_dir(spec)
             return sandbox
+
+    async def _probe_commands(self, name: str, instance_id: str, spec: SandboxSpec) -> None:
+        cached_id, verified = self._command_probes.get(name, (instance_id, set[str]()))
+        if cached_id != instance_id:
+            verified = set[str]()
+        self._command_probes[name] = (instance_id, verified)
+        deadline = asyncio.get_running_loop().time() + min(
+            10.0, self._config.command_timeout_seconds
+        )
+
+        async def run(argv: tuple[str, ...], as_root: bool) -> int:
+            privilege = ("--user", "0") if as_root else ()
+            async with asyncio.timeout_at(deadline):
+                result = await self._docker(
+                    "exec",
+                    *privilege,
+                    "-w",
+                    "/",
+                    instance_id,
+                    *argv,
+                    timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+                    read_limit=1024,
+                )
+            return result.returncode
+
+        await probe_commands(spec, verified, run)
 
     async def _capabilities_dropped(self, name: str) -> bool:
         """Does this container run without ``CAP_DAC_OVERRIDE``?
@@ -1773,6 +1802,7 @@ class DockerSandboxBackend:
         knows the name will mean a different container, or a removal decides its principal
         from a container that no longer exists.
         """
+        self._command_probes.pop(container, None)
         for cached in [key for key in self._facts if key[0] == container]:
             del self._facts[cached]
 
@@ -1918,6 +1948,9 @@ class DockerSandboxBackend:
         Labels reach unregistered containers; retained names cover a failed listing.
         Failed deletions are retained per kind for retries and reported without raising."""
         if instance_id is not None:
+            for name, (cached_id, _) in list(self._command_probes.items()):
+                if cached_id == instance_id:
+                    self._command_probes.pop(name, None)
             return await self._dispose_instance(key, kind, instance_id)
         prefix = (key.scope, key.thread_id, key.agent_dir)
         with self._disposal_guard:
@@ -1930,6 +1963,7 @@ class DockerSandboxBackend:
             remembered: list[str] = []
             for entry in mine:
                 name = self._registry.pop(entry)
+                self._command_probes.pop(name, None)
                 remembered.append(name)
                 attributed[name] = entry[3]
             retained = sorted(
@@ -1988,6 +2022,7 @@ class DockerSandboxBackend:
             remembered: list[str] = []
             for entry in mine:
                 name = self._registry.pop(entry)
+                self._command_probes.pop(name, None)
                 prefix = entry[:3]
                 remembered.append(name)
                 self._undeleted.setdefault(prefix, set()).add(name)
