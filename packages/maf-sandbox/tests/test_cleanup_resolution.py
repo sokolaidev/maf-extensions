@@ -43,7 +43,7 @@ def test_established_rungs_require_their_evidence(confined, reclaim, snapshot):
     )
     spec = SandboxSpec(kind="test", confined_to_guest_call_path=confined)
     expected = {Cleanup.DISPOSE}
-    if confined and reclaim:
+    if reclaim:
         expected.add(Cleanup.RECLAIM)
     if snapshot:
         expected.add(Cleanup.RESET)
@@ -69,7 +69,7 @@ def test_resolution_selects_the_weakest_available_rung_at_each_floor(rungs, answ
     "confined,reclaim,snapshot,available",
     [
         (False, False, False, (False, False, True)),
-        (False, True, False, (False, False, True)),
+        (False, True, False, (True, False, True)),
         (True, False, False, (False, False, True)),
         (True, True, False, (True, False, True)),
         (False, False, True, (False, True, True)),
@@ -167,7 +167,7 @@ def test_admission_rechecks_cleanup_evidence_after_waiting(before, after, monkey
     backend = InProcessSandboxBackend()
     key = SandboxKey(scope="s", thread_id="t", agent_dir="a")
     spec = SandboxSpec(kind="test", confined_to_guest_call_path=True)
-    router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE, min_cleanup=Cleanup.RECLAIM)
 
     def declare(rung):
         caps = FAKE_BACKEND_DECLARATIONS.capabilities - {Capability.RECLAIM}
@@ -202,7 +202,7 @@ def test_upgraded_cleanup_still_admits_an_ordinary_shared_body(monkeypatch):
     backend = InProcessSandboxBackend()
     key = SandboxKey(scope="s", thread_id="t", agent_dir="a")
     spec = SandboxSpec(kind="test", confined_to_guest_call_path=True)
-    router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE, min_cleanup=Cleanup.RECLAIM)
 
     async def scenario():
         await router.enter_call(key, spec, owner="first")

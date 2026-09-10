@@ -1,0 +1,158 @@
+"""Real launcher receipts protect unrelated processes even when guest PID files are forged."""
+
+import asyncio
+import json
+import os
+import posixpath
+import shutil
+import uuid
+
+import maf_sandbox
+import pytest
+from maf_sandbox import (
+    HostToolRegistry,
+    HostToolRun,
+    SandboxObserver,
+    SandboxProgramTimeout,
+    guest_run_layout,
+    host_tool_calls_over_exec,
+)
+
+from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
+from maf_sandbox_docker._backend import _DockerSandbox
+
+_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_IMAGE", "")
+pytestmark = pytest.mark.skipif(
+    not _IMAGE or not shutil.which("docker") or not hasattr(maf_sandbox, "ProcessesObserved"),
+    reason="needs a Python Docker image and the process observation seam",
+)
+
+
+class Records(SandboxObserver):
+    def __init__(self):
+        self.snapshots = []
+        self.signals = []
+
+    def processes_observed(self, event):
+        self.snapshots.append(event)
+
+    def process_cleanup(self, event):
+        self.signals.append(event)
+
+
+@pytest.mark.parametrize("finish", [True, False], ids=["success", "timeout"])
+def test_forged_files_do_not_redirect_cleanup_and_observed_escapees_are_stopped(finish):
+    async def scenario():
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+        name = "maf-process-test-" + uuid.uuid4().hex
+        created = await backend._docker(
+            "run",
+            "-d",
+            "--name",
+            name,
+            "--network",
+            "none",
+            "--user",
+            "65534:65534",
+            "--cap-drop",
+            "ALL",
+            "--pids-limit",
+            "64",
+            "--memory",
+            "128m",
+            _IMAGE,
+            "sleep",
+            "120",
+            timeout=30,
+        )
+        assert created.returncode == 0, created.stderr
+        sandbox = _DockerSandbox(
+            backend._docker,
+            name,
+            30,
+            cap_drop_all=True,
+            guest_uid=65534,
+            guest_gid=65534,
+            instance_id=created.stdout.decode().strip(),
+        )
+        try:
+            victim = await sandbox.exec(
+                [
+                    "python3",
+                    "-c",
+                    "import subprocess; p=subprocess.Popen(['sleep','90'], "
+                    "start_new_session=True,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,"
+                    "stderr=subprocess.DEVNULL); print(p.pid)",
+                ],
+                working_directory="/tmp",
+                timeout=10,
+            )
+            assert victim.exit_code == 0, victim.stderr
+            target = int(victim.stdout)
+            layout = guest_run_layout("/tmp/process-test/run")
+            prepared = await sandbox.exec(
+                ["mkdir", "-p", layout.work, posixpath.dirname(layout.program)],
+                working_directory="/tmp",
+                timeout=10,
+            )
+            assert prepared.exit_code == 0
+            program = f"""import json, os, subprocess, time
+from pathlib import Path
+child = subprocess.Popen(['sleep', '90'], start_new_session=True)
+Path('/tmp/process-witness').write_text(json.dumps(dict(program=os.getpid(), child=child.pid)))
+while not Path({layout.pid!r}).exists():
+    time.sleep(.01)
+Path({layout.pid!r}).write_text({str(target)!r})
+Path({layout.session!r}).write_text({str(target)!r})
+print('ready', flush=True)
+time.sleep(2 if {finish!r} else 90)
+"""
+            await sandbox.write_file(layout.program, program, working_directory="/tmp")
+            records = Records()
+            run = HostToolRun(HostToolRegistry(observer=records))
+            if finish:
+                result = await host_tool_calls_over_exec(sandbox, run, layout, timeout=8)
+                assert result.exit_code == 0 and "ready" in result.stdout
+            else:
+                with pytest.raises(SandboxProgramTimeout) as expired:
+                    await host_tool_calls_over_exec(sandbox, run, layout, timeout=6)
+                assert expired.value.reach == "group"
+            check = await sandbox.exec(
+                [
+                    "python3",
+                    "-c",
+                    f"""import json
+from pathlib import Path
+w=json.loads(Path('/tmp/process-witness').read_text())
+def state(pid):
+    try: return Path('/proc/'+str(pid)+'/stat').read_text().rsplit(')',1)[1].split()[0]
+    except FileNotFoundError: return 'gone'
+print(json.dumps(dict(program=state(w['program']),child=state(w['child']),victim=state({target}))))
+""",
+                ],
+                working_directory="/tmp",
+                timeout=10,
+            )
+            assert check.exit_code == 0, check.stderr
+            states = json.loads(check.stdout)
+            assert states["program"] in {"Z", "gone"}, states
+            assert states["child"] in {"Z", "gone"}, states
+            assert states["victim"] not in {"Z", "gone"}, states
+            assert [s.phase for s in records.snapshots] == [
+                "before_launch",
+                "after_launch",
+                "before_cleanup",
+                "after_cleanup",
+            ]
+            assert all(s.unavailable is None for s in records.snapshots)
+            assert any(
+                p.uid == 65534 and p.argv and p.attribution == "program"
+                for s in records.snapshots
+                for p in s.processes
+            )
+            assert all(s.pid != target and s.pgid != target for s in records.signals)
+        finally:
+            removed = await backend._docker("rm", "-f", name, timeout=30)
+            assert removed.returncode == 0, removed.stderr
+
+    asyncio.run(scenario())

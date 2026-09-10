@@ -57,6 +57,7 @@ from maf_sandbox import (
 )
 from maf_sandbox import _host_tools_over_exec as host_tools_over_exec
 from maf_sandbox._host_tools_over_exec import SESSION_MADE
+from maf_sandbox._processes import ProcessTracker
 from maf_sandbox._reclaim import close_unclean_notes, open_unclean_notes
 from maf_sandbox._shim_wire_contract import (
     assert_calls_conform,
@@ -95,6 +96,15 @@ _USER_SITE_UNDER_BASE = f"lib/python{sys.version_info.major}.{sys.version_info.m
 def add(left: int, right: int) -> int:
     """Add two numbers, in the host process."""
     return left + right
+
+
+@pytest.fixture(autouse=True)
+def _process_observations_are_tested_separately(monkeypatch):
+    async def snapshot(self, phase):
+        self.latest = None
+        self.incomplete = False
+
+    monkeypatch.setattr(ProcessTracker, "snapshot", snapshot)
 
 
 class _ScriptedGuest:
@@ -136,6 +146,8 @@ class _ScriptedGuest:
         self._issued = 0
         self._collected = 0
 
+    instance_id = "scripted-instance"
+
     # -- Sandbox ------------------------------------------------------------------------
 
     def _resolved(self, path: str, working_directory: str) -> str:
@@ -158,7 +170,12 @@ class _ScriptedGuest:
         self.started = True
         if self._launcher_exit_code == 0:
             self._issue_next()
-        return ExecResult(stdout="", exit_code=self._launcher_exit_code)
+        return ExecResult(
+            stdout="maf-host-tools: process-v1 4242 4200\n"
+            if self._launcher_exit_code == 0
+            else "",
+            exit_code=self._launcher_exit_code,
+        )
 
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
         # Every real backend suspends here, and a bound only bites a call that does: under
@@ -1177,9 +1194,10 @@ class TestTheLauncher:
         words = shlex.split(inner)
         assignments = words[: next(index for index, word in enumerate(words) if "=" not in word)]
 
-        assert sorted(assignments) == ["PYTHONNOUSERSITE=1", "PYTHONUNBUFFERED=1"], (
-            f"the program's startup environment is not the two it needs: {assignments}"
-        )
+        assert sorted(a for a in assignments if a.startswith("PYTHON")) == [
+            "PYTHONNOUSERSITE=1",
+            "PYTHONUNBUFFERED=1",
+        ], f"the program's startup environment is not the two it needs: {assignments}"
 
 
 def _reap(pid_file: Path) -> None:
@@ -3533,12 +3551,22 @@ class _GuestThatRecordsTheKill(_ScriptedGuest):
             return ExecResult(stdout="", exit_code=self._kill_exit_code)
         self.commands.append(str(command))
         started = await super().exec(command, working_directory=working_directory, timeout=timeout)
-        if self._announces:
-            started = ExecResult(
-                stdout=f"{started.stdout}{SESSION_MADE}\n",
-                stderr=started.stderr,
-                exit_code=started.exit_code,
-            )
+        group = (
+            self._session
+            if self._announces
+            and self._session
+            and self._session.isascii()
+            and self._session.isdigit()
+            and int(self._session) > 1
+            else "0"
+        )
+        started = ExecResult(
+            stdout=f"maf-host-tools: process-v1 {self._pid} {group}\n"
+            if self._pid is not None
+            else "",
+            stderr=started.stderr,
+            exit_code=started.exit_code,
+        )
         if self._pid is not None:
             self.files[_LAYOUT.pid] = self._pid.encode("utf-8")
         if self._session is not None:
@@ -3635,7 +3663,7 @@ class TestStoppingTakesTheChildrenWhereItCan:
         guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session=None)
         with pytest.raises(SandboxProgramTimeout) as expired:
             _run(guest, HostToolRun(_registry()), timeout=0.2)
-        assert "still running" in str(expired.value)
+        assert "descendants may remain" in str(expired.value)
         assert "process group" not in str(expired.value)
 
     def test_the_launcher_records_the_session_from_inside_it(self):
@@ -3650,7 +3678,9 @@ class TestStoppingTakesTheChildrenWhereItCan:
         script = launcher_script(layout)
         inner = shlex.split(_branch(script, setsid=True).removesuffix(" &"))[3]
 
-        assert inner.startswith(f"printf %s $$ > '{layout.session}.part'"), inner[:120]
+        assert inner.startswith(f"maf_group=$$; printf %s $$ > '{layout.session}.part'"), inner[
+            :120
+        ]
         assert f"mv '{layout.session}.part' '{layout.session}'" in inner
         assert "$$" not in _branch(script, setsid=False), (
             "the fallback records a session it did not make"
@@ -3660,10 +3690,8 @@ class TestStoppingTakesTheChildrenWhereItCan:
 class TestAStopThatDidNotReachEverythingNotesTheCall:
     """The transport tells the running tool call when its sandbox is not clean after a stop.
 
-    Only a signal to the whole process group says what the program spawned went with it.
-    Anything less leaves something that can write a path back once the call's directory is
-    removed, so the framework's cleanup has to dispose the sandbox — and it learns that from
-    this note, not from the message a kind shows the model.
+    A failed signal is reported to the call cleanup policy. Successful signal attempts
+    do not establish full cleanliness, regardless of whether they targeted a group.
     """
 
     def _noted(self, guest) -> list[str]:
@@ -3684,11 +3712,9 @@ class TestAStopThatDidNotReachEverythingNotesTheCall:
         guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session="4200")
         assert self._noted(guest) == []
 
-    def test_a_lone_pid_signal_notes_what_it_left(self):
+    def test_a_lone_pid_signal_is_also_only_best_effort(self):
         guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session=None)
-        notes = self._noted(guest)
-        assert len(notes) == 1
-        assert "reaches it alone" in notes[0]
+        assert self._noted(guest) == []
 
     def test_a_signal_that_could_not_be_sent_notes_it(self):
         guest = _GuestThatRecordsTheKill([], finish=False, pid=None)
@@ -3792,7 +3818,7 @@ class TestStoppingARunThatOverran:
         guest = _GuestThatRecordsTheKill([], finish=True)
         result = _run(guest, HostToolRun(_registry()), timeout=5.0)
         assert result.exit_code == 0
-        assert guest.kills == [], "a finished run was killed by pid"
+        assert guest.kills == ["kill -KILL 4242 2>/dev/null"]
 
     def test_a_backend_that_refuses_the_kill_does_not_replace_the_runs_own_reason(self):
         """The kill is a remedy on the way out, and a remedy must never win over the report."""
@@ -3822,9 +3848,9 @@ class TestStoppingARunThatOverran:
 
 
 class TestTheLegWhereTheLauncherItselfRanOut:
-    """`exec` bounding the launcher cannot say whether a program was started, so the pid does."""
+    """A failed launch receipt cannot be recovered from guest-writable files."""
 
-    def test_a_pid_left_behind_is_killed_and_reported(self):
+    def test_a_pid_file_without_a_receipt_is_not_signal_authority(self):
         class _BoundsTheStartAfterLaunching(_GuestThatRecordsTheKill):
             async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
                 self.commands.append(str(command))
@@ -3837,8 +3863,8 @@ class TestTheLegWhereTheLauncherItselfRanOut:
         guest = _BoundsTheStartAfterLaunching([], finish=False)
         with pytest.raises(SandboxProgramTimeout) as expired:
             _run(guest, HostToolRun(_registry()), timeout=30.0)
-        assert "4242" in "".join(guest.kills)
-        assert "it had started the program and was sent SIGKILL" in str(expired.value)
+        assert guest.kills == []
+        assert expired.value.signal == "unknown"
 
     def test_no_pid_leaves_the_message_exactly_as_it_was(self):
         """A missing pid claims nothing either way — pinned on the whole sentence."""
@@ -4152,7 +4178,7 @@ class TestStoppingOnTheOtherTwoLegs:
             _run(guest, HostToolRun(_registry()), timeout=30.0)
 
         assert guest.kills == [], f"a non-numeric pid reached a command: {guest.commands}"
-        assert "may still be running" in str(expired.value)
+        assert expired.value.signal == "unknown"
 
     def test_a_pid_that_was_never_written_says_nothing_new(self):
         """No pid, and no kill to attempt — but the sentence still may not say nothing ran."""
@@ -4195,7 +4221,7 @@ class TestStoppingOnTheOtherTwoLegs:
         with pytest.raises(SandboxProgramTimeout) as expired:
             _run(_PidUnreadable([], finish=False), HostToolRun(_registry()), timeout=30.0)
 
-        assert "may still be running" in str(expired.value)
+        assert expired.value.signal == "unknown"
 
 
 class _GuestThatRecordsRemovals(_GuestThatRecordsTheKill):
@@ -4798,7 +4824,7 @@ class TestAPidAndALayoutThatCannotBeUsed:
             _run(guest, HostToolRun(_registry()), timeout=30.0)
 
         assert guest.kills == []
-        assert "may still be running" in str(expired.value), str(expired.value)
+        assert expired.value.signal == "unknown"
 
     def test_a_layout_that_scatters_the_transports_files_is_refused(self):
         """The directory to delete is inferred from `shim`, so the rest must agree with it.
@@ -4881,7 +4907,7 @@ class TestAPidAndALayoutThatCannotBeUsed:
             _run(guest, HostToolRun(_registry()), timeout=30.0)
 
         assert guest.kills == []
-        assert "may still be running" in str(expired.value), str(expired.value)
+        assert expired.value.signal == "unknown"
 
     @pytest.mark.parametrize("bad", [0.0, -1.0, float("inf"), float("nan")])
     def test_reclaim_run_refuses_a_timeout_that_would_not_bound_it(self, bad: float):

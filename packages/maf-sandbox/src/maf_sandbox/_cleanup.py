@@ -31,11 +31,11 @@ QUEUED_CALL_TIMEOUT = 120.0
 
 
 def established_cleanup(spec: SandboxSpec, declared: frozenset[Capability]) -> frozenset[Cleanup]:
-    """Return DISPOSE plus the rungs the workload and backend establish together."""
+    """Return the cleanup operations the backend supports; the host decides sufficiency."""
     rungs = {Cleanup.DISPOSE}
     if Capability.SNAPSHOT in declared:
         rungs.add(Cleanup.RESET)
-    if spec.confined_to_guest_call_path and Capability.RECLAIM in declared:
+    if Capability.RECLAIM in declared:
         rungs.add(Cleanup.RECLAIM)
     return frozenset(rungs)
 

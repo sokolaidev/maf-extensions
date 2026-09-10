@@ -659,9 +659,9 @@ class SandboxRouter:
             already did. Raised to :data:`~maf_sandbox.IsolationScope.CALL` it gives every
             workload this router serves a sandbox of its own per call, whatever the workload's
             own spec asks for, and refuses a backend that cannot create one.
-        min_cleanup: Weakest cleanup this host accepts. Defaults to :data:`Cleanup.RECLAIM`,
-            which permits reuse only when the workload and backend establish it. Without a
-            confinement claim or snapshot capability, cleanup still resolves to disposal.
+        min_cleanup: Weakest cleanup this host accepts. Defaults to :data:`Cleanup.DISPOSE`.
+            Choosing RECLAIM explicitly accepts residual state even for unconfined kinds;
+            directory reclamation and supervised process cleanup remain best-effort.
             A spec may raise this floor, never lower it.
         selected: Name of the backend to use. ``None`` picks the first registered one, which
             with a single backend is the whole selection story and stays correct when more
@@ -730,7 +730,7 @@ class SandboxRouter:
         *,
         min_isolation: Isolation = Isolation.MICROVM,
         min_isolation_scope: IsolationScope = IsolationScope.CONVERSATION,
-        min_cleanup: Cleanup = Cleanup.RECLAIM,
+        min_cleanup: Cleanup = Cleanup.DISPOSE,
         selected: str | None = None,
         selection: Selection = Selection.FIXED,
         denied_capabilities: Iterable[Capability] = (),

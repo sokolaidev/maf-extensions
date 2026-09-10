@@ -141,6 +141,14 @@ That difference is why silence is not a reading. A key with no `EgressObserved` 
 
 **An exporter.** Turning these events into OpenTelemetry spans, log records and counters — under the app's providers or a security pipeline's own — is a package above this seam, so that a host wanting the events and not the dependency pays for neither. That package is `maf-sandbox-otel`, and core still cannot host it: its protocol modules are standard library only.
 
+## Process observations
+
+The host-tools registry observer receives `ProcessesObserved` at `before_launch`, `after_launch`, `before_cleanup` and `after_cleanup`, plus `ProcessCleanup` for signal attempts. Each snapshot carries the sandbox instance, run, call and snapshot IDs, timestamp, duration, source (`guest_proc`), completeness and collection failure. Records retain PID, PPID, PGID, SID, start ticks, real/effective UID and GID, supplementary groups, username, argv, command, executable, cwd, process state/name, threads, CPU ticks and memory usage where available. Missing fields and truncation remain explicit. No environment variables are collected.
+
+Snapshots are bounded to 256 processes and 1 MiB, with a three-second backend bound per collection and bounded individual fields. They classify the program, observed descendants, group members, preexisting processes and new unattributed processes. The latter are diagnostic evidence only and never a blanket kill list. Zombies are reported without counting as running survivors. A separate engine conformance fingerprint has stronger provenance; these portable runtime observations execute in the guest and cannot prove the absence of hidden or missed processes.
+
+Standard logs carry IDs, counts and cleanup outcomes without commands. `maf-sandbox-otel` exports `sandbox.process.snapshot` summaries, `sandbox.process.observed` per-process logs and `sandbox.process.cleanup` action logs through the configured logger provider, with trace context and independent of trace sampling. It also records summary spans and counters with bounded phase/outcome attributes; no PID or command becomes a metric label. Configure the same observer on `HostToolRegistry` to receive these run events. For an audit sink that requires commands, set `record_sensitive_data=True`; otherwise commands, usernames and paths follow the existing redaction policy. Observer and exporter failures are contained independently of cleanup.
+
 ## Status
 
 | Decision | State | Tracking |

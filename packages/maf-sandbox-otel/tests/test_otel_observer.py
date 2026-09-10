@@ -30,6 +30,9 @@ from maf_sandbox import (
     IsolationScope,
     LandedOutput,
     OutputsCollected,
+    ProcessCleanup,
+    ProcessesObserved,
+    ProcessInfo,
     SandboxAcquired,
     SandboxDisposed,
     SandboxKey,
@@ -51,6 +54,7 @@ from opentelemetry.sdk.metrics.export import (
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.sdk.trace.sampling import ALWAYS_OFF, ALWAYS_ON
 from opentelemetry.trace import StatusCode
 
 from maf_sandbox_otel import (
@@ -176,9 +180,9 @@ class Recorded:
         return total
 
 
-def build(*, sensitive: bool = False) -> Recorded:
+def build(*, sensitive: bool = False, sampled: bool = True) -> Recorded:
     spans = InMemorySpanExporter()
-    tracer_provider = TracerProvider()
+    tracer_provider = TracerProvider(sampler=ALWAYS_ON if sampled else ALWAYS_OFF)
     tracer_provider.add_span_processor(SimpleSpanProcessor(spans))
     logs = InMemoryLogRecordExporter()
     logger_provider = LoggerProvider()
@@ -196,6 +200,70 @@ def build(*, sensitive: bool = False) -> Recorded:
         metrics=metrics,
         tracer_provider=tracer_provider,
     )
+
+
+@pytest.mark.parametrize("sensitive", [False, True])
+def test_process_audit_logs_survive_trace_sampling_and_apply_redaction(sensitive):
+    recorded = build(sensitive=sensitive, sampled=False)
+    event = ProcessesObserved(
+        key=KEY,
+        instance_id="instance",
+        run_id="run",
+        snapshot_id="snapshot",
+        phase="after_cleanup",
+        timestamp=123.5,
+        seconds=0.1,
+        call="call-1",
+        processes=(
+            ProcessInfo(
+                123,
+                100,
+                100,
+                100,
+                1234,
+                "S",
+                uid=1000,
+                argv=("python", "private.py"),
+                command="python private.py",
+                cwd="/private",
+                attribution="descendant",
+            ),
+        ),
+    )
+    with recorded.tracer_provider.get_tracer("host").start_as_current_span("call") as span:
+        trace_id = span.get_span_context().trace_id
+        recorded.observer.processes_observed(event)
+        recorded.observer.process_cleanup(
+            ProcessCleanup(
+                key=KEY,
+                instance_id="instance",
+                run_id="run",
+                pid=123,
+                pgid=None,
+                outcome="refused",
+                reach="nothing",
+                seconds=0.2,
+                start_ticks=1234,
+                call="call-1",
+            )
+        )
+    assert recorded.span_names() == []
+    attrs = recorded.log_attributes("sandbox.process.observed")
+    assert attrs["process.pid"] == 123
+    assert attrs["process.user.id"] == 1000
+    assert attrs["maf_sandbox.run_id"] == "run"
+    assert attrs["maf_sandbox.process.attribution"] == "descendant"
+    if sensitive:
+        assert attrs["process.command"] == "python private.py"
+        assert attrs["process.command_args"] == ("python", "private.py")
+    else:
+        assert "process.command" not in attrs
+        assert "private" not in json.dumps(attrs)
+    assert all(r.log_record.trace_id == trace_id for r in recorded.logs.get_finished_logs())
+    assert recorded.log_attributes("sandbox.process.snapshot")["maf_sandbox.process.survivors"] == 1
+    assert recorded.log_attributes("sandbox.process.cleanup")["process.start_ticks"] == 1234
+    assert recorded.counter("maf_sandbox.process.snapshots") == 1
+    assert recorded.counter("maf_sandbox.process.cleanups") == 1
 
 
 def an_acquire(

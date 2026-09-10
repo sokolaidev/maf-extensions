@@ -39,6 +39,8 @@ from maf_sandbox import (
     EgressObserved,
     HostToolCalled,
     OutputsCollected,
+    ProcessCleanup,
+    ProcessesObserved,
     SandboxAcquired,
     SandboxDisposed,
     SandboxObserver,
@@ -186,6 +188,8 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
         meter = (meter_provider or get_meter_provider()).get_meter(INSTRUMENTATION_SCOPE, version)
         self._redaction = Redaction(sensitive=record_sensitive_data)
 
+        self._process_snapshots: Counter = meter.create_counter("maf_sandbox.process.snapshots")
+        self._process_cleanups: Counter = meter.create_counter("maf_sandbox.process.cleanups")
         self._acquires: Counter = meter.create_counter(
             f"{NAMESPACE}.sandbox.acquires", description="Sandboxes served or refused."
         )
@@ -535,6 +539,114 @@ class OpenTelemetrySandboxObserver(SandboxObserver):
             lambda: self._call_duration.record(
                 event.seconds,
                 {TOOL: event.tool, KIND: event.kind, FAILURE: event.failure or ""},
+            )
+        )
+
+    def processes_observed(self, event: ProcessesObserved) -> None:
+        """Export a summary and one log per process, independently of trace sampling."""
+        base: dict[str, AttributeValue] = {
+            **self._redaction.key(event.key),
+            **without_none({CALL_ATTRIBUTE: event.call}),
+            "maf_sandbox.instance_id": event.instance_id,
+            "maf_sandbox.run_id": event.run_id,
+            "maf_sandbox.snapshot_id": event.snapshot_id,
+            "maf_sandbox.process.phase": event.phase,
+            "maf_sandbox.process.source": event.source,
+            "maf_sandbox.process.observed_at": event.timestamp,
+        }
+        summary: dict[str, AttributeValue] = {
+            **base,
+            "maf_sandbox.process.count": len(event.processes),
+            "maf_sandbox.process.incomplete": event.incomplete,
+            "maf_sandbox.process.unavailable": event.unavailable is not None,
+            "maf_sandbox.process.survivors": sum(
+                p.running and p.attribution in {"program", "descendant", "group"}
+                for p in event.processes
+            )
+            if event.phase == "after_cleanup"
+            else 0,
+            **self._redaction.text("maf_sandbox.process.error", event.unavailable),
+        }
+        self._emit("sandbox.process.snapshot", summary, event.seconds, event.unavailable)
+        self._isolate(
+            lambda: self._process_snapshots.add(
+                1,
+                {
+                    "maf_sandbox.process.phase": event.phase,
+                    "maf_sandbox.process.incomplete": event.incomplete,
+                    "maf_sandbox.process.unavailable": event.unavailable is not None,
+                },
+            )
+        )
+        for process in event.processes:
+            attributes: dict[str, AttributeValue] = {
+                **base,
+                "process.pid": process.pid,
+                "process.parent_pid": process.ppid,
+                "process.group_id": process.pgid,
+                "process.session_id": process.sid,
+                "process.start_ticks": process.start_ticks,
+                "process.state": process.state,
+                "process.running": process.running,
+                "maf_sandbox.process.attribution": process.attribution,
+                "maf_sandbox.process.unavailable_fields": process.unavailable,
+                "maf_sandbox.process.truncated": process.truncated,
+                "process.groups": process.groups,
+                **without_none(
+                    {
+                        "process.user.id": process.uid,
+                        "process.user.effective_id": process.effective_uid,
+                        "process.group.id": process.gid,
+                        "process.group.effective_id": process.effective_gid,
+                        "process.threads": process.threads,
+                        "process.cpu.user_ticks": process.user_ticks,
+                        "process.cpu.system_ticks": process.system_ticks,
+                        "process.memory.rss_bytes": process.rss_bytes,
+                        "process.memory.virtual_bytes": process.virtual_bytes,
+                    }
+                ),
+                **self._redaction.text("process.user.name", process.username),
+                **self._redaction.text("process.command", process.command),
+                **self._redaction.texts("process.command_args", process.argv),
+                **self._redaction.text("process.executable.path", process.executable),
+                **self._redaction.text("process.working_directory", process.cwd),
+                **self._redaction.text("process.name", process.name),
+            }
+            self._isolate(
+                lambda attrs=attributes: self._log("sandbox.process.observed", attrs, failed=False)
+            )
+
+    def process_cleanup(self, event: ProcessCleanup) -> None:
+        """Record the signal attempt and its result without asserting termination."""
+        attributes: dict[str, AttributeValue] = {
+            **self._redaction.key(event.key),
+            **without_none(
+                {
+                    CALL_ATTRIBUTE: event.call,
+                    "process.pid": event.pid,
+                    "process.group_id": event.pgid,
+                }
+            ),
+            "maf_sandbox.instance_id": event.instance_id,
+            "maf_sandbox.run_id": event.run_id,
+            "maf_sandbox.process.outcome": event.outcome,
+            "maf_sandbox.process.reach": event.reach,
+            "maf_sandbox.process.signal": "SIGKILL",
+            **without_none({"process.start_ticks": event.start_ticks}),
+        }
+        self._emit(
+            "sandbox.process.cleanup",
+            attributes,
+            event.seconds,
+            None if event.outcome in {"sent", "absent"} else event.outcome,
+        )
+        self._isolate(
+            lambda: self._process_cleanups.add(
+                1,
+                {
+                    "maf_sandbox.process.outcome": event.outcome,
+                    "maf_sandbox.process.reach": event.reach,
+                },
             )
         )
 

@@ -112,6 +112,8 @@ from ._observer import (
     LandedOutput,
     ObservesEgress,
     OutputsCollected,
+    ProcessCleanup,
+    ProcessesObserved,
     SandboxAcquired,
     SandboxDisposed,
     SandboxEvent,
@@ -148,6 +150,7 @@ from ._outputs import (
     spec_lands_artifacts,
     validate_artifact_name,
 )
+from ._process_info import ProcessAttribution, ProcessInfo, ProcessPhase
 from ._protocol import (
     CLEANUP_RANK,
     DEFAULT_BACKEND_DECLARATIONS,
@@ -216,6 +219,11 @@ from ._router import (
 from ._shim import host_tool_shim
 
 __all__ = [
+    "ProcessAttribution",
+    "ProcessCleanup",
+    "ProcessInfo",
+    "ProcessPhase",
+    "ProcessesObserved",
     "EgressDecision",
     "EgressDecisionCode",
     "EgressObserved",

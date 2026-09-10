@@ -1,6 +1,6 @@
 # 13 — author, validate, fix: two turns with warm sandbox reuse
 
-The file store starts **empty**. Turn 1 writes `main.bicep` from a brief and validates it; turn 2 repairs the compiler's diagnostics. The host file store and agent session preserve the work across calls. Bicep's confinement claim and Docker's `RECLAIM` declaration keep one sandbox warm while each call's guest directory, module cache and temporary profile are reclaimed.
+The file store starts **empty**. Turn 1 writes `main.bicep` from a brief and validates it; turn 2 repairs the compiler's diagnostics. The host file store and agent session preserve the work across calls. This host explicitly selects `Cleanup.RECLAIM` to keep one sandbox warm while each call's guest directory, module cache and temporary profile are reclaimed. Bicep attempts to confine its changes to that directory; the host accepts that reclamation cannot prove complete cleanup.
 
 | | What happens | Validations reaching the sandbox | Containers afterwards |
 |---|---|---|---|
