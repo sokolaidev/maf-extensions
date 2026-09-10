@@ -211,5 +211,11 @@ def _relative_location(uri: str, strip_prefix: str | None) -> str:
         return ""
     path = uri.removeprefix("file://")
     if strip_prefix:
-        path = path.removeprefix(strip_prefix.rstrip("/") + "/")
+        prefix = strip_prefix.rstrip("/") + "/"
+        if not strip_prefix.startswith("/"):
+            # A relative call directory identifies its subtree without knowing the backend base.
+            _, found, relative = path.rpartition("/" + prefix)
+            if found:
+                return relative
+        path = path.removeprefix(prefix)
     return path

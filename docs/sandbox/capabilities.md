@@ -97,14 +97,14 @@ class Sandbox(Protocol):
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None: ...
 ```
 
-**`working_directory` is a parameter, exactly as it is on `exec`.** No sandbox object knows the spec's `work_dir` — the ACAS sandbox holds an SDK client, the wslc one a runner and a container name, `InProcessSandbox` a dict — and `work_dir` reaches a sandbox once per call or not at all. A pull surface without it would assign the confinement duty to a layer with no way to discharge it. `path` is POSIX-shaped and relative to `working_directory`; one resolving outside it is refused.
+**`working_directory` selects the operation's location and the file methods' confinement boundary.** Each acquired sandbox is bound to a storage base: `spec.work_dir=None` delegates allocation to the backend, while an explicit value selects that exact guest-native base. A relative `working_directory` resolves beneath the bound base, with `"."` denoting the base itself; an escape is refused. Legacy absolute working directories remain guest-native. File `path` arguments are POSIX-shaped and relative to the resolved working directory; one resolving outside that directory is refused.
 
 `stat_file` is **`lstat`-like**: the final component is described rather than refused, since `EntryKind.SYMLINK` is how a caller learns it is a link, and its ancestors are still checked because a stat through one reports a type and a size from outside the working directory even though no byte crosses. `list_dir` checks one component deeper than the others, because an enumeration passes through a link as readily as a read does, and a listed link is reported as `SYMLINK` rather than hidden — a name handed back with its type erased is a name read without the warning.
 
 ```python
 @dataclass(frozen=True)
 class DeclaredOutput:
-    path: str                                            # literal, relative to work_dir; no globs
+    path: str                                            # literal, relative to storage base; no globs
     disposition: OutputDisposition = OutputDisposition.LAND
     media_type: str | None = None                        # declared by the kind, never sniffed
     required: bool = True                                # missing required is an error
@@ -226,9 +226,9 @@ Where each backend answers, stated because the legs are not equal:
 
 ## Cross-platform rules
 
-Every shipped backend runs a Linux guest today. That is an observation, not a protocol assumption. The tempting claim — the protocol states one grammar and backends translate to whatever their guest is, by analogy with `exec` taking an argv *sequence* — **does not hold**: a sequence protects against quoting, not against paths inside the arguments, and a kind derives absolute guest paths from `work_dir` and passes them straight into argv. A backend can translate a path it is given *as* a path; it cannot find one buried in an opaque argv without parsing arbitrary command lines.
+Every shipped real backend runs a Linux guest today. That is an observation, not a protocol assumption. Backends resolve relative `working_directory` values against their bound storage base and apply file-path confinement within that directory. Commands and argv remain opaque: kinds pass relative filenames to guest programs and select the call directory through `working_directory`. An argv sequence protects quoting; it does not ask a backend to find or rewrite paths embedded in arguments.
 
-- **`work_dir` is guest-native, not protocol-normalized.** The host states it to match the image it configured and nothing rewrites it. `/maf-sandbox/work` is a default, not a requirement.
+- **An explicit `work_dir` is guest-native and preserved.** It can select an image's pre-populated base; `None` lets the backend allocate one. `/maf-sandbox/work` remains the default explicit override. Kinds address the bound base with relative paths rather than deriving absolute paths from this optional field.
 - **Declared output paths and artifact names are POSIX-shaped**, and a backslash in one is refused — not because the guest is Linux, but because these are the paths the library itself resolves and it has one grammar. Nothing builds a guest path with `os.path` or `pathlib`; `posixpath` only.
 - **UTF-8 is the interchange form for names.** Linux filenames are byte strings and can be invalid UTF-8; such a name is refused rather than round-tripped. This only arises on the `FILES_LIST` road, since declared paths are authored by the kind.
 - **`str` content means UTF-8, always**, independent of host locale. Any path reaching a platform default encoding is a mojibake bug waiting for a Windows host.

@@ -811,17 +811,16 @@ class TestInProcessSandboxReclaim:
         assert f"{_WORK}/out" not in sandbox.symlinks, "the link itself survived"
         assert f"{_WORK}/out/passwd" in sandbox.contents, "the reclaim followed a link"
 
-    def test_a_relative_directory_is_not_joined_onto_the_working_directory(self):
-        """`directory` is absolute; a fake that joined it would report a cleanup no backend does."""
+    def test_a_relative_directory_resolves_against_the_working_directory(self):
         sandbox = InProcessSandbox(seed_files={f"{_WORK}/abc123/a.txt": "1"})
         self._reclaim(sandbox, "abc123")
-        assert set(sandbox.contents) == {f"{_WORK}/abc123/a.txt"}
+        assert sandbox.contents == {}
 
-    def test_the_call_is_recorded_exactly_as_it_was_made(self):
+    def test_the_resolved_target_and_the_call_timeout_are_recorded(self):
         """A test asserting the bound that reached the backend reads the third element."""
         sandbox = InProcessSandbox()
         self._reclaim(sandbox, "abc123", working_directory="/elsewhere", timeout=2.0)
-        assert sandbox.reclaims == [("abc123", "/elsewhere", 2.0)]
+        assert sandbox.reclaims == [("/elsewhere/abc123", "/elsewhere", 2.0)]
 
     def test_reclaims_are_recorded_apart_from_commands(self):
         """A test asserting a cleanup ran must not match a command that names the same path."""

@@ -1950,3 +1950,33 @@ def test_instance_disposal_conforms_against_engine_inventory():
             assert await backend.dispose(key) is None
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("override", [None, "/image/custom-base"])
+def test_relative_storage_base_conformance(override):
+    from dataclasses import replace
+
+    from maf_sandbox.conformance import assert_storage_base_conformance
+
+    scope = f"e2e-{uuid.uuid4()}"
+    backend = DockerSandboxBackend(DockerSandboxConfig())
+
+    async def scenario():
+        spec = replace(_spec(), work_dir=override)
+        first = await backend.acquire(_key(scope), spec)
+        await assert_storage_base_conformance(first, backend.declarations.capabilities)
+        await first.write_file("kept", b"warm", working_directory=".")
+        stopped = await backend._docker("stop", first.instance_id, timeout=30)
+        assert stopped.returncode == 0
+        resumed = DockerSandboxBackend(DockerSandboxConfig())
+        with pytest.raises(ValueError, match="storage base"):
+            await resumed.acquire(_key(scope), replace(spec, work_dir="/other/base"))
+        assert not await resumed._is_running(first.container_name)
+        second = await resumed.acquire(_key(scope), spec)
+        assert first.instance_id == second.instance_id
+        assert await second.read_file("kept", working_directory=".", max_bytes=4) == b"warm"
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        asyncio.run(backend.dispose_scope(scope, "thread-1"))

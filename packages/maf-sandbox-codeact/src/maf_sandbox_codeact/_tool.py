@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import posixpath
 import unicodedata
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -90,9 +91,6 @@ EXECUTE_CODE_TOOL_NAME = "execute_code"
 
 #: The sandbox kind this workload asks for.
 CODEACT_KIND = "codeact"
-
-#: Where every call's directory is created — a dedicated root rather than the image's own tree.
-_WORK_DIR = "/maf-sandbox/work"
 
 #: One fixed name inside each call's own directory.
 _PROGRAM_FILENAME = "program.py"
@@ -644,7 +642,7 @@ def _codeact_spec(
         image_id=image_id,
         egress=egress,
         egress_allow=effective_egress,
-        work_dir=_WORK_DIR,
+        work_dir=None,
         # Model-written code can write outside the call path and leave processes running.
         confined_to_guest_call_path=False,
         requires=frozenset(requires),
@@ -1058,7 +1056,7 @@ async def _execute(
     # call, derived below rather than counted.
     call_directory = session.guest_call_path()
     call_id = call_directory.rsplit("/", 1)[-1]
-    # Where the model's own files live, relative to `work_dir`: the call directory itself, or
+    # Where the model's own files live, relative to the storage base: the call directory itself, or
     # the work subdirectory of it when the transport owns the run. Everything addressed by a
     # name a model chose is built from this — what is shared in, what the manifest is read
     # from, and what is collected out — so the three cannot disagree about one call's layout.
@@ -1132,7 +1130,7 @@ async def _execute(
 
     for name, named, content in shared:
         refusal = await _write_shared(
-            sandbox, name, named, f"{shared_dir}/{name}", content, working_directory=shared_dir
+            sandbox, name, named, name, content, working_directory=shared_dir
         )
         if refusal is not None:
             return refusal
@@ -1140,7 +1138,9 @@ async def _execute(
     program_path = layout.program if layout is not None else f"{call_directory}/{_PROGRAM_FILENAME}"
     try:
         await sandbox.write_file(
-            program_path,
+            posixpath.relpath(
+                program_path, layout.directory if layout is not None else call_directory
+            ),
             code,
             working_directory=layout.directory if layout is not None else call_directory,
         )
@@ -1155,7 +1155,9 @@ async def _execute(
         # here so neither has to be narrowed from the other.
         if host_tool_call is not None and layout is not None:
             await sandbox.write_file(
-                layout.shim, host_tool_call.shim, working_directory=layout.directory
+                posixpath.relpath(layout.shim, layout.directory),
+                host_tool_call.shim,
+                working_directory=layout.directory,
             )
             # A fresh run per call: the host-tool-call cap and the ledger bound one program.
             result = await host_tool_calls_over_exec(
@@ -1168,7 +1170,7 @@ async def _execute(
         else:
             # An argv sequence, never a command line: the model's source never reaches a shell.
             result = await sandbox.exec(
-                [_INTERPRETER, program_path], working_directory=call_directory, timeout=timeout
+                [_INTERPRETER, _PROGRAM_FILENAME], working_directory=call_directory, timeout=timeout
             )
     except SandboxProgramTimeout as expired:
         # The transport's own bound — but *which* of its bounds is something only its message
@@ -1707,7 +1709,7 @@ async def _read_manifest(
     """
     path = f"{guest_prefix}/{_MANIFEST_FILENAME}"
     try:
-        entry = await sandbox.stat_file(path, working_directory=session.spec.work_dir)
+        entry = await sandbox.stat_file(path, working_directory=".")
         if entry is None:
             return f"No {_MANIFEST_FILENAME} was written, so no files were saved."
         # Stat, refuse, *then* read — the pull surface's contract, not an optimisation. A
@@ -1726,9 +1728,7 @@ async def _read_manifest(
                 f"Error: {_MANIFEST_FILENAME} is {entry.size_bytes or 'of unknown'} bytes and "
                 f"this tool reads at most {ceiling}, so no files were saved."
             )
-        raw = await sandbox.read_file(
-            path, working_directory=session.spec.work_dir, max_bytes=entry.size_bytes
-        )
+        raw = await sandbox.read_file(path, working_directory=".", max_bytes=entry.size_bytes)
     except Exception as exc:  # noqa: BLE001
         logger.warning("execute_code: could not read %s: %s", _MANIFEST_FILENAME, error_detail(exc))
         return f"Error: {_MANIFEST_FILENAME} could not be read, so no files were saved."

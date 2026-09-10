@@ -95,8 +95,8 @@ class EffectiveState:
     requires: frozenset[Capability]
     #: The image reference the spec named, unresolved — a backend completes its own.
     image: str | None
-    #: The guest directory the workload's paths resolve against.
-    work_dir: str
+    #: The spec's image-base override; None means the backend allocated its own base.
+    work_dir: str | None
     #: The artifacts the spec declares, by path.  Names chosen at call time are not here: those
     #: are the model's, and this record carries no model-chosen text.
     declared_outputs: tuple[str, ...]

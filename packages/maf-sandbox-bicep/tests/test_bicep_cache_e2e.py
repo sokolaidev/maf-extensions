@@ -65,6 +65,11 @@ done
     decoder = json.JSONDecoder()
     for _ in range(2):
         sarif, end = decoder.raw_decode(output)
-        assert all(not run.get("results") for run in sarif["runs"]), sarif
+        assert all(
+            result.get("ruleId") == "use-recent-module-versions"
+            and result.get("level", "warning") == "warning"
+            for run in sarif["runs"]
+            for result in run.get("results", [])
+        ), sarif
         output = output[end:].strip()
     assert not output

@@ -1230,6 +1230,10 @@ class TestExecAgainstTheRealService:
     """
 
     def test_the_exec_probes_come_back_clean(self, live):
+        # The shared sandbox can suspend while the other image fixtures run.
+        instance_id = live.sandbox.instance_id
+        live.sandbox = live.run(live.backend.acquire(live.key, _spec()))
+        assert live.sandbox.instance_id == instance_id
         results = live.run(assert_exec_conformance(_subject(live)))
         assert results, "the EXEC conformance run returned no results"
         skipped = {result.probe.name: result.skipped for result in results if result.skipped}
@@ -1383,3 +1387,26 @@ def test_instance_disposal_conforms_against_the_service(loop):
                     await backend.aclose()
 
     loop.run_until_complete(scenario())
+
+
+@pytest.mark.parametrize("override", [None, "/image/custom-base"])
+def test_relative_storage_base_conformance(loop, override):
+    from dataclasses import replace
+
+    from maf_sandbox.conformance import assert_storage_base_conformance
+
+    backend = AcasSandboxBackend(_config())
+    scope = f"e2e-storage-base-{uuid.uuid4()}"
+    spec = replace(_spec(), work_dir=override)
+
+    async def scenario():
+        sandbox = await backend.acquire(_key(scope), spec)
+        await assert_storage_base_conformance(sandbox, backend.declarations.capabilities)
+
+    try:
+        loop.run_until_complete(scenario())
+    finally:
+        try:
+            loop.run_until_complete(_drains_to_empty(backend, scope))
+        finally:
+            loop.run_until_complete(backend.aclose())

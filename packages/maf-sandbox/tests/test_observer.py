@@ -1334,7 +1334,9 @@ class _Untouchable(InProcessSandbox):
 class TestOutputsAreRecorded:
     def test_what_landed_is_recorded_with_its_size_and_media_type(self):
         recorder = _Recorder()
-        sandbox = InProcessSandbox(seed_files={"/w/a.png": "12345", "/w/b.png": "67"})
+        sandbox = InProcessSandbox(
+            storage_base="/w", seed_files={"/w/a.png": "12345", "/w/b.png": "67"}
+        )
         spec = _outputs_spec(
             DeclaredOutput(path="a.png", media_type="image/png"),
             DeclaredOutput(path="b.png", media_type="image/png", name="renamed.png"),
@@ -1355,7 +1357,7 @@ class TestOutputsAreRecorded:
     def test_the_call_id_a_sink_lands_under_is_recorded_beside_the_key(self):
         """`key` reaches the conversation; `call_id` reaches the folder the artifacts are in."""
         recorder = _Recorder()
-        sandbox = InProcessSandbox(seed_files={"/w/a.png": "1"})
+        sandbox = InProcessSandbox(storage_base="/w", seed_files={"/w/a.png": "1"})
         spec = _outputs_spec(DeclaredOutput(path="a.png"))
         sink = _Sink(per_call=True)
 
@@ -1376,7 +1378,7 @@ class TestOutputsAreRecorded:
 
     def test_a_per_call_sink_with_no_id_records_the_refusal_and_nothing_landed(self):
         recorder = _Recorder()
-        sandbox = InProcessSandbox(seed_files={"/w/a.png": "1"})
+        sandbox = InProcessSandbox(storage_base="/w", seed_files={"/w/a.png": "1"})
 
         with pytest.raises(ValueError, match="per_call"):
             asyncio.run(
@@ -1394,7 +1396,7 @@ class TestOutputsAreRecorded:
 
     def test_a_consumed_output_is_counted_and_not_landed(self):
         recorder = _Recorder()
-        sandbox = InProcessSandbox(seed_files={"/w/r.sarif": "{}"})
+        sandbox = InProcessSandbox(storage_base="/w", seed_files={"/w/r.sarif": "{}"})
         spec = _outputs_spec(
             DeclaredOutput(path="r.sarif", disposition=OutputDisposition.CONSUME),
         )
@@ -1407,7 +1409,7 @@ class TestOutputsAreRecorded:
     def test_a_refusal_records_what_a_sink_had_already_taken(self):
         """A deliver is a push nothing takes back, so the record has to survive the refusal."""
         recorder = _Recorder()
-        sandbox = InProcessSandbox(seed_files={"/w/a.png": "1", "/w/b.png": "2"})
+        sandbox = InProcessSandbox(storage_base="/w", seed_files={"/w/a.png": "1", "/w/b.png": "2"})
         spec = _outputs_spec(DeclaredOutput(path="a.png"), DeclaredOutput(path="b.png"))
         sink = _Sink(fail_on=1)
 
@@ -1420,7 +1422,7 @@ class TestOutputsAreRecorded:
 
     def test_a_cap_refusal_before_anything_is_read_records_an_empty_collection(self):
         recorder = _Recorder()
-        sandbox = InProcessSandbox(seed_files={"/w/a.png": "123456"})
+        sandbox = InProcessSandbox(storage_base="/w", seed_files={"/w/a.png": "123456"})
         spec = _outputs_spec(
             DeclaredOutput(path="a.png"),
             files_out=TransferLimits(max_bytes_per_file=2, max_total_bytes=2, max_files=1),
@@ -1438,7 +1440,7 @@ class TestOutputsAreRecorded:
         """A sink may land under a name of its own — content-addressed, say — and the record
         has to agree with what `collect_outputs` returned rather than with the declaration."""
         recorder = _Recorder()
-        sandbox = InProcessSandbox(seed_files={"/w/a.png": "12345"})
+        sandbox = InProcessSandbox(storage_base="/w", seed_files={"/w/a.png": "12345"})
 
         async def deliver(artifact: Artifact) -> LandedArtifact:
             return LandedArtifact(name=f"{len(artifact.content)}.blob", display="[landed]")
@@ -2275,7 +2277,7 @@ class TestEveryRecordSaysWhichCallItCameFrom:
 
         asyncio.run(_fn(_tool(router, build))())
 
-        assert seen == [f"{_SPEC.work_dir}/{recorder.one(ToolCallEnded).call}"]
+        assert seen == [recorder.one(ToolCallEnded).call]
 
     def test_a_task_that_outlives_the_call_stops_naming_it(self):
         """A child task starts from a *copy* of the context, so the call's record is the only
@@ -2378,7 +2380,7 @@ class TestEveryRecordSaysWhichCallItCameFrom:
         """The two fields answer different questions: `call_id` is what a kind asked the sink to
         stamp, and `call` is which call collected — read from the seam, not from the argument."""
         recorder = _Recorder()
-        sandbox = InProcessSandbox(seed_files={"/w/a.png": "1"})
+        sandbox = InProcessSandbox(storage_base="/w", seed_files={"/w/a.png": "1"})
         spec = _outputs_spec(DeclaredOutput(path="a.png"))
         sink = _Sink(per_call=True)
 
@@ -2436,7 +2438,7 @@ class TestARouterWithNoObserverPaysNothing:
         # The event's *payload* too, not just its envelope: a `LandedOutput` per landed
         # artifact is the part a collection would otherwise build and throw away.
         monkeypatch.setattr(outputs_module, "LandedOutput", _refuse)
-        sandbox = InProcessSandbox(seed_files={"/w/a.png": "1"})
+        sandbox = InProcessSandbox(storage_base="/w", seed_files={"/w/a.png": "1"})
 
         landed = asyncio.run(
             collect_outputs(sandbox, _outputs_spec(DeclaredOutput(path="a.png")), sink=_Sink().sink)

@@ -1277,7 +1277,7 @@ class SandboxToolSession:
 
     @property
     def spec(self) -> SandboxSpec:
-        """The sandbox this workload asks for. Workloads read ``work_dir`` off it."""
+        """The sandbox this workload asks for. Paths use the acquired sandbox's base."""
         return self._spec
 
     @property
@@ -1352,7 +1352,7 @@ class SandboxToolSession:
         return _call_name(call)
 
     def guest_call_path(self) -> str:
-        """This call's own place **inside the sandbox**, under the spec's ``work_dir``.
+        """This call's own path relative to the backend's storage base.
 
         Allocated once per call and reclaimed with everything under it when the call returns, so
         a kind that puts its files here cannot leave them behind. Apart from the three accessors
@@ -1383,9 +1383,7 @@ class SandboxToolSession:
                 "path is already reclaimed, and anything written to it now would stay in the "
                 "sandbox. A task outliving the call needs a path of its own."
             )
-        # Composed for the caller, and never stored composed: the reclaim addresses this by
-        # name against ``work_dir``, the way every other confined call on the surface does.
-        return f"{self._spec.work_dir}/{_call_name(call)}"
+        return _call_name(call)
 
     async def list_files(self, store: Any) -> list[ListedFile] | str:
         """The files this caller may act on, or the message to return if they cannot be read.
@@ -1911,7 +1909,7 @@ async def _reclaim_the_call(
         await _give_back_the_sandbox(call, router=router, only_key=only_key)
         return
     prefix = _prefixed(tool)
-    path = f"{spec.work_dir}/{call.id}" if call.named else spec.work_dir
+    path = call.id if call.named else "."
     acquired = tuple(
         (key, sandboxes)
         for key, sandboxes in call.acquired.items()
@@ -2001,7 +1999,7 @@ async def _clean_each_sandbox(
             if admission.rung is Cleanup.RECLAIM and call.named:
                 try:
                     reason = await reclaim_guest_path(
-                        sandbox, call.id, working_directory=spec.work_dir, timeout=timeout
+                        sandbox, call.id, working_directory=".", timeout=timeout
                     )
                 except (asyncio.CancelledError, GeneratorExit):
                     _refuse_not_yet_reclaimed(router, acquired, index, call=call, kind=spec.kind)
@@ -2601,7 +2599,9 @@ def sandboxed_tool(
 
         attached = decorate(checked)
         return [attached]
-    if not [part for part in posixpath.normpath(spec.work_dir).split("/") if part]:
+    if spec.work_dir is not None and not [
+        part for part in posixpath.normpath(spec.work_dir).split("/") if part
+    ]:
         # Here rather than with the spec refusals above, because it constrains only a tool that
         # can reclaim: a body that never receives the wrapper cannot leave a path behind, and
         # refusing it would be a rule enforcing something that cannot happen.

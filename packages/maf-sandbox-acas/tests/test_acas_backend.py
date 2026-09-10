@@ -72,6 +72,7 @@ def test_acquire_creates_and_repairs_the_base_through_the_data_plane():
         key = SandboxKey("work-dir", "thread", "agent")
         spec = _spec_requiring(Capability.EXEC)
         first = await backend.acquire(key, spec)
+        assert spec.work_dir is not None
         assert client.created_directories == ["/maf-sandbox", "/maf-sandbox/work"]
         client.files[first.instance_id][spec.work_dir + "/keep"] = b"keep"
         second = await backend.acquire(key, spec)
@@ -778,6 +779,21 @@ class _GuestSandboxClient(_FakeSandboxClient):
         path = params["path"]
         if path == "/":
             return {"isDir": True, "isSymlink": False}
+        if route.endswith("/list"):
+            return {
+                "path": path,
+                "entries": [
+                    {
+                        "path": child,
+                        "name": posixpath.basename(child),
+                        "isDir": value is None,
+                        "isSymlink": False,
+                        "size": len(value or b""),
+                    }
+                    for child, value in self.files.items()
+                    if posixpath.dirname(child) == path
+                ],
+            }
         if path not in self.files:
             raise ResourceNotFoundError("missing")
         return {
@@ -785,6 +801,9 @@ class _GuestSandboxClient(_FakeSandboxClient):
             "isSymlink": False,
             "size": len(self.files[path] or b""),
         }
+
+    async def read_file(self, path):
+        return self.files[path]
 
     async def delete_file(self, path, *, recursive):
         assert recursive
@@ -4905,3 +4924,42 @@ class TestReclaim:
         assert Capability.RECLAIM not in backend.declarations.capabilities
         assert Capability.SNAPSHOT not in backend.declarations.capabilities
         assert router.effective_cleanup(spec) is Cleanup.DISPOSE
+
+
+@pytest.mark.parametrize("override", [None, "/image/base"])
+def test_relative_storage_contract_through_the_data_plane(override):
+    from dataclasses import replace
+
+    from maf_sandbox.conformance import assert_storage_base_conformance
+
+    async def scenario():
+        client = _GuestGroupClient(_guest_removing(True))
+        backend = _backend_with(client)
+        spec = replace(_spec_requiring(Capability.FILES_OUT), work_dir=override)
+        sandbox = await backend.acquire(SandboxKey("storage", "thread", "agent"), spec)
+        capabilities = backend.declarations.capabilities - {Capability.EXEC}
+        await assert_storage_base_conformance(sandbox, capabilities)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("override", [None, "/image/base"])
+def test_warm_storage_binding_refuses_retargeting(override):
+    from dataclasses import replace
+
+    async def scenario():
+        client = _GuestGroupClient(_guest_removing(True))
+        backend = _backend_with(client)
+        key = SandboxKey("storage", "thread", "agent")
+        spec = replace(_spec_requiring(Capability.FILES_OUT), work_dir=override)
+        first = await backend.acquire(key, spec)
+        await first.write_file("keep", b"keep", working_directory=".")
+        before = list(client.created_directories)
+        with pytest.raises(ValueError, match="storage base"):
+            await backend.acquire(key, replace(spec, work_dir="/other/base"))
+        assert client.created_directories == before
+        again = await backend.acquire(key, spec)
+        assert again.instance_id == first.instance_id
+        assert await again.read_file("keep", working_directory=".", max_bytes=100) == b"keep"
+
+    asyncio.run(scenario())
