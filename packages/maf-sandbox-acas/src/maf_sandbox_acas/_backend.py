@@ -609,44 +609,12 @@ class _AcasSandbox:
         )
 
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
-        """Remove ``directory`` through the data plane's ``delete_file``, which acts as the
-        host rather than as the image's ``USER`` — so a file the file plane wrote as root is
-        removable on an image whose guest is not root, where ``rm`` over ``exec`` could not.
-
-        Reach: a guest that swaps ``directory`` itself gains nothing — this mechanism unlinks a
-        directly-named link instead of following it — but a swapped *ancestor* **is followed**,
-        so the argument there rests on who owns the component. The full argument, and the
-        launcher-created residual, is [`acas.md`](../../../../docs/sandbox/backends/acas.md)'s
-        to carry; the guards below refuse what this backend cannot place.
-        """
-        from azure.core.exceptions import ResourceNotFoundError
-
-        del working_directory
-        # Both refusals stand on their own rather than trusting the caller's, because this
-        # removal is recursive, irreversible, and now runs with the host's authority.
-        if not directory.startswith("/"):
-            raise ValueError(f"refusing to reclaim a path that is not absolute: {directory}")
-        target = posixpath.normpath(directory)
-        if len([part for part in target.split("/") if part]) < 2:
-            raise ValueError(f"refusing to reclaim recursively that close to the root: {target}")
-        try:
-            # Bounded like every other call on this data plane: this one runs from a `finally`,
-            # where a wedged service would otherwise hold the caller's turn open with the
-            # caller's own failure still unreported.
-            await asyncio.wait_for(self._sc.delete_file(target, recursive=True), timeout=timeout)
-        except ResourceNotFoundError:
-            # A directory already gone is success — `reclaim` runs from a `finally`, and a
-            # no-op cleanup must not bury the error that brought the caller here.
-            return
-        except TimeoutError:
-            raise
-        except Exception as refused:
-            # `azure.core` raises its own hierarchy, and `HttpResponseError` is no `OSError`.
-            # Translated the way `remove` translates, so a caller catching what the docstring
-            # says catches a transport failure too. `error_detail` carries the response body,
-            # which `str()` drops — `ReclaimFailure.reason` serializes this wrapper without
-            # traversing `__cause__`, so the detail has to ride in the message itself.
-            raise OSError(f"could not reclaim {directory}: {error_detail(refused)}") from refused
+        """Unsupported: safe ancestry for a host-authority delete cannot be established."""
+        raise NotImplementedError(
+            "the acas backend does not support RECLAIM: the data plane resolves linked "
+            "parents but cannot establish that the guest could not replace them. "
+            "Dispose the sandbox instead."
+        )
 
     async def _stat_guest(self, guest: str, relative: str) -> SandboxEntry | None:
         """Stat an absolute guest path, with no confinement check of its own.

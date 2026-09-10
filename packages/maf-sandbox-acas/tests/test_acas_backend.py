@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from maf_sandbox import (
     Capability,
+    Cleanup,
     DisposalFailure,
     Egress,
     Isolation,
@@ -3386,12 +3387,9 @@ class _FakeDataPlaneClient:
         self.gets: list[tuple[str, dict]] = []
         self.reads: list[str] = []
         self.deletes: list[tuple[str, bool]] = []
-        self.delete_raises: Exception | None = None
 
     async def delete_file(self, path, *, recursive: bool = False) -> None:
         self.deletes.append((path, recursive))
-        if self.delete_raises is not None:
-            raise self.delete_raises
 
     async def _dp_get(self, path, *, params=None):
         from azure.core.exceptions import ResourceNotFoundError
@@ -4464,140 +4462,25 @@ class TestRemove:
 
 
 class TestReclaim:
-    """``reclaim`` removes through the data plane's ``delete_file``, not over ``exec``: the data
-    plane acts as the host — the same principal the file plane writes as — so a root-written call
-    directory is removable on an image whose ``USER`` is not root. See the method's docstring."""
+    @pytest.mark.parametrize(
+        "directory",
+        ["/maf-sandbox/work/call/", "/tmp/linked/call", "/", "relative"],
+    )
+    def test_reclaim_refuses_without_accessing_the_service(self, directory):
+        class _NoClientCalls:
+            def __getattr__(self, name):
+                raise AssertionError(f"reclaim accessed the service client: {name}")
 
-    def test_a_directory_is_removed_via_delete_file(self):
-        from maf_sandbox_acas._backend import _AcasSandbox
+        sandbox = _sandbox(_NoClientCalls())
+        with pytest.raises(NotImplementedError, match="RECLAIM.*Dispose the sandbox"):
+            asyncio.run(sandbox.reclaim(directory, working_directory=_WORK_DIR, timeout=30))
 
-        directory = "/maf-sandbox/work/call-a1b2c3/"
-        client = _FakeDataPlaneClient()
-        sandbox = _AcasSandbox(client, 30.0)
-        asyncio.run(sandbox.reclaim(directory, working_directory=_WORK_DIR, timeout=30))
-        # One form only: whether a trailing slash changes the service's unlink-or-resolve
-        # answer on a link is unmeasured, so normpath settles it here rather than at the API.
-        assert client.deletes == [(posixpath.normpath(directory), True)]
-
-    def test_a_relative_path_is_refused_before_the_call(self):
-        """The removal is recursive and runs as the host, so a path the backend cannot place
-        is refused here rather than resolved against whatever the service considers the root."""
-        from maf_sandbox_acas._backend import _AcasSandbox
-
-        client = _FakeDataPlaneClient()
-        sandbox = _AcasSandbox(client, 30.0)
-        with pytest.raises(ValueError, match="not absolute"):
-            asyncio.run(
-                sandbox.reclaim("work/call-a1b2c3", working_directory=_WORK_DIR, timeout=30)
-            )
-        assert client.deletes == [], "the refusal has to land before the service is called"
-
-    def test_a_path_too_close_to_the_root_is_refused_before_the_call(self):
-        """`/` and `/tmp` are the shapes that turn a cleanup into an outage."""
-        from maf_sandbox_acas._backend import _AcasSandbox
-
-        client = _FakeDataPlaneClient()
-        sandbox = _AcasSandbox(client, 30.0)
-        with pytest.raises(ValueError, match="close to the root"):
-            asyncio.run(sandbox.reclaim("/tmp", working_directory=_WORK_DIR, timeout=30))
-        assert client.deletes == [], "the refusal has to land before the service is called"
-
-    def test_a_missing_directory_is_success(self):
-        """``delete_file`` raises where ``rm -rf`` exited 0; this turns the raise into the same
-        no-op, so a cleanup in a `finally` does not bury the error that brought the caller here."""
-        from azure.core.exceptions import ResourceNotFoundError
-
-        from maf_sandbox_acas._backend import _AcasSandbox
-
-        client = _FakeDataPlaneClient()
-        client.delete_raises = ResourceNotFoundError(message="no such path")
-        sandbox = _AcasSandbox(client, 30.0)
-        asyncio.run(
-            sandbox.reclaim(
-                "/maf-sandbox/work/never-there", working_directory=_WORK_DIR, timeout=30
-            )
-        )
-        assert client.deletes == [("/maf-sandbox/work/never-there", True)]
-
-    def test_a_service_failure_is_answered_as_the_documented_oserror(self):
-        """The SDK raises `azure.core`'s hierarchy, and the contract names `OSError`: a caller
-        catching what the docstring says must catch a transport failure too, the same translation
-        `remove` already performs."""
-        from maf_sandbox_acas._backend import _AcasSandbox
-
-        class _ServiceDown(Exception):
-            """Stands in for `azure.core`'s hierarchy: not an `OSError`."""
-
-        class _RefusingClient:
-            async def delete_file(self, path, *, recursive: bool = False) -> None:
-                raise _ServiceDown("502 from the data plane")
-
-        sandbox = _AcasSandbox(_RefusingClient(), 30.0)
-        with pytest.raises(OSError, match=r"could not reclaim.*_ServiceDown") as raised:
-            asyncio.run(
-                sandbox.reclaim("/maf-sandbox/work/x", working_directory=_WORK_DIR, timeout=30)
-            )
-        assert isinstance(raised.value.__cause__, _ServiceDown)
-
-    def test_the_failure_message_carries_the_service_detail(self):
-        """`reclaim_guest_path` serializes this wrapper into `ReclaimFailure.reason` without
-        traversing `__cause__`, so the service detail has to ride in the message itself: the
-        body is what says *why* the removal failed."""
-        from maf_sandbox_acas._backend import _AcasSandbox
-
-        class _RefusingClient:
-            async def delete_file(self, path, *, recursive: bool = False) -> None:
-                class _Unauthorized(OSError):
-                    status_code = 401
-
-                raise _Unauthorized("Operation returned an invalid status 'Unauthorized'")
-
-        sandbox = _AcasSandbox(_RefusingClient(), 30.0)
-        with pytest.raises(OSError, match=r"could not reclaim.*status=401"):
-            asyncio.run(
-                sandbox.reclaim("/maf-sandbox/work/x", working_directory=_WORK_DIR, timeout=30)
-            )
-
-    def test_the_timeout_bounds_the_call(self):
-        """``delete_file`` is a direct SDK call that does not bound itself; ``reclaim`` bounds it
-        with its own ``timeout`` contract parameter, the way ``exec`` bounds the SDK's ``exec``,
-        so this proves the value given actually bounds the call."""
-        from maf_sandbox_acas._backend import _AcasSandbox
-
-        class _HangingClient:
-            async def delete_file(self, path, *, recursive: bool = False) -> None:
-                await asyncio.sleep(10)
-                raise AssertionError("should have been cancelled by the timeout")
-
-        sandbox = _AcasSandbox(_HangingClient(), 30.0)
-        with pytest.raises(TimeoutError):
-            asyncio.run(
-                sandbox.reclaim("/maf-sandbox/work/x", working_directory=_WORK_DIR, timeout=0.05)
-            )
-
-    def test_a_hostile_name_reaches_delete_file_verbatim(self):
-        """Core dispatches the path unaltered; this backend hands it to ``delete_file`` as a
-        path, not as a shell argv, so there is no ``shlex.join`` to split on. A ``work_dir`` is
-        host-supplied, so a name holding a space or a `;` is reachable — and one that reached the
-        service shell-split would have `rm` delete something else; the path argument removes that
-        whole class."""
-        from maf_sandbox_acas._backend import _AcasSandbox
-
-        hostile = "/maf-sandbox/work/a b; touch pwned"
-        client = _FakeDataPlaneClient()
-        sandbox = _AcasSandbox(client, 30.0)
-        asyncio.run(sandbox.reclaim(hostile, working_directory=_WORK_DIR, timeout=30))
-        assert client.deletes == [(hostile, True)]
-
-    def test_a_working_directory_swap_for_a_link_does_not_change_the_call(self):
-        """`working_directory` is a reach argument, not a confinement one: `reclaim` owes no
-        walk of it, so a caller cannot smuggle a swap past the call and a link planted at that
-        name does not steer the delete — the call goes to the directory the framework created,
-        as a path, whatever `working_directory` now says."""
-        from maf_sandbox_acas._backend import _AcasSandbox
-
-        directory = "/maf-sandbox/work/call-a1b2c3"
-        client = _FakeDataPlaneClient()
-        sandbox = _AcasSandbox(client, 30.0)
-        asyncio.run(sandbox.reclaim(directory, working_directory="/elsewhere/now", timeout=30))
-        assert client.deletes == [(directory, True)]
+    @pytest.mark.parametrize("confined", [False, True])
+    @pytest.mark.parametrize("floor", list(Cleanup))
+    def test_every_workload_resolves_to_disposal(self, confined, floor):
+        backend = AcasSandboxBackend(_config())
+        router = SandboxRouter([backend], min_cleanup=floor)
+        spec = SandboxSpec(kind="test", confined_to_guest_call_path=confined)
+        assert Capability.RECLAIM not in backend.declarations.capabilities
+        assert Capability.SNAPSHOT not in backend.declarations.capabilities
+        assert router.effective_cleanup(spec) is Cleanup.DISPOSE

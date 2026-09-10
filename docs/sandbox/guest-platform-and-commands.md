@@ -70,7 +70,7 @@ Everything in this table is a live claim about the guest, made by code that has 
 | `maf-sandbox-docker`, `_backend.py`, `remove` and `reclaim` | It is `rm -rf` / `rm -f`, *"since the engine has no delete primitive"* |
 | `maf-sandbox-acas`, `_backend.py`, `_AcasSandbox.probe_guest_removal` | The guest has `rm`. The file plane plants a root-owned probe file and verifies its removal; stdout and a successful exit alone cannot enable `FILES_DELETE`. An inconclusive probe serves `FILES_OUT` and `HOST_TOOLS` and refuses `FILES_DELETE` |
 | `maf-sandbox-acas`, `_backend.py`, `remove` | The guest has `rm`; the file plane checks paths and confirms absence after guest execution |
-| `maf-sandbox-acas`, `_backend.py`, `reclaim` | It is `delete_file` on the data plane — no shell, no `rm`. `exec` runs as the image's `USER` and the SDK exposes no selector ([#707](https://github.com/sokolaidev/maf-extensions/pull/707)), so the data plane, which acts as the host, is the removal |
+| `maf-sandbox-acas`, `_backend.py`, `reclaim` | Refuses with `NotImplementedError` before any service call: safe ancestry for a host-authority delete cannot be established. The router uses disposal |
 | `maf-sandbox-wslc`, `_backend.py`, `reclaim` | Refused without running a guest command; router-managed cleanup disposes the kind through the engine |
 | `maf-sandbox-codeact` | The interpreter is spelled `python3` |
 | `maf-sandbox-bicep` | POSIX command templates |
