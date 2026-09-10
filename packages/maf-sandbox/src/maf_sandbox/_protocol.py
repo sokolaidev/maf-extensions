@@ -1341,10 +1341,9 @@ class BackendDeclarations:
     #: is the one reading that is certain: nothing was watched, so no absence means anything.
     #:
     #: **``True`` is weaker than "silence means nothing was attempted".**  It says this backend
-    #: reports the windows it can attribute, and a backend keyed on a key can only attribute
-    #: what it acquired — not a sandbox another replica created, and not one from before this
-    #: process started.  Those windows go unreported, so a reader treating silence as safety
-    #: needs the backend's own page for where that holds.  Saying ``True`` obliges the backend
+    #: reports the windows it can attribute. Attribution may come from persistent engine
+    #: metadata or local state; the backend's own page states which windows it can recover.
+    #: Unattributable windows go unreported. Saying ``True`` obliges the backend
     #: to implement :class:`~maf_sandbox.ObservesEgress`, and the router warns at construction
     #: where it does not.
     observes_egress: bool = False
