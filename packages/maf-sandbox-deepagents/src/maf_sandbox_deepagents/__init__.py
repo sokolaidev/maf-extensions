@@ -15,8 +15,10 @@ This package imports ``maf_sandbox`` and ``deepagents``, and no backend and no a
 from ._sandbox import (
     DEEPAGENTS_KIND,
     DEFAULT_EXEC_TIMEOUT_SECONDS,
+    DEFAULT_WORK_DIR,
     REQUIRED_CAPABILITIES,
     SANDBOX_UNAVAILABLE,
+    STORAGE_BASE,
     MafSandbox,
     deepagents_spec,
 )
@@ -24,8 +26,10 @@ from ._sandbox import (
 __all__ = [
     "DEEPAGENTS_KIND",
     "DEFAULT_EXEC_TIMEOUT_SECONDS",
+    "DEFAULT_WORK_DIR",
     "REQUIRED_CAPABILITIES",
     "SANDBOX_UNAVAILABLE",
+    "STORAGE_BASE",
     "MafSandbox",
     "MafSandboxDeepagentsExperimentalWarning",
     "deepagents_spec",

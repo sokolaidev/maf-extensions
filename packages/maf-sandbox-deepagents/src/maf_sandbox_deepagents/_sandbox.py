@@ -45,8 +45,10 @@ from maf_sandbox import (
 __all__ = [
     "DEEPAGENTS_KIND",
     "DEFAULT_EXEC_TIMEOUT_SECONDS",
+    "DEFAULT_WORK_DIR",
     "REQUIRED_CAPABILITIES",
     "SANDBOX_UNAVAILABLE",
+    "STORAGE_BASE",
     "MafSandbox",
     "deepagents_spec",
 ]
@@ -66,6 +68,14 @@ REQUIRED_CAPABILITIES: frozenset[Capability] = frozenset(
 
 DEFAULT_EXEC_TIMEOUT_SECONDS = 120.0
 
+#: The protocol's default base, read off the spec rather than spelled a second time here.
+DEFAULT_WORK_DIR: str | None = SandboxSpec(kind=DEEPAGENTS_KIND).work_dir
+
+#: The acquired sandbox's storage base, addressed relatively: every command runs there and
+#: every upload and download path is relative to it. The backend resolves it, whether the
+#: spec named a base or left the allocation to the backend.
+STORAGE_BASE = "."
+
 #: What the model reads when the router or the backend could not serve a call. Fixed, because
 #: the provider's own message can carry an endpoint or a tenant and a tool result is persisted
 #: into the transcript; the detail goes to the log.
@@ -83,7 +93,7 @@ def deepagents_spec(
     *,
     image_id: str | None = None,
     egress_allow: tuple[str | EgressRule, ...] = (),
-    work_dir: str | None = None,
+    work_dir: str | None = DEFAULT_WORK_DIR,
     files_in: TransferLimits = DEFAULT_TRANSFER_LIMITS,
     files_out: TransferLimits = DEFAULT_TRANSFER_LIMITS,
     min_isolation: Isolation | None = None,
@@ -94,21 +104,22 @@ def deepagents_spec(
     Egress is derived, never passed: named hosts run :data:`~maf_sandbox.Egress.ALLOWLIST` with
     those hosts as the payload, and none runs :data:`~maf_sandbox.Egress.CLOSED`. The open
     posture is not expressible, because the agent writes the shell commands this sandbox runs.
+
+    ``work_dir`` names the base for an image with a fixed layout; ``None`` lets the backend
+    allocate one.
     """
-    fields: dict[str, Any] = {
-        "kind": kind,
-        "image": image,
-        "image_id": image_id,
-        "egress_allow": tuple(egress_allow),
-        "egress": Egress.ALLOWLIST if egress_allow else Egress.CLOSED,
-        "requires": REQUIRED_CAPABILITIES,
-        "files_in": files_in,
-        "files_out": files_out,
-        "min_isolation": min_isolation,
-    }
-    if work_dir is not None:
-        fields["work_dir"] = work_dir
-    return SandboxSpec(**fields)
+    return SandboxSpec(
+        kind=kind,
+        image=image,
+        image_id=image_id,
+        egress_allow=tuple(egress_allow),
+        egress=Egress.ALLOWLIST if egress_allow else Egress.CLOSED,
+        work_dir=work_dir,
+        requires=REQUIRED_CAPABILITIES,
+        files_in=files_in,
+        files_out=files_out,
+        min_isolation=min_isolation,
+    )
 
 
 def _run_sync[T](coroutine: Coroutine[Any, Any, T]) -> T:
@@ -248,9 +259,7 @@ class MafSandbox(BaseSandbox):
         if sandbox is None:
             return ExecuteResponse(output=SANDBOX_UNAVAILABLE, exit_code=None)
         try:
-            result = await sandbox.exec(
-                command, working_directory=self._spec.work_dir, timeout=bound
-            )
+            result = await sandbox.exec(command, working_directory=STORAGE_BASE, timeout=bound)
         except TimeoutError:
             return ExecuteResponse(output=_TIMED_OUT.format(seconds=bound), exit_code=None)
         return _response(result)
@@ -267,7 +276,7 @@ class MafSandbox(BaseSandbox):
         responses: list[FileUploadResponse] = []
         for path, content in files:
             try:
-                await sandbox.write_file(path, content, working_directory=self._spec.work_dir)
+                await sandbox.write_file(path, content, working_directory=STORAGE_BASE)
             except (ValueError, NotADirectoryError) as refused:
                 # The file plane's own refusals — outside work_dir, through a link, a parent
                 # that is a file — are the guest's shape, safe to name by code.
@@ -286,10 +295,9 @@ class MafSandbox(BaseSandbox):
     # --- files out -------------------------------------------------------------------------
 
     async def _download(self, sandbox: Sandbox, path: str) -> FileDownloadResponse:
-        work_dir = self._spec.work_dir
         cap = self._spec.files_out.max_bytes_per_file
         try:
-            entry = await sandbox.stat_file(path, working_directory=work_dir)
+            entry = await sandbox.stat_file(path, working_directory=STORAGE_BASE)
         except ValueError as refused:
             logger.info("%s: download of %r refused: %s", self._id, path, refused)
             return FileDownloadResponse(path=path, error=INVALID_PATH)
@@ -305,7 +313,7 @@ class MafSandbox(BaseSandbox):
         if entry.size_bytes > cap:
             return FileDownloadResponse(path=path, error=_OVER_CAP)
         try:
-            content = await sandbox.read_file(path, working_directory=work_dir, max_bytes=cap)
+            content = await sandbox.read_file(path, working_directory=STORAGE_BASE, max_bytes=cap)
         except SandboxTransferCapExceeded:
             return FileDownloadResponse(path=path, error=_OVER_CAP)
         except FileNotFoundError:

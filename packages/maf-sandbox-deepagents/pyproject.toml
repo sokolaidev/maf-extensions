@@ -30,7 +30,7 @@ dependencies = [
     # not reached a stable API, so every release before 1.0.0 may include breaking changes;
     # moving either end of this range has an order to it — see RELEASING.md. The number is
     # what `scripts/set_dependents_range.py` moves.
-    "maf-sandbox>=0.37.0,<0.38",
+    "maf-sandbox>=0.38.0,<0.39",
     # `BaseSandbox` and the response types this adapter answers with. Deep Agents changes its
     # backend protocol between 0.x minors (0.6 and 0.7 both did), so one minor is admitted.
     "deepagents>=0.7.13,<0.8",

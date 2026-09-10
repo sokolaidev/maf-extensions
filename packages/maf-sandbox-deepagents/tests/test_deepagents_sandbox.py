@@ -80,6 +80,7 @@ class TestTheSpec:
     def test_the_work_dir_default_is_the_protocol_s(self):
         assert deepagents_spec("img:1").work_dir == SandboxSpec(kind="x").work_dir
         assert deepagents_spec("img:1", work_dir="/w").work_dir == "/w"
+        assert deepagents_spec("img:1", work_dir=None).work_dir is None
 
 
 class TestConstruction:
@@ -144,7 +145,8 @@ class TestTheId:
 
 
 class TestExecute:
-    def test_runs_the_command_in_the_work_dir_under_the_default_timeout(self):
+    def test_runs_the_command_in_the_storage_base_under_the_default_timeout(self):
+        """The base is addressed as `"."`; the backend resolves it to the spec's `work_dir`."""
         fake = InProcessSandbox(outputs={"echo": "hello\n"})
         adapter, _ = _adapter(fake)
 
@@ -154,6 +156,7 @@ class TestExecute:
         assert response.exit_code == 0
         assert response.truncated is False
         assert fake.commands == [("echo hello", WORK, DEFAULT_EXEC_TIMEOUT_SECONDS)]
+        assert adapter.spec.work_dir == WORK
 
     def test_a_per_command_timeout_is_the_bound_handed_down(self):
         fake = InProcessSandbox()
@@ -186,13 +189,14 @@ class TestExecute:
     def test_an_unavailable_sandbox_is_a_fixed_sentence_with_the_detail_logged(
         self, caplog: pytest.LogCaptureFixture
     ):
-        adapter, _ = _adapter(acquire_error=RuntimeError("https://tenant-a.example.net refused"))
+        detail = "subscription 0000-1111 refused the create"
+        adapter, _ = _adapter(acquire_error=RuntimeError(detail))
         with caplog.at_level(logging.ERROR, logger="maf_sandbox_deepagents"):
             response = asyncio.run(adapter.aexecute("true"))
         assert response.output == SANDBOX_UNAVAILABLE
         assert response.exit_code is None
-        assert "tenant-a" not in response.output
-        assert "tenant-a.example.net" in caplog.text
+        assert "subscription" not in response.output
+        assert detail in caplog.text
 
     def test_a_timeout_is_reported_as_one(self):
         adapter, _ = _adapter(InProcessSandbox(raises=TimeoutError()))

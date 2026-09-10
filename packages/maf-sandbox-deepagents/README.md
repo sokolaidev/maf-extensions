@@ -31,7 +31,7 @@ sandbox = MafSandbox(router, SandboxKey(scope="tenant-a", thread_id="thread-1", 
 agent = create_deep_agent(model=..., backend=sandbox, system_prompt="...")
 ```
 
-`deepagents_spec` builds the spec Deep Agents needs — `EXEC`, `FILES_IN` and `FILES_OUT` — and derives egress: `egress_allow=("pypi.org",)` runs the sandbox `ALLOWLIST` with that host, and no hosts runs it `CLOSED`. There is no open posture to ask for, because the agent writes the commands. `MafSandbox` refuses a spec that lacks a required capability, and asks the router at construction whether the backend can serve it, so a misconfigured host fails before an agent is built.
+`deepagents_spec` builds the spec Deep Agents needs — `EXEC`, `FILES_IN` and `FILES_OUT` — with the protocol's default base, or `work_dir=None` to let the backend allocate one, and derives egress: `egress_allow=("pypi.org",)` runs the sandbox `ALLOWLIST` with that host, and no hosts runs it `CLOSED`. There is no open posture to ask for, because the agent writes the commands. `MafSandbox` refuses a spec that lacks a required capability, and asks the router at construction whether the backend can serve it, so a misconfigured host fails before an agent is built.
 
 The sandbox is acquired on the first command and reused warm after that. It lives until the host disposes it: `await sandbox.aclose()`, or the router's `dispose_scope(scope, thread_id)` on the host's own conversation-delete path — the backstop every sandbox in the suite answers to, and the one to wire, because LangGraph fires nothing when a thread is deleted. [`samples/17_docker_deepagents_bicep`](https://github.com/sokolaidev/maf-extensions/tree/main/samples/17_docker_deepagents_bicep) runs the whole thing end to end.
 
@@ -39,8 +39,8 @@ The sandbox is acquired on the first command and reused warm after that. It live
 
 | Deep Agents | `maf_sandbox` |
 |---|---|
-| `execute(command, timeout)` | `Sandbox.exec(command, working_directory=spec.work_dir, timeout=...)` — a shell string, run as `sh -c` by the backend; `stdout` and `stderr` come back as one stream with `[stderr]` on the second, the way Deep Agents' own backends render it |
-| `upload_files([(path, bytes)])` | `Sandbox.write_file`, one call per file, relative to `spec.work_dir`; a path outside it or through a link is refused as `invalid_path` |
+| `execute(command, timeout)` | `Sandbox.exec(command, working_directory=".", timeout=...)` — run in the sandbox's storage base, a shell string the backend runs as `sh -c`; `stdout` and `stderr` come back as one stream with `[stderr]` on the second, the way Deep Agents' own backends render it |
+| `upload_files([(path, bytes)])` | `Sandbox.write_file`, one call per file, relative to the storage base; a path outside it or through a link is refused as `invalid_path` |
 | `download_files([path])` | `Sandbox.stat_file` then `Sandbox.read_file`, capped by `spec.files_out.max_bytes_per_file` and refusing rather than truncating; a missing file is `file_not_found`, a directory `is_directory`, a link `invalid_path` |
 | `id` | An opaque hash of the key and the kind, because Deep Agents may render it to the model and a scope is often a tenant |
 | `aclose()` | `SandboxRouter.dispose_kind` for this conversation's sandbox of this kind alone, so a packaged kind serving the same conversation keeps its own |
