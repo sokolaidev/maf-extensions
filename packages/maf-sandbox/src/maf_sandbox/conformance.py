@@ -132,10 +132,45 @@ async def assert_storage_base_conformance(
 
     Run with both ``work_dir=None`` and an explicit image base. EXEC probes need POSIX
     ``pwd`` and ``cat``; file probes require no guest utilities. Dispose after the suite.
+    Read-only probes inspect the base and reject escapes; file round trips and cleanup
+    require ``FILES_IN`` to plant their contents.
     """
     if Capability.EXEC in capabilities:
         result = await sandbox.exec(["pwd"], working_directory=".", timeout=60)
         assert result.exit_code == 0 and result.stdout.strip(), "the allocated cwd is absent"
+    if Capability.FILES_OUT in capabilities:
+        entry = await sandbox.stat_file(".", working_directory=".")
+        assert entry is not None and entry.kind is EntryKind.DIRECTORY, "the base is absent"
+        assert entry.path in ("", "."), "stat leaked its storage base"
+        await _refused_with(
+            OSError,
+            "reading the storage base as a file",
+            sandbox.read_file(".", working_directory=".", max_bytes=1),
+        )
+    if Capability.FILES_LIST in capabilities:
+        entries = await sandbox.list_dir(".", working_directory=".")
+        assert all(
+            entry.path not in ("", ".", "..") and "/" not in entry.path and "\\" not in entry.path
+            for entry in entries
+        ), "listing leaked its storage base"
+    for path, cwd in (("escape", "../outside"), ("../escape", ".")):
+        if Capability.FILES_OUT in capabilities:
+            await _refused_with(
+                ValueError,
+                f"stat of escaping path {path!r} from {cwd!r}",
+                sandbox.stat_file(path, working_directory=cwd),
+            )
+            await _refused_with(
+                ValueError,
+                f"read of escaping path {path!r} from {cwd!r}",
+                sandbox.read_file(path, working_directory=cwd, max_bytes=1),
+            )
+        if Capability.FILES_LIST in capabilities:
+            await _refused_with(
+                ValueError,
+                f"listing of escaping path {path!r} from {cwd!r}",
+                sandbox.list_dir(path, working_directory=cwd),
+            )
     if Capability.FILES_IN not in capabilities:
         return
     child = "storage-base-probe"

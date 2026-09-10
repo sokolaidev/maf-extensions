@@ -128,9 +128,9 @@ class ReclaimFailure:
     #: The sandbox it is in. Always set: nothing is reported for a call that acquired none,
     #: because such a call wrote nothing.
     key: SandboxKey
-    #: The call path relative to the storage base — its affected path, not one guaranteed
-    #: to still exist: a landed disposal (``disposal == "disposed"``) took the whole sandbox,
-    #: and a stop-only note names a path a successful reclaim already removed.
+    #: The affected path relative to the storage base; ``"."`` denotes the whole base.
+    #: It need not still exist: a landed disposal (``disposal == "disposed"``) took the
+    #: whole sandbox, and a stop-only note names a path a successful reclaim already removed.
     path: str
     #: Why the sandbox is not clean, in this stack's own words: the removal that did not
     #: happen, or the stop that did not reach everything the program started.
