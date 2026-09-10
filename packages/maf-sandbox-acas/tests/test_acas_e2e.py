@@ -324,7 +324,7 @@ def files_delete_results(live):
 
 @pytest.fixture(scope="module")
 def service_link_delete(live):
-    """Measure SDK delete link semantics used by host-side reclaim."""
+    """Measure service-side deletion independently of backend capabilities."""
     paths = ConformancePaths.under(_WORK)
     sc = live.sandbox._sc  # noqa: SLF001 — reaching past the backend is the whole measurement
 
@@ -385,8 +385,7 @@ def service_link_delete(live):
             f"{paths.outside}/svc-parent/child.txt"
         )
 
-        # A link *inside* a recursively deleted tree: the shape `reclaim` actually faces, and
-        # the one no argument the backend passes can name.
+        # Interior links must be measured separately from the path named in the request.
         await sc.write_file(f"{paths.outside}/svc-interior.txt", b"pointed at from inside\n")
         await sc.write_file(f"{paths.work}/svc-tree/leaf.txt", b"in the tree\n")
         await plant_link(f"{paths.work}/svc-tree/inside-link", f"{paths.outside}/svc-interior.txt")
@@ -399,7 +398,7 @@ def service_link_delete(live):
 
 
 class TestWhatTheServiceDoesWithALinkOnDelete:
-    """Regression coverage for the service link semantics behind reclaim."""
+    """Regression coverage for the service-side deletion measurements."""
 
     def test_a_link_named_directly_is_unlinked_and_its_target_kept(self, service_link_delete):
         """Both flag values — `recursive` may reach a different operation on the service."""
@@ -432,11 +431,11 @@ class TestWhatTheServiceDoesWithALinkOnDelete:
         )
 
     def test_a_link_inside_a_recursive_delete_is_unlinked_not_followed(self, service_link_delete):
-        """What `reclaim` would face on the data plane: a link the caller never names."""
+        """A recursive service delete must unlink interior links without following them."""
         assert service_link_delete["tree-gone"], "the recursively deleted tree is still there"
         assert service_link_delete["interior-target-survives"], (
             "a recursive delete resolved an interior link and removed a file outside the "
-            "tree during host-side reclaim"
+            "tree during a recursive service delete"
         )
 
 
