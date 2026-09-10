@@ -125,7 +125,6 @@ def test_proxy_failure_preserves_instance_for_retry(failure, observed):
         "Networks": {"first-net": {"NetworkID": "network-id"}}
     }
     backend = _backend(engine)
-    backend._acquired["first"] = (KEY.scope, KEY.thread_id, KEY.agent_dir)
     events = []
     if observed:
         backend.observe_egress(events.append)
@@ -158,14 +157,12 @@ def test_proxy_failure_preserves_instance_for_retry(failure, observed):
     assert set(engine.rows) == {workload_id, proxy_id, sibling_id}
     assert engine.removed == []
     assert not any(args[:2] == ("network", "rm") for args in calls)
-    assert "first" in backend._acquired
     assert events == []
 
     failed = False
     assert asyncio.run(backend.dispose(KEY, kind=SPEC.kind, instance_id=workload_id)) is None
     assert set(engine.rows) == {sibling_id}
     assert engine.removed == [proxy_id, workload_id]
-    assert "first" not in backend._acquired
     assert len(events) == int(observed)
     if observed:
         assert [decision.host for decision in events[0].decisions] == ["example.com"]

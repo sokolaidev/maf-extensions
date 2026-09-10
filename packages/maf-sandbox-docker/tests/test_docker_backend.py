@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import io
 import itertools
+import json
 import logging
 import sys
 import tarfile
@@ -395,10 +396,19 @@ def _machine(
             # Every walk now stats the root, and a real engine answers it with the root
             # directory's own header — root's, writable by nobody else on any sane image.
             return _DockerResult(0, _owned_directory_tar(".", 0, 0o755), "")
-        if args[0] == "inspect":
+        if args[0] == "inspect" or args[:2] == ("container", "inspect"):
             name = args[-1]
             if name not in live_running | live_stopped:
                 return _DockerResult(1, b"", f"Error: No such object: {name}")
+            if args[:2] == ("container", "inspect"):
+                from maf_sandbox_docker._backend import _sandbox_labels
+
+                labels = _sandbox_labels(_KEY, _ALLOW_SPEC)
+                if name.endswith("-proxy"):
+                    labels["maf-sandbox.role"] = "proxy"
+                return _DockerResult(
+                    0, json.dumps([{"Id": name, "Config": {"Labels": labels}}]).encode(), ""
+                )
             state = "true" if name in live_running else "false"
             return _DockerResult(0, state.encode() + b"\n", "")
         if args[:2] == ("ps", "-a") or args[0] == "ps":
@@ -4484,7 +4494,7 @@ class TestTheProxysOwnDecisionsReachARecord:
         assert [e.unreadable for e in seen] == ["daemon said no"]
         assert seen[0].decisions == ()
 
-    def test_a_purge_drains_every_proxy_the_registry_can_attribute(self):
+    def test_a_purge_drains_every_proxy_the_engine_can_attribute(self):
         """`dispose_scope` is the routine cleanup — a thread deletion, a `scope` block closing —
         so a purge that drained nothing lost the last window of every sandbox on the ordinary
         path, while `observes_egress` told a reader the sandbox was watched."""
@@ -4542,7 +4552,6 @@ class TestTheProxysOwnDecisionsReachARecord:
             ),
             config=_ALLOW_CONFIG,
         )
-        backend._acquired[_AL] = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
         backend.observe_egress(seen.append)
         asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
         assert [d.host for e in seen for d in e.decisions] == ["orphan.example"]
@@ -4646,9 +4655,7 @@ class TestTheProxysOwnDecisionsReachARecord:
         assert seen[0].decisions  # not vacuous: the whole lines survived
         assert all(d.host == "h.example" for d in seen[0].decisions)
 
-    def test_a_proxy_this_process_made_and_then_lost_is_an_open_window(self):
-        """`observes_egress` licenses a reader to treat silence as "nothing was attempted", so a
-        proxy that existed and vanished cannot be silent."""
+    def test_absence_without_an_inspected_instance_does_not_invent_a_window(self):
         seen: list[EgressObserved] = []
         backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
@@ -4658,9 +4665,7 @@ class TestTheProxysOwnDecisionsReachARecord:
         fake._responder = _machine(running=[_AL], overrides={("logs", "--tail"): absent})
         backend.observe_egress(seen.append)
         asyncio.run(backend.dispose(_KEY))
-        assert [e.unreadable for e in seen] == [
-            "the proxy is gone, so whatever it decided went with it"
-        ]
+        assert seen == []
 
     def test_a_closed_sandbox_is_never_reported_as_a_lost_proxy(self):
         """It never had one. Only an allowlisted acquire is tracked, so a closed teardown stays
@@ -4671,35 +4676,6 @@ class TestTheProxysOwnDecisionsReachARecord:
         backend.observe_egress(seen.append)
         asyncio.run(backend.dispose(_KEY))
         assert seen == []
-
-    def test_attribution_survives_a_removal_that_did_not_land(self):
-        """A proxy a removal could not take is still running and still deciding, so a retry has
-        to be able to key its drain."""
-        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
-        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
-        assert _AL in backend._acquired
-        # Only now, so the acquire itself is not the thing that fails.
-        fake._responder = _machine(
-            running=[_AL], overrides={("rm",): _DockerResult(1, b"", "device or resource busy")}
-        )
-        asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
-        assert _AL in backend._acquired
-
-    def test_attribution_outlives_a_workload_whose_proxy_would_not_go(self):
-        """A workload can go while its proxy stays, and that proxy is still deciding. Keying the
-        drop on the pair rather than on the proxy left the next purge unable to key it."""
-        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
-        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
-        assert _AL in backend._acquired
-
-        def stubborn_proxy(args: tuple[str, ...]) -> _DockerResult:
-            if args[:1] == ("rm",) and args[-1] == _AL_PROXY:
-                return _DockerResult(1, b"", "device or resource busy")
-            return _machine(running=[_AL])(args)
-
-        fake._responder = stubborn_proxy
-        asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
-        assert _AL in backend._acquired
 
     def test_a_second_observed_router_taking_this_backend_over_is_named(self, caplog):
         """The records move to whichever router was built last, including for sandboxes the
@@ -4731,7 +4707,6 @@ class TestTheProxysOwnDecisionsReachARecord:
         seen: list[EgressObserved] = []
         backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
-        assert _AL in backend._acquired
 
         warm = _machine(running=[_AL], networks={_AL_NET: _UNADDRESSED})
 
@@ -4744,41 +4719,7 @@ class TestTheProxysOwnDecisionsReachARecord:
         backend.observe_egress(seen.append)
         with pytest.raises(RuntimeError):
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
-        assert _AL not in backend._acquired
         assert [e.unreadable for e in seen] == []
-
-    def test_a_proxy_removal_that_failed_keeps_its_attribution(self):
-        """It is still running and still deciding, so a retry has to be able to key its
-        drain."""
-        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
-        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
-
-        warm = _machine(running=[_AL], networks={_AL_NET: _UNADDRESSED})
-
-        def stubborn(args: tuple[str, ...]) -> _DockerResult:
-            if args[:1] == ("rm",) and args[-1] == _AL_PROXY:
-                return _DockerResult(1, b"", "device or resource busy")
-            return warm(args)
-
-        fake._responder = stubborn
-        asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
-        assert _AL in backend._acquired
-
-    def test_a_proxy_already_gone_drops_its_attribution(self):
-        """`_remove` answers `removed=False, failure=None` for one that was never there, which
-        is the same thing to a later drain as having removed it: neither retains attribution."""
-        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
-        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
-        warm = _machine(running=[_AL], networks={_AL_NET: _UNADDRESSED})
-
-        def proxy_deleted_behind_us(args: tuple[str, ...]) -> _DockerResult:
-            if args[:1] == ("rm",) and args[-1] == _AL_PROXY:
-                return _DockerResult(1, b"", f"Error: No such container: {_AL_PROXY}")
-            return warm(args)
-
-        fake._responder = proxy_deleted_behind_us
-        asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
-        assert _AL not in backend._acquired
 
     def test_the_last_window_is_drained_at_disposal(self):
         seen: list[EgressObserved] = []
@@ -4870,7 +4811,6 @@ def test_proxy_removal_retry_publishes_only_the_successful_window(
     else:
         asyncio.run(attempt())
     assert seen == []
-    assert _AL in backend._acquired
     failed = False
     if route == "derived":
         base = _machine(running=[_AL_PROXY])

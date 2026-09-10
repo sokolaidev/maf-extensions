@@ -133,6 +133,8 @@ def _machine(
 ):
     """A responder describing which containers exist, and how a command answers."""
 
+    proxy_labels = {}
+
     def respond(args: tuple[str, ...]) -> _WslcResult:
         for prefix, result in (overrides or {}).items():
             if args[: len(prefix)] == prefix:
@@ -143,6 +145,19 @@ def _machine(
                 payload = [{"Id": f"id-{n}", "Name": n} for n in names]
                 return _WslcResult(0, json.dumps(payload).encode(), b"")
             return _WslcResult(0, "".join(f"id-{n}\n" for n in names).encode(), b"")
+        if args[:2] == ("container", "run") and args[4].endswith("-proxy"):
+            proxy_labels[args[4]] = dict(
+                args[i + 1].split("=", 1) for i, arg in enumerate(args) if arg == "-l"
+            )
+        if args[:2] == ("container", "inspect") and args[-1].endswith("-proxy"):
+            from maf_sandbox_wslc._backend import _sandbox_labels
+
+            labels = proxy_labels.get(
+                args[-1], {**_sandbox_labels(_KEY, _ALLOW_SPEC), "maf-sandbox.role": "proxy"}
+            )
+            return _WslcResult(
+                0, json.dumps([{"Id": args[-1], "Config": {"Labels": labels}}]).encode(), b""
+            )
         if args[:2] == ("container", "inspect"):
             return _WslcResult(
                 0, json.dumps([{"Id": f"id-{args[-1]}", "Config": {"User": ""}}]).encode(), b""
@@ -2465,7 +2480,7 @@ class TestTheProxysOwnDecisionsReachARecord:
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         assert [e.unreadable for e in seen] == ["WSLC_E_SERVICE_UNAVAILABLE"]
 
-    def test_a_purge_drains_every_proxy_the_registry_can_attribute(self):
+    def test_a_purge_drains_every_proxy_the_engine_can_attribute(self):
         """`dispose_scope` is the routine cleanup, so a purge that drained nothing lost the last
         window of every sandbox on the ordinary path."""
         seen: list[EgressObserved] = []
@@ -2600,7 +2615,7 @@ class TestTheProxysOwnDecisionsReachARecord:
         assert seen[0].truncated is True
         assert seen[0].unreadable is None
 
-    def test_a_proxy_this_process_made_and_then_lost_is_an_open_window(self):
+    def test_absence_without_an_inspected_instance_does_not_invent_a_window(self):
         seen: list[EgressObserved] = []
         backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
@@ -2610,9 +2625,7 @@ class TestTheProxysOwnDecisionsReachARecord:
         )
         backend.observe_egress(seen.append)
         asyncio.run(backend.dispose(_KEY))
-        assert [e.unreadable for e in seen] == [
-            "the proxy is gone, so whatever it decided went with it"
-        ]
+        assert seen == []
 
     def test_a_closed_sandbox_is_never_reported_as_a_lost_proxy(self):
         seen: list[EgressObserved] = []
@@ -2740,7 +2753,6 @@ def test_proxy_removal_retry_publishes_only_the_successful_window(
     else:
         asyncio.run(attempt())
     assert seen == []
-    assert _AL in backend._acquired
     failed = False
     asyncio.run(attempt())
     assert removal_landed

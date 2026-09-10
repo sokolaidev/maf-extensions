@@ -354,11 +354,9 @@ def test_reap_continues_after_a_real_proxy_disappears(stage, monkeypatch):
                 return await command(*args, **kwargs)
 
             monkeypatch.setattr(backend, "_wslc", disappear)
-            assert name in backend._acquired
             result = await backend.reap(timedelta(seconds=1), scope=scope)
             assert removed
             assert result == WslcReapResult(1, 0, 1)
-            assert name not in backend._acquired
             assert _names_on_the_machine(name) == []
             assert _names_on_the_machine(name + "-proxy") == []
             assert not _network_present(name + "-net")
@@ -485,6 +483,69 @@ class TestAllowlistEgress:
 
     def _config(self) -> WslcSandboxConfig:
         return WslcSandboxConfig(egress_proxy_image=_PROXY_IMAGE)
+
+    def test_oversized_keys_acquire_and_drain_with_the_callers_key(self):
+        key = SandboxKey(scope=f"e2e-{uuid.uuid4()}", thread_id="thread", agent_dir="x" * 150_000)
+        creator = WslcSandboxBackend(self._config())
+        reader = WslcSandboxBackend(self._config())
+        events = []
+        reader.observe_egress(events.append)
+
+        async def scenario():
+            try:
+                sandbox = await creator.acquire(
+                    key, replace(_spec(), egress=Egress.ALLOWLIST, egress_allow=("example.com",))
+                )
+                result = await sandbox.exec(
+                    ["curl", "-I", "--max-time", "10", "https://blocked.invalid"],
+                    working_directory="/",
+                    timeout=20,
+                )
+                assert result.exit_code != 0
+                await reader._drain_attributed_proxy(sandbox.container_name)
+                assert events == []
+                creator.observe_egress(events.append)
+                assert (await creator.dispose(key)) is None
+                assert [event.key for event in events] == [key]
+                assert [d.host for event in events for d in event.decisions] == ["blocked.invalid"]
+            finally:
+                await creator.dispose_scope(key.scope, key.thread_id)
+
+        asyncio.run(scenario())
+
+    @pytest.mark.parametrize("orphan", [False, True])
+    def test_a_fresh_backend_reports_proxy_decisions_with_lossless_attribution(self, orphan):
+        key = SandboxKey(
+            scope=f"e2e-{uuid.uuid4()} / \u2603",
+            thread_id="thread / 1",
+            agent_dir="agent" * 30,
+        )
+        creator = WslcSandboxBackend(self._config())
+        reader = WslcSandboxBackend(self._config())
+        events = []
+        reader.observe_egress(events.append)
+
+        async def scenario():
+            try:
+                sandbox = await creator.acquire(
+                    key, replace(_spec(), egress=Egress.ALLOWLIST, egress_allow=("example.com",))
+                )
+                result = await sandbox.exec(
+                    ["curl", "-I", "--max-time", "10", "https://blocked.invalid"],
+                    working_directory="/",
+                    timeout=20,
+                )
+                assert result.exit_code != 0
+                if orphan:
+                    assert (await creator._remove(sandbox.container_name)).removed
+                assert (await reader.dispose_scope(key.scope, key.thread_id)).undisposed is None
+                assert [event.key for event in events] == [key]
+                assert [d.host for event in events for d in event.decisions] == ["blocked.invalid"]
+                assert events[0].unreadable is None
+            finally:
+                await creator.dispose_scope(key.scope, key.thread_id)
+
+        asyncio.run(scenario())
 
     def _curl_status(self, sandbox, url: str) -> tuple[int, str]:
         result = asyncio.run(
