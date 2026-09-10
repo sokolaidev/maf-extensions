@@ -76,8 +76,10 @@ from maf_sandbox.paths import (
     confine_resolve_guest_path,
     confine_resolve_guest_read_path,
     confine_resolve_guest_write_path,
+    ensure_guest_work_dir,
     guest_path_and_ancestors,
     path_ancestors_are_host_owned,
+    posix_work_dir_ancestors,
     sandbox_entry_from_tar_header,
     tar_header_from_block,
 )
@@ -655,6 +657,32 @@ class _DockerSandbox:
     @property
     def container_name(self) -> str:
         return self._name
+
+    async def prepare_work_dir(self, spec: SandboxSpec) -> None:
+        """Establish the spec's base through the container file plane."""
+        await ensure_guest_work_dir(
+            spec,
+            lambda path: self._stat_guest(path, path),
+            self._create_directories,
+            resolve=posix_work_dir_ancestors,
+        )
+
+    async def _create_directories(self, directories: tuple[str, ...]) -> None:
+        """Create missing parents as root and the work directory as the image user."""
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w") as archive:
+            for directory in directories:
+                entry = tarfile.TarInfo(directory.lstrip("/") + "/")
+                entry.type = tarfile.DIRTYPE
+                entry.mode = 0o755
+                if directory == directories[-1]:
+                    entry.uid, entry.gid = self._guest_uid, self._guest_gid
+                archive.addfile(entry)
+        result = await self._run(
+            "cp", "-", f"{self._name}:/", stdin=buffer.getvalue(), timeout=self._command_timeout
+        )
+        if result.returncode:
+            raise RuntimeError(f"docker could not create the working directory: {result.stderr}")
 
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
         """Write ``content`` to ``path`` inside the container, parents included.
@@ -1472,7 +1500,7 @@ class DockerSandboxBackend:
                     "or an `id` it can run. Unresolved identities are retried on the next acquire."
                 ),
             )
-            return _DockerSandbox(
+            sandbox = _DockerSandbox(
                 self._docker,
                 name,
                 self._config.command_timeout_seconds,
@@ -1482,6 +1510,8 @@ class DockerSandboxBackend:
                 facts.guest_gid,
                 instance_id=instance_id,
             )
+            await sandbox.prepare_work_dir(spec)
+            return sandbox
 
     async def _capabilities_dropped(self, name: str) -> bool:
         """Does this container run without ``CAP_DAC_OVERRIDE``?

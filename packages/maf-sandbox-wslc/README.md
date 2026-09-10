@@ -12,6 +12,8 @@ app  ->  maf_sandbox  ->  maf_sandbox_wslc  ->  the container
 
 The developer-machine sandbox backend: a container created by `wslc`, the container CLI that ships with WSL, in about half a second — no subscription, no daemon, no login, and no dependency but [`maf-sandbox`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox) itself. A workload written against the protocol runs here unchanged, which is what makes it a workload rather than an integration.
 
+For workloads requiring `EXEC` or any `FILES_*` capability, `acquire` ensures `spec.work_dir` exists, including on warm reuse. Existing directories retain their contents, ownership and modes; an unreadable path, a symlink or a non-directory fails acquire. This guarantees the base's existence on return, not additional guest permissions or the creation of per-call children. Runtime-only workloads require no directory. Missing directories are sent through the WSLC tar file plane: ancestors are root-owned and the base uses the resolved image uid/gid. An unresolved identity refuses creation of a missing base. No guest `mkdir` is needed; the file plane's documented concurrent-redirection residual also applies to creation.
+
 ## Quickstart
 
 ```bash

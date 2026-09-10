@@ -21,7 +21,16 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from maf_sandbox import Cleanup, Egress, Isolation, OsFamily, SandboxKey, SandboxRouter, SandboxSpec
+from maf_sandbox import (
+    Capability,
+    Cleanup,
+    Egress,
+    Isolation,
+    OsFamily,
+    SandboxKey,
+    SandboxRouter,
+    SandboxSpec,
+)
 from maf_sandbox.conformance import (
     PosixGuestSubject,
     assert_egress_conformance,
@@ -42,6 +51,62 @@ _NONROOT_IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_NONROOT_IMAGE")
 _GUEST_OWNED_IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_GUEST_OWNED_IMAGE")
 
 _WORK = "/maf-sandbox/work"
+
+
+@pytest.mark.parametrize("image", [_IMAGE, _NONROOT_IMAGE], ids=["root", "nonroot"])
+def test_acquire_prepares_base_before_exec_and_repairs_warm_reuse(image):
+    if not image:
+        pytest.skip("needs the corresponding WSLC E2E image")
+
+    async def scenario():
+        backend = WslcSandboxBackend(WslcSandboxConfig())
+        key = _key("acquire-work-dir-" + uuid.uuid4().hex[:10])
+        spec = SandboxSpec(
+            kind="base",
+            image=image,
+            work_dir="/maf-sandbox/acquire-test",
+            requires=frozenset({Capability.EXEC}),
+        )
+        try:
+            sandbox = await backend.acquire(key, spec)
+            first_id = sandbox.instance_id
+            for state in ("cold", "warm", "repaired", "restarted"):
+                if state == "repaired":
+                    removed = await backend._wslc(
+                        "container",
+                        "exec",
+                        "--user",
+                        "0",
+                        "-w",
+                        "/",
+                        sandbox.container_name,
+                        "rm",
+                        "-rf",
+                        "--",
+                        spec.work_dir,
+                        timeout=30,
+                    )
+                    assert removed.returncode == 0
+                if state == "restarted":
+                    stopped = await backend._wslc(
+                        "container", "stop", sandbox.container_name, timeout=30
+                    )
+                    assert stopped.returncode == 0
+                if state != "cold":
+                    sandbox = await backend.acquire(key, spec)
+                assert sandbox.instance_id == first_id
+                result = await sandbox.exec(
+                    "printf ok > marker; cat marker",
+                    working_directory=spec.work_dir,
+                    timeout=30,
+                )
+                assert result.exit_code == 0, (state, result)
+                assert result.stdout == "ok"
+        finally:
+            assert await backend.dispose(key, kind=spec.kind) is None
+
+    asyncio.run(scenario())
+
 
 pytestmark = pytest.mark.skipif(
     shutil.which("wslc") is None or not _IMAGE,

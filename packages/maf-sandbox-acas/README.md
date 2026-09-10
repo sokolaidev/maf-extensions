@@ -16,6 +16,8 @@ An agent that writes code should not be the thing that runs it. This package giv
 
 This package is the backend only, with no sandbox kind of its own. [`maf-sandbox-bicep`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox-bicep) is the first kind that runs on it, written against [`maf-sandbox`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox)'s protocol rather than against this backend.
 
+For workloads requiring `EXEC` or any `FILES_*` capability, `acquire` ensures `spec.work_dir` exists, including on warm reuse. Existing directories retain their contents, ownership and modes; an unreadable path, a symlink or a non-directory fails acquire. This guarantees the base's existence on return, not additional guest permissions or the creation of per-call children. Runtime-only workloads require no directory. Missing parents are created through the SDK's data-plane `mkdir`, without a guest command. Ownership follows the service's file plane; its documented concurrent-redirection residual also applies to creation.
+
 ## Quickstart
 
 ```bash

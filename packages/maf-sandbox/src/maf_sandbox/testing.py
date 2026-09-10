@@ -17,6 +17,7 @@ a call names, the same rule a real backend enforces against its own guest filesy
 
 from __future__ import annotations
 
+import ntpath
 import posixpath
 import shlex
 from collections.abc import Mapping, Sequence
@@ -50,7 +51,9 @@ from .paths import (
     confine_resolve_guest_list_path,
     confine_resolve_guest_read_path,
     confine_resolve_guest_write_path,
+    ensure_guest_work_dir,
     guest_path_relative_to,
+    posix_work_dir_ancestors,
 )
 
 __all__ = [
@@ -203,6 +206,42 @@ class InProcessSandbox:
             set(self.running),
         )
 
+    async def prepare_work_dir(self, spec: SandboxSpec) -> None:
+        """Include the host's base directories in the state restored by reset."""
+        prepared: set[str] = set()
+
+        async def stat(directory: str) -> SandboxEntry | None:
+            entry = await self._stat_unconfined(directory)
+            if entry is not None and entry.kind is EntryKind.DIRECTORY:
+                prepared.add(directory)
+            return entry
+
+        async def create(directories: tuple[str, ...]) -> None:
+            prepared.update(directories)
+
+        await ensure_guest_work_dir(spec, stat, create, resolve=self._work_dir_ancestors)
+        self.directories.update(prepared)
+        self._baseline[3].update(prepared)
+
+    @staticmethod
+    def _work_dir_ancestors(guest_work_dir: str) -> tuple[str, ...]:
+        """Model POSIX and Windows bases without using the host's path grammar."""
+        if guest_work_dir.startswith("/") or not ntpath.splitdrive(guest_work_dir)[0]:
+            posix_directories = posix_work_dir_ancestors(guest_work_dir)
+            # The store distinguishes POSIX's double-rooted spelling, unlike a Linux engine.
+            if posixpath.normpath(guest_work_dir).startswith("//"):
+                return tuple("/" + directory for directory in posix_directories)
+            return posix_directories
+        if not ntpath.isabs(guest_work_dir) or "\0" in guest_work_dir:
+            raise ValueError("work_dir must be an absolute guest path without NUL bytes")
+        separator = "\\" if "\\" in guest_work_dir else "/"
+        directory = ntpath.normpath(guest_work_dir)
+        directories: list[str] = []
+        while (parent := ntpath.dirname(directory)) != directory:
+            directories.append(directory.replace("\\", separator))
+            directory = parent
+        return tuple(reversed(directories))
+
     async def reset(self, *, timeout: float) -> None:
         """Restore the initial filesystem and process state; timeout is accepted but unused."""
         del timeout
@@ -297,11 +336,18 @@ class InProcessSandbox:
         return any(p.startswith(prefix) for p in self._stored())
 
     def _kind_at(self, full_path: str) -> tuple[EntryKind, int | None] | None:
-        """What is stored at an absolute guest path, unconfined and following nothing.
+        """Classify a guest path, including intrinsic roots, without following links.
 
         Unconfined because the filesystem path check classifies the working directory's own
         ancestors, which sit outside it by definition.
         """
+        if full_path.startswith("/"):
+            if not full_path.strip("/"):
+                return EntryKind.DIRECTORY, None
+        else:
+            drive, tail = ntpath.splitdrive(full_path)
+            if drive and ntpath.isabs(full_path) and not tail.strip("\\/"):
+                return EntryKind.DIRECTORY, None
         if full_path in self.contents:
             return EntryKind.FILE, len(self.contents[full_path])
         if full_path in self.symlinks:
@@ -335,6 +381,9 @@ class InProcessSandbox:
         full_path = await confine_resolve_guest_read_path(
             self._stat_unconfined, path, working_directory
         )
+        found = self._kind_at(full_path)
+        if found is not None and found[0] is EntryKind.DIRECTORY:
+            raise IsADirectoryError(f"{path!r} is a directory")
         if full_path in self.contents:
             content = self.contents[full_path]
             if len(content) > max_bytes:
@@ -346,8 +395,6 @@ class InProcessSandbox:
             return content
         if full_path in self.symlinks or full_path in self.non_regular:
             raise OSError(f"{path!r} is not a regular file and is refused")
-        if full_path in self.directories or self._has_children(full_path):
-            raise IsADirectoryError(f"{path!r} is a directory")
         raise FileNotFoundError(f"no such file: {path!r}")
 
     async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
@@ -529,9 +576,7 @@ class InProcessSandboxBackend:
             raise self.acquire_error
         self.keys.append(key)
         self.specs.append(spec)
-        if not self.sandbox_per_key:
-            return self.sandbox
-        held = self.sandboxes.get((key, spec.kind))
+        held = self.sandboxes.get((key, spec.kind)) if self.sandbox_per_key else self.sandbox
         if held is None:
             # The one this was constructed with serves the first acquire, so a test that
             # scripted its outputs still gets them. Once, not once per empty map: a key whose
@@ -540,6 +585,8 @@ class InProcessSandboxBackend:
             self._handed_out = True
             self.sandboxes[(key, spec.kind)] = held
             self._instances[(key, spec.kind)] = held._instance  # pyright: ignore[reportPrivateUsage]
+
+        await held.prepare_work_dir(spec)
         return held
 
     async def dispose(

@@ -62,6 +62,34 @@ _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engin
 _SPEC = SandboxSpec(kind="bicep", image="bicep-sandbox:local")
 _NAME = _container_name(_KEY, _SPEC.kind)
 _WORK = "/maf-sandbox/work"
+# Method tests prepare their own paths; lifecycle tests exercise the acquire contract.
+_METHOD_SPEC = replace(_SPEC, requires=frozenset())
+
+
+@pytest.mark.parametrize("state", ["cold", "warm", "stopped"])
+def test_acquire_creates_missing_base_as_guest_without_mkdir(state):
+    machine = _machine(
+        running=[_NAME] if state == "warm" else [],
+        stopped=[_NAME] if state == "stopped" else [],
+        overrides={
+            ("container", "cp", f"{_NAME}:/maf-sandbox"): _WslcResult(1, b"", b"no such file"),
+            ("container", "inspect"): _WslcResult(
+                0, json.dumps([{"Id": "instance", "Config": {"User": "10001:20001"}}]).encode(), b""
+            ),
+        },
+    )
+    backend, fake = _backend_with(machine)
+    asyncio.run(backend.acquire(_KEY, _SPEC))
+    with tarfile.open(fileobj=io.BytesIO(fake.only("container", "cp").stdin)) as archive:
+        entries = archive.getmembers()
+    assert [(e.name, e.uid, e.gid, e.mode) for e in entries] == [
+        ("maf-sandbox", 0, 0, 0o755),
+        ("maf-sandbox/work", 10001, 20001, 0o755),
+    ]
+    assert all(e.isdir() for e in entries)
+    assert not any("mkdir" in call.args for call in fake.calls)
+
+
 #: The argv a guest-side stat probe arrives on: raised, and `test` passed as argv with no
 #: shell. The fake matches overrides by prefix, so a key missing `--user 0` silently stops
 #: matching and every probe falls through to the responder's default success.
@@ -212,7 +240,9 @@ def test_instance_id_comes_from_the_engine_on_every_acquire():
 
     def respond(args):
         if args[:2] == ("container", "inspect"):
-            return _WslcResult(0, json.dumps([{"Id": ids[0]}]).encode(), b"")
+            return _WslcResult(
+                0, json.dumps([{"Id": ids[0], "Config": {"User": ""}}]).encode(), b""
+            )
         return machine(args)
 
     backend, _ = _backend_with(respond)
@@ -548,7 +578,7 @@ class TestExecArgv:
         """`wslc exec` takes argv natively, so nothing needs quoting and nothing may be
         re-interpreted: an element containing `;` stays one argument."""
         backend, fake = _backend_with(_machine(running=[_NAME]))
-        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         argv = ["echo", "a; rm -rf /", "$(id)"]
         asyncio.run(sandbox.exec(argv, working_directory="/maf-sandbox/work", timeout=5))
 
@@ -558,7 +588,7 @@ class TestExecArgv:
 
     def test_a_string_is_run_by_a_shell(self):
         backend, fake = _backend_with(_machine(running=[_NAME]))
-        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         asyncio.run(sandbox.exec("bicep build x || true", working_directory="/w", timeout=5))
 
         assert fake.only("container", "exec").args == (
@@ -576,7 +606,7 @@ class TestExecArgv:
         """Not the lifecycle timeout: a workload's own bound is what governs its command."""
         config = WslcSandboxConfig(command_timeout_seconds=60.0)
         backend, fake = _backend_with(_machine(running=[_NAME]), config=config)
-        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         asyncio.run(sandbox.exec(["true"], working_directory="/w", timeout=12.5))
 
         assert fake.only("container", "exec").timeout == 12.5
@@ -586,7 +616,7 @@ class TestExecResult:
     def test_stdout_stderr_and_exit_code_are_mapped_verbatim(self):
         overrides = {("container", "exec"): _WslcResult(7, b"out\n", b"err\n")}
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         result = asyncio.run(sandbox.exec(["false"], working_directory="/w", timeout=5))
 
         assert result == ExecResult(stdout="out\n", stderr="err\n", exit_code=7)
@@ -731,7 +761,7 @@ class TestGuestPrincipal:
 class TestWriteFile:
     @pytest.mark.parametrize("work", ["workspace", "./workspace", "/workspace", "//workspace"])
     def test_work_dir_spellings_stamp_every_missing_directory(self, work):
-        spec = replace(_SPEC, work_dir=work)
+        spec = replace(_METHOD_SPEC, work_dir=work)
         name = _container_name(_KEY, spec.kind)
         overrides = {
             ("container", "inspect"): _WslcResult(
@@ -774,7 +804,7 @@ class TestWriteFile:
             ("container", "exec", "-w", "/", _NAME, "id", "-g"): _WslcResult(0, gid, b""),
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         assert sandbox.instance_id == instance_id
         assert len(fake.matching("container", "inspect")) == 1
         asyncio.run(sandbox.write_file("nested/input", b"data", working_directory=_WORK))
@@ -805,7 +835,7 @@ class TestWriteFile:
             _machine(running=[_NAME], overrides={("container", "inspect"): inspection})
         )
         with pytest.raises((RuntimeError, ValueError)):
-            sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+            sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
             asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
         assert not fake.matching("container", "cp")
 
@@ -817,7 +847,7 @@ class TestWriteFile:
             for guest in ("/maf-sandbox", _WORK, f"{_WORK}/existing")
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         asyncio.run(sandbox.write_file("existing/new/input", b"data", working_directory=_WORK))
         archive = tarfile.open(fileobj=io.BytesIO(fake.only("container", "cp").stdin))
         assert archive.getnames() == [
@@ -835,7 +865,7 @@ class TestWriteFile:
             ("container", "exec", "-w", "/", _NAME, "id", "-g"): _WslcResult(0, gid, b""),
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         with pytest.raises(RuntimeError, match="resolve the image user"):
             asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
         assert not fake.matching("container", "cp")
@@ -854,11 +884,11 @@ class TestWriteFile:
             return next(answers) if args[:2] == ("container", "inspect") else machine(args)
 
         backend, fake = _backend_with(respond)
-        first = asyncio.run(backend.acquire(_KEY, _SPEC))
+        first = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         with pytest.raises(RuntimeError, match="resolve the image user"):
             asyncio.run(first.write_file("input", b"data", working_directory=_WORK))
         for expected in ((10001, 20001), (10002, 20002)):
-            sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+            sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
             asyncio.run(sandbox.write_file("input", b"data", working_directory=_WORK))
             sent = fake.matching("container", "cp", "-")[-1]
             archive = tarfile.open(fileobj=io.BytesIO(sent.stdin))
@@ -866,14 +896,14 @@ class TestWriteFile:
 
     def test_working_at_root_never_emits_a_root_directory_entry(self):
         backend, fake = _backend_with(_machine(running=[_NAME]))
-        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         asyncio.run(sandbox.write_file("nested/input", b"data", working_directory="/"))
         archive = tarfile.open(fileobj=io.BytesIO(fake.only("container", "cp").stdin))
         assert archive.getnames() == ["nested", "nested/input"]
 
     def _sent(self, path: str, content: str) -> tuple[_Recorded, tarfile.TarFile]:
         backend, fake = _backend_with(_machine(running=[_NAME]))
-        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         asyncio.run(sandbox.write_file(path, content, working_directory=_WORK))
         call = fake.only("container", "cp")
         assert call.stdin is not None
@@ -912,7 +942,7 @@ class TestWriteFile:
         spreadsheet needs bytes, and they must reach the tar entry unencoded. Raising
         ``AttributeError`` on ``bytes.encode`` here was the load-bearing half of #370."""
         backend, fake = _backend_with(_machine(running=[_NAME]))
-        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         payload = b"\x89PNG\r\n\x1a\n" + bytes(range(256))
         asyncio.run(
             sandbox.write_file("/maf-sandbox/work/diagram.png", payload, working_directory=_WORK)
@@ -934,7 +964,7 @@ class TestWriteFile:
         the workload believes it just wrote."""
         overrides = {("container", "cp", "-"): _WslcResult(1, b"", b"WSLC_E_PATH_NOT_FOUND")}
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
 
         with pytest.raises(RuntimeError, match="WSLC_E_PATH_NOT_FOUND"):
             asyncio.run(
@@ -943,7 +973,7 @@ class TestWriteFile:
 
     def test_a_refused_path_never_reaches_the_copy_seam(self):
         backend, fake = _backend_with(_machine(running=[_NAME]))
-        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
         with pytest.raises(ValueError):
             asyncio.run(sandbox.write_file("../escape", "x", working_directory=_WORK))
         assert fake.matching("container", "cp", "-") == []
@@ -1003,7 +1033,7 @@ class TestStatGuestTarHeader:
         if overrides is None:
             overrides = {("container", "cp"): _WslcResult(0, payload or b"", b"")}
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
+        return asyncio.run(backend.acquire(_KEY, _METHOD_SPEC)), fake
 
     def _tar_block(self, entry: tarfile.TarInfo, data: bytes = b"") -> bytes:
         buffer = io.BytesIO()

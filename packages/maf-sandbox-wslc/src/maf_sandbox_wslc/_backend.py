@@ -61,7 +61,9 @@ from maf_sandbox import (
 )
 from maf_sandbox.paths import (
     confine_resolve_guest_write_path,
+    ensure_guest_work_dir,
     guest_path_and_ancestors,
+    posix_work_dir_ancestors,
     sandbox_entry_from_tar_header,
     stat_by_asking_the_guest_as_root,
     tar_header_from_block,
@@ -438,6 +440,39 @@ class _WslcSandbox:
     @property
     def container_name(self) -> str:
         return self._name
+
+    async def prepare_work_dir(self, spec: SandboxSpec) -> None:
+        """Establish the spec's base through the container file plane."""
+        await ensure_guest_work_dir(
+            spec,
+            lambda path: self._stat_guest(path, path),
+            self._create_directories,
+            resolve=posix_work_dir_ancestors,
+        )
+
+    async def _create_directories(self, directories: tuple[str, ...]) -> None:
+        """Create missing parents without changing existing directory metadata."""
+        if self._guest_identity is None:
+            raise RuntimeError("wslc could not resolve the image user for directory creation")
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w") as archive:
+            for directory in directories:
+                entry = tarfile.TarInfo(directory.lstrip("/") + "/")
+                entry.type = tarfile.DIRTYPE
+                entry.mode = 0o755
+                if directory == directories[-1]:
+                    entry.uid, entry.gid = self._guest_identity
+                archive.addfile(entry)
+        result = await self._run(
+            "container",
+            "cp",
+            "-",
+            f"{self._name}:/",
+            stdin=buffer.getvalue(),
+            timeout=self._command_timeout,
+        )
+        if result.returncode:
+            raise RuntimeError(f"wslc could not create the working directory: {result.stderr_text}")
 
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
         """Write ``content`` to ``path`` inside the container, parents included.
@@ -968,6 +1003,7 @@ class WslcSandboxBackend:
                 sandbox.guest_principal,
                 guest_uid,
             )
+            await sandbox.prepare_work_dir(spec)
             return sandbox
 
     async def _write_identity(

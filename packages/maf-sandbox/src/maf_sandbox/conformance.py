@@ -57,12 +57,10 @@ passing (#951).
 that is the documented recovery, not a defect.  A caller sharing one sandbox across suites runs
 EXEC last, and a caller that wants what comes after acquires a second sandbox.
 
-**The EXEC and reclaim suites plant their own working directory.**  ``working_directory`` does
-not exist after ``acquire`` — no backend creates ``spec.work_dir`` and the protocol does not
-promise it — so they plant a marker file first: the caller-creates rule, with the reasoning and
-the open question of whether ``acquire`` should owe it filed as #466.  The marker goes through
-:meth:`ConformanceSubject.plant_file`, so a subject whose sandbox has no ``write_file`` plants
-it however its guest allows.
+**The EXEC and reclaim suites plant their own working directory.** A subject may test a
+directory other than the spec's base, which is the only directory ``acquire`` prepares.
+The marker goes through :meth:`ConformanceSubject.plant_file`, so a subject whose sandbox
+has no ``write_file`` plants it however its guest allows.
 
 Nothing here imports a test framework: this module ships in the wheel.  A failure raises
 :class:`ConformanceFailure` naming every probe that failed rather than the first.
@@ -1960,8 +1958,7 @@ async def _probe_a_missing_directory_is_success(
 async def _probe_an_absent_working_directory_still_succeeds(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
-    # A call that wrote nothing leaves the work dir absent. A backend that moves there first
-    # fails here.
+    # Cleanup must not depend on changing into a caller's uncreated child directory.
     await subject.sandbox.reclaim(
         f"{paths.work}/absent-work/call-a1b2c3",
         working_directory=f"{paths.work}/absent-work",
