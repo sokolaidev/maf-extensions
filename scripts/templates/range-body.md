@@ -10,6 +10,6 @@ It carries both ends of the range, because they are one string and two pull requ
 
 **Nothing under `samples/` is in this pull request**, deliberately: merged with the packages' hunk it takes the whole suite unsatisfiable whenever the core reached the index first (0.33.0, 0.34.0). The release workflow opens a separate `chore:` pull request for the samples; merge that one only after every dependent that should admit @VERSION@ has published.
 
-**To decline a floor without losing its ceiling**, edit that line back to the floor it had and leave the new upper bound alone — the two now live in one hunk, so dropping the hunk wholesale would give up the widening too. Retitle it feat:/breaking if adopting the version is more than a patch for a dependent; the title says fix: so the bot does not choose the bump.
+**To decline a floor without losing its ceiling**, edit that line back to the floor it had and leave the new upper bound alone — the two now live in one hunk, so dropping the hunk wholesale would give up the widening too. If adopting the version is more than a patch for a dependent, retitle it with `feat:` for a feature or `feat!:`/`fix!:` for a breaking change; the generated `fix:` title assumes a patch.
 
 **Then merge it, and let the dependent releases it cuts publish.** The widening is only worth anything once it is on PyPI: that is what the next core release checks before it uploads. Its checks are held at "Approve and run", the same as a Release PR's; clearing them is what starts them.
