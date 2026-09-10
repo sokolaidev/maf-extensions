@@ -2,6 +2,13 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.15.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.15.0...maf-sandbox-bicep-v0.15.1) (2026-09-10)
+
+
+### Fixes
+
+* **bicep:** skip module restore when egress is closed ([#1085](https://github.com/sokolaidev/maf-extensions/issues/1085)) ([992b40b](https://github.com/sokolaidev/maf-extensions/commit/992b40bb2659fda9a07ba9a181f947aaba1824c4))
+
 ## [0.15.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.14.2...maf-sandbox-bicep-v0.15.0) (2026-09-10)
 
 
