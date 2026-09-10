@@ -13,6 +13,39 @@ from maf_sandbox.testing import InProcessSandbox, InProcessSandboxBackend
 _KEY = SandboxKey("work-dir", "thread", "agent")
 
 
+@pytest.mark.parametrize("existing", ["explicit", "implicit", "parent"])
+def test_preparing_a_warm_base_retains_only_its_directories_on_reset(existing):
+    async def scenario():
+        sandbox = InProcessSandbox(seed_files={"/seed.txt": b"original"})
+        backend = InProcessSandboxBackend(sandbox)
+        runtime = SandboxSpec(kind="test", work_dir="/session/work", requires=frozenset())
+        assert await backend.acquire(_KEY, runtime) is sandbox
+        if existing == "explicit":
+            sandbox.directories.update({"/session", "/session/work"})
+        elif existing == "implicit":
+            sandbox.contents["/session/work/marker"] = b"guest"
+        else:
+            sandbox.directories.add("/session")
+        sandbox.directories.add("/other")
+        sandbox.contents["/other/marker"] = b"guest"
+        before_contents = dict(sandbox.contents)
+
+        spec = SandboxSpec(
+            kind="test", work_dir=runtime.work_dir, requires=frozenset({Capability.EXEC})
+        )
+        assert await backend.acquire(_KEY, spec) is sandbox
+        assert sandbox.contents == before_contents
+        prepared_are_clean = not {"/session", spec.work_dir}.intersection(sandbox.changed_paths())
+        await sandbox.reset(timeout=1)
+        entry = await sandbox.stat_file(spec.work_dir, working_directory=spec.work_dir)
+        assert entry is not None and entry.kind is EntryKind.DIRECTORY
+        assert sandbox.directories == {"/session", spec.work_dir}
+        assert sandbox.contents == {"/seed.txt": b"original"}
+        assert prepared_are_clean
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("path", ["/", "//", "///"])
 def test_posix_root_base_exists_through_acquire_and_reset(path):
     async def scenario():
@@ -184,10 +217,12 @@ def test_acquire_refuses_obstructed_paths_without_modifying_the_store(path, kind
     else:
         sandbox.contents[path] = b"keep"
     before = sandbox._snapshot()
+    baseline = tuple(part.copy() for part in sandbox._baseline)
     backend = InProcessSandboxBackend(sandbox=sandbox)
     with pytest.raises(ValueError if kind == "link" else NotADirectoryError):
         asyncio.run(backend.acquire(_KEY, SandboxSpec(kind="test")))
     assert sandbox._snapshot() == before
+    assert sandbox._baseline == baseline
 
 
 @pytest.mark.parametrize("path", ["relative", "", "/bad\0path", "/bad\\path"])
@@ -200,6 +235,8 @@ def test_filesystem_acquire_refuses_invalid_bases(path):
 
 def test_an_existing_base_keeps_contents_and_creates_no_child():
     sandbox = InProcessSandbox(seed_files={"/maf-sandbox/work/config": b"keep"})
-    before = sandbox._snapshot()
+    before = dict(sandbox.contents)
     asyncio.run(InProcessSandboxBackend(sandbox=sandbox).acquire(_KEY, SandboxSpec(kind="test")))
-    assert sandbox._snapshot() == before
+    assert sandbox.contents == before
+    assert sandbox.directories == {"/maf-sandbox", "/maf-sandbox/work"}
+    assert not sandbox.changed_paths()

@@ -208,14 +208,20 @@ class InProcessSandbox:
 
     async def prepare_work_dir(self, spec: SandboxSpec) -> None:
         """Include the host's base directories in the state restored by reset."""
+        prepared: set[str] = set()
+
+        async def stat(directory: str) -> SandboxEntry | None:
+            entry = await self._stat_unconfined(directory)
+            if entry is not None and entry.kind is EntryKind.DIRECTORY:
+                prepared.add(directory)
+            return entry
 
         async def create(directories: tuple[str, ...]) -> None:
-            self.directories.update(directories)
-            self._baseline[3].update(directories)
+            prepared.update(directories)
 
-        await ensure_guest_work_dir(
-            spec, self._stat_unconfined, create, resolve=self._work_dir_ancestors
-        )
+        await ensure_guest_work_dir(spec, stat, create, resolve=self._work_dir_ancestors)
+        self.directories.update(prepared)
+        self._baseline[3].update(prepared)
 
     @staticmethod
     def _work_dir_ancestors(guest_work_dir: str) -> tuple[str, ...]:
