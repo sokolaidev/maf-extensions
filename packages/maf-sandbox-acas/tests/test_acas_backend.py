@@ -4467,13 +4467,17 @@ class TestReclaim:
         ["/maf-sandbox/work/call/", "/tmp/linked/call", "/", "relative"],
     )
     def test_reclaim_refuses_without_accessing_the_service(self, directory):
+        accesses: list[str] = []
+
         class _NoClientCalls:
             def __getattr__(self, name):
-                raise AssertionError(f"reclaim accessed the service client: {name}")
+                accesses.append(name)
+                raise AttributeError(f"reclaim accessed the service client: {name}")
 
         sandbox = _sandbox(_NoClientCalls())
         with pytest.raises(NotImplementedError, match="RECLAIM.*Dispose the sandbox"):
             asyncio.run(sandbox.reclaim(directory, working_directory=_WORK_DIR, timeout=30))
+        assert accesses == []
 
     @pytest.mark.parametrize("confined", [False, True])
     @pytest.mark.parametrize("floor", list(Cleanup))
