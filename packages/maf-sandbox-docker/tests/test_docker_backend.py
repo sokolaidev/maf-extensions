@@ -1241,11 +1241,7 @@ class TestReclaim:
         assert fake.only("exec").timeout == 42
 
     def test_the_removal_runs_from_root_not_the_uncreated_working_directory(self):
-        """`working_directory` says where the directory sits, not where to run the removal
-        from: no backend creates a spec's `work_dir`, so a call whose work dir was never
-        written must still reclaim cleanly, which it can only do by execing from `/` rather
-        than a directory that is not there.
-        """
+        """Reclaim must tolerate a caller's child directory that was never created."""
         sandbox, fake = self._sandbox()
         asyncio.run(
             sandbox.reclaim(
