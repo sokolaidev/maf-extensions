@@ -1192,11 +1192,11 @@ class DockerSandboxBackend:
     ) -> EgressObserved | None:
         """Read attribution and decisions from the same engine instance, across host processes."""
         if self._egress_report is None:
-            return
+            return None
         try:
             data = await self._inspect_disposal_target(proxy_id or _proxy_name(name))
             if data is None:
-                return
+                return None
             metadata = data.get("Config")
             labels = data.get("Labels")
             if labels is None and isinstance(metadata, dict):
@@ -1205,16 +1205,16 @@ class DockerSandboxBackend:
                 not isinstance(labels, dict)
                 or cast(dict[str, object], labels).get(_LABEL_ROLE) != "proxy"
             ):
-                return
+                return None
             key = _key_from_labels(cast(object, labels))
             instance = data.get("Id")
             if key is None or not isinstance(instance, str) or not instance:
-                return
+                return None
             if proxy_id is not None and instance != proxy_id:
-                return
+                return None
         except Exception as exc:  # noqa: BLE001 - attribution must not block cleanup
             logger.warning("could not attribute proxy %s: %s", name, error_detail(exc))
-            return
+            return None
         return await self._drain_the_proxy(name, key, proxy_id=instance)
 
     async def _drain_the_proxy(
