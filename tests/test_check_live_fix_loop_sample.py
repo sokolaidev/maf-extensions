@@ -1,6 +1,6 @@
 """The match logic behind `scripts/check_live_fix_loop_sample.py`, tested on every PR.
 
-`_HEALTHY` is a trimmed live transcript with per-call disposal checkpoints.
+`_HEALTHY` combines live compiler output with representative warm-reuse checkpoints.
 
 Every tamper asserts `tampered != _HEALTHY` first. A substitution that matches nothing produces
 a test that passes while testing the unmodified fixture, which is the one failure a green run
@@ -84,7 +84,7 @@ Validation complete. Here are the 3 diagnostics, one line each:
 3. `use-recent-api-versions` — warning — line 5 (`2023-01-01` is over the 730-day guideline)
 
   [measured] validations that reached the sandbox in turn 1: 1
-  [measured] containers after turn 1: 0 (none)
+  [measured] containers after turn 1: 1 (a1b2c3d4e5f6)
 
 == What the compiler says about the file turn 1 wrote ==
 
@@ -98,7 +98,7 @@ Validation complete. Here are the 3 diagnostics, one line each:
     [warning] use-recent-api-versions @ main.bicep:5: '2023-01-01' is 1322 days old.
 
   [measured] tracked faults in the authored file: 2 — no-unused-params(environmentName); BCP035(sku)
-  [measured] containers after the baseline compile: 0 (none)
+  [measured] containers after the baseline compile: 1 (a1b2c3d4e5f6)
 
 == Turn 2: fix, then validate again ==
 
@@ -109,14 +109,14 @@ Validation is clean — zero diagnostics. What changed:
 3. `use-recent-api-versions` — bumped the API version to `2025-01-01`.
 
   [measured] validations that reached the sandbox in turn 2: 1
-  [measured] containers after turn 2: 0 (none)
+  [measured] containers after turn 2: 1 (a1b2c3d4e5f6)
 
 == What the compiler says about the file the model left ==
 
   build(main.bicep): no diagnostics
   lint(main.bicep): no diagnostics
 
-  [measured] containers after the check: 0 (none)
+  [measured] containers after the check: 1 (a1b2c3d4e5f6)
 
 == The work product ==
 
@@ -128,7 +128,7 @@ Validation is clean — zero diagnostics. What changed:
   [measured] faults remaining:   0 — none
   [measured] faults introduced:  0 — none
 
-  [measured] Disposed 0 sandbox(es) after 2 turns and a check. Containers left: 0.
+  [measured] Disposed 1 sandbox(es) after 2 turns and a check. Containers left: 0.
 """
 
 #: A run where the model fixed only `BCP035` and left the unused parameter. Both the tally and
@@ -262,42 +262,64 @@ class TestTheSecondAcquireActuallyHappened:
         assert any("did not report how many validations" in r for r in reasons), reasons
 
 
-class TestPerCallDisposal:
+class TestWarmReuse:
     @pytest.mark.parametrize(
         "where", ["after turn 1", "after the baseline compile", "after turn 2", "after the check"]
     )
-    @pytest.mark.parametrize("count", [1, 2])
-    def test_a_container_surviving_a_checkpoint_is_caught(self, where, count):
+    @pytest.mark.parametrize("count", [0, 2])
+    def test_a_checkpoint_without_exactly_one_container_is_caught(self, where, count):
         reasons = _tampered(
-            f"containers {where}: 0 (none)",
+            f"containers {where}: 1 (a1b2c3d4e5f6)",
             f"containers {where}: {count} (a1b2c3d4e5f6)",
         )
-        assert any(f"{where}, expected 0 after per-call disposal" in r for r in reasons), reasons
+        assert any(f"{where}, expected 1 for warm reuse" in r for r in reasons), reasons
 
     @pytest.mark.parametrize(
         "where", ["after turn 1", "after the baseline compile", "after turn 2", "after the check"]
     )
     def test_a_missing_checkpoint_is_caught(self, where):
-        reasons = _tampered(f"  [measured] containers {where}: 0 (none)\n", "")
+        reasons = _tampered(f"  [measured] containers {where}: 1 (a1b2c3d4e5f6)\n", "")
         assert any(f"no container count {where}" in r for r in reasons), reasons
 
-    @pytest.mark.parametrize("ids", ["a1b2c3d4e5f6", ""])
-    def test_zero_count_must_report_no_ids(self, ids):
+    @pytest.mark.parametrize("ids", ["none", "", "not-an-id", "abc", "a1b2c3d4e5f6, 0badc0ffee00"])
+    def test_one_container_must_name_one_engine_id(self, ids):
         reasons = _tampered(
-            "containers after turn 2: 0 (none)", f"containers after turn 2: 0 ({ids})"
+            "containers after turn 2: 1 (a1b2c3d4e5f6)", f"containers after turn 2: 1 ({ids})"
         )
-        assert any("is 0 but lists" in r for r in reasons), reasons
+        assert any("does not name one Docker id" in r for r in reasons), reasons
+
+    @pytest.mark.parametrize(
+        "where", ["after the baseline compile", "after turn 2", "after the check"]
+    )
+    def test_replacing_the_container_without_changing_the_count_is_caught(self, where):
+        reasons = _tampered(
+            f"containers {where}: 1 (a1b2c3d4e5f6)",
+            f"containers {where}: 1 (0badc0ffee00)",
+        )
+        assert any(f"container {where} changed" in r for r in reasons), reasons
+
+    def test_full_engine_ids_are_accepted(self):
+        assert check.assess(_HEALTHY.replace("a1b2c3d4e5f6", "a" * 64)) == []
+
+    @pytest.mark.parametrize(
+        "where", ["after turn 1", "after the baseline compile", "after turn 2", "after the check"]
+    )
+    def test_duplicate_checkpoints_cannot_hide_a_replacement(self, where):
+        line = f"  [measured] containers {where}: 1 (a1b2c3d4e5f6)"
+        reasons = _tampered(line, line + "\n" + line.replace("a1b2c3d4e5f6", "0badc0ffee00"))
+        assert any(f"multiple container counts {where}" in r for r in reasons), reasons
 
     def test_a_container_left_behind_is_caught(self):
         reasons = _tampered("Containers left: 0.", "Containers left: 1.")
         assert any("left behind" in r for r in reasons), reasons
 
-    def test_disposal_deferred_to_scope_purge_is_caught(self):
-        reasons = _tampered("Disposed 0 sandbox(es)", "Disposed 1 sandbox(es)")
-        assert any("reported disposing 1" in r for r in reasons), reasons
+    @pytest.mark.parametrize("disposed", [0, 2])
+    def test_scope_purge_must_dispose_the_one_reused_sandbox(self, disposed):
+        reasons = _tampered("Disposed 1 sandbox(es)", f"Disposed {disposed} sandbox(es)")
+        assert any(f"reported disposing {disposed}" in r for r in reasons), reasons
 
     def test_a_run_that_died_before_the_footer_is_caught(self):
-        reasons = _tampered("Disposed 0 sandbox(es)", "Traceback (most recent call last)")
+        reasons = _tampered("Disposed 1 sandbox(es)", "Traceback (most recent call last)")
         assert any("no footer line" in r for r in reasons), reasons
 
 
@@ -742,7 +764,7 @@ class TestWhichHalfFailedIsInTheExitStatus:
     def test_a_measurement_this_suite_owns_does_not(self, tmp_path):
         """Two containers is a broken sandbox, and a second model attempt cannot mend it."""
         broken = _HEALTHY.replace(
-            "containers after turn 2: 0 (none)",
+            "containers after turn 2: 1 (a1b2c3d4e5f6)",
             "containers after turn 2: 2 (a1b2c3d4e5f6, 0badc0ffee00)",
         )
         assert broken != _HEALTHY
@@ -750,7 +772,7 @@ class TestWhichHalfFailedIsInTheExitStatus:
 
     def test_one_hard_failure_among_the_model_s_is_enough_to_forbid_a_retry(self, tmp_path):
         both = _SWAPPED.replace(
-            "  [measured] Disposed 0 sandbox(es)", "  [measured] Disposed 1 sandbox(es)"
+            "  [measured] Disposed 1 sandbox(es)", "  [measured] Disposed 0 sandbox(es)"
         )
         assert both != _SWAPPED
         assert self._status(tmp_path, both) == 1
@@ -759,7 +781,7 @@ class TestWhichHalfFailedIsInTheExitStatus:
         """A reworded failure must keep its class, so nothing downstream parses prose."""
         assert all(isinstance(r, check._TheModelsHalf) for r in check.assess(_SWAPPED))
         containers = check.assess(
-            _HEALTHY.replace("containers after the check: 0", "containers after the check: 2")
+            _HEALTHY.replace("containers after the check: 1", "containers after the check: 2")
         )
         assert containers and not any(isinstance(r, check._TheModelsHalf) for r in containers)
 
@@ -820,7 +842,7 @@ def test_sample_reports_scope_purge_failure(undisposed, capsys):
 
     async def dispose_scope(scope, thread_id):
         assert (scope, thread_id) == ("samples", "13-fix-loop")
-        return ScopePurge(disposed=0, undisposed=undisposed)
+        return ScopePurge(disposed=1, undisposed=undisposed)
 
     namespace: dict = {
         "router": SimpleNamespace(dispose_scope=dispose_scope),
@@ -833,7 +855,7 @@ def test_sample_reports_scope_purge_failure(undisposed, capsys):
     exec(compile(ast.Module(body=[run], type_ignores=[]), "<sample-13>", "exec"), namespace)
     assert asyncio.run(namespace["run"]()) == 0
     output = capsys.readouterr().out
-    assert "Disposed 0 sandbox(es)" in output
+    assert "Disposed 1 sandbox(es)" in output
     assert "Containers left: 0." in output
     marker = "  [measured] Not fully disposed:"
     if undisposed is None:
@@ -975,7 +997,7 @@ class TestNarrationNeverSuppliesAMeasurement:
         "faults fixed:       0 — none",
         "faults remaining:   2 — no-unused-params(environmentName); BCP035(sku)",
         "tracked faults in the authored file: 0 — none",
-        "Disposed 0 sandbox(es) after 2 turns and a check. Containers left: 7.",
+        "Disposed 1 sandbox(es) after 2 turns and a check. Containers left: 7.",
     )
 
     @pytest.mark.parametrize("sentence", NARRATED, ids=lambda text: text.split(":")[0])
@@ -1141,12 +1163,12 @@ class TestModelTextCannotImpersonateAMeasurement:
         # reader accepts only widens what has to be sanitized.
         assert re.search(
             check._M + r"containers",
-            "  [measured] containers after turn 2: 0 (none)",
+            "  [measured] containers after turn 2: 1 (a1b2c3d4e5f6)",
             check._F,
         )
         assert not re.search(
             check._M + r"containers",
-            "  [Measured] containers after turn 2: 0 (none)",
+            "  [Measured] containers after turn 2: 1 (a1b2c3d4e5f6)",
             check._F,
         )
 
