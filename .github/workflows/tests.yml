@@ -481,6 +481,18 @@ jobs:
           docker pull "$MAF_SANDBOX_DOCKER_OBSERVER_IMAGE"
           uv run pytest -q -ra packages/maf-sandbox-docker/tests/test_docker_fingerprint_e2e.py
 
+      - name: Measure Bicep confinement and module cache cleanup
+        if: needs.changes.outputs.code == 'true'
+        env:
+          MAF_SANDBOX_BICEP_E2E_IMAGE: bicep-sandbox:ci
+          MAF_SANDBOX_DOCKER_OBSERVER_IMAGE: python:3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285
+        run: |
+          set -euo pipefail
+          docker build -t "$MAF_SANDBOX_BICEP_E2E_IMAGE" images/bicep-sandbox
+          uv run pytest -q -ra \
+            packages/maf-sandbox-bicep/tests/test_bicep_cache_e2e.py \
+            packages/maf-sandbox-bicep/tests/test_bicep_confinement_e2e.py
+
       - name: Measure confinement on a rootless engine
         if: needs.changes.outputs.code == 'true'
         run: |
