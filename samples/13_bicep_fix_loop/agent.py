@@ -1,10 +1,10 @@
-"""Author, validate, fix — two turns with per-call sandbox disposal.
+"""Author, validate, fix — two turns reusing a confined Bicep sandbox.
 
 Every other sample runs one turn against a file that was already there. Here the store starts
 **empty**: turn 1 writes `main.bicep` from a written brief and validates what it wrote, turn 2
 repairs what the compiler reported, and the program compiles the file itself at both ends.
-The session and host file store carry the work between calls; each sandbox is disposed
-when its call ends.
+The session and host file store carry the work between calls. Bicep's confinement claim earns
+reuse of the sandbox; each call directory is reclaimed and the final scope purge disposes it.
 
 The brief is what makes the diagnostics predictable without scripting them. It asks for a
 parameter that a later change will use, and for no `sku` yet because the tier is undecided —
@@ -158,7 +158,7 @@ def containers() -> list[str]:
 
 
 def counted(ids: list[str]) -> str:
-    """Report remaining containers and their ids for cleanup diagnostics."""
+    """Report container ids so the checker can distinguish reuse from replacement."""
     return f"{len(ids)} ({', '.join(ids) or 'none'})"
 
 

@@ -4,7 +4,7 @@
     python scripts/check_live_fix_loop_sample.py out.txt   # or: ... | python …
 
 Turn 1 must author a file with a real fault, both turns must validate, and the compiler must
-agree with the reported repair. Per-call disposal must leave no containers at each checkpoint.
+agree with the reported repair. The same sandbox must survive every checkpoint until disposal.
 
 Every *number* comes off a line the sample tagged `[measured]`, never from the model's replies
 around it. The one thing read out of a reply is turn 1's prose, which has to name the rules the
@@ -58,7 +58,7 @@ _TURN_ONE = (
     re.compile(_M + r"validations that reached the sandbox in turn 1", _F),
 )
 
-#: `docker ps -a` after each phase must show no containers under per-call disposal.
+#: Counts alone cannot distinguish reuse from replacement; each checkpoint includes the id.
 _COUNTS = (
     ("after turn 1", re.compile(_M + r"containers after turn 1:\s*(\d+)\s*\(([^)]*)\)", _F)),
     (
@@ -85,7 +85,7 @@ _FIXED = re.compile(_M + r"faults fixed:\s*(\d+)\s*[-—]\s*([^\n]*)", _F)
 _REMAINING = re.compile(_M + r"faults remaining:\s*(\d+)\s*[-—]\s*([^\n]*)", _F)
 _INTRODUCED = re.compile(_M + r"faults introduced:\s*(\d+)\s*[-—]\s*([^\n]*)", _F)
 
-#: Successful compiler results prove work even when per-call cleanup leaves no containers.
+#: Successful compiler results prove work independently of the container count.
 _TOOL_CALLS = (
     ("turn 1", re.compile(_M + r"validations that reached the sandbox in turn 1:\s*(\d+)", _F)),
     ("turn 2", re.compile(_M + r"validations that reached the sandbox in turn 2:\s*(\d+)", _F)),
@@ -308,7 +308,7 @@ def _assess_first_turn(output: str, authored: set[str]) -> list[str]:
 
 
 def _assess_calls_and_cleanup(output: str) -> list[str]:
-    """Both turns validate, and per-call disposal leaves every checkpoint empty."""
+    """Both turns validate and reuse the same container through all four checkpoints."""
     failures: list[str] = []
 
     for turn, pattern in _TOOL_CALLS:
@@ -316,23 +316,34 @@ def _assess_calls_and_cleanup(output: str) -> list[str]:
         if calls is None:
             failures.append(
                 f"{turn} did not report how many validations reached the sandbox — "
-                "an empty container count alone does not prove work"
+                "a container count alone does not prove work"
             )
         elif int(calls) < 1:
             failures.append(
                 f"{turn} reached the sandbox no times — both turns must validate their file"
             )
 
+    first_id: str | None = None
     for where, pattern in _COUNTS:
-        match = pattern.search(output)
-        if match is None:
-            failures.append(f"no container count {where} — cleanup is unshown at that point")
+        matches = list(pattern.finditer(output))
+        if not matches:
+            failures.append(f"no container count {where} — reuse is unshown at that point")
             continue
+        if len(matches) != 1:
+            failures.append(f"multiple container counts {where} — reuse is ambiguous")
+            continue
+        match = matches[0]
         count, ids = int(match.group(1)), match.group(2).strip()
-        if count != 0:
-            failures.append(f"{count} container(s) {where}, expected 0 after per-call disposal")
-        elif ids.lower() != "none":
-            failures.append(f"container count {where} is 0 but lists {ids!r}, expected 'none'")
+        if count != 1:
+            failures.append(f"{count} container(s) {where}, expected 1 for warm reuse")
+        elif re.fullmatch(r"(?:[0-9a-f]{12}|[0-9a-f]{64})", ids) is None:
+            failures.append(
+                f"container count {where} is 1 but does not name one Docker id: {ids!r}"
+            )
+        elif first_id is None:
+            first_id = ids
+        elif ids != first_id:
+            failures.append(f"container {where} changed from {first_id} to {ids} — not warm reuse")
     return failures
 
 
@@ -573,10 +584,8 @@ def _assess_footer(output: str) -> list[str]:
     failures: list[str] = []
     if _NOT_DISPOSED.search(output):
         failures.append("the scope purge could not account for every sandbox — data may remain")
-    if disposed != 0:
-        failures.append(
-            f"the router reported disposing {disposed}, expected 0 after per-call disposal"
-        )
+    if disposed != 1:
+        failures.append(f"the router reported disposing {disposed}, expected 1 after warm reuse")
     if leftover != 0:
         failures.append(
             f"{leftover} container(s) left behind — this count is `docker ps -a`, so a container "
@@ -599,7 +608,7 @@ def main(argv: list[str]) -> int:
     failures = assess(output)
     if failures:
         print(
-            "FAIL: the fix-loop sample did not repair the file with per-call disposal:",
+            "FAIL: the fix-loop sample did not repair the file with warm sandbox reuse:",
             file=sys.stderr,
         )
         for reason in failures:
@@ -618,7 +627,7 @@ def main(argv: list[str]) -> int:
     # "agrees with the repair reported", not "the file is fixed": a run that repaired one of two
     # faults and said so passes, and the compiler still reports an error on it.
     print(
-        "OK  the model wrote main.bicep and repaired it with per-call disposal, "
+        "OK  the model wrote main.bicep and repaired it with warm sandbox reuse, "
         "and the compiler agrees with the repair the run reported"
     )
     return 0
