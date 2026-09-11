@@ -644,6 +644,35 @@ class TestFilesIn:
         (read,) = asyncio.run(adapter.adownload_files([f"{WORK}/notes/todo.txt"]))
         assert read.content == b"1"
 
+    def test_the_planes_permission_refusal_keeps_its_code(self):
+        class Unsearchable(InProcessSandbox):
+            async def write_file(self, path, content, *, working_directory):
+                raise PermissionError("an ancestor is not searchable")
+
+        adapter, _ = _adapter(Unsearchable())
+        (response,) = asyncio.run(adapter.aupload_files([("locked/f.txt", b"1")]))
+        assert response.error == "permission_denied"
+
+    def test_a_plane_write_that_did_not_finish_condemns_and_fails_the_batch(self):
+        """The plane does not promise a whole file or none, so a write that failed midway may
+        have left part of it; the batch ends as it would on the shell road."""
+
+        class Broken(InProcessSandbox):
+            async def write_file(self, path, content, *, working_directory):
+                raise RuntimeError("tar stream reset")
+
+        adapter, backend = _adapter(Broken())
+
+        async def scenario():
+            responses = await adapter.aupload_files([("a.txt", b"1"), ("b.txt", b"2")])
+            await adapter.aclose()
+            return responses
+
+        first, second = asyncio.run(scenario())
+        assert first.error is not None and "did not land" in first.error
+        assert second.error == first.error
+        assert backend.disposed[-1] == KEY
+
     def test_a_base_spelled_with_dots_still_bounds_the_file_plane(self):
         """A spec may write the base as `/a/../b`; the backends resolve it, and so must the
         road choice, or a file under it would take the shell for nothing."""
@@ -924,6 +953,22 @@ class TestFilesOut:
         assert grew.error is not None and "max_bytes_per_file" in grew.error
         assert rest.error is not None and "was not read" in rest.error
         assert backend.disposed[-1] == KEY
+
+    def test_an_unreadable_file_is_permission_denied_on_stat_and_on_read(self):
+        class LockedStat(InProcessSandbox):
+            async def stat_file(self, path, *, working_directory):
+                raise PermissionError("no search permission")
+
+        class LockedRead(InProcessSandbox):
+            async def read_file(self, path, *, working_directory, max_bytes):
+                raise PermissionError("no read permission")
+
+        adapter, _ = _adapter(LockedStat())
+        (on_stat,) = asyncio.run(adapter.adownload_files(["f.txt"]))
+        adapter, _ = _adapter(LockedRead(seed_files={f"{WORK}/f.txt": "1"}))
+        (on_read,) = asyncio.run(adapter.adownload_files(["f.txt"]))
+        assert on_stat.error == "permission_denied"
+        assert on_read.error == "permission_denied"
 
     def test_a_read_that_comes_back_over_the_cap_is_refused_after_the_fact(self):
         """The protocol has the caller re-count: a backend that buffers first can only refuse late."""

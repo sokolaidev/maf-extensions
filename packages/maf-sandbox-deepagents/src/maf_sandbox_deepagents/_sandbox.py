@@ -566,7 +566,7 @@ class MafSandbox(BaseSandbox):
                     elif sent + len(content) > limits.max_total_bytes:
                         error = _OVER_TOTAL_CAP.format(direction="files_in")
                     elif self._inside_base(path):
-                        error = await self._upload_via_plane(sandbox, path, content)
+                        error = await self._upload_via_plane(call, sandbox, path, content)
                     elif isinstance(sandbox, BoundedExec):
                         error = await self._upload_via_shell(call, path, content)
                     else:
@@ -580,18 +580,32 @@ class MafSandbox(BaseSandbox):
         finally:
             await self._leave(call)
 
-    async def _upload_via_plane(self, sandbox: Sandbox, path: str, content: bytes) -> str | None:
-        """Write under the base through the file plane; the error code, or ``None``."""
+    async def _upload_via_plane(
+        self, call: _Call, sandbox: Sandbox, path: str, content: bytes
+    ) -> str | None:
+        """Write under the base through the file plane; the error code, or ``None``.
+
+        A write the plane did not refuse and did not finish — a transport failure, the caller
+        leaving — may have left part of the file, and the plane does not promise otherwise, so
+        the instance is condemned and the batch ends, as on the shell road.
+        """
         try:
             await sandbox.write_file(path, content, working_directory=STORAGE_BASE)
+        except PermissionError as refused:
+            logger.info("%s: upload of %r refused: %s", self._id, path, refused)
+            return PERMISSION_DENIED
         except (ValueError, NotADirectoryError) as refused:
             # The file plane's own refusals — through a link, a parent that is a file — are
             # the guest's shape, safe to name by code.
             logger.info("%s: upload of %r refused: %s", self._id, path, refused)
             return INVALID_PATH
+        except asyncio.CancelledError:
+            self._condemn(call)
+            raise
         except Exception:
             logger.exception("%s: upload of %r failed", self._id, path)
-            return _UPLOAD_FAILED
+            self._condemn(call)
+            raise _BatchLost() from None
         return None
 
     async def _upload_via_shell(self, call: _Call, path: str, content: bytes) -> str | None:
@@ -663,6 +677,9 @@ class MafSandbox(BaseSandbox):
         except TimeoutError:
             logger.warning("%s: stat of %r timed out", self._id, path)
             return FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)
+        except PermissionError as refused:
+            logger.info("%s: download of %r refused: %s", self._id, path, refused)
+            return FileDownloadResponse(path=path, error=PERMISSION_DENIED)
         except ValueError as refused:
             logger.info("%s: download of %r refused: %s", self._id, path, refused)
             return FileDownloadResponse(path=path, error=INVALID_PATH)
@@ -689,6 +706,10 @@ class MafSandbox(BaseSandbox):
             return FileDownloadResponse(path=path, error=FILE_NOT_FOUND)
         except IsADirectoryError:
             return FileDownloadResponse(path=path, error=IS_DIRECTORY)
+        except PermissionError as refused:
+            # Before the OSError branch it is one of: an unreadable file is not a bad path.
+            logger.info("%s: download of %r refused: %s", self._id, path, refused)
+            return FileDownloadResponse(path=path, error=PERMISSION_DENIED)
         except (ValueError, OSError) as refused:
             logger.info("%s: download of %r refused: %s", self._id, path, refused)
             return FileDownloadResponse(path=path, error=INVALID_PATH)
