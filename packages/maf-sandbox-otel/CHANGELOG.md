@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-otel-v0.4.0...maf-sandbox-otel-v0.5.0) (2026-09-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** dispose sandboxes by default and audit process cleanup ([#1091](https://github.com/sokolaidev/maf-extensions/issues/1091))
+
+### Features
+
+* **sandbox:** dispose sandboxes by default and audit process cleanup ([#1091](https://github.com/sokolaidev/maf-extensions/issues/1091)) ([a11c06e](https://github.com/sokolaidev/maf-extensions/commit/a11c06e85c8114520e489ce3fce0c275c81840b8))
+
 ## [0.4.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-otel-v0.3.0...maf-sandbox-otel-v0.4.0) (2026-09-10)
 
 
