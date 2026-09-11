@@ -20,7 +20,7 @@ import posixpath
 import time
 import uuid
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, cast
 
 from deepagents.backends.protocol import (
     FILE_NOT_FOUND,
@@ -160,7 +160,19 @@ def deepagents_spec(
 
     ``work_dir`` names the base the agent's file paths resolve under. It is the one field of
     the spec :class:`MafSandbox` refuses ``None`` for.
+
+    Raises:
+        TypeError: when ``egress_allow`` is a bare ``str`` rather than a sequence of hostnames.
+        ValueError: when an entry is not one hostname; the spec states that grammar.
     """
+    # Refused here rather than left to the spec, because the tuple below is what would reach it:
+    # a bare string arrives as one host per character, and a dotless one is a tuple of hostnames
+    # the grammar has no reason to reject.
+    if isinstance(cast("object", egress_allow), str):
+        raise TypeError(
+            f"egress_allow must be a sequence of hostnames, not a single string: "
+            f"{egress_allow!r} would be read one character at a time"
+        )
     return SandboxSpec(
         kind=kind,
         image=image,

@@ -211,6 +211,36 @@ class Egress(StrEnum):
     CLOSED = "closed"
 
 
+#: One label of a hostname: letters, digits and inner hyphens.
+_EGRESS_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+#: A whole allow entry — dot-separated labels, optionally behind a single ``*.`` wildcard label.
+_EGRESS_HOST = re.compile(rf"(?:\*\.)?{_EGRESS_LABEL}(?:\.{_EGRESS_LABEL})*")
+
+
+def _validated_egress_host(entry: object) -> str:
+    """Refuse an allow entry that is not one hostname, naming the entry and the rule.
+
+    The grammar is narrow because an entry is read by backends rather than here — a filtering
+    proxy on docker and wslc, a policy pattern on ACAS — and a scheme, a port, a path or a glob
+    reaches at least one of them as a rule matching something other than what it names.
+    """
+    if not isinstance(entry, str):
+        raise TypeError(f"egress_allow entries are hostnames or EgressRule values, got {entry!r}")
+    if entry == "*":
+        raise ValueError(
+            "egress_allow entry '*' allows every host, which is Egress.UNRESTRICTED written as "
+            "an allowlist and served by any backend enforcing Egress.ALLOWLIST. Name the hosts, "
+            "or ask for egress=Egress.UNRESTRICTED on a backend that declares it."
+        )
+    if _EGRESS_HOST.fullmatch(entry) is None:
+        raise ValueError(
+            f"egress_allow entry {entry!r} is not one hostname: an entry is dot-separated labels "
+            "of letters, digits and hyphens, optionally behind a single '*.' wildcard label, "
+            "with no scheme, port, path, whitespace or comma."
+        )
+    return entry
+
+
 @dataclass(frozen=True)
 class EgressRule:
     """Allow a host for the literal, case-sensitive HTTP methods named, or all for ``None``.
@@ -223,6 +253,7 @@ class EgressRule:
     methods: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
+        _validated_egress_host(self.host)
         if self.methods is None:
             return
         if not isinstance(cast("object", self.methods), tuple):
@@ -712,7 +743,10 @@ class SandboxSpec:
     is consulted only in that mode.  A non-empty ``egress_allow`` therefore requires
     ``egress is Egress.ALLOWLIST``, refused here otherwise: naming hosts with no network to reach
     them on is incoherent, not resolved into a surprise.  The ``CLOSED`` default keeps the
-    fail-closed property: a spec that says nothing about egress gets no network.
+    fail-closed property: a spec that says nothing about egress gets no network.  Each entry is
+    **one hostname**, optionally behind a single ``*.`` wildcard label, and anything else is
+    refused here rather than handed on — a bare ``*`` most of all, which asks for
+    :data:`Egress.UNRESTRICTED` in a shape every ``ALLOWLIST`` backend would serve.
 
     ``work_dir`` overrides the backend's storage base for an image with a fixed layout.
     ``None`` lets the backend allocate its own base; the existing default is retained for
@@ -843,6 +877,20 @@ class SandboxSpec:
         # the resolution below ranks it through `CLEANUP_RANK` and a bare string is not a key.
         if self.min_cleanup is not None:
             object.__setattr__(self, "min_cleanup", Cleanup(str(self.min_cleanup)))
+        allow = cast("object", self.egress_allow)
+        if isinstance(allow, str):
+            raise TypeError(
+                f"egress_allow must be a sequence of hostnames, not a single string: {allow!r} "
+                "would be read one character at a time"
+            )
+        if not isinstance(allow, Iterable):
+            raise TypeError(
+                f"egress_allow must be a sequence of hostnames, got {allow!r}; an allowlist "
+                "that allows nothing is ()"
+            )
+        # Materialised before the mode check reads it: a one-shot iterable is truthy whatever
+        # it would yield, and the fold below would spend it.
+        object.__setattr__(self, "egress_allow", tuple(cast("Iterable[Any]", allow)))
         if self.egress_allow and self.egress is not Egress.ALLOWLIST:
             hosts = ", ".join(str(entry) for entry in self.egress_allow)
             raise ValueError(
@@ -855,7 +903,8 @@ class SandboxSpec:
         for entry in self.egress_allow:
             if isinstance(entry, EgressRule) and entry.methods is None:
                 entry = entry.host
-            host = entry.host if isinstance(entry, EgressRule) else entry
+            # A rule validated its own host on construction; a bare entry is checked here.
+            host = entry.host if isinstance(entry, EgressRule) else _validated_egress_host(entry)
             methods = (
                 frozenset(entry.methods)
                 if isinstance(entry, EgressRule) and entry.methods is not None
