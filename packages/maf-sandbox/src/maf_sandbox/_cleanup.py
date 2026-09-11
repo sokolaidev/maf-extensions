@@ -241,6 +241,20 @@ class ExclusiveSlots:
         for waiter in waiters:
             _notify(waiter)
 
+    def renew(self, key: SandboxKey, kind: str) -> None:
+        """Restart every waiter's bound now that one cleanup target has landed.
+
+        Targets are cleaned one after another, so a waiter holding a budget for a single
+        target would refuse a caller whose predecessor is still inside a later target's bounds.
+        """
+        at = (key, kind)
+        with self._guard:
+            slot = self._slots.get(at)
+            if slot is None:
+                return
+            slot.generation += 1
+        self._wake(at)
+
     def cleaned(self, key: SandboxKey, kind: str) -> None:
         """Reopen admission only after every claimed record has reached its completion path."""
         at = (key, kind)

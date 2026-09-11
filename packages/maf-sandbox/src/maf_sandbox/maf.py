@@ -2463,8 +2463,10 @@ def sandboxed_tool(
         admission_timeout: Seconds this call waits for each call ahead of it on the same
             sandbox: that call's body bound plus twice this tool's cleanup bound, allowing
             reclaim or reset followed by disposal. The cleanup bound is ``reclaim_timeout``
-            where set and the router's ``reclaim.timeout`` otherwise. The wait restarts as each
-            call ahead leaves; a call ahead that outlasts it makes this one answer busy. Default
+            where set and the router's ``reclaim.timeout`` otherwise. That pair is the budget
+            for one sandbox instance; the wait restarts as each call ahead leaves and as each of
+            its cleanup targets lands, so a call holding several instances is not charged
+            against a single budget. A call ahead that outlasts it answers busy. Default
             ``None`` is the framework's queued-call bound (``120.0``). An ordinary call waits
             only while the sandbox drains or cleans; a spec asking ``exclusive_admission``
             waits for every sibling, so a kind that asks should pass the bound its body has.

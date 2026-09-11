@@ -293,3 +293,36 @@ def test_failed_instance_does_not_skip_another_and_survives_entry_eviction(monke
 
     asyncio.run(scenario())
     assert attempts == [a.instance_id, b.instance_id]
+
+
+def test_a_waiter_is_renewed_as_each_cleanup_target_lands(monkeypatch):
+    """One call can hold several instances, and their cleanups run one after another. A waiter
+    budgeting a single target would be refused while its predecessor is still inside a later
+    target's own bounds."""
+    router, backend = _router()
+    first, second = InProcessSandbox(), InProcessSandbox()
+    assert first.instance_id != second.instance_id
+    stage = 0.3
+    landed = []
+
+    async def clean(key, spec, serving, rung, held, unclean, bound):
+        await asyncio.sleep(stage)
+        landed.append(held.instance_id)
+        return None
+
+    monkeypatch.setattr(router, "_run_the_rung", clean)
+
+    async def scenario():
+        await router.enter_call(KEY, SPEC, owner="holder")
+        _queue(router, backend, first, "holder")
+        _queue(router, backend, second, "holder")
+        # Enough for one target and its escalation, short of two targets end to end.
+        waiting = asyncio.create_task(router.enter_call(KEY, SPEC, owner="waiter", timeout=0.45))
+        await asyncio.sleep(0)
+        await router.release_call(KEY, SPEC.kind, owner="holder")
+        await waiting
+        await router.release_call(KEY, SPEC.kind, owner="waiter")
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=10))
+    assert landed == [first.instance_id, second.instance_id]
+    assert not router._slots._slots

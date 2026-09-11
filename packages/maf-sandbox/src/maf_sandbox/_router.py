@@ -1890,6 +1890,8 @@ class SandboxRouter:
                     key, one.spec, one.backend, one.rung, one.sandbox, one.unclean, one.timeout
                 )
                 self._slots.complete(one, failure)
+                # Each target is bounded on its own, so each one that lands renews the wait.
+                self._slots.renew(key, kind)
         except (asyncio.CancelledError, GeneratorExit):
             logger.warning("sandbox router: cleanup was cancelled during the disposal or reset")
             raise
