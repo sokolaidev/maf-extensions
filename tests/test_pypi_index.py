@@ -282,6 +282,36 @@ class TestAVersionsMetadataComesFromTheIndexThatCarriesIt:
             "https://pypi.org/pypi/maf-sandbox/0.37.0/json"
         ]
 
+    @pytest.mark.parametrize(
+        ("base", "expected"),
+        [
+            ("https://pypi.org/simple/", "https://pypi.org/pypi/maf-sandbox/0.38.0/json"),
+            (
+                "https://test.pypi.org/simple/",
+                "https://test.pypi.org/pypi/maf-sandbox/0.38.0/json",
+            ),
+            (
+                "https://mirror.example/repository/simple/",
+                "https://mirror.example/repository/pypi/maf-sandbox/0.38.0/json",
+            ),
+            (
+                "https://mirror.example/repository/simple/?token=abc",
+                "https://mirror.example/repository/pypi/maf-sandbox/0.38.0/json?token=abc",
+            ),
+            (
+                "https://mirror.example/idx/",
+                "https://mirror.example/idx/pypi/maf-sandbox/0.38.0/json",
+            ),
+        ],
+    )
+    def test_the_base_keeps_its_own_path_and_query(self, base: str, expected: str):
+        """A mirror scoped under a prefix, or authenticating by query, is asked where it lives.
+
+        Rebuilt from the host alone it is asked at a path it does not serve, without the
+        credential, and answers as though the version were not published.
+        """
+        assert index.version_document_url(base, "maf-sandbox", "0.38.0") == expected
+
 
 class TestAnIndexMayCarryWhatThisRepositoryNeverPublishes:
     """`version` orders dotted releases and raises on the rest, and ceilings are written as one.
@@ -401,11 +431,12 @@ class TestADistributionIsJoinedOntoThePath:
 
 
 class TestAVersionOnEitherIndexCounts:
-    """Under uv's two `unsafe-` strategies every index is searched, so every index counts.
+    """Under `unsafe-best-match` uv prefers the best version across indexes, so every one counts.
 
-    `first-index` is the other half and has its own class below. Which one applies is read from
-    `UV_INDEX_STRATEGY` rather than chosen here: a check that merged under a strategy the
-    resolver does not would admit versions the install cannot reach.
+    The only strategy that merges. `first-index` and `unsafe-first-match` are the other half and
+    have their own class below. Which applies is read from `UV_INDEX_STRATEGY` rather than chosen
+    here: merging under a strategy the resolver does not would admit versions the install cannot
+    reach.
     """
 
     def _two(self, monkeypatch: pytest.MonkeyPatch, first: object, second: object) -> _Index:

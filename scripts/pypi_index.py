@@ -182,21 +182,38 @@ def package_url(index: str, distribution: str) -> str:
     )
 
 
+def version_document_url(index: str, distribution: str, released: str) -> str:
+    """Where a simple index at ``index`` serves one version's legacy JSON document.
+
+    Warehouse puts it beside the simple index, so the base's own path and query are kept and
+    only the ``simple`` segment is exchanged for ``pypi``. Rebuilt from the host alone instead,
+    a path-scoped mirror is asked at a prefix it does not serve and a query-authenticated one is
+    asked without its credential — and both answer as though the version were not there.
+    """
+    parsed = urllib.parse.urlsplit(index)
+    segments = [segment for segment in parsed.path.split("/") if segment]
+    if segments and segments[-1] == "simple":
+        segments = segments[:-1]
+    path = "/" + "/".join([*segments, "pypi", distribution, released, "json"])
+    return urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment)
+    )
+
+
 def fetch_version_document(distribution: str, released: str) -> dict | None:
     """One version's legacy JSON document, from whichever index carries it.
 
-    Warehouse serves ``/pypi/<name>/<version>/json`` beside its simple index, so the host comes
-    from the same variables the simple lookup reads, tried in the same order. Asked of pypi.org
+    The same variables the simple lookup reads, tried in the same order. Asked of pypi.org
     regardless, a version only a rehearsal index carries answers 404, and a caller reads that as
     "no such version" and drops it — leaving the gate to report exactly the shortfall the
     rehearsal was arranged to disprove.
+
+    An index that is not Warehouse serves no such document and answers 404, which falls through
+    to the next rather than ending the search. There is no per-version ``requires_dist`` in the
+    simple API to fall back to.
     """
     for index in index_urls():
-        parsed = urllib.parse.urlsplit(index)
-        document = urllib.parse.urlunsplit(
-            (parsed.scheme, parsed.netloc, f"/pypi/{distribution}/{released}/json", "", "")
-        )
-        payload = read_json(document)
+        payload = read_json(version_document_url(index, distribution, released))
         if payload is not None:
             return payload
     return None
@@ -208,10 +225,12 @@ def fetch_simple(distribution: str) -> dict | None:
     The simple index is fresher than the CDN-cached top-level JSON document, and it is what
     ``uv`` resolves from. A 404 means never released *there*; `read_json` decides the rest.
 
-    How many indexes count is ``UV_INDEX_STRATEGY``'s answer rather than one made here. uv's
-    default stops at the first index carrying the distribution and resolves only what that one
-    offers; its two ``unsafe-`` strategies look at the rest. Merging regardless would let a
-    check admit a version the install it gates cannot reach.
+    How many indexes count is ``UV_INDEX_STRATEGY``'s answer rather than one made here, and
+    **only ``unsafe-best-match`` merges**: uv's default resolves what the first index carrying
+    the distribution offers, and ``unsafe-first-match`` prefers that index's versions without
+    stopping at them — an order that turns on a requirement this layer does not hold, so it is
+    approximated by the first index alone. That reports fewer versions than uv would consider,
+    never one it would refuse, which is the direction a release gate should be wrong in.
     """
     merge = os.environ.get(_STRATEGY_VARIABLE, "").strip() in _SEARCHES_EVERY_INDEX
     payloads: list[dict] = []
