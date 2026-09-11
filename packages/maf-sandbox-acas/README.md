@@ -133,4 +133,6 @@ Maintained by [SOKOLAI BV](https://www.sokol.ai).
 
 ## Exec bytes and text views
 
+After complete output retrieval, a reported scratch-removal failure logs a warning naming the guest directory and returns the captured bytes and exit code. This includes a program that removes its own shell. Scratch may remain until sandbox disposal; no host-authority file operation removes it. Exceptions, timeouts, cancellation, and incomplete capture or retrieval still invalidate and attempt to dispose the sandbox.
+
 `ExecResult.stdout_bytes` and `stderr_bytes` preserve returned program bytes; `stdout_text` and `stderr_text` (also `stdout` and `stderr`) are UTF-8 display views with replacement decoding. Use the byte fields for artifacts and byte counts, and the text views for model or JSON display. See the [output contract, ACAS prerequisites and release migration](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/exec-output.md).

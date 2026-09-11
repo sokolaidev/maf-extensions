@@ -28,6 +28,9 @@ class _CaptureService:
         self.calls = 0
         self.started = asyncio.Event()
         self.response_fields = {}
+        self.cleanup_fields = {}
+        self.cleanup_started = asyncio.Event()
+        self.cleanup_failure: str | None = None
 
     async def begin_delete(self):
         self.deleted = True
@@ -39,6 +42,7 @@ class _CaptureService:
     async def send(self, request, **kwargs):
         self.calls += 1
         script = json.loads(request.content)["command"]
+        is_cleanup = not script.startswith("for tool") and "dd if=" not in script
         assert kwargs == {"stream": True, "auto_decompress": False}
         if script.startswith("for tool"):
             self.token = next(
@@ -52,7 +56,13 @@ class _CaptureService:
             text = self.token + "\n" + base64.b64encode(raw).decode() + "\n" + self.token + "\n"
         else:
             self.cleaned = True
+            self.cleanup_started.set()
+            if self.cleanup_failure == "raised":
+                raise OSError("cleanup transport failed")
+            if self.cleanup_failure in {"timeout", "cancel"}:
+                await asyncio.Event().wait()
             text = ""
+        fields = self.response_fields | (self.cleanup_fields if is_cleanup else {})
         if self.mode == "wire":
             text = "x" * 10000
         service = self
@@ -65,14 +75,25 @@ class _CaptureService:
                 service.started.set()
                 if service.mode in {"timeout", "cancel"}:
                     await asyncio.Event().wait()
-                yield json.dumps(
-                    {"stdout": text, "stderr": "", "exitCode": 0} | service.response_fields
-                ).encode()
+                yield json.dumps({"stdout": text, "stderr": "", "exitCode": 0} | fields).encode()
 
             async def close(self):
                 service.closed += 1
 
         return SimpleNamespace(http_response=Response())
+
+    async def exec(self, command, *, working_directory):
+        response = await self.send(
+            SimpleNamespace(content=json.dumps({"command": command})),
+            stream=True,
+            auto_decompress=False,
+        )
+        raw = b"".join([chunk async for chunk in response.http_response.iter_raw()])
+        await response.http_response.close()
+        fields = json.loads(raw)
+        return SimpleNamespace(
+            stdout=fields["stdout"], stderr=fields["stderr"], exit_code=fields["exitCode"]
+        )
 
 
 @pytest.mark.parametrize("field", ["stdout", "stderr", "exitCode"])
@@ -106,6 +127,70 @@ def test_bounded_capture_preserves_binary_streams_and_cleans_scratch():
         assert service.closed == service.calls == 4
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("bounded", [False, True])
+@pytest.mark.parametrize("empty", [False, True])
+@pytest.mark.parametrize(
+    "cleanup_fields",
+    [
+        {"exitCode": 127, "stderr": "sh: not found"},
+        {"exitCode": 1, "stderr": "rm: permission denied"},
+        {"stdout": "unexpected cleanup output"},
+        {"stderr": "unexpected cleanup diagnostic"},
+    ],
+    ids=["missing-shell", "permission-denied", "stdout", "stderr"],
+)
+def test_complete_output_survives_reported_scratch_cleanup_failure(
+    bounded, empty, cleanup_fields, caplog
+):
+    async def scenario():
+        out, err = (b"", b"") if empty else (bytes(range(256)), b"\xff\x00error")
+        service = _CaptureService(out, err)
+        service.cleanup_fields = cleanup_fields
+        sandbox = _AcasSandbox(service, 1)
+        if bounded:
+            result = await sandbox.exec_bounded(
+                "program", working_directory="/", timeout=1, max_output_bytes=1024
+            )
+        else:
+            result = await sandbox.exec("program", working_directory="/", timeout=1)
+        assert (result.stdout_bytes, result.stderr_bytes, result.exit_code) == (out, err, 7)
+        assert service.cleaned and not service.deleted and not sandbox._held.unusable
+        assert service.closed == service.calls
+        assert "scratch cleanup failed for /tmp/" + service.token in caplog.text
+        assert "scratch may remain until sandbox disposal" in caplog.text
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("bounded", [False, True])
+@pytest.mark.parametrize("failure", ["raised", "timeout", "cancel"])
+def test_interrupted_scratch_cleanup_still_invalidates_and_disposes(bounded, failure):
+    async def scenario():
+        service = _CaptureService(b"", b"")
+        service.cleanup_failure = failure
+        sandbox = _AcasSandbox(service, 1)
+        if bounded:
+            pending = sandbox.exec_bounded(
+                "program", working_directory="/", timeout=0.1, max_output_bytes=1024
+            )
+        else:
+            pending = sandbox.exec("program", working_directory="/", timeout=0.1)
+        task = asyncio.create_task(pending)
+        await service.cleanup_started.wait()
+        if failure == "cancel":
+            task.cancel()
+        expected = {
+            "raised": OSError,
+            "timeout": TimeoutError,
+            "cancel": asyncio.CancelledError,
+        }[failure]
+        with pytest.raises(expected):
+            await task
+        assert service.deleted and sandbox._held.unusable
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=3))
 
 
 @pytest.mark.parametrize("bounded", [False, True])
