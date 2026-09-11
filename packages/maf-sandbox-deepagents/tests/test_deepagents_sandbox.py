@@ -106,6 +106,11 @@ class TestConstruction:
         with pytest.raises(ValueError, match="whole conversation"):
             MafSandbox(_router(_backend()), KEY, spec)
 
+    def test_refuses_an_open_egress_however_the_spec_was_built(self):
+        spec = dataclasses.replace(deepagents_spec("img:1"), egress=Egress.UNRESTRICTED)
+        with pytest.raises(ValueError, match="egress"):
+            MafSandbox(_router(_backend()), KEY, spec)
+
     def test_refuses_a_key_naming_a_call(self):
         with pytest.raises(ValueError, match="call_id"):
             MafSandbox(

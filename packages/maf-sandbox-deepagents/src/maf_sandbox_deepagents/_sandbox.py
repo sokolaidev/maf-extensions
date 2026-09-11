@@ -280,6 +280,12 @@ class MafSandbox(BaseSandbox):
             )
         if key.call_id:
             raise ValueError("key.call_id must be empty: one sandbox serves the conversation")
+        if spec.egress is Egress.UNRESTRICTED:
+            # `deepagents_spec` cannot express it; a spec built another way must not either.
+            raise ValueError(
+                "spec.egress must be CLOSED or ALLOWLIST: the model writes the commands, so an "
+                "open network is not a posture this sandbox takes"
+            )
         if spec.work_dir is None:
             # Deep Agents' file tools take guest paths the model spells out, so the host has to
             # be able to tell it the base; a backend-allocated one is knowable to neither.
