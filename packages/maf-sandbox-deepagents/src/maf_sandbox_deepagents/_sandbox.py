@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import concurrent.futures
+import contextlib
 import hashlib
 import json
 import logging
@@ -20,7 +21,7 @@ import posixpath
 import shlex
 import threading
 import time
-from collections.abc import Coroutine
+from collections.abc import AsyncGenerator, Coroutine
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -323,8 +324,11 @@ class MafSandbox(BaseSandbox):
         self._max_output_bytes = max_output_bytes
         #: The engine instance the last acquire handed back, and what `aclose` deletes.
         self._instance_id: str | None = None
-        #: A delete still running after a command did not finish; no operation overtakes it.
+        #: A delete still running after a command did not finish; no operation overtakes it,
+        #: and it waits for the operations already in flight, counted here.
         self._disposal: concurrent.futures.Future[bool] | None = None
+        self._active = 0
+        self._active_guard = threading.Lock()
         backend = router.backend_for(spec)
         identity = [
             "" if backend is None else backend.name,
@@ -399,6 +403,31 @@ class MafSandbox(BaseSandbox):
             self._dispose_later(instance_id)
             raise
 
+    @contextlib.asynccontextmanager
+    async def _in_flight(self) -> AsyncGenerator[None]:
+        """Count an operation, so a deferred delete waits for it; entered after the acquire,
+        which is where a pending delete is joined, so the two never wait on each other."""
+        with self._active_guard:
+            self._active += 1
+        try:
+            yield
+        finally:
+            with self._active_guard:
+                self._active -= 1
+
+    async def _quiet(self) -> None:
+        """Wait until no operation of this adapter is in flight.
+
+        The router asks callers to keep active calls off a sandbox being deleted, and Deep
+        Agents may run tool calls in parallel, so a delete one call started waits for the
+        others. Polled, because the operations may run on another loop than the delete.
+        """
+        while True:
+            with self._active_guard:
+                if self._active == 0:
+                    return
+            await asyncio.sleep(0.02)
+
     def _inside_base(self, path: str) -> bool:
         """Whether ``path`` names something under the storage base, the file plane's reach."""
         if not path.startswith("/"):
@@ -426,32 +455,33 @@ class MafSandbox(BaseSandbox):
             return ExecuteResponse(output=_TIMED_OUT.format(seconds=bound), exit_code=None)
         if sandbox is None:
             return ExecuteResponse(output=SANDBOX_UNAVAILABLE, exit_code=None)
-        if not isinstance(sandbox, BoundedExec):
-            logger.error("%s: the backend has no exec_bounded, so no command runs", self._id)
-            return ExecuteResponse(output=_UNBOUNDED, exit_code=None)
-        remaining = bound - (time.monotonic() - started)
-        if remaining <= 0:
-            return ExecuteResponse(output=_TIMED_OUT.format(seconds=bound), exit_code=None)
-        try:
-            result = await self._run_bounded(
-                sandbox,
-                sandbox.instance_id,
-                command,
-                timeout=remaining,
-                max_output_bytes=self._max_output_bytes,
-            )
-        except TimeoutError:
-            return ExecuteResponse(output=_TIMED_OUT.format(seconds=bound), exit_code=None)
-        except SandboxExecOutputLimitExceeded:
-            return ExecuteResponse(
-                output=_OUTPUT_DROPPED.format(limit=self._max_output_bytes),
-                exit_code=None,
-                truncated=True,
-            )
-        except Exception:
-            logger.exception("%s: the command's result could not be read", self._id)
-            return ExecuteResponse(output=_EXEC_FAILED, exit_code=None)
-        return _response(result)
+        async with self._in_flight():
+            if not isinstance(sandbox, BoundedExec):
+                logger.error("%s: the backend has no exec_bounded, so no command runs", self._id)
+                return ExecuteResponse(output=_UNBOUNDED, exit_code=None)
+            remaining = bound - (time.monotonic() - started)
+            if remaining <= 0:
+                return ExecuteResponse(output=_TIMED_OUT.format(seconds=bound), exit_code=None)
+            try:
+                result = await self._run_bounded(
+                    sandbox,
+                    sandbox.instance_id,
+                    command,
+                    timeout=remaining,
+                    max_output_bytes=self._max_output_bytes,
+                )
+            except TimeoutError:
+                return ExecuteResponse(output=_TIMED_OUT.format(seconds=bound), exit_code=None)
+            except SandboxExecOutputLimitExceeded:
+                return ExecuteResponse(
+                    output=_OUTPUT_DROPPED.format(limit=self._max_output_bytes),
+                    exit_code=None,
+                    truncated=True,
+                )
+            except Exception:
+                logger.exception("%s: the command's result could not be read", self._id)
+                return ExecuteResponse(output=_EXEC_FAILED, exit_code=None)
+            return _response(result)
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         return _SYNC.run(self.aexecute(command, timeout=timeout))
@@ -466,31 +496,32 @@ class MafSandbox(BaseSandbox):
         sandbox = await self._acquire()
         if sandbox is None:
             return [FileUploadResponse(path=path, error=_UPLOAD_FAILED) for path, _ in files]
-        responses: list[FileUploadResponse] = []
-        sent = 0
-        for path, content in files:
-            # Checked before the write it would have prevented, and counted only for what
-            # crossed: a refused file leaves the budget where it was.
-            error: str | None
-            try:
-                if len(content) > limits.max_bytes_per_file:
-                    error = _OVER_FILE_CAP.format(direction="files_in")
-                elif sent + len(content) > limits.max_total_bytes:
-                    error = _OVER_TOTAL_CAP.format(direction="files_in")
-                elif self._inside_base(path):
-                    error = await self._upload_via_plane(sandbox, path, content)
-                elif isinstance(sandbox, BoundedExec):
-                    error = await self._upload_via_shell(
-                        sandbox, path, content, instance_id=sandbox.instance_id
-                    )
-                else:
-                    error = _NO_SHELL_ROAD
-            except _BatchLost:
-                return [FileUploadResponse(path=p, error=_UPLOAD_BATCH_LOST) for p, _ in files]
-            if error is None:
-                sent += len(content)
-            responses.append(FileUploadResponse(path=path, error=error))
-        return responses
+        async with self._in_flight():
+            responses: list[FileUploadResponse] = []
+            sent = 0
+            for path, content in files:
+                # Checked before the write it would have prevented, and counted only for what
+                # crossed: a refused file leaves the budget where it was.
+                error: str | None
+                try:
+                    if len(content) > limits.max_bytes_per_file:
+                        error = _OVER_FILE_CAP.format(direction="files_in")
+                    elif sent + len(content) > limits.max_total_bytes:
+                        error = _OVER_TOTAL_CAP.format(direction="files_in")
+                    elif self._inside_base(path):
+                        error = await self._upload_via_plane(sandbox, path, content)
+                    elif isinstance(sandbox, BoundedExec):
+                        error = await self._upload_via_shell(
+                            sandbox, path, content, instance_id=sandbox.instance_id
+                        )
+                    else:
+                        error = _NO_SHELL_ROAD
+                except _BatchLost:
+                    return [FileUploadResponse(path=p, error=_UPLOAD_BATCH_LOST) for p, _ in files]
+                if error is None:
+                    sent += len(content)
+                responses.append(FileUploadResponse(path=path, error=error))
+            return responses
 
     async def _upload_via_plane(self, sandbox: Sandbox, path: str, content: bytes) -> str | None:
         """Write under the base through the file plane; the error code, or ``None``."""
@@ -686,27 +717,28 @@ class MafSandbox(BaseSandbox):
         sandbox = await self._acquire()
         if sandbox is None:
             return [FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED) for path in paths]
-        responses: list[FileDownloadResponse] = []
-        room = limits.max_total_bytes
-        for path in paths:
-            try:
-                response = await self._download(sandbox, path, room=room)
-            except _BatchLost as lost:
-                responses.append(
-                    lost.response or FileDownloadResponse(path=path, error=_DOWNLOAD_BATCH_LOST)
-                )
-                rest = paths[len(responses) :]
-                responses.extend(
-                    FileDownloadResponse(path=p, error=_DOWNLOAD_BATCH_LOST) for p in rest
-                )
-                break
-            except Exception:
-                logger.exception("%s: download of %r failed", self._id, path)
-                response = FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)
-            if response.content is not None:
-                room -= len(response.content)
-            responses.append(response)
-        return responses
+        async with self._in_flight():
+            responses: list[FileDownloadResponse] = []
+            room = limits.max_total_bytes
+            for path in paths:
+                try:
+                    response = await self._download(sandbox, path, room=room)
+                except _BatchLost as lost:
+                    responses.append(
+                        lost.response or FileDownloadResponse(path=path, error=_DOWNLOAD_BATCH_LOST)
+                    )
+                    rest = paths[len(responses) :]
+                    responses.extend(
+                        FileDownloadResponse(path=p, error=_DOWNLOAD_BATCH_LOST) for p in rest
+                    )
+                    break
+                except Exception:
+                    logger.exception("%s: download of %r failed", self._id, path)
+                    response = FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)
+                if response.content is not None:
+                    room -= len(response.content)
+                responses.append(response)
+            return responses
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         return _SYNC.run(self.adownload_files(paths))
@@ -723,6 +755,7 @@ class MafSandbox(BaseSandbox):
         no ``aclose`` reached.
         """
         await self._join_disposal()
+        await self._quiet()
         instance_id = self._instance_id
         if instance_id is None:
             return True
@@ -735,11 +768,16 @@ class MafSandbox(BaseSandbox):
         concurrent acquire may have moved on. The delete runs on the process's own loop, so it
         outlives the caller's, which ``asyncio.run`` closes on return, and is joinable from any
         loop; the next operation joins it before it acquires, so nothing reaches the instance
-        while it is still being deleted.
+        while it is still being deleted, and the delete waits for the operations already in
+        flight, so a parallel call is never cut off underneath.
         """
-        future = _SYNC.submit(self._dispose(instance_id))
+        future = _SYNC.submit(self._dispose_after_quiet(instance_id))
         future.add_done_callback(self._disposal_done)
         self._disposal = future
+
+    async def _dispose_after_quiet(self, instance_id: str) -> bool:
+        await self._quiet()
+        return await self._dispose(instance_id)
 
     def _disposal_done(self, future: concurrent.futures.Future[bool]) -> None:
         if future.cancelled():

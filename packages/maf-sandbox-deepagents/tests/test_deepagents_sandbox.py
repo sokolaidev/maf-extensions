@@ -342,6 +342,38 @@ class TestExecute:
         assert backend.disposed == [KEY, KEY]
         assert backend.disposed_kinds[-1] == DEEPAGENTS_KIND
 
+    def test_a_parallel_healthy_call_finishes_before_the_delete_a_timeout_started(self):
+        """The router asks callers to keep active calls off a sandbox being deleted, and Deep
+        Agents may run tool calls in parallel."""
+        disposed_when_healthy_done: list[int] = []
+
+        class Mixed(InProcessSandbox):
+            async def exec(self, command, *, working_directory, timeout):
+                self.commands.append((str(command), working_directory, timeout))
+                if "slow" in str(command):
+                    await asyncio.sleep(0.05)
+                    raise TimeoutError()
+                await asyncio.sleep(0.3)
+                disposed_when_healthy_done.append(len(backend.disposed))
+                return ExecResult(stdout="ok")
+
+        adapter, backend = _adapter(Mixed())
+
+        async def scenario():
+            slow, healthy = await asyncio.gather(
+                adapter.aexecute("slow", timeout=5), adapter.aexecute("healthy", timeout=5)
+            )
+            await adapter.aclose()  # joins the delete the timeout started
+            return slow, healthy
+
+        slow, healthy = asyncio.run(scenario())
+
+        assert slow.exit_code is None
+        assert healthy.output == "ok"
+        # The delete the timeout started landed exactly once, and only after the healthy call.
+        assert backend.disposed[-1] == KEY
+        assert disposed_when_healthy_done == [len(backend.disposed) - 1]
+
     def test_a_cancelled_command_disposes_the_sandbox_and_stays_cancelled(self):
         class Hanging(InProcessSandbox):
             async def exec(self, command, *, working_directory, timeout):
