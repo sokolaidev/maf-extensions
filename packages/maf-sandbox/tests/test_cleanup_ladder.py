@@ -419,7 +419,7 @@ def test_the_router_holds_an_exclusive_spec_that_way_without_being_told():
 
 
 @pytest.mark.parametrize("stated", [None, 7.5])
-def test_a_call_waits_its_stated_bound_plus_the_cleanup_bound_per_call_ahead(stated):
+def test_a_call_waits_its_stated_bound_plus_two_cleanup_bounds_per_call_ahead(stated):
     seen = []
 
     class _Recording(SandboxRouter):
@@ -441,7 +441,7 @@ def test_a_call_waits_its_stated_bound_plus_the_cleanup_bound_per_call_ahead(sta
         await _tool(router, _SPEC, use, admission_timeout=stated)(target="x")
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))
-    assert seen == [(QUEUED_CALL_TIMEOUT if stated is None else stated) + 2.5]
+    assert seen == [(QUEUED_CALL_TIMEOUT if stated is None else stated) + 2 * 2.5]
 
 
 @pytest.mark.parametrize("bad", [0, -1.0, float("inf"), float("nan")])
@@ -458,9 +458,7 @@ def test_an_admission_bound_must_be_finite_and_positive(bad):
 
 @pytest.mark.parametrize("stated", [None, 7.5])
 def test_the_wait_adds_the_tools_own_cleanup_bound_rather_than_the_routers(stated):
-    """A tool may raise the cleanup bound above the router's, and the cleanup between two
-    holds then gets the raised one. A waiter allowing only the router's would refuse a caller
-    whose predecessor was still inside the bound its own tool set."""
+    """Both cleanup stages use the tool's effective bound."""
     seen = []
 
     class _Recording(SandboxRouter):
@@ -483,4 +481,69 @@ def test_the_wait_adds_the_tools_own_cleanup_bound_rather_than_the_routers(state
         await run(target="x")
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))
-    assert seen == [(QUEUED_CALL_TIMEOUT if stated is None else stated) + 90.0]
+    assert seen == [(QUEUED_CALL_TIMEOUT if stated is None else stated) + 2 * 90.0]
+
+
+@pytest.mark.parametrize("rung", [Cleanup.RECLAIM, Cleanup.RESET])
+@pytest.mark.parametrize("failure", ["raised", "timeout"])
+def test_admission_waits_for_failed_cleanup_then_disposal(rung, failure):
+    entered, release = asyncio.Event(), asyncio.Event()
+    stages, paths = [], {}
+    bound = 0.4
+
+    class _SlowCleanup(InProcessSandbox):
+        fail_cleanup = False
+
+        async def fail(self, stage, timeout):
+            stages.append(stage)
+            assert timeout == bound
+            if failure == "timeout":
+                async with asyncio.timeout(timeout):
+                    await asyncio.Event().wait()
+            await asyncio.sleep(0.3)
+            raise RuntimeError("cleanup refused")
+
+        async def reclaim(self, directory, *, working_directory, timeout):
+            if self.fail_cleanup:
+                await self.fail("reclaim", timeout)
+            await super().reclaim(directory, working_directory=working_directory, timeout=timeout)
+
+        async def reset(self, *, timeout):
+            if self.fail_cleanup:
+                await self.fail("reset", timeout)
+            await super().reset(timeout=timeout)
+
+    class _SlowDisposal(InProcessSandboxBackend):
+        async def dispose(self, key, *, kind=None, instance_id=None):
+            stages.append("dispose")
+            await asyncio.sleep(0.3)
+            return await super().dispose(key, kind=kind, instance_id=instance_id)
+
+    backend = _SlowDisposal(_SlowCleanup(), sandbox_per_key=True, declarations=_DECLARATIONS)
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE, min_cleanup=rung)
+
+    async def use(sandbox, guest_path, target):
+        paths[target] = guest_path
+        if target == "first":
+            sandbox.fail_cleanup = True
+            entered.set()
+            await release.wait()
+        else:
+            assert stages == [rung.value, "dispose"]
+            assert _stored(f"{paths['first']}/payload") not in sandbox.contents
+
+    async def scenario():
+        run = _tool(router, _EXCLUSIVE, use, admission_timeout=0.05, reclaim_timeout=bound)
+        first = asyncio.create_task(run(target="first"))
+        await entered.wait()
+        second = asyncio.create_task(run(target="second"))
+        while not router._slots._slots[(_KEY, _EXCLUSIVE.kind)].waiters:
+            await asyncio.sleep(0)
+        release.set()
+        results = await asyncio.gather(first, second)
+        assert "second" in paths, results
+        assert results == [paths["first"], paths["second"]]
+        assert backend.disposed == [_KEY]
+        assert not router._slots._slots
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=5))

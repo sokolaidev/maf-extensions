@@ -719,7 +719,7 @@ class TestCodeactSandboxSpec:
             exec_timeout_seconds=45,
         )[0]
         _run(tool, "print('hi')")
-        assert seen == [(48.0, True)]
+        assert seen == [(51.0, True)]
 
     @pytest.mark.parametrize(
         ("snapshot", "floor", "expected"),

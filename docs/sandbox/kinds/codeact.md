@@ -74,7 +74,7 @@ The two-directory split is why the transport's names are not reserved against a 
 
 Caps are checked before the read they would have prevented, not after: the file count before the listing, the program's own bytes before the store is touched, each shared file's as it arrives. A bound that answers only once everything is in memory has already spent what it exists to bound.
 
-**Calls run one at a time.** The spec sets `exclusive_admission`, so two `execute_code` calls in one assistant message queue on the conversation's sandbox rather than run in it together. The reason is the one that keeps this kind unconfined: a model-written program reads whatever a sibling call shared in or wrote, and a withheld call's inputs are exactly what a sibling must not print. A queued call waits `exec_timeout_seconds` plus the tool's cleanup bound for each call ahead of it, then answers busy. Under the default `DISPOSE` cleanup each call pays a disposal, which one call per turn already paid.
+**Calls run one at a time.** The spec sets `exclusive_admission`, so two `execute_code` calls in one assistant message queue on the conversation's sandbox rather than run in it together. The reason is the one that keeps this kind unconfined: a model-written program reads whatever a sibling call shared in or wrote, and a withheld call's inputs are exactly what a sibling must not print. A queued call waits `exec_timeout_seconds` plus twice the tool's cleanup bound for each call ahead of it, allowing reclaim or reset followed by disposal, then answers busy. Under the default `DISPOSE` cleanup each call pays a disposal, which one call per turn already paid.
 
 ## The empty registry is the security story
 
