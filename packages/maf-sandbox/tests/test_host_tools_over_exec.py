@@ -1531,6 +1531,10 @@ class TestTheLauncherAgainstARealShell:
             )
 
     @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    @pytest.mark.skipif(
+        os.pathsep != ":",
+        reason="the launcher's path handling is POSIX, and this reads back the files it wrote",
+    )
     def test_a_program_that_prints_and_then_hangs_leaves_its_output_readable(self, tmp_path: Path):
         """The timeout quotes this file, so what has not reached it does not exist.
 
@@ -1607,6 +1611,10 @@ class TestTheLauncherAgainstARealShell:
             _reap(tmp_path / "pid")
 
     @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    @pytest.mark.skipif(
+        os.pathsep != ":",
+        reason="the launcher's path handling is POSIX, and this reads back the files it wrote",
+    )
     def test_the_launcher_leaves_the_programs_own_ending_behind(self, tmp_path: Path):
         """The two facts the supervisor reads are the program's own, made where it says.
 
