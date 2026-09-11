@@ -21,6 +21,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from _fixture_probe import _the_image_ships
 from maf_sandbox import (
     Capability,
     Cleanup,
@@ -856,6 +857,10 @@ class TestAGuestThatIsNotRoot:
 
     def test_the_guest_can_modify_inputs_and_create_outputs(self):
         """The file plane's inputs and missing directories belong to the image's user."""
+        assert not _the_image_ships(_WORK, str(_NONROOT_IMAGE)), (
+            f"this fixture must not ship {_WORK}: what the ownership checks below read is "
+            "what acquire created"
+        )
         scope = f"e2e-{uuid.uuid4()}"
         backend = WslcSandboxBackend(WslcSandboxConfig())
 
@@ -932,6 +937,10 @@ def test_a_guest_owned_work_dir_answers_the_reach_probe():
     scope = f"e2e-{uuid.uuid4()}"
     backend = WslcSandboxBackend(WslcSandboxConfig())
     spec = SandboxSpec(kind="e2e-guest-owned", image=_GUEST_OWNED_IMAGE, work_dir=_WORK)
+    assert _the_image_ships(_WORK, str(_GUEST_OWNED_IMAGE)), (
+        f"this fixture must ship a guest-owned {_WORK}: preserving a directory that is "
+        "already there is what the stat comparison below measures"
+    )
 
     async def scenario() -> None:
         sandbox = await backend.acquire(_key(scope), spec)
