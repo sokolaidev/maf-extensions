@@ -4,6 +4,29 @@ All notable changes to `maf-sandbox-acas` are documented here. The format follow
 
 Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, and the entries below name it as it was — their tags and compare links point at real history and are left as they were written. `maf-sandbox-aca` is not maintained past `0.2.3`; PyPI names cannot be reused, so the rename is a new distribution rather than a continuation of that one.
 
+## [0.22.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.21.0...maf-sandbox-acas-v0.22.0) (2026-09-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** preserve exec bytes and expose safe text views ([#1100](https://github.com/sokolaidev/maf-extensions/issues/1100))
+* **sandbox:** dispose sandboxes by default and audit process cleanup ([#1091](https://github.com/sokolaidev/maf-extensions/issues/1091))
+* **sandbox:** resolve workload paths against backend storage bases ([#1090](https://github.com/sokolaidev/maf-extensions/issues/1090))
+
+### Features
+
+* **sandbox:** dispose sandboxes by default and audit process cleanup ([#1091](https://github.com/sokolaidev/maf-extensions/issues/1091)) ([a11c06e](https://github.com/sokolaidev/maf-extensions/commit/a11c06e85c8114520e489ce3fce0c275c81840b8))
+* **sandbox:** prepare working directories when acquiring sandboxes ([#1086](https://github.com/sokolaidev/maf-extensions/issues/1086)) ([e774a51](https://github.com/sokolaidev/maf-extensions/commit/e774a512c32097cfb3803660838545a2ecd64095))
+* **sandbox:** preserve exec bytes and expose safe text views ([#1100](https://github.com/sokolaidev/maf-extensions/issues/1100)) ([69daefa](https://github.com/sokolaidev/maf-extensions/commit/69daefaff889f3a31049cdf9dcf6c707fa5ef39a))
+* **sandbox:** resolve workload paths against backend storage bases ([#1090](https://github.com/sokolaidev/maf-extensions/issues/1090)) ([1d93a39](https://github.com/sokolaidev/maf-extensions/commit/1d93a39e2dc30a7f6ddc5dba17a4a4fc201ff9e9))
+
+
+### Fixes
+
+* **acas:** refuse reclamation without safe ancestor ownership ([#1088](https://github.com/sokolaidev/maf-extensions/issues/1088)) ([0a80a1e](https://github.com/sokolaidev/maf-extensions/commit/0a80a1e470b7dcd0934490e9233d6a31a767831a))
+* **acas:** refuse reuse under a changed egress policy ([#1102](https://github.com/sokolaidev/maf-extensions/issues/1102)) ([264d79d](https://github.com/sokolaidev/maf-extensions/commit/264d79d529cb55c16916ac665c8bf034c3f4d871))
+* **sandbox:** refuse missing sandbox commands during acquisition ([#1089](https://github.com/sokolaidev/maf-extensions/issues/1089)) ([80f0a16](https://github.com/sokolaidev/maf-extensions/commit/80f0a16d01cd732a0f100f694efa66af893c31cd))
+
 ## [0.21.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.20.0...maf-sandbox-acas-v0.21.0) (2026-09-10)
 
 
