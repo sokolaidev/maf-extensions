@@ -154,11 +154,18 @@ class TestAllowEntryGrammar:
             "under_score.com",
             "münchen.example",
             "",
+            # 64 octets: one past what DNS encodes, so the name cannot be looked up at all.
+            "a" * 64 + ".example.com",
+            "*." + "a" * 64 + ".example.com",
         ],
     )
     def test_anything_that_is_not_one_hostname_is_refused(self, host: str):
         with pytest.raises(ValueError, match="not one hostname"):
             spec(host)
+
+    def test_a_label_at_the_dns_limit_is_still_admitted(self):
+        """The bound is 63, so refusing 64 must not cost the longest legal label."""
+        assert spec("a" * 63 + ".example.com").egress_allow == ("a" * 63 + ".example.com",)
 
     def test_a_bare_string_is_refused_rather_than_read_one_character_at_a_time(self):
         with pytest.raises(TypeError, match="not a single string"):

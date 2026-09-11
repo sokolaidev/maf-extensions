@@ -163,7 +163,9 @@ def deepagents_spec(
 
     Raises:
         TypeError: when ``egress_allow`` is a bare ``str`` rather than a sequence of hostnames.
-        ValueError: when an entry is not one hostname; the spec states that grammar.
+        ValueError: when an entry is not one hostname. That grammar is the spec's, so which
+            cores enforce it follows this package's ``maf-sandbox`` range rather than its own
+            code; on a core without it the entry reaches the backend unchecked.
     """
     # Refused here rather than left to the spec, because the tuple below is what would reach it:
     # a bare string arrives as one host per character, and a dotless one is a tuple of hostnames

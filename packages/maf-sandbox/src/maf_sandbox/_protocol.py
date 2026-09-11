@@ -211,8 +211,10 @@ class Egress(StrEnum):
     CLOSED = "closed"
 
 
-#: One label of a hostname: letters, digits and inner hyphens.
-_EGRESS_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+#: One label of a hostname: letters, digits and inner hyphens, up to the 63 octets DNS allows.
+#: Past that a name cannot be encoded at all, so admitting one would hand a backend an entry
+#: nothing can resolve — the shape this grammar exists to refuse.
+_EGRESS_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
 #: A whole allow entry — dot-separated labels, optionally behind a single ``*.`` wildcard label.
 _EGRESS_HOST = re.compile(rf"(?:\*\.)?{_EGRESS_LABEL}(?:\.{_EGRESS_LABEL})*")
 
@@ -228,9 +230,9 @@ def _validated_egress_host(entry: object) -> str:
         raise TypeError(f"egress_allow entries are hostnames or EgressRule values, got {entry!r}")
     if entry == "*":
         raise ValueError(
-            "egress_allow entry '*' allows every host, which is Egress.UNRESTRICTED written as "
-            "an allowlist and served by any backend enforcing Egress.ALLOWLIST. Name the hosts, "
-            "or ask for egress=Egress.UNRESTRICTED on a backend that declares it."
+            "egress_allow entry '*' names every host, which is Egress.UNRESTRICTED under the "
+            "allowlist's name. Name the hosts, or ask for egress=Egress.UNRESTRICTED on a "
+            "backend that declares it."
         )
     if _EGRESS_HOST.fullmatch(entry) is None:
         raise ValueError(
@@ -745,8 +747,8 @@ class SandboxSpec:
     them on is incoherent, not resolved into a surprise.  The ``CLOSED`` default keeps the
     fail-closed property: a spec that says nothing about egress gets no network.  Each entry is
     **one hostname**, optionally behind a single ``*.`` wildcard label, and anything else is
-    refused here rather than handed on — a bare ``*`` most of all, which asks for
-    :data:`Egress.UNRESTRICTED` in a shape every ``ALLOWLIST`` backend would serve.
+    refused here rather than handed on — a bare ``*`` most of all, which names every host and is
+    :data:`Egress.UNRESTRICTED` under the allowlist's name.
 
     ``work_dir`` overrides the backend's storage base for an image with a fixed layout.
     ``None`` lets the backend allocate its own base; the existing default is retained for
@@ -903,7 +905,6 @@ class SandboxSpec:
         for entry in self.egress_allow:
             if isinstance(entry, EgressRule) and entry.methods is None:
                 entry = entry.host
-            # A rule validated its own host on construction; a bare entry is checked here.
             host = entry.host if isinstance(entry, EgressRule) else _validated_egress_host(entry)
             methods = (
                 frozenset(entry.methods)
