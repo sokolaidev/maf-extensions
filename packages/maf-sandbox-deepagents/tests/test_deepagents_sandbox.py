@@ -374,6 +374,85 @@ class TestExecute:
         assert backend.disposed[-1] == KEY
         assert disposed_when_healthy_done == [len(backend.disposed) - 1]
 
+    def test_a_sibling_adapters_call_finishes_before_the_delete_this_ones_timeout_started(self):
+        """Two adapters over one router, key and kind share one instance; the lifecycle that
+        the delete waits on is the router's, so the sibling's call is counted too."""
+        disposed_when_healthy_done: list[int] = []
+
+        class Mixed(InProcessSandbox):
+            async def exec(self, command, *, working_directory, timeout):
+                self.commands.append((str(command), working_directory, timeout))
+                if "slow" in str(command):
+                    await asyncio.sleep(0.05)
+                    raise TimeoutError()
+                await asyncio.sleep(0.3)
+                disposed_when_healthy_done.append(len(backend.disposed))
+                return ExecResult(stdout="ok")
+
+        first, backend = _adapter(Mixed())
+        second = MafSandbox(first.router, KEY, first.spec)
+
+        async def scenario():
+            slow, healthy = await asyncio.gather(
+                second.aexecute("slow", timeout=5), first.aexecute("healthy", timeout=5)
+            )
+            closed = await first.aclose()
+            return slow, healthy, closed
+
+        slow, healthy, closed = asyncio.run(scenario())
+
+        assert slow.exit_code is None
+        assert healthy.output == "ok"
+        assert closed is True
+        # Only the adoption's own delete had happened when the healthy call finished; the
+        # queued delete landed after it.
+        assert disposed_when_healthy_done == [1]
+        assert len(backend.disposed) >= 2
+        assert backend.disposed[-1] == KEY
+
+    def test_a_call_still_acquiring_is_counted_before_the_delete_runs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Admission comes before the acquire, so a slow acquire is a call in flight too."""
+        disposed_when_healthy_done: list[int] = []
+
+        class Mixed(InProcessSandbox):
+            async def exec(self, command, *, working_directory, timeout):
+                self.commands.append((str(command), working_directory, timeout))
+                if "slow" in str(command):
+                    await asyncio.sleep(0.05)
+                    raise TimeoutError()
+                disposed_when_healthy_done.append(len(backend.disposed))
+                return ExecResult(stdout="ok")
+
+        adapter, backend = _adapter(Mixed())
+        acquire = adapter.router.acquire
+        delayed: list[bool] = []
+
+        async def slow_first_acquire(*args, **kwargs):
+            if not delayed:
+                delayed.append(True)
+                await asyncio.sleep(0.3)
+            return await acquire(*args, **kwargs)
+
+        async def scenario():
+            monkeypatch.setattr(adapter.router, "acquire", slow_first_acquire)
+            healthy_call = asyncio.create_task(adapter.aexecute("healthy", timeout=5))
+            await asyncio.sleep(0.05)  # the healthy call is admitted and still acquiring
+            slow = await adapter.aexecute("slow", timeout=5)
+            healthy = await healthy_call
+            closed = await adapter.aclose()
+            return slow, healthy, closed
+
+        slow, healthy, closed = asyncio.run(scenario())
+
+        assert slow.exit_code is None
+        assert healthy.output == "ok"
+        assert closed is True
+        assert disposed_when_healthy_done == [1]
+        assert len(backend.disposed) >= 2
+        assert backend.disposed[-1] == KEY
+
     def test_a_cancelled_command_disposes_the_sandbox_and_stays_cancelled(self):
         class Hanging(InProcessSandbox):
             async def exec(self, command, *, working_directory, timeout):
@@ -402,7 +481,7 @@ class TestExecute:
 
         class OnceSlow(InProcessSandbox):
             async def exec(self, command, *, working_directory, timeout):
-                if not self.commands:
+                if "sleep" in str(command):
                     self.commands.append((str(command), working_directory, timeout))
                     raise TimeoutError()
                 disposed_when_run.append(len(backend.disposed))
@@ -411,14 +490,16 @@ class TestExecute:
                 )
 
         adapter, backend = _adapter(OnceSlow())
-        dispose_kind = adapter.router.dispose_kind
+        dispose = backend.dispose
 
-        async def slow_dispose_kind(*args, **kwargs):
+        async def slow_dispose(*args, **kwargs):
             await asyncio.sleep(0.3)
-            return await dispose_kind(*args, **kwargs)
+            return await dispose(*args, **kwargs)
 
         async def scenario():
-            monkeypatch.setattr(adapter.router, "dispose_kind", slow_dispose_kind)
+            await adapter.aexecute("true")  # warm: the adoption's own delete happens here
+            disposed_when_run.clear()
+            monkeypatch.setattr(backend, "dispose", slow_dispose)
             started = time.monotonic()
             timed_out = await adapter.aexecute("sleep 999", timeout=5)
             answered_after = time.monotonic() - started

@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import concurrent.futures
-import contextlib
+import dataclasses
 import hashlib
 import json
 import logging
@@ -21,7 +21,8 @@ import posixpath
 import shlex
 import threading
 import time
-from collections.abc import AsyncGenerator, Coroutine
+import uuid
+from collections.abc import Coroutine
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -39,6 +40,7 @@ from maf_sandbox import (
     DEFAULT_TRANSFER_LIMITS,
     BoundedExec,
     Capability,
+    Cleanup,
     Egress,
     EgressRule,
     EntryKind,
@@ -226,6 +228,16 @@ def _response(result: ExecResult) -> ExecuteResponse:
     return ExecuteResponse(output=output, exit_code=result.exit_code, truncated=False)
 
 
+@dataclasses.dataclass
+class _Call:
+    """One admitted operation: its owner token, its admission, and the sandbox it acquired."""
+
+    owner: str
+    admission: Any
+    sandbox: Sandbox | None = None
+    condemned: bool = False
+
+
 class _BatchLost(Exception):
     """The sandbox went in the middle of a batch; ``response`` answers the file that took it."""
 
@@ -324,11 +336,6 @@ class MafSandbox(BaseSandbox):
         self._max_output_bytes = max_output_bytes
         #: The engine instance the last acquire handed back, and what `aclose` deletes.
         self._instance_id: str | None = None
-        #: A delete still running after a command did not finish; no operation overtakes it,
-        #: and it waits for the operations already in flight, counted here.
-        self._disposal: concurrent.futures.Future[bool] | None = None
-        self._active = 0
-        self._active_guard = threading.Lock()
         backend = router.backend_for(spec)
         identity = [
             "" if backend is None else backend.name,
@@ -366,32 +373,92 @@ class MafSandbox(BaseSandbox):
         """The router serving this sandbox."""
         return self._router
 
-    async def _acquire(self) -> Sandbox | None:
-        """The conversation's sandbox, or ``None`` with the reason in the log."""
-        await self._join_disposal()
+    async def _open(self, bound: float) -> tuple[_Call, Sandbox] | None:
+        """Admit a call and acquire its sandbox under one deadline.
+
+        Admission is the router's call lifecycle, shared by every call over this key from
+        this adapter or another: a delete one call queued runs when the last of them leaves,
+        and a new call waits for it, so nothing in flight is cut off and nothing reaches an
+        instance being deleted. ``None`` when the sandbox is unavailable, with the reason in
+        the log; ``TimeoutError`` when the deadline passed.
+        """
+        owner = uuid.uuid4().hex
+        call: _Call | None = None
         try:
-            sandbox = await self._router.acquire(self._key, self._spec)
-        except Exception:
-            logger.exception("%s: the sandbox could not be acquired", self._id)
-            return None
+            async with asyncio.timeout(bound):
+                try:
+                    admission = await self._router.enter_call(
+                        self._key, self._spec, owner=owner, timeout=bound
+                    )
+                except TimeoutError:
+                    raise
+                except Exception:
+                    logger.exception("%s: the call was not admitted", self._id)
+                    return None
+                call = _Call(owner, admission)
+                try:
+                    sandbox = await self._router.acquire(self._key, self._spec)
+                except Exception:
+                    logger.exception("%s: the sandbox could not be acquired", self._id)
+                    await self._leave(call)
+                    return None
+        except TimeoutError:
+            if call is not None:
+                await self._leave(call, deferred=True)
+            raise
         self._instance_id = sandbox.instance_id
-        return sandbox
+        call.sandbox = sandbox
+        return call, sandbox
+
+    def _condemn(self, call: _Call) -> None:
+        """Queue the instance's delete with the router, for when the last call over this key
+        leaves; the field only names what `aclose` deletes, so it forgets a condemned one."""
+        if call.condemned or call.sandbox is None:
+            return
+        call.condemned = True
+        self._router.queue_cleanup(
+            self._key,
+            self._spec,
+            admission=call.admission,
+            sandbox=call.sandbox,
+            owner=call.owner,
+            rung=Cleanup.DISPOSE,
+        )
+        if self._instance_id == call.sandbox.instance_id:
+            self._instance_id = None
+
+    async def _leave(self, call: _Call, *, deferred: bool = False) -> None:
+        """Release the admission; the last call out runs whatever delete was queued.
+
+        After an unfinished command that release goes to the process's own loop, so the
+        delete never extends the caller's wait and outlives a loop ``asyncio.run`` closes on
+        return; the next call over the key is admitted once it is done.
+        """
+        release = self._router.release_call(self._key, self._spec.kind, owner=call.owner)
+        if not (call.condemned or deferred):
+            await release
+            return
+        _SYNC.submit(release).add_done_callback(self._left)
+
+    def _left(self, future: concurrent.futures.Future[None]) -> None:
+        if future.cancelled():
+            logger.warning("%s: the release after an unfinished command was cancelled", self._id)
+        elif (failure := future.exception()) is not None:
+            logger.error(
+                "%s: the release after an unfinished command failed: %s", self._id, failure
+            )
 
     async def _run_bounded(
-        self,
-        sandbox: BoundedExec,
-        instance_id: str,
-        command: str,
-        *,
-        timeout: float,
-        max_output_bytes: int,
+        self, call: _Call, command: str, *, timeout: float, max_output_bytes: int
     ) -> ExecResult:
-        """``exec_bounded``, with the instance deleted whenever the command's end is unknown.
+        """``exec_bounded``, with the instance condemned whenever the command's end is unknown.
 
         A timeout says the wait ended, an overflow that the host stopped reading, a
         cancellation that the caller left: none says the guest process stopped, and the
         backends do not establish it either, so the instance goes before anything reuses it.
         """
+        sandbox = call.sandbox
+        assert isinstance(sandbox, BoundedExec)
         try:
             return await sandbox.exec_bounded(
                 command,
@@ -400,33 +467,8 @@ class MafSandbox(BaseSandbox):
                 max_output_bytes=max_output_bytes,
             )
         except (TimeoutError, SandboxExecOutputLimitExceeded, asyncio.CancelledError):
-            self._dispose_later(instance_id)
+            self._condemn(call)
             raise
-
-    @contextlib.asynccontextmanager
-    async def _in_flight(self) -> AsyncGenerator[None]:
-        """Count an operation, so a deferred delete waits for it; entered after the acquire,
-        which is where a pending delete is joined, so the two never wait on each other."""
-        with self._active_guard:
-            self._active += 1
-        try:
-            yield
-        finally:
-            with self._active_guard:
-                self._active -= 1
-
-    async def _quiet(self) -> None:
-        """Wait until no operation of this adapter is in flight.
-
-        The router asks callers to keep active calls off a sandbox being deleted, and Deep
-        Agents may run tool calls in parallel, so a delete one call started waits for the
-        others. Polled, because the operations may run on another loop than the delete.
-        """
-        while True:
-            with self._active_guard:
-                if self._active == 0:
-                    return
-            await asyncio.sleep(0.02)
 
     def _inside_base(self, path: str) -> bool:
         """Whether ``path`` names something under the storage base, the file plane's reach."""
@@ -449,13 +491,13 @@ class MafSandbox(BaseSandbox):
         # it, and the command gets the rest.
         started = time.monotonic()
         try:
-            async with asyncio.timeout(bound):
-                sandbox = await self._acquire()
+            opened = await self._open(bound)
         except TimeoutError:
             return ExecuteResponse(output=_TIMED_OUT.format(seconds=bound), exit_code=None)
-        if sandbox is None:
+        if opened is None:
             return ExecuteResponse(output=SANDBOX_UNAVAILABLE, exit_code=None)
-        async with self._in_flight():
+        call, sandbox = opened
+        try:
             if not isinstance(sandbox, BoundedExec):
                 logger.error("%s: the backend has no exec_bounded, so no command runs", self._id)
                 return ExecuteResponse(output=_UNBOUNDED, exit_code=None)
@@ -464,11 +506,7 @@ class MafSandbox(BaseSandbox):
                 return ExecuteResponse(output=_TIMED_OUT.format(seconds=bound), exit_code=None)
             try:
                 result = await self._run_bounded(
-                    sandbox,
-                    sandbox.instance_id,
-                    command,
-                    timeout=remaining,
-                    max_output_bytes=self._max_output_bytes,
+                    call, command, timeout=remaining, max_output_bytes=self._max_output_bytes
                 )
             except TimeoutError:
                 return ExecuteResponse(output=_TIMED_OUT.format(seconds=bound), exit_code=None)
@@ -482,6 +520,8 @@ class MafSandbox(BaseSandbox):
                 logger.exception("%s: the command's result could not be read", self._id)
                 return ExecuteResponse(output=_EXEC_FAILED, exit_code=None)
             return _response(result)
+        finally:
+            await self._leave(call)
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         return _SYNC.run(self.aexecute(command, timeout=timeout))
@@ -493,10 +533,14 @@ class MafSandbox(BaseSandbox):
         if len(files) > limits.max_files:
             refusal = _TOO_MANY_FILES.format(direction="files_in")
             return [FileUploadResponse(path=path, error=refusal) for path, _ in files]
-        sandbox = await self._acquire()
-        if sandbox is None:
+        try:
+            opened = await self._open(self._timeout)
+        except TimeoutError:
+            opened = None
+        if opened is None:
             return [FileUploadResponse(path=path, error=_UPLOAD_FAILED) for path, _ in files]
-        async with self._in_flight():
+        call, sandbox = opened
+        try:
             responses: list[FileUploadResponse] = []
             sent = 0
             for path, content in files:
@@ -511,9 +555,7 @@ class MafSandbox(BaseSandbox):
                     elif self._inside_base(path):
                         error = await self._upload_via_plane(sandbox, path, content)
                     elif isinstance(sandbox, BoundedExec):
-                        error = await self._upload_via_shell(
-                            sandbox, path, content, instance_id=sandbox.instance_id
-                        )
+                        error = await self._upload_via_shell(call, path, content)
                     else:
                         error = _NO_SHELL_ROAD
                 except _BatchLost:
@@ -522,6 +564,8 @@ class MafSandbox(BaseSandbox):
                     sent += len(content)
                 responses.append(FileUploadResponse(path=path, error=error))
             return responses
+        finally:
+            await self._leave(call)
 
     async def _upload_via_plane(self, sandbox: Sandbox, path: str, content: bytes) -> str | None:
         """Write under the base through the file plane; the error code, or ``None``."""
@@ -537,9 +581,7 @@ class MafSandbox(BaseSandbox):
             return _UPLOAD_FAILED
         return None
 
-    async def _upload_via_shell(
-        self, sandbox: BoundedExec, path: str, content: bytes, *, instance_id: str
-    ) -> str | None:
+    async def _upload_via_shell(self, call: _Call, path: str, content: bytes) -> str | None:
         """Write outside the base through the shell the agent already has.
 
         Deep Agents writes its offloaded history under ``/conversation_history`` and its
@@ -559,7 +601,7 @@ class MafSandbox(BaseSandbox):
         for command in commands:
             try:
                 result = await self._run_bounded(
-                    sandbox, instance_id, command, timeout=self._timeout, max_output_bytes=4096
+                    call, command, timeout=self._timeout, max_output_bytes=4096
                 )
             except (TimeoutError, SandboxExecOutputLimitExceeded) as unfinished:
                 # The command may still be running, so the sandbox went, and with it every
@@ -588,7 +630,9 @@ class MafSandbox(BaseSandbox):
 
     # --- files out -------------------------------------------------------------------------
 
-    async def _download(self, sandbox: Sandbox, path: str, *, room: int) -> FileDownloadResponse:
+    async def _download(
+        self, call: _Call, sandbox: Sandbox, path: str, *, room: int
+    ) -> FileDownloadResponse:
         """One file, read under the smaller of the per-file cap and ``room``, the batch's rest."""
         per_file = self._spec.files_out.max_bytes_per_file
         cap = min(per_file, room)
@@ -600,9 +644,7 @@ class MafSandbox(BaseSandbox):
         if not self._inside_base(path):
             if not isinstance(sandbox, BoundedExec):
                 return FileDownloadResponse(path=path, error=_NO_SHELL_ROAD)
-            return await self._download_via_shell(
-                sandbox, path, cap=cap, over_cap=over_cap, instance_id=sandbox.instance_id
-            )
+            return await self._download_via_shell(call, path, cap=cap, over_cap=over_cap)
         try:
             entry = await sandbox.stat_file(path, working_directory=STORAGE_BASE)
         except TimeoutError:
@@ -644,7 +686,7 @@ class MafSandbox(BaseSandbox):
         return FileDownloadResponse(path=path, content=content)
 
     async def _download_via_shell(
-        self, sandbox: BoundedExec, path: str, *, cap: int, over_cap: str, instance_id: str
+        self, call: _Call, path: str, *, cap: int, over_cap: str
     ) -> FileDownloadResponse:
         """Read outside the base through the shell, under ``cap``; see :meth:`_upload_via_shell`."""
         target = shlex.quote(path)
@@ -657,7 +699,7 @@ class MafSandbox(BaseSandbox):
         )
         try:
             probed = await self._run_bounded(
-                sandbox, instance_id, probe, timeout=self._timeout, max_output_bytes=4096
+                call, probe, timeout=self._timeout, max_output_bytes=4096
             )
         except (TimeoutError, SandboxExecOutputLimitExceeded) as unfinished:
             logger.warning(
@@ -684,11 +726,7 @@ class MafSandbox(BaseSandbox):
         try:
             # Base64 is 4/3 of the file plus line breaks; the budget bounds a file that grew.
             read = await self._run_bounded(
-                sandbox,
-                instance_id,
-                f"base64 < {target}",
-                timeout=self._timeout,
-                max_output_bytes=cap * 2 + 4096,
+                call, f"base64 < {target}", timeout=self._timeout, max_output_bytes=cap * 2 + 4096
             )
         except SandboxExecOutputLimitExceeded:
             # The file outgrew its cap mid-read, and the read may still be running: this file
@@ -714,15 +752,19 @@ class MafSandbox(BaseSandbox):
         if len(paths) > limits.max_files:
             refusal = _TOO_MANY_FILES.format(direction="files_out")
             return [FileDownloadResponse(path=path, error=refusal) for path in paths]
-        sandbox = await self._acquire()
-        if sandbox is None:
+        try:
+            opened = await self._open(self._timeout)
+        except TimeoutError:
+            opened = None
+        if opened is None:
             return [FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED) for path in paths]
-        async with self._in_flight():
+        call, sandbox = opened
+        try:
             responses: list[FileDownloadResponse] = []
             room = limits.max_total_bytes
             for path in paths:
                 try:
-                    response = await self._download(sandbox, path, room=room)
+                    response = await self._download(call, sandbox, path, room=room)
                 except _BatchLost as lost:
                     responses.append(
                         lost.response or FileDownloadResponse(path=path, error=_DOWNLOAD_BATCH_LOST)
@@ -739,6 +781,8 @@ class MafSandbox(BaseSandbox):
                     room -= len(response.content)
                 responses.append(response)
             return responses
+        finally:
+            await self._leave(call)
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         return _SYNC.run(self.adownload_files(paths))
@@ -748,66 +792,41 @@ class MafSandbox(BaseSandbox):
     async def aclose(self) -> bool:
         """Delete this conversation's sandbox; ``False`` when the delete did not land.
 
-        Deletes the one instance this adapter acquired, so a packaged kind serving the same
-        conversation, or another adapter over the same key with a different backend or egress,
-        keeps its own; before any acquire there is nothing to delete. The router's
-        ``dispose_scope`` on the host's conversation-delete path is the backstop for a sandbox
-        no ``aclose`` reached.
+        Admitted exclusively first, so every call over this key, from this adapter or another,
+        has left and a delete one of them queued has run. Then deletes the one instance this
+        adapter acquired, so a packaged kind serving the same conversation, or another adapter
+        over the same key with a different backend or egress, keeps its own; before any
+        acquire there is nothing of this adapter's to delete. An instance a sibling's queued
+        delete already took is named again here, which the protocol makes a no-op. The
+        router's ``dispose_scope`` on the host's conversation-delete path is the backstop for
+        a sandbox no ``aclose`` reached.
         """
-        await self._join_disposal()
-        await self._quiet()
-        instance_id = self._instance_id
-        if instance_id is None:
-            return True
-        return await self._dispose(instance_id)
-
-    def _dispose_later(self, instance_id: str) -> None:
-        """Delete ``instance_id`` after the answer, so cleanup never extends the caller's wait.
-
-        The instance is the one the operation itself acquired, never the field, which a
-        concurrent acquire may have moved on. The delete runs on the process's own loop, so it
-        outlives the caller's, which ``asyncio.run`` closes on return, and is joinable from any
-        loop; the next operation joins it before it acquires, so nothing reaches the instance
-        while it is still being deleted, and the delete waits for the operations already in
-        flight, so a parallel call is never cut off underneath.
-        """
-        future = _SYNC.submit(self._dispose_after_quiet(instance_id))
-        future.add_done_callback(self._disposal_done)
-        self._disposal = future
-
-    async def _dispose_after_quiet(self, instance_id: str) -> bool:
-        await self._quiet()
-        return await self._dispose(instance_id)
-
-    def _disposal_done(self, future: concurrent.futures.Future[bool]) -> None:
-        if future.cancelled():
-            logger.warning("%s: the delete after an unfinished command was cancelled", self._id)
-        elif (failure := future.exception()) is not None:
-            logger.error("%s: the delete after an unfinished command failed: %s", self._id, failure)
-        elif not future.result():
-            logger.warning("%s: the delete after an unfinished command did not land", self._id)
-
-    async def _join_disposal(self) -> None:
-        pending = self._disposal
-        if pending is not None and not pending.done():
-            try:
-                # Shielded: a caller's deadline may cancel the wait, never the delete.
-                await asyncio.shield(asyncio.wrap_future(pending))
-            except Exception:
-                pass  # logged by `_disposal_done`
-
-    async def _dispose(self, instance_id: str) -> bool:
-        disposed = await self._router.dispose_kind(
-            self._key,
-            self._spec.kind,
-            instance_id=instance_id,
-            timeout=self._router.reclaim.timeout,
-        )
-        # Forgotten only once the delete landed, so a retry reaches the same instance; kept as
-        # is if an acquire replaced it meanwhile.
-        if disposed and self._instance_id == instance_id:
-            self._instance_id = None
-        return disposed
+        owner = uuid.uuid4().hex
+        timeout = self._router.reclaim.timeout
+        try:
+            await self._router.enter_call(
+                self._key, self._spec, owner=owner, exclusive=True, timeout=timeout
+            )
+        except TimeoutError:
+            logger.warning("%s: close timed out waiting for the calls in flight", self._id)
+            return False
+        except Exception:
+            logger.exception("%s: close was not admitted", self._id)
+            return False
+        try:
+            instance_id = self._instance_id
+            if instance_id is None:
+                return True
+            disposed = await self._router.dispose_kind(
+                self._key, self._spec.kind, instance_id=instance_id, timeout=timeout
+            )
+            # Forgotten only once the delete landed, so a retry reaches the same instance;
+            # kept as is if an acquire replaced it meanwhile.
+            if disposed and self._instance_id == instance_id:
+                self._instance_id = None
+            return disposed
+        finally:
+            await self._router.release_call(self._key, self._spec.kind, owner=owner)
 
     def close(self) -> bool:
         """Synchronous :meth:`aclose`."""
