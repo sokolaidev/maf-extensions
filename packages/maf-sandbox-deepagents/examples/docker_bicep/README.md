@@ -1,4 +1,6 @@
-# 17 — validate a Bicep file from a Deep Agents agent, in a maf-sandbox container
+# Validate a Bicep file from a Deep Agents agent, in a maf-sandbox container
+
+> Held here until `maf-sandbox-deepagents` is published: the repository's samples install from PyPI, and this one cannot yet. It is written as a sample and moves to `samples/` unchanged when the package is on the index.
 
 Sample 05 from the other side of the seam. The agent is [LangChain's Deep Agents](https://docs.langchain.com/oss/python/deepagents/sandboxes), not Microsoft Agent Framework; its sandbox is Deep Agents' own `execute` tool; and what sits behind that tool is a `maf_sandbox` router with the same Docker backend and the same image sample 05 runs.
 
@@ -21,7 +23,7 @@ SARIF rather than the plain format for a measured reason: with an error in the f
 ## Prerequisites
 
 - **A Docker-compatible engine, reachable through the `docker` client.** Same as sample 05.
-- **The sandbox image**, built from [`images/bicep-sandbox`](../../images/bicep-sandbox/), from the repository root:
+- **The sandbox image**, built from [`images/bicep-sandbox`](../../../../images/bicep-sandbox/), from the repository root:
 
   ```bash
   docker build -t bicep-sandbox:local images/bicep-sandbox
@@ -33,16 +35,10 @@ SARIF rather than the plain format for a measured reason: with an error in the f
 
 ## Install
 
-Dependencies are declared in `agent.py` itself, in a [PEP 723](https://peps.python.org/pep-0723/) block, so [uv](https://docs.astral.sh/uv/) builds a throwaway environment for the run:
+Dependencies are declared in `agent.py` itself, in a [PEP 723](https://peps.python.org/pep-0723/) block, which is what `uv run agent.py` will resolve once the package is published. Until then, run the file with the workspace's own interpreter from this directory, which ignores the block and uses the checked-out packages:
 
 ```bash
-uv run agent.py
-```
-
-`maf-sandbox-deepagents` is not published yet, so that command cannot resolve the block until it is. Until then run the file with the workspace's own interpreter from this directory, which ignores the block and uses the checked-out packages:
-
-```bash
-uv run --project ../.. python agent.py
+uv run --project ../../../.. python agent.py
 ```
 
 ## Environment

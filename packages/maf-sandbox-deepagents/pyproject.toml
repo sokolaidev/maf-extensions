@@ -59,6 +59,9 @@ extend-select = ["I", "UP", "D100", "D101", "D103", "D104", "E501", "W505", "TD"
 # ruff resolves [tool.ruff] per file by the NEAREST ancestor pyproject.toml that has one, so
 # this package carries its own copy rather than inheriting one from the workspace root.
 "tests/**" = ["D101", "D103", "E501", "W505"]
+# `examples/` holds a sample written to the root's rules, parked here until this package is on the
+# index; it keeps those rules so it moves to `samples/` unchanged.
+"examples/**" = ["E501", "W505", "I001"]
 
 [tool.ruff.lint.pycodestyle]
 max-doc-length = 100

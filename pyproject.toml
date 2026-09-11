@@ -35,7 +35,8 @@ dev = [
     # Wide where the tooling bands are narrow, and deliberately: a sample declares it unpinned,
     # so a check held to an older minor would pass against a version no live run uses.
     "agent-framework-openai>=1.13.0,<2",
-    # The one sample on a LangChain model imports this, for the same reason as the line above.
+    # The Deep Agents example parked under its package imports this when run from the workspace,
+    # for the same reason as the line above; it becomes a sample once that package is published.
     "langchain-openai>=1,<2",
     # `maf-sandbox-otel` ships against the OpenTelemetry *API* alone, so its own tests are the
     # only thing here that needs an SDK: the in-memory exporters are what let a test read back
