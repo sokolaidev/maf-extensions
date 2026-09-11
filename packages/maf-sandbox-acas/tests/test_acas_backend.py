@@ -2264,7 +2264,7 @@ class TestDisposeScope:
         """Teardown for one key is not serialized, so the purge reconciles against the live
         record: it must not index a prefix a `dispose` removed, nor drop an id it added."""
         release = asyncio.Event()
-        prefix = ("scope-a", "thread-1", "devops-engineer")
+        prefix = ("scope-a", "thread-1", "devops-engineer", "")
         backend = _backend_with(_FakeGroupClient())
         backend._undeleted[prefix] = {"sbx-1"}
         original = backend._delete
@@ -3985,7 +3985,7 @@ class TestConcurrentAcquire:
 
     def test_cancelling_a_waiter_preserves_exclusion_for_other_waiters(self):
         backend = _backend_with(_SlowCreateGroupClient())
-        identity = ("s", "t", "a", "kind")
+        identity = ("s", "t", "a", "", "kind")
         entered = []
 
         async def wait_for_owner(name):
@@ -4012,7 +4012,7 @@ class TestConcurrentAcquire:
     @pytest.mark.parametrize("cancel_owner", [False, True])
     def test_an_interrupted_owner_releases_waiters(self, cancel_owner):
         backend = _backend_with(_SlowCreateGroupClient())
-        identity = ("s", "t", "a", "kind")
+        identity = ("s", "t", "a", "", "kind")
 
         async def scenario():
             entered = asyncio.Event()
