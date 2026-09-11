@@ -48,7 +48,9 @@ def test_validation_leaves_nothing_behind_and_reuses_the_sandbox(case: str, monk
     async def scenario():
         egress = Egress.ALLOWLIST if case == "modules" else Egress.CLOSED
         backend = DockerSandboxBackend(DockerSandboxConfig(egress_proxy_image=_PROXY))
-        router = SandboxRouter([backend], min_isolation=backend.isolation)
+        router = SandboxRouter(
+            [backend], min_isolation=backend.isolation, min_cleanup=Cleanup.RECLAIM
+        )
         spec = bicep_sandbox_spec(image=_IMAGE, egress=egress)
         key = SandboxKey(
             scope="bicep-confinement-" + uuid.uuid4().hex, thread_id="test", agent_dir="test"
