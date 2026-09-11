@@ -1393,6 +1393,26 @@ class TestWhichPrincipalACommandCarries:
         with pytest.raises(OSError, match=r"Permission denied.*as root: rm: read-only file"):
             asyncio.run(sandbox.reclaim(f"{_WORK}/x", working_directory=_WORK, timeout=30))
 
+    def test_failed_removal_preserves_both_attempts_diagnostic_bytes(self):
+        root = b"root: \xff\xe2\x82\n"
+        guest = b"guest: \xfe\x00\n"
+        differ = {
+            ("exec", "--user", "0"): _DockerResult(1, b"", root.decode("utf-8", "replace"), root),
+            ("exec", "-w"): _DockerResult(2, b"", guest.decode("utf-8", "replace"), guest),
+        }
+        sandbox, _fake = self._sandbox(differ, capabilities_dropped=True)
+        result = asyncio.run(
+            sandbox._removal(
+                ["rm", "-rf", "--", f"{_WORK}/x"],
+                working_directory="/",
+                timeout=30,
+                raise_authority=True,
+            )
+        )
+        assert result.exit_code == 2
+        assert result.stderr_bytes == guest.strip() + b" (as root: " + root.strip() + b")"
+        assert result.stderr == result.stderr_bytes.decode("utf-8", "replace")
+
     def test_a_refused_remove_is_retried_the_same_way(self):
         refused = {("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied")}
         sandbox, fake = self._sandbox(refused, capabilities_dropped=True)

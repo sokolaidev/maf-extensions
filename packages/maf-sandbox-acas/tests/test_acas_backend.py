@@ -2427,6 +2427,14 @@ class TestExecArgv:
     actually sent to the SDK recovering the exact original argv is that proof.
     """
 
+    def _command_tokens(self, script):
+        import shlex
+
+        before, start, rest = script.partition('(umask "$old_umask"; exec ')
+        command, end, after = rest.rpartition(') > "$d/outpipe" 2> "$d/errpipe"\nrc=$?\n')
+        assert before and start and end and after
+        return shlex.split(command)
+
     class _RecordingClient:
         sandbox_id = "recording"
 
@@ -2459,7 +2467,7 @@ class TestExecArgv:
                 "echo hi", working_directory="/maf-sandbox/work", timeout=5
             )
         )
-        assert "exec sh -c 'echo hi'" in client.calls[0]
+        assert self._command_tokens(client.calls[0]) == ["sh", "-c", "echo hi"]
         assert len(client.calls) == 2
 
     def test_a_sequence_is_quoted_with_shlex_join(self):
@@ -2468,16 +2476,14 @@ class TestExecArgv:
         from maf_sandbox_acas._backend import _AcasSandbox
 
         client = self._RecordingClient()
-        argv = ["echo", "a; rm -rf /", "$(id)", "`id`", "it's mine", 'say "hi"']
+        argv = ["echo", "a; rm -rf /", "$(id)", "`id`", "it's mine", 'say "hi"', "one\ntwo"]
         asyncio.run(
             _AcasSandbox(client, 30.0).exec(argv, working_directory="/maf-sandbox/work", timeout=5)
         )
 
-        assert "exec sh -c " + shlex.quote(shlex.join(argv)) in client.calls[0]
-        # Round-tripping through shlex.split recovers the exact argv — proof the quoted
-        # form cannot be re-interpreted as more than one token per element, and cannot
-        # break out into a second shell command.
-        assert "exec sh -c " + shlex.quote(shlex.join(argv)) in client.calls[0]
+        tokens = self._command_tokens(client.calls[0])
+        assert tokens == ["sh", "-c", shlex.join(argv)]
+        assert shlex.split(tokens[2]) == argv
 
     def test_a_bare_space_separated_argv_stays_one_command(self):
         import shlex
@@ -2496,7 +2502,9 @@ class TestExecArgv:
             _AcasSandbox(client, 30.0).exec(argv, working_directory="/maf-sandbox/work", timeout=5)
         )
 
-        assert "exec sh -c " + shlex.quote(shlex.join(argv)) in client.calls[0]
+        tokens = self._command_tokens(client.calls[0])
+        assert tokens == ["sh", "-c", shlex.join(argv)]
+        assert shlex.split(tokens[2]) == argv
 
 
 class TestNarrowedDisposal:

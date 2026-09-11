@@ -1254,8 +1254,8 @@ FILES_IN_PROBES: tuple[Probe, ...] = (
             "text-shaped hop in the transport corrupts them in ways a caller cannot detect: "
             "half a PNG returned as success is indistinguishable from a whole one. Asserted "
             "over arbitrary bytes, through the result's authoritative `stdout_bytes` field; "
-            "whether exec must carry non-UTF-8 bytes losslessly is an unstated contract, "
-            "proposed separately rather than guessed here."
+            "this probe covers file transfer, while exec-byte-fidelity checks both output "
+            "streams independently of FILES_IN."
         ),
         requires=frozenset({Capability.FILES_IN}),
         run=_probe_bytes_survive_the_round_trip,

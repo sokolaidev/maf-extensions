@@ -892,7 +892,10 @@ class _DockerSandbox:
             return retried
         return replace(
             retried,
-            stderr_bytes=f"{retried.stderr.strip()} (as root: {removed.stderr.strip()})".encode(),
+            stderr_bytes=retried.stderr_bytes.strip()
+            + b" (as root: "
+            + removed.stderr_bytes.strip()
+            + b")",
         )
 
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:

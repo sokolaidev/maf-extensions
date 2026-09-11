@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from azure.core.rest import HttpRequest
-from maf_sandbox import Capability, SandboxKey, SandboxSpec
+from maf_sandbox import Capability, ExecResult, SandboxKey, SandboxSpec
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 
 _BEGIN = "maf-exec-bytes-v1:begin"
@@ -60,7 +60,13 @@ exit "$rc"
 def decode_envelope(stdout: str, stderr: str, exit_code: int) -> Captured:
     """Reject incomplete framing and invalid base64 rather than reporting partial success."""
     lines = stdout.splitlines()
-    if stderr or len(lines) < 5 or lines[0] != _BEGIN or lines[-1] != _END:
+    if (
+        stderr
+        or len(lines) < 5
+        or lines[0] != _BEGIN
+        or lines[-1] != _END
+        or not stdout.endswith(_END + "\n")
+    ):
         raise ValueError("missing envelope or unexpected transport diagnostics")
     status = int(lines[1])
     if status != exit_code or not 0 <= status <= 255:
@@ -115,6 +121,37 @@ def _summary(actual: bytes, expected: bytes) -> dict[str, Any]:
         "sha256": hashlib.sha256(actual).hexdigest(),
         "exact": actual == expected,
     }
+
+
+def _case_result(result: ExecResult, out: bytes, err: bytes, status: int) -> dict[str, Any]:
+    """Record invalid envelopes as failed measurements, retaining available diagnostics."""
+    try:
+        captured = decode_envelope(result.stdout, result.stderr, result.exit_code)
+        return {
+            "stdout": _summary(captured.stdout, out),
+            "stderr": _summary(captured.stderr, err),
+            "exit_code": captured.exit_code,
+            "passed": captured.stdout == out
+            and captured.stderr == err
+            and captured.exit_code == status,
+        }
+    except (ValueError, UnicodeError) as exc:
+        lines = result.stdout.splitlines()
+        return {
+            "passed": False,
+            "error": type(exc).__name__,
+            "received_text_characters": len(result.stdout),
+            "transport_stderr": result.stderr,
+            "framed_exit_code": lines[1] if len(lines) > 1 and lines[0] == _BEGIN else None,
+            "exit_code": result.exit_code,
+        }
+
+
+def _count_capture_directories(result: ExecResult) -> int:
+    """Count scratch only after a successful, diagnostic-free inventory."""
+    if result.exit_code != 0 or result.stderr:
+        raise ValueError("capture directory inventory failed or returned diagnostics")
+    return len(result.stdout.splitlines())
 
 
 async def measure(output: Path) -> dict[str, Any]:
@@ -175,27 +212,7 @@ async def measure(output: Path) -> dict[str, Any]:
                 wrap_command(command), working_directory=work, timeout=60
             )
             case: dict[str, Any] = {"name": name, "seconds": round(time.monotonic() - started, 3)}
-            try:
-                captured = decode_envelope(result.stdout, result.stderr, result.exit_code)
-                case.update(
-                    stdout=_summary(captured.stdout, out),
-                    stderr=_summary(captured.stderr, err),
-                    exit_code=captured.exit_code,
-                    passed=captured.stdout == out
-                    and captured.stderr == err
-                    and captured.exit_code == status,
-                )
-            except (ValueError, UnicodeError) as exc:
-                case.update(
-                    passed=False,
-                    error=type(exc).__name__,
-                    received_text_characters=len(result.stdout),
-                    transport_stderr=result.stderr,
-                    framed_exit_code=result.stdout.splitlines()[1]
-                    if result.stdout.startswith(_BEGIN + "\n")
-                    else None,
-                    exit_code=result.exit_code,
-                )
+            case.update(_case_result(result, out, err, status))
             report["cases"].append(case)
             print(name + ": " + ("exact" if case["passed"] else "FAILED"), flush=True)
             save()
@@ -370,7 +387,7 @@ async def measure(output: Path) -> dict[str, Any]:
             working_directory=work,
             timeout=20,
         )
-        report["capture_directories_remaining"] = len(leftovers.stdout.splitlines())
+        report["capture_directories_remaining"] = _count_capture_directories(leftovers)
     finally:
         try:
             print("Disposing the probe scope", flush=True)

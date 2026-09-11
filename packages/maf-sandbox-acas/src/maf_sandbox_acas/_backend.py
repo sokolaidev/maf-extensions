@@ -569,6 +569,7 @@ class _AcasSandbox:
                 poller = await self._sc.begin_delete()
                 await poller.result()
         except ResourceNotFoundError:
+            # An already-absent sandbox satisfies disposal.
             pass
 
     async def probe_command(

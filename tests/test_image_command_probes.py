@@ -18,8 +18,8 @@ def test_only_requested_commands_are_probed_and_success_is_reused(backend):
         seen = []
         verified = set()
 
-        async def run(argv, as_root, _owns_capture=False):
-            seen.append((argv, as_root))
+        async def run(argv, as_root, owns_capture=False):
+            seen.append((argv, as_root, owns_capture))
             return 0
 
         await check(SandboxSpec(kind="probe", requires=frozenset()), verified, run)
@@ -27,10 +27,11 @@ def test_only_requested_commands_are_probed_and_success_is_reused(backend):
         spec = SandboxSpec(kind="probe", requires=frozenset({Capability.EXEC}))
         await check(spec, verified, run)
         await check(spec, verified, run)
-        assert seen[0] == (("sh", "-c", "exit 0"), False)
+        assert seen[0] == (("sh", "-c", "exit 0"), False, False)
         assert len(seen) == (2 if backend == "acas" else 1)
         if backend == "acas":
             assert "mkfifo" in seen[1][0][2] and "head -c" in seen[1][0][2]
+            assert seen[1][1:] == (False, True)
 
     asyncio.run(scenario())
 
@@ -143,8 +144,8 @@ def test_host_tools_batches_required_utilities_and_keeps_optional_runtime_choice
         seen = []
         verified = set()
 
-        async def run(argv, as_root, _owns_capture=False):
-            seen.append(argv)
+        async def run(argv, as_root, owns_capture=False):
+            seen.append((argv, owns_capture))
             assert not as_root
             return status
 
@@ -162,8 +163,11 @@ def test_host_tools_batches_required_utilities_and_keeps_optional_runtime_choice
                 await check(spec, verified, run)
             assert not verified
         assert len(seen) == (2 if backend == "acas" and status == 0 else 1)
-        assert seen[0][:2] == ("sh", "-c")
-        script = seen[0][2]
+        assert seen[0][1] is False
+        if backend == "acas" and status == 0:
+            assert seen[1][1] is True
+        assert seen[0][0][:2] == ("sh", "-c")
+        script = seen[0][0][2]
         assert all(command in script for command in ("mkdir", "mv", "nohup"))
         assert "setsid" not in script and "python" not in script
 

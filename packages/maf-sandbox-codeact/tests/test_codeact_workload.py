@@ -1213,14 +1213,14 @@ class TestAWithheldStreamIsNeverRead:
         assert out == "The program exited with status 0."
 
     def test_binary_output_renders_as_safe_model_text(self):
-        import httpx
+        import json
 
         from maf_sandbox_codeact._tool import _format_result
 
         raw = bytes(range(256)) + b"\xe2\x82"
         rendered = _format_result(ExecResult(stdout_bytes=raw, stderr_bytes=raw[::-1]))
-        request = httpx.Request("POST", "https://example.com", json={"content": rendered})
-        assert request.content.decode("utf-8")
+        payload = json.dumps({"content": rendered}, ensure_ascii=False).encode("utf-8")
+        assert json.loads(payload) == {"content": rendered}
 
 
 class TestWithholdingIsRefusedWhereItCouldNotBeHonest:
