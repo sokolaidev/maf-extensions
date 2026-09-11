@@ -35,6 +35,8 @@ EXEC and HOST_TOOLS acquisition requires a compatible `sh`, `mkdir`, `mkfifo`, `
 
 Timeout, cancellation, overflow, failed readers, malformed framing, interrupted retrieval or failed cleanup invalidates and attempts to delete the entire sandbox, including concurrent commands and its filesystem state. A successful result cannot be returned from an instance invalidated by another call. Deletion has an additional allowance of `min(30, read_timeout_seconds)` seconds. If deletion fails, the original exception carries a note, the backend retains the invalidated entry for disposal, and reacquisition must successfully retry deletion before creating a replacement. These failures do not return partial `ExecResult` streams.
 
+Pending ACAS disposals must complete before acquisition for the affected kind. A key-wide discovery without a known kind blocks every kind for that key. An instance discovered only by a scope purge blocks acquisition across that scope and thread until its deletion succeeds; other scopes and threads remain available. Discovered IDs are retained even when a later listing fails or is cancelled. Acquisition retries those known IDs without requiring another successful listing.
+
 ## Sample 09 and release migration
 
 Sample 09 captures subprocess pipes as bytes, then deliberately translates host-root path spellings back to its guest work directory. With the new core it preserves all bytes outside those substitutions. It is a path-translating demonstration, so its result is not a byte-identical copy of a process stream containing one of those host paths. Its published older-core compatibility branch returns UTF-8 display text until the automated samples floor update follows the dependent releases.

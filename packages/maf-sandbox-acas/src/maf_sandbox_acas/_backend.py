@@ -402,9 +402,6 @@ class _Held:
     probed: bool = False
     commands: set[str] = field(default_factory=set[str])
     unusable: bool = False
-    on_invalidate: Callable[[_Held], None] | None = field(
-        default=None, kw_only=True, repr=False, compare=False
-    )
     invalidation: Future[None] | None = field(default=None, init=False, repr=False, compare=False)
     invalidation_guard: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False, compare=False
@@ -571,10 +568,7 @@ class _AcasSandbox:
             completion = self._held.invalidation
             owns_cleanup = completion is None
             if completion is None:
-                if self._held.on_invalidate is None:
-                    self._held.unusable = True
-                else:
-                    self._held.on_invalidate(self._held)
+                self._held.unusable = True
                 completion = self._held.invalidation = Future()
 
         if owns_cleanup:
@@ -1010,7 +1004,7 @@ class AcasSandboxBackend:
         #: never served. An entry lives only while its delete keeps failing.
         self._undeleted: dict[tuple[str, str, str], set[str]] = {}
         self._undeleted_kinds: dict[tuple[str, str, str], dict[str, str]] = {}
-        self._invalidated_ids: set[str] = set()
+        self._scope_disposals: dict[tuple[str, str], dict[str, object]] = {}
         self._disposal_tokens: dict[tuple[str, str, str], dict[str, object]] = {}
         self._disposal_guard = threading.Lock()
         # Group clients cached per event loop. An azure-core async client binds its transport
@@ -1149,14 +1143,27 @@ class AcasSandboxBackend:
             )
         gc = self._group_client()
         prefix = registry_key[:3]
+        scope_key = prefix[:2]
         with self._disposal_guard:
+            scope_attempted = self._retain_scope_disposals(
+                scope_key, list(self._scope_disposals.get(scope_key, {}))
+            )
+        for name in scope_attempted:
+            deletion = await self._delete(gc, name)
+            with self._disposal_guard:
+                self._finish_scope_disposals(
+                    scope_key, {name: scope_attempted[name]}, [name] if deletion.failure else []
+                )
+            if deletion.failure is not None:
+                raise SandboxOutputError("ACAS could not dispose a retained scope sandbox")
+        with self._disposal_guard:
+            attributed = self._undeleted_kinds.get(prefix, {})
             retained = [
                 name
                 for name in self._undeleted.get(prefix, ())
-                if self._undeleted_kinds.get(prefix, {}).get(name) == spec.kind
-                and name in self._invalidated_ids
+                if attributed.get(name) in (None, spec.kind)
             ]
-            kinds = dict.fromkeys(retained, spec.kind)
+            kinds = {name: attributed[name] for name in retained if name in attributed}
             attempted = self._retain_disposals(prefix, retained, kinds)
         for name in retained:
             deletion = await self._delete(gc, name)
@@ -1168,6 +1175,12 @@ class AcasSandboxBackend:
                 raise SandboxOutputError(
                     "ACAS could not dispose a retained sandbox; retry disposal before reacquiring"
                 )
+        with self._disposal_guard:
+            if self._scope_disposals.get(scope_key) or any(
+                self._undeleted_kinds.get(prefix, {}).get(name) in (None, spec.kind)
+                for name in self._undeleted.get(prefix, ())
+            ):
+                raise SandboxOutputError("ACAS retained disposal is still pending")
         if held is not None and held.unusable:
             deletion = await self._delete(gc, held.sandbox_id)
             if deletion.failure is not None:
@@ -1252,9 +1265,7 @@ class AcasSandboxBackend:
             key.agent_dir,
         )
         # Register immediately, so the sandbox is reachable by purge even if configure fails.
-        held = self._registry[registry_key] = _Held(
-            sc.sandbox_id, egress=egress, work_dir=work_dir, on_invalidate=self._mark_invalidated
-        )
+        held = self._registry[registry_key] = _Held(sc.sandbox_id, egress=egress, work_dir=work_dir)
         try:
             await self._configure(sc)
         except Exception as exc:  # noqa: BLE001
@@ -1279,8 +1290,6 @@ class AcasSandboxBackend:
             await self._probe_commands(spec, created, held)
         except SandboxCapabilityNotSupported:
             with self._disposal_guard:
-                if held.unusable:
-                    self._invalidated_ids.add(held.sandbox_id)
                 self._registry.pop(registry_key, None)
             await self._release_the_refused(gc, key, sc.sandbox_id, kind=spec.kind)
             raise
@@ -1300,12 +1309,26 @@ class AcasSandboxBackend:
 
         await probe_commands(spec, held.commands, run)
 
-    def _mark_invalidated(self, held: _Held) -> None:
-        """Publish invalidation atomically with removal from the registry."""
-        with self._disposal_guard:
-            held.unusable = True
-            if any(held.sandbox_id in names for names in self._undeleted.values()):
-                self._invalidated_ids.add(held.sandbox_id)
+    def _retain_scope_disposals(
+        self, scope_key: tuple[str, str], names: Sequence[str]
+    ) -> dict[str, object]:
+        """Reserve scope-only retry records while holding the disposal guard."""
+        tokens = {name: object() for name in names}
+        if tokens:
+            self._scope_disposals.setdefault(scope_key, {}).update(tokens)
+        return tokens
+
+    def _finish_scope_disposals(
+        self, scope_key: tuple[str, str], attempted: Mapping[str, object], failed: Sequence[str]
+    ) -> None:
+        """Reconcile only this attempt's scope records under the disposal guard."""
+        self._retain_scope_disposals(scope_key, failed)
+        tokens = self._scope_disposals.get(scope_key, {})
+        for name, token in attempted.items():
+            if tokens.get(name) is token:
+                tokens.pop(name)
+        if not tokens:
+            self._scope_disposals.pop(scope_key, None)
 
     def _retain_disposals(
         self, prefix: tuple[str, str, str], names: Sequence[str], kinds: Mapping[str, str]
@@ -1336,7 +1359,6 @@ class AcasSandboxBackend:
                 tokens.pop(name)
                 names.discard(name)
                 attributed.pop(name, None)
-                self._invalidated_ids.discard(name)
         if not tokens:
             self._disposal_tokens.pop(prefix, None)
         if not names:
@@ -1528,8 +1550,6 @@ class AcasSandboxBackend:
             remembered: list[str] = []
             for entry in mine:
                 held = self._registry.pop(entry)
-                if held.unusable:
-                    self._invalidated_ids.add(held.sandbox_id)
                 remembered.append(held.sandbox_id)
                 attributed[held.sandbox_id] = entry[3]
             retained = sorted(
@@ -1570,6 +1590,15 @@ class AcasSandboxBackend:
                     raise ValueError("the service returned no sandbox ID")
                 if instance_id is None or sandbox_id == instance_id:
                     listed.append(sandbox_id)
+                    if sandbox_id not in wanted:
+                        wanted.append(sandbox_id)
+                    with self._disposal_guard:
+                        if kind is not None:
+                            attempted_kinds[sandbox_id] = kind
+                        if sandbox_id not in attempted:
+                            attempted.update(
+                                self._retain_disposals(prefix, [sandbox_id], attempted_kinds)
+                            )
         except Exception as exc:  # noqa: BLE001 - a failed listing is never an empty inventory
             logger.warning(
                 "acas backend: could not discover disposal targets: %s", error_detail(exc)
@@ -1638,6 +1667,7 @@ class AcasSandboxBackend:
         Labels reach sandboxes created elsewhere; registry and retry records cover failed
         listings, which are still reported. Registry entries are dropped before deletion.
         """
+        scope_key = (scope, thread_id)
         with self._disposal_guard:
             known = [
                 (k, entry.sandbox_id)
@@ -1645,9 +1675,7 @@ class AcasSandboxBackend:
                 if k[0] == scope and k[1] == thread_id
             ]
             for k, _ in known:
-                held = self._registry.pop(k, None)
-                if held is not None and held.unusable:
-                    self._invalidated_ids.add(held.sandbox_id)
+                self._registry.pop(k, None)
             for entry, sandbox_id in known:
                 self._undeleted_kinds.setdefault(entry[:3], {})[sandbox_id] = entry[3]
                 self._undeleted.setdefault(entry[:3], set()).add(sandbox_id)
@@ -1669,6 +1697,9 @@ class AcasSandboxBackend:
                 prefix: self._retain_disposals(prefix, list(names), attempted_kinds[prefix])
                 for prefix, names in retained.items()
             }
+            scope_attempted = self._retain_scope_disposals(
+                scope_key, list(self._scope_disposals.get(scope_key, {}))
+            )
         try:
             gc = self._group_client()
         except Exception as exc:  # noqa: BLE001 - purge must never fail
@@ -1683,7 +1714,15 @@ class AcasSandboxBackend:
         undisposed: list[DisposalFailure] = []
         ids = {sandbox_id for _, sandbox_id in known}
         ids.update(sandbox_id for names in retained.values() for sandbox_id in names)
-        listed = await self._list_thread_sandbox_ids(gc, scope, thread_id)
+        ids.update(scope_attempted)
+
+        def remember(sandbox_id: str) -> None:
+            if sandbox_id not in ids:
+                with self._disposal_guard:
+                    scope_attempted.update(self._retain_scope_disposals(scope_key, [sandbox_id]))
+                ids.add(sandbox_id)
+
+        listed = await self._list_thread_sandbox_ids(gc, scope, thread_id, on_discovered=remember)
         if listed is None:
             undisposed.append(
                 DisposalFailure(
@@ -1711,6 +1750,11 @@ class AcasSandboxBackend:
                 self._finish_disposals(
                     prefix, tokens, list(tokens.keys() & undeleted), attempted_kinds[prefix]
                 )
+            self._finish_scope_disposals(
+                scope_key, scope_attempted, list(scope_attempted.keys() & undeleted)
+            )
+            if self._scope_disposals.get(scope_key) and not undisposed:
+                undisposed.append(DisposalFailure("unknown", "scope disposal is still pending"))
         return ScopePurge(count, fold_disposal_failures(undisposed))
 
     # -- internals ----------------------------------------------------------------
@@ -1786,7 +1830,12 @@ class AcasSandboxBackend:
             )
 
     async def _list_thread_sandbox_ids(
-        self, group_client: Any, scope: str, thread_id: str
+        self,
+        group_client: Any,
+        scope: str,
+        thread_id: str,
+        *,
+        on_discovered: Callable[[str], None] | None = None,
     ) -> list[str] | None:
         """Sandbox ids labelled ``(scope, thread_id)``, or ``None`` when the query failed.
 
@@ -1807,8 +1856,11 @@ class AcasSandboxBackend:
                 }
             ):
                 sandbox_id = getattr(sandbox, "id", None)
-                if sandbox_id:
-                    ids.append(sandbox_id)
+                if not isinstance(sandbox_id, str) or not sandbox_id:
+                    raise ValueError("the service returned no sandbox ID")
+                if on_discovered is not None:
+                    on_discovered(sandbox_id)
+                ids.append(sandbox_id)
         except Exception as exc:  # noqa: BLE001 - purge must never fail
             logger.warning(
                 "acas backend: could not list sandboxes for thread %s: %s",

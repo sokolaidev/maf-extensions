@@ -3170,6 +3170,153 @@ def _spec():
     return SandboxSpec(kind="bicep", image_id="pinned-id")
 
 
+@pytest.mark.parametrize("listing_fails", [False, True])
+@pytest.mark.parametrize("kind", [None, "bicep"])
+def test_key_discovery_retains_cleanup_before_replacement(kind, listing_fails, monkeypatch):
+    from maf_sandbox import SandboxOutputError
+
+    client = _GuestGroupClient(_guest_removing(True), delete_fails=True)
+    backend = _backend_with(client)
+    key = SandboxKey("s", "t", "a")
+
+    async def listed():
+        yield _FakeSandbox("remote")
+        if listing_fails:
+            raise RuntimeError("listing interrupted")
+
+    monkeypatch.setattr(client, "list_sandboxes", lambda **kwargs: listed())
+
+    async def scenario():
+        assert await backend.dispose(key, kind=kind) is not None
+        for requested in ["bicep", "codeact"] if kind is None else [kind]:
+            with pytest.raises(SandboxOutputError, match="retained"):
+                await backend.acquire(key, SandboxSpec(kind=requested, image_id="pinned-id"))
+        assert client.create_calls == 0
+        assert backend._undeleted[("s", "t", "a")] == {"remote"}
+        assert backend._undeleted_kinds.get(("s", "t", "a"), {}).get("remote") == kind
+        client.delete_fails = False
+        replacement = await backend.acquire(key, _spec())
+        assert replacement.instance_id == "sbx-1" and client.deleted == ["remote"]
+        assert not backend._undeleted
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("retry", ["acquire", "purge"])
+@pytest.mark.parametrize("listing_fails", [False, True])
+def test_scope_discovery_survives_failed_listing_and_blocks_its_scope(
+    retry, listing_fails, monkeypatch
+):
+    from maf_sandbox import SandboxOutputError
+
+    client = _GuestGroupClient(_guest_removing(True), delete_fails=True)
+    backend = _backend_with(client)
+
+    async def listed():
+        yield _FakeSandbox("remote")
+        if listing_fails:
+            raise RuntimeError("listing interrupted")
+
+    def offline(**kwargs):
+        raise RuntimeError("listing offline")
+
+    monkeypatch.setattr(client, "list_sandboxes", lambda **kwargs: listed())
+
+    async def scenario():
+        assert (await backend.dispose_scope("s", "t")).undisposed is not None
+        monkeypatch.setattr(client, "list_sandboxes", offline)
+        for agent, kind in [("a", "bicep"), ("b", "codeact")]:
+            with pytest.raises(SandboxOutputError, match="retained scope"):
+                await backend.acquire(
+                    SandboxKey("s", "t", agent), SandboxSpec(kind=kind, image_id="pinned-id")
+                )
+        assert client.create_calls == 0
+        for scope, thread in [("other", "t"), ("s", "other")]:
+            await backend.acquire(SandboxKey(scope, thread, "a"), _spec())
+        assert client.create_calls == 2
+        client.delete_fails = False
+        if retry == "purge":
+            purged = await backend.dispose_scope("s", "t")
+            assert purged.disposed == 1
+            assert purged.undisposed is not None and purged.undisposed.code == "unlisted"
+        replacement = await backend.acquire(SandboxKey("s", "t", "a"), _spec())
+        assert replacement.instance_id == "sbx-3" and client.deleted == ["remote"]
+        assert not backend._scope_disposals
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("scope_wide", [False, True])
+def test_discovery_is_retained_when_listing_is_cancelled(scope_wide, monkeypatch):
+    from maf_sandbox import SandboxOutputError
+
+    client = _GuestGroupClient(_guest_removing(True), delete_fails=True)
+    backend = _backend_with(client)
+    key = SandboxKey("s", "t", "a")
+
+    async def scenario():
+        pending = asyncio.Event()
+
+        async def listed():
+            yield _FakeSandbox("remote")
+            pending.set()
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(client, "list_sandboxes", lambda **kwargs: listed())
+        task = asyncio.create_task(
+            backend.dispose_scope("s", "t") if scope_wide else backend.dispose(key)
+        )
+        await pending.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        with pytest.raises(SandboxOutputError, match="retained"):
+            await backend.acquire(key, _spec())
+        assert client.create_calls == 0
+
+    asyncio.run(scenario())
+
+
+def test_older_scope_success_cannot_clear_a_newer_failed_deletion(monkeypatch):
+    from maf_sandbox import SandboxOutputError
+
+    client = _GuestGroupClient(_guest_removing(True), delete_fails=True)
+    backend = _backend_with(client)
+    monkeypatch.setattr(
+        client, "list_sandboxes", lambda **kwargs: _FakePager([_FakeSandbox("remote")])
+    )
+    original_delete = _GuestSandboxClient.begin_delete
+
+    async def scenario():
+        started, release = asyncio.Event(), asyncio.Event()
+        calls = 0
+
+        async def delete(sandbox):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                started.set()
+                await release.wait()
+                return _CompletedDeletion()
+            return await original_delete(sandbox)
+
+        monkeypatch.setattr(_GuestSandboxClient, "begin_delete", delete)
+        first = asyncio.create_task(backend.dispose_scope("s", "t"))
+        await started.wait()
+        second = await backend.dispose_scope("s", "t")
+        assert second.undisposed is not None
+        release.set()
+        assert (await first).undisposed is not None
+        with pytest.raises(SandboxOutputError, match="retained scope"):
+            await backend.acquire(SandboxKey("s", "t", "a"), _spec())
+        assert client.create_calls == 0
+        client.delete_fails = False
+        assert (await backend.acquire(SandboxKey("s", "t", "a"), _spec())).instance_id == "sbx-1"
+        assert not backend._scope_disposals
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("failure", ["exit", "exception"])
 def test_fresh_capture_probe_failure_retries_deletion_before_replacement(failure, monkeypatch):
     from maf_sandbox import SandboxOutputError
@@ -3207,13 +3354,12 @@ def test_fresh_capture_probe_failure_retries_deletion_before_replacement(failure
         fail_probe = False
         with pytest.raises(SandboxOutputError, match="retained"):
             await backend.acquire(key, spec)
-        assert backend._invalidated_ids == {"sbx-1"}
         assert client.create_calls == 1 and attempts[-1] == ("sbx-1", 1)
         client.delete_fails = False
         replacement = await backend.acquire(key, spec)
         assert replacement.instance_id == "sbx-2"
         assert attempts[-1] == ("sbx-1", 1)
-        assert not backend._undeleted and not backend._invalidated_ids
+        assert not backend._undeleted
 
     asyncio.run(scenario())
 
@@ -3257,7 +3403,7 @@ def test_exec_invalidation_after_failed_disposal_blocks_replacement(disposal, re
         replacement = await backend.acquire(key, spec)
         assert client.deleted[-1] == sandbox.instance_id
         assert replacement.instance_id != sandbox.instance_id
-        assert not backend._invalidated_ids and not backend._undeleted
+        assert not backend._undeleted
 
     asyncio.run(scenario())
 
@@ -3298,7 +3444,7 @@ def test_reacquire_retries_invalidated_ids_retained_after_disposal(disposal, mon
                 is not None
             )
         assert not backend._registry
-        assert first.instance_id in backend._invalidated_ids
+        assert first.instance_id in backend._undeleted[(key.scope, key.thread_id, key.agent_dir)]
         with pytest.raises(SandboxOutputError, match="retained"):
             await backend.acquire(key, spec)
         assert client.create_calls == 1
@@ -3308,7 +3454,7 @@ def test_reacquire_retries_invalidated_ids_retained_after_disposal(disposal, mon
         assert replacement.instance_id != first.instance_id
         assert attempts[-1] == (first.instance_id, 1)
         assert client.create_calls == 2
-        assert not backend._invalidated_ids and not backend._undeleted
+        assert not backend._undeleted
 
     asyncio.run(scenario())
 
@@ -3780,9 +3926,11 @@ class TestEgressPolicy:
         asyncio.run(scenario())
 
     @pytest.mark.parametrize("delete_failed", [False, True])
-    def test_explicit_disposal_allows_a_new_policy_and_retains_failed_targets(
+    def test_explicit_disposal_requires_cleanup_before_a_new_policy(
         self, monkeypatch, delete_failed
     ):
+        from maf_sandbox import SandboxOutputError
+
         client = _SlowCreateGroupClient()
         backend = _backend_with(client)
         key = SandboxKey("s", "t", "a")
@@ -3801,6 +3949,7 @@ class TestEgressPolicy:
         monkeypatch.setattr(backend, "_delete", failure)
 
         async def scenario():
+            nonlocal delete_failed
             first = await backend.acquire(key, original)
             with pytest.raises(SandboxEgressNotEnforced):
                 await backend.acquire(key, closed)
@@ -3808,11 +3957,14 @@ class TestEgressPolicy:
             assert (
                 first.instance_id in backend._undeleted.get(("s", "t", "a"), set())
             ) == delete_failed
+            if delete_failed:
+                with pytest.raises(SandboxOutputError, match="retained"):
+                    await backend.acquire(key, closed)
+                assert client.create_calls == 1
+                delete_failed = False
             replacement = await backend.acquire(key, closed)
             assert replacement.instance_id != first.instance_id
-            assert (
-                first.instance_id in backend._undeleted.get(("s", "t", "a"), set())
-            ) == delete_failed
+            assert not backend._undeleted
             assert client.create_calls == 2
 
         asyncio.run(scenario())
