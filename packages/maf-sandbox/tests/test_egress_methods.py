@@ -1,4 +1,4 @@
-"""Literal method policy, normalization and refusal before a backend is called."""
+"""Allow-entry grammar, literal method policy, normalization and refusal before a backend."""
 
 from __future__ import annotations
 
@@ -106,8 +106,89 @@ class TestMethodVocabulary:
             )
 
     @pytest.mark.parametrize("host", ["", "https://example.com", "a,b", "a b"])
-    def test_core_does_not_take_over_host_validation(self, host: str):
-        assert spec(EgressRule(host)).egress_allow == (host,)
+    def test_a_rule_validates_its_host_as_a_bare_entry_does(self, host: str):
+        with pytest.raises(ValueError, match="not one hostname"):
+            EgressRule(host)
+
+
+class TestAllowEntryGrammar:
+    """An allow entry is one hostname, because backends read it and none of them agree
+    about anything else."""
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "mcr.microsoft.com",
+            "*.data.mcr.microsoft.com",
+            "aka.ms",
+            "live-data.bicep.azure.com",
+            "Example.COM",
+            "localhost",
+            "1.2.3.4",
+        ],
+    )
+    def test_a_hostname_and_one_leading_wildcard_label_are_admitted(self, host: str):
+        assert spec(host).egress_allow == (host,)
+        assert EgressRule(host, ("GET",)).host == host
+
+    def test_a_bare_star_is_refused_as_the_open_posture_in_disguise(self):
+        with pytest.raises(ValueError, match="every host"):
+            spec("*")
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "?xample.com",
+            "[e]xample.com",
+            "*.*",
+            "a.*.com",
+            "**.example.com",
+            "https://example.com",
+            "example.com:443",
+            "example.com/simple",
+            "a.example,b.example",
+            " example.com",
+            "example.com.",
+            "-example.com",
+            "example-.com",
+            "under_score.com",
+            "münchen.example",
+            "",
+            # 64 octets: one past what DNS encodes, so the name cannot be looked up at all.
+            "a" * 64 + ".example.com",
+            "*." + "a" * 64 + ".example.com",
+        ],
+    )
+    def test_anything_that_is_not_one_hostname_is_refused(self, host: str):
+        with pytest.raises(ValueError, match="not one hostname"):
+            spec(host)
+
+    def test_a_label_at_the_dns_limit_is_still_admitted(self):
+        """The bound is 63, so refusing 64 must not cost the longest legal label."""
+        assert spec("a" * 63 + ".example.com").egress_allow == ("a" * 63 + ".example.com",)
+
+    def test_a_bare_string_is_refused_rather_than_read_one_character_at_a_time(self):
+        with pytest.raises(TypeError, match="not a single string"):
+            SandboxSpec(kind="test", egress=Egress.ALLOWLIST, egress_allow="example.com")
+
+    @pytest.mark.parametrize("value", [None, 5])
+    def test_a_value_that_is_not_a_sequence_is_refused_by_name(self, value: Any):
+        with pytest.raises(TypeError, match="egress_allow"):
+            SandboxSpec(kind="test", egress=Egress.ALLOWLIST, egress_allow=value)
+
+    def test_a_one_shot_iterable_is_materialised_rather_than_spent(self):
+        named = ("a.example", "b.example")
+        built = SandboxSpec(
+            kind="test", egress=Egress.ALLOWLIST, egress_allow=(host for host in named)
+        )
+        assert built.egress_allow == named
+
+    def test_an_empty_iterable_does_not_read_as_naming_hosts(self):
+        """Truthiness decides whether a mode mismatch is raised, and a generator is always
+        truthy."""
+        built = SandboxSpec(kind="test", egress_allow=(host for host in ()))
+        assert built.egress_allow == ()
+        assert built.egress is Egress.CLOSED
 
 
 class TestMethodRouting:

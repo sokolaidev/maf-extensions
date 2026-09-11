@@ -17,7 +17,6 @@ import contextlib
 import ipaddress
 import os
 from collections.abc import Sequence
-from fnmatch import fnmatchcase
 
 _DEFAULT_PORT = 3128
 _CHUNK = 65536
@@ -26,9 +25,21 @@ _DIAL_TIMEOUT = 20.0
 
 
 def host_allowed(host: str, allowlist: Sequence[str]) -> bool:
-    """Whether ``host`` matches the allowlist — exact or ``*.`` wildcard, case-insensitive."""
+    """Whether ``host`` matches the allowlist — exact or ``*.`` wildcard, case-insensitive.
+
+    Matched literally rather than as a glob: a spec can express only these two shapes, so a
+    matcher honouring more would allow what no spec is able to ask for.
+    """
     lowered = host.lower()
-    return any(fnmatchcase(lowered, pattern.lower()) for pattern in allowlist)
+    for pattern in allowlist:
+        folded = pattern.lower()
+        if folded.startswith("*."):
+            suffix = folded[1:]
+            if lowered.endswith(suffix) and len(lowered) > len(suffix):
+                return True
+        elif lowered == folded:
+            return True
+    return False
 
 
 def _peer_is_global(writer: asyncio.StreamWriter) -> bool:

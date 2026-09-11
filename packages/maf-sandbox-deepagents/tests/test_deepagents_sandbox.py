@@ -70,6 +70,20 @@ def _adapter(
     return MafSandbox(_router(backend), KEY, deepagents_spec("img:1")), backend
 
 
+def _core_validates_allow_entries() -> bool:
+    """Whether the installed core refuses a malformed allow entry.
+
+    This suite runs against every published core the package's range admits, and the grammar
+    landed in one of them rather than in all — so the refusals below are asked for only where
+    there is something to refuse them.
+    """
+    try:
+        SandboxSpec(kind="probe", egress=Egress.ALLOWLIST, egress_allow=("a b",))
+    except (ValueError, TypeError):
+        return True
+    return False
+
+
 class TestTheSpec:
     def test_requires_what_deep_agents_needs(self):
         spec = deepagents_spec("img:1")
@@ -89,6 +103,24 @@ class TestTheSpec:
     def test_the_work_dir_default_is_the_protocol_s(self):
         assert deepagents_spec("img:1").work_dir == SandboxSpec(kind="x").work_dir
         assert deepagents_spec("img:1", work_dir="/w").work_dir == "/w"
+
+    @pytest.mark.skipif(
+        not _core_validates_allow_entries(),
+        reason="the installed maf-sandbox predates the allow-entry grammar",
+    )
+    @pytest.mark.parametrize(
+        "entry", ["*", " pypi.org", "https://pypi.org", "a.example,b.example", "pypi.org:443"]
+    )
+    def test_a_malformed_allow_entry_is_refused_rather_than_handed_to_a_backend(self, entry: str):
+        with pytest.raises(ValueError):
+            deepagents_spec("img:1", egress_allow=(entry,))
+
+    @pytest.mark.parametrize("hosts", ["pypi.org", "pypi"])
+    def test_a_bare_string_allowlist_is_refused_rather_than_split_per_character(self, hosts: str):
+        """This kind's own guard, not the spec's: the tuple it builds is what the spec sees, and
+        a dotless string becomes a tuple of hostnames no grammar has cause to reject."""
+        with pytest.raises(TypeError, match="not a single string"):
+            deepagents_spec("img:1", egress_allow=hosts)  # type: ignore[arg-type]
 
 
 class TestConstruction:

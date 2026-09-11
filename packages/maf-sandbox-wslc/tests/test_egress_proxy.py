@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from maf_sandbox_wslc._proxy import build_context
 from maf_sandbox_wslc._proxy.proxy import ProxyServer, host_allowed
 
@@ -35,6 +37,16 @@ class TestHostAllowed:
 
     def test_a_listed_name_does_not_match_its_own_subdomains(self):
         assert not host_allowed("evil.mcr.microsoft.com", ("mcr.microsoft.com",))
+
+    @pytest.mark.parametrize("pattern", ["*", "?cr.microsoft.com", "[m]cr.microsoft.com"])
+    def test_a_glob_that_is_not_a_leading_wildcard_label_matches_nothing(self, pattern: str):
+        """The allowlist is matched literally, so the proxy honours only what a spec can ask
+        for: `*` alone would be the open posture served under the allowlist's name."""
+        assert not host_allowed("mcr.microsoft.com", (pattern,))
+        assert not host_allowed("evil.example", (pattern,))
+
+    def test_a_wildcard_does_not_match_a_name_that_merely_ends_with_the_suffix(self):
+        assert not host_allowed("notdata.mcr.microsoft.com", ("*.data.mcr.microsoft.com",))
 
 
 async def _echo_server() -> tuple[asyncio.Server, int]:
