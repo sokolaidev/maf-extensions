@@ -12,7 +12,7 @@ That leaves a host three moments where a sandbox can go away, and choosing betwe
 | End of turn | `async with router.scope(scope, thread)` | on a billable backend, the only sane default |
 | Thread delete | `SandboxPurger.purge_scoped_thread` | the backstop, and the only thing that reclaims a conversation whose turns were never scoped |
 
-There is a fourth moment, and it is the one a host does not choose: the framework tries to clean up after a call and **cannot**. Acts 5 and 6 force that for real and show what each policy does about it, and what the host is told — see [below](#and-when-the-cleanup-cannot-run).
+There is a fourth moment, and it is the one a host does not choose: the framework tries to clean up after a call and **cannot**. Acts 5 to 8 force that for real and show what each of the host's three policies does about it, what the host is told, and what a handler that itself fails changes — see [below](#and-when-the-cleanup-cannot-run).
 
 ## The end-of-turn decision is where the money is
 
@@ -63,7 +63,7 @@ That distinction is load-bearing. The protocol promises "a running sandbox for `
 
 ## And when the cleanup cannot run
 
-Acts 1 to 4 are about a host choosing *when* a sandbox goes away. Acts 5 and 6 are about the case the host does not choose: the framework tries to clean up and **cannot**.
+Acts 1 to 4 are about a host choosing *when* a sandbox goes away. Acts 5 to 8 are about the case the host does not choose: the framework tries to clean up and **cannot**.
 
 ### The failure is real, and hardening is what causes it
 
@@ -75,25 +75,38 @@ So the coupling is the lesson, not the trick: **hardening the container is what 
 
 The other precondition is the host's own. The per-call directory removal runs at `Cleanup.RECLAIM` and nowhere else, so the router sets `min_cleanup=Cleanup.RECLAIM`; a host that leaves the default floor disposes the sandbox after every call and never reaches this at all. The sample prints `router.effective_cleanup(spec)` rather than assuming it, and the live check refuses any other answer — at a different rung these acts would still print plausible numbers while demonstrating nothing.
 
-### What each policy does, counted with `docker ps`
+### All three outcomes a host branches on
 
-| Act | `failed_reclaim_policy` | `ReclaimFailure.disposal` | Containers after |
+`ReclaimFailure.disposal` has three values and each is a different decision, so there is an act each.
+
+| Act | What the host set | `disposal` | What followed |
 |---|---|---|---|
-| 5 | `DISPOSE` (the default) | `disposed` | **0** — the sandbox it could not clean is deleted |
-| 6 | `KEEP` | `kept` | **1** — still there, still holding what would not go |
+| 5 | `DISPOSE` (the default) | `disposed` | **0** containers — the sandbox it could not clean is deleted |
+| 6 | `KEEP` | `kept` | **1** container, still holding what would not go |
+| 7 | a cleanup budget the engine cannot meet | `failed` | the next `acquire` on that key raises `SandboxUnclean` |
 
 Act 5 is the guarantee: `acquire` is get-or-create, so a sandbox left warm would hand the next call in that conversation everything this one could not take back. Better a cold start than leaked data. Act 6 is the only setting that loosens it, and it loosens nothing else — `min_cleanup` is a separate floor, and a sandbox this router did not clean is still never adopted by a later process.
 
-Both are read off `docker ps`, like every other number here.
+**Act 7 is the one whose reading is easy to get wrong.** `failed` means the framework could not *prove* the remedy landed — and in this run the container is gone, because `docker rm` was sent and the daemon finished it after the host had stopped waiting. So the refusal is not about a container that is still there. It is about a router that cannot say what state the key is in, refusing to serve the next call into it. `KEEP` does not loosen this one either: act 6's opt-down is about a reclaim, and this is the remedy for one. The sample prints that container count and the live check deliberately does not assert it, for the same reason.
+
+A one-millisecond budget is not a setting anyone chooses; a budget too small for the engine underneath it is — a loaded daemon, a remote one, a cleanup competing with the next turn. It is set through `sandboxed_tool`'s per-tool `reclaim_timeout` rather than on the router, and that is not incidental: the router's value also bounds what it does *outside* a call, so starving it there means the router cannot clean an instance it has not served before, and the call is refused before its body runs with no cleanup left to fail. The two knobs are the pair [#520](https://github.com/sokolaidev/maf-extensions/issues/520) asks a sample to show — the router-wide default, and the per-tool override.
+
+### A handler that raises is contained
+
+Act 8 raises from the handler, and two things do not move: the call still answers what its body returned, and the record the handler wrote *before* raising is still there.
+
+That ordering is the whole lesson. `sandboxed_tool` runs the handler inside an `except Exception` that logs and continues, so a handler that raises on its way to recording loses the record and leaves the run looking clean — every container count correct, and the reporting path quietly short one event. That is not hypothetical: it is the defect review found in sample 07's handler, which printed before it appended.
+
+Both are read off `docker ps` and the exporter, like every other number here.
 
 ### The record the telemetry package cannot make
 
-This is the first sample to wire [`maf-sandbox-otel`](../../packages/maf-sandbox-otel/), and acts 5 and 6 are where it earns its place: they show what it records, and then what it does not.
+This is the first sample to wire [`maf-sandbox-otel`](../../packages/maf-sandbox-otel/), and acts 5 to 8 are where it earns its place: they show what it records, and then what it does not.
 
 `OpenTelemetrySandboxObserver` is an observer on the *router*. It records what the library did. A reclaim that did not happen is reported to the **host** instead, through `ReclaimConfig(on_failure=...)`, because what to do about it is a host decision. So when a cleanup fails, here is what a collector receives without a handler:
 
 - `sandbox.call` with `maf_sandbox.call.unclean = 0`. That attribute counts what a transport noted about processes it could not prove it stopped. A directory that would not go is not one of those.
-- `sandbox.dispose` — **two** of them in act 5, both `outcome=gone`, both carrying the same call id. One is the escalation; the other is the router cleaning an instance it had not served before, which happens inside `acquire`, ahead of the body, and on a perfectly healthy first call too. Nothing on either says which was which. Under `KEEP` there is one, and it is the adoption: the cleanup that did not happen leaves no record at all.
+- `sandbox.dispose` — **two** of them in acts 5 and 7, both `outcome=gone` in act 5, both carrying the same call id. One is the escalation; the other is the router cleaning an instance it had not served before, which happens inside `acquire`, ahead of the body, and on a perfectly healthy first call too. Nothing on either says which was which. Under `KEEP` there is one, and it is the adoption: the cleanup that did not happen leaves no record at all.
 
 From the package's records alone, a call whose cleanup failed is indistinguishable from one that cleaned up perfectly. The three facts that separate them are the three `ReclaimFailure` carries and no event does: **which path**, **why**, and **what the framework did about it**.
 
@@ -111,9 +124,9 @@ The sample exports to an in-memory exporter so it can print what a collector wou
 cd samples/12_purge_lifecycle && uv run agent.py
 ```
 
-Needs a Docker-compatible engine and nothing else — no cloud account, no model, no environment variables. It creates seven containers over the run, one thread at a time, and reclaims all of them; the last thing it prints is how many were left behind, beside how many reclaim failures were recorded.
+Needs a Docker-compatible engine and nothing else — no cloud account, no model, no environment variables. It creates nine containers over the run, one thread at a time, and reclaims all of them; the last thing it prints is how many were left behind, beside how many reclaim failures were recorded.
 
-That second number is the one to watch, and it fails in the opposite direction from everything else here: the check requires it to be **2**. A handler nothing ever calls reports nought, and a check reading nought agrees with it — which is exactly how a bug in the reporting path ships unnoticed ([#760](https://github.com/sokolaidev/maf-extensions/issues/760)).
+That second number is the one to watch, and it fails in the opposite direction from everything else here: the check requires it to be **4**, one per act from 5 to 8. A handler nothing ever calls reports nought, and a check reading nought agrees with it — which is exactly how a bug in the reporting path ships unnoticed ([#760](https://github.com/sokolaidev/maf-extensions/issues/760)).
 
 ## Where this sits
 
