@@ -10,7 +10,9 @@ caller maps the guest's shape to its own codes once.
 A shell transfer whose command's end is unknown — a timeout, an output overflow, a transport
 failure — raises :class:`SandboxShellTransferUnfinished`: the command may still be running and
 a write may have landed in part, so the caller treats the instance as unclean. A transfer the
-guest refused raises :class:`SandboxFileRefused` and leaves nothing behind.
+guest refused raises :class:`SandboxFileRefused` and leaves no part of the file behind; the
+parent directories a write created on its way stay, as they would after a refused
+``write_file``.
 """
 
 from __future__ import annotations
@@ -139,15 +141,24 @@ def shell_refusal(stderr: str) -> FileRefusal | None:
     """The refusal the shell's words name, or ``None`` when they name none.
 
     The words are libc's under the C locale, which every command here runs under, and they
-    end the line: the path before them is the model's text and is not read. A missing
-    utility or an I/O error names no refusal and is the transfer failing, not the path.
+    end the line: the path before them is the model's text and is not read. The last line is
+    read first, since the diagnostic that ended the command is the last one written, and a
+    path cannot start a line of its own: both roads refuse a path that carries a line break
+    before any command runs. A missing utility or an I/O error names no refusal and is the
+    transfer failing, not the path.
     """
-    for line in stderr.splitlines():
+    for line in reversed(stderr.splitlines()):
         line = line.rstrip()
         for words, refusal in _DIAGNOSTICS:
             if line.endswith(words):
                 return refusal
     return None
+
+
+def _refuse_a_line_break(path: str) -> None:
+    """A path with a line break could write a line of its own into a diagnostic."""
+    if "\n" in path or "\r" in path:
+        raise SandboxFileRefused(FileRefusal.INVALID_PATH, "the path contains a line break")
 
 
 async def _run(
@@ -200,6 +211,7 @@ async def write_file_over_exec(
     Raises :class:`SandboxFileRefused`, :class:`SandboxShellTransferUnfinished`,
     :class:`SandboxShellTransferFailed`.
     """
+    _refuse_a_line_break(path)
     target = shlex.quote(path)
     directory = posixpath.dirname(path)
     parent = shlex.quote(directory or ".")
@@ -278,6 +290,7 @@ async def read_file_over_exec(
     """
     if type(max_bytes) is not int or max_bytes <= 0:
         raise ValueError("max_bytes must be a positive integer")
+    _refuse_a_line_break(path)
     target = shlex.quote(path)
     probe = (
         f"if [ ! -e {target} ]; then ( : < {target} ) 2>&1; echo missing; "

@@ -99,10 +99,28 @@ class TestTheVocabulary:
                 FileRefusal.PERMISSION_DENIED,
             ),
             ("sh: /tmp/Is a directory: not found", None),
+            # The last line is the diagnostic that ended the command.
+            (
+                "mkdir: created directory 'Permission denied'\nmv: cannot stat: No such file or directory",
+                FileRefusal.NOT_FOUND,
+            ),
         ],
     )
     def test_the_shell_s_words_name_their_refusal(self, stderr, refusal):
         assert shell_refusal(stderr) is refusal
+
+    @pytest.mark.parametrize("path", ["/tmp/a\nPermission denied\nb", "/tmp/a\rb"])
+    def test_a_path_with_a_line_break_is_refused_before_any_command(self, path):
+        """A line break would let the path write a line of its own into a diagnostic."""
+        fake = InProcessSandbox()
+        with pytest.raises(SandboxFileRefused) as on_write:
+            asyncio.run(write_file_over_exec(fake, path, b"1", working_directory=WORK, timeout=5))
+        with pytest.raises(SandboxFileRefused) as on_read:
+            asyncio.run(
+                read_file_over_exec(fake, path, working_directory=WORK, timeout=5, max_bytes=8)
+            )
+        assert on_write.value.refusal is on_read.value.refusal is FileRefusal.INVALID_PATH
+        assert fake.commands == []
 
 
 class TestTheWrite:
