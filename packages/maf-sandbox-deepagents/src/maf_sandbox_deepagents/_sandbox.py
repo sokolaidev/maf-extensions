@@ -19,7 +19,6 @@ import math
 import posixpath
 import time
 import uuid
-from collections.abc import Coroutine
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -437,14 +436,13 @@ class MafSandbox(BaseSandbox):
         delete never extends the caller's wait and outlives a loop ``asyncio.run`` closes on
         return; the next call over the key is admitted once it is done.
         """
-        release: Coroutine[Any, Any, None] = self._router.release_call(
-            self._key, self._spec.kind, owner=call.owner
-        )
         if not (call.condemned or deferred):
-            await release
+            await self._router.release_call(self._key, self._spec.kind, owner=call.owner)
             return
         # `SyncRunner.submit` takes the coroutine itself and runs it on the process's loop.
-        released = _SYNC.submit(release)
+        released = _SYNC.submit(
+            self._router.release_call(self._key, self._spec.kind, owner=call.owner)
+        )
         released.add_done_callback(self._left)
 
     def _left(self, future: concurrent.futures.Future[None]) -> None:
