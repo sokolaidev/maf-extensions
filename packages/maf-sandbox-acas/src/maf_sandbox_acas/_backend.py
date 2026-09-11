@@ -1198,7 +1198,10 @@ class AcasSandboxBackend:
                         "AcasSandboxBackend.dispose before changing policy, or use a different key."
                     )
         gc = self._group_client()
-        prefix = registry_key[:3]
+        # Four fields, not three: the disposal ledger is keyed by the call as well, so a
+        # three-field slice would look up a prefix nothing files under and read every retained
+        # record as absent — which is an acquire served on a key whose cleanup never landed.
+        prefix = registry_key[:4]
         scope_key = prefix[:2]
         with self._disposal_guard:
             if held is not None and unusable:

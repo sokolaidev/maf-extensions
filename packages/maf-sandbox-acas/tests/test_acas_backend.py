@@ -3197,8 +3197,8 @@ def test_key_discovery_retains_cleanup_before_replacement(kind, listing_fails, m
             with pytest.raises(SandboxOutputError, match="retained"):
                 await backend.acquire(key, SandboxSpec(kind=requested, image_id="pinned-id"))
         assert client.create_calls == 0
-        assert backend._undeleted[("s", "t", "a")] == {"remote"}
-        assert backend._undeleted_kinds.get(("s", "t", "a"), {}).get("remote") == kind
+        assert backend._undeleted[("s", "t", "a", "")] == {"remote"}
+        assert backend._undeleted_kinds.get(("s", "t", "a", ""), {}).get("remote") == kind
         client.delete_fails = False
         replacement = await backend.acquire(key, _spec())
         assert replacement.instance_id == "sbx-1" and client.deleted == ["remote"]
@@ -3389,7 +3389,7 @@ def test_fresh_capture_probe_failure_retries_deletion_before_replacement(failure
         with pytest.raises(SandboxCapabilityNotSupported, match="exec-capture"):
             await backend.acquire(key, spec)
         assert not backend._registry
-        assert backend._undeleted[("s", "t", "a")] == {"sbx-1"}
+        assert backend._undeleted[("s", "t", "a", "")] == {"sbx-1"}
         assert attempts == [("sbx-1", 1), ("sbx-1", 1)]
         fail_probe = False
         with pytest.raises(SandboxOutputError, match="retained"):
@@ -3484,7 +3484,10 @@ def test_reacquire_retries_invalidated_ids_retained_after_disposal(disposal, mon
                 is not None
             )
         assert not backend._registry
-        assert first.instance_id in backend._undeleted[(key.scope, key.thread_id, key.agent_dir)]
+        assert (
+            first.instance_id
+            in backend._undeleted[(key.scope, key.thread_id, key.agent_dir, key.call_id)]
+        )
         with pytest.raises(SandboxOutputError, match="retained"):
             await backend.acquire(key, spec)
         assert client.create_calls == 1
@@ -3624,7 +3627,7 @@ def test_capture_invalidation_allows_policy_change_after_deletion(delete_failed)
             with pytest.raises(SandboxOutputError, match="dispose an invalidated sandbox"):
                 await backend.acquire(key, changed)
             assert client.create_calls == 1
-            assert backend._registry[("s", "t", "a", original.kind)] is first._held
+            assert backend._registry[("s", "t", "a", "", original.kind)] is first._held
             client.delete_fails = False
         replacement = await backend.acquire(key, changed)
         assert first.instance_id in client.deleted
@@ -3648,7 +3651,7 @@ def test_invalidated_acquire_reconciles_concurrent_disposal(
     client = _GuestGroupClient(_guest_removing(True), delete_fails=True)
     backend = _backend_with(client)
     key, spec = SandboxKey("s", "t", "a"), _spec()
-    prefix = (key.scope, key.thread_id, key.agent_dir)
+    prefix = (key.scope, key.thread_id, key.agent_dir, key.call_id)
     original_delete = backend._delete
     calls = 0
 
