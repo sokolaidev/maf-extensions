@@ -94,8 +94,8 @@ DEFAULT_MAX_OUTPUT_BYTES = 1_048_576
 DEFAULT_WORK_DIR: str | None = SandboxSpec(kind=DEEPAGENTS_KIND).work_dir
 
 #: The acquired sandbox's storage base, addressed relatively: every command runs there and
-#: every upload and download path is relative to it. The backend resolves it, whether the
-#: spec named a base or left the allocation to the backend.
+#: every upload and download path is relative to it. The backend resolves it to the base the
+#: spec named; a spec that names none is refused at construction.
 STORAGE_BASE = "."
 
 #: What the model reads when the router or the backend could not serve a call. Fixed, because
@@ -222,11 +222,13 @@ class _SyncRunner:
 _SYNC = _SyncRunner()
 
 
-def _response(result: ExecResult) -> ExecuteResponse:
+def _response(result: ExecResult, *, max_output_bytes: int | None = None) -> ExecuteResponse:
     """One combined stream, the way Deep Agents' own backends render it.
 
     Each ``stderr`` line is prefixed so the model can tell the two apart, and the prefix says
     whose words they are: a producer that took the field is speaking there, not the program.
+    The prefixes grow the stream, so it is held to ``max_output_bytes`` again once rendered:
+    the budget is what reaches the model, and a stream of short lines must not step over it.
     """
     parts: list[str] = []
     if result.stdout:
@@ -235,6 +237,10 @@ def _response(result: ExecResult) -> ExecuteResponse:
         label = "[note]" if result.producer_owns_stderr else "[stderr]"
         parts.extend(f"{label} {line}" for line in result.stderr.strip().splitlines())
     output = "\n".join(parts) if parts else "<no output>"
+    if max_output_bytes is not None and len(output.encode("utf-8")) > max_output_bytes:
+        return ExecuteResponse(
+            output=_OUTPUT_DROPPED.format(limit=max_output_bytes), exit_code=None, truncated=True
+        )
     return ExecuteResponse(output=output, exit_code=result.exit_code, truncated=False)
 
 
@@ -407,7 +413,9 @@ class MafSandbox(BaseSandbox):
                     return None
                 call = _Call(owner, admission)
                 try:
-                    sandbox = await self._router.acquire(self._key, self._spec)
+                    sandbox = await self._router.acquire(
+                        self._key, self._spec, _admission=admission
+                    )
                 except asyncio.CancelledError:
                     # The deadline, or the caller leaving: the admission must not outlive
                     # the call, or an exclusive close and every queued delete wait on it.
@@ -541,7 +549,7 @@ class MafSandbox(BaseSandbox):
             except Exception:
                 logger.exception("%s: the command's result could not be read", self._id)
                 return ExecuteResponse(output=_EXEC_FAILED, exit_code=None)
-            return _response(result)
+            return _response(result, max_output_bytes=self._max_output_bytes)
         finally:
             await self._leave(call)
 
@@ -693,7 +701,8 @@ class MafSandbox(BaseSandbox):
         except PermissionError as refused:
             logger.info("%s: download of %r refused: %s", self._id, path, refused)
             return FileDownloadResponse(path=path, error=PERMISSION_DENIED)
-        except ValueError as refused:
+        except (ValueError, NotADirectoryError) as refused:
+            # The plane's own refusals, as on the upload road: a parent that is a file too.
             logger.info("%s: download of %r refused: %s", self._id, path, refused)
             return FileDownloadResponse(path=path, error=INVALID_PATH)
         if entry is None:

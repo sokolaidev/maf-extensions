@@ -266,6 +266,27 @@ class TestExecute:
         # `aclose` then names the same instance again, a no-op under the protocol.
         assert backend.disposed[before:] == [KEY, KEY]
 
+    def test_the_rendered_stream_is_held_to_the_budget(self):
+        """The stderr prefixes grow the stream, so short lines under the raw budget could step
+        over it once rendered; the rendered stream is what the model reads."""
+
+        class Chatty(InProcessSandbox):
+            async def exec(self, command, *, working_directory, timeout):
+                return ExecResult(stdout="", stderr="x\n" * 4)
+
+        adapter, backend = _adapter(Chatty())
+        adapter = MafSandbox(adapter.router, KEY, adapter.spec, max_output_bytes=16)
+        asyncio.run(adapter.aexecute("true"))  # warm, and adopted
+        before = len(backend.disposed)
+
+        response = asyncio.run(adapter.aexecute("chatter"))
+
+        assert response.truncated is True
+        assert response.exit_code is None
+        assert "16 bytes" in response.output
+        # The command ended and its output was read whole: nothing is unknown, nothing goes.
+        assert backend.disposed[before:] == []
+
     def test_a_sandbox_that_cannot_bound_output_runs_nothing(
         self, caplog: pytest.LogCaptureFixture
     ):
@@ -342,6 +363,23 @@ class TestExecute:
         # Adoption, the queued delete, and `aclose` naming the instance again (a no-op).
         assert backend.disposed == [KEY, KEY, KEY]
         assert backend.disposed_instances[1] == backend.disposed_instances[2]
+
+    def test_the_acquire_is_handed_the_call_s_admission(self, monkeypatch: pytest.MonkeyPatch):
+        """The admission retains the backend that admitted the call; the acquire must use it,
+        as the framework's own glue does, or a re-routed acquire could serve from another."""
+        adapter, backend = _adapter(InProcessSandbox())
+        acquire = adapter.router.acquire
+        admitted_backends: list[object] = []
+
+        async def spying_acquire(*args, **kwargs):
+            admission = kwargs.get("_admission")
+            admitted_backends.append(None if admission is None else admission.backend)
+            return await acquire(*args, **kwargs)
+
+        monkeypatch.setattr(adapter.router, "acquire", spying_acquire)
+        asyncio.run(adapter.aexecute("true"))
+
+        assert admitted_backends == [backend]
 
     def test_a_cancelled_acquire_releases_its_admission(self, monkeypatch: pytest.MonkeyPatch):
         """An admission that outlived its call would block an exclusive close for good."""
@@ -599,6 +637,13 @@ class TestTheCombinedStream:
 
     def test_nothing_is_said_so(self):
         assert _response(ExecResult(stdout="")).output == "<no output>"
+
+    def test_the_prefixes_count_against_the_budget(self):
+        within = _response(ExecResult(stdout="", stderr="a\nb\n"), max_output_bytes=24)
+        over = _response(ExecResult(stdout="", stderr="a\nb\n"), max_output_bytes=16)
+        assert within.output == "[stderr] a\n[stderr] b"
+        assert over.truncated is True
+        assert over.exit_code is None
 
 
 class TestFilesIn:
@@ -971,6 +1016,17 @@ class TestFilesOut:
         (on_read,) = asyncio.run(adapter.adownload_files(["f.txt"]))
         assert on_stat.error == "permission_denied"
         assert on_read.error == "permission_denied"
+
+    def test_a_parent_that_is_a_file_is_invalid_path_on_stat(self):
+        """The plane's own refusal, the same code the upload road gives it."""
+
+        class FileParent(InProcessSandbox):
+            async def stat_file(self, path, *, working_directory):
+                raise NotADirectoryError("'file' is not a directory")
+
+        adapter, _ = _adapter(FileParent())
+        (response,) = asyncio.run(adapter.adownload_files(["file/child.txt"]))
+        assert response.error == "invalid_path"
 
     def test_a_read_that_comes_back_over_the_cap_is_refused_after_the_fact(self):
         """The protocol has the caller re-count: a backend that buffers first can only refuse late."""
