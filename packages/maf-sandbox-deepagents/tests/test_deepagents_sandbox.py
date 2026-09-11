@@ -161,6 +161,13 @@ class TestConstruction:
         with pytest.raises(ValueError, match="work_dir"):
             MafSandbox(_router(_backend()), KEY, deepagents_spec("img:1", work_dir=None))
 
+    @pytest.mark.parametrize("work_dir", ["relative/base", "", "/with\0nul"])
+    def test_refuses_a_base_the_backends_would(self, work_dir: str):
+        """The backends' rule for a named base, applied at construction: a host error is
+        reported where the host is, not as a sandbox unavailable on the first command."""
+        with pytest.raises(ValueError, match="work_dir"):
+            MafSandbox(_router(_backend()), KEY, deepagents_spec("img:1", work_dir=work_dir))
+
 
 class TestTheId:
     def test_is_opaque(self):

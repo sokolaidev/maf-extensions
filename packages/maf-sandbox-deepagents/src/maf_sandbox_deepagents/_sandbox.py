@@ -57,6 +57,7 @@ from maf_sandbox import (
     SandboxTransferCapExceeded,
     TransferLimits,
 )
+from maf_sandbox.paths import posix_work_dir_ancestors
 
 __all__ = [
     "DEEPAGENTS_KIND",
@@ -338,6 +339,10 @@ class MafSandbox(BaseSandbox):
                 "spec.work_dir must name the storage base: Deep Agents addresses files by "
                 "guest path, and a base the backend allocates is one nothing can tell the model"
             )
+        # The backends' own rule for a named base, applied here so a relative, empty or
+        # NUL-bearing base is a host configuration error at construction, not a sandbox
+        # unavailable on the first command.
+        posix_work_dir_ancestors(spec.work_dir)
         if not math.isfinite(exec_timeout_seconds) or exec_timeout_seconds <= 0:
             raise ValueError("exec_timeout_seconds must be a finite positive number of seconds")
         if type(max_output_bytes) is not int or max_output_bytes <= 0:

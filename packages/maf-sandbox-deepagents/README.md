@@ -63,4 +63,5 @@ Both surfaces are served: the `a*` methods are native, and the synchronous ones,
 
 - Python 3.12 or newer.
 - `deepagents` 0.7.x. Its backend protocol has changed between 0.x minors, so one minor is admitted at a time.
+- An image with `sh`, `mkdir`, `base64` and `wc`, which the shell road runs for an upload or download outside the base (`test`, `printf` and `echo` are the shell's own in busybox, dash and bash). Docker's exec probe checks only `sh`, so an image without `base64` or `wc` constructs fine and fails on the first transfer outside the base; `python:3.12-alpine` and the bicep image have all four.
 - A `maf-sandbox` backend that implements `BoundedExec` (the adapter runs nothing through a sandbox that cannot bound its output), and declares `EXEC`, `FILES_IN` and `FILES_OUT` — [`maf-sandbox-docker`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox-docker) and [`maf-sandbox-acas`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox-acas) do; `maf-sandbox-wslc` does not declare `FILES_OUT`, so the router refuses it here.
