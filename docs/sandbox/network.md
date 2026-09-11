@@ -106,7 +106,7 @@ That question now has a place to live — `spec.egress`, chosen per deployment i
 
 ## Method-scoped allow entries
 
-`SandboxSpec.egress_allow` accepts `str | EgressRule`. A bare string allows every method for that host; `EgressRule(host, methods)` narrows the entry to literal HTTP methods. This refines the `ALLOWLIST` payload without adding a mode. The argument is preserved in [`research/egress-methods.md`](research/egress-methods.md).
+`SandboxSpec.egress_allow` accepts `str | EgressRule`. A bare string allows every method for that host; `EgressRule(host, methods)` narrows the entry to the uppercase HTTP methods it names. This refines the `ALLOWLIST` payload without adding a mode. The argument is preserved in [`research/egress-methods.md`](research/egress-methods.md).
 
 ```python
 from maf_sandbox import Egress, EgressRule, SandboxSpec
