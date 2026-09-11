@@ -56,6 +56,7 @@ from maf_sandbox import (
     EgressReporter,
     ExecResult,
     Isolation,
+    IsolationScope,
     OsFamily,
     Sandbox,
     SandboxBackend,
@@ -118,6 +119,10 @@ _LABEL_SCOPE = "maf-sandbox.scope"
 _LABEL_THREAD = "maf-sandbox.thread"
 _LABEL_AGENT = "maf-sandbox.agent"
 _LABEL_KIND = "maf-sandbox.kind"
+#: The tool call a sandbox serves, written only when the key names one. Absent on a
+#: conversation-scoped container, so a key written before this label existed selects exactly as
+#: it always did, and a call-scoped disposal adds it to reach one call's container and no other.
+_LABEL_CALL = "maf-sandbox.call"
 _LABEL_PREFIX = "maf-sandbox.label."
 #: Marks the egress proxy so a purge can tell it from the sandboxes it counts.
 _LABEL_ROLE = "maf-sandbox.role"
@@ -308,6 +313,14 @@ _CAPABILITIES = frozenset(
     }
 )
 
+#: Both scopes, because a container's identity folds the key's ``call_id`` — into the name it is
+#: created under, the registry entry it is filed at and the label a disposal selects on — so two
+#: acquires differing only there are two containers and a disposal reaches one of them. Declaring
+#: :data:`~maf_sandbox.IsolationScope.CALL` without that would be answered by sharing: both calls
+#: would resolve to one container and both would succeed, which is the half
+#: ``assert_call_scope_conformance`` exists to measure.
+_ISOLATION_SCOPES = frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL})
+
 #: How this backend asks a daemon which guest it runs, and the one answer that entitles it to
 #: declare a family. `version` rather than `info`: both carry the field and this is the cheaper
 #: command.
@@ -344,14 +357,45 @@ def _label_value(raw: str) -> str:
 
 
 def _sandbox_labels(key: SandboxKey, spec: SandboxSpec) -> dict[str, str]:
-    """The labels a container is created with — the same ones ``dispose_scope`` selects on."""
+    """The labels a container is created with — the same ones ``dispose_scope`` selects on.
+
+    :data:`_LABEL_CALL` is written only when the key names a call. A conversation-scoped
+    container therefore carries exactly the labels it carried before this backend served the
+    call scope, so the disposal that selects on them keeps reaching one created by an earlier
+    release.
+    """
     return {
         _LABEL_SCOPE: _label_value(key.scope),
         _LABEL_THREAD: _label_value(key.thread_id),
         _LABEL_AGENT: _label_value(key.agent_dir),
         _LABEL_KIND: _label_value(spec.kind),
+        **({_LABEL_CALL: _label_value(key.call_id)} if key.call_id else {}),
         **{f"{_LABEL_PREFIX}{k}": _label_value(v) for k, v in spec.labels.items()},
     }
+
+
+def _call_filters(key: SandboxKey) -> list[tuple[str, str]]:
+    """The extra label filter a call-scoped key selects with, and nothing for a conversation.
+
+    A call-scoped disposal must reach the container of *that* call and leave the sibling call
+    of the same assistant message running, which is what the label pins. A conversation's key
+    adds no filter: its container carries no call label, and sweeping a call-scoped leftover of
+    the same kind is the backstop :meth:`SandboxBackend.dispose_scope` would otherwise be alone
+    in providing.
+    """
+    return [(_LABEL_CALL, key.call_id)] if key.call_id else []
+
+
+def _key_prefix(key: SandboxKey) -> tuple[str, str, str, str]:
+    """The identity every registry entry and disposal record is filed under.
+
+    ``call_id`` is the fourth field rather than something folded into the other three, so
+    :meth:`SandboxBackend.dispose_scope` keeps selecting on the first two and still reaches a
+    per-call container whose own disposal did not land. A key naming a call and the same key
+    naming none are two entries here, which is what stops one call's cleanup retiring another's
+    record.
+    """
+    return (key.scope, key.thread_id, key.agent_dir, key.call_id)
 
 
 def _key_label(key: SandboxKey) -> str:
@@ -403,7 +447,10 @@ def _container_name(key: SandboxKey, kind: str, egress_id: str = "") -> str:
     egress, so serving two kinds from one container would run the second workload under the
     first one's network policy.  ``egress_id`` folds the egress configuration in for the same
     reason — a sandbox is reused only by an acquire that wants the *same* egress — and is empty
-    for closed egress.  The result matches Docker's name charset
+    for closed egress.  ``key.call_id`` folds in last, and is what makes
+    :data:`~maf_sandbox.IsolationScope.CALL` a boundary rather than a declaration: no acquire
+    repeats a call id, so get-or-create finds nothing warm and each call is created and deleted
+    on its own.  The result matches Docker's name charset
     (``[a-zA-Z0-9][a-zA-Z0-9_.-]*``) with room to spare.
 
     The fields are length-prefixed before hashing rather than joined by a separator: ``SandboxKey``
@@ -415,6 +462,14 @@ def _container_name(key: SandboxKey, kind: str, egress_id: str = "") -> str:
     parts = [key.scope, key.thread_id, key.agent_dir, kind]
     if egress_id:
         parts.append(egress_id)
+    if key.call_id:
+        # Tagged, and appended only when the key names a call: a conversation-scoped key hashes
+        # exactly the parts it hashed before this backend served the call scope, so an upgrade
+        # keeps finding the container it already created. The tag is what keeps the two optional
+        # parts apart — an untagged call id would give `(egress="x", call="")` and
+        # `(egress="", call="x")` one name — and `_egress_id` is empty or `allow:`-tagged, so
+        # the two vocabularies cannot meet.
+        parts.append(f"call:{key.call_id}")
     digest = sha256()
     for part in parts:
         encoded = part.encode("utf-8")
@@ -1155,6 +1210,7 @@ class DockerSandboxBackend:
             egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED})
             if config.egress_proxy_image
             else frozenset({Egress.CLOSED}),
+            isolation_scopes=_ISOLATION_SCOPES,
             observes_egress=bool(config.egress_proxy_image),
         )
         # Where egress decisions go once a router with an observer hands over a reporter. `None`
@@ -1163,11 +1219,11 @@ class DockerSandboxBackend:
         self._egress_report: EgressReporter | None = None
         # (scope, thread_id, agent_dir, kind) -> name: a purge fallback for when the listing
         # fails, never the truth. Holds the last name acquired per key and kind.
-        self._registry: dict[tuple[str, str, str, str], str] = {}
+        self._registry: dict[tuple[str, str, str, str, str], str] = {}
         # Retry records do not refuse serving; the router owns that decision.
-        self._undeleted: dict[tuple[str, str, str], set[str]] = {}
-        self._undeleted_kinds: dict[tuple[str, str, str], dict[str, str]] = {}
-        self._disposal_tokens: dict[tuple[str, str, str], dict[str, object]] = {}
+        self._undeleted: dict[tuple[str, str, str, str], set[str]] = {}
+        self._undeleted_kinds: dict[tuple[str, str, str, str], dict[str, str]] = {}
+        self._disposal_tokens: dict[tuple[str, str, str, str], dict[str, object]] = {}
         self._disposal_guard = threading.Lock()
         # Get-or-create serialised per (running loop, key, kind), for the same reason wslc does
         # it: a create names no container until it returns, so two acquires racing one key would
@@ -1175,7 +1231,7 @@ class DockerSandboxBackend:
         # the loop that first waits on it; weak-keyed on the loop so a process that runs a loop
         # per call does not accumulate a lock table for loops long dead.
         self._acquire_locks: weakref.WeakKeyDictionary[
-            asyncio.AbstractEventLoop, dict[tuple[str, str, str, str], asyncio.Lock]
+            asyncio.AbstractEventLoop, dict[tuple[str, str, str, str, str], asyncio.Lock]
         ] = weakref.WeakKeyDictionary()
         # (container, image, work_dir) -> what the container itself says. Keyed on the image
         # because a container name is not, so one name can come back carrying a different one.
@@ -1531,7 +1587,7 @@ class DockerSandboxBackend:
             # Before the facts read, which is several awaited calls and can raise: the container
             # is running by now, and a name the registry never saw is one the disposal fallback
             # cannot reach when a label listing fails.
-            self._registry[(key.scope, key.thread_id, key.agent_dir, spec.kind)] = name
+            self._registry[(*_key_prefix(key), spec.kind)] = name
             try:
                 inspected = await self._docker(
                     "inspect", "-f", "{{.Id}}", name, timeout=self._config.command_timeout_seconds
@@ -1889,7 +1945,7 @@ class DockerSandboxBackend:
             del self._facts[cached]
 
     def _retain_disposals(
-        self, prefix: tuple[str, str, str], names: Sequence[str], kinds: Mapping[str, str]
+        self, prefix: tuple[str, str, str, str], names: Sequence[str], kinds: Mapping[str, str]
     ) -> dict[str, object]:
         """Reserve retry records while holding the disposal guard."""
         if not names:
@@ -1902,7 +1958,7 @@ class DockerSandboxBackend:
 
     def _finish_disposals(
         self,
-        prefix: tuple[str, str, str],
+        prefix: tuple[str, str, str, str],
         attempted: Mapping[str, object],
         failed: Sequence[str],
         kinds: Mapping[str, str],
@@ -1955,6 +2011,7 @@ class DockerSandboxBackend:
                 _LABEL_SCOPE: _label_value(key.scope),
                 _LABEL_THREAD: _label_value(key.thread_id),
                 _LABEL_AGENT: _label_value(key.agent_dir),
+                **{label: _label_value(value) for label, value in _call_filters(key)},
             }
             if kind is not None:
                 wanted[_LABEL_KIND] = _label_value(kind)
@@ -2034,12 +2091,12 @@ class DockerSandboxBackend:
                 if cached_id == instance_id:
                     self._command_probes.pop(name, None)
             return await self._dispose_instance(key, kind, instance_id)
-        prefix = (key.scope, key.thread_id, key.agent_dir)
+        prefix = _key_prefix(key)
         with self._disposal_guard:
             mine = [
                 k
                 for k in list(self._registry)
-                if k[:3] == prefix and (kind is None or k[3] == kind)
+                if k[:4] == prefix and (kind is None or k[4] == kind)
             ]
             attributed = self._undeleted_kinds.setdefault(prefix, {})
             remembered: list[str] = []
@@ -2047,7 +2104,7 @@ class DockerSandboxBackend:
                 name = self._registry.pop(entry)
                 self._command_probes.pop(name, None)
                 remembered.append(name)
-                attributed[name] = entry[3]
+                attributed[name] = entry[4]
             retained = sorted(
                 name
                 for name in self._undeleted.get(prefix, ())
@@ -2064,6 +2121,7 @@ class DockerSandboxBackend:
             (_LABEL_SCOPE, key.scope),
             (_LABEL_THREAD, key.thread_id),
             (_LABEL_AGENT, key.agent_dir),
+            *_call_filters(key),
         ]
         if kind is not None:
             wanted.append((_LABEL_KIND, kind))
@@ -2105,10 +2163,10 @@ class DockerSandboxBackend:
             for entry in mine:
                 name = self._registry.pop(entry)
                 self._command_probes.pop(name, None)
-                prefix = entry[:3]
+                prefix = entry[:4]
                 remembered.append(name)
                 self._undeleted.setdefault(prefix, set()).add(name)
-                self._undeleted_kinds.setdefault(prefix, {})[name] = entry[3]
+                self._undeleted_kinds.setdefault(prefix, {})[name] = entry[4]
             retained = {
                 p: set(names)
                 for p, names in self._undeleted.items()
@@ -2556,7 +2614,7 @@ class DockerSandboxBackend:
     def _acquire_lock(self, key: SandboxKey, kind: str) -> asyncio.Lock:
         """The get-or-create lock for one key and kind on the running loop (see ``__init__``)."""
         per_loop = self._acquire_locks.setdefault(asyncio.get_running_loop(), {})
-        registry_key = (key.scope, key.thread_id, key.agent_dir, kind)
+        registry_key = (*_key_prefix(key), kind)
         lock = per_loop.get(registry_key)
         if lock is None:
             lock = per_loop[registry_key] = asyncio.Lock()

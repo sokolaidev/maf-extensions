@@ -104,7 +104,7 @@ def test_failures_retain_exact_ids_and_retry_without_deleting_replacements(failu
     service.add("target")
     service.add("sibling", spec=replace(SPEC, kind="other"))
     backend = _backend(service)
-    backend._registry[(KEY.scope, KEY.thread_id, KEY.agent_dir, SPEC.kind)] = _Held(
+    backend._registry[(KEY.scope, KEY.thread_id, KEY.agent_dir, KEY.call_id, SPEC.kind)] = _Held(
         "target", egress=(Egress.CLOSED, frozenset())
     )
     service.failure = failure

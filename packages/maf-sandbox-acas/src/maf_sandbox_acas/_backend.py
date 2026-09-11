@@ -34,6 +34,7 @@ from maf_sandbox import (
     EntryKind,
     ExecResult,
     Isolation,
+    IsolationScope,
     OsFamily,
     Sandbox,
     SandboxBackend,
@@ -140,6 +141,30 @@ def _label_value(raw: str) -> str:
     return "sha256-" + sha256(raw.encode("utf-8")).hexdigest()[:48]
 
 
+def _call_filters(key: SandboxKey) -> dict[str, str]:
+    """The extra label a call-scoped key selects with, and nothing for a conversation.
+
+    A call-scoped disposal must reach the sandbox of *that* call and leave the sibling call of
+    the same assistant message running, which is what the label pins. A conversation's key adds
+    nothing: its sandbox carries no call label, and sweeping a call-scoped leftover of the same
+    kind is the backstop :meth:`SandboxBackend.dispose_scope` would otherwise be alone in
+    providing.
+    """
+    return {_LABEL_CALL: _label_value(key.call_id)} if key.call_id else {}
+
+
+def _key_prefix(key: SandboxKey) -> tuple[str, str, str, str]:
+    """The identity every registry entry and disposal record is filed under.
+
+    ``call_id`` is the fourth field rather than something folded into the other three, so
+    :meth:`SandboxBackend.dispose_scope` keeps selecting on the first two and still reaches a
+    per-call sandbox whose own disposal did not land. A key naming a call and the same key
+    naming none are two entries here, which is what stops one call's cleanup retiring the
+    other's record.
+    """
+    return (key.scope, key.thread_id, key.agent_dir, key.call_id)
+
+
 def _sandbox_labels(key: SandboxKey, spec: SandboxSpec) -> dict[str, str]:
     """The labels a sandbox is created with — the same ones `dispose_scope` selects on."""
     reserved = {_LABEL_SCOPE, _LABEL_THREAD, _LABEL_AGENT, _LABEL_KIND}
@@ -151,6 +176,7 @@ def _sandbox_labels(key: SandboxKey, spec: SandboxSpec) -> dict[str, str]:
         _LABEL_SCOPE: _label_value(key.scope),
         _LABEL_THREAD: _label_value(key.thread_id),
         _LABEL_AGENT: _label_value(key.agent_dir),
+        **_call_filters(key),
         _LABEL_KIND: _label_value(spec.kind),
     }
 
@@ -161,6 +187,10 @@ _LABEL_SCOPE = "scope"
 _LABEL_THREAD = "thread"
 _LABEL_AGENT = "agent"
 _LABEL_KIND = "kind"
+#: The tool call a sandbox serves, written only when the key names one. Absent on a
+#: conversation-scoped sandbox, so a key written before this label existed selects exactly as it
+#: always did, and a call-scoped disposal adds it to reach one call's sandbox and no other.
+_LABEL_CALL = "call"
 
 # How long to wait for a warm sandbox to come back from suspension before giving up on it
 # and creating a fresh one.
@@ -275,6 +305,13 @@ _DECLARATIONS = BackendDeclarations(
     limits=_LIMITS,
     egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED}),
     os_families=frozenset({OsFamily.POSIX}),
+    # Both scopes, because a sandbox's identity folds the key's ``call_id`` — into the registry
+    # entry it is filed at and the service label a disposal selects on — so two acquires
+    # differing only there are two sandboxes and a disposal reaches one of them. Declaring
+    # ``IsolationScope.CALL`` without that would be answered by sharing: both calls would
+    # resolve to one sandbox and both would succeed, which is the half
+    # ``assert_call_scope_conformance`` exists to measure.
+    isolation_scopes=frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL}),
 )
 
 # The data-plane routes and payload fields the pull surface reads for itself, rather than
@@ -1009,14 +1046,14 @@ class AcasSandboxBackend:
         # sandbox — the first spec to arrive would decide the image and egress for both.
         # `dispose_scope` treats this as a fast path, never as the source of truth — see its
         # docstring.
-        self._registry: dict[tuple[str, str, str, str], _Held] = {}
+        self._registry: dict[tuple[str, str, str, str, str], _Held] = {}
         #: Sandbox ids a delete could not remove, by key prefix. Apart from the registry,
         #: which `acquire` resumes from and `dispose` pops, so a failed delete is retried and
         #: never served. An entry lives only while its delete keeps failing.
-        self._undeleted: dict[tuple[str, str, str], set[str]] = {}
-        self._undeleted_kinds: dict[tuple[str, str, str], dict[str, str]] = {}
+        self._undeleted: dict[tuple[str, str, str, str], set[str]] = {}
+        self._undeleted_kinds: dict[tuple[str, str, str, str], dict[str, str]] = {}
         self._scope_disposals: dict[tuple[str, str], dict[str, object]] = {}
-        self._disposal_tokens: dict[tuple[str, str, str], dict[str, object]] = {}
+        self._disposal_tokens: dict[tuple[str, str, str, str], dict[str, object]] = {}
         self._disposal_guard = threading.Lock()
         # Group clients cached per event loop. An azure-core async client binds its transport
         # to the loop that created it, and this host runs some work on a dedicated background
@@ -1029,7 +1066,7 @@ class AcasSandboxBackend:
         #: Which (image, kind) pairs have already been warned about. `acquire` runs on every
         #: tool call, and a warning per call is noise rather than a signal.
         self._warned_about_the_guest: set[tuple[tuple[str, str], str]] = set()
-        self._acquisitions: dict[tuple[str, str, str, str], Future[None]] = {}
+        self._acquisitions: dict[tuple[str, str, str, str, str], Future[None]] = {}
         self._scope_purges: dict[tuple[str, str], int] = {}
         self._acquire_guard = threading.Lock()
 
@@ -1113,7 +1150,7 @@ class AcasSandboxBackend:
                 key. Capture-invalidated instances are deleted before replacement.
         """
         _sandbox_labels(key, spec)
-        async with self._acquire_lock((key.scope, key.thread_id, key.agent_dir, spec.kind)):
+        async with self._acquire_lock((*_key_prefix(key), spec.kind)):
             sandbox = await self._get_or_create(key, spec)
             async with asyncio.timeout(self._config.read_timeout_seconds):
                 await sandbox.prepare_work_dir(spec)
@@ -1122,7 +1159,7 @@ class AcasSandboxBackend:
 
     @asynccontextmanager
     async def _acquire_lock(
-        self, registry_key: tuple[str, str, str, str]
+        self, registry_key: tuple[str, str, str, str, str]
     ) -> AsyncGenerator[None, None]:
         """Serialize one registry key across event loops without blocking their threads."""
         while True:
@@ -1146,7 +1183,7 @@ class AcasSandboxBackend:
     async def _get_or_create(self, key: SandboxKey, spec: SandboxSpec) -> _AcasSandbox:
         """:meth:`acquire`'s body, run under that key's lock."""
         egress = _egress_key(spec)
-        registry_key = (key.scope, key.thread_id, key.agent_dir, spec.kind)
+        registry_key = (*_key_prefix(key), spec.kind)
         work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
         held = self._registry.get(registry_key)
         unusable = False
@@ -1354,7 +1391,7 @@ class AcasSandboxBackend:
             self._scope_disposals.pop(scope_key, None)
 
     def _retain_disposals(
-        self, prefix: tuple[str, str, str], names: Sequence[str], kinds: Mapping[str, str]
+        self, prefix: tuple[str, str, str, str], names: Sequence[str], kinds: Mapping[str, str]
     ) -> dict[str, object]:
         """Reserve retry records while holding the disposal guard."""
         if not names:
@@ -1367,7 +1404,7 @@ class AcasSandboxBackend:
 
     def _finish_disposals(
         self,
-        prefix: tuple[str, str, str],
+        prefix: tuple[str, str, str, str],
         attempted: Mapping[str, object],
         failed: Sequence[str],
     ) -> None:
@@ -1391,7 +1428,7 @@ class AcasSandboxBackend:
         self, gc: Any, key: SandboxKey, sandbox_id: str, *, kind: str
     ) -> None:
         """Delete a refused fresh sandbox, retaining its kind for retries if deletion fails."""
-        prefix = (key.scope, key.thread_id, key.agent_dir)
+        prefix = _key_prefix(key)
         kinds = {sandbox_id: kind}
         with self._disposal_guard:
             attempted = self._retain_disposals(prefix, [sandbox_id], kinds)
@@ -1558,13 +1595,13 @@ class AcasSandboxBackend:
 
         Service labels discover ownership; retained IDs cover a failed sweep listing.
         Failed deletions are retained per kind for retries and reported without raising."""
-        prefix = (key.scope, key.thread_id, key.agent_dir)
+        prefix = _key_prefix(key)
         with self._disposal_guard:
             mine = [
                 k
                 for k in list(self._registry)
-                if k[:3] == prefix
-                and (kind is None or k[3] == kind)
+                if k[:4] == prefix
+                and (kind is None or k[4] == kind)
                 and (instance_id is None or self._registry[k].sandbox_id == instance_id)
             ]
             attributed = self._undeleted_kinds.setdefault(prefix, {})
@@ -1572,7 +1609,7 @@ class AcasSandboxBackend:
             for entry in mine:
                 held = self._registry.pop(entry)
                 remembered.append(held.sandbox_id)
-                attributed[held.sandbox_id] = entry[3]
+                attributed[held.sandbox_id] = entry[4]
             retained = sorted(
                 name
                 for name in self._undeleted.get(prefix, ())
@@ -1600,6 +1637,7 @@ class AcasSandboxBackend:
             _LABEL_SCOPE: _label_value(key.scope),
             _LABEL_THREAD: _label_value(key.thread_id),
             _LABEL_AGENT: _label_value(key.agent_dir),
+            **_call_filters(key),
         }
         if kind is not None:
             labels[_LABEL_KIND] = _label_value(kind)
@@ -1720,8 +1758,8 @@ class AcasSandboxBackend:
             for k, _ in known:
                 self._registry.pop(k, None)
             for entry, sandbox_id in known:
-                self._undeleted_kinds.setdefault(entry[:3], {})[sandbox_id] = entry[3]
-                self._undeleted.setdefault(entry[:3], set()).add(sandbox_id)
+                self._undeleted_kinds.setdefault(entry[:4], {})[sandbox_id] = entry[4]
+                self._undeleted.setdefault(entry[:4], set()).add(sandbox_id)
 
             retained = {
                 p: set(names)

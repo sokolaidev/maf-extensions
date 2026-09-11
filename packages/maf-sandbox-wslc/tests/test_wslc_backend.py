@@ -33,6 +33,7 @@ from maf_sandbox import (
     EntryKind,
     ExecResult,
     Isolation,
+    IsolationScope,
     OsFamily,
     SandboxBackend,
     SandboxBackendNotPermitted,
@@ -1527,7 +1528,7 @@ class TestNarrowedDisposal:
             _machine(overrides={("container", "list"): _WslcResult(1, b"", b"listing unavailable")})
         )
         key = _KEY
-        prefix = (key.scope, key.thread_id, key.agent_dir)
+        prefix = (key.scope, key.thread_id, key.agent_dir, key.call_id)
         backend._registry[(*prefix, "a")] = "selected"
         entered, progressed = threading.Event(), threading.Event()
         failure = DisposalFailure("refused", "delete refused")
@@ -1614,7 +1615,7 @@ class TestNarrowedDisposal:
         backend, fake = _backend_with(
             _machine(overrides={("container", "list"): _WslcResult(1, b"", b"listing unavailable")})
         )
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
         backend._registry[(*prefix, "a")] = "selected"
         original = backend._purge
         entered, release = asyncio.Event(), asyncio.Event()
@@ -1690,7 +1691,7 @@ class TestNarrowedDisposal:
             ("container", "remove", "-f"): _WslcResult(1, b"", b"remove refused"),
         }
         backend, fake = _backend_with(_machine(overrides=overrides))
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
         backend._registry[(*prefix, "a")] = "selected"
         backend._registry[(*prefix, "b")] = "sibling"
         assert asyncio.run(backend.dispose(_KEY, kind="a")) is not None
@@ -1757,7 +1758,7 @@ class TestDispose:
             ("container", "list"): _WslcResult(1, b"", b"WSLC_E_SERVICE_UNAVAILABLE"),
         }
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = _NAME  # noqa: SLF001
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "", "bicep")] = _NAME  # noqa: SLF001
 
         assert asyncio.run(backend.dispose(_KEY)) is not None
         second = asyncio.run(backend.dispose(_KEY))
@@ -1768,7 +1769,7 @@ class TestDispose:
         """The record is written before the first await, so a bound that expires mid-sweep does
         not take the only name of the container with it."""
         backend, _ = _backend_with(_machine(running=[_NAME]))
-        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = _NAME  # noqa: SLF001
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "", "bicep")] = _NAME  # noqa: SLF001
         inner = backend._wslc  # noqa: SLF001
 
         async def hangs_on_remove(*args: str, **kwargs: object) -> _WslcResult:
@@ -1786,12 +1787,12 @@ class TestDispose:
             asyncio.run(cut_short())
 
         assert backend._undeleted == {  # noqa: SLF001
-            ("scope-a", "thread-1", "devops-engineer"): {_NAME}
+            ("scope-a", "thread-1", "devops-engineer", ""): {_NAME}
         }
 
     def test_a_removal_that_lands_clears_the_retry_record(self):
         backend, _ = _backend_with(_machine(running=[_NAME]))
-        backend._undeleted[("scope-a", "thread-1", "devops-engineer")] = {_NAME}  # noqa: SLF001
+        backend._undeleted[("scope-a", "thread-1", "devops-engineer", "")] = {_NAME}  # noqa: SLF001
 
         assert asyncio.run(backend.dispose(_KEY)) is None
         assert backend._undeleted == {}  # noqa: SLF001
@@ -1805,7 +1806,7 @@ class TestDispose:
 
     def test_a_runner_that_raises_comes_back_as_the_reason(self):
         backend, _ = _backend_with(_explodes)
-        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = _NAME
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "", "bicep")] = _NAME
         reason = asyncio.run(backend.dispose(_KEY))
         assert reason is not None
         assert reason.code == "unreachable", "the runner never reached the engine"
@@ -1816,8 +1817,10 @@ class TestDispose:
         reclaim all of them, not whichever one a single-slot registry kept last."""
         overrides = {("container", "list"): _WslcResult(1, b"", b"WSLC_E_SERVICE_UNAVAILABLE")}
         backend, fake = _backend_with(_machine(overrides=overrides))
-        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = "name-bicep"
-        backend._registry[("scope-a", "thread-1", "devops-engineer", "codeact")] = "name-codeact"
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "", "bicep")] = "name-bicep"
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "", "codeact")] = (
+            "name-codeact"
+        )
 
         asyncio.run(backend.dispose(_KEY))
 
@@ -1832,7 +1835,7 @@ class TestDispose:
         `None` here clears the router's refusal on the strength of a delete nobody confirmed."""
         listing = asyncio.Event()
         release = asyncio.Event()
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
 
         async def slow_listing(*args: str, **kwargs: object) -> _WslcResult:
             if args[:2] == ("container", "list"):
@@ -1864,7 +1867,7 @@ class TestDispose:
         asyncio.run(backend.acquire(_KEY, _SPEC))
         assert asyncio.run(backend.dispose(_KEY)) is not None
 
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
         assert backend._undeleted[prefix] == {_NAME}, "the name is owed a retry"  # noqa: SLF001
         asyncio.run(backend.acquire(_KEY, _SPEC))
         assert fake.matching("container", "run") == [], "the same container is handed back"
@@ -1876,7 +1879,7 @@ class TestDisposeScope:
     @pytest.mark.parametrize("unlisted", [False, True])
     def test_scope_purge_retires_confirmed_records(self, retained, partial, unlisted, monkeypatch):
         backend, _ = _backend_with(_machine())
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
         backend._registry[(*prefix, "a")] = "selected"
         backend._registry[(*prefix, "b")] = "sibling"
         failure = DisposalFailure("unknown", "engine unavailable")
@@ -1910,7 +1913,7 @@ class TestDisposeScope:
         self, first_scope, second_scope, failure_first, monkeypatch
     ):
         backend, _ = _backend_with(_machine())
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
         backend._registry[(*prefix, "a")] = "selected"
         backend._registry[(*prefix, "b")] = "sibling"
         first_started, second_started = asyncio.Event(), asyncio.Event()
@@ -1968,7 +1971,7 @@ class TestDisposeScope:
         backend, fake = _backend_with(
             _machine(overrides={("container", "list"): failed, ("container", "remove"): failed})
         )
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
         backend._registry[(*prefix, "a")] = "selected"
         backend._registry[(*prefix, "b")] = "sibling"
         original = backend._wslc
@@ -2003,7 +2006,7 @@ class TestDisposeScope:
         record: it must not index a prefix a `dispose` removed, nor drop a name it added."""
         listing = asyncio.Event()
         release = asyncio.Event()
-        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir, _KEY.call_id)
 
         async def slow_listing(*args: str, **kwargs: object) -> _WslcResult:
             if args[:2] == ("container", "list"):
@@ -2067,18 +2070,18 @@ class TestDisposeScope:
         """The labels are the source of truth; the registry is what is left when they fail."""
         overrides = {("container", "list"): _WslcResult(1, b"", b"WSLC_E_SERVICE_UNAVAILABLE")}
         backend, fake = _backend_with(_machine(overrides=overrides))
-        backend._registry[("scope-a", "thread-1", "devops", "bicep")] = "name-x"
+        backend._registry[("scope-a", "thread-1", "devops", "", "bicep")] = "name-x"
 
         assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")).disposed == 1
         assert fake.only("container", "remove").args[-1] == "name-x"
 
     def test_another_scopes_container_is_left_alone(self):
         backend, fake = _backend_with(_machine())
-        backend._registry[("scope-b", "thread-1", "devops", "bicep")] = "name-other"
+        backend._registry[("scope-b", "thread-1", "devops", "", "bicep")] = "name-other"
 
         assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")).disposed == 0
         assert fake.matching("container", "remove") == []
-        assert ("scope-b", "thread-1", "devops", "bicep") in backend._registry
+        assert ("scope-b", "thread-1", "devops", "", "bicep") in backend._registry
 
     def test_a_failing_seam_degrades_to_zero_rather_than_raising(self):
         """A conversation delete must not fail because wslc is unavailable."""
@@ -2759,7 +2762,7 @@ class TestAllowlistTeardown:
         # and network with it, not just the workload.
         overrides = {("container", "list"): _WslcResult(1, b"", b"WSLC_E_SERVICE_UNAVAILABLE")}
         backend, fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
-        backend._registry[("scope-a", "thread-1", "devops", "bicep")] = _AL
+        backend._registry[("scope-a", "thread-1", "devops", "", "bicep")] = _AL
 
         assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")).disposed == 1
         removed = [c.args[-1] for c in fake.matching("container", "remove")]
@@ -3259,3 +3262,108 @@ def test_storage_binding_precedes_adoption_of_a_name_conflict():
     with pytest.raises(ValueError, match="storage base"):
         asyncio.run(backend.acquire(_KEY, spec))
     assert not any(call.args[1] in {"start", "rm", "remove"} for call in fake.calls)
+
+
+# ---------------------------------------------------------------------------
+# The isolation scope — one sandbox per call, declared and keyed (#436)
+# ---------------------------------------------------------------------------
+
+#: What `_container_name` returned for `_KEY` and `_SPEC.kind` before this backend served the
+#: call scope, written down rather than recomputed. A conversation-scoped key has to keep
+#: mapping to the container it already created, or the release that adds the scope orphans
+#: every warm sandbox on the machine and every disposal that derives a name misses it.
+_NAME_BEFORE_THE_CALL_SCOPE = "maf-sandbox-wslc-d76deaf0de05"
+
+_CALL_A = replace(_KEY, call_id="call-a")
+_CALL_B = replace(_KEY, call_id="call-b")
+
+
+class TestTheIsolationScope:
+    """That a key naming a call is a different container, and is disposed on its own."""
+
+    def test_declares_both_scopes(self):
+        scopes = WslcSandboxBackend(WslcSandboxConfig()).declarations.isolation_scopes
+        assert scopes == frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL})
+
+    def test_a_conversation_key_maps_to_the_container_it_always_did(self):
+        """The upgrade path. Pinned to a literal: recomputing the digest here would agree with
+        the implementation whatever either one did, and prove nothing about the release before.
+        """
+        assert _container_name(_KEY, _SPEC.kind) == _NAME_BEFORE_THE_CALL_SCOPE
+
+    def test_a_key_naming_a_call_is_a_different_container(self):
+        assert _container_name(_CALL_A, _SPEC.kind) != _container_name(_KEY, _SPEC.kind)
+
+    def test_two_calls_are_two_containers(self):
+        """The property itself, at the level the name decides it: get-or-create resolves each
+        call to a name no other call produced, so neither is ever handed the other's warm one.
+        """
+        assert _container_name(_CALL_A, _SPEC.kind) != _container_name(_CALL_B, _SPEC.kind)
+
+    def test_a_call_id_cannot_be_read_as_an_egress_id(self):
+        """Both optional parts are appended, so an untagged call id would let a sandbox with an
+        allowlist and no call share a name with a call whose id spelled that allowlist.
+        """
+        egress_only = _container_name(_KEY, _SPEC.kind, "allow:example.com")
+        call_only = _container_name(replace(_KEY, call_id="allow:example.com"), _SPEC.kind)
+        assert egress_only != call_only
+
+    def test_a_conversation_container_carries_no_call_label(self):
+        """Absence is what keeps the label selector reaching containers an earlier release
+        created, which carry the four labels this one still writes and nothing more.
+        """
+        assert "maf-sandbox.call" not in _sandbox_labels(_KEY, _SPEC)
+
+    def test_a_call_scoped_container_is_labelled_with_its_call(self):
+        assert _sandbox_labels(_CALL_A, _SPEC)["maf-sandbox.call"] == "call-a"
+
+    def test_the_create_writes_the_call_label(self):
+        backend, fake = _backend_with(_machine())
+        asyncio.run(backend.acquire(_CALL_A, _SPEC))
+        assert "maf-sandbox.call=call-a" in fake.only("container", "run").args
+
+    def test_a_call_scoped_disposal_selects_on_the_call(self):
+        backend, fake = _backend_with(_machine())
+        asyncio.run(backend.dispose(_CALL_A, kind=_SPEC.kind))
+        listed = [c.args for c in fake.matching("container", "list")]
+        assert listed, "the disposal read no listing at all"
+        assert all("label=maf-sandbox.call=call-a" in args for args in listed)
+
+    def test_a_conversation_disposal_does_not_filter_on_a_call(self):
+        """A conversation's key adds no call filter, so it keeps reaching the containers a
+        release before this one labelled with four labels and no fifth.
+        """
+        backend, fake = _backend_with(_machine())
+        asyncio.run(backend.dispose(_KEY, kind=_SPEC.kind))
+        listed = [c.args for c in fake.matching("container", "list")]
+        assert listed, "the disposal read no listing at all"
+        assert not any("maf-sandbox.call" in arg for args in listed for arg in args)
+
+    def test_disposing_one_call_leaves_the_other_calls_registry_entry(self):
+        """`assert_call_scope_conformance`'s last probe, at the half this process decides.
+
+        Two calls are two registry entries, so ending one selects one of them. The other half
+        — that the engine's own listing returns one container for that filter — is the live
+        suite's: the fake here answers `container list` from everything it is holding and reads
+        no `--filter label=` at all, so an assertion about which container the *engine* removed
+        would pass or fail on the fake rather than on this backend.
+        """
+        backend, _ = _backend_with(_machine())
+
+        async def scenario() -> None:
+            await backend.acquire(_CALL_A, _SPEC)
+            await backend.acquire(_CALL_B, _SPEC)
+            await backend.dispose(_CALL_A, kind=_SPEC.kind)
+
+        asyncio.run(scenario())
+        assert {key[3] for key in backend._registry} == {"call-b"}
+
+    def test_the_purge_selects_on_scope_and_thread_and_not_on_the_call(self):
+        """The documented backstop: a per-call delete that does not land leaves a container no
+        later call can address, and the purge's filter is what still reaches it.
+        """
+        backend, fake = _backend_with(_machine())
+        asyncio.run(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+        listed = [c.args for c in fake.matching("container", "list")]
+        assert listed, "the purge read no listing at all"
+        assert not any("maf-sandbox.call" in arg for args in listed for arg in args)
