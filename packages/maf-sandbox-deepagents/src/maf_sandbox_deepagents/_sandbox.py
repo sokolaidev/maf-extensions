@@ -537,6 +537,9 @@ class MafSandbox(BaseSandbox):
     # --- files in --------------------------------------------------------------------------
 
     async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        if not files:
+            # Nothing to land: no call, so no sandbox is created for a batch of none.
+            return []
         limits = self._spec.files_in
         if len(files) > limits.max_files:
             refusal = _TOO_MANY_FILES.format(direction="files_in")
@@ -675,8 +678,12 @@ class MafSandbox(BaseSandbox):
             return FileDownloadResponse(path=path, error=_SIZE_UNKNOWN)
         if entry.size_bytes > cap:
             return FileDownloadResponse(path=path, error=over_cap)
+        # A batch that has spent its total leaves no room, and the plane's cap must be
+        # positive; one byte lets an empty file through and the re-count below refuse the rest.
         try:
-            content = await sandbox.read_file(path, working_directory=STORAGE_BASE, max_bytes=cap)
+            content = await sandbox.read_file(
+                path, working_directory=STORAGE_BASE, max_bytes=max(cap, 1)
+            )
         except SandboxTransferCapExceeded:
             return FileDownloadResponse(path=path, error=over_cap)
         except TimeoutError:
@@ -700,8 +707,14 @@ class MafSandbox(BaseSandbox):
     ) -> FileDownloadResponse:
         """Read outside the base through the shell, under ``cap``; see :meth:`_upload_via_shell`."""
         try:
+            # A batch that has spent its total leaves no room; one byte keeps the probe's
+            # classification and lets an empty file through, and the re-count refuses the rest.
             content = await read_file_over_exec(
-                sandbox, path, working_directory=STORAGE_BASE, timeout=self._timeout, max_bytes=cap
+                sandbox,
+                path,
+                working_directory=STORAGE_BASE,
+                timeout=self._timeout,
+                max_bytes=max(cap, 1),
             )
         except SandboxFileRefused as refused:
             logger.info("%s: shell read of %r refused: %s", self._id, path, refused.detail)
@@ -721,9 +734,13 @@ class MafSandbox(BaseSandbox):
         except asyncio.CancelledError:
             self._condemn(call)
             raise
+        if len(content) > cap:
+            return FileDownloadResponse(path=path, error=over_cap)
         return FileDownloadResponse(path=path, content=content)
 
     async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        if not paths:
+            return []
         limits = self._spec.files_out
         if len(paths) > limits.max_files:
             refusal = _TOO_MANY_FILES.format(direction="files_out")

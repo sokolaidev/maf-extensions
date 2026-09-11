@@ -924,6 +924,53 @@ class TestFilesOut:
         ]
         assert responses[-1].content == b"content"
 
+    def test_a_batch_of_none_opens_no_call(self):
+        """An empty batch has nothing to land or read, so no sandbox is created for it."""
+        adapter, backend = _adapter(InProcessSandbox())
+        assert asyncio.run(adapter.aupload_files([])) == []
+        assert asyncio.run(adapter.adownload_files([])) == []
+        assert backend.keys == [] and backend.disposed == []
+
+    def test_a_batch_that_spent_its_total_still_serves_an_empty_file(self):
+        """No room left is the total cap for anything with bytes; an empty file has none, and
+        the path is still classified rather than failed."""
+
+        class Scripted(InProcessSandbox):
+            async def exec(self, command, *, working_directory, timeout):
+                answers = {
+                    "wc -c < /tmp/a": "3\n",
+                    "base64 < /tmp/a": base64.b64encode(b"abc").decode(),
+                    "wc -c < /tmp/e": "0\n",
+                    "base64 < /tmp/e": "",
+                    "wc -c < /tmp/b": "1\n",
+                    "base64 < /tmp/b": base64.b64encode(b"1").decode(),
+                    "if [ ! -e /tmp/m ]": "missing\n",
+                }
+                for marker, answer in answers.items():
+                    if marker in command:
+                        return ExecResult(stdout=answer)
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        spec = deepagents_spec(
+            "img:1", files_out=TransferLimits(max_bytes_per_file=8, max_total_bytes=3, max_files=8)
+        )
+        adapter = MafSandbox(_router(_backend(Scripted())), KEY, spec)
+        a, e, b, missing = asyncio.run(
+            adapter.adownload_files(["/tmp/a", "/tmp/e", "/tmp/b", "/tmp/m"])
+        )
+        assert (a.content, e.content) == (b"abc", b"")
+        assert b.error == "the batch would exceed files_out.max_total_bytes"
+        assert missing.error == "file_not_found"
+
+        fake = InProcessSandbox(seed_files={f"{WORK}/a": "abc", f"{WORK}/e": "", f"{WORK}/b": "1"})
+        adapter = MafSandbox(_router(_backend(fake)), KEY, spec)
+        a, e, b, missing = asyncio.run(adapter.adownload_files(["a", "e", "b", "m"]))
+        assert (a.content, e.content) == (b"abc", b"")
+        assert b.error == "the batch would exceed files_out.max_total_bytes"
+        assert missing.error == "file_not_found"
+
     def test_a_download_outside_the_base_goes_through_the_shell(self):
         """Deep Agents reads its offloaded history back from `/conversation_history`."""
         encoded = base64.b64encode(b"# history\n").decode()
