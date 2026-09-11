@@ -10,17 +10,13 @@ is still keyed from the host's request context and purged with the conversation.
 from __future__ import annotations
 
 import asyncio
-import base64
 import concurrent.futures
 import dataclasses
 import hashlib
 import json
 import logging
 import math
-import os
 import posixpath
-import shlex
-import threading
 import time
 import uuid
 from collections.abc import Coroutine
@@ -44,18 +40,26 @@ from maf_sandbox import (
     Cleanup,
     Egress,
     EgressRule,
-    EntryKind,
     ExecResult,
+    FileRefusal,
     Isolation,
     IsolationScope,
     NoSandboxBackend,
     Sandbox,
     SandboxExecOutputLimitExceeded,
+    SandboxFileRefused,
     SandboxKey,
     SandboxRouter,
+    SandboxShellTransferFailed,
+    SandboxShellTransferUnfinished,
     SandboxSpec,
     SandboxTransferCapExceeded,
+    SyncRunner,
     TransferLimits,
+    entry_refusal,
+    file_refusal,
+    read_file_over_exec,
+    write_file_over_exec,
 )
 from maf_sandbox.paths import posix_work_dir_ancestors
 
@@ -134,9 +138,6 @@ _NO_SHELL_ROAD = (
     "the path is outside the storage base and the backend cannot run a bounded command to reach it"
 )
 
-#: Raw bytes per command on the shell road. Base64 of it is 64 KiB, under the 128 KiB Linux
-#: allows one argument, and ``sh -c`` receives the whole command as one.
-_SHELL_CHUNK_BYTES = 48 * 1024
 _OVER_FILE_CAP = "the file is larger than {direction}.max_bytes_per_file"
 _OVER_TOTAL_CAP = "the batch would exceed {direction}.max_total_bytes"
 
@@ -175,52 +176,10 @@ def deepagents_spec(
     )
 
 
-class _SyncRunner:
-    """One loop on a thread of its own, shared by every adapter in the process, for the
-    synchronous surface.
-
-    Deep Agents calls that surface from sync tools, which LangGraph runs on a worker thread
-    with no loop, and a caller holding a running loop cannot nest another. One loop for the
-    process rather than one per adapter or per call, because a backend may cache a client per
-    loop (ACAS does) and never evicts one for a loop that closed; a loop that lives with the
-    process leaves it exactly one. Started on the first sync call; the thread is a daemon.
-    A fork carries the loop into the child but not its thread, so the child starts over on
-    its first sync call, under a fresh guard: the inherited one may be held by a thread that
-    did not cross.
-    """
-
-    _THREAD_NAME = "maf-sandbox-deepagents"
-
-    def __init__(self) -> None:
-        self._reset()
-        if hasattr(os, "register_at_fork"):
-            os.register_at_fork(after_in_child=self._reset)
-
-    def _reset(self) -> None:
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._thread: threading.Thread | None = None
-        self._guard = threading.Lock()
-
-    def _started(self) -> asyncio.AbstractEventLoop:
-        with self._guard:
-            if self._loop is None:
-                self._loop = asyncio.new_event_loop()
-                self._thread = threading.Thread(
-                    target=self._loop.run_forever, name=self._THREAD_NAME, daemon=True
-                )
-                self._thread.start()
-            return self._loop
-
-    def run[T](self, coroutine: Coroutine[Any, Any, T]) -> T:
-        return self.submit(coroutine).result()
-
-    def submit[T](self, coroutine: Coroutine[Any, Any, T]) -> concurrent.futures.Future[T]:
-        """Run ``coroutine`` on the loop and hand back its future: work that must outlive the
-        caller's loop, joinable from any loop."""
-        return asyncio.run_coroutine_threadsafe(coroutine, self._started())
-
-
-_SYNC = _SyncRunner()
+#: One loop on a thread of its own for the synchronous surface, shared by every adapter in
+#: the process: Deep Agents calls that surface from sync tools, which LangGraph runs on a
+#: worker thread with no loop, and a backend may cache a client per loop (ACAS does).
+_SYNC = SyncRunner(thread_name="maf-sandbox-deepagents")
 
 
 def _response(result: ExecResult, *, max_output_bytes: int | None = None) -> ExecuteResponse:
@@ -263,13 +222,13 @@ class _BatchLost(Exception):
         self.response = response
 
 
-def _shell_error(stderr: str) -> str:
-    """The Deep Agents code for a failed shell write, read off what the shell said."""
-    if "Permission denied" in stderr:
-        return PERMISSION_DENIED
-    if "Is a directory" in stderr:
-        return IS_DIRECTORY
-    return INVALID_PATH
+#: Deep Agents' code for each refusal the core's file roads name.
+_CODES = {
+    FileRefusal.NOT_FOUND: FILE_NOT_FOUND,
+    FileRefusal.IS_DIRECTORY: IS_DIRECTORY,
+    FileRefusal.PERMISSION_DENIED: PERMISSION_DENIED,
+    FileRefusal.INVALID_PATH: INVALID_PATH,
+}
 
 
 class MafSandbox(BaseSandbox):
@@ -455,6 +414,22 @@ class MafSandbox(BaseSandbox):
             rung=Cleanup.DISPOSE,
         )
 
+    def _log_unfinished(
+        self, what: str, path: str, unfinished: SandboxShellTransferUnfinished
+    ) -> None:
+        """A timeout or an overflow is a warning; a failure that kept the result from coming
+        back is an error, with the provider's words and traceback for the host."""
+        expected = isinstance(unfinished.__cause__, (TimeoutError, SandboxExecOutputLimitExceeded))
+        logger.log(
+            logging.WARNING if expected else logging.ERROR,
+            "%s: %s of %r did not finish: %s",
+            self._id,
+            what,
+            path,
+            unfinished,
+            exc_info=not expected,
+        )
+
     async def _leave(self, call: _Call, *, deferred: bool = False) -> None:
         """Release the admission; the last call out runs whatever delete was queued.
 
@@ -468,7 +443,7 @@ class MafSandbox(BaseSandbox):
         if not (call.condemned or deferred):
             await release
             return
-        # `_SyncRunner.submit` takes the coroutine itself and runs it on the process's loop.
+        # `SyncRunner.submit` takes the coroutine itself and runs it on the process's loop.
         released = _SYNC.submit(release)
         released.add_done_callback(self._left)
 
@@ -590,7 +565,7 @@ class MafSandbox(BaseSandbox):
                     elif self._inside_base(path):
                         error = await self._upload_via_plane(call, sandbox, path, content)
                     elif isinstance(sandbox, BoundedExec):
-                        error = await self._upload_via_shell(call, path, content)
+                        error = await self._upload_via_shell(call, sandbox, path, content)
                     else:
                         error = _NO_SHELL_ROAD
                 except _BatchLost:
@@ -613,73 +588,45 @@ class MafSandbox(BaseSandbox):
         """
         try:
             await sandbox.write_file(path, content, working_directory=STORAGE_BASE)
-        except PermissionError as refused:
-            logger.info("%s: upload of %r refused: %s", self._id, path, refused)
-            return PERMISSION_DENIED
-        except (ValueError, NotADirectoryError) as refused:
-            # The file plane's own refusals — through a link, a parent that is a file — are
-            # the guest's shape, safe to name by code.
-            logger.info("%s: upload of %r refused: %s", self._id, path, refused)
-            return INVALID_PATH
         except asyncio.CancelledError:
             self._condemn(call)
             raise
-        except Exception:
-            logger.exception("%s: upload of %r failed", self._id, path)
-            self._condemn(call)
-            raise _BatchLost() from None
+        except Exception as failed:
+            refusal = file_refusal(failed)
+            if refusal is None:
+                logger.exception("%s: upload of %r failed", self._id, path)
+                self._condemn(call)
+                raise _BatchLost() from None
+            logger.info("%s: upload of %r refused: %s", self._id, path, failed)
+            return _CODES[refusal]
         return None
 
-    async def _upload_via_shell(self, call: _Call, path: str, content: bytes) -> str | None:
+    async def _upload_via_shell(
+        self, call: _Call, sandbox: BoundedExec, path: str, content: bytes
+    ) -> str | None:
         """Write outside the base through the shell the agent already has.
 
         Deep Agents writes its offloaded history under ``/conversation_history`` and its
         large-edit temporaries under ``/tmp``, which the file plane, confined to the base,
         cannot reach; ``execute`` can, so this widens nothing. The caps were applied by the
-        caller. Base64 in chunks, because a command is one argument to ``sh -c``; the chunks
-        land in a sibling of the target named for this call alone, moved into place once the
-        last has, so a reader, or a second writer over the same path, sees a whole file and
-        never an interleaving of two.
+        caller. The road is the core's, and lands the file whole or not at all; a command
+        whose end is unknown condemns the instance and ends the batch, with every file it
+        had already put there.
         """
-        target = shlex.quote(path)
-        parent = shlex.quote(posixpath.dirname(path) or "/")
-        staged = shlex.quote(f"{path}.{uuid.uuid4().hex}.part")
-        encoded = base64.b64encode(content).decode("ascii")
-        step = 4 * (_SHELL_CHUNK_BYTES // 3)
-        commands = [
-            f"mkdir -p {parent} && if [ -d {target} ]; then echo 'Is a directory' >&2; exit 1; "
-            f"fi && : > {staged}"
-        ]
-        commands += [
-            f"printf %s {encoded[start : start + step]} | base64 -d >> {staged}"
-            for start in range(0, len(encoded), step)
-        ]
-        commands.append(f"mv -f {staged} {target}")
-        for command in commands:
-            try:
-                result = await self._run_bounded(
-                    call, command, timeout=self._timeout, max_output_bytes=4096
-                )
-            except (TimeoutError, SandboxExecOutputLimitExceeded) as unfinished:
-                # The command may still be running, so the sandbox went, and with it every
-                # file this batch had already put there.
-                logger.warning(
-                    "%s: shell write of %r did not finish: %s",
-                    self._id,
-                    path,
-                    type(unfinished).__name__,
-                )
-                raise _BatchLost() from None
-            except Exception:
-                # The command's end is unknown here too, so the batch ends the same way; the
-                # provider's words stay in the log.
-                logger.exception("%s: shell write of %r failed", self._id, path)
-                raise _BatchLost() from None
-            if result.exit_code != 0:
-                logger.info(
-                    "%s: shell write of %r failed: %s", self._id, path, result.stderr.strip()
-                )
-                return _shell_error(result.stderr)
+        try:
+            await write_file_over_exec(
+                sandbox, path, content, working_directory=STORAGE_BASE, timeout=self._timeout
+            )
+        except SandboxFileRefused as refused:
+            logger.info("%s: shell write of %r refused: %s", self._id, path, refused.detail)
+            return _CODES[refused.refusal]
+        except SandboxShellTransferUnfinished as unfinished:
+            self._log_unfinished("shell write", path, unfinished)
+            self._condemn(call)
+            raise _BatchLost() from None
+        except asyncio.CancelledError:
+            self._condemn(call)
+            raise
         return None
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
@@ -701,7 +648,7 @@ class MafSandbox(BaseSandbox):
         if not self._inside_base(path):
             if not isinstance(sandbox, BoundedExec):
                 return FileDownloadResponse(path=path, error=_NO_SHELL_ROAD)
-            return await self._download_via_shell(call, path, cap=cap, over_cap=over_cap)
+            return await self._download_via_shell(call, sandbox, path, cap=cap, over_cap=over_cap)
         try:
             entry = await sandbox.stat_file(path, working_directory=STORAGE_BASE)
         except TimeoutError:
@@ -711,19 +658,15 @@ class MafSandbox(BaseSandbox):
             # because a command whose end is unknown may still be running.
             logger.warning("%s: stat of %r timed out", self._id, path)
             return FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)
-        except PermissionError as refused:
-            logger.info("%s: download of %r refused: %s", self._id, path, refused)
-            return FileDownloadResponse(path=path, error=PERMISSION_DENIED)
-        except (ValueError, NotADirectoryError) as refused:
-            # The plane's own refusals, as on the upload road: a parent that is a file too.
-            logger.info("%s: download of %r refused: %s", self._id, path, refused)
-            return FileDownloadResponse(path=path, error=INVALID_PATH)
-        if entry is None:
-            return FileDownloadResponse(path=path, error=FILE_NOT_FOUND)
-        if entry.kind is EntryKind.DIRECTORY:
-            return FileDownloadResponse(path=path, error=IS_DIRECTORY)
-        if entry.kind is not EntryKind.FILE:
-            return FileDownloadResponse(path=path, error=INVALID_PATH)
+        except Exception as failed:
+            refusal = file_refusal(failed)
+            if refusal is None:
+                raise
+            logger.info("%s: download of %r refused: %s", self._id, path, failed)
+            return FileDownloadResponse(path=path, error=_CODES[refusal])
+        refusal = entry_refusal(entry)
+        if entry is None or refusal is not None:
+            return FileDownloadResponse(path=path, error=_CODES[refusal or FileRefusal.NOT_FOUND])
         # `None` fails closed: an unknown size read as free is how a cap stops bounding.
         if entry.size_bytes is None:
             return FileDownloadResponse(path=path, error=_SIZE_UNKNOWN)
@@ -734,21 +677,15 @@ class MafSandbox(BaseSandbox):
         except SandboxTransferCapExceeded:
             return FileDownloadResponse(path=path, error=over_cap)
         except TimeoutError:
-            # Before the OSError branch: a timeout is one, and the path was not the problem.
             # Not condemned, for the reason given at the stat: the file is failed alone.
             logger.warning("%s: read of %r timed out", self._id, path)
             return FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)
-        except FileNotFoundError:
-            return FileDownloadResponse(path=path, error=FILE_NOT_FOUND)
-        except IsADirectoryError:
-            return FileDownloadResponse(path=path, error=IS_DIRECTORY)
-        except PermissionError as refused:
-            # Before the OSError branch it is one of: an unreadable file is not a bad path.
-            logger.info("%s: download of %r refused: %s", self._id, path, refused)
-            return FileDownloadResponse(path=path, error=PERMISSION_DENIED)
-        except (ValueError, OSError) as refused:
-            logger.info("%s: download of %r refused: %s", self._id, path, refused)
-            return FileDownloadResponse(path=path, error=INVALID_PATH)
+        except Exception as failed:
+            refusal = file_refusal(failed)
+            if refusal is None:
+                raise
+            logger.info("%s: download of %r refused: %s", self._id, path, failed)
+            return FileDownloadResponse(path=path, error=_CODES[refusal])
         if len(content) > cap:
             # The protocol has the caller re-count: a file can grow after the stat, and a
             # backend whose SDK buffers the whole response can only refuse after the fact.
@@ -756,78 +693,31 @@ class MafSandbox(BaseSandbox):
         return FileDownloadResponse(path=path, content=content)
 
     async def _download_via_shell(
-        self, call: _Call, path: str, *, cap: int, over_cap: str
+        self, call: _Call, sandbox: BoundedExec, path: str, *, cap: int, over_cap: str
     ) -> FileDownloadResponse:
         """Read outside the base through the shell, under ``cap``; see :meth:`_upload_via_shell`."""
-        target = shlex.quote(path)
-        # `test -e` is false for a file behind an unsearchable ancestor as for an absent one,
-        # so the open's own error, in the shell's words, tells the two apart.
-        probe = (
-            f"if [ ! -e {target} ]; then ( : < {target} ) 2>&1; echo missing; "
-            f"elif [ -d {target} ]; then echo directory; "
-            f"elif [ ! -f {target} ]; then echo other; "
-            f"elif [ ! -r {target} ]; then echo unreadable; "
-            f"else wc -c < {target}; fi"
-        )
         try:
-            probed = await self._run_bounded(
-                call, probe, timeout=self._timeout, max_output_bytes=4096
+            content = await read_file_over_exec(
+                sandbox, path, working_directory=STORAGE_BASE, timeout=self._timeout, max_bytes=cap
             )
-        except (TimeoutError, SandboxExecOutputLimitExceeded) as unfinished:
-            logger.warning(
-                "%s: probe of %r did not finish: %s", self._id, path, type(unfinished).__name__
-            )
-            raise _BatchLost(FileDownloadResponse(path=path, error=_DOWNLOAD_BATCH_LOST)) from None
-        except Exception:
-            logger.exception("%s: probe of %r failed", self._id, path)
-            raise _BatchLost(FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)) from None
-        answer = probed.stdout.strip()
-        if probed.exit_code != 0 or not answer:
-            logger.warning("%s: probe of %r failed: %s", self._id, path, probed.stderr.strip())
-            return FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)
-        if answer.endswith("missing"):
-            detail = answer.removesuffix("missing")
-            if "Permission denied" in detail:
-                return FileDownloadResponse(path=path, error=PERMISSION_DENIED)
-            if "Not a directory" in detail:
-                return FileDownloadResponse(path=path, error=INVALID_PATH)
-            return FileDownloadResponse(path=path, error=FILE_NOT_FOUND)
-        if answer == "directory":
-            return FileDownloadResponse(path=path, error=IS_DIRECTORY)
-        if answer == "other":
-            return FileDownloadResponse(path=path, error=INVALID_PATH)
-        if answer == "unreadable":
-            return FileDownloadResponse(path=path, error=PERMISSION_DENIED)
-        if not answer.isdigit():
-            logger.warning("%s: probe of %r answered %r", self._id, path, answer)
-            return FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)
-        if int(answer) > cap:
+        except SandboxFileRefused as refused:
+            logger.info("%s: shell read of %r refused: %s", self._id, path, refused.detail)
+            return FileDownloadResponse(path=path, error=_CODES[refused.refusal])
+        except SandboxTransferCapExceeded:
             return FileDownloadResponse(path=path, error=over_cap)
-        try:
-            # Base64 is 4/3 of the file plus line breaks; the budget bounds a file that grew.
-            read = await self._run_bounded(
-                call, f"base64 < {target}", timeout=self._timeout, max_output_bytes=cap * 2 + 4096
-            )
-        except SandboxExecOutputLimitExceeded:
-            # The file outgrew its cap mid-read, and the read may still be running: this file
-            # is over the cap, and the rest of the batch is not attempted.
-            raise _BatchLost(FileDownloadResponse(path=path, error=over_cap)) from None
-        except TimeoutError:
-            logger.warning("%s: shell read of %r timed out", self._id, path)
-            raise _BatchLost(FileDownloadResponse(path=path, error=_DOWNLOAD_BATCH_LOST)) from None
-        except Exception:
-            logger.exception("%s: shell read of %r failed", self._id, path)
-            raise _BatchLost(FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)) from None
-        if read.exit_code != 0:
-            logger.warning("%s: shell read of %r failed: %s", self._id, path, read.stderr.strip())
+        except SandboxShellTransferUnfinished as unfinished:
+            # The command may still be running: the instance goes, and the rest of the batch
+            # is not attempted. A read its own budget ended is over the cap, and says so.
+            self._log_unfinished("shell read", path, unfinished)
+            self._condemn(call)
+            error = over_cap if unfinished.over_cap else _DOWNLOAD_BATCH_LOST
+            raise _BatchLost(FileDownloadResponse(path=path, error=error)) from None
+        except SandboxShellTransferFailed as failed:
+            logger.warning("%s: shell read of %r failed: %s", self._id, path, failed)
             return FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)
-        try:
-            content = base64.b64decode("".join(read.stdout.split()), validate=True)
-        except ValueError:
-            logger.warning("%s: shell read of %r returned no base64", self._id, path)
-            return FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)
-        if len(content) > cap:
-            return FileDownloadResponse(path=path, error=over_cap)
+        except asyncio.CancelledError:
+            self._condemn(call)
+            raise
         return FileDownloadResponse(path=path, content=content)
 
     async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
