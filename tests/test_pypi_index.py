@@ -14,11 +14,13 @@ wrong quietly: a lexical order puts 0.9.0 above 0.10.0 and every caller reads th
 
 from __future__ import annotations
 
+import base64
 import email.message
 import http.client
 import importlib.util
 import io
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -81,6 +83,14 @@ def _install(monkeypatch: pytest.MonkeyPatch, fake: _Index) -> list[float]:
     return []
 
 
+@pytest.fixture(autouse=True)
+def _one_index_unless_a_test_says_otherwise(monkeypatch: pytest.MonkeyPatch):
+    """A contributor's own index settings would change how many documents each read fetches."""
+    for name in [key for key in os.environ if key.startswith("UV_INDEX")]:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("UV_DEFAULT_INDEX", raising=False)
+
+
 class TestADefinitiveReplyIsNotRetried:
     def test_a_document_comes_back_on_the_first_attempt(self, monkeypatch):
         fake = _Index({"versions": ["0.16.0"]})
@@ -95,8 +105,9 @@ class TestADefinitiveReplyIsNotRetried:
         assert index.read_json(_URL, sleep=pauses.append) is None
         assert len(fake.requests) == 1
 
-    def test_a_4xx_that_is_not_404_raises_at_once(self, monkeypatch):
-        fake = _Index(_http_error(403))
+    @pytest.mark.parametrize("code", [400, 410, 422])
+    def test_a_4xx_that_is_neither_404_nor_a_refusal_raises_at_once(self, monkeypatch, code):
+        fake = _Index(_http_error(code))
         pauses = _install(monkeypatch, fake)
         with pytest.raises(urllib.error.HTTPError):
             index.read_json(_URL, sleep=pauses.append)
@@ -226,3 +237,495 @@ class TestPublishedVersionsAreSortedSemantically:
         """None, not an empty list: a caller has to tell "no versions" from "no package"."""
         _install(monkeypatch, _Index(_http_error(404)))
         assert index.fetch_published_versions("maf-sandbox-nothing") is None
+
+
+class TestAVersionsMetadataComesFromTheIndexThatCarriesIt:
+    """Warehouse serves `/pypi/<name>/<version>/json` beside its simple index, so both follow
+    the same variables: the same indexes, the same order, the same credentials, and the base's
+    own path and query kept.
+
+    A version one index holds and another does not is the ordinary case, not a corner: a caller
+    reads a 404 as "no such version", so asking the wrong index answers about a different one.
+    """
+
+    def test_the_rehearsal_index_is_asked_first_and_answers(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("UV_INDEX", "https://test.pypi.org/simple/")
+        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://pypi.org/simple/")
+        fake = _Index({"info": {"requires_dist": ["maf-sandbox>=0.38.0,<0.39"]}})
+        _install(monkeypatch, fake)
+        payload = index.fetch_version_document("maf-sandbox-deepagents", "0.1.0")
+        assert payload is not None
+        assert fake.requests[0].full_url == (
+            "https://test.pypi.org/pypi/maf-sandbox-deepagents/0.1.0/json"
+        )
+
+    def test_an_index_without_the_version_falls_through_to_the_next(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("UV_INDEX", "https://test.pypi.org/simple/")
+        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://pypi.org/simple/")
+        fake = _Index(_http_error(404), {"info": {"requires_dist": []}})
+        _install(monkeypatch, fake)
+        assert index.fetch_version_document("maf-sandbox", "0.37.0") is not None
+        assert [request.full_url for request in fake.requests] == [
+            "https://test.pypi.org/pypi/maf-sandbox/0.37.0/json",
+            "https://pypi.org/pypi/maf-sandbox/0.37.0/json",
+        ]
+
+    def test_a_version_no_index_carries_is_none(self, monkeypatch: pytest.MonkeyPatch):
+        _install(monkeypatch, _Index(_http_error(404)))
+        assert index.fetch_version_document("maf-sandbox", "99.0.0") is None
+
+    def test_by_default_it_asks_pypi_and_nothing_else(self, monkeypatch: pytest.MonkeyPatch):
+        fake = _Index({"info": {}})
+        _install(monkeypatch, fake)
+        index.fetch_version_document("maf-sandbox", "0.37.0")
+        assert [request.full_url for request in fake.requests] == [
+            "https://pypi.org/pypi/maf-sandbox/0.37.0/json"
+        ]
+
+    @pytest.mark.parametrize(
+        ("base", "expected"),
+        [
+            ("https://pypi.org/simple/", "https://pypi.org/pypi/maf-sandbox/0.38.0/json"),
+            (
+                "https://test.pypi.org/simple/",
+                "https://test.pypi.org/pypi/maf-sandbox/0.38.0/json",
+            ),
+            (
+                "https://mirror.example/repository/simple/",
+                "https://mirror.example/repository/pypi/maf-sandbox/0.38.0/json",
+            ),
+            (
+                "https://mirror.example/repository/simple/?token=abc",
+                "https://mirror.example/repository/pypi/maf-sandbox/0.38.0/json?token=abc",
+            ),
+            (
+                "https://mirror.example/idx/",
+                "https://mirror.example/idx/pypi/maf-sandbox/0.38.0/json",
+            ),
+        ],
+    )
+    def test_the_base_keeps_its_own_path_and_query(self, base: str, expected: str):
+        """A mirror scoped under a prefix, or authenticating by query, is asked where it lives.
+
+        Rebuilt from the host alone it is asked at a path it does not serve, without the
+        credential, and answers as though the version were not published.
+        """
+        assert index.version_document_url(base, "maf-sandbox", "0.38.0") == expected
+
+
+class TestEveryVersionAnIndexCarriesIsReported:
+    """Dropping a version a range admits gates on a set the install it guards does not resolve.
+
+    `0.38.0.post1` satisfies `>=0.38.0,<0.39` and a resolver may select it, so it has to reach
+    the caller. `version` answers the release segment, which is what a `<ceiling` bound is
+    written against; `sort_key` carries PEP 440's precedence.
+    """
+
+    def _carrying(self, monkeypatch: pytest.MonkeyPatch, *versions: str) -> None:
+        monkeypatch.setattr(index, "fetch_simple", lambda _name: {"versions": list(versions)})
+
+    def test_a_post_release_comes_back_and_sorts_above_its_own_release(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        self._carrying(monkeypatch, "0.1.0", "0.1.0.post1", "0.2.0", "0.38.0")
+        assert index.fetch_published_versions("maf-sandbox") == [
+            "0.38.0",
+            "0.2.0",
+            "0.1.0.post1",
+            "0.1.0",
+        ]
+
+    @pytest.mark.parametrize(
+        ("odd", "expected"),
+        [
+            ("1.0.0rc1", ["1.0.0", "1.0.0rc1"]),
+            ("1.0.0b2", ["1.0.0", "1.0.0b2"]),
+            ("1.0.0.dev3", ["1.0.0", "1.0.0.dev3"]),
+            ("1.0.0.post1", ["1.0.0.post1", "1.0.0"]),
+        ],
+    )
+    def test_each_pep440_shape_is_ordered_rather_than_dropped(
+        self, monkeypatch: pytest.MonkeyPatch, odd: str, expected: list[str]
+    ):
+        self._carrying(monkeypatch, "1.0.0", odd)
+        assert index.fetch_published_versions("maf-sandbox") == expected
+
+    def test_a_range_admits_a_post_release_by_its_release_segment(self):
+        assert index.version("0.38.0.post1") == (0, 38, 0)
+        assert index.admits(index.version("0.38.0.post1"), (0, 39))
+        assert not index.admits(index.version("0.39.0.post1"), (0, 39))
+
+    def test_the_whole_order_is_pep_440s(self):
+        """The one part that is not "nothing sorts last": a dev release with no pre sorts below
+        one with a pre, so `1.0.dev1` precedes `1.0a1`."""
+        assert sorted(
+            ["1.0", "1.0a1", "2!0.1", "1.0.post1", "1.0.dev1", "1.0rc1", "1.0b1"],
+            key=index.sort_key,
+        ) == ["1.0.dev1", "1.0a1", "1.0b1", "1.0rc1", "1.0", "1.0.post1", "2!0.1"]
+
+    @pytest.mark.parametrize("nonsense", ["latest", "", "1.0.0-beta-final", "v"])
+    def test_something_that_is_not_a_version_still_raises(self, nonsense: str):
+        """A refusal, not a silent drop: an index answering this is not a set to gate on."""
+        with pytest.raises(ValueError):
+            index.sort_key(nonsense)
+
+
+class TestWhichIndexesAreRead:
+    """The checks read exactly what `uv` would resolve from: its variables, in its order.
+
+    `UV_INDEX` first and `UV_DEFAULT_INDEX` behind it, PyPI when neither names one, and an
+    entry's optional `<name>=` prefix is not part of its URL.
+    """
+
+    def test_pypi_is_the_only_index_by_default(self):
+        assert index.index_urls() == ("https://pypi.org/simple/",)
+
+    @pytest.mark.parametrize("variable", ["UV_INDEX", "UV_DEFAULT_INDEX"])
+    def test_the_name_uv_lets_an_index_carry_is_not_part_of_its_url(
+        self, monkeypatch: pytest.MonkeyPatch, variable: str
+    ):
+        """`uv pip install --index corp=https://…` is documented and resolves; taken whole it
+        would request `corp=https://mirror.example/simple/maf-sandbox/` and every check fail."""
+        monkeypatch.setenv(variable, "corp=https://mirror.example/simple/")
+        assert "https://mirror.example/simple/" in index.index_urls()
+
+    def test_a_query_is_not_mistaken_for_a_name(self, monkeypatch: pytest.MonkeyPatch):
+        """The name prefix is recognised by the scheme behind it, so an `=` elsewhere is safe."""
+        monkeypatch.setenv("UV_INDEX", "https://mirror.example/simple?token=abc")
+        assert index.index_urls()[0] == "https://mirror.example/simple/?token=abc"
+
+
+class TestADistributionIsJoinedOntoThePath:
+    """An index may carry a query, and a name concatenated onto the whole URL lands inside it.
+
+    The request then asks for a package nobody named, against a path the index does not serve —
+    and on an index that authenticates by query, it puts the name where the credential is.
+    """
+
+    @pytest.mark.parametrize(
+        "base",
+        [
+            "https://mirror.example/simple",
+            "https://mirror.example/simple/",
+            "https://mirror.example/simple///",
+        ],
+    )
+    def test_however_the_base_ends_the_path_gains_one_segment(self, base: str):
+        assert (
+            index.package_url(base, "maf-sandbox") == "https://mirror.example/simple/maf-sandbox/"
+        )
+
+    def test_a_query_rides_behind_the_path_rather_than_swallowing_it(self):
+        assert (
+            index.package_url("https://mirror.example/simple/?token=abc", "maf-sandbox")
+            == "https://mirror.example/simple/maf-sandbox/?token=abc"
+        )
+
+    def test_the_document_read_is_the_one_the_path_names(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("UV_INDEX", "https://mirror.example/simple?token=abc")
+        fake = _Index({"versions": ["1.0.0"]})
+        _install(monkeypatch, fake)
+        index.fetch_published_versions("maf-sandbox")
+        assert fake.requests[0].full_url == "https://mirror.example/simple/maf-sandbox/?token=abc"
+
+    def test_the_primary_comes_first_and_the_extras_follow(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("UV_INDEX", "https://test.pypi.org/simple/")
+        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://pypi.org/simple/")
+        assert index.index_urls() == ("https://test.pypi.org/simple/", "https://pypi.org/simple/")
+
+    def test_a_missing_trailing_slash_is_not_a_different_index(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("UV_INDEX", "https://test.pypi.org/simple")
+        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://test.pypi.org/simple/")
+        assert index.index_urls() == ("https://test.pypi.org/simple/",)
+
+    def test_several_extras_are_split_the_way_uv_splits_them(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("UV_INDEX", "https://one.example/simple/ https://two.example/simple/")
+        assert index.index_urls() == (
+            "https://one.example/simple/",
+            "https://two.example/simple/",
+            "https://pypi.org/simple/",
+        )
+
+
+class TestAVersionOnEitherIndexCounts:
+    """Under `unsafe-best-match` uv prefers the best version across indexes, so every one counts.
+
+    The only strategy that merges. `first-index` and `unsafe-first-match` are the other half and
+    have their own class below. Which applies is read from `UV_INDEX_STRATEGY` rather than chosen
+    here: merging under a strategy the resolver does not would admit versions the install cannot
+    reach.
+    """
+
+    def _two(self, monkeypatch: pytest.MonkeyPatch, first: object, second: object) -> _Index:
+        monkeypatch.setenv("UV_INDEX", "https://test.pypi.org/simple/")
+        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://pypi.org/simple/")
+        monkeypatch.setenv("UV_INDEX_STRATEGY", "unsafe-best-match")
+        fake = _Index(first, second)
+        _install(monkeypatch, fake)
+        return fake
+
+    def test_the_rehearsed_version_is_seen_beside_the_released_ones(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        self._two(monkeypatch, {"versions": ["0.38.0"]}, {"versions": ["0.36.0", "0.37.0"]})
+        assert index.fetch_published_versions("maf-sandbox") == ["0.38.0", "0.37.0", "0.36.0"]
+
+    def test_a_version_on_both_is_named_once(self, monkeypatch: pytest.MonkeyPatch):
+        self._two(monkeypatch, {"versions": ["0.37.0"]}, {"versions": ["0.37.0"]})
+        assert index.fetch_published_versions("maf-sandbox") == ["0.37.0"]
+
+    def test_an_index_that_never_had_it_does_not_hide_the_one_that_does(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        self._two(monkeypatch, _http_error(404), {"versions": ["0.37.0"]})
+        assert index.fetch_published_versions("maf-sandbox") == ["0.37.0"]
+
+    def test_never_released_anywhere_is_still_none(self, monkeypatch: pytest.MonkeyPatch):
+        self._two(monkeypatch, _http_error(404), _http_error(404))
+        assert index.fetch_published_versions("maf-sandbox-nothing") is None
+
+    def test_both_indexes_are_asked(self, monkeypatch: pytest.MonkeyPatch):
+        fake = self._two(monkeypatch, {"versions": ["0.38.0"]}, {"versions": ["0.37.0"]})
+        index.fetch_published_versions("maf-sandbox")
+        assert [request.full_url for request in fake.requests] == [
+            "https://test.pypi.org/simple/maf-sandbox/",
+            "https://pypi.org/simple/maf-sandbox/",
+        ]
+
+    def test_the_files_of_both_are_kept_so_upload_times_stay_readable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        self._two(
+            monkeypatch,
+            {"versions": ["0.38.0"], "files": [{"upload-time": "2026-09-11T14:00:00Z"}]},
+            {"versions": ["0.37.0"], "files": [{"upload-time": "2026-09-10T08:58:00Z"}]},
+        )
+        payload = index.fetch_simple("maf-sandbox")
+        assert payload is not None
+        assert index.newest_upload(payload) == "2026-09-11T14:00:00Z"
+
+
+class TestFirstIndexStopsAtTheFirstMatch:
+    """uv's default resolves only what the first index carrying the distribution offers.
+
+    A merged read under it would report versions the install cannot reach, which is the same
+    disagreement between check and resolver that naming the indexes exists to end.
+    """
+
+    def _two(self, monkeypatch: pytest.MonkeyPatch, first: object, second: object) -> _Index:
+        monkeypatch.setenv("UV_INDEX", "https://one.example/simple/")
+        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://pypi.org/simple/")
+        fake = _Index(first, second)
+        _install(monkeypatch, fake)
+        return fake
+
+    @pytest.mark.parametrize("strategy", ["", "first-index", "unsafe-first-match"])
+    def test_the_second_index_is_never_asked(self, monkeypatch: pytest.MonkeyPatch, strategy: str):
+        """`unsafe-first-match` belongs here, not with the merge: uv exhausts the first index's
+        versions before reaching the next, an order that turns on a requirement this layer does
+        not hold. Reading the first index alone reports fewer versions than uv would, never a
+        version it would refuse."""
+        if strategy:
+            monkeypatch.setenv("UV_INDEX_STRATEGY", strategy)
+        fake = self._two(monkeypatch, {"versions": ["0.1.0"]}, {"versions": ["9.9.9"]})
+        assert index.fetch_published_versions("maf-sandbox") == ["0.1.0"]
+        assert [request.full_url for request in fake.requests] == [
+            "https://one.example/simple/maf-sandbox/"
+        ]
+
+    def test_an_index_without_it_is_passed_over_rather_than_ending_the_search(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """uv stops at the first index that returns a match, not at the first index asked."""
+        self._two(monkeypatch, _http_error(404), {"versions": ["0.37.0"]})
+        assert index.fetch_published_versions("maf-sandbox") == ["0.37.0"]
+
+    def test_an_unknown_strategy_does_not_widen_the_search(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("UV_INDEX_STRATEGY", "whatever-uv-adds-next")
+        self._two(monkeypatch, {"versions": ["0.1.0"]}, {"versions": ["9.9.9"]})
+        assert index.fetch_published_versions("maf-sandbox") == ["0.1.0"]
+
+
+class TestANamedIndexCarriesTheCredentialUvWouldSend:
+    """uv addresses a named index's credentials by that name, so the name has to survive parsing.
+
+    Stripped, the check reads an authenticated index unauthenticated: refused, or quietly sent
+    to the next index, which is the reader and the resolver disagreeing one layer below where
+    naming the index was meant to settle it.
+    """
+
+    def test_the_header_is_composed_from_uvs_own_variables(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("UV_INDEX", "corp=https://mirror.example/simple/")
+        monkeypatch.setenv("UV_INDEX_CORP_USERNAME", "reader")
+        monkeypatch.setenv("UV_INDEX_CORP_PASSWORD", "secret")
+        fake = _Index({"versions": ["1.0.0"]})
+        _install(monkeypatch, fake)
+        index.fetch_published_versions("maf-sandbox")
+        assert fake.requests[0].get_header("Authorization") == "Basic cmVhZGVyOnNlY3JldA=="
+
+    def test_a_name_uv_would_spell_differently_is_spelled_uvs_way(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("UV_INDEX", "my-corp.eu=https://mirror.example/simple/")
+        monkeypatch.setenv("UV_INDEX_MY_CORP_EU_USERNAME", "reader")
+        assert index.configured_indexes()[0][1] is not None
+
+    def test_an_index_with_no_credentials_sends_none(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("UV_INDEX", "corp=https://mirror.example/simple/")
+        fake = _Index({"versions": ["1.0.0"]})
+        _install(monkeypatch, fake)
+        index.fetch_published_versions("maf-sandbox")
+        assert fake.requests[0].get_header("Authorization") is None
+
+    def test_userinfo_becomes_a_header_and_leaves_the_request_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """`urllib` hands `user:pass@host` to the resolver, which fails to look it up — and the
+        `URLError` that follows is retried and reported as an index nobody could reach."""
+        monkeypatch.setenv("UV_INDEX", "https://reader:secret@mirror.example/simple/")
+        fake = _Index({"versions": ["1.0.0"]})
+        _install(monkeypatch, fake)
+        index.fetch_published_versions("maf-sandbox")
+        assert fake.requests[0].full_url == "https://mirror.example/simple/maf-sandbox/"
+        assert fake.requests[0].get_header("Authorization") == "Basic cmVhZGVyOnNlY3JldA=="
+
+    def test_a_named_variable_beats_userinfo_on_the_same_url(self, monkeypatch: pytest.MonkeyPatch):
+        """uv's own precedence is not established here; the variable set beside the index is the
+        more deliberate of the two."""
+        monkeypatch.setenv("UV_INDEX", "corp=https://embedded:old@mirror.example/simple/")
+        monkeypatch.setenv("UV_INDEX_CORP_USERNAME", "reader")
+        monkeypatch.setenv("UV_INDEX_CORP_PASSWORD", "secret")
+        assert index.configured_indexes()[0] == (
+            "https://mirror.example/simple/",
+            "Basic cmVhZGVyOnNlY3JldA==",
+        )
+
+    def test_userinfo_on_the_default_index_is_carried_too(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://reader:secret@mirror.example/simple/")
+        assert index.configured_indexes() == (
+            ("https://mirror.example/simple/", "Basic cmVhZGVyOnNlY3JldA=="),
+        )
+
+    def test_a_percent_encoded_credential_is_decoded_the_way_uv_reads_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """`urlsplit` leaves `p%40ss` encoded; uv authenticates as `p@ss`, a different secret."""
+        monkeypatch.setenv("UV_INDEX", "https://reader:p%40ss@mirror.example/simple/")
+        expected = "Basic " + base64.b64encode(b"reader:p@ss").decode()
+        assert index.configured_indexes()[0][1] == expected
+
+    def test_an_unnamed_index_is_never_given_another_indexs_credential(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("UV_INDEX", "https://mirror.example/simple/")
+        monkeypatch.setenv("UV_INDEX_CORP_USERNAME", "reader")
+        assert index.configured_indexes()[0][1] is None
+
+    def test_a_bare_name_contributes_no_index_as_it_does_for_uv(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """`uv pip install --index somename` resolves from the default index without error."""
+        monkeypatch.setenv("UV_INDEX", "somename")
+        assert index.index_urls() == ("https://pypi.org/simple/",)
+
+    @pytest.mark.parametrize("code", [401, 403])
+    def test_a_refusal_says_the_index_could_not_be_asked(self, monkeypatch, code: int):
+        """Not a `None` that a caller reads as "no such version", and not a bare traceback."""
+        pauses = _install(monkeypatch, _Index(_http_error(code)))
+        with pytest.raises(index.IndexUnreachable) as raised:
+            index.read_json(_URL, sleep=pauses.append)
+        said = str(raised.value)
+        assert "refused the request" in said
+        assert "not a verdict" in said
+        assert pauses == []
+
+
+class TestACredentialStaysAtItsOrigin:
+    """urllib copies every header across a redirect, `Authorization` included.
+
+    A mirror answering 302 towards another host would otherwise hand that host the private
+    index's credential. The redirect is still followed; only the header is dropped, and only
+    when scheme, host or port changes.
+    """
+
+    def _following(self, first: str, then: str) -> urllib.request.Request:
+        handler = index._CredentialStaysAtItsOrigin()  # noqa: SLF001
+        request = urllib.request.Request(first, headers={"Authorization": "Basic SECRET"})
+        following = handler.redirect_request(
+            request, io.BytesIO(b""), 302, "Found", email.message.Message(), then
+        )
+        assert following is not None
+        return following
+
+    @pytest.mark.parametrize(
+        "elsewhere",
+        [
+            "https://other.example/simple/pkg/",
+            "http://mirror.example/simple/pkg/",
+            "https://mirror.example:8443/simple/pkg/",
+        ],
+        ids=["host", "scheme", "port"],
+    )
+    def test_a_redirect_off_the_origin_drops_the_credential(self, elsewhere: str):
+        following = self._following("https://mirror.example/simple/pkg/", elsewhere)
+        assert following.get_header("Authorization") is None
+
+    def test_a_redirect_within_the_origin_keeps_it(self):
+        following = self._following(
+            "https://mirror.example/simple/pkg/", "https://mirror.example/simple/pkg/index.html"
+        )
+        assert following.get_header("Authorization") == "Basic SECRET"
+
+    def test_the_installed_opener_carries_the_handler(self):
+        """Installed globally, so a call site that forgot it would leak rather than fail."""
+        assert any(
+            isinstance(handler, index._CredentialStaysAtItsOrigin)  # noqa: SLF001
+            for handler in index._OPENER.handlers  # noqa: SLF001
+        )
+
+
+class TestAnIndexUrlMayCarryACredential:
+    """The annotation reaches the run log, which is readable and never masked."""
+
+    def test_userinfo_and_query_are_replaced(self):
+        assert (
+            index.redacted("https://token:secret@mirror.example/simple/pkg/?key=abc")
+            == "https://***@mirror.example/simple/pkg/?***"
+        )
+
+    def test_the_host_port_and_path_survive_so_the_reader_knows_which_index(self):
+        assert (
+            index.redacted("https://u:p@mirror.example:8443/simple/pkg/")
+            == "https://***@mirror.example:8443/simple/pkg/"
+        )
+
+    def test_a_url_carrying_neither_is_untouched(self):
+        assert index.redacted(_URL) == _URL
+
+    def test_an_ipv6_host_keeps_the_brackets_that_make_it_a_url(self):
+        """Rebuilt from `hostname` and `port` the brackets are gone and `https://***@2001:db8::1:8443/`
+        is not an address any more — the one line a reader needs in order to act is the one lost."""
+        assert (
+            index.redacted("https://u:p@[2001:db8::1]:8443/simple/")
+            == "https://***@[2001:db8::1]:8443/simple/"
+        )
+
+    def test_an_ipv6_host_with_no_credential_is_left_alone(self):
+        plain = "https://[2001:db8::1]:8443/simple/"
+        assert index.redacted(plain) == plain
+
+    def test_the_unreachable_message_carries_the_redacted_form(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        secret = "https://token:secret@mirror.example/simple/maf-sandbox/"
+        pauses = _install(monkeypatch, _Index(*[_http_error(503)] * index.ATTEMPTS))
+        with pytest.raises(index.IndexUnreachable) as raised:
+            index.read_json(secret, sleep=pauses.append)
+        said = str(raised.value)
+        assert "secret" not in said
+        assert "token" not in said
+        assert "mirror.example/simple/maf-sandbox/" in said

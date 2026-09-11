@@ -66,6 +66,11 @@ jobs:
       package: ${{ steps.resolve.outputs.package }}
       version: ${{ steps.resolve.outputs.version }}
       target: ${{ steps.resolve.outputs.target }}
+      # The index the gates read and resolve from, derived here with everything else so every
+      # step asks the index this run uploads to rather than whichever one it defaults to.
+      index_url: ${{ steps.resolve.outputs.index_url }}
+      default_index_url: ${{ steps.resolve.outputs.default_index_url }}
+      index_strategy: ${{ steps.resolve.outputs.index_strategy }}
       # Context only — a breaking release whose dependents still import runs the live check
       # all the same. The dispatch decision is `live_check` on the dispatch job below, read off
       # the post-upload dispatch check (the `pypi` environment can hold while the index moves,
@@ -109,10 +114,24 @@ jobs:
             echo "::error::tag '${REF_NAME}' resolves to package '${package}', which does not exist under packages/"
             exit 1
           fi
+          # A rehearsal resolves from the index it uploads to, with PyPI behind it for
+          # everything TestPyPI does not carry — the install line this workflow already prints
+          # on a rehearsal summary, in uv's spelling. `first-index` is uv's default, so the
+          # pypi path resolves exactly as it did before.
+          if [ "${target}" = "testpypi" ]; then
+            index_url="https://test.pypi.org/simple/"
+            index_strategy="unsafe-best-match"
+          else
+            index_url="https://pypi.org/simple/"
+            index_strategy="first-index"
+          fi
           echo "package=${package}" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "target=${target}" >> "$GITHUB_OUTPUT"
-          echo "publishing ${package} ${version} to ${target}"
+          echo "index_url=${index_url}" >> "$GITHUB_OUTPUT"
+          echo "default_index_url=https://pypi.org/simple/" >> "$GITHUB_OUTPUT"
+          echo "index_strategy=${index_strategy}" >> "$GITHUB_OUTPUT"
+          echo "publishing ${package} ${version} to ${target} against ${index_url}"
 
       # The changelog's breaking flag is informational: it does not identify whether published
       # dependents are stranded. The work check below makes the live-check dispatch decision;
@@ -261,9 +280,13 @@ jobs:
           name: dist-${{ needs.build.outputs.package }}
           path: dist/
 
-      # Resolves from the real index with NO local fallback — deliberately opposite of
+      # Resolves from the target's own indexes with NO local fallback — deliberately opposite of
       # tests.yml's copy of this gate. Stops a release whose dependency isn't published yet.
       - name: Install the wheel into a clean environment
+        env:
+          UV_INDEX: ${{ needs.build.outputs.index_url }}
+          UV_DEFAULT_INDEX: ${{ needs.build.outputs.default_index_url }}
+          UV_INDEX_STRATEGY: ${{ needs.build.outputs.index_strategy }}
         run: |
           set -euo pipefail
           uv venv /tmp/smoke
@@ -321,6 +344,9 @@ jobs:
         if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
         env:
           PACKAGE: ${{ needs.build.outputs.package }}
+          UV_INDEX: ${{ needs.build.outputs.index_url }}
+          UV_DEFAULT_INDEX: ${{ needs.build.outputs.default_index_url }}
+          UV_INDEX_STRATEGY: ${{ needs.build.outputs.index_strategy }}
         run: |
           set -euo pipefail
           wheel="$(ls dist/"${PACKAGE//-/_}"-*.whl)"
@@ -335,6 +361,10 @@ jobs:
       # that moved past a sibling, and no later publish repairs it.
       - name: The release's own packages install together
         if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
+        env:
+          UV_INDEX: ${{ needs.build.outputs.index_url }}
+          UV_DEFAULT_INDEX: ${{ needs.build.outputs.default_index_url }}
+          UV_INDEX_STRATEGY: ${{ needs.build.outputs.index_strategy }}
         run: |
           set -euo pipefail
           python3 scripts/check_suite_installs_together.py --whole-set --dist-dir dist
@@ -345,6 +375,10 @@ jobs:
       # resolved. The report goes to the job summary and the release goes ahead.
       - name: The candidate beside the published suite
         if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
+        env:
+          UV_INDEX: ${{ needs.build.outputs.index_url }}
+          UV_DEFAULT_INDEX: ${{ needs.build.outputs.default_index_url }}
+          UV_INDEX_STRATEGY: ${{ needs.build.outputs.index_strategy }}
         run: |
           set -euo pipefail
           python3 scripts/check_suite_installs_together.py --dist-dir dist
@@ -396,6 +430,9 @@ jobs:
         if: ${{ needs.build.outputs.package == 'maf-sandbox' }}
         env:
           VERSION: ${{ needs.build.outputs.version }}
+          UV_INDEX: ${{ needs.build.outputs.index_url }}
+          UV_DEFAULT_INDEX: ${{ needs.build.outputs.default_index_url }}
+          UV_INDEX_STRATEGY: ${{ needs.build.outputs.index_strategy }}
         run: |
           set -euo pipefail
           python3 scripts/check_core_against_dependents.py \

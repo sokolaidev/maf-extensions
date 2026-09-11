@@ -25,6 +25,7 @@ import urllib.parse
 from pathlib import Path
 
 import pytest
+import yaml
 from _version_prose import release_named_in
 from _workflow_commands import (
     command_arguments,
@@ -470,6 +471,64 @@ class TestTheBuildLoopsDiscoverEveryPackage:
         )
         assert not named, f"{step!r} hand-lists {named}: discover from packages/*/ instead"
         assert "packages/*/" in block, f"{step!r} does not enumerate packages/*/"
+
+
+class TestTheIndexIsDerivedOnceAndReachesEveryStepThatReadsOne:
+    """Every step that reads or resolves an index has to say which one, and say the same one.
+
+    A gate that asks a different index than the resolver measures something nobody installs, so
+    the index is resolved beside the package, the version and the registry, and carried to each
+    step from there.
+
+    The last test enumerates rather than hand-listing: a step reads an index if it runs
+    `uv pip install` or a script importing `pypi_index`, so one added later is caught on its own
+    commit.
+    """
+
+    #: All three, exactly: `UV_INDEX` alone leaves the resolver on a different strategy than the
+    #: reader, and it is a prefix of `UV_INDEX_STRATEGY`, so a substring test passes on the one
+    #: variable that decides the least.
+    INDEX_KEYS = frozenset({"UV_INDEX", "UV_DEFAULT_INDEX", "UV_INDEX_STRATEGY"})
+
+    RESOLVE = run_block(PUBLISH_WORKFLOW, "Resolve the release")
+    WORKFLOW = yaml.safe_load(PUBLISH_WORKFLOW.read_text("utf-8"))
+    READERS = sorted(
+        path.name
+        for path in (REPO_ROOT / "scripts").glob("*.py")
+        if path.name != "pypi_index.py" and "pypi_index" in path.read_text(encoding="utf-8")
+    )
+
+    @pytest.mark.parametrize("output", ["index_url", "default_index_url", "index_strategy"])
+    def test_the_resolve_step_writes_it_and_the_job_exposes_it(self, output: str):
+        assert f'echo "{output}=' in self.RESOLVE
+        assert self.WORKFLOW["jobs"]["build"]["outputs"][output]
+
+    def test_a_rehearsal_and_a_release_do_not_resolve_from_the_same_index(self):
+        assert "testpypi" in self.RESOLVE
+        assert "https://test.pypi.org/simple/" in self.RESOLVE
+        assert "https://pypi.org/simple/" in self.RESOLVE
+
+    def test_there_is_at_least_one_index_reading_script_to_find(self):
+        """The enumeration below gates nothing if it finds nothing."""
+        assert self.READERS
+
+    def test_every_step_that_reads_an_index_names_which_one(self):
+        unnamed = []
+        for job_name, job in self.WORKFLOW["jobs"].items():
+            gate = str(job.get("if", ""))
+            for step in job.get("steps", []):
+                block = str(step.get("run", ""))
+                if "uv pip install" not in block and not any(r in block for r in self.READERS):
+                    continue
+                if "target == 'pypi'" in gate + str(step.get("if", "")):
+                    continue
+                if self.INDEX_KEYS <= set(step.get("env") or {}):
+                    continue
+                unnamed.append(f"{job_name}: {step.get('name', 'unnamed step')}")
+        assert not unnamed, (
+            "these steps read an index without naming all of "
+            f"{sorted(self.INDEX_KEYS)}, and are not confined to a real release: {unnamed}"
+        )
 
 
 class TestRoutineAutomationDoesNotClaimToCloseAnIssue:
