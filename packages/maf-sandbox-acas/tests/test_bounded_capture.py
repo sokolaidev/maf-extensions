@@ -27,6 +27,7 @@ class _CaptureService:
         self.closed = 0
         self.calls = 0
         self.started = asyncio.Event()
+        self.response_fields = {}
 
     async def begin_delete(self):
         self.deleted = True
@@ -64,12 +65,30 @@ class _CaptureService:
                 service.started.set()
                 if service.mode in {"timeout", "cancel"}:
                     await asyncio.Event().wait()
-                yield json.dumps({"stdout": text, "stderr": "", "exitCode": 0}).encode()
+                yield json.dumps(
+                    {"stdout": text, "stderr": "", "exitCode": 0} | service.response_fields
+                ).encode()
 
             async def close(self):
                 service.closed += 1
 
         return SimpleNamespace(http_response=Response())
+
+
+@pytest.mark.parametrize("field", ["stdout", "stderr", "exitCode"])
+def test_malformed_control_response_disposes_and_closes(field):
+    async def scenario():
+        service = _CaptureService(b"out", b"err")
+        service.response_fields[field] = False
+        sandbox = _AcasSandbox(service, 1)
+        with pytest.raises(ValueError, match="invalid execution response"):
+            await sandbox.exec_bounded(
+                "program", working_directory="/", timeout=1, max_output_bytes=1024
+            )
+        assert service.deleted and sandbox._held.unusable
+        assert service.closed == service.calls == 1
+
+    asyncio.run(scenario())
 
 
 def test_bounded_capture_preserves_binary_streams_and_cleans_scratch():

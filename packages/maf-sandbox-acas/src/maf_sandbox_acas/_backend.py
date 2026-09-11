@@ -441,6 +441,13 @@ class _Deletion:
     failure: DisposalFailure | None = None
 
 
+def _control_result(stdout: object, stderr: object, exit_code: object) -> ExecResult:
+    """Validate control-response fields before constructing a text result."""
+    if not isinstance(stdout, str) or not isinstance(stderr, str) or type(exit_code) is not int:
+        raise ValueError("invalid execution response")
+    return ExecResult(stdout=stdout, stderr=stderr, exit_code=exit_code)
+
+
 class _AcasSandbox:
     """A running ACA sandbox, narrowed to what a workload is allowed to do with it."""
 
@@ -646,10 +653,10 @@ class _AcasSandbox:
         result = await asyncio.wait_for(
             self._sc.exec(cmd, working_directory=working_directory), timeout=timeout
         )
-        return ExecResult(
-            stdout=getattr(result, "stdout", "") or "",
-            stderr=getattr(result, "stderr", "") or "",
-            exit_code=getattr(result, "exit_code", 0) or 0,
+        return _control_result(
+            stdout=getattr(result, "stdout", ""),
+            stderr=getattr(result, "stderr", ""),
+            exit_code=getattr(result, "exit_code", 0),
         )
 
     async def exec_bounded(
@@ -722,15 +729,11 @@ class _AcasSandbox:
                 if not isinstance(decoded, dict):
                     raise ValueError("invalid execution response")
                 payload = cast(dict[str, Any], decoded)
-                stdout, stderr = payload.get("stdout") or "", payload.get("stderr") or ""
-                exit_code = payload.get("exitCode") or 0
-                if (
-                    not isinstance(stdout, str)
-                    or not isinstance(stderr, str)
-                    or type(exit_code) is not int
-                ):
-                    raise ValueError("invalid execution response")
-                return ExecResult(stdout=stdout, stderr=stderr, exit_code=exit_code)
+                return _control_result(
+                    stdout=payload.get("stdout", ""),
+                    stderr=payload.get("stderr", ""),
+                    exit_code=payload.get("exitCode", 0),
+                )
             finally:
                 await response.close()
 

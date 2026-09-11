@@ -12,6 +12,78 @@ from maf_sandbox import SandboxExecOutputLimitExceeded
 from maf_sandbox_acas._backend import _AcasSandbox
 
 
+class _ControlResponse:
+    headers = {}
+    status_code = 200
+
+    def __init__(self, payload):
+        self.payload = payload
+        self.closed = False
+
+    async def iter_raw(self):
+        yield json.dumps(self.payload).encode()
+
+    async def close(self):
+        self.closed = True
+
+
+async def _read_control_response(response, bounded):
+    async def send(request, **kwargs):
+        return SimpleNamespace(http_response=response)
+
+    async def execute(command, **kwargs):
+        from azure.containerapps.sandbox import ExecResult as SdkExecResult
+
+        return SdkExecResult._from_dict(response.payload)
+
+    client = SimpleNamespace(
+        _endpoint="https://sandbox.example",
+        _sbx_path="/sandboxes/one",
+        _api_version="test",
+        _pipeline=SimpleNamespace(run=send),
+        exec=execute,
+    )
+    sandbox = _AcasSandbox(client, 1)
+    if bounded:
+        return await sandbox._exec_text_bounded(
+            "probe", working_directory="/", timeout=1, max_output_bytes=1024
+        )
+    return await sandbox._exec_text("probe", working_directory="/", timeout=1)
+
+
+@pytest.mark.parametrize("bounded", [False, True])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [(field, value) for field in ("stdout", "stderr") for value in (None, False, 0, 0.0, [], {})]
+    + [("exitCode", value) for value in (None, False, True, 0.0, "", [], {})],
+)
+def test_control_response_rejects_malformed_fields(field, value, bounded):
+    response = _ControlResponse({"stdout": "out", "stderr": "err", "exitCode": 7, field: value})
+    with pytest.raises(ValueError, match="invalid execution response"):
+        asyncio.run(_read_control_response(response, bounded))
+    assert response.closed is bounded
+
+
+@pytest.mark.parametrize("bounded", [False, True])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"stdout": "", "stderr": "", "exitCode": 0},
+        {"stdout": "out", "stderr": "err", "exitCode": 7},
+    ],
+)
+def test_control_response_preserves_defaults_and_valid_fields(payload, bounded):
+    response = _ControlResponse(payload)
+    result = asyncio.run(_read_control_response(response, bounded))
+    assert (result.stdout, result.stderr, result.exit_code) == (
+        payload.get("stdout", ""),
+        payload.get("stderr", ""),
+        payload.get("exitCode", 0),
+    )
+    assert response.closed is bounded
+
+
 @pytest.mark.parametrize("stream", ["stdout", "stderr", "error"])
 def test_cap_is_enforced_before_decoding_and_response_is_closed(stream):
     async def scenario():
