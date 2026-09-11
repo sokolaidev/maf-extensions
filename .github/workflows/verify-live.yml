@@ -1142,16 +1142,19 @@ jobs:
   sample-12:
     name: samples/12_purge_lifecycle against a live container
     # The lifecycle end no other sample reaches: reuse within a turn, `router.scope` at the end
-    # of one, and `SandboxPurger` on a thread delete. Only the router (maf-sandbox) and the
-    # backend it disposes through (maf-sandbox-docker) can change what this exercises; no kind
-    # package is involved.
+    # of one, `SandboxPurger` on a thread delete — and a reclaim that fails, which is the only
+    # place the suite runs the `on_reclaim_failure` path at all (#760). The router (maf-sandbox)
+    # and the backend it disposes through (maf-sandbox-docker) can change what this exercises,
+    # and so can maf-sandbox-otel: acts 5 and 6 read the records it makes to show which facts
+    # about a failed cleanup only the host's own handler carries. No kind package is involved.
     if: >-
       inputs.package == ''
-      || contains(fromJSON('["maf-sandbox", "maf-sandbox-docker"]'), inputs.package)
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-docker", "maf-sandbox-otel"]'),
+      inputs.package)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # No `environment:` and no `permissions:`, as for samples 10 and 11: this one calls no model
-    # either. It does create containers — five threads' worth, one at a time — and counts them
+    # either. It does create containers — seven threads' worth, one at a time — and counts them
     # with `docker ps`, which is the only evidence a purge claim is worth anything.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -1185,9 +1188,12 @@ jobs:
         run: |
           set -euo pipefail
           uv run --no-project samples/12_purge_lifecycle/agent.py | tee /tmp/sample12-out.txt
-          # Two assertions carry it: no container left behind, and the purger finding 1 on the
+          # Three assertions carry it: no container left behind; the purger finding 1 on the
           # abandoned thread — a purger wired to nothing reports 0 everywhere, so the tidy
-          # thread's expected 0 cannot be the only zero checked. stdlib-only, so the runner's
+          # thread's expected 0 cannot be the only zero checked; and the two reclaim failures
+          # the run forced, each with what the framework did about it. That last one is the
+          # reverse of the others: it fails when a number is *nought*, because a handler nothing
+          # ever calls reports nought and looks healthy doing it. stdlib-only, so the runner's
           # own python3 runs it.
           python3 "$HARNESS"/scripts/check_live_purge_sample.py /tmp/sample12-out.txt
 

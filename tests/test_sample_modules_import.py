@@ -99,6 +99,10 @@ def _import(path: Path, sample: Path) -> list[str]:
     sys.path.insert(0, str(sample))
     evicted: list[str] = []
     try:
+        # In the cache before it executes, as a real import does: module level may depend on
+        # being there, and `@dataclass` does — it resolves its annotations through `sys.modules`.
+        # The eviction below takes this entry with the rest, being keyed on the directory.
+        sys.modules[spec.name] = module
         spec.loader.exec_module(module)
     finally:
         sys.path[:] = before
