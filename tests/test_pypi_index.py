@@ -81,6 +81,13 @@ def _install(monkeypatch: pytest.MonkeyPatch, fake: _Index) -> list[float]:
     return []
 
 
+@pytest.fixture(autouse=True)
+def _one_index_unless_a_test_says_otherwise(monkeypatch: pytest.MonkeyPatch):
+    """A contributor's own index settings would change how many documents each read fetches."""
+    monkeypatch.delenv("UV_INDEX", raising=False)
+    monkeypatch.delenv("UV_DEFAULT_INDEX", raising=False)
+
+
 class TestADefinitiveReplyIsNotRetried:
     def test_a_document_comes_back_on_the_first_attempt(self, monkeypatch):
         fake = _Index({"versions": ["0.16.0"]})
@@ -226,3 +233,90 @@ class TestPublishedVersionsAreSortedSemantically:
         """None, not an empty list: a caller has to tell "no versions" from "no package"."""
         _install(monkeypatch, _Index(_http_error(404)))
         assert index.fetch_published_versions("maf-sandbox-nothing") is None
+
+
+class TestWhichIndexesAreRead:
+    """A rehearsal uploads to one index and has to be measured against that one.
+
+    The variables are `uv`'s own, so the set a check reads is the set the install it gates
+    resolves from; a check that asked a different index than the resolver would is the defect
+    this exists to stop (#1121).
+    """
+
+    def test_pypi_is_the_only_index_by_default(self):
+        assert index.index_urls() == ("https://pypi.org/simple/",)
+
+    def test_the_primary_comes_first_and_the_extras_follow(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("UV_INDEX", "https://test.pypi.org/simple/")
+        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://pypi.org/simple/")
+        assert index.index_urls() == ("https://test.pypi.org/simple/", "https://pypi.org/simple/")
+
+    def test_a_missing_trailing_slash_is_not_a_different_index(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("UV_INDEX", "https://test.pypi.org/simple")
+        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://test.pypi.org/simple/")
+        assert index.index_urls() == ("https://test.pypi.org/simple/",)
+
+    def test_several_extras_are_split_the_way_uv_splits_them(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("UV_INDEX", "https://one.example/simple/ https://two.example/simple/")
+        assert index.index_urls() == (
+            "https://one.example/simple/",
+            "https://two.example/simple/",
+            "https://pypi.org/simple/",
+        )
+
+
+class TestAVersionOnEitherIndexCounts:
+    """The failure that prompted this: 0.38.0 was on TestPyPI and the gate asked PyPI.
+
+    Merged rather than first-hit, because a rehearsal index carries one version of interest
+    and years of junk beside it — reading it alone trades one wrong answer for another.
+    """
+
+    def _two(self, monkeypatch: pytest.MonkeyPatch, first: object, second: object) -> _Index:
+        monkeypatch.setenv("UV_INDEX", "https://test.pypi.org/simple/")
+        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://pypi.org/simple/")
+        fake = _Index(first, second)
+        _install(monkeypatch, fake)
+        return fake
+
+    def test_the_rehearsed_version_is_seen_beside_the_released_ones(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        self._two(monkeypatch, {"versions": ["0.38.0"]}, {"versions": ["0.36.0", "0.37.0"]})
+        assert index.fetch_published_versions("maf-sandbox") == ["0.38.0", "0.37.0", "0.36.0"]
+
+    def test_a_version_on_both_is_named_once(self, monkeypatch: pytest.MonkeyPatch):
+        self._two(monkeypatch, {"versions": ["0.37.0"]}, {"versions": ["0.37.0"]})
+        assert index.fetch_published_versions("maf-sandbox") == ["0.37.0"]
+
+    def test_an_index_that_never_had_it_does_not_hide_the_one_that_does(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        self._two(monkeypatch, _http_error(404), {"versions": ["0.37.0"]})
+        assert index.fetch_published_versions("maf-sandbox") == ["0.37.0"]
+
+    def test_never_released_anywhere_is_still_none(self, monkeypatch: pytest.MonkeyPatch):
+        self._two(monkeypatch, _http_error(404), _http_error(404))
+        assert index.fetch_published_versions("maf-sandbox-nothing") is None
+
+    def test_both_indexes_are_asked(self, monkeypatch: pytest.MonkeyPatch):
+        fake = self._two(monkeypatch, {"versions": ["0.38.0"]}, {"versions": ["0.37.0"]})
+        index.fetch_published_versions("maf-sandbox")
+        assert [request.full_url for request in fake.requests] == [
+            "https://test.pypi.org/simple/maf-sandbox/",
+            "https://pypi.org/simple/maf-sandbox/",
+        ]
+
+    def test_the_files_of_both_are_kept_so_upload_times_stay_readable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        self._two(
+            monkeypatch,
+            {"versions": ["0.38.0"], "files": [{"upload-time": "2026-09-11T14:00:00Z"}]},
+            {"versions": ["0.37.0"], "files": [{"upload-time": "2026-09-10T08:58:00Z"}]},
+        )
+        payload = index.fetch_simple("maf-sandbox")
+        assert payload is not None
+        assert index.newest_upload(payload) == "2026-09-11T14:00:00Z"

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -37,6 +38,10 @@ FIRST_PAUSE_SECONDS = 1.0
 _TIMEOUT_SECONDS = 30
 
 _SIMPLE_ACCEPT = "application/vnd.pypi.simple.v1+json"
+
+_PYPI_SIMPLE = "https://pypi.org/simple/"
+_INDEX_VARIABLE = "UV_INDEX"
+_DEFAULT_INDEX_VARIABLE = "UV_DEFAULT_INDEX"
 
 #: The replies that are the index having a moment rather than answering. One reset reaches here
 #: three ways — wrapped in `URLError` when it lands on the connect, bare when it lands on the
@@ -79,7 +84,7 @@ def read_json(
             reason = error
         if attempt == ATTEMPTS:
             raise IndexUnreachable(
-                f"pypi.org did not answer {url} in {ATTEMPTS} attempts ({reason}). The index was "
+                f"the index did not answer {url} in {ATTEMPTS} attempts ({reason}). The index was "
                 "unreachable, so this check could not finish — this is not a verdict on any "
                 "version."
             ) from reason
@@ -98,13 +103,47 @@ def admits(version: tuple[int, ...], ceiling: tuple[int, ...]) -> bool:
     return padded < ceiling + (0,) * (width - len(ceiling))
 
 
+def index_urls() -> tuple[str, ...]:
+    """The simple-index bases to read, in the order ``uv`` searches them.
+
+    ``UV_INDEX`` before ``UV_DEFAULT_INDEX``, which is uv's own precedence, so a check measures
+    the set the install it gates would get. A TestPyPI rehearsal sets them; everything else
+    reads PyPI.
+    """
+    extra = os.environ.get(_INDEX_VARIABLE, "").split()
+    default = os.environ.get(_DEFAULT_INDEX_VARIABLE, "").strip() or _PYPI_SIMPLE
+    seen: dict[str, None] = {}
+    for url in (*extra, default):
+        seen[url.rstrip("/") + "/"] = None
+    return tuple(seen)
+
+
 def fetch_simple(distribution: str) -> dict | None:
-    """``distribution``'s PEP 691 simple document, or None if it was never released.
+    """``distribution``'s PEP 691 simple document, or None if no index has it.
 
     The simple index is fresher than the CDN-cached top-level JSON document, and it is what
-    ``uv`` resolves from. A 404 means never released; `read_json` decides the rest.
+    ``uv`` resolves from. A 404 means never released *there*; `read_json` decides the rest.
+
+    Several indexes are merged rather than the first hit winning, because that is what
+    ``UV_INDEX_STRATEGY=unsafe-best-match`` does and the point is to answer the question the
+    install will. A rehearsal index carries one version of interest and years of junk beside
+    it, so reading it alone would trade one wrong answer for another.
     """
-    return read_json(f"https://pypi.org/simple/{distribution}/", accept=_SIMPLE_ACCEPT)
+    payloads = [
+        payload
+        for payload in (
+            read_json(f"{url}{distribution}/", accept=_SIMPLE_ACCEPT) for url in index_urls()
+        )
+        if payload is not None
+    ]
+    if not payloads:
+        return None
+    if len(payloads) == 1:
+        return payloads[0]
+    merged = dict(payloads[0])
+    merged["versions"] = sorted({v for payload in payloads for v in payload.get("versions", ())})
+    merged["files"] = [file for payload in payloads for file in payload.get("files", ())]
+    return merged
 
 
 def fetch_published_versions(distribution: str) -> list[str] | None:
