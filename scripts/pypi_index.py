@@ -181,21 +181,31 @@ def configured_indexes() -> tuple[tuple[str, str | None], ...]:
     check reads an authenticated index unauthenticated and is refused or sent elsewhere, which
     is the reader and the resolver disagreeing again one layer down.
 
+    Both of uv's credential forms are honoured, and **a named variable beats userinfo embedded
+    in the same URL**: uv's own precedence between them is not established here, and a variable
+    set beside the index is the more deliberate of the two. A keyring and a netrc are out of
+    reach either way; `read_json` says so when an index refuses.
+
     A bare name with no URL contributes no index, matching uv, which accepts the form and
     resolves from the default index.
     """
     entries = [_named(entry) for entry in os.environ.get(_INDEX_VARIABLE, "").split()]
-    name, default = _named(os.environ.get(_DEFAULT_INDEX_VARIABLE, "").strip())
-    entries.append((name, default or _PYPI_SIMPLE))
+    name, default, embedded = _named(os.environ.get(_DEFAULT_INDEX_VARIABLE, "").strip())
+    entries.append((name, default or _PYPI_SIMPLE, embedded))
     seen: dict[str, str | None] = {}
-    for index_name, url in entries:
+    for index_name, url, credential in entries:
         if url and url not in seen:
-            seen[url] = _authorization(index_name) if index_name else None
+            seen[url] = (_authorization(index_name) if index_name else None) or credential
     return tuple(seen.items())
 
 
-def _named(entry: str) -> tuple[str, str]:
-    """One index entry as its optional uv name and its URL, or an empty URL if it has none.
+def _named(entry: str) -> tuple[str, str, str | None]:
+    """One index entry as its uv name, its URL without userinfo, and what that userinfo means.
+
+    ``urllib`` does not read userinfo as authentication: it hands ``user:pass@host`` to the
+    resolver, the lookup fails, and the failure is a ``URLError`` this module retries and then
+    reports as an index nobody could reach. uv admits credentials embedded in an index URL, so
+    they are converted here rather than passed on to fail as an outage.
 
     The trailing slash is settled on the *path*. Appended to the whole string it lands past a
     query the index carries, where it is not part of any path and the join in `package_url`
@@ -205,21 +215,33 @@ def _named(entry: str) -> tuple[str, str]:
     name = entry[: match.end() - 1] if match else ""
     parsed = urllib.parse.urlsplit(entry[match.end() :] if match else entry)
     if not parsed.scheme:
-        return name, ""
-    return name, urllib.parse.urlunsplit(
-        (parsed.scheme, parsed.netloc, parsed.path.rstrip("/") + "/", parsed.query, parsed.fragment)
+        return name, "", None
+    url = urllib.parse.urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc.rpartition("@")[2],
+            parsed.path.rstrip("/") + "/",
+            parsed.query,
+            parsed.fragment,
+        )
     )
+    return name, url, _basic(parsed.username, parsed.password)
 
 
 def _authorization(name: str) -> str | None:
     """The Basic header uv composes for a named index, or None when neither variable is set."""
     key = _NOT_IN_A_VARIABLE.sub("_", name).upper()
-    user = os.environ.get(f"{_INDEX_VARIABLE}_{key}_USERNAME")
-    secret = os.environ.get(f"{_INDEX_VARIABLE}_{key}_PASSWORD")
+    return _basic(
+        os.environ.get(f"{_INDEX_VARIABLE}_{key}_USERNAME"),
+        os.environ.get(f"{_INDEX_VARIABLE}_{key}_PASSWORD"),
+    )
+
+
+def _basic(user: str | None, secret: str | None) -> str | None:
+    """A Basic header for one credential pair, or None when neither half is set."""
     if user is None and secret is None:
         return None
-    pair = f"{user or ''}:{secret or ''}".encode()
-    return "Basic " + base64.b64encode(pair).decode()
+    return "Basic " + base64.b64encode(f"{user or ''}:{secret or ''}".encode()).decode()
 
 
 def package_url(index: str, distribution: str) -> str:
@@ -308,13 +330,12 @@ def fetch_published_versions(distribution: str) -> list[str] | None:
     ``requires_dist`` excludes lives in the per-version document, which a caller that cares
     must fetch.
 
-    **Anything that is not a dotted release is left out**, and an index is free to carry one —
-    TestPyPI holds a `maf-sandbox 0.1.0.post1` from years ago. `version` orders dotted releases
-    and raises on the rest, and every ceiling a caller compares against is written as one, so
-    the alternatives were a PEP 440 ordering nothing here would use, or a `ValueError` that
-    takes a check out over an artifact it has nothing to say about. Nothing this repository
-    publishes is anything else: `check_rehearsal_version` refuses to rehearse one and
-    release-please cuts none.
+    **Anything that is not a dotted release is left out**, and an index is free to carry a
+    pre-release, a post-release or a local version. `version` orders dotted releases and raises
+    on the rest, and every ceiling a caller compares against is written as one, so the
+    alternatives are a PEP 440 ordering nothing here would use or a `ValueError` over an
+    artifact this has nothing to say about. Nothing this repository publishes is anything else:
+    `check_rehearsal_version` refuses to rehearse one and release-please cuts none.
     """
     payload = fetch_simple(distribution)
     if payload is None:

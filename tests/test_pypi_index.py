@@ -317,9 +317,9 @@ class TestAVersionsMetadataComesFromTheIndexThatCarriesIt:
 class TestAnIndexMayCarryWhatThisRepositoryNeverPublishes:
     """`version` orders dotted releases and raises on the rest, and ceilings are written as one.
 
-    TestPyPI holds `maf-sandbox 0.1.0.post1`, so reading it is not hypothetical: included, it
-    reaches the sort and takes the check out with a `ValueError` over an artifact nothing here
-    has anything to say about.
+    An index may carry a pre-release, a post-release or a local version; included, one reaches
+    the sort and takes the check out with a `ValueError` over an artifact nothing here has
+    anything to say about. The accepted shape is a dotted release and only that.
     """
 
     def _carrying(self, monkeypatch: pytest.MonkeyPatch, *versions: str) -> None:
@@ -560,6 +560,35 @@ class TestANamedIndexCarriesTheCredentialUvWouldSend:
         _install(monkeypatch, fake)
         index.fetch_published_versions("maf-sandbox")
         assert fake.requests[0].get_header("Authorization") is None
+
+    def test_userinfo_becomes_a_header_and_leaves_the_request_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """`urllib` hands `user:pass@host` to the resolver, which fails to look it up — and the
+        `URLError` that follows is retried and reported as an index nobody could reach."""
+        monkeypatch.setenv("UV_INDEX", "https://reader:secret@mirror.example/simple/")
+        fake = _Index({"versions": ["1.0.0"]})
+        _install(monkeypatch, fake)
+        index.fetch_published_versions("maf-sandbox")
+        assert fake.requests[0].full_url == "https://mirror.example/simple/maf-sandbox/"
+        assert fake.requests[0].get_header("Authorization") == "Basic cmVhZGVyOnNlY3JldA=="
+
+    def test_a_named_variable_beats_userinfo_on_the_same_url(self, monkeypatch: pytest.MonkeyPatch):
+        """uv's own precedence is not established here; the variable set beside the index is the
+        more deliberate of the two."""
+        monkeypatch.setenv("UV_INDEX", "corp=https://embedded:old@mirror.example/simple/")
+        monkeypatch.setenv("UV_INDEX_CORP_USERNAME", "reader")
+        monkeypatch.setenv("UV_INDEX_CORP_PASSWORD", "secret")
+        assert index.configured_indexes()[0] == (
+            "https://mirror.example/simple/",
+            "Basic cmVhZGVyOnNlY3JldA==",
+        )
+
+    def test_userinfo_on_the_default_index_is_carried_too(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://reader:secret@mirror.example/simple/")
+        assert index.configured_indexes() == (
+            ("https://mirror.example/simple/", "Basic cmVhZGVyOnNlY3JldA=="),
+        )
 
     def test_an_unnamed_index_is_never_given_another_indexs_credential(
         self, monkeypatch: pytest.MonkeyPatch

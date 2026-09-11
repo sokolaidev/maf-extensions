@@ -66,8 +66,8 @@ jobs:
       package: ${{ steps.resolve.outputs.package }}
       version: ${{ steps.resolve.outputs.version }}
       target: ${{ steps.resolve.outputs.target }}
-      # The index the gates read and resolve from, derived here with everything else so a
-      # rehearsal cannot ask one index and upload to another (#1121).
+      # The index the gates read and resolve from, derived here with everything else so every
+      # step asks the index this run uploads to rather than whichever one it defaults to.
       index_url: ${{ steps.resolve.outputs.index_url }}
       default_index_url: ${{ steps.resolve.outputs.default_index_url }}
       index_strategy: ${{ steps.resolve.outputs.index_strategy }}
