@@ -693,8 +693,11 @@ class TestFilesIn:
         # Under the base: the plane. Outside it: the shell, never the plane.
         assert sorted(fake.contents) == [f"{WORK}/notes/todo.txt"]
         commands = [command for command, _, _ in fake.commands]
-        assert commands[0].startswith("mkdir -p /notes && : > /notes/todo.txt")
-        assert "base64 -d >> /notes/todo.txt" in commands[1]
+        assert commands[0].startswith("mkdir -p /notes && if [ -d /notes/todo.txt ]")
+        assert "base64 -d >> /notes/todo.txt." in commands[1]
+        assert commands[2].startswith("mv -f /notes/todo.txt.") and commands[2].endswith(
+            ".part /notes/todo.txt"
+        )
         (read,) = asyncio.run(adapter.adownload_files([f"{WORK}/notes/todo.txt"]))
         assert read.content == b"1"
 
@@ -761,11 +764,23 @@ class TestFilesIn:
 
         assert response.error is None
         commands = [command for command, _, _ in fake.commands]
-        assert commands[0] == "mkdir -p /tmp && : > /tmp/.deepagents_edit_x_old"
-        chunks = [c.removeprefix("printf %s ").split(" | ")[0] for c in commands[1:]]
+        staged = commands[0].removeprefix(
+            "mkdir -p /tmp && if [ -d /tmp/.deepagents_edit_x_old ]; then "
+            "echo 'Is a directory' >&2; exit 1; fi && : > "
+        )
+        assert staged.startswith("/tmp/.deepagents_edit_x_old.") and staged.endswith(".part")
+        chunks = [c.removeprefix("printf %s ").split(" | ")[0] for c in commands[1:-1]]
         assert len(chunks) == 3
         assert all(len(chunk) <= 65536 for chunk in chunks)
+        assert all(c.endswith(f"base64 -d >> {staged}") for c in commands[1:-1])
         assert base64.b64decode("".join(chunks)) == content
+        assert commands[-1] == f"mv -f {staged} /tmp/.deepagents_edit_x_old"
+        # A second write over the same path stages beside it under its own name, so two
+        # writers admitted together each land a whole file and the last one stands.
+        asyncio.run(adapter.aupload_files([("/tmp/.deepagents_edit_x_old", b"again")]))
+        again = [command for command, _, _ in fake.commands][len(commands) :]
+        assert again[0] != commands[0]
+        assert again[-1].endswith(" /tmp/.deepagents_edit_x_old") and again[-1] != commands[-1]
 
     def test_what_the_shell_refuses_comes_back_by_code(self):
         class Refusing(InProcessSandbox):
@@ -927,12 +942,17 @@ class TestFilesOut:
         ("answer", "error"),
         [
             ("missing", "file_not_found"),
+            ("sh: 1: cannot open /tmp/x: No such file or directory\nmissing", "file_not_found"),
+            ("sh: can't open '/tmp/x': Permission denied\nmissing", "permission_denied"),
+            ("sh: can't open '/tmp/x': Not a directory\nmissing", "invalid_path"),
             ("directory", "is_directory"),
             ("other", "invalid_path"),
             ("unreadable", "permission_denied"),
         ],
     )
     def test_the_shell_probe_answers_by_code(self, answer: str, error: str):
+        """`test -e` is false behind an unsearchable ancestor as for an absent file; the
+        open's own words, in the shell's phrasing (busybox, dash), tell the two apart."""
         adapter, _ = _adapter(InProcessSandbox(outputs={"wc -c": f"{answer}\n"}))
         (response,) = asyncio.run(adapter.adownload_files(["/tmp/x"]))
         assert response.error == error

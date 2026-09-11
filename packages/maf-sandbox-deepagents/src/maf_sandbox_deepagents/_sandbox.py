@@ -636,17 +636,25 @@ class MafSandbox(BaseSandbox):
         Deep Agents writes its offloaded history under ``/conversation_history`` and its
         large-edit temporaries under ``/tmp``, which the file plane, confined to the base,
         cannot reach; ``execute`` can, so this widens nothing. The caps were applied by the
-        caller. Base64 in chunks, because a command is one argument to ``sh -c``.
+        caller. Base64 in chunks, because a command is one argument to ``sh -c``; the chunks
+        land in a sibling of the target named for this call alone, moved into place once the
+        last has, so a reader, or a second writer over the same path, sees a whole file and
+        never an interleaving of two.
         """
         target = shlex.quote(path)
         parent = shlex.quote(posixpath.dirname(path) or "/")
+        staged = shlex.quote(f"{path}.{uuid.uuid4().hex}.part")
         encoded = base64.b64encode(content).decode("ascii")
         step = 4 * (_SHELL_CHUNK_BYTES // 3)
-        commands = [f"mkdir -p {parent} && : > {target}"]
+        commands = [
+            f"mkdir -p {parent} && if [ -d {target} ]; then echo 'Is a directory' >&2; exit 1; "
+            f"fi && : > {staged}"
+        ]
         commands += [
-            f"printf %s {encoded[start : start + step]} | base64 -d >> {target}"
+            f"printf %s {encoded[start : start + step]} | base64 -d >> {staged}"
             for start in range(0, len(encoded), step)
         ]
+        commands.append(f"mv -f {staged} {target}")
         for command in commands:
             try:
                 result = await self._run_bounded(
@@ -752,8 +760,10 @@ class MafSandbox(BaseSandbox):
     ) -> FileDownloadResponse:
         """Read outside the base through the shell, under ``cap``; see :meth:`_upload_via_shell`."""
         target = shlex.quote(path)
+        # `test -e` is false for a file behind an unsearchable ancestor as for an absent one,
+        # so the open's own error, in the shell's words, tells the two apart.
         probe = (
-            f"if [ ! -e {target} ]; then echo missing; "
+            f"if [ ! -e {target} ]; then ( : < {target} ) 2>&1; echo missing; "
             f"elif [ -d {target} ]; then echo directory; "
             f"elif [ ! -f {target} ]; then echo other; "
             f"elif [ ! -r {target} ]; then echo unreadable; "
@@ -775,7 +785,12 @@ class MafSandbox(BaseSandbox):
         if probed.exit_code != 0 or not answer:
             logger.warning("%s: probe of %r failed: %s", self._id, path, probed.stderr.strip())
             return FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)
-        if answer == "missing":
+        if answer.endswith("missing"):
+            detail = answer.removesuffix("missing")
+            if "Permission denied" in detail:
+                return FileDownloadResponse(path=path, error=PERMISSION_DENIED)
+            if "Not a directory" in detail:
+                return FileDownloadResponse(path=path, error=INVALID_PATH)
             return FileDownloadResponse(path=path, error=FILE_NOT_FOUND)
         if answer == "directory":
             return FileDownloadResponse(path=path, error=IS_DIRECTORY)
