@@ -97,7 +97,7 @@ def test_a_forked_child_starts_its_own_loop():
     with warnings.catch_warnings():
         # The fork of a multi-threaded process is the scenario, not an accident.
         warnings.simplefilter("ignore", DeprecationWarning)
-        pid = os.fork()
+        pid = os.fork()  # pyright: ignore[reportAttributeAccessIssue]
     if pid == 0:  # pragma: no cover - the child reports through its exit status
         ok = False
         try:
@@ -106,7 +106,7 @@ def test_a_forked_child_starts_its_own_loop():
             os._exit(0 if ok else 1)
     deadline = time.monotonic() + 30
     while True:
-        waited, status = os.waitpid(pid, os.WNOHANG)
+        waited, status = os.waitpid(pid, os.WNOHANG)  # pyright: ignore[reportAttributeAccessIssue]
         if waited == pid:
             break
         if time.monotonic() > deadline:

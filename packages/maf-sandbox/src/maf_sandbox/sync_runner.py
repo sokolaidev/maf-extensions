@@ -29,7 +29,7 @@ class SyncRunner:
         self._thread_name = thread_name
         self._reset()
         if hasattr(os, "register_at_fork"):
-            os.register_at_fork(after_in_child=self._reset)
+            os.register_at_fork(after_in_child=self._reset)  # type: ignore[attr-defined]
 
     def _reset(self) -> None:
         self._loop: asyncio.AbstractEventLoop | None = None
