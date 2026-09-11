@@ -140,14 +140,13 @@ def _names_on_the_machine(name: str) -> list[str]:
     return [row["Name"] for row in rows if row.get("Name") == name]
 
 
-def _the_image_ships(path: str, image: str) -> bool:
-    """Whether ``image`` already carries ``path``, read from a throwaway container.
+def _the_image_ships(guest_path: str, image: str) -> bool:
+    """Whether ``image`` already carries ``guest_path``, read before any acquisition.
 
-    Runs before acquisition, which prepares the base and leaves every fixture looking
-    alike, and as root, so an untraversable parent cannot hide a path that is there. The
-    answer is a word the guest prints, not an exit code: wslc reports a missing image as
-    exit 1 as well, and one caller expects the path while the other expects its absence,
-    so an engine failure must not read as either answer.
+    Acquire prepares the base, so every fixture looks alike afterwards. Runs as root so an
+    untraversable parent cannot hide the path, on no network because a path check needs
+    none, and reads a word the guest prints rather than an exit code, which wslc returns
+    as 1 for an unresolvable image too.
     """
     probe = subprocess.run(
         [
@@ -155,6 +154,8 @@ def _the_image_ships(path: str, image: str) -> bool:
             "container",
             "run",
             "--rm",
+            "--network",
+            "none",
             "--user",
             "0",
             image,
@@ -162,15 +163,18 @@ def _the_image_ships(path: str, image: str) -> bool:
             "-c",
             'if [ -e "$1" ]; then echo present; else echo absent; fi',
             "sh",
-            path,
+            guest_path,
         ],
         capture_output=True,
         text=True,
         timeout=180,
     )
     answer = probe.stdout.strip()
-    if answer not in ("present", "absent"):
-        raise RuntimeError(f"probing {image} for {path} answered {answer!r}: {probe.stderr}")
+    if probe.returncode != 0 or answer not in ("present", "absent"):
+        raise RuntimeError(
+            f"probing {image} for {guest_path} exited {probe.returncode} with {answer!r}:"
+            f" {probe.stderr}"
+        )
     return answer == "present"
 
 
