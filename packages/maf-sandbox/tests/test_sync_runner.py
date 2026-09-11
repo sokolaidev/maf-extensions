@@ -62,6 +62,21 @@ def test_one_loop_serves_every_call_from_every_thread():
     assert sum(t.name == "sync-under-test" for t in threading.enumerate()) == 1
 
 
+def test_run_on_the_runner_s_own_loop_thread_is_refused_not_hung():
+    """The wait would block the one thread that could run the work; code on that loop awaits."""
+    runner = SyncRunner()
+
+    async def nested() -> int:
+        return 1
+
+    async def on_the_runners_loop() -> str:
+        with pytest.raises(RuntimeError, match="own loop thread") as refused:
+            runner.run(nested())
+        return str(refused.value)
+
+    assert "await" in runner.submit(on_the_runners_loop()).result(timeout=5)
+
+
 def test_submit_hands_back_a_future_joinable_from_anywhere():
     runner = SyncRunner()
 

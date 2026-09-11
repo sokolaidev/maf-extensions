@@ -50,6 +50,10 @@ SHELL_UTILITIES = ("sh", "mkdir", "mv", "base64", "wc")
 #: Output budget for a command that answers in a line.
 _ANSWER_BYTES = 4096
 
+#: Every command's prefix: the diagnostics this module reads are libc's, and a localised
+#: guest would word them otherwise.
+_C_LOCALE = "export LC_ALL=C; "
+
 
 class FileRefusal(StrEnum):
     """Why the guest would not serve a path, on either road."""
@@ -118,8 +122,12 @@ def entry_refusal(entry: SandboxEntry | None) -> FileRefusal | None:
     return None
 
 
-def shell_refusal(stderr: str) -> FileRefusal:
-    """The refusal the shell's words name; anything unrecognised is an invalid path."""
+def shell_refusal(stderr: str) -> FileRefusal | None:
+    """The refusal the shell's words name, or ``None`` when they name none.
+
+    The words are libc's under the C locale, which every command here runs under; a missing
+    utility or an I/O error names no refusal and is the transfer failing, not the path.
+    """
     if "Permission denied" in stderr:
         return FileRefusal.PERMISSION_DENIED
     if "Is a directory" in stderr:
@@ -127,22 +135,32 @@ def shell_refusal(stderr: str) -> FileRefusal:
     if "Not a directory" in stderr:
         return FileRefusal.INVALID_PATH
     if "o such file" in stderr:
-        # "No such file or directory" from libc; "no such file" from busybox.
+        # "No such file or directory" from libc; "no such file" from busybox's shell.
         return FileRefusal.NOT_FOUND
-    return FileRefusal.INVALID_PATH
+    return None
 
 
 async def _run(
-    sandbox: BoundedExec, command: str, *, working_directory: str, timeout: float, budget: int
+    sandbox: BoundedExec,
+    command: str,
+    *,
+    working_directory: str,
+    timeout: float,
+    budget: int,
+    reading: bool = False,
 ):
+    """``exec_bounded`` under the C locale; ``reading`` says the budget is the file's cap."""
     try:
         return await sandbox.exec_bounded(
-            command, working_directory=working_directory, timeout=timeout, max_output_bytes=budget
+            _C_LOCALE + command,
+            working_directory=working_directory,
+            timeout=timeout,
+            max_output_bytes=budget,
         )
     except SandboxExecOutputLimitExceeded as overflow:
         raise SandboxShellTransferUnfinished(
             "the command's output passed its budget and the command may still be running",
-            over_cap=True,
+            over_cap=reading,
         ) from overflow
     except TimeoutError as late:
         raise SandboxShellTransferUnfinished(
@@ -164,22 +182,25 @@ async def write_file_over_exec(
     writer over the same path, sees a whole file and never an interleaving of two. Parent
     directories are created. A directory at ``path`` is refused, not entered.
 
-    Raises :class:`SandboxFileRefused`, :class:`SandboxShellTransferUnfinished`.
+    Raises :class:`SandboxFileRefused`, :class:`SandboxShellTransferUnfinished`,
+    :class:`SandboxShellTransferFailed`.
     """
     target = shlex.quote(path)
     parent = shlex.quote(posixpath.dirname(path) or ".")
     staged = shlex.quote(f"{path}.{uuid.uuid4().hex}.part")
     encoded = base64.b64encode(content).decode("ascii")
     step = 4 * (SHELL_CHUNK_BYTES // 3)
+    # `--` before every operand a utility takes: a relative path may begin with a dash. A
+    # redirection's word is never an option, so `>` and `<` need none.
     commands = [
-        f"mkdir -p {parent} && if [ -d {target} ]; then echo 'Is a directory' >&2; exit 1; "
+        f"mkdir -p -- {parent} && if [ -d {target} ]; then echo 'Is a directory' >&2; exit 1; "
         f"fi && : > {staged}"
     ]
     commands += [
         f"printf %s {encoded[start : start + step]} | base64 -d >> {staged}"
         for start in range(0, len(encoded), step)
     ]
-    commands.append(f"mv -f {staged} {target}")
+    commands.append(f"mv -f -- {staged} {target}")
     for command in commands:
         result = await _run(
             sandbox,
@@ -189,7 +210,11 @@ async def write_file_over_exec(
             budget=_ANSWER_BYTES,
         )
         if result.exit_code != 0:
-            raise SandboxFileRefused(shell_refusal(result.stderr), result.stderr.strip())
+            detail = result.stderr.strip()
+            refusal = shell_refusal(detail)
+            if refusal is None:
+                raise SandboxShellTransferFailed(f"the write of {path!r} failed: {detail}")
+            raise SandboxFileRefused(refusal, detail)
 
 
 async def read_file_over_exec(
@@ -224,8 +249,8 @@ async def read_file_over_exec(
     if answer.endswith("missing"):
         detail = answer.removesuffix("missing").strip()
         refusal = shell_refusal(detail) if detail else FileRefusal.NOT_FOUND
-        if refusal is FileRefusal.INVALID_PATH and "Not a directory" not in detail:
-            refusal = FileRefusal.NOT_FOUND
+        if refusal is None:
+            raise SandboxShellTransferFailed(f"the probe of {path!r} could not open it: {detail}")
         raise SandboxFileRefused(refusal, detail)
     if answer == "directory":
         raise SandboxFileRefused(FileRefusal.IS_DIRECTORY)
@@ -246,6 +271,7 @@ async def read_file_over_exec(
         working_directory=working_directory,
         timeout=timeout,
         budget=max_bytes * 2 + _ANSWER_BYTES,
+        reading=True,
     )
     if read.exit_code != 0:
         raise SandboxShellTransferFailed(f"the read of {path!r} failed: {read.stderr.strip()}")

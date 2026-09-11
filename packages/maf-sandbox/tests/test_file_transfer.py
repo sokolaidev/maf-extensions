@@ -87,7 +87,8 @@ class TestTheVocabulary:
             ("sh: /f/x: Not a directory", FileRefusal.INVALID_PATH),
             ("sh: can't open /x: No such file or directory", FileRefusal.NOT_FOUND),
             ("sh: can't open /x: no such file", FileRefusal.NOT_FOUND),
-            ("something else", FileRefusal.INVALID_PATH),
+            ("sh: base64: not found", None),
+            ("mv: cannot move: Input/output error", None),
         ],
     )
     def test_the_shell_s_words_name_their_refusal(self, stderr, refusal):
@@ -106,8 +107,10 @@ class TestTheWrite:
         )
 
         commands = _commands(fake)
+        assert all(c.startswith("export LC_ALL=C; ") for c in commands)
+        commands = [c.removeprefix("export LC_ALL=C; ") for c in commands]
         staged = commands[0].removeprefix(
-            "mkdir -p /notes && if [ -d /notes/todo.bin ]; then echo 'Is a directory' >&2; "
+            "mkdir -p -- /notes && if [ -d /notes/todo.bin ]; then echo 'Is a directory' >&2; "
             "exit 1; fi && : > "
         )
         assert staged.startswith("/notes/todo.bin.") and staged.endswith(".part")
@@ -116,7 +119,7 @@ class TestTheWrite:
         assert all(len(chunk) <= 4 * (SHELL_CHUNK_BYTES // 3) for chunk in chunks)
         assert all(c.endswith(f"base64 -d >> {staged}") for c in commands[1:-1])
         assert base64.b64decode("".join(chunks)) == content
-        assert commands[-1] == f"mv -f {staged} /notes/todo.bin"
+        assert commands[-1] == f"mv -f -- {staged} /notes/todo.bin"
         assert {directory for _, directory, _ in fake.commands} == {WORK}
 
     def test_a_second_write_over_the_path_stages_under_its_own_name(self):
@@ -131,7 +134,18 @@ class TestTheWrite:
     def test_a_relative_path_is_written_where_the_working_directory_is(self):
         fake = InProcessSandbox()
         asyncio.run(write_file_over_exec(fake, "note.txt", b"1", working_directory=WORK, timeout=5))
-        assert _commands(fake)[0].startswith("mkdir -p . && if [ -d note.txt ]")
+        assert _commands(fake)[0].startswith("export LC_ALL=C; mkdir -p -- . && if [ -d note.txt ]")
+
+    def test_a_path_that_begins_with_a_dash_is_an_operand_not_an_option(self):
+        fake = InProcessSandbox()
+        asyncio.run(
+            write_file_over_exec(fake, "-dir/-file", b"1", working_directory=WORK, timeout=5)
+        )
+        first, _, last = _commands(fake)
+        assert first.startswith("export LC_ALL=C; mkdir -p -- -dir && if [ -d -dir/-file ]")
+        assert last.startswith("export LC_ALL=C; mv -f -- -dir/-file.") and last.endswith(
+            ".part -dir/-file"
+        )
 
     def test_what_the_shell_refuses_is_named(self):
         fake = Answering(exit_code=1, stderr="sh: can't create /etc/x: Permission denied")
@@ -142,6 +156,13 @@ class TestTheWrite:
         assert refused.value.refusal is FileRefusal.PERMISSION_DENIED
         assert "Permission denied" in refused.value.detail
         assert len(fake.commands) == 1  # nothing after the refusal
+
+    def test_a_failure_the_words_do_not_name_is_not_a_refusal(self):
+        fake = Answering(exit_code=127, stderr="sh: base64: not found")
+        with pytest.raises(SandboxShellTransferFailed, match="base64: not found"):
+            asyncio.run(
+                write_file_over_exec(fake, "/tmp/f", b"1", working_directory=WORK, timeout=5)
+            )
 
     @pytest.mark.parametrize(
         "raised", [TimeoutError("late"), SandboxExecOutputLimitExceeded("loud"), OSError("gone")]
@@ -170,8 +191,10 @@ class TestTheRead:
 
         assert content == b"# history\n"
         probe, read = _commands(fake)
-        assert probe.startswith("if [ ! -e /conversation_history/s.md ]; then ( : < ")
-        assert read == "base64 < /conversation_history/s.md"
+        assert probe.startswith(
+            "export LC_ALL=C; if [ ! -e /conversation_history/s.md ]; then ( : < "
+        )
+        assert read == "export LC_ALL=C; base64 < /conversation_history/s.md"
 
     @pytest.mark.parametrize(
         ("answer", "refusal"),
@@ -219,7 +242,7 @@ class TestTheRead:
     def test_the_read_runs_under_a_budget_sized_for_base64(self):
         class Loud(InProcessSandbox):
             async def exec_bounded(self, command, *, working_directory, timeout, max_output_bytes):
-                if isinstance(command, str) and command.startswith("base64 <"):
+                if isinstance(command, str) and command.endswith("base64 < /tmp/x"):
                     assert max_output_bytes == 64 * 2 + 4096
                     raise SandboxExecOutputLimitExceeded("the file outgrew its cap")
                 return await super().exec_bounded(
@@ -235,6 +258,23 @@ class TestTheRead:
                 read_file_over_exec(fake, "/tmp/x", working_directory=WORK, timeout=5, max_bytes=64)
             )
         assert unfinished.value.over_cap is True
+
+    def test_a_probe_whose_open_fails_for_words_it_does_not_know_is_a_failure(self):
+        fake = InProcessSandbox(
+            outputs={"wc -c": "sh: can't open /tmp/x: Input/output error\nmissing\n"}
+        )
+        with pytest.raises(SandboxShellTransferFailed, match="Input/output error"):
+            asyncio.run(
+                read_file_over_exec(fake, "/tmp/x", working_directory=WORK, timeout=5, max_bytes=64)
+            )
+
+    def test_a_probe_that_overflows_is_unfinished_but_not_over_the_cap(self):
+        fake = InProcessSandbox(outputs={"wc -c": "x" * 5000})
+        with pytest.raises(SandboxShellTransferUnfinished) as unfinished:
+            asyncio.run(
+                read_file_over_exec(fake, "/tmp/x", working_directory=WORK, timeout=5, max_bytes=64)
+            )
+        assert unfinished.value.over_cap is False
 
     def test_a_probe_that_fails_or_answers_nonsense_is_a_failure_not_a_refusal(self):
         with pytest.raises(SandboxShellTransferFailed):
