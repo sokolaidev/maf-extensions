@@ -41,10 +41,10 @@ The sandbox is acquired on the first command and reused warm after that. It live
 
 | Deep Agents | `maf_sandbox` |
 |---|---|
-| `execute(command, timeout)` | `Sandbox.exec(command, working_directory=".", timeout=...)` — run in the sandbox's storage base, a shell string the backend runs as `sh -c`; `stdout` and `stderr` come back as one stream with `[stderr]` on the second, the way Deep Agents' own backends render it |
+| `execute(command, timeout)` | `Sandbox.exec(command, working_directory=".", timeout=...)` — run in the sandbox's storage base, a shell string the backend runs as `sh -c`, under one deadline that a cold acquire spends part of; `stdout` and `stderr` come back as one stream with `[stderr]` on the second, the way Deep Agents' own backends render it |
 | `upload_files([(path, bytes)])` | `Sandbox.write_file`, one call per file, relative to the storage base, under `spec.files_in`: a batch over `max_files` is refused whole, a file over `max_bytes_per_file` or past `max_total_bytes` is refused alone; a path outside the base or through a link is refused as `invalid_path` |
 | `download_files([path])` | `Sandbox.stat_file` then `Sandbox.read_file`, under `spec.files_out`: a batch over `max_files` is refused whole, and each file is read under the smaller of `max_bytes_per_file` and what `max_total_bytes` has left, refusing rather than truncating; a missing file is `file_not_found`, a directory `is_directory`, a link `invalid_path` |
-| `id` | An opaque hash of the key and the kind, because Deep Agents may render it to the model and a scope is often a tenant |
+| `id` | An opaque hash of what names the sandbox — the key, the kind, the serving backend and the egress posture — because Deep Agents may render it to the model and a scope is often a tenant |
 | `aclose()` | `SandboxRouter.dispose_kind` for this conversation's sandbox of this kind alone, so a packaged kind serving the same conversation keeps its own |
 
 Both surfaces are served: the `a*` methods are native, and the synchronous ones run the same coroutine on a loop of their own, which is what a sync tool on a LangGraph worker thread calls.

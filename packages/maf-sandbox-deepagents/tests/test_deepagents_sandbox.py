@@ -26,6 +26,7 @@ from maf_sandbox import (
     SandboxKey,
     SandboxRouter,
     SandboxSpec,
+    SandboxTransferCapExceeded,
     TransferLimits,
 )
 from maf_sandbox.testing import FAKE_BACKEND_DECLARATIONS, InProcessSandbox, InProcessSandboxBackend
@@ -159,7 +160,19 @@ class TestTheId:
         )
         other_kind = MafSandbox(_router(_backend()), KEY, deepagents_spec("img:1", kind="shell"))
         other_backend = MafSandbox(_router(_backend(name="second")), KEY, deepagents_spec("img:1"))
-        assert len({base.id, other_thread.id, other_kind.id, other_backend.id}) == 4
+        other_egress = MafSandbox(
+            _router(_backend()), KEY, deepagents_spec("img:1", egress_allow=("pypi.org",))
+        )
+        assert (
+            len({base.id, other_thread.id, other_kind.id, other_backend.id, other_egress.id}) == 5
+        )
+
+    def test_the_encoding_keeps_field_boundaries(self):
+        """A scope ending where a thread begins must not collide with the split moved."""
+        shifted = SandboxKey(scope="tenant-", thread_id="athread-1", agent_dir="coder")
+        base, _ = _adapter()
+        other = MafSandbox(_router(_backend()), shifted, deepagents_spec("img:1"))
+        assert base.id != other.id
 
 
 class TestExecute:
@@ -173,14 +186,36 @@ class TestExecute:
         assert response.output == "hello\n"
         assert response.exit_code == 0
         assert response.truncated is False
-        assert fake.commands == [("echo hello", WORK, DEFAULT_EXEC_TIMEOUT_SECONDS)]
+        ((command, directory, bound),) = fake.commands
+        assert (command, directory) == ("echo hello", WORK)
+        assert DEFAULT_EXEC_TIMEOUT_SECONDS - 0.5 < bound <= DEFAULT_EXEC_TIMEOUT_SECONDS
         assert adapter.spec.work_dir == WORK
 
-    def test_a_per_command_timeout_is_the_bound_handed_down(self):
+    def test_a_per_command_timeout_bounds_the_command_less_what_the_acquire_spent(self):
         fake = InProcessSandbox()
         adapter, _ = _adapter(fake)
         asyncio.run(adapter.aexecute("true", timeout=7))
-        assert fake.commands[0][2] == 7.0
+        assert 6.5 < fake.commands[0][2] <= 7.0
+
+    def test_an_acquire_that_spends_the_whole_budget_leaves_no_command_to_run(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        fake = InProcessSandbox()
+        adapter, _ = _adapter(fake)
+        adapter = MafSandbox(adapter.router, KEY, adapter.spec, exec_timeout_seconds=0.05)
+        acquire = adapter.router.acquire
+
+        async def slow_acquire(*args, **kwargs):
+            await asyncio.sleep(0.1)
+            return await acquire(*args, **kwargs)
+
+        monkeypatch.setattr(adapter.router, "acquire", slow_acquire)
+
+        response = asyncio.run(adapter.aexecute("true"))
+
+        assert response.exit_code is None
+        assert "0.05 seconds" in response.output
+        assert fake.commands == []
 
     def test_an_empty_command_is_an_error_result_not_a_raise(self):
         adapter, _ = _adapter()
@@ -230,11 +265,12 @@ class TestExecute:
         assert "result" in response.output
         assert detail in caplog.text
 
-    def test_a_timeout_is_reported_as_one(self):
+    def test_a_timeout_is_reported_as_one_and_claims_no_stop(self):
         adapter, _ = _adapter(InProcessSandbox(raises=TimeoutError()))
         response = asyncio.run(adapter.aexecute("sleep 999", timeout=3))
         assert response.exit_code is None
         assert "3 seconds" in response.output
+        assert "stopped" not in response.output
 
 
 class TestTheCombinedStream:
@@ -377,6 +413,40 @@ class TestFilesOut:
         (response,) = asyncio.run(adapter.adownload_files(["big.bin"]))
 
         assert response.content is None
+        assert response.error == "the file is larger than files_out.max_bytes_per_file"
+
+    def test_a_read_that_times_out_is_a_failure_not_a_bad_path(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        fake = InProcessSandbox(seed_files={f"{WORK}/slow.txt": "content"})
+        adapter, _ = _adapter(fake)
+
+        async def read_file(*args, **kwargs):
+            raise TimeoutError("the read did not finish")
+
+        monkeypatch.setattr(fake, "read_file", read_file)
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox_deepagents"):
+            (response,) = asyncio.run(adapter.adownload_files(["slow.txt"]))
+
+        assert response.error == "download failed; see the host log"
+        assert "timed out" in caplog.text
+
+    def test_a_cap_the_read_reports_is_named_by_the_cap_handed_down(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A file that grew after the stat is judged by the ceiling the read was given."""
+        fake = InProcessSandbox(seed_files={f"{WORK}/grew.txt": "123"})
+        spec = deepagents_spec(
+            "img:1", files_out=TransferLimits(max_bytes_per_file=4, max_total_bytes=64, max_files=8)
+        )
+        adapter = MafSandbox(_router(_backend(fake)), KEY, spec)
+
+        async def read_file(*args, **kwargs):
+            raise SandboxTransferCapExceeded("grew past the cap")
+
+        monkeypatch.setattr(fake, "read_file", read_file)
+        (response,) = asyncio.run(adapter.adownload_files(["grew.txt"]))
+
         assert response.error == "the file is larger than files_out.max_bytes_per_file"
 
     def test_a_batch_over_max_files_is_refused_whole(self):

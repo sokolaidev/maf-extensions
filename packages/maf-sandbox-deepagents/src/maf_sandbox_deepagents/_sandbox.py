@@ -12,8 +12,10 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import hashlib
+import json
 import logging
 import math
+import time
 from collections.abc import Coroutine
 from typing import Any
 
@@ -83,7 +85,9 @@ STORAGE_BASE = "."
 #: into the transcript; the detail goes to the log.
 SANDBOX_UNAVAILABLE = "Error: sandbox unavailable — the command did not run."
 
-_TIMED_OUT = "Error: the command did not finish within {seconds:g} seconds and was stopped."
+#: Says only what every backend can establish: the wait ended. Whether the command was
+#: stopped is the backend's own contract, and differs between them.
+_TIMED_OUT = "Error: the command did not finish within {seconds:g} seconds."
 #: Distinct from :data:`SANDBOX_UNAVAILABLE`: the command may have run, and the result is what
 #: did not come back.
 _EXEC_FAILED = "Error: the sandbox did not return the command's result; see the host log."
@@ -225,14 +229,21 @@ class MafSandbox(BaseSandbox):
         self._spec = spec
         self._timeout = float(exec_timeout_seconds)
         backend = router.backend_for(spec)
-        served_by = "" if backend is None else backend.name
-        digest = hashlib.sha256(
-            "\0".join((served_by, key.scope, key.thread_id, key.agent_dir, spec.kind)).encode()
-        ).hexdigest()
+        identity = [
+            "" if backend is None else backend.name,
+            key.scope,
+            key.thread_id,
+            key.agent_dir,
+            spec.kind,
+            str(spec.egress),
+            sorted(str(entry) for entry in spec.egress_allow),
+        ]
+        digest = hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()
         # The id names the sandbox, as a provider's own id would: two adapters over one key,
-        # kind and backend reach one sandbox through the router's get-or-create, and say so.
-        # Opaque rather than the key spelled out, because Deep Agents may render it to the
-        # model and a scope is often a tenant or a user.
+        # kind, backend and egress posture reach one sandbox through the router's get-or-create,
+        # and say so; a backend keys a container on the egress posture too. Opaque rather than
+        # the key spelled out, because Deep Agents may render it to the model and a scope is
+        # often a tenant or a user.
         self._id = f"maf-sandbox-{digest[:16]}"
 
     @property
@@ -270,11 +281,17 @@ class MafSandbox(BaseSandbox):
         bound = self._timeout if timeout is None else float(timeout)
         if not math.isfinite(bound) or bound <= 0:
             raise ValueError(f"timeout must be a finite positive number of seconds, got {timeout}")
+        # One deadline over the acquire and the command: a cold create spends part of the
+        # budget Deep Agents defines as the wait for the command, and the command gets the rest.
+        started = time.monotonic()
         sandbox = await self._acquire()
         if sandbox is None:
             return ExecuteResponse(output=SANDBOX_UNAVAILABLE, exit_code=None)
+        remaining = bound - (time.monotonic() - started)
+        if remaining <= 0:
+            return ExecuteResponse(output=_TIMED_OUT.format(seconds=bound), exit_code=None)
         try:
-            result = await sandbox.exec(command, working_directory=STORAGE_BASE, timeout=bound)
+            result = await sandbox.exec(command, working_directory=STORAGE_BASE, timeout=remaining)
         except TimeoutError:
             return ExecuteResponse(output=_TIMED_OUT.format(seconds=bound), exit_code=None)
         except Exception:
@@ -330,9 +347,18 @@ class MafSandbox(BaseSandbox):
 
     async def _download(self, sandbox: Sandbox, path: str, *, room: int) -> FileDownloadResponse:
         """One file, read under the smaller of the per-file cap and ``room``, the batch's rest."""
-        cap = min(self._spec.files_out.max_bytes_per_file, room)
+        per_file = self._spec.files_out.max_bytes_per_file
+        cap = min(per_file, room)
+        # Which ceiling `cap` is: read off the cap handed down, never off a stat that a
+        # growing file has already made stale.
+        over_cap = (_OVER_FILE_CAP if cap == per_file else _OVER_TOTAL_CAP).format(
+            direction="files_out"
+        )
         try:
             entry = await sandbox.stat_file(path, working_directory=STORAGE_BASE)
+        except TimeoutError:
+            logger.warning("%s: stat of %r timed out", self._id, path)
+            return FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)
         except ValueError as refused:
             logger.info("%s: download of %r refused: %s", self._id, path, refused)
             return FileDownloadResponse(path=path, error=INVALID_PATH)
@@ -346,11 +372,15 @@ class MafSandbox(BaseSandbox):
         if entry.size_bytes is None:
             return FileDownloadResponse(path=path, error=_SIZE_UNKNOWN)
         if entry.size_bytes > cap:
-            return FileDownloadResponse(path=path, error=self._over_cap(entry.size_bytes))
+            return FileDownloadResponse(path=path, error=over_cap)
         try:
             content = await sandbox.read_file(path, working_directory=STORAGE_BASE, max_bytes=cap)
         except SandboxTransferCapExceeded:
-            return FileDownloadResponse(path=path, error=self._over_cap(entry.size_bytes))
+            return FileDownloadResponse(path=path, error=over_cap)
+        except TimeoutError:
+            # Before the OSError branch: a timeout is one, and the path was not the problem.
+            logger.warning("%s: read of %r timed out", self._id, path)
+            return FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)
         except FileNotFoundError:
             return FileDownloadResponse(path=path, error=FILE_NOT_FOUND)
         except IsADirectoryError:
@@ -359,13 +389,6 @@ class MafSandbox(BaseSandbox):
             logger.info("%s: download of %r refused: %s", self._id, path, refused)
             return FileDownloadResponse(path=path, error=INVALID_PATH)
         return FileDownloadResponse(path=path, content=content)
-
-    def _over_cap(self, size: int) -> str:
-        """Which ceiling a file of ``size`` bytes broke: its own, or what the batch had left."""
-        direction = "files_out"
-        if size > self._spec.files_out.max_bytes_per_file:
-            return _OVER_FILE_CAP.format(direction=direction)
-        return _OVER_TOTAL_CAP.format(direction=direction)
 
     async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         limits = self._spec.files_out
