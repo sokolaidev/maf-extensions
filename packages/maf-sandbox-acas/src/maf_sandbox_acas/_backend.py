@@ -17,7 +17,7 @@ import logging
 import posixpath
 import shlex
 import threading
-from collections.abc import AsyncGenerator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from concurrent.futures import Future
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -65,6 +65,7 @@ from maf_sandbox.paths import (
 )
 
 from ._config import AcasSandboxConfig
+from ._exec_capture import capture
 from ._images import (
     names_a_prebuilt_image,
     qualify_image_reference,
@@ -400,6 +401,11 @@ class _Held:
     removal: bool | None = None
     probed: bool = False
     commands: set[str] = field(default_factory=set[str])
+    unusable: bool = False
+    invalidation: Future[None] | None = field(default=None, init=False, repr=False, compare=False)
+    invalidation_guard: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False, compare=False
+    )
     egress: tuple[Egress, frozenset[str]] = field(kw_only=True)
     work_dir: str = "/maf-sandbox/work"
 
@@ -435,12 +441,28 @@ class _Deletion:
     failure: DisposalFailure | None = None
 
 
+def _control_result(stdout: object, stderr: object, exit_code: object) -> ExecResult:
+    """Validate control-response fields before constructing a text result."""
+    if not isinstance(stdout, str) or not isinstance(stderr, str) or type(exit_code) is not int:
+        raise ValueError("invalid execution response")
+    return ExecResult(stdout=stdout, stderr=stderr, exit_code=exit_code)
+
+
 class _AcasSandbox:
     """A running ACA sandbox, narrowed to what a workload is allowed to do with it."""
 
-    def __init__(self, sandbox_client: Any, read_timeout: float) -> None:
+    def __init__(
+        self,
+        sandbox_client: Any,
+        read_timeout: float,
+        *,
+        held: _Held | None = None,
+        exec_output_limit: int = 1 << 20,
+    ) -> None:
         self._sc = sandbox_client
         self._read_timeout = read_timeout
+        self._held = held if held is not None else _Held("", egress=(Egress.CLOSED, frozenset()))
+        self._exec_output_limit = exec_output_limit
         self._work_dir = "/maf-sandbox/work"
 
     @property
@@ -450,6 +472,12 @@ class _AcasSandbox:
     @property
     def instance_id(self) -> str:
         return self.sandbox_id
+
+    def check_usable(self) -> None:
+        """Refuse an acquire after capture invalidation."""
+        with self._held.invalidation_guard:
+            if self._held.unusable:
+                raise SandboxOutputError("ACAS sandbox was invalidated during acquire")
 
     async def prepare_work_dir(self, spec: SandboxSpec) -> None:
         """Establish the spec's base through the data plane."""
@@ -499,25 +527,136 @@ class _AcasSandbox:
     async def exec(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float
     ) -> ExecResult:
-        """Run ``command``, bounded by ``timeout``.
+        """Return exact bounded streams, with one deadline for capture, retrieval and cleanup.
 
-        The bound is applied here rather than left to the SDK: a sandbox that stops
-        answering would otherwise hold the caller's turn open indefinitely.  ``TimeoutError``
-        propagates so the workload can report it as a diagnostic rather than as a hang.
-
-        The SDK's own ``exec`` takes a string only, so a sequence is quoted into one with
-        :func:`shlex.join` first — POSIX quoting, which is the guest shape this backend
-        declares in ``declarations.os_families`` and the router matches a spec against.
+        Timeout, cancellation or capture failure invalidates and disposes this entire sandbox,
+        including concurrent commands. Deletion has its own bounded cleanup allowance.
         """
+        return await self._capture_exec(
+            command, working_directory=working_directory, timeout=timeout
+        )
+
+    async def _capture_exec(
+        self,
+        command: str | Sequence[str],
+        *,
+        working_directory: str,
+        timeout: float,
+        max_output_bytes: int | None = None,
+    ) -> ExecResult:
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
+        with self._held.invalidation_guard:
+            if self._held.unusable:
+                raise SandboxOutputError(
+                    "ACAS sandbox was invalidated by an earlier exec failure; reacquire it"
+                )
+
+        async def run(script: str) -> ExecResult:
+            if max_output_bytes is not None:
+                return await self._exec_text_bounded(
+                    script,
+                    working_directory=working_directory,
+                    timeout=timeout,
+                    max_output_bytes=max_output_bytes,
+                )
+            return await self._exec_text(
+                script, working_directory=working_directory, timeout=timeout
+            )
+
+        try:
+            async with asyncio.timeout(timeout):
+                result = await capture(
+                    command, run, self._exec_output_limit, combined_limit=max_output_bytes
+                )
+                with self._held.invalidation_guard:
+                    if self._held.unusable:
+                        raise SandboxOutputError(
+                            "ACAS sandbox was invalidated by a concurrent exec failure"
+                        )
+                    return result
+        except BaseException as failure:
+            await self._invalidate_after_exec(failure)
+            raise
+
+    async def _invalidate_after_exec(self, failure: BaseException) -> None:
+        with self._held.invalidation_guard:
+            completion = self._held.invalidation
+            owns_cleanup = completion is None
+            if completion is None:
+                self._held.unusable = True
+                completion = self._held.invalidation = Future()
+
+        if owns_cleanup:
+
+            def completed(task: asyncio.Task[None]) -> None:
+                try:
+                    task.result()
+                except BaseException as error:
+                    completion.set_exception(error)
+                else:
+                    completion.set_result(None)
+
+            discard = asyncio.create_task(self._discard_after_exec())
+            discard.add_done_callback(completed)
+        cleanup = asyncio.wrap_future(completion)
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        try:
+            cleanup.result()
+        except Exception as deletion_failed:
+            failure.add_note(
+                "ACAS sandbox deletion failed; disposal must be retried: "
+                + error_detail(deletion_failed)
+            )
+            logger.warning(
+                "acas: could not dispose invalidated sandbox %s: %s",
+                self.sandbox_id,
+                error_detail(deletion_failed),
+            )
+
+    async def _discard_after_exec(self) -> None:
+        from azure.core.exceptions import ResourceNotFoundError
+
+        try:
+            async with asyncio.timeout(min(30.0, self._read_timeout)):
+                poller = await self._sc.begin_delete()
+                await poller.result()
+        except ResourceNotFoundError:
+            # An already-absent sandbox satisfies disposal.
+            pass
+
+    async def probe_command(
+        self, command: tuple[str, ...], *, timeout: float, owns_capture: bool
+    ) -> int:
+        """Check a guest prerequisite, disposing any capture that cannot complete."""
+        try:
+            result = await self._exec_text(command, working_directory="/", timeout=timeout)
+        except BaseException as failure:
+            if owns_capture:
+                await self._invalidate_after_exec(failure)
+            raise
+        if owns_capture and result.exit_code:
+            await self._invalidate_after_exec(SandboxOutputError("exec capture probe failed"))
+        return result.exit_code
+
+    async def _exec_text(
+        self, command: str | Sequence[str], *, working_directory: str, timeout: float
+    ) -> ExecResult:
+        """Run backend control commands; these never supply program-output bytes."""
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         cmd = command if isinstance(command, str) else shlex.join(command)
         result = await asyncio.wait_for(
             self._sc.exec(cmd, working_directory=working_directory), timeout=timeout
         )
-        return ExecResult(
-            stdout=getattr(result, "stdout", "") or "",
-            stderr=getattr(result, "stderr", "") or "",
-            exit_code=getattr(result, "exit_code", 0) or 0,
+        return _control_result(
+            stdout=getattr(result, "stdout", ""),
+            stderr=getattr(result, "stderr", ""),
+            exit_code=getattr(result, "exit_code", 0),
         )
 
     async def exec_bounded(
@@ -528,7 +667,29 @@ class _AcasSandbox:
         timeout: float,
         max_output_bytes: int,
     ) -> ExecResult:
-        """Bound the encoded execution response before parsing stdout or stderr."""
+        """Capture exact bytes with a combined output cap and a cap on each wire response.
+
+        Encoded framing can exhaust the wire cap before program output reaches its budget.
+        Failure invalidates and disposes the sandbox, as for ordinary exec.
+        """
+        if type(max_output_bytes) is not int or max_output_bytes <= 0:
+            raise ValueError("max_output_bytes must be a positive integer")
+        return await self._capture_exec(
+            command,
+            working_directory=working_directory,
+            timeout=timeout,
+            max_output_bytes=max_output_bytes,
+        )
+
+    async def _exec_text_bounded(
+        self,
+        command: str | Sequence[str],
+        *,
+        working_directory: str,
+        timeout: float,
+        max_output_bytes: int,
+    ) -> ExecResult:
+        """Bound backend control responses before parsing their text fields."""
         from azure.core.exceptions import HttpResponseError
         from azure.core.rest import AsyncHttpResponse, HttpRequest
 
@@ -568,15 +729,11 @@ class _AcasSandbox:
                 if not isinstance(decoded, dict):
                     raise ValueError("invalid execution response")
                 payload = cast(dict[str, Any], decoded)
-                stdout, stderr = payload.get("stdout") or "", payload.get("stderr") or ""
-                exit_code = payload.get("exitCode") or 0
-                if (
-                    not isinstance(stdout, str)
-                    or not isinstance(stderr, str)
-                    or type(exit_code) is not int
-                ):
-                    raise ValueError("invalid execution response")
-                return ExecResult(stdout=stdout, stderr=stderr, exit_code=exit_code)
+                return _control_result(
+                    stdout=payload.get("stdout", ""),
+                    stderr=payload.get("stderr", ""),
+                    exit_code=payload.get("exitCode", 0),
+                )
             finally:
                 await response.close()
 
@@ -594,7 +751,7 @@ class _AcasSandbox:
                 planted = await self.stat_file(guest_file, working_directory="/")
                 if planted is None or planted.kind is not EntryKind.FILE:
                     raise OSError("the file plane did not create the removal probe file")
-                answered = await self.exec(
+                answered = await self._exec_text(
                     ["rm", "--", guest_file],
                     working_directory=_GUEST_PROBE_WORKING_DIRECTORY,
                     timeout=_PROBE_TIMEOUT_S,
@@ -695,7 +852,7 @@ class _AcasSandbox:
                     return
                 if planted.kind is EntryKind.DIRECTORY and not recursive:
                     raise OSError(f"refusing to remove a directory without recursive: {path}")
-                answered = await self.exec(
+                answered = await self._exec_text(
                     ["rm", "-rf" if recursive else "-f", "--", guest],
                     working_directory="/",
                     timeout=self._read_timeout,
@@ -858,6 +1015,7 @@ class AcasSandboxBackend:
         #: never served. An entry lives only while its delete keeps failing.
         self._undeleted: dict[tuple[str, str, str], set[str]] = {}
         self._undeleted_kinds: dict[tuple[str, str, str], dict[str, str]] = {}
+        self._scope_disposals: dict[tuple[str, str], dict[str, object]] = {}
         self._disposal_tokens: dict[tuple[str, str, str], dict[str, object]] = {}
         self._disposal_guard = threading.Lock()
         # Group clients cached per event loop. An azure-core async client binds its transport
@@ -872,6 +1030,7 @@ class AcasSandboxBackend:
         #: tool call, and a warning per call is noise rather than a signal.
         self._warned_about_the_guest: set[tuple[tuple[str, str], str]] = set()
         self._acquisitions: dict[tuple[str, str, str, str], Future[None]] = {}
+        self._scope_purges: dict[tuple[str, str], int] = {}
         self._acquire_guard = threading.Lock()
 
     @property
@@ -949,15 +1108,16 @@ class AcasSandboxBackend:
                 probe serves the writing capabilities but refuses deletion; a successful
                 probe does not establish that the guest is root. Method-scoped egress
                 is also refused because the service matches methods case-insensitively.
-            AcasEgressPolicyConflict: when this key and kind already hold a different
-                egress policy. Successfully dispose the kind through the router or this
-                backend before changing it, or use another key.
+            AcasEgressPolicyConflict: when this key and kind hold a usable sandbox with a
+                different egress policy. Dispose it before changing policy, or use another
+                key. Capture-invalidated instances are deleted before replacement.
         """
         _sandbox_labels(key, spec)
         async with self._acquire_lock((key.scope, key.thread_id, key.agent_dir, spec.kind)):
             sandbox = await self._get_or_create(key, spec)
             async with asyncio.timeout(self._config.read_timeout_seconds):
                 await sandbox.prepare_work_dir(spec)
+            sandbox.check_usable()
             return sandbox
 
     @asynccontextmanager
@@ -967,6 +1127,8 @@ class AcasSandboxBackend:
         """Serialize one registry key across event loops without blocking their threads."""
         while True:
             with self._acquire_guard:
+                if registry_key[:2] in self._scope_purges:
+                    raise SandboxOutputError("ACAS scope disposal is in progress; retry acquire")
                 active = self._acquisitions.get(registry_key)
                 if active is None:
                     owned: Future[None] = Future()
@@ -987,20 +1149,79 @@ class AcasSandboxBackend:
         registry_key = (key.scope, key.thread_id, key.agent_dir, spec.kind)
         work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
         held = self._registry.get(registry_key)
-        if held is not None and held.egress != egress:
-            # Replacement could delete an instance another caller is still using.
-            raise AcasEgressPolicyConflict(
-                "ACAS already holds a different egress policy for this key and kind. "
-                "Successfully dispose the kind with SandboxRouter.dispose_kind or "
-                "AcasSandboxBackend.dispose before changing policy, or use a different key."
-            )
+        unusable = False
+        if held is not None:
+            with held.invalidation_guard:
+                unusable = held.unusable
+                if not unusable and held.egress != egress:
+                    # Replacement could delete an instance another caller is still using.
+                    raise AcasEgressPolicyConflict(
+                        "ACAS already holds a different egress policy for this key and kind. "
+                        "Successfully dispose the kind with SandboxRouter.dispose_kind or "
+                        "AcasSandboxBackend.dispose before changing policy, or use a different key."
+                    )
         gc = self._group_client()
+        prefix = registry_key[:3]
+        scope_key = prefix[:2]
+        with self._disposal_guard:
+            if held is not None and unusable:
+                self._retain_disposals(prefix, [held.sandbox_id], {held.sandbox_id: spec.kind})
+            scope_attempted = self._retain_scope_disposals(
+                scope_key, list(self._scope_disposals.get(scope_key, {}))
+            )
+        for name in scope_attempted:
+            deletion = await self._delete(gc, name)
+            with self._disposal_guard:
+                self._finish_scope_disposals(
+                    scope_key, {name: scope_attempted[name]}, [name] if deletion.failure else []
+                )
+            if deletion.failure is not None:
+                raise SandboxOutputError("ACAS could not dispose a retained scope sandbox")
+        with self._disposal_guard:
+            attributed = self._undeleted_kinds.get(prefix, {})
+            retained = [
+                name
+                for name in self._undeleted.get(prefix, ())
+                if attributed.get(name) in (None, spec.kind)
+            ]
+            kinds = {name: attributed[name] for name in retained if name in attributed}
+            attempted = self._retain_disposals(prefix, retained, kinds)
+        for name in retained:
+            deletion = await self._delete(gc, name)
+            with self._disposal_guard:
+                self._finish_disposals(
+                    prefix, {name: attempted[name]}, [name] if deletion.failure else []
+                )
+            if deletion.failure is not None:
+                if held is not None and unusable and name == held.sandbox_id:
+                    raise SandboxOutputError(
+                        "ACAS could not dispose an invalidated sandbox; "
+                        "retry disposal before reacquiring"
+                    )
+                raise SandboxOutputError(
+                    "ACAS could not dispose a retained sandbox; retry disposal before reacquiring"
+                )
+        with self._disposal_guard:
+            if self._scope_disposals.get(scope_key) or any(
+                self._undeleted_kinds.get(prefix, {}).get(name) in (None, spec.kind)
+                for name in self._undeleted.get(prefix, ())
+            ):
+                raise SandboxOutputError("ACAS retained disposal is still pending")
+            if held is not None and unusable:
+                if self._registry.get(registry_key) is held:
+                    self._registry.pop(registry_key)
+                held = None
         if held is not None:
             sandbox_id = held.sandbox_id
             try:
                 sc = gc.get_sandbox_client(sandbox_id)
                 await sc.ensure_running(timeout=_RESUME_TIMEOUT_S)
-                reused = _AcasSandbox(sc, self._config.read_timeout_seconds)
+                reused = _AcasSandbox(
+                    sc,
+                    self._config.read_timeout_seconds,
+                    held=held,
+                    exec_output_limit=self._config.exec_output_limit_bytes,
+                )
             except Exception as exc:  # noqa: BLE001 - a dead sandbox is replaced, not reported
                 # Not a warning: a sandbox reclaimed by its auto-delete timer between rounds
                 # is the expected path, not a fault. But it does mean the next call pays for
@@ -1027,7 +1248,10 @@ class AcasSandboxBackend:
                     key.agent_dir,
                 )
                 return reused
-            self._registry.pop(registry_key, None)
+            with held.invalidation_guard:
+                if held.unusable:
+                    raise SandboxOutputError("ACAS sandbox was invalidated during acquire")
+                self._registry.pop(registry_key, None)
 
         # The hint answers here and nowhere earlier, because here is where a create is about to
         # be paid for: the second workload to meet a refused image is refused without one. A
@@ -1077,14 +1301,20 @@ class AcasSandboxBackend:
                 sc.sandbox_id,
                 error_detail(exc),
             )
-        created = _AcasSandbox(sc, self._config.read_timeout_seconds)
+        created = _AcasSandbox(
+            sc,
+            self._config.read_timeout_seconds,
+            held=held,
+            exec_output_limit=self._config.exec_output_limit_bytes,
+        )
         try:
             await self._refuse_or_warn_on_guest_removal(
                 spec, created, held=held, freshly_created=True
             )
             await self._probe_commands(spec, created, held)
         except SandboxCapabilityNotSupported:
-            self._registry.pop(registry_key, None)
+            with self._disposal_guard:
+                self._registry.pop(registry_key, None)
             await self._release_the_refused(gc, key, sc.sandbox_id, kind=spec.kind)
             raise
         return created
@@ -1092,17 +1322,36 @@ class AcasSandboxBackend:
     async def _probe_commands(self, spec: SandboxSpec, sandbox: _AcasSandbox, held: _Held) -> None:
         deadline = asyncio.get_running_loop().time() + min(10.0, self._config.read_timeout_seconds)
 
-        async def run(argv: tuple[str, ...], as_root: bool) -> int:
+        async def run(argv: tuple[str, ...], as_root: bool, owns_capture: bool) -> int:
             assert not as_root
             async with asyncio.timeout_at(deadline):
-                result = await sandbox.exec(
+                return await sandbox.probe_command(
                     argv,
-                    working_directory="/",
                     timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+                    owns_capture=owns_capture,
                 )
-            return result.exit_code
 
         await probe_commands(spec, held.commands, run)
+
+    def _retain_scope_disposals(
+        self, scope_key: tuple[str, str], names: Sequence[str]
+    ) -> dict[str, object]:
+        """Reserve scope-only retry records while holding the disposal guard."""
+        tokens = {name: object() for name in names}
+        if tokens:
+            self._scope_disposals.setdefault(scope_key, {}).update(tokens)
+        return tokens
+
+    def _finish_scope_disposals(
+        self, scope_key: tuple[str, str], attempted: Mapping[str, object], failed: Sequence[str]
+    ) -> None:
+        """Reconcile only this attempt's scope records under the disposal guard."""
+        tokens = self._scope_disposals.get(scope_key, {})
+        for name, token in attempted.items():
+            if tokens.get(name) is token and name not in failed:
+                tokens.pop(name)
+        if not tokens:
+            self._scope_disposals.pop(scope_key, None)
 
     def _retain_disposals(
         self, prefix: tuple[str, str, str], names: Sequence[str], kinds: Mapping[str, str]
@@ -1121,15 +1370,13 @@ class AcasSandboxBackend:
         prefix: tuple[str, str, str],
         attempted: Mapping[str, object],
         failed: Sequence[str],
-        kinds: Mapping[str, str],
     ) -> None:
         """Reconcile this attempt while holding the disposal guard."""
-        self._retain_disposals(prefix, failed, {n: kinds[n] for n in failed if n in kinds})
         tokens = self._disposal_tokens.get(prefix, {})
         names = self._undeleted.get(prefix, set())
         attributed = self._undeleted_kinds.get(prefix, {})
         for name, token in attempted.items():
-            if tokens.get(name) is token:
+            if tokens.get(name) is token and name not in failed:
                 tokens.pop(name)
                 names.discard(name)
                 attributed.pop(name, None)
@@ -1151,7 +1398,7 @@ class AcasSandboxBackend:
         deletion = await self._delete(gc, sandbox_id)
         with self._disposal_guard:
             self._finish_disposals(
-                prefix, attempted, [sandbox_id] if deletion.failure is not None else [], kinds
+                prefix, attempted, [sandbox_id] if deletion.failure is not None else []
             )
         if deletion.failure is not None:
             return
@@ -1364,6 +1611,15 @@ class AcasSandboxBackend:
                     raise ValueError("the service returned no sandbox ID")
                 if instance_id is None or sandbox_id == instance_id:
                     listed.append(sandbox_id)
+                    if sandbox_id not in wanted:
+                        wanted.append(sandbox_id)
+                    with self._disposal_guard:
+                        if kind is not None:
+                            attempted_kinds[sandbox_id] = kind
+                        if sandbox_id not in attempted:
+                            attempted.update(
+                                self._retain_disposals(prefix, [sandbox_id], attempted_kinds)
+                            )
         except Exception as exc:  # noqa: BLE001 - a failed listing is never an empty inventory
             logger.warning(
                 "acas backend: could not discover disposal targets: %s", error_detail(exc)
@@ -1397,7 +1653,7 @@ class AcasSandboxBackend:
             if deletion.failure is not None:
                 undeleted[sandbox_id] = deletion.failure
         with self._disposal_guard:
-            self._finish_disposals(prefix, attempted, list(undeleted), attempted_kinds)
+            self._finish_disposals(prefix, attempted, list(undeleted))
             left = self._undeleted.get(prefix, set())
             attributed = self._undeleted_kinds.get(prefix, {})
             outstanding = {
@@ -1427,11 +1683,34 @@ class AcasSandboxBackend:
         return None
 
     async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
+        """Purge a scope while refusing new local acquires; report active acquires as incomplete."""
+        scope_key = (scope, thread_id)
+        with self._acquire_guard:
+            if any(key[:2] == scope_key for key in self._acquisitions):
+                return ScopePurge(
+                    0,
+                    DisposalFailure(
+                        "unknown", "ACAS acquisition is in progress; retry scope purge"
+                    ),
+                )
+            self._scope_purges[scope_key] = self._scope_purges.get(scope_key, 0) + 1
+        try:
+            return await self._dispose_scope(scope, thread_id)
+        finally:
+            with self._acquire_guard:
+                remaining = self._scope_purges[scope_key] - 1
+                if remaining:
+                    self._scope_purges[scope_key] = remaining
+                else:
+                    del self._scope_purges[scope_key]
+
+    async def _dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
         """Delete sandboxes labelled ``(scope, thread_id)`` and report what stayed.
 
         Labels reach sandboxes created elsewhere; registry and retry records cover failed
         listings, which are still reported. Registry entries are dropped before deletion.
         """
+        scope_key = (scope, thread_id)
         with self._disposal_guard:
             known = [
                 (k, entry.sandbox_id)
@@ -1461,6 +1740,9 @@ class AcasSandboxBackend:
                 prefix: self._retain_disposals(prefix, list(names), attempted_kinds[prefix])
                 for prefix, names in retained.items()
             }
+            scope_attempted = self._retain_scope_disposals(
+                scope_key, list(self._scope_disposals.get(scope_key, {}))
+            )
         try:
             gc = self._group_client()
         except Exception as exc:  # noqa: BLE001 - purge must never fail
@@ -1475,7 +1757,15 @@ class AcasSandboxBackend:
         undisposed: list[DisposalFailure] = []
         ids = {sandbox_id for _, sandbox_id in known}
         ids.update(sandbox_id for names in retained.values() for sandbox_id in names)
-        listed = await self._list_thread_sandbox_ids(gc, scope, thread_id)
+        ids.update(scope_attempted)
+
+        def remember(sandbox_id: str) -> None:
+            if sandbox_id not in ids:
+                with self._disposal_guard:
+                    scope_attempted.update(self._retain_scope_disposals(scope_key, [sandbox_id]))
+                ids.add(sandbox_id)
+
+        listed = await self._list_thread_sandbox_ids(gc, scope, thread_id, on_discovered=remember)
         if listed is None:
             undisposed.append(
                 DisposalFailure(
@@ -1500,9 +1790,12 @@ class AcasSandboxBackend:
                 undisposed.append(deletion.failure)
         with self._disposal_guard:
             for prefix, tokens in attempted.items():
-                self._finish_disposals(
-                    prefix, tokens, list(tokens.keys() & undeleted), attempted_kinds[prefix]
-                )
+                self._finish_disposals(prefix, tokens, list(tokens.keys() & undeleted))
+            self._finish_scope_disposals(
+                scope_key, scope_attempted, list(scope_attempted.keys() & undeleted)
+            )
+            if self._scope_disposals.get(scope_key) and not undisposed:
+                undisposed.append(DisposalFailure("unknown", "scope disposal is still pending"))
         return ScopePurge(count, fold_disposal_failures(undisposed))
 
     # -- internals ----------------------------------------------------------------
@@ -1578,7 +1871,12 @@ class AcasSandboxBackend:
             )
 
     async def _list_thread_sandbox_ids(
-        self, group_client: Any, scope: str, thread_id: str
+        self,
+        group_client: Any,
+        scope: str,
+        thread_id: str,
+        *,
+        on_discovered: Callable[[str], None] | None = None,
     ) -> list[str] | None:
         """Sandbox ids labelled ``(scope, thread_id)``, or ``None`` when the query failed.
 
@@ -1599,8 +1897,11 @@ class AcasSandboxBackend:
                 }
             ):
                 sandbox_id = getattr(sandbox, "id", None)
-                if sandbox_id:
-                    ids.append(sandbox_id)
+                if not isinstance(sandbox_id, str) or not sandbox_id:
+                    raise ValueError("the service returned no sandbox ID")
+                if on_discovered is not None:
+                    on_discovered(sandbox_id)
+                ids.append(sandbox_id)
         except Exception as exc:  # noqa: BLE001 - purge must never fail
             logger.warning(
                 "acas backend: could not list sandboxes for thread %s: %s",

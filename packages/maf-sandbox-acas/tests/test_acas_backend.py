@@ -940,11 +940,16 @@ class TestImageCommandProbes:
             spec = _spec_requiring(Capability.EXEC)
             first = await backend.acquire(key, spec)
             await backend.acquire(key, spec)
-            assert shells == [first.instance_id]
+            assert shells == [first.instance_id, first.instance_id]
             await backend.dispose(key)
             second = await backend.acquire(key, spec)
             assert second.instance_id != first.instance_id
-            assert shells == [first.instance_id, second.instance_id]
+            assert shells == [
+                first.instance_id,
+                first.instance_id,
+                second.instance_id,
+                second.instance_id,
+            ]
 
         asyncio.run(scenario())
 
@@ -2152,7 +2157,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert not backend._undeleted
         assert not backend._undeleted_kinds
 
-    def test_a_refused_create_retains_its_kind_after_a_concurrent_disposal(self):
+    def test_a_refused_create_does_not_restore_a_completed_disposal(self):
         from maf_sandbox import SandboxCapabilityNotSupported
 
         from maf_sandbox_acas._backend import _Deletion
@@ -2189,7 +2194,7 @@ class TestAnImageWhoseGuestIsNotRoot:
             assert await backend.dispose(key, kind="codeact") is None
 
         asyncio.run(asyncio.wait_for(scenario(), timeout=5))
-        assert client.deleted == ["sbx-1"]
+        assert client.deleted == []
         assert not backend._undeleted
         assert not backend._undeleted_kinds
 
@@ -2422,7 +2427,17 @@ class TestExecArgv:
     actually sent to the SDK recovering the exact original argv is that proof.
     """
 
+    def _command_tokens(self, script):
+        import shlex
+
+        before, start, rest = script.partition('(umask "$old_umask"; exec ')
+        command, end, after = rest.rpartition(') > "$d/outpipe" 2> "$d/errpipe"\nrc=$?\n')
+        assert before and start and end and after
+        return shlex.split(command)
+
     class _RecordingClient:
+        sandbox_id = "recording"
+
         def __init__(self) -> None:
             self.calls: list[str] = []
 
@@ -2434,6 +2449,13 @@ class TestExecArgv:
                 stderr = ""
                 exit_code = 0
 
+            if command.startswith("for tool"):
+                token = next(
+                    line.split("=", 1)[1].removeprefix("/tmp/")
+                    for line in command.splitlines()
+                    if line.startswith("d=")
+                )
+                _Result.stdout = f"{token} 0 0 0\n"
             return _Result()
 
     def test_a_string_command_passes_through_unchanged(self):
@@ -2445,7 +2467,8 @@ class TestExecArgv:
                 "echo hi", working_directory="/maf-sandbox/work", timeout=5
             )
         )
-        assert client.calls == ["echo hi"]
+        assert self._command_tokens(client.calls[0]) == ["sh", "-c", "echo hi"]
+        assert len(client.calls) == 2
 
     def test_a_sequence_is_quoted_with_shlex_join(self):
         import shlex
@@ -2453,16 +2476,14 @@ class TestExecArgv:
         from maf_sandbox_acas._backend import _AcasSandbox
 
         client = self._RecordingClient()
-        argv = ["echo", "a; rm -rf /", "$(id)", "`id`", "it's mine", 'say "hi"']
+        argv = ["echo", "a; rm -rf /", "$(id)", "`id`", "it's mine", 'say "hi"', "one\ntwo"]
         asyncio.run(
             _AcasSandbox(client, 30.0).exec(argv, working_directory="/maf-sandbox/work", timeout=5)
         )
 
-        assert client.calls == [shlex.join(argv)]
-        # Round-tripping through shlex.split recovers the exact argv — proof the quoted
-        # form cannot be re-interpreted as more than one token per element, and cannot
-        # break out into a second shell command.
-        assert shlex.split(client.calls[0]) == argv
+        tokens = self._command_tokens(client.calls[0])
+        assert tokens == ["sh", "-c", shlex.join(argv)]
+        assert shlex.split(tokens[2]) == argv
 
     def test_a_bare_space_separated_argv_stays_one_command(self):
         import shlex
@@ -2481,7 +2502,9 @@ class TestExecArgv:
             _AcasSandbox(client, 30.0).exec(argv, working_directory="/maf-sandbox/work", timeout=5)
         )
 
-        assert shlex.split(client.calls[0]) == argv
+        tokens = self._command_tokens(client.calls[0])
+        assert tokens == ["sh", "-c", shlex.join(argv)]
+        assert shlex.split(tokens[2]) == argv
 
 
 class TestNarrowedDisposal:
@@ -2657,7 +2680,7 @@ class TestNarrowedDisposal:
     @pytest.mark.parametrize("operation", ["kind", "whole", "scope"])
     @pytest.mark.parametrize("retained", [False, True])
     @pytest.mark.parametrize("new_ledger", [False, True])
-    def test_concurrent_failure_restores_kind_for_a_narrowed_retry(
+    def test_stale_failure_does_not_restore_a_completed_retry(
         self, operation, retained, new_ledger
     ):
         from maf_sandbox_acas._backend import _Deletion
@@ -2712,7 +2735,7 @@ class TestNarrowedDisposal:
             assert await backend.dispose(key, kind="a") is None
 
         asyncio.run(asyncio.wait_for(scenario(), timeout=5))
-        assert client.deleted == ["selected"]
+        assert client.deleted == []
         assert backend._undeleted == ({prefix: {"sibling"}} if new_ledger else {})
         assert backend._undeleted_kinds == ({prefix: {"sibling": "b"}} if new_ledger else {})
 
@@ -3147,6 +3170,687 @@ def _spec():
     return SandboxSpec(kind="bicep", image_id="pinned-id")
 
 
+@pytest.mark.parametrize("listing_fails", [False, True])
+@pytest.mark.parametrize("kind", [None, "bicep"])
+def test_key_discovery_retains_cleanup_before_replacement(kind, listing_fails, monkeypatch):
+    from maf_sandbox import SandboxOutputError
+
+    client = _GuestGroupClient(_guest_removing(True), delete_fails=True)
+    backend = _backend_with(client)
+    key = SandboxKey("s", "t", "a")
+
+    async def listed():
+        yield _FakeSandbox("remote")
+        if listing_fails:
+            raise RuntimeError("listing interrupted")
+
+    monkeypatch.setattr(client, "list_sandboxes", lambda **kwargs: listed())
+
+    async def scenario():
+        assert await backend.dispose(key, kind=kind) is not None
+        for requested in ["bicep", "codeact"] if kind is None else [kind]:
+            with pytest.raises(SandboxOutputError, match="retained"):
+                await backend.acquire(key, SandboxSpec(kind=requested, image_id="pinned-id"))
+        assert client.create_calls == 0
+        assert backend._undeleted[("s", "t", "a")] == {"remote"}
+        assert backend._undeleted_kinds.get(("s", "t", "a"), {}).get("remote") == kind
+        client.delete_fails = False
+        replacement = await backend.acquire(key, _spec())
+        assert replacement.instance_id == "sbx-1" and client.deleted == ["remote"]
+        assert not backend._undeleted
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("retry", ["acquire", "purge"])
+@pytest.mark.parametrize("listing_fails", [False, True])
+def test_scope_discovery_survives_failed_listing_and_blocks_its_scope(
+    retry, listing_fails, monkeypatch
+):
+    from maf_sandbox import SandboxOutputError
+
+    client = _GuestGroupClient(_guest_removing(True), delete_fails=True)
+    backend = _backend_with(client)
+
+    async def listed():
+        yield _FakeSandbox("remote")
+        if listing_fails:
+            raise RuntimeError("listing interrupted")
+
+    def offline(**kwargs):
+        raise RuntimeError("listing offline")
+
+    monkeypatch.setattr(client, "list_sandboxes", lambda **kwargs: listed())
+
+    async def scenario():
+        assert (await backend.dispose_scope("s", "t")).undisposed is not None
+        monkeypatch.setattr(client, "list_sandboxes", offline)
+        for agent, kind in [("a", "bicep"), ("b", "codeact")]:
+            with pytest.raises(SandboxOutputError, match="retained scope"):
+                await backend.acquire(
+                    SandboxKey("s", "t", agent), SandboxSpec(kind=kind, image_id="pinned-id")
+                )
+        assert client.create_calls == 0
+        for scope, thread in [("other", "t"), ("s", "other")]:
+            await backend.acquire(SandboxKey(scope, thread, "a"), _spec())
+        assert client.create_calls == 2
+        client.delete_fails = False
+        if retry == "purge":
+            purged = await backend.dispose_scope("s", "t")
+            assert purged.disposed == 1
+            assert purged.undisposed is not None and purged.undisposed.code == "unlisted"
+        replacement = await backend.acquire(SandboxKey("s", "t", "a"), _spec())
+        assert replacement.instance_id == "sbx-3" and client.deleted == ["remote"]
+        assert not backend._scope_disposals
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("scope_wide", [False, True])
+def test_discovery_is_retained_when_listing_is_cancelled(scope_wide, monkeypatch):
+    from maf_sandbox import SandboxOutputError
+
+    client = _GuestGroupClient(_guest_removing(True), delete_fails=True)
+    backend = _backend_with(client)
+    key = SandboxKey("s", "t", "a")
+
+    async def scenario():
+        pending = asyncio.Event()
+
+        async def listed():
+            yield _FakeSandbox("remote")
+            pending.set()
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(client, "list_sandboxes", lambda **kwargs: listed())
+        task = asyncio.create_task(
+            backend.dispose_scope("s", "t") if scope_wide else backend.dispose(key)
+        )
+        await pending.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        with pytest.raises(SandboxOutputError, match="retained"):
+            await backend.acquire(key, _spec())
+        assert client.create_calls == 0
+
+    asyncio.run(scenario())
+
+
+def test_older_scope_failure_cannot_restore_a_newer_completed_deletion(monkeypatch):
+    client = _GuestGroupClient(_guest_removing(True))
+    backend = _backend_with(client)
+    monkeypatch.setattr(
+        client, "list_sandboxes", lambda **kwargs: _FakePager([_FakeSandbox("remote")])
+    )
+    original_delete = _GuestSandboxClient.begin_delete
+
+    async def scenario():
+        started, release = asyncio.Event(), asyncio.Event()
+        calls = 0
+
+        async def delete(sandbox):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                started.set()
+                await release.wait()
+                raise RuntimeError("old deletion failed")
+            return await original_delete(sandbox)
+
+        monkeypatch.setattr(_GuestSandboxClient, "begin_delete", delete)
+        first = asyncio.create_task(backend.dispose_scope("s", "t"))
+        await started.wait()
+        assert (await backend.dispose_scope("s", "t")).undisposed is None
+        release.set()
+        assert (await first).undisposed is not None
+        client.delete_fails = True
+        result = await backend.acquire(SandboxKey("s", "t", "a"), _spec())
+        assert result.instance_id == "sbx-1" and calls == 2
+        assert not backend._scope_disposals
+
+    asyncio.run(scenario())
+
+
+def test_older_scope_success_cannot_clear_a_newer_failed_deletion(monkeypatch):
+    from maf_sandbox import SandboxOutputError
+
+    client = _GuestGroupClient(_guest_removing(True), delete_fails=True)
+    backend = _backend_with(client)
+    monkeypatch.setattr(
+        client, "list_sandboxes", lambda **kwargs: _FakePager([_FakeSandbox("remote")])
+    )
+    original_delete = _GuestSandboxClient.begin_delete
+
+    async def scenario():
+        started, release = asyncio.Event(), asyncio.Event()
+        calls = 0
+
+        async def delete(sandbox):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                started.set()
+                await release.wait()
+                return _CompletedDeletion()
+            return await original_delete(sandbox)
+
+        monkeypatch.setattr(_GuestSandboxClient, "begin_delete", delete)
+        first = asyncio.create_task(backend.dispose_scope("s", "t"))
+        await started.wait()
+        second = await backend.dispose_scope("s", "t")
+        assert second.undisposed is not None
+        release.set()
+        assert (await first).undisposed is not None
+        with pytest.raises(SandboxOutputError, match="retained scope"):
+            await backend.acquire(SandboxKey("s", "t", "a"), _spec())
+        assert client.create_calls == 0
+        client.delete_fails = False
+        assert (await backend.acquire(SandboxKey("s", "t", "a"), _spec())).instance_id == "sbx-1"
+        assert not backend._scope_disposals
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure", ["exit", "exception"])
+def test_fresh_capture_probe_failure_retries_deletion_before_replacement(failure, monkeypatch):
+    from maf_sandbox import SandboxOutputError
+
+    client = _GuestGroupClient(_guest_removing(True), delete_fails=True)
+    backend = _backend_with(client)
+    key = SandboxKey("s", "t", "a")
+    spec = _spec()
+    original_exec = _GuestSandboxClient.exec
+    original_delete = _GuestSandboxClient.begin_delete
+    attempts = []
+    fail_probe = True
+
+    async def exec_probe(self, command, *, working_directory):
+        if fail_probe and "maf-exec-probe-" in command:
+            if failure == "exception":
+                raise OSError("capture unavailable")
+            return SimpleNamespace(stdout="", stderr="capture unavailable", exit_code=125)
+        return await original_exec(self, command, working_directory=working_directory)
+
+    async def delete(self):
+        attempts.append((self.sandbox_id, client.create_calls))
+        return await original_delete(self)
+
+    monkeypatch.setattr(_GuestSandboxClient, "exec", exec_probe)
+    monkeypatch.setattr(_GuestSandboxClient, "begin_delete", delete)
+
+    async def scenario():
+        nonlocal fail_probe
+        with pytest.raises(SandboxCapabilityNotSupported, match="exec-capture"):
+            await backend.acquire(key, spec)
+        assert not backend._registry
+        assert backend._undeleted[("s", "t", "a")] == {"sbx-1"}
+        assert attempts == [("sbx-1", 1), ("sbx-1", 1)]
+        fail_probe = False
+        with pytest.raises(SandboxOutputError, match="retained"):
+            await backend.acquire(key, spec)
+        assert client.create_calls == 1 and attempts[-1] == ("sbx-1", 1)
+        client.delete_fails = False
+        replacement = await backend.acquire(key, spec)
+        assert replacement.instance_id == "sbx-2"
+        assert attempts[-1] == ("sbx-1", 1)
+        assert not backend._undeleted
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("disposal", ["key", "kind", "scope"])
+@pytest.mark.parametrize("reuse", [False, True])
+def test_exec_invalidation_after_failed_disposal_blocks_replacement(disposal, reuse, monkeypatch):
+    from maf_sandbox import SandboxOutputError
+
+    client = _GuestGroupClient(_guest_removing(True), delete_fails=True)
+    backend = _backend_with(client)
+    key = SandboxKey("s", "t", "a")
+    spec = _spec()
+
+    async def scenario():
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def capture(*args, **kwargs):
+            started.set()
+            await release.wait()
+            raise SandboxOutputError("capture failed")
+
+        monkeypatch.setattr(f"{_Held.__module__}.capture", capture)
+        sandbox = await backend.acquire(key, spec)
+        if reuse:
+            sandbox = await backend.acquire(key, spec)
+        task = asyncio.create_task(sandbox.exec("program", working_directory="/", timeout=10))
+        await started.wait()
+        if disposal == "scope":
+            assert (await backend.dispose_scope(key.scope, key.thread_id)).undisposed is not None
+        else:
+            assert await backend.dispose(key, kind=spec.kind if disposal == "kind" else None)
+        assert not backend._registry and not sandbox._held.unusable
+        release.set()
+        with pytest.raises(SandboxOutputError, match="capture failed"):
+            await task
+        with pytest.raises(SandboxOutputError, match="retained"):
+            await backend.acquire(key, spec)
+        assert client.create_calls == 1
+        client.delete_fails = False
+        replacement = await backend.acquire(key, spec)
+        assert client.deleted[-1] == sandbox.instance_id
+        assert replacement.instance_id != sandbox.instance_id
+        assert not backend._undeleted
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("disposal", ["key", "kind", "scope"])
+def test_reacquire_retries_invalidated_ids_retained_after_disposal(disposal, monkeypatch):
+    from maf_sandbox import SandboxOutputError
+
+    from maf_sandbox_acas._backend import _Deletion
+
+    client = _SlowCreateGroupClient()
+    backend = _backend_with(client)
+    key = SandboxKey("s", "t", "a")
+    spec = _spec()
+    failed = True
+    attempts = []
+
+    async def delete(group, sandbox_id):
+        attempts.append((sandbox_id, client.create_calls))
+        return (
+            _Deletion(False, DisposalFailure("unreachable", "offline"))
+            if failed
+            else _Deletion(True)
+        )
+
+    monkeypatch.setattr(client, "list_sandboxes", lambda **kwargs: _FakePager([]), raising=False)
+    monkeypatch.setattr(backend, "_delete", delete)
+
+    async def scenario():
+        nonlocal failed
+        first = await backend.acquire(key, spec)
+        first._held.unusable = True
+        if disposal == "scope":
+            assert (await backend.dispose_scope(key.scope, key.thread_id)).undisposed is not None
+        else:
+            assert (
+                await backend.dispose(key, kind=spec.kind if disposal == "kind" else None)
+                is not None
+            )
+        assert not backend._registry
+        assert first.instance_id in backend._undeleted[(key.scope, key.thread_id, key.agent_dir)]
+        with pytest.raises(SandboxOutputError, match="retained"):
+            await backend.acquire(key, spec)
+        assert client.create_calls == 1
+        assert len(attempts) == 2
+        failed = False
+        replacement = await backend.acquire(key, spec)
+        assert replacement.instance_id != first.instance_id
+        assert attempts[-1] == (first.instance_id, 1)
+        assert client.create_calls == 2
+        assert not backend._undeleted
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("stage", ["resume", "resume_failure", "probe", "prepare"])
+def test_reacquire_refuses_invalidation_during_preparation(stage, monkeypatch):
+    from maf_sandbox import SandboxOutputError
+
+    from maf_sandbox_acas._backend import _AcasSandbox
+
+    client = _SlowCreateGroupClient()
+    backend = _backend_with(client)
+    key = SandboxKey("s", "t", "a")
+    spec = _spec()
+
+    async def scenario():
+        first = await backend.acquire(key, spec)
+        ready, release = asyncio.Event(), asyncio.Event()
+        owner, name = {
+            "resume": (_ResumingSandboxClient, "ensure_running"),
+            "resume_failure": (_ResumingSandboxClient, "ensure_running"),
+            "probe": (backend, "_probe_commands"),
+            "prepare": (_AcasSandbox, "prepare_work_dir"),
+        }[stage]
+        original = getattr(owner, name)
+
+        async def pause(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            ready.set()
+            await release.wait()
+            if stage == "resume_failure":
+                raise RuntimeError("sandbox disappeared while resuming")
+            return result
+
+        with monkeypatch.context() as patch:
+            patch.setattr(owner, name, pause)
+            acquire = asyncio.create_task(backend.acquire(key, spec))
+            await asyncio.wait_for(ready.wait(), 5)
+            try:
+                await first._invalidate_after_exec(SandboxOutputError("capture failed"))
+            finally:
+                release.set()
+            with pytest.raises(SandboxOutputError, match="invalidated during acquire"):
+                await acquire
+        assert client.create_calls == 1
+        replacement = await backend.acquire(key, spec)
+        assert replacement.instance_id != first.instance_id
+
+    asyncio.run(scenario())
+
+
+def test_acquire_return_waits_for_invalidation_on_another_loop(monkeypatch):
+    from maf_sandbox import SandboxOutputError
+
+    from maf_sandbox_acas._backend import _AcasSandbox
+
+    backend = _backend_with(_SlowCreateGroupClient())
+    key, spec = SandboxKey("s", "t", "a"), _spec()
+    first = asyncio.run(backend.acquire(key, spec))
+    ready, finish_prepare = threading.Event(), threading.Event()
+    invalidating, finish_invalidation = threading.Event(), threading.Event()
+    result_waiting = threading.Event()
+    role, lock = threading.local(), threading.Lock()
+
+    class Guard:
+        def __enter__(self):
+            if role.name == "reader" and invalidating.is_set():
+                result_waiting.set()
+            assert lock.acquire(timeout=5)
+            if role.name == "writer":
+                invalidating.set()
+                assert finish_invalidation.wait(5)
+
+        def __exit__(self, *args):
+            lock.release()
+
+    original = _AcasSandbox.prepare_work_dir
+
+    async def prepare(self, spec):
+        await original(self, spec)
+        ready.set()
+        assert finish_prepare.wait(5)
+
+    monkeypatch.setattr(_AcasSandbox, "prepare_work_dir", prepare)
+    monkeypatch.setattr(first._held, "invalidation_guard", Guard())
+
+    def acquire():
+        role.name = "reader"
+        return asyncio.run(backend.acquire(key, spec))
+
+    def invalidate():
+        role.name = "writer"
+        asyncio.run(first._invalidate_after_exec(SandboxOutputError("capture failed")))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        result = pool.submit(acquire)
+        assert ready.wait(5)
+        cleanup = pool.submit(invalidate)
+        try:
+            assert invalidating.wait(5)
+            finish_prepare.set()
+            assert result_waiting.wait(3)
+            assert not result.done()
+        finally:
+            finish_prepare.set()
+            finish_invalidation.set()
+        with pytest.raises(SandboxOutputError, match="invalidated during acquire"):
+            result.result(timeout=5)
+        assert cleanup.result(timeout=5) is None
+
+
+@pytest.mark.parametrize("delete_failed", [False, True])
+def test_capture_invalidation_allows_policy_change_after_deletion(delete_failed):
+    from maf_sandbox import SandboxOutputError
+
+    client = _GuestGroupClient(_guest_removing(True), delete_fails=delete_failed)
+    backend = _backend_with(client)
+    key = SandboxKey("s", "t", "a")
+    original = _spec()
+    changed = replace(original, egress=Egress.ALLOWLIST, egress_allow=("api.example",))
+
+    async def scenario():
+        first = await backend.acquire(key, original)
+        await first._invalidate_after_exec(SandboxOutputError("capture failed"))
+        assert first._held.unusable
+        if delete_failed:
+            with pytest.raises(SandboxOutputError, match="dispose an invalidated sandbox"):
+                await backend.acquire(key, changed)
+            assert client.create_calls == 1
+            assert backend._registry[("s", "t", "a", original.kind)] is first._held
+            client.delete_fails = False
+        replacement = await backend.acquire(key, changed)
+        assert first.instance_id in client.deleted
+        assert replacement.instance_id != first.instance_id
+        assert replacement._held.egress == (Egress.ALLOWLIST, frozenset({"api.example"}))
+        assert client.create_calls == 2
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("operation", ["key", "kind"])
+@pytest.mark.parametrize("older_failed", [False, True])
+@pytest.mark.parametrize("newer_failed", [False, True])
+def test_invalidated_acquire_reconciles_concurrent_disposal(
+    operation, older_failed, newer_failed, monkeypatch
+):
+    from maf_sandbox import SandboxOutputError
+
+    from maf_sandbox_acas._backend import _Deletion
+
+    client = _GuestGroupClient(_guest_removing(True), delete_fails=True)
+    backend = _backend_with(client)
+    key, spec = SandboxKey("s", "t", "a"), _spec()
+    prefix = (key.scope, key.thread_id, key.agent_dir)
+    original_delete = backend._delete
+    calls = 0
+
+    async def scenario():
+        first = await backend.acquire(key, spec)
+        await first._invalidate_after_exec(SandboxOutputError("capture failed"))
+        client.delete_fails = False
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def delete(group, sandbox_id):
+            nonlocal calls
+            calls += 1
+            attempt = calls
+            assert sandbox_id == first.instance_id
+            if attempt == 1:
+                started.set()
+                await release.wait()
+            if (attempt == 1 and older_failed) or (attempt == 2 and newer_failed):
+                return _Deletion(False, DisposalFailure("unreachable", "deletion failed"))
+            return await original_delete(group, sandbox_id)
+
+        monkeypatch.setattr(backend, "_delete", delete)
+        acquire = asyncio.create_task(backend.acquire(key, spec))
+        await asyncio.wait_for(started.wait(), 5)
+        try:
+            failure = await backend.dispose(key, kind=spec.kind if operation == "kind" else None)
+            assert (failure is not None) == newer_failed
+        finally:
+            release.set()
+        if older_failed or newer_failed:
+            message = "invalidated sandbox" if older_failed else "retained disposal"
+            with pytest.raises(SandboxOutputError, match=message):
+                await acquire
+            assert client.create_calls == 1
+        else:
+            assert (await acquire).instance_id != first.instance_id
+        assert calls == 2
+        assert backend._undeleted.get(prefix, set()) == (
+            {first.instance_id} if newer_failed else set()
+        )
+        replacement = await backend.acquire(key, spec)
+        assert replacement.instance_id != first.instance_id and client.create_calls == 2
+        assert calls == (3 if newer_failed else 2)
+        assert not backend._undeleted and not backend._disposal_tokens
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=10))
+
+
+@pytest.mark.parametrize("stage", ["create", "resume", "prepare"])
+def test_scope_purge_reports_active_acquisition(stage, monkeypatch):
+    from maf_sandbox_acas._backend import _AcasSandbox
+
+    client = _GuestGroupClient(_guest_removing(True))
+    backend = _backend_with(client)
+    key, spec = SandboxKey("s", "t", "a"), _spec()
+
+    async def scenario():
+        if stage != "create":
+            await backend.acquire(key, spec)
+        owner, name = {
+            "create": (client, "begin_create_sandbox"),
+            "resume": (_GuestSandboxClient, "ensure_running"),
+            "prepare": (_AcasSandbox, "prepare_work_dir"),
+        }[stage]
+        original = getattr(owner, name)
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def pause(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            started.set()
+            await release.wait()
+            return result
+
+        with monkeypatch.context() as patch:
+            patch.setattr(owner, name, pause)
+            acquire = asyncio.create_task(backend.acquire(key, spec))
+            await asyncio.wait_for(started.wait(), 5)
+            try:
+                purge = await backend.dispose_scope(key.scope, key.thread_id)
+                assert purge.disposed == 0 and purge.undisposed is not None
+                assert purge.undisposed.code == "unknown"
+                assert not client.deleted
+            finally:
+                release.set()
+            result = await acquire
+        purge = await backend.dispose_scope(key.scope, key.thread_id)
+        assert purge.undisposed is None and purge.disposed == 1
+        assert client.deleted == [result.instance_id]
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=10))
+
+
+@pytest.mark.parametrize("stage", ["listing", "deletion"])
+def test_scope_purge_refuses_new_acquires_without_blocking_other_scopes(stage, monkeypatch):
+    from maf_sandbox import SandboxOutputError
+
+    client = _GuestGroupClient(_guest_removing(True))
+    backend = _backend_with(client)
+    key, spec = SandboxKey("s", "t", "a"), _spec()
+
+    async def scenario():
+        if stage == "deletion":
+            await backend.acquire(key, spec)
+        name = "_list_thread_sandbox_ids" if stage == "listing" else "_delete"
+        original = getattr(backend, name)
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def pause(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            started.set()
+            await release.wait()
+            return result
+
+        with monkeypatch.context() as patch:
+            patch.setattr(backend, name, pause)
+            purge = asyncio.create_task(backend.dispose_scope(key.scope, key.thread_id))
+            await asyncio.wait_for(started.wait(), 5)
+            try:
+                creates = client.create_calls
+                for scoped_key, scoped_spec in (
+                    (key, spec),
+                    (replace(key, agent_dir="other"), spec),
+                    (key, replace(spec, kind="other")),
+                ):
+                    with pytest.raises(SandboxOutputError, match="scope disposal is in progress"):
+                        await backend.acquire(scoped_key, scoped_spec)
+                assert client.create_calls == creates
+                for other in (replace(key, scope="other"), replace(key, thread_id="other")):
+                    assert (await backend.acquire(other, spec)).instance_id
+            finally:
+                release.set()
+            assert (await purge).undisposed is None
+        assert (await backend.acquire(key, spec)).instance_id
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=10))
+
+
+def test_scope_purge_refuses_acquire_on_another_event_loop(monkeypatch):
+    from maf_sandbox import SandboxOutputError
+
+    backend = _backend_with(_GuestGroupClient(_guest_removing(True)))
+    key = SandboxKey("s", "t", "a")
+    started, release = threading.Event(), threading.Event()
+
+    async def listed(*args, **kwargs):
+        started.set()
+        assert release.wait(5)
+        return []
+
+    monkeypatch.setattr(backend, "_list_thread_sandbox_ids", listed)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        purge = pool.submit(asyncio.run, backend.dispose_scope(key.scope, key.thread_id))
+        try:
+            assert started.wait(5)
+            with pytest.raises(SandboxOutputError, match="scope disposal is in progress"):
+                asyncio.run(backend.acquire(key, _spec()))
+        finally:
+            release.set()
+        assert purge.result(timeout=5).undisposed is None
+    assert asyncio.run(backend.acquire(key, _spec())).instance_id
+
+
+@pytest.mark.parametrize("first_end", ["success", "failure", "cancel"])
+def test_overlapping_scope_purges_keep_admission_closed_until_both_finish(first_end, monkeypatch):
+    from maf_sandbox import SandboxOutputError
+
+    backend = _backend_with(_GuestGroupClient(_guest_removing(True)))
+    key = SandboxKey("s", "t", "a")
+
+    async def scenario():
+        started = [asyncio.Event(), asyncio.Event()]
+        release = [asyncio.Event(), asyncio.Event()]
+        calls = 0
+
+        async def listed(*args, **kwargs):
+            nonlocal calls
+            index = calls
+            calls += 1
+            started[index].set()
+            await release[index].wait()
+            return None if index == 0 and first_end == "failure" else []
+
+        monkeypatch.setattr(backend, "_list_thread_sandbox_ids", listed)
+        first = asyncio.create_task(backend.dispose_scope(key.scope, key.thread_id))
+        await asyncio.wait_for(started[0].wait(), 5)
+        second = asyncio.create_task(backend.dispose_scope(key.scope, key.thread_id))
+        await asyncio.wait_for(started[1].wait(), 5)
+        try:
+            if first_end == "cancel":
+                first.cancel()
+            release[0].set()
+            outcome = (await asyncio.gather(first, return_exceptions=True))[0]
+            if first_end == "cancel":
+                assert isinstance(outcome, asyncio.CancelledError)
+            else:
+                assert isinstance(outcome, ScopePurge)
+                assert (outcome.undisposed is not None) == (first_end == "failure")
+            with pytest.raises(SandboxOutputError, match="scope disposal is in progress"):
+                await backend.acquire(key, _spec())
+        finally:
+            release[1].set()
+        assert (await second).undisposed is None
+        assert (await backend.acquire(key, _spec())).instance_id
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=10))
+
+
 class TestConcurrentAcquire:
     """Get-or-create is serialised per key, because a create cannot be made idempotent here.
 
@@ -3176,7 +3880,7 @@ class TestConcurrentAcquire:
         assert first.instance_id == second.instance_id == "sbx-1"
         assert backend._registry == {
             ("scope-a", "thread-1", "devops-engineer", "bicep"): _Held(
-                "sbx-1", egress=(Egress.CLOSED, frozenset()), commands={"sh"}
+                "sbx-1", egress=(Egress.CLOSED, frozenset()), commands={"sh", "exec-capture"}
             )
         }
 
@@ -3614,9 +4318,11 @@ class TestEgressPolicy:
         asyncio.run(scenario())
 
     @pytest.mark.parametrize("delete_failed", [False, True])
-    def test_explicit_disposal_allows_a_new_policy_and_retains_failed_targets(
+    def test_explicit_disposal_requires_cleanup_before_a_new_policy(
         self, monkeypatch, delete_failed
     ):
+        from maf_sandbox import SandboxOutputError
+
         client = _SlowCreateGroupClient()
         backend = _backend_with(client)
         key = SandboxKey("s", "t", "a")
@@ -3635,6 +4341,7 @@ class TestEgressPolicy:
         monkeypatch.setattr(backend, "_delete", failure)
 
         async def scenario():
+            nonlocal delete_failed
             first = await backend.acquire(key, original)
             with pytest.raises(SandboxEgressNotEnforced):
                 await backend.acquire(key, closed)
@@ -3642,11 +4349,14 @@ class TestEgressPolicy:
             assert (
                 first.instance_id in backend._undeleted.get(("s", "t", "a"), set())
             ) == delete_failed
+            if delete_failed:
+                with pytest.raises(SandboxOutputError, match="retained"):
+                    await backend.acquire(key, closed)
+                assert client.create_calls == 1
+                delete_failed = False
             replacement = await backend.acquire(key, closed)
             assert replacement.instance_id != first.instance_id
-            assert (
-                first.instance_id in backend._undeleted.get(("s", "t", "a"), set())
-            ) == delete_failed
+            assert not backend._undeleted
             assert client.create_calls == 2
 
         asyncio.run(scenario())

@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
+from typing import Any, cast
 from uuid import uuid4
 
 from maf_sandbox import (
@@ -171,14 +172,25 @@ class NoIsolationSandbox:
                 shell=shell,
                 cwd=str(host_cwd),
                 capture_output=True,
-                text=True,
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired as exc:
             raise TimeoutError(str(exc)) from exc
+        # Samples retain their published core floor until the dependent releases are available.
+        # Older cores have only the display view; new cores retain the translated bytes too.
+        out = self._to_guest(
+            (completed.stdout or b"").decode("utf-8", errors="surrogateescape")
+        ).encode("utf-8", errors="surrogateescape")
+        err = self._to_guest(
+            (completed.stderr or b"").decode("utf-8", errors="surrogateescape")
+        ).encode("utf-8", errors="surrogateescape")
+        if "stdout_bytes" in ExecResult.__dataclass_fields__:
+            return cast(Any, ExecResult)(
+                stdout_bytes=out, stderr_bytes=err, exit_code=completed.returncode
+            )
         return ExecResult(
-            stdout=self._to_guest(completed.stdout or ""),
-            stderr=self._to_guest(completed.stderr or ""),
+            stdout=out.decode("utf-8", errors="replace"),
+            stderr=err.decode("utf-8", errors="replace"),
             exit_code=completed.returncode,
         )
 

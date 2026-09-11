@@ -10,11 +10,14 @@ from uuid import uuid4
 
 from maf_sandbox import Capability, SandboxCapabilityNotSupported, SandboxSpec
 
+from ._exec_capture import capture_command
+
 _REQUIREMENTS = {
     "sh": frozenset({Capability.EXEC, Capability.HOST_TOOLS}),
     "host-tools": frozenset({Capability.HOST_TOOLS}),
+    "exec-capture": frozenset({Capability.EXEC, Capability.HOST_TOOLS}),
 }
-RunProbe = Callable[[tuple[str, ...], bool], Awaitable[int]]
+RunProbe = Callable[[tuple[str, ...], bool, bool], Awaitable[int]]
 
 
 async def probe_commands(spec: SandboxSpec, verified: set[str], run: RunProbe) -> None:
@@ -38,11 +41,21 @@ async def probe_commands(spec: SandboxSpec, verified: set[str], run: RunProbe) -
                 "nohup sh -c 'exit 0' </dev/null >/dev/null 2>&1 || exit 13"
             )
             commands = [(("sh", "-c", script), False, 0)]
+        elif name == "exec-capture":
+            directory = f"/tmp/maf-exec-probe-{uuid4().hex}"
+            script = capture_command("printf x", directory, "probe", 8)
+            script += (
+                f'chunk=$(dd if="{directory}/stdout" bs=1 count=1 2>/dev/null | base64)\n'
+                'test "$chunk" = eA== || exit 125\n'
+                f'rm -f -- "{directory}/stdout" "{directory}/stderr" '
+                f'"{directory}/outpipe" "{directory}/errpipe" && rmdir -- "{directory}"\n'
+            )
+            commands = [(("sh", "-c", script), False, 0)]
         else:
             raise AssertionError(name)
         try:
             for argv, as_root, expected in commands:
-                status = await run(argv, as_root)
+                status = await run(argv, as_root, name == "exec-capture")
                 if status != expected:
                     raise SandboxCapabilityNotSupported(
                         f"sandbox backend 'acas' cannot serve "

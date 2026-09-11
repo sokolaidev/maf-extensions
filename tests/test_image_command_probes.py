@@ -18,8 +18,8 @@ def test_only_requested_commands_are_probed_and_success_is_reused(backend):
         seen = []
         verified = set()
 
-        async def run(argv, as_root):
-            seen.append((argv, as_root))
+        async def run(argv, as_root, owns_capture=False):
+            seen.append((argv, as_root, owns_capture))
             return 0
 
         await check(SandboxSpec(kind="probe", requires=frozenset()), verified, run)
@@ -27,7 +27,11 @@ def test_only_requested_commands_are_probed_and_success_is_reused(backend):
         spec = SandboxSpec(kind="probe", requires=frozenset({Capability.EXEC}))
         await check(spec, verified, run)
         await check(spec, verified, run)
-        assert seen == [(("sh", "-c", "exit 0"), False)]
+        assert seen[0] == (("sh", "-c", "exit 0"), False, False)
+        assert len(seen) == (2 if backend == "acas" else 1)
+        if backend == "acas":
+            assert "mkfifo" in seen[1][0][2] and "head -c" in seen[1][0][2]
+            assert seen[1][1:] == (False, True)
 
     asyncio.run(scenario())
 
@@ -41,7 +45,7 @@ def test_unsuccessful_checks_are_typed_refusals_and_retry(backend, failure):
         verified = set()
         spec = SandboxSpec(kind="probe", image="guest:tag", requires=frozenset({Capability.EXEC}))
 
-        async def fail(argv, as_root):
+        async def fail(argv, as_root, _owns_capture=False):
             if isinstance(failure, Exception):
                 raise failure
             return failure
@@ -50,11 +54,11 @@ def test_unsuccessful_checks_are_typed_refusals_and_retry(backend, failure):
             await check(spec, verified, fail)
         assert not verified
 
-        async def succeed(argv, as_root):
+        async def succeed(argv, as_root, _owns_capture=False):
             return 0
 
         await check(spec, verified, succeed)
-        assert verified == {"sh"}
+        assert verified == ({"sh", "exec-capture"} if backend == "acas" else {"sh"})
 
     asyncio.run(scenario())
 
@@ -66,7 +70,7 @@ def test_cancellation_is_not_a_verdict(backend):
     async def scenario():
         verified = set()
 
-        async def cancel(argv, as_root):
+        async def cancel(argv, as_root, _owns_capture=False):
             raise asyncio.CancelledError
 
         with pytest.raises(asyncio.CancelledError):
@@ -82,7 +86,7 @@ def test_docker_file_only_work_needs_no_guest_command_and_delete_needs_no_shell(
     async def scenario():
         seen = []
 
-        async def run(argv, as_root):
+        async def run(argv, as_root, _owns_capture=False):
             seen.append((argv, as_root))
             return 0
 
@@ -112,7 +116,7 @@ def test_wslc_tests_the_external_binary_with_true_and_false_cases(negative_statu
         seen = []
         verified = set()
 
-        async def run(argv, as_root):
+        async def run(argv, as_root, _owns_capture=False):
             seen.append((argv, as_root))
             return negative_status if argv[1] == "-e" else 0
 
@@ -140,8 +144,8 @@ def test_host_tools_batches_required_utilities_and_keeps_optional_runtime_choice
         seen = []
         verified = set()
 
-        async def run(argv, as_root):
-            seen.append(argv)
+        async def run(argv, as_root, owns_capture=False):
+            seen.append((argv, owns_capture))
             assert not as_root
             return status
 
@@ -151,14 +155,19 @@ def test_host_tools_batches_required_utilities_and_keeps_optional_runtime_choice
         if status == 0:
             await check(spec, verified, run)
             await check(spec, verified, run)
-            assert verified == {"sh", "host-tools"}
+            assert verified == (
+                {"sh", "host-tools", "exec-capture"} if backend == "acas" else {"sh", "host-tools"}
+            )
         else:
             with pytest.raises(SandboxCapabilityNotSupported, match="host_tools"):
                 await check(spec, verified, run)
             assert not verified
-        assert len(seen) == 1
-        assert seen[0][:2] == ("sh", "-c")
-        script = seen[0][2]
+        assert len(seen) == (2 if backend == "acas" and status == 0 else 1)
+        assert seen[0][1] is False
+        if backend == "acas" and status == 0:
+            assert seen[1][1] is True
+        assert seen[0][0][:2] == ("sh", "-c")
+        script = seen[0][0][2]
         assert all(command in script for command in ("mkdir", "mv", "nohup"))
         assert "setsid" not in script and "python" not in script
 

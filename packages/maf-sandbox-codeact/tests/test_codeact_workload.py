@@ -263,7 +263,7 @@ class _CallingSandbox(_ScriptedSandbox):
         self.contents[f"{layout.calls}/0001.request.json"] = json.dumps(
             {"id": "0001", "name": name, "arguments": arguments}
         ).encode()
-        return dataclasses.replace(result, stdout="maf-host-tools: process-v1 4242 4200\n")
+        return dataclasses.replace(result, stdout_bytes=b"maf-host-tools: process-v1 4242 4200\n")
 
     async def stat_file(self, path, *, working_directory):
         self._take_the_answer()
@@ -308,7 +308,7 @@ class _FinishingSandbox(_ProducingSandbox):
         layout = guest_run_layout(working_directory, program=_PROGRAM_FILENAME)
         self.contents[layout.output] = b"ran"
         self.contents[layout.exit_code] = b"0"
-        return dataclasses.replace(result, stdout="maf-host-tools: process-v1 4242 4200\n")
+        return dataclasses.replace(result, stdout_bytes=b"maf-host-tools: process-v1 4242 4200\n")
 
 
 class _RecordingSink:
@@ -1207,10 +1207,18 @@ class TestAWithheldStreamIsNeverRead:
 
     def test_a_lone_surrogate_is_never_touched(self):
         out = _run(
-            _withholding_tool(_ScriptedSandbox(ExecResult(stdout="ok\udcff"))), "print('hi')"
+            _withholding_tool(_ScriptedSandbox(ExecResult(stdout_bytes=b"ok\xff"))), "print('hi')"
         )
 
         assert out == "The program exited with status 0."
+
+    def test_binary_output_renders_as_safe_model_text(self):
+        from maf_sandbox_codeact._tool import _format_result
+
+        raw = bytes(range(256)) + b"\xe2\x82"
+        rendered = _format_result(ExecResult(stdout_bytes=raw, stderr_bytes=raw[::-1]))
+        payload = json.dumps({"content": rendered}, ensure_ascii=False).encode("utf-8")
+        assert json.loads(payload) == {"content": rendered}
 
 
 class TestWithholdingIsRefusedWhereItCouldNotBeHonest:

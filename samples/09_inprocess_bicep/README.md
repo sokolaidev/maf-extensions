@@ -88,3 +88,6 @@ One thing is still read from the reply, and only one: it has to *name* the rules
 **`Azure OpenAI client requires either an API key or an Azure AD token provider`** — the CI path was taken (`AZURE_OPENAI_ENDPOINT` is set) but the credential resolved to nothing. An `az login` (or a federated CI credential) is what satisfies `DefaultAzureCredential`; check that the federated identity is configured for this branch's subject, the way the other Azure samples do.
 
 **No diagnostics in the output, just the model's opinion** — the tool was not attached, which means `make_bicep_tools` returned `[]`, or the compiler never ran. The router has a backend here, so the likely cause is the `bicep` binary not being found or failing at startup; `bicep --version` from the same shell is the fastest way to tell.
+## Output fidelity
+
+The local backend captures both pipes as bytes and deliberately rewrites host-root path spellings back to the guest directory. With the new byte-result core, every byte outside those substitutions is preserved. The older-core branch remains a safe UTF-8 text producer until the automated samples floor update; see [the compatibility decision](../../docs/sandbox/exec-output.md#sample-09-and-release-migration).

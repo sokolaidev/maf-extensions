@@ -346,10 +346,7 @@ class InProcessSandbox:
         if type(max_output_bytes) is not int or max_output_bytes <= 0:
             raise ValueError("max_output_bytes must be a positive integer")
         result = await self.exec(command, working_directory=working_directory, timeout=timeout)
-        if (
-            len(result.stdout.encode("utf-8")) + len(result.stderr.encode("utf-8"))
-            > max_output_bytes
-        ):
+        if len(result.stdout_bytes) + len(result.stderr_bytes) > max_output_bytes:
             raise SandboxExecOutputLimitExceeded("execution output exceeded its byte budget")
         return result
 

@@ -887,12 +887,14 @@ class SandboxSpec:
             )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class ExecResult:
     """The result of one command run inside a sandbox.
 
-    ``stdout`` is the program's standard output and ``stderr`` its standard error, each in its
-    own field.  A producer that writes to ``stderr`` itself declares it with
+    ``stdout_bytes`` and ``stderr_bytes`` preserve every returned byte. ``stdout_text`` and
+    ``stderr_text`` (also exposed as ``stdout`` and ``stderr``) are safe UTF-8 replacement-decoded
+    display views. The streams remain in their own fields. A producer that writes to ``stderr``
+    itself declares it with
     ``producer_owns_stderr`` rather than leaving a caller to guess, and
     :func:`~maf_sandbox.conformance.assert_exec_conformance` holds a backend to both halves.
 
@@ -914,12 +916,58 @@ class ExecResult:
     differently reads this rather than inferring it from the transport it built.
     """
 
-    stdout: str
-    stderr: str = ""
-    exit_code: int = 0
-    # Appended after the defaulted fields already here, so it cannot rebind what a positional
-    # caller passes.
-    producer_owns_stderr: bool = False
+    stdout_bytes: bytes
+    stderr_bytes: bytes
+    exit_code: int
+    producer_owns_stderr: bool
+
+    def __init__(
+        self,
+        stdout: str = "",
+        stderr: str = "",
+        exit_code: int = 0,
+        producer_owns_stderr: bool = False,
+        *,
+        stdout_bytes: bytes | None = None,
+        stderr_bytes: bytes | None = None,
+    ) -> None:
+        """Store exact returned bytes; string inputs are a UTF-8 convenience for text producers.
+
+        A stream cannot supply both text and bytes. Text views use UTF-8 replacement decoding
+        for display and JSON transport; only the byte fields promise fidelity, including on
+        future RUN_CODE producers. Caps may still omit output under the ownership rules above.
+        """
+        for name, text, raw in (
+            ("stdout_bytes", stdout, stdout_bytes),
+            ("stderr_bytes", stderr, stderr_bytes),
+        ):
+            if raw is not None and text:
+                raise ValueError(f"supply either {name} or its text, not both")
+            if raw is not None and not isinstance(cast(object, raw), bytes):
+                raise TypeError(f"{name} must be bytes")
+            object.__setattr__(self, name, text.encode("utf-8") if raw is None else raw)
+        object.__setattr__(self, "exit_code", exit_code)
+        object.__setattr__(self, "producer_owns_stderr", producer_owns_stderr)
+
+    @property
+    def stdout_text(self) -> str:
+        """The safe stdout display view; equivalent to ``stdout``."""
+        return self.stdout
+
+    @property
+    def stderr_text(self) -> str:
+        """The safe stderr display view; equivalent to ``stderr``."""
+        return self.stderr
+
+    @property
+    def stdout(self) -> str:
+        """The stdout text view, decoded as UTF-8 with replacement for display."""
+        return self.stdout_bytes.decode("utf-8", errors="replace")
+
+    @property
+    def stderr(self) -> str:
+        """The stderr text view, decoded as UTF-8 with replacement for display."""
+        return self.stderr_bytes.decode("utf-8", errors="replace")
 
 
 class SandboxQueuedTimeout(TimeoutError):
@@ -1041,6 +1089,10 @@ class Sandbox(Protocol):
         they pass from a budget they own, so they read its expiry as their own budget running
         out; a backend borrowing the same exception for a different limit makes that reading
         false, and the caller has no way to tell.
+
+        Stopping remote work may require a separate bounded cleanup allowance before the
+        exception returns. A backend documents that allowance and what else disposal stops.
+        Successful calls include output retrieval and scratch cleanup in ``timeout``.
 
         ``command`` accepts two shapes, and they are not interchangeable:
 
@@ -1413,6 +1465,10 @@ class SandboxBackend(Protocol):
         expects one, and only one of them is remembered.  Serialise the get-or-create, or
         derive a name the provider will reject a duplicate of.
 
+        A backend may retry retained disposal before acquisition and refuse acquisition
+        while cleanup remains pending or a scope purge is active. Direct callers must handle
+        these admission failures; the router also enforces its own unclean-key guard.
+
         ``key`` may carry a :attr:`SandboxKey.call_id`, and it is part of a sandbox's identity
         exactly as the other three fields are.  A backend deriving its name from three of the
         four hands one sandbox to two calls that asked not to share, so fold the whole key —
@@ -1432,7 +1488,8 @@ class SandboxBackend(Protocol):
 
         Return DisposalFailure when a sandbox may remain, or None when no failure is known.
         Callers branch on its code; detail is for logs. Use unknown when the cause is uncertain.
-        Retry bookkeeping does not refuse acquire; that guard belongs to the router."""
+        A backend may refuse acquire until retained cleanup succeeds. The router separately
+        refuses reuse of keys it tracks as unclean."""
         ...
 
     async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
@@ -1441,6 +1498,9 @@ class SandboxBackend(Protocol):
         Returns how many went and, like :meth:`dispose`, why any is still there. A conversation
         delete that silently deleted nothing would otherwise read as a clean sweep, and the
         router would reopen every key it had refused for that conversation.
+        Hosts must stop new work for the conversation across replicas before purging it;
+        backend-local admission checks cannot fence creation in another process. A backend
+        may report an incomplete purge when acquisition is still in progress.
         """
         ...
 

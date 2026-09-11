@@ -28,6 +28,7 @@ from maf_sandbox import (
     Sandbox,
     SandboxBackend,
     SandboxEntry,
+    SandboxExecOutputLimitExceeded,
     SandboxKey,
     SandboxLimits,
     SandboxSpec,
@@ -43,6 +44,37 @@ from maf_sandbox.testing import (
 )
 
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+
+
+@pytest.mark.parametrize(
+    "stdout,stderr", [(b"\xff", b""), (b"", b"\xfe"), (b"\xff", b"\xfe"), (b"\xef\xbf\xbd", b"")]
+)
+def test_bounded_testing_result_counts_raw_bytes(stdout, stderr, monkeypatch):
+    sandbox = InProcessSandbox()
+    result = ExecResult(stdout_bytes=stdout, stderr_bytes=stderr, exit_code=7)
+
+    async def scripted(*args, **kwargs):
+        return result
+
+    monkeypatch.setattr(sandbox, "exec", scripted)
+
+    async def scenario():
+        size = len(stdout) + len(stderr)
+        assert (
+            await sandbox.exec_bounded(
+                "scripted", working_directory="/", timeout=1, max_output_bytes=size
+            )
+            is result
+        )
+        if size > 1:
+            with pytest.raises(SandboxExecOutputLimitExceeded):
+                await sandbox.exec_bounded(
+                    "scripted", working_directory="/", timeout=1, max_output_bytes=size - 1
+                )
+
+    asyncio.run(scenario())
+
+
 _SPEC = SandboxSpec(kind="test")
 _WORK = "/maf-sandbox/work"
 

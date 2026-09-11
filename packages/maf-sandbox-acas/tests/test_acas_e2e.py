@@ -242,6 +242,7 @@ def _subject(live: _Live) -> PosixGuestSubject:
         # probes that matter and reports success anyway.
         capabilities=live.backend.declarations.capabilities,
         exec_timeout=_EXEC_TIMEOUT,
+        exec_cleanup_timeout=30.0,
     )
 
 
@@ -1221,12 +1222,9 @@ class TestReclaimAgainstTheRealService:
 class TestExecAgainstTheRealService:
     """The run surface's probes — quoting, exit codes, the working directory, the timeout bound.
 
-    **Last class on the shared sandbox, and it must stay last.** This backend survives the
-    timeout probe (`asyncio.wait_for` bounds the host-side call; the guest keeps sleeping), so
-    unlike docker's the sandbox need not be a fresh one — but the sleeping guest is still in
-    there afterwards, so nothing that measures guest state may follow it on `live`. Cost
-    discipline stays as it was: one more probe set on the one sandbox the module already pays
-    for, disposed by the `live` fixture's teardown as before.
+    Keep this last on the shared sandbox: the timeout probe invalidates and disposes the
+    instance, including concurrent guest commands. Further execution requires reacquisition;
+    the fixture teardown can safely retry disposal.
     """
 
     def test_the_exec_probes_come_back_clean(self, live):
