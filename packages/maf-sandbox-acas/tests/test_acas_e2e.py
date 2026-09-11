@@ -162,22 +162,54 @@ def _key(scope: str) -> SandboxKey:
 
 
 class _Live:
-    """One acquired sandbox, its backend, and the loop all three are bound to."""
+    """One acquired sandbox, its backend, the spec that acquired it, and their loop.
+
+    **`run` goes back through `acquire` before it awaits anything (#1097).** The service
+    suspends a sandbox left idle for ``auto_suspend_seconds``, and the data plane does not
+    start a suspended one: it answers HTTP 409 ``GlobalSandboxNotRunning``. The shared sandbox
+    below waits out whole fixtures that create and probe their own, which is minutes, so being
+    suspended on return is the ordinary case here rather than a corner — the exec probes ran
+    into it while planting their first file. Returning through `acquire` is what a host does
+    between turns, and on a warm key requiring nothing it costs one control-plane read, plus a
+    resume where there is something to resume.
+    """
 
     def __init__(
         self,
         loop: asyncio.AbstractEventLoop,
         backend: AcasSandboxBackend,
         key: SandboxKey,
+        spec: SandboxSpec,
         sandbox: Any,
     ) -> None:
         self._loop = loop
         self.backend = backend
         self.key = key
+        self.spec = spec
         self.sandbox = sandbox
 
     def run(self, coroutine: Coroutine[Any, Any, Any]) -> Any:
-        return self._loop.run_until_complete(coroutine)
+        """Put this sandbox back in the running state, then await ``coroutine`` on the loop."""
+        return self._loop.run_until_complete(self._after_resuming(coroutine))
+
+    async def _after_resuming(self, coroutine: Coroutine[Any, Any, Any]) -> Any:
+        try:
+            reacquired = await self.backend.acquire(self.key, self.spec)
+            # The sandbox is kept rather than swapped in: a wrapper addresses its sandbox by
+            # id, so the one the fixture yielded answers again as soon as the service has that
+            # sandbox running. What nothing here survives is a *replacement* — `acquire` makes
+            # one where a resume failed, and every coroutine already built still addresses the
+            # sandbox that went away.
+            assert reacquired.instance_id == self.sandbox.instance_id, (
+                f"the {self.spec.kind!r} sandbox was replaced rather than resumed: "
+                f"{self.sandbox.instance_id} -> {reacquired.instance_id}"
+            )
+        except BaseException:
+            # The caller built the coroutine before handing it over, so failing here would
+            # leave it un-awaited as well — a warning naming the caller's line, not this one.
+            coroutine.close()
+            raise
+        return await coroutine
 
 
 @pytest.fixture(scope="module")
@@ -202,14 +234,17 @@ def live(loop):
     backend = AcasSandboxBackend(_config())
     scope = f"e2e-{uuid.uuid4()}"
     key = _key(scope)
+    # Above the guard, unlike the acquire: `_spec` skips a group that has imported nothing, and
+    # a skip there would otherwise pay for a teardown that has nothing to tear down.
+    spec = _spec()
     try:
         # Inside the guard, not above it. `_get_or_create` registers the id only after the
         # long-running create returns, so an acquire that creates the sandbox and *then* fails
         # — a transport drop, a poller timeout — leaves a running billable microVM this process
         # never learned the id of. dispose_scope finds it anyway, by label, which is the whole
         # reason it is the teardown here; it cannot do that from outside the try.
-        sandbox = loop.run_until_complete(backend.acquire(key, _spec()))
-        yield _Live(loop, backend, key, sandbox)
+        sandbox = loop.run_until_complete(backend.acquire(key, spec))
+        yield _Live(loop, backend, key, spec, sandbox)
     finally:
         loop.run_until_complete(backend.dispose_scope(scope, "thread-1"))
         loop.run_until_complete(backend.aclose())
@@ -880,14 +915,13 @@ class TestBootingAnImageTheServiceProvides:
         backend = AcasSandboxBackend(_config())
         scope = f"e2e-prebuilt-{uuid.uuid4()}"
         key = _key(scope)
+        spec = SandboxSpec(kind="e2e-prebuilt", image=_PREBUILT)
         try:
             # Inside the guard for the reason the shared fixture gives: a create that returns
             # and then fails leaves a running microVM whose id this process never learned, and
             # dispose_scope is what finds it by label.
-            sandbox = loop.run_until_complete(
-                backend.acquire(key, SandboxSpec(kind="e2e-prebuilt", image=_PREBUILT))
-            )
-            yield _Live(loop, backend, key, sandbox)
+            sandbox = loop.run_until_complete(backend.acquire(key, spec))
+            yield _Live(loop, backend, key, spec, sandbox)
         finally:
             loop.run_until_complete(backend.dispose_scope(scope, "thread-1"))
             loop.run_until_complete(backend.aclose())
@@ -1066,7 +1100,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         try:
             # Inside the guard for the reason the shared fixture gives.
             sandbox = loop.run_until_complete(backend.acquire(key, spec))
-            yield _Live(loop, backend, key, sandbox)
+            yield _Live(loop, backend, key, spec, sandbox)
         finally:
             loop.run_until_complete(backend.dispose_scope(scope, "thread-1"))
             loop.run_until_complete(backend.aclose())
@@ -1132,7 +1166,9 @@ class TestAnImageWhoseGuestIsNotRoot:
 
         assert "did not demonstrate removal" in str(refusal.value), str(refusal.value)
 
-    def test_a_cold_refusal_deletes_the_sandbox_it_had_to_create(self, nonroot: _Live, caplog):
+    def test_a_cold_refusal_deletes_the_sandbox_it_had_to_create(
+        self, loop, nonroot: _Live, caplog
+    ):
         """A refusal that had to create a sandbox to reach its verdict still deletes it.
 
         Needs a backend of its own: the memo is per instance, so the fixture's has already
@@ -1173,8 +1209,10 @@ class TestAnImageWhoseGuestIsNotRoot:
             raise AssertionError(f"{scope} still has sandboxes: a refused acquire leaked one")
 
         try:
+            # On the loop rather than through `nonroot.run`: every call below is `cold`'s, and
+            # resuming the fixture's own sandbox for them would log a reuse into this capture.
             with caplog.at_level(logging.INFO, logger="maf_sandbox_acas"):
-                nonroot.run(scenario())
+                loop.run_until_complete(scenario())
             created = [
                 r.getMessage() for r in caplog.records if "sandbox created" in r.getMessage()
             ]
@@ -1188,8 +1226,64 @@ class TestAnImageWhoseGuestIsNotRoot:
             assert _logged_sandbox_id(created[0]) == _logged_sandbox_id(released[0])
         finally:
             # Belt and braces: if the assertions above failed, something is still running.
-            nonroot.run(cold.dispose_scope(scope, "thread-1"))
-            nonroot.run(cold.aclose())
+            loop.run_until_complete(cold.dispose_scope(scope, "thread-1"))
+            loop.run_until_complete(cold.aclose())
+
+
+class TestComingBackToTheSharedSandbox:
+    """The idle gap the fixtures above leave, made deterministic (#1097).
+
+    The shared sandbox sits untouched for minutes while they create and probe their own, and
+    the service's auto-suspend timer stops it somewhere inside that window. Nothing says so
+    until the next call: the data plane refuses a stopped sandbox with HTTP 409
+    ``GlobalSandboxNotRunning``, which is how a full run reached the exec probes below and
+    failed on the first file they plant.
+
+    **Stopped through the service rather than waited for.** Waiting costs this suite the whole
+    suspend interval to reach a state one call reaches in seconds, and a run that waited and
+    was not stopped would pass having measured nothing. The stop poller returns only once the
+    service reports the sandbox down, so what follows is asked of a sandbox that is really
+    stopped.
+
+    Placed here, at the end of the gap, because the probe classes after it all depend on the
+    answer. It adds no sandbox: the stop and the return are both the shared one.
+    """
+
+    def test_a_stopped_sandbox_is_resumed_rather_than_replaced(self, loop, live):
+        sandbox_id = live.sandbox.sandbox_id
+
+        async def stop_through_the_service() -> str:
+            # Past the backend, as `service_link_delete` above reaches past it: stopping a
+            # sandbox is not something this backend offers, and a test that asked the code
+            # under test to set up its own provocation would be asking the wrong thing.
+            client = live.sandbox._sc  # noqa: SLF001 — the provocation, not the measurement
+            poller = await client.begin_stop()
+            await poller.result()
+            # Read back rather than taken from the poller: what the calls below run into is the
+            # service's own answer about this sandbox, and a poller that resolved to nothing
+            # would let the rest of this test pass having stopped nothing.
+            return str((await client.get()).state or "")
+
+        state = loop.run_until_complete(stop_through_the_service())
+        assert state and state.lower() != "running", f"the sandbox did not stop: {state!r}"
+
+        # The call that failed: a write through the data plane, which starts nothing.
+        planted = f"{_WORK}/resumed-{uuid.uuid4().hex[:12]}"
+        live.run(live.sandbox.write_file(f"{planted}/back.txt", "back\n", working_directory=_WORK))
+        read_back = live.run(
+            live.sandbox.exec(
+                ["cat", f"{planted}/back.txt"], working_directory=_WORK, timeout=_EXEC_TIMEOUT
+            )
+        )
+        assert read_back.exit_code == 0, read_back.stderr
+        assert read_back.stdout == "back\n"
+
+        # And the sandbox that answered is the one that was stopped. The registry is where
+        # `acquire` records what it holds, so a replacement — which is what it creates when a
+        # resume fails — would be a different id here, on a guest with none of this suite's
+        # state and none of its remaining probes' assumptions.
+        held = [entry.sandbox_id for entry in live.backend._registry.values()]  # noqa: SLF001
+        assert held == [sandbox_id], "the shared sandbox was replaced rather than resumed"
 
 
 @pytest.fixture(scope="module")
@@ -1228,10 +1322,6 @@ class TestExecAgainstTheRealService:
     """
 
     def test_the_exec_probes_come_back_clean(self, live):
-        # The shared sandbox can suspend while the other image fixtures run.
-        instance_id = live.sandbox.instance_id
-        live.sandbox = live.run(live.backend.acquire(live.key, _spec()))
-        assert live.sandbox.instance_id == instance_id
         results = live.run(assert_exec_conformance(_subject(live)))
         assert results, "the EXEC conformance run returned no results"
         skipped = {result.probe.name: result.skipped for result in results if result.skipped}
@@ -1254,7 +1344,7 @@ def live_allowlist(loop):
     spec = _spec(egress=Egress.ALLOWLIST, egress_allow=(_EGRESS_ALLOWED_HOST,))
     try:
         sandbox = loop.run_until_complete(backend.acquire(key, spec))
-        yield _Live(loop, backend, key, sandbox)
+        yield _Live(loop, backend, key, spec, sandbox)
     finally:
         loop.run_until_complete(backend.dispose_scope(scope, "thread-1"))
         loop.run_until_complete(backend.aclose())
