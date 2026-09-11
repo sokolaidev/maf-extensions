@@ -1143,9 +1143,11 @@ class AcasSandboxBackend:
         registry_key = (key.scope, key.thread_id, key.agent_dir, spec.kind)
         work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
         held = self._registry.get(registry_key)
+        unusable = False
         if held is not None:
             with held.invalidation_guard:
-                if not held.unusable and held.egress != egress:
+                unusable = held.unusable
+                if not unusable and held.egress != egress:
                     # Replacement could delete an instance another caller is still using.
                     raise AcasEgressPolicyConflict(
                         "ACAS already holds a different egress policy for this key and kind. "
@@ -1156,6 +1158,8 @@ class AcasSandboxBackend:
         prefix = registry_key[:3]
         scope_key = prefix[:2]
         with self._disposal_guard:
+            if held is not None and unusable:
+                self._retain_disposals(prefix, [held.sandbox_id], {held.sandbox_id: spec.kind})
             scope_attempted = self._retain_scope_disposals(
                 scope_key, list(self._scope_disposals.get(scope_key, {}))
             )
@@ -1183,6 +1187,11 @@ class AcasSandboxBackend:
                     prefix, {name: attempted[name]}, [name] if deletion.failure else []
                 )
             if deletion.failure is not None:
+                if held is not None and unusable and name == held.sandbox_id:
+                    raise SandboxOutputError(
+                        "ACAS could not dispose an invalidated sandbox; "
+                        "retry disposal before reacquiring"
+                    )
                 raise SandboxOutputError(
                     "ACAS could not dispose a retained sandbox; retry disposal before reacquiring"
                 )
@@ -1192,19 +1201,10 @@ class AcasSandboxBackend:
                 for name in self._undeleted.get(prefix, ())
             ):
                 raise SandboxOutputError("ACAS retained disposal is still pending")
-        unusable = False
-        if held is not None:
-            with held.invalidation_guard:
-                unusable = held.unusable
-        if held is not None and unusable:
-            deletion = await self._delete(gc, held.sandbox_id)
-            if deletion.failure is not None:
-                raise SandboxOutputError(
-                    "ACAS could not dispose an invalidated sandbox; "
-                    "retry disposal before reacquiring"
-                )
-            self._registry.pop(registry_key, None)
-            held = None
+            if held is not None and unusable:
+                if self._registry.get(registry_key) is held:
+                    self._registry.pop(registry_key)
+                held = None
         if held is not None:
             sandbox_id = held.sandbox_id
             try:

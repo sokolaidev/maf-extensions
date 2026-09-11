@@ -3630,6 +3630,73 @@ def test_capture_invalidation_allows_policy_change_after_deletion(delete_failed)
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("operation", ["key", "kind", "scope"])
+@pytest.mark.parametrize("older_failed", [False, True])
+@pytest.mark.parametrize("newer_failed", [False, True])
+def test_invalidated_acquire_reconciles_concurrent_disposal(
+    operation, older_failed, newer_failed, monkeypatch
+):
+    from maf_sandbox import SandboxOutputError
+
+    from maf_sandbox_acas._backend import _Deletion
+
+    client = _GuestGroupClient(_guest_removing(True), delete_fails=True)
+    backend = _backend_with(client)
+    key, spec = SandboxKey("s", "t", "a"), _spec()
+    prefix = (key.scope, key.thread_id, key.agent_dir)
+    original_delete = backend._delete
+    calls = 0
+
+    async def scenario():
+        first = await backend.acquire(key, spec)
+        await first._invalidate_after_exec(SandboxOutputError("capture failed"))
+        client.delete_fails = False
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def delete(group, sandbox_id):
+            nonlocal calls
+            calls += 1
+            attempt = calls
+            assert sandbox_id == first.instance_id
+            if attempt == 1:
+                started.set()
+                await release.wait()
+            if (attempt == 1 and older_failed) or (attempt == 2 and newer_failed):
+                return _Deletion(False, DisposalFailure("unreachable", "deletion failed"))
+            return await original_delete(group, sandbox_id)
+
+        monkeypatch.setattr(backend, "_delete", delete)
+        acquire = asyncio.create_task(backend.acquire(key, spec))
+        await asyncio.wait_for(started.wait(), 5)
+        try:
+            if operation == "scope":
+                failure = (await backend.dispose_scope(key.scope, key.thread_id)).undisposed
+            else:
+                failure = await backend.dispose(
+                    key, kind=spec.kind if operation == "kind" else None
+                )
+            assert (failure is not None) == newer_failed
+        finally:
+            release.set()
+        if older_failed or newer_failed:
+            message = "invalidated sandbox" if older_failed else "retained disposal"
+            with pytest.raises(SandboxOutputError, match=message):
+                await acquire
+            assert client.create_calls == 1
+        else:
+            assert (await acquire).instance_id != first.instance_id
+        assert calls == 2
+        assert backend._undeleted.get(prefix, set()) == (
+            {first.instance_id} if newer_failed else set()
+        )
+        replacement = await backend.acquire(key, spec)
+        assert replacement.instance_id != first.instance_id and client.create_calls == 2
+        assert calls == (3 if newer_failed else 2)
+        assert not backend._undeleted and not backend._disposal_tokens
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=10))
+
+
 class TestConcurrentAcquire:
     """Get-or-create is serialised per key, because a create cannot be made idempotent here.
 
