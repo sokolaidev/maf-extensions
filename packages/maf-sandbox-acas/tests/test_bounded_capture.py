@@ -90,8 +90,6 @@ def test_bounded_capture_preserves_binary_streams_and_cleans_scratch():
 @pytest.mark.parametrize("second_outcome", ["success", "failure", "cancel"])
 @pytest.mark.parametrize("delete_fails", [False, True])
 def test_concurrent_handles_share_invalidation_cleanup(second_outcome, delete_fails, monkeypatch):
-    import maf_sandbox_acas._backend as module
-
     async def scenario():
         started = [asyncio.Event(), asyncio.Event()]
         release = [asyncio.Event(), asyncio.Event()]
@@ -122,7 +120,7 @@ def test_concurrent_handles_share_invalidation_cleanup(second_outcome, delete_fa
                 raise RuntimeError("delete unavailable")
             return service
 
-        monkeypatch.setattr(module, "capture", capture)
+        monkeypatch.setattr(f"{_AcasSandbox.__module__}.capture", capture)
         monkeypatch.setattr(service, "begin_delete", delete)
         first = _AcasSandbox(service, 10)
         second = _AcasSandbox(service, 10, held=first._held)

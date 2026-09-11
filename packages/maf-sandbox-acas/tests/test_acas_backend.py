@@ -3223,8 +3223,6 @@ def test_fresh_capture_probe_failure_retries_deletion_before_replacement(failure
 def test_exec_invalidation_after_failed_disposal_blocks_replacement(disposal, reuse, monkeypatch):
     from maf_sandbox import SandboxOutputError
 
-    import maf_sandbox_acas._backend as module
-
     client = _GuestGroupClient(_guest_removing(True), delete_fails=True)
     backend = _backend_with(client)
     key = SandboxKey("s", "t", "a")
@@ -3238,7 +3236,7 @@ def test_exec_invalidation_after_failed_disposal_blocks_replacement(disposal, re
             await release.wait()
             raise SandboxOutputError("capture failed")
 
-        monkeypatch.setattr(module, "capture", capture)
+        monkeypatch.setattr(f"{_Held.__module__}.capture", capture)
         sandbox = await backend.acquire(key, spec)
         if reuse:
             sandbox = await backend.acquire(key, spec)
