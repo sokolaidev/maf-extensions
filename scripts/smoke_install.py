@@ -472,7 +472,13 @@ def _smoke_maf_sandbox_wslc() -> str:
 
 def _smoke_maf_sandbox_deepagents() -> str:
     from deepagents.backends.protocol import SandboxBackendProtocol, execute_accepts_timeout
-    from maf_sandbox import Capability, Isolation, SandboxKey, SandboxRouter
+    from maf_sandbox import (
+        Capability,
+        Isolation,
+        SandboxCapabilityNotSupported,
+        SandboxKey,
+        SandboxRouter,
+    )
     from maf_sandbox.testing import InProcessSandboxBackend
     from maf_sandbox_deepagents import REQUIRED_CAPABILITIES, MafSandbox, deepagents_spec
 
@@ -486,11 +492,11 @@ def _smoke_maf_sandbox_deepagents() -> str:
     router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE)
     try:
         MafSandbox(router, SandboxKey(scope="s", thread_id="t", agent_dir="a"), spec)
-    except Exception as refused:  # the fake declares no FILES_OUT, so the router must refuse
-        detail = type(refused).__name__
+    except SandboxCapabilityNotSupported:  # the fake declares no FILES_OUT
+        pass
     else:
         raise SystemExit("FAIL: a backend without FILES_OUT was admitted")
-    return f"adapter constructs, carries a timeout, and a backend lacking FILES_OUT is refused ({detail})"
+    return "adapter constructs, carries a timeout, and a backend lacking FILES_OUT is refused"
 
 
 def _smoke_maf_sandbox_docker() -> str:

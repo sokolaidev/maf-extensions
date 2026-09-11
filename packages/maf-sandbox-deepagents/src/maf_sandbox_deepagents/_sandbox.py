@@ -13,6 +13,7 @@ import asyncio
 import concurrent.futures
 import hashlib
 import logging
+import math
 from collections.abc import Coroutine
 from typing import Any
 
@@ -34,6 +35,7 @@ from maf_sandbox import (
     ExecResult,
     Isolation,
     IsolationScope,
+    NoSandboxBackend,
     Sandbox,
     SandboxKey,
     SandboxRouter,
@@ -110,8 +112,8 @@ def deepagents_spec(
     those hosts as the payload, and none runs :data:`~maf_sandbox.Egress.CLOSED`. The open
     posture is not expressible, because the agent writes the shell commands this sandbox runs.
 
-    ``work_dir`` names the base for an image with a fixed layout; ``None`` lets the backend
-    allocate one.
+    ``work_dir`` names the base the agent's file paths resolve under. It is the one field of
+    the spec :class:`MafSandbox` refuses ``None`` for.
     """
     return SandboxSpec(
         kind=kind,
@@ -169,9 +171,15 @@ class MafSandbox(BaseSandbox):
     host disposes it: :meth:`aclose` here, or the router's ``dispose_scope`` on the host's own
     conversation-delete path, which is what every other sandbox in the suite answers to.
 
-    Construction refuses what the router refuses — a backend below the isolation floor, one that
-    cannot enforce the spec's egress mode, a missing capability — so a misconfigured host fails
-    before an agent is built, not on its first command.
+    Construction refuses what the router refuses — no backend at all, one below the isolation
+    floor, one that cannot enforce the spec's egress mode, a missing capability — so a
+    misconfigured host fails before an agent is built, not on its first command.
+
+    Paths are guest paths, as they are for every sandbox Deep Agents ships: the agent's file
+    tools name them absolutely, and the adapter accepts an absolute path inside ``spec.work_dir``
+    or a relative one under it and refuses anything else as ``invalid_path``. The host puts
+    ``spec.work_dir`` in the prompt so the model knows where its files are; a spec leaving the
+    base to the backend is refused, because nothing could then tell the model.
 
     Deep Agents' derived file tools (``ls``, ``read_file``, ``write_file``, ``edit_file``,
     ``glob``, ``grep``) run ``python3`` inside the guest; on an image without it only ``execute``
@@ -200,8 +208,17 @@ class MafSandbox(BaseSandbox):
             )
         if key.call_id:
             raise ValueError("key.call_id must be empty: one sandbox serves the conversation")
-        if exec_timeout_seconds <= 0:
-            raise ValueError("exec_timeout_seconds must be positive")
+        if spec.work_dir is None:
+            # Deep Agents' file tools take guest paths the model spells out, so the host has to
+            # be able to tell it the base; a backend-allocated one is knowable to neither.
+            raise ValueError(
+                "spec.work_dir must name the storage base: Deep Agents addresses files by "
+                "guest path, and a base the backend allocates is one nothing can tell the model"
+            )
+        if not math.isfinite(exec_timeout_seconds) or exec_timeout_seconds <= 0:
+            raise ValueError("exec_timeout_seconds must be a finite positive number of seconds")
+        if not router.enabled:
+            raise NoSandboxBackend("no sandbox backend is configured")
         router.ensure_can_serve(spec)
         self._router = router
         self._key = key
@@ -251,8 +268,8 @@ class MafSandbox(BaseSandbox):
         if not command or not isinstance(command, str):  # pyright: ignore[reportUnnecessaryIsInstance]
             return ExecuteResponse(output="Error: Command must be a non-empty string.", exit_code=1)
         bound = self._timeout if timeout is None else float(timeout)
-        if bound <= 0:
-            raise ValueError(f"timeout must be positive, got {timeout}")
+        if not math.isfinite(bound) or bound <= 0:
+            raise ValueError(f"timeout must be a finite positive number of seconds, got {timeout}")
         sandbox = await self._acquire()
         if sandbox is None:
             return ExecuteResponse(output=SANDBOX_UNAVAILABLE, exit_code=None)

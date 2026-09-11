@@ -20,6 +20,7 @@ from maf_sandbox import (
     ExecResult,
     Isolation,
     IsolationScope,
+    NoSandboxBackend,
     SandboxBackendNotPermitted,
     SandboxCapabilityNotSupported,
     SandboxKey,
@@ -80,7 +81,6 @@ class TestTheSpec:
     def test_the_work_dir_default_is_the_protocol_s(self):
         assert deepagents_spec("img:1").work_dir == SandboxSpec(kind="x").work_dir
         assert deepagents_spec("img:1", work_dir="/w").work_dir == "/w"
-        assert deepagents_spec("img:1", work_dir=None).work_dir is None
 
 
 class TestConstruction:
@@ -119,9 +119,22 @@ class TestConstruction:
                 _router(_backend()), KEY, deepagents_spec("img:1", min_isolation=Isolation.MICROVM)
             )
 
-    def test_refuses_a_non_positive_timeout(self):
+    @pytest.mark.parametrize("seconds", [0, -1, float("inf"), float("nan")])
+    def test_refuses_a_timeout_that_bounds_nothing(self, seconds: float):
         with pytest.raises(ValueError, match="exec_timeout_seconds"):
-            MafSandbox(_router(_backend()), KEY, deepagents_spec("img:1"), exec_timeout_seconds=0)
+            MafSandbox(
+                _router(_backend()), KEY, deepagents_spec("img:1"), exec_timeout_seconds=seconds
+            )
+
+    def test_refuses_a_router_with_no_backend(self):
+        with pytest.raises(NoSandboxBackend):
+            MafSandbox(
+                SandboxRouter([], min_isolation=Isolation.NONE), KEY, deepagents_spec("img:1")
+            )
+
+    def test_refuses_a_base_the_backend_would_allocate(self):
+        with pytest.raises(ValueError, match="work_dir"):
+            MafSandbox(_router(_backend()), KEY, deepagents_spec("img:1", work_dir=None))
 
 
 class TestTheId:
@@ -175,10 +188,11 @@ class TestExecute:
         assert response.exit_code == 1
         assert "non-empty" in response.output
 
-    def test_a_non_positive_timeout_raises(self):
+    @pytest.mark.parametrize("seconds", [0, -1, float("inf"), float("nan")])
+    def test_a_timeout_that_bounds_nothing_raises(self, seconds: float):
         adapter, _ = _adapter()
         with pytest.raises(ValueError, match="timeout"):
-            asyncio.run(adapter.aexecute("true", timeout=0))
+            asyncio.run(adapter.aexecute("true", timeout=seconds))  # pyright: ignore[reportArgumentType]
 
     def test_the_sandbox_is_reused_warm_under_this_key_and_kind(self):
         """The router cleans an instance it has never seen before the first command, which is
@@ -255,10 +269,29 @@ class TestFilesIn:
         assert fake.contents[f"{WORK}/main.bicep"] == b"param x string"
         assert fake.contents[f"{WORK}/sub/two.txt"] == b"2"
 
-    def test_a_path_leaving_the_work_dir_is_refused_by_code(self):
-        adapter, _ = _adapter(InProcessSandbox())
-        (response,) = asyncio.run(adapter.aupload_files([("../etc/passwd", b"x")]))
-        assert response.error == "invalid_path"
+    def test_paths_are_guest_paths_under_the_base(self):
+        """Deep Agents' file tools spell paths absolutely; the base is where they must land."""
+        fake = InProcessSandbox()
+        adapter, _ = _adapter(fake)
+
+        responses = asyncio.run(
+            adapter.aupload_files(
+                [
+                    (f"{WORK}/notes/todo.txt", b"1"),
+                    ("../etc/passwd", b"x"),
+                    ("/notes/todo.txt", b"2"),
+                ]
+            )
+        )
+
+        assert [(r.path, r.error) for r in responses] == [
+            (f"{WORK}/notes/todo.txt", None),
+            ("../etc/passwd", "invalid_path"),
+            ("/notes/todo.txt", "invalid_path"),
+        ]
+        assert sorted(fake.contents) == [f"{WORK}/notes/todo.txt"]
+        (read,) = asyncio.run(adapter.adownload_files([f"{WORK}/notes/todo.txt"]))
+        assert read.content == b"1"
 
     def test_a_batch_over_max_files_is_refused_whole_before_anything_crosses(self):
         fake = InProcessSandbox()

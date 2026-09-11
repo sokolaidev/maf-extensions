@@ -77,9 +77,11 @@ MODEL_VARS = ("OPENAI_API_KEY", "OPENAI_CHAT_MODEL")
 BUILD = f"bicep build {BICEP_FILE} --no-restore --diagnostics-format sarif"
 LINT = f"bicep lint {BICEP_FILE} --diagnostics-format sarif"
 
+#: `{base}` is the sandbox's storage base, filled in from the spec: Deep Agents' file tools
+#: take guest paths, so the model has to be told where its files are.
 INSTRUCTIONS = (
     "You validate Azure Bicep with the compiler, never by reading the file yourself. "
-    f"The file to validate is {BICEP_FILE}, already in your working directory. "
+    f"The file to validate is {{base}}/{BICEP_FILE}; your working directory is {{base}}. "
     f"Use the execute tool only: run `{BUILD}` and then `{LINT}`, and report exactly the "
     "diagnostics in the SARIF they print — ruleId, level (a missing level means warning), "
     "line and message. This sandbox image has no Python, so ls, read_file, write_file, "
@@ -147,7 +149,7 @@ async def run() -> int:
                 api_key=env["OPENAI_API_KEY"],  # pyright: ignore[reportArgumentType]
                 base_url=os.environ.get("OPENAI_BASE_URL"),
             ),
-            system_prompt=INSTRUCTIONS,
+            system_prompt=INSTRUCTIONS.format(base=spec.work_dir),
             backend=sandbox,
         )
         reply = await agent.ainvoke(
