@@ -15,12 +15,20 @@ everywhere, which is why the tidy thread's 0 cannot be the only zero checked.
 The counts it reads come from `docker ps -a`, so a container stopped but not removed still
 counts as left behind — which is the shape a half-finished purge actually leaves.
 
-Acts 5 and 6 add a third direction. They make a reclaim **fail for real** and assert what each
-policy then did: the default disposes the sandbox it could not clean, so the container count goes
-to nought, and `FailedReclaimPolicy.KEEP` leaves it at one with the data still in it. Both are
-read off `docker ps` like everything else here. Beside them the check reads the telemetry the run
-exported, because the handler firing is the whole point of those acts — a healthy run reports
-nothing, so a count of nought would pass while proving nothing (#760).
+Acts 5 to 8 add a third direction. They make a reclaim **fail for real** and assert what the host
+was told each time: the default disposes the sandbox it could not clean, so the container count
+goes to nought; `FailedReclaimPolicy.KEEP` leaves it at one with the data still in it; a cleanup
+budget the engine cannot meet leaves the remedy unproven, so the key is refused with
+`SandboxUnclean`; and a handler that raises changes neither the answer nor the record it had
+already written. The counts are read off `docker ps` like everything else here, and beside them
+the check reads the telemetry the run exported, because the handler firing is the whole point of
+those acts — a healthy run reports nothing, so a count of nought would pass while proving
+nothing (#760).
+
+**Act 7's container count is deliberately not asserted.** `docker rm` was sent and the daemon may
+well have finished it; what did not happen is the host learning so inside its own budget. Pinning
+that count would assert a race, and would also say that `failed` means the sandbox is still
+there, which is the misreading the act exists to correct.
 
 One assertion there looks like a tautology and is not: `maf_sandbox.call.unclean` must read `0`
 beside a directory that was not removed. That attribute counts what a transport noted about
@@ -68,18 +76,33 @@ _ESCALATED = re.compile(r"containers after the escalation:\s*(\d+)", re.IGNORECA
 #: Act 6: the opt-down, measured the same way. One container, still holding the data.
 _KEPT_UNCLEAN = re.compile(r"containers kept after the failure:\s*(\d+)", re.IGNORECASE)
 
-#: Both acts, in order: act 5 first, act 6 second. Two lines each, so these are read as ordered
-#: pairs rather than single answers — which is also why they are not in `_SINGULAR`.
+#: Act 7: the remedy that could not be proved, and the refusal that follows it. The container
+#: count is deliberately not asserted — `docker rm` was sent and the daemon may well have
+#: finished it, which is the act's own point: `failed` is about what the host could prove.
+_NEXT_ACQUIRE = re.compile(r"The next acquire on that key:\s*(\S+)", re.IGNORECASE)
+
+#: Act 8: a handler that raises, and the two things it must not change.
+_REACHED_THE_CALLER = re.compile(r"The raise reached the caller:\s*(\S+)", re.IGNORECASE)
+_RAISING_RECORDS = re.compile(r"Records made by the handler that raised:\s*(\d+)", re.IGNORECASE)
+
+#: Acts 5 to 8, in order. Four lines each, so these are read as ordered sequences rather than
+#: single answers — which is also why they are not in `_SINGULAR`.
 _CALL_SPAN = re.compile(r"sandbox\.call\s+maf_sandbox\.call\.unclean = (\S+)")
 _DISPOSE_SPAN = re.compile(
-    r"sandbox\.dispose\s+(\d+) record\(s\), maf_sandbox\.disposal\.outcome = (\S+)"
+    r"sandbox\.dispose\s+(\d+) record\(s\), maf_sandbox\.disposal\.outcome = (.+)"
 )
 _RECORDS = re.compile(r"Disposal records for this call:\s*(\d+)", re.IGNORECASE)
 _RECORDED_DISPOSAL = re.compile(r"Recorded disposal:\s*(\S+)", re.IGNORECASE)
+_RECORDED_PATH = re.compile(r"Recorded path:\s*(\S+)", re.IGNORECASE)
 _RECORDED_REASON = re.compile(r"Recorded reason:\s*(.+)")
-#: The call each act's records were selected by. Two distinct ones, or the second act read the
-#: first act's records and every value below it is the wrong act's.
+#: The call each act's records were selected by. Distinct every time, or one act read another's
+#: records and every value below it belongs to the wrong act.
 _COLLECTED_FOR = re.compile(r"what a collector received for call\s+([0-9a-f]{32}):", re.IGNORECASE)
+
+#: What each of acts 5, 6 and 7 was told the framework did, in order. Act 8 reports no line of
+#: its own here: it runs under the default policy, so its record would repeat act 5's and a
+#: fourth `disposed` would say nothing about the raise.
+_DISPOSALS_IN_ORDER = ["disposed", "kept", "failed"]
 
 #: What the handler writes when the framework could not tell it a path, and what the sample
 #: prints for a record that was never made. Either one in a reason is a failed assertion.
@@ -87,15 +110,17 @@ _NOT_RECORDED = ("(absent)", "(no record)")
 
 #: The footer, every number read back from what the run observed.
 _FOOTER = re.compile(
-    r"Completed\s+(\d+)\s+of\s+6\s+acts\.\s+Purger found\s+(\d+)\s+on a purged thread and\s+"
+    r"Completed\s+(\d+)\s+of\s+8\s+acts\.\s+Purger found\s+(\d+)\s+on a purged thread and\s+"
     r"(\d+)\s+on an unscoped one\.\s+Kept after a failed reclaim:\s*(\d+)\.\s+"
-    r"Reclaim failures recorded:\s*(\d+)\.\s+Containers left behind:\s*(\d+)\.",
+    r"The key after an unprovable disposal:\s*(\S+)\.\s+The answer under a raising\s+"
+    r"handler:\s*(\S+)\.\s+Reclaim failures recorded:\s*(\d+)\.\s+Containers left "
+    r"behind:\s*(\d+)\.",
     re.IGNORECASE,
 )
 
 
 #: Each pattern with what it answers for, so a repeated line can be named. Every one reports a
-#: single act of a fixed six-act run, and this stream carries no model prose to confuse them.
+#: single act of a fixed eight-act run, and this stream carries no model prose to confuse them.
 _SINGULAR = (
     ("the reuse count", _REUSE_COUNT),
     ("the containers kept", _KEPT),
@@ -108,6 +133,9 @@ _SINGULAR = (
     ("the cleanup rung", _RUNG),
     ("the containers after the escalation", _ESCALATED),
     ("the containers kept after the failure", _KEPT_UNCLEAN),
+    ("what the next acquire did", _NEXT_ACQUIRE),
+    ("whether the raise reached the caller", _REACHED_THE_CALLER),
+    ("what the raising handler recorded", _RAISING_RECORDS),
     ("the footer", _FOOTER),
 )
 
@@ -253,6 +281,36 @@ def _assess_the_cleanup_that_failed(output: str) -> list[str]:
             "policies did the same thing"
         )
 
+    next_acquire = _one(_NEXT_ACQUIRE, output)
+    if next_acquire is None:
+        failures.append("act 7 did not report what the next acquire on the refused key did")
+    elif next_acquire != "SandboxUnclean":
+        failures.append(
+            f"the next acquire on the key was {next_acquire!r}, expected 'SandboxUnclean' — a "
+            "disposal the host could not prove landed must refuse the key, because serving it "
+            "hands the next call whatever the last one left"
+        )
+
+    reached = _one(_REACHED_THE_CALLER, output)
+    if reached is None:
+        failures.append("act 8 did not report whether the handler's raise reached the caller")
+    elif reached != "unchanged":
+        failures.append(
+            f"a raising handler left the answer {reached!r}, expected 'unchanged' — the callback "
+            "runs after the framework has acted and reports to the host; a host cannot turn a "
+            "cleanup problem into a failed turn by writing a bad one"
+        )
+
+    raising_records = _one(_RAISING_RECORDS, output)
+    if raising_records is None:
+        failures.append("act 8 did not report what the handler recorded before it raised")
+    elif int(raising_records) != 1:
+        failures.append(
+            f"the handler that raised recorded {raising_records}, expected 1 — it writes the "
+            "record before doing the thing that fails, and the reverse order loses exactly the "
+            "events the reporting path exists for while every count here stays correct"
+        )
+
     failures.extend(_assess_what_was_recorded(output))
     return failures
 
@@ -267,25 +325,25 @@ def _assess_what_was_recorded(output: str) -> list[str]:
     failures: list[str] = []
 
     disposals = _RECORDED_DISPOSAL.findall(output)
-    if disposals != ["disposed", "kept"]:
+    if disposals != _DISPOSALS_IN_ORDER:
         failures.append(
-            f"the recorded disposals were {disposals}, expected ['disposed', 'kept'] — the "
+            f"the recorded disposals were {disposals}, expected {_DISPOSALS_IN_ORDER} — the "
             "handler runs after the framework has already acted, and these are what it was told "
-            "each policy did. Anything else means the handler did not fire for both acts, or "
-            "the two policies are no longer distinguishable to a host"
+            "each policy did. Anything else means the handler did not fire for every act, or "
+            "that the three outcomes are no longer distinguishable to a host"
         )
 
     records = _RECORDS.findall(output)
-    if records != ["2", "1"]:
+    if records != ["2", "1", "2"]:
         failures.append(
-            f"the disposal record counts were {records}, expected ['2', '1'] — act 5 records the "
-            "router's adoption cleanup and the escalation, act 6 only the adoption, and the "
-            "sample's argument is that neither act's records say which was which"
+            f"the disposal record counts were {records}, expected ['2', '1', '2'] — acts 5 and 7 "
+            "record the router's adoption cleanup and the escalation, act 6 only the adoption, "
+            "and the sample's argument is that no act's records say which was which"
         )
 
     reasons = _RECORDED_REASON.findall(output)
-    if len(reasons) != 2:
-        failures.append(f"{len(reasons)} recorded reason(s), expected 2 — one per failed cleanup")
+    if len(reasons) != 3:
+        failures.append(f"{len(reasons)} recorded reason(s), expected 3 — one per failed cleanup")
     for reason in reasons:
         if reason.strip() in _NOT_RECORDED or len(reason.strip()) < 20:
             failures.append(
@@ -294,30 +352,39 @@ def _assess_what_was_recorded(output: str) -> list[str]:
                 "the host record exists to carry"
             )
 
-    unclean = _CALL_SPAN.findall(output)
-    if unclean != ["0", "0"]:
+    collected = _COLLECTED_FOR.findall(output)
+    paths = _RECORDED_PATH.findall(output)
+    if len(collected) != 3:
+        failures.append(f"{len(collected)} record set(s) were reported, expected 3 — one per act")
+    elif len(set(collected)) != len(collected):
         failures.append(
-            f"maf_sandbox.call.unclean read {unclean}, expected ['0', '0'] — that attribute "
+            f"two acts reported records for the same call id ({collected}), so one of them read "
+            "another's — the selection is on the call id precisely so they cannot be confused"
+        )
+    if paths != collected:
+        failures.append(
+            f"the recorded paths were {paths} against call ids {collected} — the host record's "
+            "own `app.reclaim.path` has to name the call directory the observer's records name, "
+            "and it is the only assertion on that attribute: drop it from the handler and "
+            "nothing else here would notice"
+        )
+
+    unclean = _CALL_SPAN.findall(output)
+    if unclean != ["0", "0", "0"]:
+        failures.append(
+            f"maf_sandbox.call.unclean read {unclean}, expected ['0', '0', '0'] — that attribute "
             "counts what a transport noted about processes it could not prove it stopped, never "
             "a removal that failed. If it now counts these too, this sample's argument for a "
             "host record is out of date and its prose needs rewriting rather than its numbers"
         )
 
-    dispose_spans = _DISPOSE_SPAN.findall(output)
-    if [outcome for _, outcome in dispose_spans] != ["gone", "gone"]:
+    outcomes = [outcome.strip() for _, outcome in _DISPOSE_SPAN.findall(output)]
+    if outcomes != ["gone", "gone", "gone, may_remain"]:
         failures.append(
-            f"the disposal outcomes were {[o for _, o in dispose_spans]}, expected "
-            "['gone', 'gone'] — a disposal the backend reported as failed is a different story "
-            "from the one these acts tell, and the container counts above would not be reliable"
-        )
-
-    collected = _COLLECTED_FOR.findall(output)
-    if len(collected) != 2:
-        failures.append(f"{len(collected)} record set(s) were reported, expected 2 — one per act")
-    elif collected[0] == collected[1]:
-        failures.append(
-            "both acts reported records for the same call id, so act 6 read act 5's records — "
-            "the selection is on the call id precisely so the two cannot be confused"
+            f"the disposal outcomes were {outcomes}, expected "
+            "['gone', 'gone', 'gone, may_remain'] — acts 5 and 6 dispose cleanly, and act 7's "
+            "second record is the remedy the backend could not confirm, which is what makes its "
+            "`failed` and the refusal that follows mean anything"
         )
 
     return failures
@@ -327,12 +394,22 @@ def _assess_footer(output: str) -> list[str]:
     footer = _FOOTER.search(output)
     if footer is None:
         return ["no footer line — the sample did not run to completion"]
-    acts, tidy, unscoped, kept_unclean, reported, leftover = (
-        int(group) for group in footer.groups()
-    )
+    acts, tidy, unscoped, kept_unclean, refusal, contained, reported, leftover = footer.groups()
+    acts, tidy, unscoped = int(acts), int(tidy), int(unscoped)
+    kept_unclean, reported, leftover = int(kept_unclean), int(reported), int(leftover)
     failures: list[str] = []
-    if acts != 6:
-        failures.append(f"only {acts} of 6 acts completed — the sample stopped part-way")
+    if acts != 8:
+        failures.append(f"only {acts} of 8 acts completed — the sample stopped part-way")
+    if refusal != "SandboxUnclean":
+        failures.append(
+            f"the footer reports the key was {refusal!r} after an unprovable disposal where act "
+            "7 reported a refusal — the summary and the run disagree"
+        )
+    if contained != "unchanged":
+        failures.append(
+            f"the footer reports the answer was {contained!r} under a raising handler where act "
+            "8 reported it unchanged — the summary and the run disagree"
+        )
     if (tidy, unscoped) != (0, 1):
         failures.append(
             f"the footer reports {tidy} and {unscoped} where the acts reported 0 and 1 — the "
@@ -343,12 +420,12 @@ def _assess_footer(output: str) -> list[str]:
             f"the footer reports {kept_unclean} kept after a failed reclaim, expected 1 — the "
             "summary and act 6 disagree"
         )
-    if reported != 2:
+    if reported != 4:
         failures.append(
-            f"{reported} reclaim failure(s) recorded, expected 2 — this is counted off the "
-            "exporter rather than kept in a variable, so it is what a collector received and "
-            "not what the handler believes it sent. Nought is what this sample existed to stop "
-            "passing (#760)"
+            f"{reported} reclaim failure(s) recorded, expected 4 — one per act from 5 to 8, "
+            "counted off the exporter rather than kept in a variable, so it is what a collector "
+            "received and not what the handler believes it sent. Nought is what this sample "
+            "existed to stop passing (#760)"
         )
     if leftover != 0:
         failures.append(
@@ -377,7 +454,7 @@ def main(argv: list[str]) -> int:
         return 1
     print(
         "OK  reuse within a turn, disposal at its end, the delete path catching the rest, and "
-        "a reclaim that failed reported to the host both ways"
+        "a reclaim that failed reported to the host under every policy it has"
     )
     return 0
 

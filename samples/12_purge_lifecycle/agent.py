@@ -6,11 +6,13 @@ Every other sample creates a sandbox and drops it on the way out; this one is ab
 long-lived host has to wire, because a sandbox is keyed by the caller's scope, thread and agent directory and
 outlives the turn that made it.
 
-Acts 5 and 6 are the fourth thing a host has to decide, and the only one it cannot decide by
+Acts 5 to 8 are the fourth thing a host has to decide, and the only one it cannot decide by
 reading: a cleanup that **fails**. The removal is made to fail honestly rather than faked — see
-`cleanup_probe.py` — the framework disposes the sandbox it could not clean, and the host records
-what it was told through `maf-sandbox-otel` and a handler of its own. Act 6 runs the same call
-under the one policy that loosens that, and `docker ps` reports the difference.
+`cleanup_probe.py` — and each act takes the host's decision somewhere different. 5: the default,
+which disposes the sandbox it could not clean. 6: `FailedReclaimPolicy.KEEP`, the one opt-down.
+7: a cleanup budget the engine cannot meet, so the remedy is unproven too and the key is refused.
+8: a handler that raises, which changes neither. The host records what it was told through
+`maf-sandbox-otel` and a handler of its own, and `docker ps` reports what each decision left.
 
 Needs a Docker-compatible engine. Containers are counted with `docker ps` rather than trusted
 from a return value — see this directory's README.
@@ -30,10 +32,10 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from _scaffold import MEASURED, installed_versions
-from cleanup_probe import cleanup_probe_spec, make_cleanup_probe_tools
+from cleanup_probe import PROGRAM_RAN, cleanup_probe_spec, make_cleanup_probe_tools
 from maf_sandbox import (
     Cleanup,
     FailedReclaimPolicy,
@@ -43,6 +45,7 @@ from maf_sandbox import (
     SandboxKey,
     SandboxRouter,
     SandboxSpec,
+    SandboxUnclean,
 )
 from maf_sandbox.maf import SandboxPurger, make_caller_context
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
@@ -51,6 +54,7 @@ from telemetry import (
     CALL_ID,
     DISPOSAL,
     DISPOSAL_OUTCOME,
+    PATH,
     REASON,
     RECLAIM_FAILURE_SPAN,
     UNCLEAN,
@@ -62,16 +66,30 @@ from telemetry import (
     outcomes,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from maf_sandbox import ReclaimFailure
+
 IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 SCOPE = "samples"
 AGENT_DIR = "assistant"
 
 #: Acts 1 to 4, which never let a cleanup fail.
 _THREADS = ("t-reuse", "t-kept", "t-perturn", "t-tidy", "t-unscoped")
-#: Acts 5 and 6, on the hardened backend. One each, because the second act's whole point is a
-#: container the first act's policy would have deleted.
+#: Acts 5 to 8, on the hardened backend. One thread each, because each act ends in a different
+#: state — a sandbox deleted, one kept on purpose, one whose key is refused — and sharing a
+#: thread would make each act's count a reading of the last act's decision.
 _LOCKED_THREAD = "t-locked"
 _KEPT_UNCLEAN_THREAD = "t-kept-unclean"
+_UNPROVEN_THREAD = "t-unproven"
+_RAISING_THREAD = "t-raising"
+_UNCLEAN_THREADS = (_LOCKED_THREAD, _KEPT_UNCLEAN_THREAD, _UNPROVEN_THREAD, _RAISING_THREAD)
+
+#: Act 7's cleanup budget. Small enough that no engine answers inside it, which is how a
+#: disposal is made to fail without anything being faked: the removal is real and the
+#: deadline is real, and the host simply never learns which of them won.
+_NO_ENGINE_MEETS_IT = 0.001
 
 #: The labels `DockerSandboxBackend` stamps on every container it creates, and the same ones its
 #: `dispose_scope` selects on. Short plain values pass through unchanged, which is why the
@@ -238,7 +256,12 @@ async def _no_files(_store: Any) -> list[ListedFile]:
     return []
 
 
-def _hardened_router(telemetry: Telemetry, policy: FailedReclaimPolicy) -> SandboxRouter:
+def _hardened_router(
+    telemetry: Telemetry,
+    policy: FailedReclaimPolicy,
+    *,
+    on_failure: Callable[[ReclaimFailure], Awaitable[None]] | None = None,
+) -> SandboxRouter:
     """A router whose backend drops every capability, and which is told what to do about it.
 
     `cap_drop_all=True` is the hardening — and the reason a removal in this container can fail
@@ -246,6 +269,8 @@ def _hardened_router(telemetry: Telemetry, policy: FailedReclaimPolicy) -> Sandb
     `min_cleanup=Cleanup.RECLAIM` is the other half: the per-call directory removal only runs at
     that rung, so a host that never lowers its floor never reaches this failure and disposes
     after every call instead.
+
+    ``on_failure`` defaults to the telemetry handler; act 8 passes one that raises.
     """
     backend = DockerSandboxBackend(DockerSandboxConfig(cap_drop_all=True))
     return SandboxRouter(
@@ -254,20 +279,21 @@ def _hardened_router(telemetry: Telemetry, policy: FailedReclaimPolicy) -> Sandb
         min_cleanup=Cleanup.RECLAIM,
         observer=telemetry.observer,
         reclaim=ReclaimConfig(
-            # The default, stated because it bounds two things a host may not expect it to: the
-            # removal itself — a `docker exec` here, which can hang where the engine does — and
-            # the handler below, which runs inside the same budget.
+            # The default, and what bounds everything the router does *outside* a call —
+            # including cleaning an instance it has not served before, which act 7 needs to keep
+            # working while it starves that call's own cleanup through the per-tool override.
             timeout=30.0,
             failed_reclaim_policy=policy,
-            # Set once, on the router, rather than per tool. `sandboxed_tool` takes an
-            # `on_reclaim_failure=` override, and a host that wants one policy for every kind it
-            # attaches — including packaged ones it did not write — sets it here.
-            on_failure=telemetry.on_reclaim_failure,
+            # Set once, on the router, rather than per tool: this is the half a host wires for
+            # every kind it attaches, including packaged ones it did not write.
+            on_failure=on_failure if on_failure is not None else telemetry.on_reclaim_failure,
         ),
     )
 
 
-async def _one_locked_call(router: SandboxRouter, thread: str) -> str:
+async def _one_locked_call(
+    router: SandboxRouter, thread: str, *, reclaim_timeout: float | None = None
+) -> str:
     """Attach the probe for one caller and call it once. Returns what the tool answered.
 
     No model: the tool is invoked directly, because the reclaim and the handler do not care who
@@ -275,21 +301,24 @@ async def _one_locked_call(router: SandboxRouter, thread: str) -> str:
     MAF would hand a model.
     """
     context = make_caller_context(_no_files, lambda: SCOPE, lambda: thread)
-    (probe,) = make_cleanup_probe_tools(router, AGENT_DIR, context, image=IMAGE)
+    (probe,) = make_cleanup_probe_tools(
+        router, AGENT_DIR, context, image=IMAGE, reclaim_timeout=reclaim_timeout
+    )
     answer = await probe.invoke(arguments={}, skip_parsing=True)
     return str(answer)
 
 
 def _report_what_was_recorded(telemetry: Telemetry) -> None:
-    """Print the three records this call produced, selected by its own call id.
+    """Print the records this call produced, joined the way a pipeline would join them.
 
-    The handler's record is what names the call, so it is read first and the package's two are
-    found from it. That order is also the join a pipeline makes, run here against one exporter
-    instead of a query.
+    The call id comes from the **package's** own record and the handler's is looked up by it,
+    rather than the other way round. That ordering is what makes the reported path worth
+    printing: it is the host record's own `app.reclaim.path`, and it matching a call id the
+    observer wrote is two independently produced records agreeing.
     """
-    reclaim = exported(telemetry.exporter, RECLAIM_FAILURE_SPAN)[-1]
-    call_id = attribute(reclaim, CALL_ID)
-    (call,) = for_call(telemetry.exporter, CALL, call_id)
+    call = exported(telemetry.exporter, CALL)[-1]
+    call_id = attribute(call, CALL_ID)
+    reclaim = for_call(telemetry.exporter, RECLAIM_FAILURE_SPAN, call_id)[-1]
     disposals = for_call(telemetry.exporter, DISPOSE, call_id)
 
     print(f"  what a collector received for call {call_id}:")
@@ -301,6 +330,7 @@ def _report_what_was_recorded(telemetry: Telemetry) -> None:
     print(f"    {RECLAIM_FAILURE_SPAN:<28} {DISPOSAL} = {attribute(reclaim, DISPOSAL)}")
     print(f"{MEASURED}Disposal records for this call: {len(disposals)}")
     print(f"{MEASURED}Recorded disposal: {attribute(reclaim, DISPOSAL)}")
+    print(f"{MEASURED}Recorded path: {attribute(reclaim, PATH)}")
     print(f"{MEASURED}Recorded reason: {attribute(reclaim, REASON)}")
 
 
@@ -375,8 +405,94 @@ async def act_six_the_one_policy_that_loosens_it(telemetry: Telemetry) -> int:
     return kept
 
 
+async def act_seven_a_disposal_nobody_could_prove(telemetry: Telemetry) -> str:
+    """The third `disposal` value: the remedy itself did not land, so the key is refused.
+
+    Returns what the next acquire on that key did, so the footer reports the refusal rather
+    than this file's expectation of one.
+    """
+    print("== 7. `disposal='failed'`: the remedy that could not be proved ==\n")
+
+    router = _hardened_router(telemetry, FailedReclaimPolicy.DISPOSE)
+    # The per-tool override, and the only place the set shows it. It bounds this call's cleanup
+    # and nothing else — which is the whole reason a budget this small is usable here at all.
+    # On the router it would starve the cleaning of an unfamiliar instance too, and the call
+    # would be refused before its body ran, with no cleanup to fail.
+    answer = await _one_locked_call(router, _UNPROVEN_THREAD, reclaim_timeout=_NO_ENGINE_MEETS_IT)
+    print(f"  the call answered: {answer!r}")
+    _report_what_was_recorded(telemetry)
+    print()
+
+    key = SandboxKey(scope=SCOPE, thread_id=_UNPROVEN_THREAD, agent_dir=AGENT_DIR)
+    try:
+        await router.acquire(key, cleanup_probe_spec(IMAGE))
+        refusal = "served"
+    except SandboxUnclean:
+        refusal = "SandboxUnclean"
+    print(f"{MEASURED}The next acquire on that key: {refusal}")
+    print(f"  containers left by the unproved disposal: {containers(_UNPROVEN_THREAD)}")
+    print()
+    print("  Read those two lines together, because they look like a contradiction and are")
+    print("  the point. The container is gone: `docker rm` was sent and the daemon finished")
+    print("  it. What did not happen is the host **learning** that, inside the budget it set.")
+    print("  So `failed` does not mean the sandbox is still there. It means nothing proved it")
+    print("  went, and a router that cannot prove a disposal landed refuses the key rather")
+    print("  than serving the next call whatever it happens to contain. `KEEP` does not")
+    print("  loosen this one: act 6's opt-down is about a reclaim, and this is the remedy.")
+    print()
+    print("  A one-millisecond budget is not a setting anyone chooses. A budget too small for")
+    print("  the engine underneath it is — a loaded daemon, a remote one, a cleanup competing")
+    print("  with the next turn — and this is what that host sees.\n")
+
+    await router.dispose_scope(SCOPE, _UNPROVEN_THREAD)
+    return refusal
+
+
+async def act_eight_a_handler_that_raises(telemetry: Telemetry) -> str:
+    """A handler that fails does not fail the call, and does not lose what it already recorded.
+
+    Returns the tool's answer, so the footer reports that the raise did not reach the caller.
+    """
+    print("== 8. A handler that raises is contained ==\n")
+
+    async def records_then_raises(failure: ReclaimFailure) -> None:
+        """The recommended order, and the reason for it, in two lines."""
+        await telemetry.on_reclaim_failure(failure)
+        raise RuntimeError("this host's alerting is down")
+
+    before = len(exported(telemetry.exporter, RECLAIM_FAILURE_SPAN))
+    router = _hardened_router(
+        telemetry, FailedReclaimPolicy.DISPOSE, on_failure=records_then_raises
+    )
+    answer = await _one_locked_call(router, _RAISING_THREAD)
+    recorded = len(exported(telemetry.exporter, RECLAIM_FAILURE_SPAN)) - before
+    # Against the kind's own constant rather than a copy of the sentence, so a body that had
+    # stopped running could not satisfy this by leaving the string behind somewhere else.
+    reached_the_caller = "unchanged" if answer == PROGRAM_RAN else "replaced"
+
+    print(f"  the call answered: {answer!r}")
+    print(f"{MEASURED}The raise reached the caller: {reached_the_caller}")
+    print(f"{MEASURED}Records made by the handler that raised: {recorded}")
+    print(f"  containers after the raising handler: {containers(_RAISING_THREAD)}")
+    print()
+    print("  The exception went to the framework's log and no further: the call's answer is")
+    print("  the body's, and the sandbox was disposed before the handler ran at all. A host")
+    print("  cannot break a cleanup guarantee by writing a bad callback, which is the reason")
+    print("  the callback is not where safety is wired.")
+    print()
+    print("  And the record survived, because the handler wrote it before doing the thing that")
+    print("  failed. Reverse those two lines and this act records nothing while every")
+    print("  container count above stays correct — a reporting path losing exactly the events")
+    print("  it exists for, in the direction that looks healthy. That is not hypothetical: it")
+    print("  is the defect review found in sample 07's handler, which printed before it")
+    print("  appended, and which nothing could have caught until this act existed.\n")
+
+    await router.dispose_scope(SCOPE, _RAISING_THREAD)
+    return reached_the_caller
+
+
 async def main() -> int:
-    """Six acts against Docker, counted with `docker ps` throughout."""
+    """Eight acts against Docker, counted with `docker ps` throughout."""
     backend = DockerSandboxBackend(DockerSandboxConfig())
     router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
     # One provider for both halves: the package's observer records what the library did, and the
@@ -392,23 +508,25 @@ async def main() -> int:
         tidy_found, unscoped_found = await act_four_thread_delete(router)
         await act_five_a_cleanup_that_could_not_run(telemetry)
         kept_unclean = await act_six_the_one_policy_that_loosens_it(telemetry)
+        refusal = await act_seven_a_disposal_nobody_could_prove(telemetry)
+        contained = await act_eight_a_handler_that_raises(telemetry)
     finally:
         # Whatever any act left behind, however it ended. The sample is about not leaking, so
         # it does not get to leak while saying so — act 6 above all, which ends holding a
         # sandbox on purpose and would otherwise be the one act that leaks.
-        for thread in (*_THREADS, _LOCKED_THREAD, _KEPT_UNCLEAN_THREAD):
+        for thread in (*_THREADS, *_UNCLEAN_THREADS):
             await router.dispose_scope(SCOPE, thread)
 
-    leftover = sum(
-        containers(thread) for thread in (*_THREADS, _LOCKED_THREAD, _KEPT_UNCLEAN_THREAD)
-    )
+    leftover = sum(containers(thread) for thread in (*_THREADS, *_UNCLEAN_THREADS))
     # Counted off the exporter rather than kept in a variable, so this is what a collector
     # received and not what the handler believes it sent.
     reported = len(exported(telemetry.exporter, RECLAIM_FAILURE_SPAN))
     print(
-        f"Completed 6 of 6 acts. Purger found {tidy_found} on a purged thread and "
+        f"Completed 8 of 8 acts. Purger found {tidy_found} on a purged thread and "
         f"{unscoped_found} on an unscoped one. Kept after a failed reclaim: {kept_unclean}. "
-        f"Reclaim failures recorded: {reported}. Containers left behind: {leftover}."
+        f"The key after an unprovable disposal: {refusal}. The answer under a raising "
+        f"handler: {contained}. Reclaim failures recorded: {reported}. Containers left "
+        f"behind: {leftover}."
     )
     return 0
 

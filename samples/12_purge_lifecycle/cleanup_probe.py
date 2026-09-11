@@ -65,6 +65,11 @@ _PROGRAM = (
     f"chmod {_LOCKED_MODE} {_LOCKED_DIRECTORY}"
 )
 
+#: What a healthy call answers. A module constant because act 8 compares against it: the
+#: claim there is that a handler raising does not reach the caller, and comparing the answer
+#: to a copy of the sentence in another file would pass on a body that had stopped running.
+PROGRAM_RAN = f"The program ran and left {_LOCKED_DIRECTORY}/{_LOCKED_FILE} behind."
+
 _RECEIPT_FILENAME = "receipt.txt"
 _RECEIPT = "this call ran\n"
 
@@ -96,13 +101,19 @@ def make_cleanup_probe_tools(
     *,
     image: str,
     exec_timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
+    reclaim_timeout: float | None = None,
 ) -> list[Any]:
     """Return the ``[leave_a_locked_directory]`` tool list, or ``[]`` with no sandbox configured.
 
-    No ``on_reclaim_failure=`` here. The handler is set once on the router, as
-    ``ReclaimConfig(on_failure=...)``, which is the half a host wires for every kind it attaches
-    rather than per tool — `sandboxed_tool` resolves the per-tool override against it and the
-    router's is what a packaged kind inherits.
+    Args:
+        reclaim_timeout: The per-tool override of ``ReclaimConfig.timeout``, or ``None`` to
+            inherit the router's. It bounds this call's own cleanup and nothing else — the
+            router's value still bounds what happens before a call, which is what lets act 7
+            starve one without starving the other.
+
+    No ``on_reclaim_failure=`` override, deliberately. The handler is set once on the router,
+    which is the half a host wires for every kind it attaches rather than per tool, and the one
+    a packaged kind it did not write inherits.
     """
     spec = cleanup_probe_spec(image)
     return sandboxed_tool(
@@ -113,6 +124,7 @@ def make_cleanup_probe_tools(
         spec=spec,
         name=LEAVE_A_LOCKED_DIRECTORY_TOOL_NAME,
         approval_mode="never_require",
+        reclaim_timeout=reclaim_timeout,
         # The conservative label, and the spec is why rather than the body. Nothing the store
         # holds reaches this result — it is one fixed sentence — but `requires` opens that
         # channel, and a `trusted` claim over an open channel is refused at attach unless the
@@ -176,6 +188,6 @@ def _leave_a_locked_directory_tool(
         # The call answers normally. What follows — the reclaim that cannot happen, the
         # disposal that answers it, and the handler that reports both — happens after this
         # return, and changes none of it. That separation is act 5's whole claim.
-        return f"The program ran and left {_LOCKED_DIRECTORY}/{_LOCKED_FILE} behind."
+        return PROGRAM_RAN
 
     return leave_a_locked_directory
