@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -439,3 +440,28 @@ class TestTheBoundIsPerCallAhead:
 
         # Woken by the other waiter's exit and still refused at its own bound, not a fresh one.
         assert _run(scenario()) < 0.4
+
+    def test_a_waiter_on_another_loop_has_its_bound_renewed_too(self):
+        """The renewal is plain data under the guard, so it must reach a waiter whose future
+        lives on a loop the releases never run on."""
+        slots = ExclusiveSlots()
+        bound, gap = 0.3, 0.2
+        queued = threading.Event()
+        _run(slots.take(_KEY, _KIND, owner=OWNER, exclusive=False, timeout=1))
+        _run(slots.take(_KEY, _KIND, owner=RIVAL, exclusive=False, timeout=1))
+
+        async def other_loop() -> None:
+            queued.set()
+            await slots.take(_KEY, _KIND, owner="call-3", exclusive=True, timeout=bound)
+            slots.release(_KEY, _KIND, owner="call-3")
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            waiting = pool.submit(lambda: _run(other_loop()))
+            assert queued.wait(1)
+            time.sleep(gap)
+            slots.release(_KEY, _KIND, owner=OWNER)
+            time.sleep(gap)
+            slots.release(_KEY, _KIND, owner=RIVAL)
+            # Two gaps, each inside the bound and together past it: only renewal admits it.
+            waiting.result(timeout=2)
+        assert not slots._slots
