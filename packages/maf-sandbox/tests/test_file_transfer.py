@@ -89,6 +89,16 @@ class TestTheVocabulary:
             ("sh: can't open /x: no such file", FileRefusal.NOT_FOUND),
             ("sh: base64: not found", None),
             ("mv: cannot move: Input/output error", None),
+            # The path is the model's text: only the line's end is the shell's.
+            (
+                "sh: can't open '/tmp/Permission denied': No such file or directory",
+                FileRefusal.NOT_FOUND,
+            ),
+            (
+                "mkdir: can't create '/No such file or directory': Permission denied",
+                FileRefusal.PERMISSION_DENIED,
+            ),
+            ("sh: /tmp/Is a directory: not found", None),
         ],
     )
     def test_the_shell_s_words_name_their_refusal(self, stderr, refusal):
@@ -109,17 +119,20 @@ class TestTheWrite:
         commands = _commands(fake)
         assert all(c.startswith("export LC_ALL=C; ") for c in commands)
         commands = [c.removeprefix("export LC_ALL=C; ") for c in commands]
-        staged = commands[0].removeprefix(
-            "mkdir -p -- /notes && if [ -d /notes/todo.bin ]; then echo 'Is a directory' >&2; "
-            "exit 1; fi && : > "
-        )
-        assert staged.startswith("/notes/todo.bin.") and staged.endswith(".part")
+        refuse = "if [ -d /notes/todo.bin ]; then echo 'Is a directory' >&2; exit 1; fi"
+        staged = commands[0].removeprefix(f"mkdir -p -- /notes && {refuse} && : > ")
+        # A sibling in the target's directory, of a fixed length: the leaf may already be as
+        # long as a name can be.
+        assert staged.startswith("/notes/.maf-") and staged.endswith(".part")
+        assert len(staged) == len("/notes/.maf-") + 32 + len(".part")
         chunks = [c.removeprefix("printf %s ").split(" | ")[0] for c in commands[1:-1]]
         assert len(chunks) == -(-len(content) // SHELL_CHUNK_BYTES)
         assert all(len(chunk) <= 4 * (SHELL_CHUNK_BYTES // 3) for chunk in chunks)
         assert all(c.endswith(f"base64 -d >> {staged}") for c in commands[1:-1])
         assert base64.b64decode("".join(chunks)) == content
-        assert commands[-1] == f"mv -f -- {staged} /notes/todo.bin"
+        # The directory check again, in the command that moves: `mv` would otherwise move
+        # the sibling inside a directory that appeared in between.
+        assert commands[-1] == f"{refuse} && mv -f -- {staged} /notes/todo.bin"
         assert {directory for _, directory, _ in fake.commands} == {WORK}
 
     def test_a_second_write_over_the_path_stages_under_its_own_name(self):
@@ -129,12 +142,14 @@ class TestTheWrite:
         asyncio.run(write_file_over_exec(fake, "/tmp/f", b"2", working_directory=WORK, timeout=5))
         second = _commands(fake)[len(first) :]
         assert second[0] != first[0]
-        assert second[-1] != first[-1] and second[-1].endswith(" /tmp/f")
+        assert second[-1] != first[-1] and second[-1].endswith(".part /tmp/f")
 
     def test_a_relative_path_is_written_where_the_working_directory_is(self):
         fake = InProcessSandbox()
         asyncio.run(write_file_over_exec(fake, "note.txt", b"1", working_directory=WORK, timeout=5))
-        assert _commands(fake)[0].startswith("export LC_ALL=C; mkdir -p -- . && if [ -d note.txt ]")
+        first = _commands(fake)[0]
+        assert first.startswith("export LC_ALL=C; mkdir -p -- . && if [ -d note.txt ]")
+        assert "&& : > .maf-" in first  # the sibling is relative too
 
     def test_a_path_that_begins_with_a_dash_is_an_operand_not_an_option(self):
         fake = InProcessSandbox()
@@ -143,9 +158,44 @@ class TestTheWrite:
         )
         first, _, last = _commands(fake)
         assert first.startswith("export LC_ALL=C; mkdir -p -- -dir && if [ -d -dir/-file ]")
-        assert last.startswith("export LC_ALL=C; mv -f -- -dir/-file.") and last.endswith(
-            ".part -dir/-file"
-        )
+        assert "&& mv -f -- -dir/.maf-" in last and last.endswith(".part -dir/-file")
+
+    def test_a_write_refused_part_way_takes_its_sibling_back(self):
+        class Full(InProcessSandbox):
+            async def exec(self, command, *, working_directory, timeout):
+                result = await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+                if "base64 -d" in command:
+                    return ExecResult(
+                        stdout="", stderr="sh: can't open: Permission denied", exit_code=1
+                    )
+                return result
+
+        fake = Full()
+        with pytest.raises(SandboxFileRefused) as refused:
+            asyncio.run(
+                write_file_over_exec(fake, "/tmp/f", b"1", working_directory=WORK, timeout=5)
+            )
+        assert refused.value.refusal is FileRefusal.PERMISSION_DENIED
+        first, _, last = _commands(fake)
+        staged = first.split(" : > ")[1]
+        assert last == f"export LC_ALL=C; rm -f -- {staged}"
+
+    def test_a_sibling_that_cannot_be_taken_back_is_unfinished(self):
+        class Stuck(InProcessSandbox):
+            async def exec(self, command, *, working_directory, timeout):
+                result = await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+                if "base64 -d" in command or "rm -f" in command:
+                    return ExecResult(stdout="", stderr="disk on fire", exit_code=1)
+                return result
+
+        with pytest.raises(SandboxShellTransferUnfinished, match="could not be removed"):
+            asyncio.run(
+                write_file_over_exec(Stuck(), "/tmp/f", b"1", working_directory=WORK, timeout=5)
+            )
 
     def test_what_the_shell_refuses_is_named(self):
         fake = Answering(exit_code=1, stderr="sh: can't create /etc/x: Permission denied")
@@ -276,6 +326,35 @@ class TestTheRead:
             )
         assert unfinished.value.over_cap is False
 
+    @pytest.mark.parametrize(
+        ("marker", "stderr", "refusal"),
+        [
+            ("wc -c", "sh: can't open /tmp/x: Permission denied", FileRefusal.PERMISSION_DENIED),
+            ("base64 <", "sh: can't open /tmp/x: No such file or directory", FileRefusal.NOT_FOUND),
+            ("base64 <", "base64: /tmp/x: Is a directory", FileRefusal.IS_DIRECTORY),
+        ],
+    )
+    def test_a_path_that_changed_under_the_probe_or_the_read_is_still_refused_by_code(
+        self, marker, stderr, refusal
+    ):
+        """The path can go, become a directory or lose permission between the probe's
+        branches and `wc`, or between the probe and the read; the words still name it."""
+
+        class Shifting(InProcessSandbox):
+            async def exec(self, command, *, working_directory, timeout):
+                if marker in command:
+                    return ExecResult(stdout="", stderr=stderr, exit_code=1)
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        fake = Shifting(outputs={"wc -c": "3\n"})
+        with pytest.raises(SandboxFileRefused) as refused:
+            asyncio.run(
+                read_file_over_exec(fake, "/tmp/x", working_directory=WORK, timeout=5, max_bytes=64)
+            )
+        assert refused.value.refusal is refusal
+
     def test_a_probe_that_fails_or_answers_nonsense_is_a_failure_not_a_refusal(self):
         with pytest.raises(SandboxShellTransferFailed):
             asyncio.run(
@@ -326,6 +405,19 @@ def test_the_utilities_the_road_runs_are_the_ones_it_names():
     fake = InProcessSandbox(outputs={"wc -c": "1\n", "base64 <": "eA==\n"})
     asyncio.run(write_file_over_exec(fake, "/tmp/f", b"x", working_directory=WORK, timeout=5))
     asyncio.run(read_file_over_exec(fake, "/tmp/f", working_directory=WORK, timeout=5, max_bytes=8))
-    words = {word for command in _commands(fake) for word in command.replace("|", " ").split()}
+
+    class RefusingAChunk(InProcessSandbox):
+        async def exec(self, command, *, working_directory, timeout):
+            if "base64 -d" in command:
+                return ExecResult(stdout="", stderr="sh: Permission denied", exit_code=1)
+            return await super().exec(command, working_directory=working_directory, timeout=timeout)
+
+    refusing = RefusingAChunk()
+    with pytest.raises(SandboxFileRefused):  # `rm` runs only to take a failed write back
+        asyncio.run(
+            write_file_over_exec(refusing, "/tmp/g", b"x", working_directory=WORK, timeout=5)
+        )
+    commands = _commands(fake) + _commands(refusing)
+    words = {word for command in commands for word in command.replace("|", " ").split()}
     for utility in SHELL_UTILITIES:
         assert utility == "sh" or utility in words

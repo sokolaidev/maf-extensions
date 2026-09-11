@@ -44,8 +44,9 @@ __all__ = [
 SHELL_CHUNK_BYTES = 48 * 1024
 
 #: What the shell road runs in the guest. ``test``, ``printf`` and ``echo`` are the shell's own
-#: in busybox, dash and bash; these are not.
-SHELL_UTILITIES = ("sh", "mkdir", "mv", "base64", "wc")
+#: in busybox, dash and bash; these are not. ``rm`` runs only to take back a staged write.
+SHELL_UTILITIES = ("sh", "mkdir", "mv", "rm", "base64", "wc")
+
 
 #: Output budget for a command that answers in a line.
 _ANSWER_BYTES = 4096
@@ -62,6 +63,18 @@ class FileRefusal(StrEnum):
     IS_DIRECTORY = "is_directory"
     PERMISSION_DENIED = "permission_denied"
     INVALID_PATH = "invalid_path"
+
+
+#: What the shell says at the end of a diagnostic line, under the C locale, for each refusal.
+#: Matched as a line's suffix, never as a substring: a path is the model's text and may carry
+#: any of these words.
+_DIAGNOSTICS = (
+    ("Permission denied", FileRefusal.PERMISSION_DENIED),
+    ("Is a directory", FileRefusal.IS_DIRECTORY),
+    ("Not a directory", FileRefusal.INVALID_PATH),
+    ("No such file or directory", FileRefusal.NOT_FOUND),
+    ("no such file", FileRefusal.NOT_FOUND),  # busybox's shell, on a redirection
+)
 
 
 class SandboxFileRefused(Exception):
@@ -92,10 +105,10 @@ class SandboxShellTransferFailed(RuntimeError):
 def file_refusal(error: BaseException) -> FileRefusal | None:
     """The refusal a file-plane exception names, or ``None`` when it names none.
 
-    A cap, a timeout and a lost connection are not refusals of the path, and each subclasses
-    what a refusal is (``SandboxTransferCapExceeded`` is a ``ValueError``, the other two are
-    ``OSError``), so they are answered first; a ``PermissionError`` is an ``OSError`` too, so
-    it comes before the branch that folds the rest.
+    A cap, a timeout and a lost connection are not refusals of the path, so they are answered
+    first: the last two subclass ``OSError``, which the final branch folds, and the cap is
+    listed with them so a future change of its base cannot make it one. A ``PermissionError``
+    is an ``OSError`` too, so it comes before that branch.
     """
     if isinstance(error, (SandboxTransferCapExceeded, TimeoutError, ConnectionError)):
         return None
@@ -125,18 +138,15 @@ def entry_refusal(entry: SandboxEntry | None) -> FileRefusal | None:
 def shell_refusal(stderr: str) -> FileRefusal | None:
     """The refusal the shell's words name, or ``None`` when they name none.
 
-    The words are libc's under the C locale, which every command here runs under; a missing
+    The words are libc's under the C locale, which every command here runs under, and they
+    end the line: the path before them is the model's text and is not read. A missing
     utility or an I/O error names no refusal and is the transfer failing, not the path.
     """
-    if "Permission denied" in stderr:
-        return FileRefusal.PERMISSION_DENIED
-    if "Is a directory" in stderr:
-        return FileRefusal.IS_DIRECTORY
-    if "Not a directory" in stderr:
-        return FileRefusal.INVALID_PATH
-    if "o such file" in stderr:
-        # "No such file or directory" from libc; "no such file" from busybox's shell.
-        return FileRefusal.NOT_FOUND
+    for line in stderr.splitlines():
+        line = line.rstrip()
+        for words, refusal in _DIAGNOSTICS:
+            if line.endswith(words):
+                return refusal
     return None
 
 
@@ -177,31 +187,37 @@ async def write_file_over_exec(
 ) -> None:
     """Write ``content`` to ``path`` through the shell, whole or not at all.
 
-    Base64 in chunks of :data:`SHELL_CHUNK_BYTES`, into a sibling of the target named for
-    this call alone and moved into place once the last chunk landed, so a reader, or a second
-    writer over the same path, sees a whole file and never an interleaving of two. Parent
-    directories are created. A directory at ``path`` is refused, not entered.
+    Base64 in chunks of :data:`SHELL_CHUNK_BYTES`, into a sibling in the target's directory
+    named for this call alone and moved into place once the last chunk landed, so a reader,
+    or a second writer over the same path, sees a whole file and never an interleaving of
+    two. Parent directories are created. A directory at ``path`` is refused, not entered:
+    checked before the first chunk and again in the command that moves, since ``mv`` would
+    otherwise move the sibling inside a directory that appeared in between; what remains is
+    the instant between that check and the move. A write the guest refused or that failed
+    part-way takes its sibling back before raising, and one it could not take back raises
+    :class:`SandboxShellTransferUnfinished`, since the chunks that landed are readable there.
 
     Raises :class:`SandboxFileRefused`, :class:`SandboxShellTransferUnfinished`,
     :class:`SandboxShellTransferFailed`.
     """
     target = shlex.quote(path)
-    parent = shlex.quote(posixpath.dirname(path) or ".")
-    staged = shlex.quote(f"{path}.{uuid.uuid4().hex}.part")
+    directory = posixpath.dirname(path)
+    parent = shlex.quote(directory or ".")
+    # A sibling of a fixed length: the target's own leaf may already be as long as a name
+    # can be.
+    staged = shlex.quote(posixpath.join(directory, f".maf-{uuid.uuid4().hex}.part"))
     encoded = base64.b64encode(content).decode("ascii")
     step = 4 * (SHELL_CHUNK_BYTES // 3)
+    refuse_directory = f"if [ -d {target} ]; then echo 'Is a directory' >&2; exit 1; fi"
     # `--` before every operand a utility takes: a relative path may begin with a dash. A
     # redirection's word is never an option, so `>` and `<` need none.
-    commands = [
-        f"mkdir -p -- {parent} && if [ -d {target} ]; then echo 'Is a directory' >&2; exit 1; "
-        f"fi && : > {staged}"
-    ]
+    commands = [f"mkdir -p -- {parent} && {refuse_directory} && : > {staged}"]
     commands += [
         f"printf %s {encoded[start : start + step]} | base64 -d >> {staged}"
         for start in range(0, len(encoded), step)
     ]
-    commands.append(f"mv -f -- {staged} {target}")
-    for command in commands:
+    commands.append(f"{refuse_directory} && mv -f -- {staged} {target}")
+    for index, command in enumerate(commands):
         result = await _run(
             sandbox,
             command,
@@ -209,12 +225,42 @@ async def write_file_over_exec(
             timeout=timeout,
             budget=_ANSWER_BYTES,
         )
-        if result.exit_code != 0:
-            detail = result.stderr.strip()
-            refusal = shell_refusal(detail)
-            if refusal is None:
-                raise SandboxShellTransferFailed(f"the write of {path!r} failed: {detail}")
-            raise SandboxFileRefused(refusal, detail)
+        if result.exit_code == 0:
+            continue
+        detail = result.stderr.strip()
+        if index > 0:
+            await _take_back(sandbox, staged, working_directory=working_directory, timeout=timeout)
+        refusal = shell_refusal(detail)
+        if refusal is None:
+            raise SandboxShellTransferFailed(f"the write of {path!r} failed: {detail}")
+        raise SandboxFileRefused(refusal, detail)
+
+
+async def _take_back(
+    sandbox: BoundedExec, staged: str, *, working_directory: str, timeout: float
+) -> None:
+    """Remove the staged sibling a failed write left; not established is unfinished."""
+    removed = await _run(
+        sandbox,
+        f"rm -f -- {staged}",
+        working_directory=working_directory,
+        timeout=timeout,
+        budget=_ANSWER_BYTES,
+    )
+    if removed.exit_code != 0:
+        raise SandboxShellTransferUnfinished(
+            f"the staged sibling {staged} of a failed write could not be removed: "
+            f"{removed.stderr.strip()}"
+        )
+
+
+def _raise_for(stderr: str, what: str) -> None:
+    """A command that ended and failed: the refusal its words name, or the failure."""
+    detail = stderr.strip()
+    refusal = shell_refusal(detail)
+    if refusal is None:
+        raise SandboxShellTransferFailed(f"{what}: {detail}")
+    raise SandboxFileRefused(refusal, detail)
 
 
 async def read_file_over_exec(
@@ -245,7 +291,8 @@ async def read_file_over_exec(
     )
     answer = probed.stdout.strip()
     if probed.exit_code != 0 or not answer:
-        raise SandboxShellTransferFailed(f"the probe of {path!r} failed: {probed.stderr.strip()}")
+        # The path can go, or lose permission, between the probe's branches and `wc`.
+        _raise_for(probed.stderr, f"the probe of {path!r} failed")
     if answer.endswith("missing"):
         detail = answer.removesuffix("missing").strip()
         refusal = shell_refusal(detail) if detail else FileRefusal.NOT_FOUND
@@ -274,7 +321,8 @@ async def read_file_over_exec(
         reading=True,
     )
     if read.exit_code != 0:
-        raise SandboxShellTransferFailed(f"the read of {path!r} failed: {read.stderr.strip()}")
+        # The file can go, become a directory, or lose permission after the probe.
+        _raise_for(read.stderr, f"the read of {path!r} failed")
     try:
         content = base64.b64decode("".join(read.stdout.split()), validate=True)
     except ValueError as garbled:
