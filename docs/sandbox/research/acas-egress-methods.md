@@ -1,6 +1,8 @@
 # ACAS method matching and policy reuse
 
 > Live measurements for [#377](https://github.com/sokolaidev/maf-extensions/issues/377), taken on 2026-09-10 against the HTTPS service path. The contract and current backend behavior live in [network.md](../network.md#method-scoped-allow-entries) and [acas.md](../backends/acas.md). This record explains why an SDK method field is insufficient to declare literal method enforcement.
+>
+> **The case half of that verdict is superseded.** The measurements stand; what changed is the contract they were judged against. Core methods are now uppercase tokens and a case distinction is not expressible, so case-insensitive matching is no longer a mismatch — see [network.md](../network.md#method-scoped-allow-entries). ACAS still withholds the capability, for the unmeasured surface named under "Limits and cleanup" rather than for case.
 
 ## Setup
 

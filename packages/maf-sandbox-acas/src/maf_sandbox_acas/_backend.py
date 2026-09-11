@@ -458,8 +458,9 @@ def _egress_key(spec: SandboxSpec) -> tuple[Egress, frozenset[str]]:
     """The supported policy's identity, independent of host spelling and order."""
     if Capability.EGRESS_METHODS in spec.required_capabilities:
         raise SandboxCapabilityNotSupported(
-            "ACAS cannot enforce literal, case-sensitive egress methods; "
-            "method-scoped policy is refused."
+            "ACAS has not established method enforcement against the service; method-scoped "
+            "policy is refused. The measured HTTPS path denies an unnamed verb, but redirects, "
+            "rule precedence, wildcard overlap and the non-TLS path are unmeasured."
         )
     return spec.egress, frozenset(str(host).lower() for host in spec.egress_allow)
 

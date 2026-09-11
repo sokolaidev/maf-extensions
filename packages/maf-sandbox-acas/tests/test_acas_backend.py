@@ -4239,7 +4239,7 @@ class TestEgressPolicy:
 
         asyncio.run(scenario())
 
-    @pytest.mark.parametrize("methods", [("GET",), ("get",), ("PROPFIND",)])
+    @pytest.mark.parametrize("methods", [("GET",), ("POST", "PUT"), ("PROPFIND",)])
     def test_method_policy_refuses_before_reaching_the_service(self, methods, monkeypatch):
         backend = AcasSandboxBackend(_config())
         monkeypatch.setattr(backend, "_group_client", lambda: pytest.fail("contacted service"))

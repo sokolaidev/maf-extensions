@@ -38,6 +38,7 @@ __all__ = [
     "EntryKind",
     "ExecResult",
     "HostToolAggregate",
+    "HttpMethod",
     "Identity",
     "Isolation",
     "IsolationScope",
@@ -217,6 +218,9 @@ class Egress(StrEnum):
 _EGRESS_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
 #: A whole allow entry — dot-separated labels, optionally behind a single ``*.`` wildcard label.
 _EGRESS_HOST = re.compile(rf"(?:\*\.)?{_EGRESS_LABEL}(?:\.{_EGRESS_LABEL})*")
+#: An HTTP method token, per RFC 9110's ``token`` rule.  Case is refused separately, so that a
+#: lowercase method fails on being lowercase rather than on not being a token.
+_HTTP_TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 
 
 def _validated_egress_host(entry: object) -> str:
@@ -243,16 +247,62 @@ def _validated_egress_host(entry: object) -> str:
     return entry
 
 
+class HttpMethod(StrEnum):
+    """A method an :class:`EgressRule` can name — the common ones, spelled uppercase.
+
+    Not a closed set: a token outside it is still accepted as an uppercase string, because
+    WebDAV and vendor verbs are real and at least one backend enforces them.  The members
+    exist so the ordinary verbs are discoverable and a typo in one of them is caught here.
+    """
+
+    GET = "GET"
+    HEAD = "HEAD"
+    POST = "POST"
+    PUT = "PUT"
+    PATCH = "PATCH"
+    DELETE = "DELETE"
+    OPTIONS = "OPTIONS"
+    TRACE = "TRACE"
+    CONNECT = "CONNECT"
+
+
+def _validated_egress_method(method: object) -> HttpMethod | str:
+    """Return the method as a member where one exists, otherwise as an uppercase token.
+
+    Case is refused rather than normalized.  Silently uppercasing would enforce a rule the
+    author did not write, and accepting the lowercase spelling would promise a distinction
+    nothing keeps — see the class docstring.
+    """
+    if not isinstance(method, str) or _HTTP_TOKEN.fullmatch(method) is None:
+        raise ValueError(f"egress method must be an HTTP token, got {method!r}")
+    if method != method.upper():
+        raise ValueError(
+            f"egress method {method!r} is not uppercase; write {method.upper()!r}. No backend "
+            "distinguishes a method's case, so naming a lowercase one would ask for a rule "
+            "nothing enforces."
+        )
+    try:
+        return HttpMethod(method)
+    except ValueError:
+        return method
+
+
 @dataclass(frozen=True)
 class EgressRule:
-    """Allow a host for the literal, case-sensitive HTTP methods named, or all for ``None``.
+    """Allow a host for the uppercase HTTP methods named, or for all of them with ``None``.
 
     Method scope narrows a channel; it does not close it. GET can still send data through
-    URLs, headers and request content. Lowercase ``get`` does not mean ``GET``.
+    URLs, headers and request content.
+
+    **Case is not part of the rule.** Every mechanism that enforces this matches the method
+    case-insensitively — measured on both the ACAS proxy and Hyperlight's wasi-http boundary —
+    so a rule naming ``GET`` is also reached by a guest sending ``get``. The vocabulary refuses
+    a lowercase token rather than accept one it cannot honour: a rule never admits a *verb* it
+    does not name, and never claims a spelling it cannot hold.
     """
 
     host: str
-    methods: tuple[str, ...] | None = None
+    methods: tuple[HttpMethod | str, ...] | None = None
 
     def __post_init__(self) -> None:
         _validated_egress_host(self.host)
@@ -262,14 +312,12 @@ class EgressRule:
             raise TypeError("egress methods must be a tuple of HTTP tokens or None")
         if not self.methods:
             raise ValueError("egress methods cannot be empty; omit the host instead")
-        for method in cast("tuple[object, ...]", self.methods):
-            if (
-                not isinstance(method, str)
-                or re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", method) is None
-            ):
-                raise ValueError(f"egress method must be an HTTP token, got {method!r}")
-        if len(set(self.methods)) != len(self.methods):
+        methods = tuple(
+            _validated_egress_method(method) for method in cast("tuple[object, ...]", self.methods)
+        )
+        if len(set(methods)) != len(methods):
             raise ValueError("egress methods must not contain duplicate tokens")
+        object.__setattr__(self, "methods", methods)
 
     def __str__(self) -> str:
         if self.methods is None:
@@ -313,7 +361,7 @@ class Capability(StrEnum):
     #: Reuse requires explicit host opt-in; workload confinement is advisory. Without this
     #: declaration, cleanup resolves to RESET where permitted and available, otherwise DISPOSE.
     RECLAIM = "reclaim"
-    #: Enforce literal HTTP methods on allowlist entries, within ``egress_method_tokens``.
+    #: Enforce the HTTP methods an allowlist entry names, within ``egress_method_tokens``.
     EGRESS_METHODS = "egress_methods"
 
 
@@ -1450,8 +1498,10 @@ class BackendDeclarations:
     #: to implement :class:`~maf_sandbox.ObservesEgress`, and the router warns at construction
     #: where it does not.
     observes_egress: bool = False
-    #: Exact method spellings enforced with EGRESS_METHODS. None means every valid HTTP token;
-    #: an omitted declaration permits none. Ignored unless the capability is declared.
+    #: The methods enforced with EGRESS_METHODS. None means every token a rule may name, which
+    #: a backend matching any verb can now say honestly; a finite set means exactly those verbs,
+    #: for a mechanism whose verb list is fixed. An omitted declaration permits none, and the
+    #: whole field is ignored unless the capability is declared.
     egress_method_tokens: frozenset[str] | None = frozenset()
 
 
