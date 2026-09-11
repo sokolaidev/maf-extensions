@@ -112,6 +112,12 @@ _UNBOUNDED = (
     "command did not run."
 )
 _UPLOAD_FAILED = "upload failed; see the host log"
+#: A timed-out transfer on the shell road disposes the sandbox, and everything the batch had
+#: put there went with it.
+_UPLOAD_BATCH_LOST = "the sandbox was disposed after a transfer timed out; the batch did not land"
+_DOWNLOAD_BATCH_LOST = (
+    "the sandbox was disposed after a transfer timed out; the rest of the batch was not read"
+)
 _DOWNLOAD_FAILED = "download failed; see the host log"
 _SIZE_UNKNOWN = "the sandbox could not report the file's size"
 _TOO_MANY_FILES = "the batch has more files than {direction}.max_files allows"
@@ -387,6 +393,8 @@ class MafSandbox(BaseSandbox):
                 max_output_bytes=self._max_output_bytes,
             )
         except TimeoutError:
+            # As below: a timeout says the wait ended, not that the program did.
+            await self._dispose()
             return ExecuteResponse(output=_TIMED_OUT.format(seconds=bound), exit_code=None)
         except SandboxExecOutputLimitExceeded:
             # Nothing establishes that the guest process stopped when the host stopped
@@ -431,6 +439,8 @@ class MafSandbox(BaseSandbox):
                 error = await self._upload_via_shell(sandbox, path, content)
             else:
                 error = _NO_SHELL_ROAD
+            if error == _UPLOAD_BATCH_LOST:
+                return [FileUploadResponse(path=path, error=error) for path, _ in files]
             if error is None:
                 sent += len(content)
             responses.append(FileUploadResponse(path=path, error=error))
@@ -478,8 +488,11 @@ class MafSandbox(BaseSandbox):
                     max_output_bytes=4096,
                 )
             except TimeoutError:
+                # The command may still be running, so the sandbox goes, and with it every
+                # file this batch had already put there.
                 logger.warning("%s: shell write of %r timed out", self._id, path)
-                return _UPLOAD_FAILED
+                await self._dispose()
+                return _UPLOAD_BATCH_LOST
             except Exception:
                 # Per file, as Deep Agents' contract asks, and the provider's words stay in
                 # the log.
@@ -562,9 +575,14 @@ class MafSandbox(BaseSandbox):
             f"elif [ ! -r {target} ]; then echo unreadable; "
             f"else wc -c < {target}; fi"
         )
-        probed = await sandbox.exec_bounded(
-            probe, working_directory=STORAGE_BASE, timeout=self._timeout, max_output_bytes=4096
-        )
+        try:
+            probed = await sandbox.exec_bounded(
+                probe, working_directory=STORAGE_BASE, timeout=self._timeout, max_output_bytes=4096
+            )
+        except TimeoutError:
+            logger.warning("%s: probe of %r timed out", self._id, path)
+            await self._dispose()
+            return FileDownloadResponse(path=path, error=_DOWNLOAD_BATCH_LOST)
         answer = probed.stdout.strip()
         if probed.exit_code != 0 or not answer:
             logger.warning("%s: probe of %r failed: %s", self._id, path, probed.stderr.strip())
@@ -592,6 +610,10 @@ class MafSandbox(BaseSandbox):
             )
         except SandboxExecOutputLimitExceeded:
             return FileDownloadResponse(path=path, error=over_cap)
+        except TimeoutError:
+            logger.warning("%s: shell read of %r timed out", self._id, path)
+            await self._dispose()
+            return FileDownloadResponse(path=path, error=_DOWNLOAD_BATCH_LOST)
         if read.exit_code != 0:
             logger.warning("%s: shell read of %r failed: %s", self._id, path, read.stderr.strip())
             return FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)
@@ -623,6 +645,10 @@ class MafSandbox(BaseSandbox):
             if response.content is not None:
                 room -= len(response.content)
             responses.append(response)
+            if response.error == _DOWNLOAD_BATCH_LOST:
+                rest = paths[len(responses) :]
+                responses.extend(FileDownloadResponse(path=p, error=response.error) for p in rest)
+                break
         return responses
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
@@ -645,13 +671,17 @@ class MafSandbox(BaseSandbox):
         instance_id = self._instance_id
         if instance_id is None:
             return True
-        self._instance_id = None
-        return await self._router.dispose_kind(
+        disposed = await self._router.dispose_kind(
             self._key,
             self._spec.kind,
             instance_id=instance_id,
             timeout=self._router.reclaim.timeout,
         )
+        # Forgotten only once the delete landed, so a retry reaches the same instance; kept as
+        # is if an acquire replaced it meanwhile.
+        if disposed and self._instance_id == instance_id:
+            self._instance_id = None
+        return disposed
 
     def close(self) -> bool:
         """Synchronous :meth:`aclose`."""

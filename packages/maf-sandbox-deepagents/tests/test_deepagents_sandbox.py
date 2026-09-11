@@ -18,6 +18,7 @@ import pytest
 from deepagents.backends.protocol import SandboxBackendProtocol, execute_accepts_timeout
 from maf_sandbox import (
     Capability,
+    DisposalFailure,
     Egress,
     EntryKind,
     ExecResult,
@@ -320,6 +321,14 @@ class TestExecute:
         assert "result" in response.output
         assert detail in caplog.text
 
+    def test_a_timeout_disposes_the_sandbox(self):
+        """A timeout says the wait ended, not that the program did; the next command starts cold."""
+        adapter, backend = _adapter(InProcessSandbox(raises=TimeoutError()))
+        asyncio.run(adapter.aexecute("sleep 999", timeout=3))
+        # The router's adoption of an unfamiliar instance disposes once; the timeout, once more.
+        assert backend.disposed == [KEY, KEY]
+        assert backend.disposed_kinds[-1] == DEEPAGENTS_KIND
+
     def test_a_timeout_is_reported_as_one_and_claims_no_stop(self):
         adapter, _ = _adapter(InProcessSandbox(raises=TimeoutError()))
         response = asyncio.run(adapter.aexecute("sleep 999", timeout=3))
@@ -437,6 +446,15 @@ class TestFilesIn:
         assert response.error is not None and "host log" in response.error
         assert "subscription" not in response.error
         assert detail in caplog.text
+
+    def test_a_shell_upload_that_times_out_disposes_and_fails_the_batch(self):
+        adapter, backend = _adapter(InProcessSandbox(raises=TimeoutError()))
+        responses = asyncio.run(adapter.aupload_files([("kept.txt", b"1"), ("/tmp/x", b"2")]))
+        assert [r.error is not None and "did not land" in r.error for r in responses] == [
+            True,
+            True,
+        ]
+        assert backend.disposed[-1] == KEY
 
     def test_the_shell_road_needs_a_backend_that_bounds_output(self):
         class Unbounded(InProcessSandbox):
@@ -579,6 +597,18 @@ class TestFilesOut:
         (refused,) = asyncio.run(adapter.adownload_files(["/tmp/big"]))
         assert refused.error is not None and "max_bytes_per_file" in refused.error
         assert len(big.commands) == 1  # refused on the probe, never read
+
+    def test_a_shell_download_that_times_out_disposes_and_ends_the_batch(self):
+        fake = InProcessSandbox(raises=TimeoutError(), seed_files={f"{WORK}/a.txt": "1"})
+        adapter, backend = _adapter(fake)
+        first, second, third = asyncio.run(
+            adapter.adownload_files([f"{WORK}/a.txt", "/tmp/x", "/tmp/y"])
+        )
+        assert first.content == b"1"
+        assert second.error is not None and "was not read" in second.error
+        assert third.error == second.error
+        assert len(fake.commands) == 1  # the probe that timed out; nothing after it ran
+        assert backend.disposed[-1] == KEY
 
     def test_a_read_that_comes_back_over_the_cap_is_refused_after_the_fact(self):
         """The protocol has the caller re-count: a backend that buffers first can only refuse late."""
@@ -749,6 +779,23 @@ class TestClose:
         assert backend.disposed_kinds[before:] == [DEEPAGENTS_KIND]
         # The one instance this adapter acquired, never a sweep of the key.
         assert backend.disposed_instances[before:] == [fake.instance_id]
+
+    def test_a_failed_disposal_keeps_the_instance_for_a_retry(self):
+        fake = InProcessSandbox()
+        adapter, backend = _adapter(fake)
+        asyncio.run(adapter.aexecute("true"))
+        # Set after the warm-up, or the router's adoption dispose would fail the acquire itself.
+        backend.dispose_failure = DisposalFailure("timeout", "still there")
+        attempts = len(backend.disposed)
+
+        assert asyncio.run(adapter.aclose()) is False
+        backend.dispose_failure = None
+        retried = asyncio.run(adapter.aclose())
+
+        assert retried is True
+        assert backend.disposed_instances[attempts:] == [fake.instance_id, fake.instance_id]
+        assert asyncio.run(adapter.aclose()) is True
+        assert len(backend.disposed) == attempts + 2
 
     def test_a_close_before_any_acquire_deletes_nothing(self):
         adapter, backend = _adapter(InProcessSandbox())
