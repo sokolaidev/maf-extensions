@@ -505,14 +505,12 @@ class _AcasSandbox:
         guest could not have written itself.  On a root image that is a confinement failure and
         nothing more, since the guest was already root.  On a non-root one it is more than the
         guest had, which is the reach rule :class:`~maf_sandbox.Sandbox` states for the whole
-        file surface, writes included.
+        file surface.
 
-        Stated rather than refused, for the one reason that still holds: withholding
-        ``FILES_IN`` would leave this backend no in-door at all on such an image.
-        :meth:`remove` takes another answer the rule offers and runs as the guest (#1029);
-        whether this write should follow it is #1131.  A per-component gate is not among the
-        answers available here, since the data plane's stat payload carries no owner to build
-        one from — see ``docs/sandbox/backends/acas.md``.
+        Stated rather than refused: withholding ``FILES_IN`` would leave this backend no
+        in-door at all on such an image.  Gating that authority per component is not available
+        here, since the data plane's stat payload carries no owner to build a gate from — see
+        ``docs/sandbox/backends/acas.md``.
         """
         # `create_dirs=True` is the SDK's own default, and it is passed explicitly anyway.
         # A workload may hand us a nested path — `infra/main.bicep` is the example in the
