@@ -116,17 +116,27 @@ _CAPABILITIES = frozenset({Capability.EXEC, Capability.FILES_IN})
 
 #: `wslc` exits non-zero for a container that is not there, so removal is judged by this.
 _NOT_FOUND = "WSLC_E_CONTAINER_NOT_FOUND"
-# `container cp` reports a missing guest path with this code. Measured on wslc 2.9.4.0:
-# `Could not find the file <path> in container <id>` above `Error code: ERROR_PATH_NOT_FOUND`.
-# The code is what is matched; the sentence above it quotes the path the caller asked for.
+# The codes `container cp` ends a failure with, on wslc 2.9.4.0. `E_FAIL` covers both a
+# directory and a non-directory component, so it takes the message below to tell them apart.
 _PATH_NOT_FOUND = "ERROR_PATH_NOT_FOUND"
-# A directory cannot be streamed to stdout, but this diagnostic proves it exists and is a directory.
+_COPY_FAILED = "E_FAIL"
 _DIRECTORY_COPY_ERROR = "cannot copy a directory to a file path"
 # The docker-engine spelling of container absence, kept for `stop`, `logs` and `inspect`.
-# `container cp` answers `_NOT_FOUND` for a missing container and `_PATH_NOT_FOUND` for a
-# missing path on wslc 2.9.4.0, so the stat reads neither this nor any other bare substring:
-# a copy diagnostic quotes the guest path it was handed, and a path may contain anything.
+# `container cp` answers `_NOT_FOUND` for a missing container and its own codes for a path, so
+# :func:`_copy_verdict` reads those instead.
 _NO_SUCH = "no such"
+
+#: The engine's own verdict, and the last one wins.  A copy diagnostic quotes the guest path
+#: above this line, so a code matched anywhere in the text is the caller's path choosing the
+#: answer — and both answers :func:`_copy_verdict` gives are ones the path check continues past.
+_ERROR_CODE_LINE = re.compile(r"^Error code: (\S+)\s*$", re.MULTILINE)
+
+#: The same reasoning for the message: anchored to a line, so an echoed path cannot supply it.
+_DIRECTORY_COPY_LINE = re.compile(rf"^{re.escape(_DIRECTORY_COPY_ERROR)}", re.MULTILINE | re.I)
+
+#: Refused in a guest path before the engine is asked.  A newline would let a path forge a line
+#: of the engine's own, which is the one thing the anchoring above cannot see through.
+_FORGEABLE = ("\n", "\r", "\0")
 
 #: What `run --name` reports when the name is taken — the one create failure that is recoverable.
 #: `network create` reports the same code for a taken network name.
@@ -289,6 +299,23 @@ _PROXY_SUFFIX = "-proxy"
 def _network_name(container: str) -> str:
     """The internal network paired with a sandbox container, derived from its name."""
     return f"{container}{_NET_SUFFIX}"
+
+
+def _copy_verdict(stderr: str) -> str | None:
+    """What a failed ``container cp`` says a path is: ``"absent"``, ``"directory"``, or nothing.
+
+    Both answers let the filesystem path check carry on, so both are read from the engine's own
+    verdict line rather than from anywhere in the text.  The diagnostic above it quotes the
+    guest path, and a path is the caller's to spell.
+    """
+    codes = _ERROR_CODE_LINE.findall(stderr)
+    if not codes:
+        return None
+    if codes[-1] == _PATH_NOT_FOUND:
+        return "absent"
+    if codes[-1] == _COPY_FAILED and _DIRECTORY_COPY_LINE.search(stderr):
+        return "directory"
+    return None
 
 
 def _reads_as_absent(stderr: str) -> bool:
@@ -570,16 +597,19 @@ class _WslcSandbox:
         """Stat an absolute guest path: the engine settles the kind, the guest splits the rest.
 
         Measured on wslc 2.9.4.0, ``container cp`` refuses a missing path and a directory with
-        a diagnostic apiece, and exits 0 for everything else.  Those are the two answers
-        :func:`~maf_sandbox.paths.refuse_symlinked_ancestors` reads permissively — absent ends
-        the check, a directory continues it — and both come from **outside** the container.
-        What is left for :meth:`_non_directory_kind` is which non-directory kind an exit-0 path
-        is, so no answer the guest gives can turn a link into a directory the check then
-        continues through (#495).
+        a diagnostic apiece and exits 0 for everything else.  Those two are the answers
+        :func:`~maf_sandbox.paths.refuse_symlinked_ancestors` continues past, and both come from
+        **outside** the container; :meth:`_non_directory_kind` is asked only which non-directory
+        kind an exit-0 path is, so no answer the guest gives carries the check through a link.
 
-        No tar header was produced for any kind on wslc 2.9.4.0, and the branch stays because a
+        No tar header was produced for any kind on that version, and the branch stays because a
         CLI that grows one answers the kind outright and leaves the guest out of it (#125).
         """
+        if any(character in guest for character in _FORGEABLE):
+            raise ValueError(
+                f"refusing to stat {rel!r}: a guest path carrying a newline or a NUL could "
+                f"forge a line of the engine's own diagnostic, which is what decides this"
+            )
         result = await self._run(
             "container",
             "cp",
@@ -589,10 +619,10 @@ class _WslcSandbox:
             read_limit=_TAR_BLOCK,
         )
         if result.returncode != 0 and not result.stdout:
-            error_text = result.stderr_text.lower()
-            if _PATH_NOT_FOUND.lower() in error_text:
+            verdict = _copy_verdict(result.stderr_text)
+            if verdict == "absent":
                 return None
-            if _DIRECTORY_COPY_ERROR in error_text:
+            if verdict == "directory":
                 return SandboxEntry(path=rel, kind=EntryKind.DIRECTORY, size_bytes=None)
             raise RuntimeError(f"wslc could not stat {rel}: {result.stderr_text.strip()}")
         if len(result.stdout) < _TAR_BLOCK:
@@ -603,14 +633,10 @@ class _WslcSandbox:
     async def _non_directory_kind(self, guest: str, rel: str) -> EntryKind:
         """Which non-directory kind sits at ``guest``, asked of the guest and capped here.
 
-        The engine has already streamed this path, so it is neither absent nor a directory.
-        The question left is whether it is a link — the one kind a write refuses at its leaf —
-        and ``test`` answers it inside the container being confined, so the answer is the
-        workload's to choose.  **Capping is what bounds that choice**: a claim of a directory
-        contradicts the engine, and so does a claim that nothing is there, so neither is taken.
-        Both become :data:`~maf_sandbox.EntryKind.OTHER`, which refuses an ancestor as surely
-        as a link does and leaves a leaf to be written over.  A lie can pick which refusal a
-        caller gets, and cannot pick a path outside ``working_directory``.
+        The engine accepted this path as a copy source, so it is neither absent nor a directory
+        and ``test`` is asked only whether it is a link.  **Directory and absent are not answers
+        it may give**: both would carry the check onward, and the engine has already ruled them
+        out, so either becomes :data:`~maf_sandbox.EntryKind.OTHER` and refuses.
         """
         entry = await stat_by_asking_the_guest_as_root(self._test_in_guest, guest, rel)
         if entry is None or entry.kind is EntryKind.DIRECTORY:
@@ -720,9 +746,9 @@ class _WslcSandbox:
         """Not supported: this backend declares neither :data:`~maf_sandbox.Capability.FILES_OUT`
         nor :data:`~maf_sandbox.Capability.FILES_LIST`.
 
-        ``wslc`` shares the docker engine's ``container cp`` tar stream, so a stat-from-header
-        path is buildable here — but it was never wired, and the router refuses a spec requiring
-        either capability before a workload runs, so a well-formed caller never reaches here.
+        ``wslc`` has no container-to-stdout form of ``container cp`` to read a tar header from
+        (#125), and the router refuses a spec requiring either capability before a workload
+        runs, so a well-formed caller never reaches here.
         The raise is the honest floor under one that skipped the check: an :class:`AttributeError`
         from a missing method names neither the backend nor the file, and reads as unrelated to
         a ``write_file`` that had just succeeded.  See :mod:`maf_sandbox.conformance` for the

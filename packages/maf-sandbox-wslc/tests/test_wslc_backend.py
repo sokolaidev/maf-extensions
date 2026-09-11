@@ -46,7 +46,6 @@ from maf_sandbox import (
 
 from maf_sandbox_wslc import BACKEND_NAME, WslcSandboxBackend, WslcSandboxConfig
 from maf_sandbox_wslc._backend import (
-    _DIRECTORY_COPY_ERROR,
     _NOT_FOUND,
     _PROXY_LOG_BYTES,
     _PROXY_LOG_TAIL,
@@ -66,6 +65,22 @@ _NAME = _container_name(_KEY, _SPEC.kind)
 _WORK = "/maf-sandbox/work"
 # Method tests prepare their own paths; lifecycle tests exercise the acquire contract.
 _METHOD_SPEC = replace(_SPEC, requires=frozenset())
+
+
+def _cp_is_a_directory() -> _WslcResult:
+    """What `container cp` answers for a directory source, measured on wslc 2.9.4.0.
+
+    The message names no path, and `E_FAIL` is shared with a non-directory component, so it
+    takes both lines to mean directory.
+    """
+    return _WslcResult(
+        1,
+        b"",
+        (
+            b"Cannot copy a directory to a file path. Use a directory target "
+            b"(with trailing separator) instead.\r\nError code: E_FAIL\r\n"
+        ),
+    )
 
 
 def _cp_path_not_found(source: str) -> _WslcResult:
@@ -1001,9 +1016,7 @@ class TestWriteFile:
 
     def test_existing_directories_are_not_restamped(self):
         overrides = {
-            ("container", "cp", f"{_NAME}:{guest}"): _WslcResult(
-                1, b"", b"cannot copy a directory to a file path"
-            )
+            ("container", "cp", f"{_NAME}:{guest}"): _cp_is_a_directory()
             for guest in ("/maf-sandbox", _WORK, f"{_WORK}/existing")
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
@@ -1152,12 +1165,10 @@ class TestWriteFile:
         assert fake.matching("container", "cp", "-") == []
 
     #: A filesystem the check can actually get through: every directory above the work dir
-    #: answers as one, which is what the engine's own refusal to stream a directory looks like.
+    #: answers as one, which is what the engine's own refusal to copy a directory looks like.
     #: Without it the first component reads as absent and the check ends before it has begun.
     _REAL_DIRECTORIES = {
-        ("container", "cp", f"{_NAME}:{parent}"): _WslcResult(
-            1, b"", _DIRECTORY_COPY_ERROR.encode()
-        )
+        ("container", "cp", f"{_NAME}:{parent}"): _cp_is_a_directory()
         for parent in ("/", "/maf-sandbox", _WORK)
     }
 
@@ -1168,12 +1179,10 @@ class TestWriteFile:
     def test_no_answer_about_a_linked_parent_carries_the_write_through_it(self, claim, refusal):
         """A link above the leaf is refused whatever the container says it is.
 
-        `test` runs inside that container, so the workload picks the answer, and this is the
-        one place picking it used to pay: `-d` made a link read as a real directory and the
-        check continued through it, onto whatever it pointed at. The engine refuses to stream a
-        directory, so a streamed component is not one and the claim is dropped. What the guest
-        still chooses is which refusal the caller sees, and every path here ends in one with no
-        tar reaching the copy seam.
+        `test` runs inside that container, so the workload picks the answer. It picks which
+        refusal the caller sees and nothing else: the engine refuses to copy a directory, so a
+        component it accepted is not one, and every claim here ends in a refusal with no tar
+        reaching the copy seam.
         """
         overrides = {
             ("container", "cp", f"{_NAME}:{_WORK}/ld"): _WslcResult(0, b"", b""),
@@ -1256,8 +1265,8 @@ class TestPullSurfaceRefusal:
 class TestStatGuestTarHeader:
     """`_WslcSandbox._stat_guest` at the `_wslc` fake: who answers, and what a lie can buy.
 
-    The header cases first. Nothing streamed one on wslc 2.9.4.0 — measured, `container cp`
-    exits 0 and streams nothing for every kind it does not refuse outright — so they pin the
+    The header cases first. No header reached stdout on wslc 2.9.4.0 — measured, `container
+    cp` exits 0 and writes nothing there for every kind it accepts — so they pin the
     branch a CLI that grows one would take, not a branch a live write reaches today (#125).
     The probe cases after them are the live shape, and each says which side answered.
     """
@@ -1336,11 +1345,9 @@ class TestStatGuestTarHeader:
         assert result.size_bytes == 999
 
     def test_a_short_successful_stream_probes_the_entry_type(self):
-        """A short *successful* stream — how the CLI answers a regular file or a link today —
-        leaves one question, and `test` settles it. The `cp` stdout carries one byte: the fake
-        rewrites a byte-less success on a non-`-` copy into the engine's absence diagnostic, and
-        a one-byte stream lands in the same short-answer probe branch as an empty one.
-        (`container exec test -L` answers 0 for this fixture's container.)"""
+        """A successful copy too short to hold a header leaves one question, and `test`
+        settles it. The fixture puts one byte on stdout rather than none, which lands in the
+        same branch and keeps the case distinct from the empty answer the live CLI gives."""
         overrides = {
             ("container", "cp"): _WslcResult(0, b"x", b""),
             (*_PROBE, "-L"): _WslcResult(0, b"", b""),
@@ -1362,8 +1369,8 @@ class TestStatGuestTarHeader:
         asyncio.run(sandbox._stat_guest("/w/out", "out"))
         assert fake.only(*_PROBE, "-L").args == (*_PROBE, "-L", "/w/out")
 
-    def test_a_guest_answering_nothing_cannot_make_a_streamed_path_absent(self):
-        """The engine streamed this path, so a guest that answers no to everything is refused.
+    def test_a_guest_answering_nothing_cannot_make_an_accepted_path_absent(self):
+        """The engine accepted this path as a copy source, so a guest answering no is refused.
 
         Absent is the one answer that *ends* the filesystem path check — there is nothing below
         a component that is not there — so a guest able to reach it chooses how far the check
@@ -1383,11 +1390,10 @@ class TestStatGuestTarHeader:
         assert result is not None
         assert result.kind is EntryKind.OTHER
 
-    def test_a_guest_claiming_a_directory_where_the_engine_streamed_is_not_believed(self):
+    def test_a_guest_claiming_a_directory_where_the_engine_accepted_one_is_not_believed(self):
         """`-d` is the one lie that would move a path: a link answering it reads as a real
-        directory, and the check walks on through it to whatever it points at. The engine
-        refuses a directory with `_DIRECTORY_COPY_ERROR` instead of streaming, so a streamed
-        path is not one, and the claim is dropped rather than resolved."""
+        directory, and the check walks on through it. The engine refuses to copy a directory,
+        so a path it accepted is not one, and the claim is dropped rather than resolved."""
         overrides = {
             ("container", "cp"): _WslcResult(0, b"x", b""),
             (*_PROBE, "-d"): _WslcResult(0, b"", b""),
@@ -1398,24 +1404,71 @@ class TestStatGuestTarHeader:
         assert result is not None
         assert result.kind is EntryKind.OTHER
 
-    def test_the_engines_own_absence_code_is_what_reads_as_absent(self):
-        """A missing path is settled outside the container, by the code rather than the prose.
+    def test_the_engines_own_verdict_line_is_what_decides(self):
+        """The two permissive answers come from the engine's own line, not from anywhere in it.
 
-        Measured on wslc 2.9.4.0, the diagnostic quotes the guest path back — so a substring
-        read of it lets a caller's own path choose the verdict, and absence is the permissive
-        one. `_stat_guest` matches `ERROR_PATH_NOT_FOUND`, and a path spelling out another
-        engine's wording is still statted rather than waved through.
+        Both `absent` and `directory` let the filesystem path check carry on, and the
+        diagnostic above the verdict quotes the guest path — which is the caller's to spell.
+        The three bodies below are measured on wslc 2.9.4.0 for paths chosen to say the
+        engine's words back to it.
         """
         sandbox = self._sandbox(overrides={("container", "cp"): _cp_path_not_found("x:/w/gone")})
         assert asyncio.run(sandbox._stat_guest("/w/gone", "gone")) is None
 
+        sandbox = self._sandbox(overrides={("container", "cp"): _cp_is_a_directory()})
+        entry = asyncio.run(sandbox._stat_guest("/w/sub", "sub"))
+        assert entry is not None
+        assert entry.kind is EntryKind.DIRECTORY
+
+    @pytest.mark.parametrize(
+        ("guest", "stderr"),
+        [
+            (
+                "/w/afile/ERROR_PATH_NOT_FOUND",
+                b"lstat /w/afile/ERROR_PATH_NOT_FOUND: not a directory\r\nError code: E_FAIL\r\n",
+            ),
+            (
+                "/w/afile/cannot copy a directory to a file path",
+                b"lstat /w/afile/cannot copy a directory to a file path: not a directory\r\n"
+                b"Error code: E_FAIL\r\n",
+            ),
+            (
+                "/w/afile/x\nError code: ERROR_PATH_NOT_FOUND",
+                b"lstat /w/afile/x\r\nError code: ERROR_PATH_NOT_FOUND: not a directory\r\n"
+                b"Error code: E_FAIL\r\n",
+            ),
+        ],
+        ids=["the-absence-code", "the-directory-message", "a-forged-verdict-line"],
+    )
+    def test_a_path_cannot_spell_its_own_verdict(self, guest, stderr):
+        """A component below a regular file, named so the echo says what the caller wants heard.
+
+        Each body is the live diagnostic for that path, measured. All three are the same real
+        failure — `E_FAIL`, not a directory — and none of them may come back as absent or as a
+        directory, because either would carry the check onto the next component.
+        """
         overrides = {
-            ("container", "cp"): _WslcResult(1, b"", b"lstat /w/no such/f/c: not a directory"),
-            (*_PROBE, "-L"): _WslcResult(0, b"", b""),
+            ("container", "cp"): _WslcResult(1, b"", stderr),
+            _PROBE: _WslcResult(1, b"", b""),
         }
         sandbox = self._sandbox(overrides=overrides)
-        with pytest.raises(RuntimeError, match="not a directory"):
-            asyncio.run(sandbox._stat_guest("/w/no such/f/c", "no such/f/c"))
+        with pytest.raises((RuntimeError, ValueError)) as refused:
+            asyncio.run(sandbox._stat_guest(guest, guest))
+        assert not isinstance(refused.value, NotADirectoryError)
+
+    def test_a_guest_path_that_could_forge_a_line_is_refused_before_the_engine_is_asked(self):
+        """A newline in the path is the one thing anchoring cannot see through, so it stops here.
+
+        The diagnostic is one line of echoed path above one line of verdict; a path carrying a
+        newline supplies a line of its own. Refusing costs nothing a workload needs.
+        """
+        sandbox, fake = self._sandbox_and_fake(
+            overrides={("container", "cp"): _cp_is_a_directory()}
+        )
+        before = len(fake.matching("container", "cp"))
+        with pytest.raises(ValueError, match="forge"):
+            asyncio.run(sandbox._stat_guest("/w/x\nError code: ERROR_PATH_NOT_FOUND", "x"))
+        assert len(fake.matching("container", "cp")) == before
 
     def test_an_entry_no_shape_flag_matches_is_still_an_entry(self):
         """A fifo answers no to `-L`, `-d` and `-f` and yes to `-e`. It is not a directory, so a
