@@ -134,8 +134,8 @@ async def run() -> int:
     sandbox = MafSandbox(router, key, spec)
 
     try:
-        # The host puts the file in the sandbox. Deep Agents' `write_file` would run Python in
-        # the guest to do it, and this image has none; the adapter's own upload does not.
+        # The host puts the file in the sandbox. Deep Agents' `write_file` would first run a
+        # Python preflight in the guest, and this image has none; the adapter's own upload does not.
         (uploaded,) = await sandbox.aupload_files(
             [(BICEP_FILE, (Path(__file__).parent / BICEP_FILE).read_bytes())]
         )

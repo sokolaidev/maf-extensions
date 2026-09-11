@@ -30,6 +30,7 @@ from deepagents.backends.protocol import (
 from deepagents.backends.sandbox import BaseSandbox
 from maf_sandbox import (
     DEFAULT_TRANSFER_LIMITS,
+    BoundedExec,
     Capability,
     Egress,
     EgressRule,
@@ -39,6 +40,7 @@ from maf_sandbox import (
     IsolationScope,
     NoSandboxBackend,
     Sandbox,
+    SandboxExecOutputLimitExceeded,
     SandboxKey,
     SandboxRouter,
     SandboxSpec,
@@ -49,6 +51,7 @@ from maf_sandbox import (
 __all__ = [
     "DEEPAGENTS_KIND",
     "DEFAULT_EXEC_TIMEOUT_SECONDS",
+    "DEFAULT_MAX_OUTPUT_BYTES",
     "DEFAULT_WORK_DIR",
     "REQUIRED_CAPABILITIES",
     "SANDBOX_UNAVAILABLE",
@@ -64,13 +67,18 @@ logger = logging.getLogger(__name__)
 DEEPAGENTS_KIND = "deepagents"
 
 #: What Deep Agents needs from a backend: a shell, files pushed in for ``upload_files`` and
-#: ``write_file``, files pulled out for ``download_files``. The derived tools run on
-#: ``execute`` alone.
+#: ``write_file``, files pulled out for ``download_files``. The other derived tools run on
+#: ``execute`` alone, and ``write_file`` runs a Python preflight there before it uploads.
 REQUIRED_CAPABILITIES: frozenset[Capability] = frozenset(
     {Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT}
 )
 
 DEFAULT_EXEC_TIMEOUT_SECONDS = 120.0
+
+#: The most combined stdout and stderr one command may return, in bytes. Above the 500 KiB
+#: page Deep Agents' own ``read_file`` renders, so a large read still comes back whole; a
+#: command past it is refused rather than truncated, which is the suite's bounded-exec contract.
+DEFAULT_MAX_OUTPUT_BYTES = 1_048_576
 
 #: The protocol's default base, read off the spec rather than spelled a second time here.
 DEFAULT_WORK_DIR: str | None = SandboxSpec(kind=DEEPAGENTS_KIND).work_dir
@@ -91,6 +99,13 @@ _TIMED_OUT = "Error: the command did not finish within {seconds:g} seconds."
 #: Distinct from :data:`SANDBOX_UNAVAILABLE`: the command may have run, and the result is what
 #: did not come back.
 _EXEC_FAILED = "Error: the sandbox did not return the command's result; see the host log."
+#: The whole output is dropped, not cut: the backend refuses past the budget and returns none
+#: of it, so a partial result is never mistaken for a program that printed less.
+_OUTPUT_DROPPED = "Error: the command's output exceeded {limit} bytes and was dropped."
+_UNBOUNDED = (
+    "Error: sandbox unavailable — the backend cannot bound the command's output, so the "
+    "command did not run."
+)
 _UPLOAD_FAILED = "upload failed; see the host log"
 _DOWNLOAD_FAILED = "download failed; see the host log"
 _SIZE_UNKNOWN = "the sandbox could not report the file's size"
@@ -186,8 +201,13 @@ class MafSandbox(BaseSandbox):
     base to the backend is refused, because nothing could then tell the model.
 
     Deep Agents' derived file tools (``ls``, ``read_file``, ``write_file``, ``edit_file``,
-    ``glob``, ``grep``) run ``python3`` inside the guest; on an image without it only ``execute``
+    ``glob``, ``grep``) run ``python3`` inside the guest, ``write_file`` for the preflight that
+    creates the parent directory before it uploads; on an image without it only ``execute``
     and this class's own upload and download work. The image is the host's to choose.
+
+    Every command runs under ``max_output_bytes``, enforced by the backend before it buffers
+    the output: the model writes the command, so what it prints is bounded on the host or the
+    command does not run.
     """
 
     def __init__(
@@ -197,6 +217,7 @@ class MafSandbox(BaseSandbox):
         spec: SandboxSpec,
         *,
         exec_timeout_seconds: float = DEFAULT_EXEC_TIMEOUT_SECONDS,
+        max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
     ) -> None:
         missing = REQUIRED_CAPABILITIES - spec.requires
         if missing:
@@ -221,6 +242,8 @@ class MafSandbox(BaseSandbox):
             )
         if not math.isfinite(exec_timeout_seconds) or exec_timeout_seconds <= 0:
             raise ValueError("exec_timeout_seconds must be a finite positive number of seconds")
+        if type(max_output_bytes) is not int or max_output_bytes <= 0:
+            raise ValueError("max_output_bytes must be a positive integer of bytes")
         if not router.enabled:
             raise NoSandboxBackend("no sandbox backend is configured")
         router.ensure_can_serve(spec)
@@ -228,6 +251,7 @@ class MafSandbox(BaseSandbox):
         self._key = key
         self._spec = spec
         self._timeout = float(exec_timeout_seconds)
+        self._max_output_bytes = max_output_bytes
         backend = router.backend_for(spec)
         identity = [
             "" if backend is None else backend.name,
@@ -282,18 +306,37 @@ class MafSandbox(BaseSandbox):
         if not math.isfinite(bound) or bound <= 0:
             raise ValueError(f"timeout must be a finite positive number of seconds, got {timeout}")
         # One deadline over the acquire and the command: a cold create spends part of the
-        # budget Deep Agents defines as the wait for the command, and the command gets the rest.
+        # budget Deep Agents defines as the wait for the command, is cut off if it outlives
+        # it, and the command gets the rest.
         started = time.monotonic()
-        sandbox = await self._acquire()
+        try:
+            async with asyncio.timeout(bound):
+                sandbox = await self._acquire()
+        except TimeoutError:
+            return ExecuteResponse(output=_TIMED_OUT.format(seconds=bound), exit_code=None)
         if sandbox is None:
             return ExecuteResponse(output=SANDBOX_UNAVAILABLE, exit_code=None)
+        if not isinstance(sandbox, BoundedExec):
+            logger.error("%s: the backend has no exec_bounded, so no command runs", self._id)
+            return ExecuteResponse(output=_UNBOUNDED, exit_code=None)
         remaining = bound - (time.monotonic() - started)
         if remaining <= 0:
             return ExecuteResponse(output=_TIMED_OUT.format(seconds=bound), exit_code=None)
         try:
-            result = await sandbox.exec(command, working_directory=STORAGE_BASE, timeout=remaining)
+            result = await sandbox.exec_bounded(
+                command,
+                working_directory=STORAGE_BASE,
+                timeout=remaining,
+                max_output_bytes=self._max_output_bytes,
+            )
         except TimeoutError:
             return ExecuteResponse(output=_TIMED_OUT.format(seconds=bound), exit_code=None)
+        except SandboxExecOutputLimitExceeded:
+            return ExecuteResponse(
+                output=_OUTPUT_DROPPED.format(limit=self._max_output_bytes),
+                exit_code=None,
+                truncated=True,
+            )
         except Exception:
             logger.exception("%s: the command's result could not be read", self._id)
             return ExecuteResponse(output=_EXEC_FAILED, exit_code=None)

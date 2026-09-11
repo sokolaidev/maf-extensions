@@ -14,7 +14,7 @@ What the router keeps, and this sample shows:
 
 - **The floor.** `DockerSandboxBackend` declares `Isolation.CONTAINER`, below the router's default `microvm` floor, so the router is constructed with `min_isolation=Isolation.CONTAINER` explicitly. Leave that out and construction refuses the backend before any agent exists.
 - **Egress.** `deepagents_spec(image)` names no host, so the spec runs `CLOSED` and the container is created with `--network none`. `main.bicep` uses no modules, so the compile completes offline.
-- **Keying and disposal.** The sandbox is keyed by scope, thread and agent directory, acquired on the agent's first command and reused warm after it, and purged at the end by `dispose_scope` — the same call every other sample makes, because LangGraph fires nothing when a thread goes.
+- **Keying and disposal.** The sandbox is keyed by scope, thread and agent directory, acquired on the first operation, here the host's upload, and reused warm after it, and purged at the end by `dispose_scope` — the same call every other sample makes, because LangGraph fires nothing when a thread goes.
 
 What it gives up, and this sample says out loud: the agent writes the shell. `bicep_validate` runs a fixed argv and reads SARIF back; here the model types `bicep build main.bicep --no-restore --diagnostics-format sarif` and the sandbox runs it. That is Deep Agents' model, and the container and the closed network are the controls. It also weakens the evidence the sample can print: a tool result still proves *a* command ran in the sandbox, but the model chose which, so a result counting as a compile is a result that carries SARIF `ruleId` entries, and nothing more can be said from outside the model. Sample 05's count is stronger because the kind wrote the command.
 
@@ -29,7 +29,7 @@ SARIF rather than the plain format for a measured reason: with an error in the f
   docker build -t bicep-sandbox:local images/bicep-sandbox
   ```
 
-  It carries the Bicep CLI and `bicepconfig.json` and **no Python**. Deep Agents' `ls`, `read_file`, `write_file`, `edit_file`, `glob` and `grep` tools run `python3` inside the guest, so on this image only `execute` works, and the system prompt tells the model so. The host puts `main.bicep` in the sandbox with the adapter's own `upload_files`, which goes through the backend's file plane and needs nothing in the image.
+  It carries the Bicep CLI and `bicepconfig.json` and **no Python**. Deep Agents' `ls`, `read_file`, `edit_file`, `glob` and `grep` tools run `python3` inside the guest, and `write_file` runs a Python preflight there before it uploads, so on this image only `execute` works, and the system prompt tells the model so. The host puts `main.bicep` in the sandbox with the adapter's own `upload_files`, which goes through the backend's file plane and needs nothing in the image.
 
 - **An OpenAI-compatible chat endpoint** whose model can call a tool: OpenAI itself, a router such as OpenRouter (`OPENAI_BASE_URL=https://openrouter.ai/api/v1`, a model name like `openai/gpt-4o-mini`), or a local server (Ollama, vLLM, LM Studio) — the same road samples 02 and 04 take.
 
@@ -54,7 +54,7 @@ With any of the required three unset the program says which and exits non-zero, 
 
 ## Run
 
-The first command pays for creating the container. The model writes its own summary first; under it the sample prints the compiler's words again, this time straight out of what `execute` returned:
+The upload, the first operation, pays for creating the container. The model writes its own summary first; under it the sample prints the compiler's words again, this time straight out of what `execute` returned:
 
 ```
 == Diagnostics as execute returned them ==
@@ -86,4 +86,4 @@ Only the prose above the heading is the model's; the block under it is the tool'
 
 **`Error: sandbox unavailable`** in a tool result — the router or the backend could not serve the command: usually an image that is not on this machine. The provider's message is in the host's log, never in the transcript.
 
-**The model called `read_file` or `ls` and got `python3: not found`** — this image has no interpreter, and those tools need one. The prompt says so; a model that ignores it gets that answer and usually falls back to `execute`.
+**The model called `read_file`, `write_file` or `ls` and got `python3: not found`** — this image has no interpreter, and those tools need one, `write_file` for the preflight it runs before uploading. The prompt says so; a model that ignores it gets that answer and usually falls back to `execute`.

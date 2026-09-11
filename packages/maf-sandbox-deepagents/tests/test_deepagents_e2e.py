@@ -2,9 +2,10 @@
 
 Skipped unless the ``docker`` client is on ``PATH`` and ``MAF_SANDBOX_DEEPAGENTS_E2E_IMAGE``
 names an image with ``sh`` and ``python3`` — Deep Agents' derived file tools run Python in the
-guest, and the last test here is the one that proves they do on this adapter. Set
+guest, and the derived-tools test here proves they do on this adapter. Set
 ``MAF_SANDBOX_DEEPAGENTS_E2E_BICEP_IMAGE`` to a build of ``images/bicep-sandbox`` as well and
-the compiler round trip the sample makes runs too, without a model.
+the compiler round trip the sample makes runs too, without a model, beside the proof that
+``write_file`` needs the interpreter that image lacks.
 
 `maf-sandbox-docker` is a dev dependency of this workspace, not of the wheel: the adapter
 speaks to the router and never imports a backend, and the offline suite proves that.
@@ -52,11 +53,11 @@ def _key(name: str) -> SandboxKey:
     )
 
 
-def _adapter(image: str, name: str) -> MafSandbox:
+def _adapter(image: str, name: str, **kwargs: int) -> MafSandbox:
     router = SandboxRouter(
         [DockerSandboxBackend(DockerSandboxConfig())], min_isolation=Isolation.CONTAINER
     )
-    return MafSandbox(router, _key(name), deepagents_spec(image), exec_timeout_seconds=60)
+    return MafSandbox(router, _key(name), deepagents_spec(image), exec_timeout_seconds=60, **kwargs)
 
 
 def test_execute_and_the_file_round_trip():
@@ -108,6 +109,24 @@ def test_a_timeout_reports_and_the_next_command_starts_cold():
     asyncio.run(scenario())
 
 
+def test_output_past_the_budget_is_dropped_and_the_sandbox_stays_usable():
+    adapter = _adapter(_IMAGE, "budget", max_output_bytes=4096)
+
+    async def scenario():
+        try:
+            flood = await adapter.aexecute("yes", timeout=30)
+            assert flood.truncated is True
+            assert flood.exit_code is None
+            assert "4096 bytes" in flood.output
+            again = await adapter.aexecute("echo back")
+            assert again.output.strip() == "back"
+        finally:
+            closed = await adapter.aclose()
+            assert closed is True
+
+    asyncio.run(scenario())
+
+
 def test_deep_agents_derived_file_tools_run_over_execute():
     """`write`, `read` and `ls` are Deep Agents' own, built on `execute` and `upload_files`."""
     adapter = _adapter(_IMAGE, "derived")
@@ -138,6 +157,10 @@ def test_the_compiler_answers_through_execute_on_the_bicep_image():
             assert uploaded.error is None
             built = await adapter.aexecute("bicep build main.bicep")
             assert "BCP035" in built.output, built
+            # Deep Agents' `write_file` runs a Python preflight through `execute` before it
+            # uploads, so on this image it fails where the adapter's own upload above did not.
+            written = await adapter.awrite(f"{_WORK}/other.bicep", "param p string\n")
+            assert written.error is not None and "python3" in written.error, written
         finally:
             closed = await adapter.aclose()
             assert closed is True

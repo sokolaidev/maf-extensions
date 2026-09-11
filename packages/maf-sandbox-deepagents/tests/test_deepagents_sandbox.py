@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import time
 
 import pytest
 from deepagents.backends.protocol import SandboxBackendProtocol, execute_accepts_timeout
@@ -72,6 +73,9 @@ class TestTheSpec:
         assert spec.kind == DEEPAGENTS_KIND
         assert spec.requires == REQUIRED_CAPABILITIES
         assert Capability.FILES_OUT in spec.requires
+        # Left unset, as the shipped kinds leave it: the plain Docker constructor declares no
+        # guest family, and the tools' needs (`sh`, `python3`) are the image's, not the shape's.
+        assert spec.requires_os_family is None
 
     def test_egress_is_closed_unless_hosts_are_named(self):
         assert deepagents_spec("img:1").egress is Egress.CLOSED
@@ -113,6 +117,16 @@ class TestConstruction:
         backend = InProcessSandboxBackend(declarations=FAKE_BACKEND_DECLARATIONS)
         with pytest.raises(SandboxCapabilityNotSupported):
             MafSandbox(_router(backend), KEY, deepagents_spec("img:1"))
+
+    @pytest.mark.parametrize("budget", [0, -1, 1.5, True])
+    def test_refuses_an_output_budget_that_bounds_nothing(self, budget: object):
+        with pytest.raises(ValueError, match="max_output_bytes"):
+            MafSandbox(
+                _router(_backend()),
+                KEY,
+                deepagents_spec("img:1"),
+                max_output_bytes=budget,  # pyright: ignore[reportArgumentType]
+            )
 
     def test_refuses_a_spec_raising_the_floor_above_the_backend(self):
         with pytest.raises(SandboxBackendNotPermitted):
@@ -197,25 +211,54 @@ class TestExecute:
         asyncio.run(adapter.aexecute("true", timeout=7))
         assert 6.5 < fake.commands[0][2] <= 7.0
 
-    def test_an_acquire_that_spends_the_whole_budget_leaves_no_command_to_run(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_an_acquire_that_outlives_the_budget_is_cut_off(self, monkeypatch: pytest.MonkeyPatch):
+        """The deadline bounds the acquire too: a queued or slow create cannot exceed it."""
         fake = InProcessSandbox()
         adapter, _ = _adapter(fake)
         adapter = MafSandbox(adapter.router, KEY, adapter.spec, exec_timeout_seconds=0.05)
         acquire = adapter.router.acquire
 
         async def slow_acquire(*args, **kwargs):
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(5)
             return await acquire(*args, **kwargs)
 
         monkeypatch.setattr(adapter.router, "acquire", slow_acquire)
 
+        started = time.monotonic()
         response = asyncio.run(adapter.aexecute("true"))
 
+        assert time.monotonic() - started < 1
         assert response.exit_code is None
         assert "0.05 seconds" in response.output
         assert fake.commands == []
+
+    def test_output_past_the_budget_is_dropped_whole_and_said_so(self):
+        fake = InProcessSandbox(outputs={"seq": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n"})
+        adapter, _ = _adapter(fake)
+        adapter = MafSandbox(adapter.router, KEY, adapter.spec, max_output_bytes=8)
+
+        response = asyncio.run(adapter.aexecute("seq 10"))
+
+        assert response.truncated is True
+        assert response.exit_code is None
+        assert "8 bytes" in response.output
+        assert "1" not in response.output.replace("8 bytes", "")
+
+    def test_a_sandbox_that_cannot_bound_output_runs_nothing(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        class Unbounded(InProcessSandbox):
+            exec_bounded = None  # type: ignore[assignment]  # opts out of `BoundedExec`
+
+        fake = Unbounded()
+        adapter, _ = _adapter(fake)
+        with caplog.at_level(logging.ERROR, logger="maf_sandbox_deepagents"):
+            response = asyncio.run(adapter.aexecute("true"))
+
+        assert response.exit_code is None
+        assert "did not run" in response.output
+        assert fake.commands == []
+        assert "exec_bounded" in caplog.text
 
     def test_an_empty_command_is_an_error_result_not_a_raise(self):
         adapter, _ = _adapter()
