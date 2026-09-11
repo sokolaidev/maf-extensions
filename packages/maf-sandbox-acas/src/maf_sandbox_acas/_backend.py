@@ -532,10 +532,11 @@ class _AcasSandbox:
         max_output_bytes: int | None = None,
     ) -> ExecResult:
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
-        if self._held.unusable:
-            raise SandboxOutputError(
-                "ACAS sandbox was invalidated by an earlier exec failure; reacquire it"
-            )
+        with self._held.invalidation_guard:
+            if self._held.unusable:
+                raise SandboxOutputError(
+                    "ACAS sandbox was invalidated by an earlier exec failure; reacquire it"
+                )
 
         async def run(script: str) -> ExecResult:
             if max_output_bytes is not None:
@@ -554,11 +555,12 @@ class _AcasSandbox:
                 result = await capture(
                     command, run, self._exec_output_limit, combined_limit=max_output_bytes
                 )
-                if self._held.unusable:
-                    raise SandboxOutputError(
-                        "ACAS sandbox was invalidated by a concurrent exec failure"
-                    )
-                return result
+                with self._held.invalidation_guard:
+                    if self._held.unusable:
+                        raise SandboxOutputError(
+                            "ACAS sandbox was invalidated by a concurrent exec failure"
+                        )
+                    return result
         except BaseException as failure:
             await self._invalidate_after_exec(failure)
             raise
@@ -1169,7 +1171,7 @@ class AcasSandboxBackend:
             deletion = await self._delete(gc, name)
             with self._disposal_guard:
                 self._finish_disposals(
-                    prefix, {name: attempted[name]}, [name] if deletion.failure else [], kinds
+                    prefix, {name: attempted[name]}, [name] if deletion.failure else []
                 )
             if deletion.failure is not None:
                 raise SandboxOutputError(
@@ -1322,10 +1324,9 @@ class AcasSandboxBackend:
         self, scope_key: tuple[str, str], attempted: Mapping[str, object], failed: Sequence[str]
     ) -> None:
         """Reconcile only this attempt's scope records under the disposal guard."""
-        self._retain_scope_disposals(scope_key, failed)
         tokens = self._scope_disposals.get(scope_key, {})
         for name, token in attempted.items():
-            if tokens.get(name) is token:
+            if tokens.get(name) is token and name not in failed:
                 tokens.pop(name)
         if not tokens:
             self._scope_disposals.pop(scope_key, None)
@@ -1347,15 +1348,13 @@ class AcasSandboxBackend:
         prefix: tuple[str, str, str],
         attempted: Mapping[str, object],
         failed: Sequence[str],
-        kinds: Mapping[str, str],
     ) -> None:
         """Reconcile this attempt while holding the disposal guard."""
-        self._retain_disposals(prefix, failed, {n: kinds[n] for n in failed if n in kinds})
         tokens = self._disposal_tokens.get(prefix, {})
         names = self._undeleted.get(prefix, set())
         attributed = self._undeleted_kinds.get(prefix, {})
         for name, token in attempted.items():
-            if tokens.get(name) is token:
+            if tokens.get(name) is token and name not in failed:
                 tokens.pop(name)
                 names.discard(name)
                 attributed.pop(name, None)
@@ -1377,7 +1376,7 @@ class AcasSandboxBackend:
         deletion = await self._delete(gc, sandbox_id)
         with self._disposal_guard:
             self._finish_disposals(
-                prefix, attempted, [sandbox_id] if deletion.failure is not None else [], kinds
+                prefix, attempted, [sandbox_id] if deletion.failure is not None else []
             )
         if deletion.failure is not None:
             return
@@ -1632,7 +1631,7 @@ class AcasSandboxBackend:
             if deletion.failure is not None:
                 undeleted[sandbox_id] = deletion.failure
         with self._disposal_guard:
-            self._finish_disposals(prefix, attempted, list(undeleted), attempted_kinds)
+            self._finish_disposals(prefix, attempted, list(undeleted))
             left = self._undeleted.get(prefix, set())
             attributed = self._undeleted_kinds.get(prefix, {})
             outstanding = {
@@ -1747,9 +1746,7 @@ class AcasSandboxBackend:
                 undisposed.append(deletion.failure)
         with self._disposal_guard:
             for prefix, tokens in attempted.items():
-                self._finish_disposals(
-                    prefix, tokens, list(tokens.keys() & undeleted), attempted_kinds[prefix]
-                )
+                self._finish_disposals(prefix, tokens, list(tokens.keys() & undeleted))
             self._finish_scope_disposals(
                 scope_key, scope_attempted, list(scope_attempted.keys() & undeleted)
             )

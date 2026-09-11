@@ -2157,7 +2157,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         assert not backend._undeleted
         assert not backend._undeleted_kinds
 
-    def test_a_refused_create_retains_its_kind_after_a_concurrent_disposal(self):
+    def test_a_refused_create_does_not_restore_a_completed_disposal(self):
         from maf_sandbox import SandboxCapabilityNotSupported
 
         from maf_sandbox_acas._backend import _Deletion
@@ -2194,7 +2194,7 @@ class TestAnImageWhoseGuestIsNotRoot:
             assert await backend.dispose(key, kind="codeact") is None
 
         asyncio.run(asyncio.wait_for(scenario(), timeout=5))
-        assert client.deleted == ["sbx-1"]
+        assert client.deleted == []
         assert not backend._undeleted
         assert not backend._undeleted_kinds
 
@@ -2680,7 +2680,7 @@ class TestNarrowedDisposal:
     @pytest.mark.parametrize("operation", ["kind", "whole", "scope"])
     @pytest.mark.parametrize("retained", [False, True])
     @pytest.mark.parametrize("new_ledger", [False, True])
-    def test_concurrent_failure_restores_kind_for_a_narrowed_retry(
+    def test_stale_failure_does_not_restore_a_completed_retry(
         self, operation, retained, new_ledger
     ):
         from maf_sandbox_acas._backend import _Deletion
@@ -2735,7 +2735,7 @@ class TestNarrowedDisposal:
             assert await backend.dispose(key, kind="a") is None
 
         asyncio.run(asyncio.wait_for(scenario(), timeout=5))
-        assert client.deleted == ["selected"]
+        assert client.deleted == []
         assert backend._undeleted == ({prefix: {"sibling"}} if new_ledger else {})
         assert backend._undeleted_kinds == ({prefix: {"sibling": "b"}} if new_ledger else {})
 
@@ -3273,6 +3273,41 @@ def test_discovery_is_retained_when_listing_is_cancelled(scope_wide, monkeypatch
         with pytest.raises(SandboxOutputError, match="retained"):
             await backend.acquire(key, _spec())
         assert client.create_calls == 0
+
+    asyncio.run(scenario())
+
+
+def test_older_scope_failure_cannot_restore_a_newer_completed_deletion(monkeypatch):
+    client = _GuestGroupClient(_guest_removing(True))
+    backend = _backend_with(client)
+    monkeypatch.setattr(
+        client, "list_sandboxes", lambda **kwargs: _FakePager([_FakeSandbox("remote")])
+    )
+    original_delete = _GuestSandboxClient.begin_delete
+
+    async def scenario():
+        started, release = asyncio.Event(), asyncio.Event()
+        calls = 0
+
+        async def delete(sandbox):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                started.set()
+                await release.wait()
+                raise RuntimeError("old deletion failed")
+            return await original_delete(sandbox)
+
+        monkeypatch.setattr(_GuestSandboxClient, "begin_delete", delete)
+        first = asyncio.create_task(backend.dispose_scope("s", "t"))
+        await started.wait()
+        assert (await backend.dispose_scope("s", "t")).undisposed is None
+        release.set()
+        assert (await first).undisposed is not None
+        client.delete_fails = True
+        result = await backend.acquire(SandboxKey("s", "t", "a"), _spec())
+        assert result.instance_id == "sbx-1" and calls == 2
+        assert not backend._scope_disposals
 
     asyncio.run(scenario())
 

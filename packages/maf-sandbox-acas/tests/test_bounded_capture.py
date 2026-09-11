@@ -3,6 +3,8 @@
 import asyncio
 import base64
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
@@ -85,6 +87,68 @@ def test_bounded_capture_preserves_binary_streams_and_cleans_scratch():
         assert service.closed == service.calls == 4
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("bounded", [False, True])
+def test_result_waits_for_invalidation_on_another_loop(bounded, monkeypatch):
+    ready, finish_capture = threading.Event(), threading.Event()
+    invalidating, finish_invalidation = threading.Event(), threading.Event()
+    result_waiting = threading.Event()
+    role = threading.local()
+    lock = threading.Lock()
+
+    class Guard:
+        def __enter__(self):
+            if role.name == "reader" and invalidating.is_set():
+                result_waiting.set()
+            assert lock.acquire(timeout=5)
+            if role.name == "writer":
+                invalidating.set()
+                assert finish_invalidation.wait(5)
+
+        def __exit__(self, *args):
+            lock.release()
+
+    async def capture(*args, **kwargs):
+        ready.set()
+        assert finish_capture.wait(5)
+        return ExecResult(stdout_bytes=b"ok", exit_code=0)
+
+    monkeypatch.setattr(f"{_AcasSandbox.__module__}.capture", capture)
+    service = _CaptureService(b"", b"")
+    reader = _AcasSandbox(service, 10)
+    writer = _AcasSandbox(service, 10, held=reader._held)
+    monkeypatch.setattr(reader._held, "invalidation_guard", Guard())
+
+    def read():
+        role.name = "reader"
+        command = (
+            reader.exec_bounded("program", working_directory="/", timeout=10, max_output_bytes=50)
+            if bounded
+            else reader.exec("program", working_directory="/", timeout=10)
+        )
+        return asyncio.run(command)
+
+    def invalidate():
+        role.name = "writer"
+        asyncio.run(writer._invalidate_after_exec(SandboxOutputError("other exec failed")))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        result = pool.submit(read)
+        assert ready.wait(5)
+        cleanup = pool.submit(invalidate)
+        try:
+            assert invalidating.wait(5)
+            finish_capture.set()
+            assert result_waiting.wait(3)
+            assert not result.done()
+        finally:
+            finish_capture.set()
+            finish_invalidation.set()
+        with pytest.raises(SandboxOutputError, match="concurrent exec failure"):
+            result.result(timeout=5)
+        assert cleanup.result(timeout=5) is None
+    assert service.deleted
 
 
 @pytest.mark.parametrize("second_outcome", ["success", "failure", "cancel"])
