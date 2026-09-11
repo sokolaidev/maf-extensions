@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import threading
 import time
 
 import pytest
@@ -446,6 +447,29 @@ class TestFilesOut:
         ]
         assert responses[-1].content == b"content"
 
+    def test_a_read_that_comes_back_over_the_cap_is_refused_after_the_fact(self):
+        """The protocol has the caller re-count: a backend that buffers first can only refuse late."""
+
+        class Oversized(InProcessSandbox):
+            async def read_file(self, path, *, working_directory, max_bytes):
+                return b"x" * (max_bytes + 1)
+
+        fake = Oversized(seed_files={f"{WORK}/grew.bin": "1"})
+        adapter, _ = _adapter(fake)
+        adapter = MafSandbox(
+            adapter.router,
+            KEY,
+            dataclasses.replace(
+                adapter.spec,
+                files_out=TransferLimits(max_bytes_per_file=4, max_total_bytes=4, max_files=8),
+            ),
+        )
+
+        (response,) = asyncio.run(adapter.adownload_files(["grew.bin"]))
+
+        assert response.content is None
+        assert response.error is not None and "max_bytes_per_file" in response.error
+
     def test_a_file_over_the_cap_is_refused_rather_than_truncated(self):
         fake = InProcessSandbox(seed_files={f"{WORK}/big.bin": "0123456789"})
         spec = deepagents_spec(
@@ -549,6 +573,38 @@ class TestTheSynchronousSurface:
 
         with pytest.raises(ValueError, match="timeout"):
             asyncio.run(scenario())
+
+    def test_one_loop_serves_every_sync_call_until_close(self):
+        """A backend may cache a client per loop, so the sync surface must not mint one per call."""
+        # The loop objects themselves, held so a collected loop's address cannot be reused.
+        loops: list[asyncio.AbstractEventLoop] = []
+
+        class Recording(InProcessSandbox):
+            async def exec(self, command, *, working_directory, timeout):
+                loops.append(asyncio.get_running_loop())
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        def loop_threads() -> int:
+            return sum(t.name == "maf-sandbox-deepagents" for t in threading.enumerate())
+
+        adapter, _ = _adapter(Recording())
+        idle = loop_threads()
+        adapter.execute("true")
+        adapter.upload_files([("f", b"1")])
+        adapter.execute("true")
+        assert len({id(loop) for loop in loops}) == 1
+        assert loop_threads() == idle + 1
+
+        assert adapter.close() is True
+
+        assert loop_threads() == idle
+        # A sync call after close starts a loop again; the sandbox itself is fresh too.
+        adapter.execute("true")
+        assert len({id(loop) for loop in loops}) == 2
+        adapter.close()
+        assert loop_threads() == idle
 
 
 class TestClose:

@@ -47,7 +47,7 @@ The sandbox is acquired on the first operation, a command or a file transfer, an
 | `id` | An opaque hash of what names the sandbox — the key, the kind, the serving backend and the egress posture — because Deep Agents may render it to the model and a scope is often a tenant |
 | `aclose()` | `SandboxRouter.dispose_kind` for this conversation's sandbox of this kind alone, so a packaged kind serving the same conversation keeps its own |
 
-Both surfaces are served: the `a*` methods are native, and the synchronous ones run the same coroutine on a loop of their own, which is what a sync tool on a LangGraph worker thread calls.
+Both surfaces are served: the `a*` methods are native, and the synchronous ones, which a sync tool on a LangGraph worker thread calls, run the same coroutine on one long-lived loop on a thread of the adapter's own, started by the first sync call and stopped by `close()`, so a backend that caches a client per loop holds one, not one per call.
 
 ## What it costs, honestly
 

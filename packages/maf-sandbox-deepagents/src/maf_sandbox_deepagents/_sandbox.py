@@ -10,11 +10,11 @@ is still keyed from the host's request context and purged with the conversation.
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import hashlib
 import json
 import logging
 import math
+import threading
 import time
 from collections.abc import Coroutine
 from typing import Any
@@ -148,21 +148,45 @@ def deepagents_spec(
     )
 
 
-def _run_sync[T](coroutine: Coroutine[Any, Any, T]) -> T:
-    """Run ``coroutine`` to completion from synchronous code.
+class _SyncRunner:
+    """One long-lived loop on a thread of its own, for the synchronous surface.
 
-    Deep Agents calls the synchronous surface from sync tools, which LangGraph runs on a worker
-    thread with no loop; a caller that does hold a running loop gets a fresh one on a thread of
-    its own, since ``asyncio.run`` refuses to nest.
+    Deep Agents calls that surface from sync tools, which LangGraph runs on a worker thread
+    with no loop, and a caller holding a running loop cannot nest another. One loop for the
+    adapter's life rather than one per call, because a backend may cache a client per loop
+    (ACAS does) and would otherwise hold one per call until its shutdown. Started on the first
+    sync call, stopped by :meth:`stop`.
     """
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coroutine)
-    with concurrent.futures.ThreadPoolExecutor(
-        max_workers=1, thread_name_prefix="maf-sandbox-deepagents"
-    ) as worker:
-        return worker.submit(asyncio.run, coroutine).result()
+
+    _THREAD_NAME = "maf-sandbox-deepagents"
+
+    def __init__(self) -> None:
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._guard = threading.Lock()
+
+    def run[T](self, coroutine: Coroutine[Any, Any, T]) -> T:
+        with self._guard:
+            if self._loop is None:
+                self._loop = asyncio.new_event_loop()
+                self._thread = threading.Thread(
+                    target=self._loop.run_forever, name=self._THREAD_NAME, daemon=True
+                )
+                self._thread.start()
+            loop = self._loop
+        return asyncio.run_coroutine_threadsafe(coroutine, loop).result()
+
+    def stop(self) -> None:
+        """Stop and close the loop; a no-op from its own thread, which cannot join itself."""
+        with self._guard:
+            loop, thread = self._loop, self._thread
+            if thread is None or thread is threading.current_thread():
+                return
+            self._loop = self._thread = None
+        assert loop is not None
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        loop.close()
 
 
 def _response(result: ExecResult) -> ExecuteResponse:
@@ -252,6 +276,7 @@ class MafSandbox(BaseSandbox):
         self._spec = spec
         self._timeout = float(exec_timeout_seconds)
         self._max_output_bytes = max_output_bytes
+        self._sync = _SyncRunner()
         backend = router.backend_for(spec)
         identity = [
             "" if backend is None else backend.name,
@@ -343,7 +368,7 @@ class MafSandbox(BaseSandbox):
         return _response(result)
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-        return _run_sync(self.aexecute(command, timeout=timeout))
+        return self._sync.run(self.aexecute(command, timeout=timeout))
 
     # --- files in --------------------------------------------------------------------------
 
@@ -384,7 +409,7 @@ class MafSandbox(BaseSandbox):
         return responses
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
-        return _run_sync(self.aupload_files(files))
+        return self._sync.run(self.aupload_files(files))
 
     # --- files out -------------------------------------------------------------------------
 
@@ -431,6 +456,10 @@ class MafSandbox(BaseSandbox):
         except (ValueError, OSError) as refused:
             logger.info("%s: download of %r refused: %s", self._id, path, refused)
             return FileDownloadResponse(path=path, error=INVALID_PATH)
+        if len(content) > cap:
+            # The protocol has the caller re-count: a file can grow after the stat, and a
+            # backend whose SDK buffers the whole response can only refuse after the fact.
+            return FileDownloadResponse(path=path, error=over_cap)
         return FileDownloadResponse(path=path, content=content)
 
     async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
@@ -455,7 +484,7 @@ class MafSandbox(BaseSandbox):
         return responses
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        return _run_sync(self.adownload_files(paths))
+        return self._sync.run(self.adownload_files(paths))
 
     # --- lifecycle -------------------------------------------------------------------------
 
@@ -466,10 +495,14 @@ class MafSandbox(BaseSandbox):
         The router's ``dispose_scope`` on the host's conversation-delete path is the backstop for
         a sandbox no ``aclose`` reached.
         """
-        return await self._router.dispose_kind(
+        disposed = await self._router.dispose_kind(
             self._key, self._spec.kind, timeout=self._router.reclaim.timeout
         )
+        self._sync.stop()
+        return disposed
 
     def close(self) -> bool:
-        """Synchronous :meth:`aclose`."""
-        return _run_sync(self.aclose())
+        """Synchronous :meth:`aclose`, which also stops the loop the sync surface ran on."""
+        disposed = self._sync.run(self.aclose())
+        self._sync.stop()
+        return disposed
