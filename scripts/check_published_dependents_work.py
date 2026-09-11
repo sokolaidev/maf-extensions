@@ -50,7 +50,13 @@ from collections.abc import Callable
 from pathlib import Path
 
 from check_published_dependents_admit import ceiling_of, dependent_distributions
-from pypi_index import admits, fetch_published_versions, read_json, run_check, version
+from pypi_index import (
+    admits,
+    fetch_published_versions,
+    fetch_version_document,
+    run_check,
+    version,
+)
 
 
 def import_module(distribution: str) -> str:
@@ -67,7 +73,7 @@ def fetch_requires_dist_for_version(distribution: str, version_str: str) -> list
     (PEP 592 allows that, with a warning) but because normal unpinned resolution never selects a
     yanked release, so a user does not land on one and a break there is not a real-user break.
     """
-    payload = read_json(f"https://pypi.org/pypi/{distribution}/{version_str}/json")
+    payload = fetch_version_document(distribution, version_str)
     if payload is None:
         return None
     info = payload["info"]

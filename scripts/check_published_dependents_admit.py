@@ -41,7 +41,13 @@ import sys
 import tomllib
 from pathlib import Path
 
-from pypi_index import admits, fetch_published_versions, read_json, run_check, version
+from pypi_index import (
+    admits,
+    fetch_published_versions,
+    fetch_version_document,
+    run_check,
+    version,
+)
 
 _CORE = "maf-sandbox"
 #: A distribution name and its optional extras, at the head of a requirement.
@@ -106,7 +112,7 @@ def exclusions(published: dict[str, list[str] | None], released: tuple[int, ...]
 
 def _requires_dist_for_version(distribution: str, version_str: str) -> list[str] | None:
     """One version's ``requires_dist``, or None if that version is gone or yanked."""
-    payload = read_json(f"https://pypi.org/pypi/{distribution}/{version_str}/json")
+    payload = fetch_version_document(distribution, version_str)
     if payload is None:
         return None
     info = payload["info"]

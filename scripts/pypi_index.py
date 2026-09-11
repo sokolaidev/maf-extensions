@@ -46,9 +46,12 @@ _INDEX_VARIABLE = "UV_INDEX"
 _DEFAULT_INDEX_VARIABLE = "UV_DEFAULT_INDEX"
 _STRATEGY_VARIABLE = "UV_INDEX_STRATEGY"
 
-#: The strategies under which ``uv`` looks past the first index that carries a distribution. Its
-#: default, ``first-index``, does not.
-_SEARCHES_EVERY_INDEX = frozenset({"unsafe-first-match", "unsafe-best-match"})
+#: The one strategy under which ``uv`` prefers the best version across indexes. ``first-index``
+#: resolves only what the first index carrying the distribution offers, and
+#: ``unsafe-first-match`` exhausts that index before reaching the next — an order this cannot
+#: reproduce, because it turns on a requirement only the caller holds. Reading the first index
+#: alone under it reports fewer versions than uv would, never more.
+_SEARCHES_EVERY_INDEX = frozenset({"unsafe-best-match"})
 
 #: An index may be given as ``<name>=<url>``. The scheme lookahead keeps a query's own ``=`` out
 #: of it.
@@ -77,8 +80,9 @@ def redacted(url: str) -> str:
     parsed = urllib.parse.urlsplit(url)
     if not (parsed.username or parsed.password or parsed.query):
         return url
-    host = parsed.hostname or ""
-    netloc = f"{host}:{parsed.port}" if parsed.port else host
+    # Kept verbatim rather than rebuilt from `hostname` and `port`: that pair drops the brackets
+    # an IPv6 host is written with, and the result is not a URL any more.
+    netloc = parsed.netloc.rpartition("@")[2]
     if parsed.username or parsed.password:
         netloc = f"***@{netloc}"
     return urllib.parse.urlunsplit(
@@ -176,6 +180,26 @@ def package_url(index: str, distribution: str) -> str:
     return urllib.parse.urlunsplit(
         (parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment)
     )
+
+
+def fetch_version_document(distribution: str, released: str) -> dict | None:
+    """One version's legacy JSON document, from whichever index carries it.
+
+    Warehouse serves ``/pypi/<name>/<version>/json`` beside its simple index, so the host comes
+    from the same variables the simple lookup reads, tried in the same order. Asked of pypi.org
+    regardless, a version only a rehearsal index carries answers 404, and a caller reads that as
+    "no such version" and drops it — leaving the gate to report exactly the shortfall the
+    rehearsal was arranged to disprove.
+    """
+    for index in index_urls():
+        parsed = urllib.parse.urlsplit(index)
+        document = urllib.parse.urlunsplit(
+            (parsed.scheme, parsed.netloc, f"/pypi/{distribution}/{released}/json", "", "")
+        )
+        payload = read_json(document)
+        if payload is not None:
+            return payload
+    return None
 
 
 def fetch_simple(distribution: str) -> dict | None:

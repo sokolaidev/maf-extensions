@@ -236,6 +236,53 @@ class TestPublishedVersionsAreSortedSemantically:
         assert index.fetch_published_versions("maf-sandbox-nothing") is None
 
 
+class TestAVersionsMetadataComesFromTheIndexThatCarriesIt:
+    """The simple lookup follows uv's variables; the per-version document has to follow them too.
+
+    Warehouse serves `/pypi/<name>/<version>/json` beside its simple index. Asked of pypi.org
+    regardless, a version only a rehearsal index holds answers 404, every caller reads that as
+    "no such version" and drops it, and the gate reports the shortfall the rehearsal existed to
+    disprove. Measured on the real indexes: `maf-sandbox-wslc 0.0.1` is 200 on TestPyPI and 404
+    on PyPI.
+    """
+
+    def test_the_rehearsal_index_is_asked_first_and_answers(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("UV_INDEX", "https://test.pypi.org/simple/")
+        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://pypi.org/simple/")
+        fake = _Index({"info": {"requires_dist": ["maf-sandbox>=0.38.0,<0.39"]}})
+        _install(monkeypatch, fake)
+        payload = index.fetch_version_document("maf-sandbox-deepagents", "0.1.0")
+        assert payload is not None
+        assert fake.requests[0].full_url == (
+            "https://test.pypi.org/pypi/maf-sandbox-deepagents/0.1.0/json"
+        )
+
+    def test_an_index_without_the_version_falls_through_to_the_next(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("UV_INDEX", "https://test.pypi.org/simple/")
+        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://pypi.org/simple/")
+        fake = _Index(_http_error(404), {"info": {"requires_dist": []}})
+        _install(monkeypatch, fake)
+        assert index.fetch_version_document("maf-sandbox", "0.37.0") is not None
+        assert [request.full_url for request in fake.requests] == [
+            "https://test.pypi.org/pypi/maf-sandbox/0.37.0/json",
+            "https://pypi.org/pypi/maf-sandbox/0.37.0/json",
+        ]
+
+    def test_a_version_no_index_carries_is_none(self, monkeypatch: pytest.MonkeyPatch):
+        _install(monkeypatch, _Index(_http_error(404)))
+        assert index.fetch_version_document("maf-sandbox", "99.0.0") is None
+
+    def test_by_default_it_asks_pypi_and_nothing_else(self, monkeypatch: pytest.MonkeyPatch):
+        fake = _Index({"info": {}})
+        _install(monkeypatch, fake)
+        index.fetch_version_document("maf-sandbox", "0.37.0")
+        assert [request.full_url for request in fake.requests] == [
+            "https://pypi.org/pypi/maf-sandbox/0.37.0/json"
+        ]
+
+
 class TestAnIndexMayCarryWhatThisRepositoryNeverPublishes:
     """`version` orders dotted releases and raises on the rest, and ceilings are written as one.
 
@@ -424,8 +471,12 @@ class TestFirstIndexStopsAtTheFirstMatch:
         _install(monkeypatch, fake)
         return fake
 
-    @pytest.mark.parametrize("strategy", ["", "first-index"])
+    @pytest.mark.parametrize("strategy", ["", "first-index", "unsafe-first-match"])
     def test_the_second_index_is_never_asked(self, monkeypatch: pytest.MonkeyPatch, strategy: str):
+        """`unsafe-first-match` belongs here, not with the merge: uv exhausts the first index's
+        versions before reaching the next, an order that turns on a requirement this layer does
+        not hold. Reading the first index alone reports fewer versions than uv would, never a
+        version it would refuse."""
         if strategy:
             monkeypatch.setenv("UV_INDEX_STRATEGY", strategy)
         fake = self._two(monkeypatch, {"versions": ["0.1.0"]}, {"versions": ["9.9.9"]})
@@ -464,6 +515,18 @@ class TestAnIndexUrlMayCarryACredential:
 
     def test_a_url_carrying_neither_is_untouched(self):
         assert index.redacted(_URL) == _URL
+
+    def test_an_ipv6_host_keeps_the_brackets_that_make_it_a_url(self):
+        """Rebuilt from `hostname` and `port` the brackets are gone and `https://***@2001:db8::1:8443/`
+        is not an address any more — the one line a reader needs in order to act is the one lost."""
+        assert (
+            index.redacted("https://u:p@[2001:db8::1]:8443/simple/")
+            == "https://***@[2001:db8::1]:8443/simple/"
+        )
+
+    def test_an_ipv6_host_with_no_credential_is_left_alone(self):
+        plain = "https://[2001:db8::1]:8443/simple/"
+        assert index.redacted(plain) == plain
 
     def test_the_unreachable_message_carries_the_redacted_form(
         self, monkeypatch: pytest.MonkeyPatch
