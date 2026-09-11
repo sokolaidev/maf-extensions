@@ -96,7 +96,7 @@ than a regression — the default is still `conversation`, and a host raises the
 
 | Decision | State | Tracking |
 |---|---|---|
-| A workload can ask for a sandbox per tool call, and this backend serves one | shipped — `call_id` reaches the container name, the registry entry and the disposal's label filter, and a conversation-scoped key keeps the name and labels it already had. `assert_call_scope_conformance` is wired into the live suite, which no pull request runs | [#436](https://github.com/sokolaidev/maf-extensions/issues/436) (closed) |
+| A workload can ask for a sandbox per tool call, and this backend serves one | shipped — `call_id` reaches the container name, the registry entry and the disposal's label filter, and a conversation-scoped key keeps the name and labels it already had. `assert_call_scope_conformance` is wired into the live suite, which no pull request runs | [#436](https://github.com/sokolaidev/maf-extensions/issues/436) (closed) by [#1139](https://github.com/sokolaidev/maf-extensions/pull/1139) (merged) |
 | The backend, `EXEC` and `FILES_IN`, both egress modes, label purge | shipped | — |
 | Operator retention for stopped workloads and orphan infrastructure | implemented — separate-process workload and partial-infrastructure cleanup verified on WSLC 2.9.4.0 | [#1010](https://github.com/sokolaidev/maf-extensions/issues/1010) (closed) by [#1015](https://github.com/sokolaidev/maf-extensions/pull/1015) (merged) |
 | `egress_modes = {CLOSED}`, or `{CLOSED, ALLOWLIST}` with a proxy image; a mode outside the set is refused rather than degraded | shipped | [#530](https://github.com/sokolaidev/maf-extensions/pull/530) (merged) under [#265](https://github.com/sokolaidev/maf-extensions/issues/265) (closed) |
