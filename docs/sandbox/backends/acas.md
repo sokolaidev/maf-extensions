@@ -15,6 +15,7 @@ The four below `isolation` are fields of this backend's `declarations`.
 | `egress_modes` | `{Egress.ALLOWLIST, Egress.CLOSED}` |
 | `limits` | 32 MiB per file, 128 MiB total, 128 files — the same `TransferLimits` in each direction |
 | `os_families` | `{OsFamily.POSIX}` — a constant rather than a read: every sandbox the service boots is a Linux microVM, from the prebuilt catalogue and from an imported disk image alike. It is what `exec`'s `shlex.join` quoting and this backend's `posixpath` arithmetic rest on |
+| `isolation_scopes` | `{IsolationScope.CONVERSATION, IsolationScope.CALL}` — see [one sandbox per call](#one-sandbox-per-call) |
 
 The byte ceilings sit well under what a streaming backend could offer, because this one cannot stream: the SDK's `read_file` buffers the whole response, so a per-file ceiling bounds **host memory** rather than transfer cost. `max_files` is comparatively high because a `FILES_LIST` kind fetches each file in a round trip of its own.
 
@@ -108,10 +109,36 @@ M6 established that named snapshots survive source deletion, can be recovered by
 
 **The control-plane credential never enters the guest.** `DefaultAzureCredential` lives with the group client in the host process; nothing in the sandbox can reach it, the host's identity, or another conversation's sandbox. That is the standard's second leg, and it is why this backend can claim the rung.
 
+## One sandbox per call
+
+A spec asking for `IsolationScope.CALL` is served here rather than refused. This backend mints no
+name of its own — the service issues the sandbox id — so the whole of its call-scope identity is
+the **registry entry**, filed under `(scope, thread, agent, call, kind)`, and the **service
+label** a disposal selects on, `call`. Two acquires differing only in `call_id` miss each other
+in the registry and are two microVMs; a disposal that names a call selects that label and leaves
+the sibling call of the same assistant message running. That is the property
+`maf_sandbox.conformance.assert_call_scope_conformance` measures, and the live suite here answers
+it against the service.
+
+**A conversation-scoped key carries exactly the labels it carried before.** The `call` label is
+written only when the key names a call, so a sandbox created by an earlier release is still
+reached by a selector that does not mention it.
+
+**The conversation's purge is still the backstop.** `dispose_scope` selects on scope and thread
+alone, never on the call, so a per-call sandbox whose own delete did not land is reached when the
+conversation ends — which matters more here than elsewhere, because what is left running is
+billable.
+
+**What it costs is a cold create per call**, and on this backend that is the most expensive cold
+start of the three: a warm resume is seconds where a create is minutes. The default is still
+`conversation`; a host raises the floor with `SandboxRouter(min_isolation_scope=...)` or a spec
+raises it for itself.
+
 ## Status
 
 | Decision | State | Tracking |
 |---|---|---|
+| A workload can ask for a sandbox per tool call, and this backend serves one | shipped — the service mints the id, so `call_id` reaches the registry entry and the `call` service label a disposal selects on; a conversation-scoped key keeps the labels it already had. `assert_call_scope_conformance` is wired into the live suite, which no pull request runs | [#436](https://github.com/sokolaidev/maf-extensions/issues/436) (closed) |
 | The backend, its declarations, and `FILES_OUT` served natively | shipped | [#109](https://github.com/sokolaidev/maf-extensions/issues/109) open as the `FILES_OUT` tracking issue; the ACAS item landed |
 | Withhold `SNAPSHOT` and retain disposal because M6 establishes no consistent benefit sufficient to justify snapshot reset | decided — the backend declares neither `SNAPSHOT` nor `RECLAIM` and refuses reset, so the router disposes after a call | [#981](https://github.com/sokolaidev/maf-extensions/issues/981) (closed) by [#1035](https://github.com/sokolaidev/maf-extensions/pull/1035) (merged) |
 | Snapshot quota and exact storage price | investigation closed — M6 measured latency, state restoration and recovery; quota and storage pricing remain unverified and require provider confirmation. Closing the investigation establishes neither value | [#978](https://github.com/sokolaidev/maf-extensions/issues/978) (closed) |

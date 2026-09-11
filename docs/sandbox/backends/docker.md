@@ -19,6 +19,7 @@ The four below `isolation` are fields of this backend's `declarations`. Three ar
 | `egress_modes` | `{Egress.CLOSED}`; `{Egress.CLOSED, Egress.ALLOWLIST}` when an egress proxy image is configured. Never `UNRESTRICTED`: a container backend always cuts or proxies |
 | `limits` | 64 MiB per file, 256 MiB total, 256 files — the same `TransferLimits` in each direction |
 | `os_families` | `{OsFamily.POSIX}` when the daemon reports `linux`; `frozenset()` for every other answer, `windows` included. Read once by `DockerSandboxBackend.create`, and the plain constructor declares nothing |
+| `isolation_scopes` | `{IsolationScope.CONVERSATION, IsolationScope.CALL}` — see [one sandbox per call](#one-sandbox-per-call) |
 
 ## `container` is a constant
 
@@ -108,6 +109,33 @@ It keeps a floor as well: it refuses a relative path, and one within two compone
 
 As on ACAS, `HOST_TOOLS` has no method behind it and asserts that **`exec` detaches** — a process started by one call outlives it and is observable from the next, because the container *is* the sandbox and it stays up between calls. `test_docker_e2e.py` measures it rather than assuming it. It is not a claim about the image.
 
+## One sandbox per call
+
+A spec asking for `IsolationScope.CALL` is served here rather than refused. What entitles this
+backend to declare it is that `SandboxKey.call_id` reaches all three things that decide which
+container an acquire resolves to and which one a disposal removes: the **container name**, which
+folds the call id as a `call:`-tagged part; the **registry entry**, filed under
+`(scope, thread, agent, call, kind)`; and the **label** a disposal selects on,
+`maf-sandbox.call`. Two acquires differing only in `call_id` are therefore two containers, and
+ending one call leaves the sibling call of the same assistant message running — which is the
+property `maf_sandbox.conformance.assert_call_scope_conformance` measures, and which the live
+suite here answers against a real engine.
+
+**A conversation-scoped key is byte-for-byte what it was.** The call id is appended to the name
+only when it is non-empty, and the label is written only then, so a container created by a
+release before this one is still found by name and still reached by the label selector. The tag
+is what keeps the two optional name parts apart: untagged, a sandbox with an allowlist and no
+call would share a name with a call whose id spelled that allowlist.
+
+**The conversation's purge is still the backstop.** `dispose_scope` selects on scope and thread
+alone, never on the call, so a per-call container whose own delete did not land is reached when
+the conversation ends. That delete is reported and the key is not marked unclean: a call-scoped
+key has no next acquire to refuse.
+
+**What it costs is a cold start per call**, which is the trade the scope exists to offer rather
+than a regression — the default is still `conversation`, and a host raises the floor with
+`SandboxRouter(min_isolation_scope=...)` or a spec raises it for itself.
+
 ## Egress topology
 
 Closed mode is `--network none`: a network namespace with nothing but loopback, enforced by whichever kernel runs the container. Allowlist mode is an **internal network with an unaddressed bridge, plus a dual-homed CONNECT proxy** — an `--internal` network created with `gateway_mode_ipv4=isolated` and its IPv6 twin so nothing on it has a route off it, a proxy container on that network carrying the spec's allowlist, its outbound leg connected to a second network, and the workload created with `HTTP_PROXY`/`HTTPS_PROXY` pointing at it. The proxy is recreated on every acquire rather than adopted, so a stale or half-connected one is never mistaken for a working one, and a failure to connect the outbound leg fails the acquire — a proxy without it would turn `ALLOWLIST` into `CLOSED` silently. Recreating it is also what makes its *record* perishable: the `ALLOW`, `DENY`, `DENY-NONGLOBAL` and `UNREACHABLE` lines it prints would go with the container it printed them in. So this backend implements `ObservesEgress` and drains them first — before the removal in `_ensure_proxy`, and before every removal `_purge` makes for a disposal or a scope purge — which makes the record cover one acquire's window rather than a sandbox's whole life. A window with nothing to report emits nothing, so an absent record is not by itself a loss — but it is not proof of quiet either: the window a live proxy is accumulating is unreported until something removes it, and one this process cannot attribute is never reported at all. A purge recovers attribution from the proxy's engine labels, including proxies created by another replica or left behind by failed setup. A nonempty `maf-sandbox.key.v1` label is a URL-safe base64 encoding of a JSON array containing the exact scope, thread ID, agent directory and call ID (empty for conversation scope); the existing ownership selectors and derived names stay unchanged. Decoded values must agree with those selectors. The encoded attribution budget is 4,096 bytes. Larger keys still acquire normally: the backend warns and writes an empty label, which disables recovery rather than falling back to partial legacy selectors. Scope purges and reaping cannot attribute those proxies. Legacy proxies are attributable only when all three selectors contain unchanged plain values; a hashed selector cannot be reversed. Key-addressed disposal and acquire can still drain legacy or oversized-key proxies using the caller's key. Scope purges and reaping inspect the proxy and read its log by that same engine ID. Missing or malformed attribution emits no egress event, and absence alone does not prove a window was lost. `observes_egress` reports attributable windows, not a complete audit history; failed or cancelled removals publish no event, and a successful sequential retry reports its window once. Overlapping cleanup can still report the same window more than once (see [egress observation](../observability.md)). It reads a bounded tail, in lines and in bytes, and says when the window may be short of it — conservatively, since a full page back cannot say whether the line past the bound was a decision; a proxy that is simply not there reports nothing, and a read that failed is reported as a window nobody can account for. Nothing is read at all until a router with an observer hands over a reporter. `egress_modes` states what the backend *can enforce*, not what one sandbox got: with a proxy image it declares both modes, and a spec running `CLOSED` still gets a `--network none` container, because denying everything for free beats burning a network and a proxy on allowing the same nothing. Without a proxy image the set is `{CLOSED}` alone, and a spec running `ALLOWLIST` is **refused at attach** rather than served the closed run it did not ask for. What the modes *mean*, and who declares what, is [`../network.md`](../network.md); this section is what this engine does to honour them.
@@ -132,6 +160,7 @@ The inventory includes stopped containers, proxies without a workload and networ
 
 | Decision | State | Tracking |
 |---|---|---|
+| A workload can ask for a sandbox per tool call, and this backend serves one | shipped — `call_id` reaches the container name, the registry entry and the disposal's label filter; `assert_call_scope_conformance` runs against a real engine in `docker-live.yml`, and a conversation-scoped key keeps the name and labels it already had | [#436](https://github.com/sokolaidev/maf-extensions/issues/436) (closed) |
 | Docker declares RECLAIM and measures confinement through trusted engine observations | implemented — rootfs diff plus a separate Linux observer for mounted storage and process birth identities; OS-independent core comparison and guest-access refusal | [#980](https://github.com/sokolaidev/maf-extensions/issues/980) (closed) by [#1037](https://github.com/sokolaidev/maf-extensions/pull/1037) (merged) |
 | `FILES_IN` placement uses the daemon's root authority despite guest-owned entries | documented — a parent swapped after the path check can redirect a write beyond the guest's reach; the REACH write probe measures the landed result, not placement authority. The window remains open | [#967](https://github.com/sokolaidev/maf-extensions/issues/967) (closed) by [#1048](https://github.com/sokolaidev/maf-extensions/pull/1048) (merged); [#456](https://github.com/sokolaidev/maf-extensions/issues/456) (open) for closing the window |
 | Rootfs-only pull surface; mounted paths are outside its absence guarantee | documented — creation tests forbid volume, mount and tmpfs flags in both network modes; no runtime mount detection | [#944](https://github.com/sokolaidev/maf-extensions/issues/944) (closed) by [#1034](https://github.com/sokolaidev/maf-extensions/pull/1034) (merged) |

@@ -101,6 +101,7 @@ Egress decisions are read before proxy removal and reported only once that remov
 | `reap(older_than, *, scope=None)` | an operator's age-based cleanup across scopes, optionally narrowed to one scope; returns `DockerReapResult` with workload, proxy and network removal counts and any failures |
 | `isolation` | `container`, unconditionally |
 | `declarations.egress_modes` | `{closed}`, or `{closed, allowlist}` when `egress_proxy_image` is set |
+| `declarations.isolation_scopes` | `{conversation, call}` — the key's `call_id` folds into the container name, the registry entry and the label a disposal selects on, so a spec asking for one sandbox per tool call is served rather than refused |
 | `declarations.capabilities` | `{EXEC, FILES_IN, FILES_OUT, FILES_DELETE, HOST_TOOLS}` |
 | `declarations.limits` | the transfer ceilings a spec may not exceed, per direction |
 | `declarations.os_families` | `{posix}` when the daemon reports `linux`, and `frozenset()` for every other answer — filled by `DockerSandboxBackend.create`, empty from the plain constructor |

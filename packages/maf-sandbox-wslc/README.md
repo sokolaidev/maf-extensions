@@ -67,6 +67,7 @@ Egress decisions are read before proxy removal and reported only once that remov
 | `isolation` | `container` — below the router's default `microvm` floor, so a host opts down explicitly with `min_isolation=Isolation.CONTAINER` |
 | `declarations.egress_modes` | `{closed}`, or `{closed, allowlist}` when `egress_proxy_image` is set — an internal network behind a filtering proxy, torn down with the sandbox |
 | `declarations.capabilities` | `{EXEC, FILES_IN}` — a command line and files written in; nothing more |
+| `declarations.isolation_scopes` | `{conversation, call}` — the key's `call_id` folds into the container name, the registry entry and the label a disposal selects on, so a spec asking for one sandbox per tool call is served rather than refused |
 | `reclaim(...)` | refused: no branch of this engine's path check reports an owner, so nothing licenses a root delete; dispose the sandbox |
 | `guest_principal` | diagnostic `root`, `unprivileged`, or `unknown`, from a bounded `id -u` probe at acquire |
 | `declarations.os_families` | `{posix}` — a constant, because `wslc` runs Linux containers and has no other guest to hand out |

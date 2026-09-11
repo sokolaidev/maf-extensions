@@ -36,12 +36,19 @@ SAMPLES = REPO_ROOT / "samples"
 #: the suite's own marker write lands as the host. It needs an image of that shape first.
 #: Appended rather than inserted — `SUITES[0]` and `SUITES[3]` are indexed positionally below,
 #: and a new member must not shift what those point at.
+#: CALL_SCOPE is last, and is the one suite here with **no gate to assert instead**: it reads
+#: nothing off `declarations`, so a backend that cannot serve
+#: :data:`~maf_sandbox.IsolationScope.CALL` has no refusal to check the way a withheld RECLAIM
+#: does. Every backend in this repository declares the scope, so requiring the call costs none
+#: of them anything; a future backend that withholds it needs a gate in the suite — or an entry
+#: here that reads the declaration — rather than an exemption written at this line.
 SUITES = (
     "assert_files_out_conformance",
     "assert_files_in_conformance",
     "assert_exec_conformance",
     "assert_files_delete_conformance",
     "assert_reclaim_conformance",
+    "assert_call_scope_conformance",
 )
 #: The measurement entry point that stands in for the FILES_DELETE assert when a backend
 #: withholds the capability: same probes, no gate, no verdict — findings rather than promises.
