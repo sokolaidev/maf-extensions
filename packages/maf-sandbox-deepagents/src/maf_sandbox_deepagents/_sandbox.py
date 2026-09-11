@@ -675,6 +675,10 @@ class MafSandbox(BaseSandbox):
         try:
             entry = await sandbox.stat_file(path, working_directory=STORAGE_BASE)
         except TimeoutError:
+            # Not condemned: a read changes nothing in the sandbox, and the bound is the
+            # backend's own, its refusal of an entry it cannot serve (ACAS reads a FIFO the
+            # guest planted as a regular file until the bound). The shell road condemns
+            # because a command whose end is unknown may still be running.
             logger.warning("%s: stat of %r timed out", self._id, path)
             return FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)
         except PermissionError as refused:
@@ -700,6 +704,7 @@ class MafSandbox(BaseSandbox):
             return FileDownloadResponse(path=path, error=over_cap)
         except TimeoutError:
             # Before the OSError branch: a timeout is one, and the path was not the problem.
+            # Not condemned, for the reason given at the stat: the file is failed alone.
             logger.warning("%s: read of %r timed out", self._id, path)
             return FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)
         except FileNotFoundError:

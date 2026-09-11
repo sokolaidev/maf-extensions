@@ -1021,6 +1021,28 @@ class TestFilesOut:
         assert response.error == "download failed; see the host log"
         assert "timed out" in caplog.text
 
+    def test_a_timed_out_plane_read_fails_that_file_alone(self, monkeypatch: pytest.MonkeyPatch):
+        """A read changes nothing in the sandbox: the rest of the batch is read, and it stays."""
+        fake = InProcessSandbox(seed_files={f"{WORK}/slow.txt": "slow", f"{WORK}/fine.txt": "fine"})
+        adapter, backend = _adapter(fake)
+        asyncio.run(adapter.aexecute("true"))
+        before = len(backend.disposed)
+        real_read = fake.read_file
+
+        async def read_file(path, *args, **kwargs):
+            if path.endswith("slow.txt"):
+                raise TimeoutError("the read did not finish")
+            return await real_read(path, *args, **kwargs)
+
+        monkeypatch.setattr(fake, "read_file", read_file)
+        slow, fine = asyncio.run(adapter.adownload_files(["slow.txt", "fine.txt"]))
+        again = asyncio.run(adapter.aexecute("cat fine.txt"))
+
+        assert slow.error == "download failed; see the host log"
+        assert fine.content == b"fine"
+        assert again.exit_code == 0
+        assert backend.disposed[before:] == []
+
     def test_a_cap_the_read_reports_is_named_by_the_cap_handed_down(
         self, monkeypatch: pytest.MonkeyPatch
     ):
