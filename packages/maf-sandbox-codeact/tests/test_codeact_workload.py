@@ -1213,8 +1213,6 @@ class TestAWithheldStreamIsNeverRead:
         assert out == "The program exited with status 0."
 
     def test_binary_output_renders_as_safe_model_text(self):
-        import json
-
         from maf_sandbox_codeact._tool import _format_result
 
         raw = bytes(range(256)) + b"\xe2\x82"
