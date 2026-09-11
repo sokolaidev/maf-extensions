@@ -691,11 +691,12 @@ class TestFilesIn:
         # Under the base: the plane. Outside it: the shell, never the plane.
         assert sorted(fake.contents) == [f"{WORK}/notes/todo.txt"]
         commands = [command for command, _, _ in fake.commands]
-        assert commands[0].startswith("mkdir -p /notes && if [ -d /notes/todo.txt ]")
-        assert "base64 -d >> /notes/todo.txt." in commands[1]
-        assert commands[2].startswith("mv -f /notes/todo.txt.") and commands[2].endswith(
-            ".part /notes/todo.txt"
+        assert commands[0].startswith(
+            "export LC_ALL=C; mkdir -p -- /notes && if [ -d /notes/todo.txt ]"
         )
+        assert "base64 -d >> /notes/todo.txt." in commands[1]
+        assert commands[2].startswith("export LC_ALL=C; mv -f -- /notes/todo.txt.")
+        assert commands[2].endswith(".part /notes/todo.txt")
         (read,) = asyncio.run(adapter.adownload_files([f"{WORK}/notes/todo.txt"]))
         assert read.content == b"1"
 
@@ -763,16 +764,18 @@ class TestFilesIn:
         assert response.error is None
         commands = [command for command, _, _ in fake.commands]
         staged = commands[0].removeprefix(
-            "mkdir -p /tmp && if [ -d /tmp/.deepagents_edit_x_old ]; then "
+            "export LC_ALL=C; mkdir -p -- /tmp && if [ -d /tmp/.deepagents_edit_x_old ]; then "
             "echo 'Is a directory' >&2; exit 1; fi && : > "
         )
         assert staged.startswith("/tmp/.deepagents_edit_x_old.") and staged.endswith(".part")
-        chunks = [c.removeprefix("printf %s ").split(" | ")[0] for c in commands[1:-1]]
+        chunks = [
+            c.removeprefix("export LC_ALL=C; printf %s ").split(" | ")[0] for c in commands[1:-1]
+        ]
         assert len(chunks) == 3
         assert all(len(chunk) <= 65536 for chunk in chunks)
         assert all(c.endswith(f"base64 -d >> {staged}") for c in commands[1:-1])
         assert base64.b64decode("".join(chunks)) == content
-        assert commands[-1] == f"mv -f {staged} /tmp/.deepagents_edit_x_old"
+        assert commands[-1] == f"export LC_ALL=C; mv -f -- {staged} /tmp/.deepagents_edit_x_old"
         # A second write over the same path stages beside it under its own name, so two
         # writers admitted together each land a whole file and the last one stands.
         asyncio.run(adapter.aupload_files([("/tmp/.deepagents_edit_x_old", b"again")]))
@@ -933,8 +936,8 @@ class TestFilesOut:
 
         assert response.content == b"# history\n"
         probe, read = (command for command, _, _ in fake.commands)
-        assert probe.startswith("if [ ! -e /conversation_history/s.md ]")
-        assert read == "base64 < /conversation_history/s.md"
+        assert probe.startswith("export LC_ALL=C; if [ ! -e /conversation_history/s.md ]")
+        assert read == "export LC_ALL=C; base64 < /conversation_history/s.md"
 
     @pytest.mark.parametrize(
         ("answer", "error"),

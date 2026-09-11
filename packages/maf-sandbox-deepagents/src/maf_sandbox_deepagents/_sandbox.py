@@ -624,6 +624,11 @@ class MafSandbox(BaseSandbox):
             self._log_unfinished("shell write", path, unfinished)
             self._condemn(call)
             raise _BatchLost() from None
+        except SandboxShellTransferFailed as failed:
+            # The command ended and said something the road does not read as a refusal: a
+            # missing utility, an I/O error. The file did not land; the sandbox is whole.
+            logger.warning("%s: shell write of %r failed: %s", self._id, path, failed)
+            return _UPLOAD_FAILED
         except asyncio.CancelledError:
             self._condemn(call)
             raise
