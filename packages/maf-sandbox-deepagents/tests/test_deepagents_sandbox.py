@@ -8,6 +8,7 @@ wiring, not a posture a host would choose.
 from __future__ import annotations
 
 import asyncio
+import base64
 import dataclasses
 import logging
 import threading
@@ -349,8 +350,9 @@ class TestFilesIn:
         assert fake.contents[f"{WORK}/main.bicep"] == b"param x string"
         assert fake.contents[f"{WORK}/sub/two.txt"] == b"2"
 
-    def test_paths_are_guest_paths_under_the_base(self):
-        """Deep Agents' file tools spell paths absolutely; the base is where they must land."""
+    def test_paths_are_guest_paths_and_the_base_is_the_file_planes_reach(self):
+        """Deep Agents' file tools spell paths absolutely; under the base the file plane serves
+        them, and a relative path that climbs out of it is the plane's own refusal."""
         fake = InProcessSandbox()
         adapter, _ = _adapter(fake)
 
@@ -367,11 +369,61 @@ class TestFilesIn:
         assert [(r.path, r.error) for r in responses] == [
             (f"{WORK}/notes/todo.txt", None),
             ("../etc/passwd", "invalid_path"),
-            ("/notes/todo.txt", "invalid_path"),
+            ("/notes/todo.txt", None),
         ]
+        # Under the base: the plane. Outside it: the shell, never the plane.
         assert sorted(fake.contents) == [f"{WORK}/notes/todo.txt"]
+        commands = [command for command, _, _ in fake.commands]
+        assert commands[0].startswith("mkdir -p /notes && : > /notes/todo.txt")
+        assert "base64 -d >> /notes/todo.txt" in commands[1]
         (read,) = asyncio.run(adapter.adownload_files([f"{WORK}/notes/todo.txt"]))
         assert read.content == b"1"
+
+    def test_a_shell_upload_carries_the_bytes_in_chunks_the_shell_can_take(self):
+        """Deep Agents' large-edit temporaries land under `/tmp`, outside the base, whole."""
+        fake = InProcessSandbox()
+        adapter, _ = _adapter(fake)
+        content = bytes(range(256)) * 400  # 100 KiB: three chunks
+        adapter = MafSandbox(
+            adapter.router,
+            KEY,
+            dataclasses.replace(
+                adapter.spec,
+                files_in=TransferLimits(
+                    max_bytes_per_file=200_000, max_total_bytes=200_000, max_files=8
+                ),
+            ),
+        )
+
+        (response,) = asyncio.run(adapter.aupload_files([("/tmp/.deepagents_edit_x_old", content)]))
+
+        assert response.error is None
+        commands = [command for command, _, _ in fake.commands]
+        assert commands[0] == "mkdir -p /tmp && : > /tmp/.deepagents_edit_x_old"
+        chunks = [c.removeprefix("printf %s ").split(" | ")[0] for c in commands[1:]]
+        assert len(chunks) == 3
+        assert all(len(chunk) <= 65536 for chunk in chunks)
+        assert base64.b64decode("".join(chunks)) == content
+
+    def test_what_the_shell_refuses_comes_back_by_code(self):
+        class Refusing(InProcessSandbox):
+            async def exec(self, command, *, working_directory, timeout):
+                await super().exec(command, working_directory=working_directory, timeout=timeout)
+                return ExecResult(
+                    stdout="", stderr="sh: can't create /etc/x: Permission denied", exit_code=1
+                )
+
+        adapter, _ = _adapter(Refusing())
+        (response,) = asyncio.run(adapter.aupload_files([("/etc/x", b"1")]))
+        assert response.error == "permission_denied"
+
+    def test_the_shell_road_needs_a_backend_that_bounds_output(self):
+        class Unbounded(InProcessSandbox):
+            exec_bounded = None  # type: ignore[assignment]  # opts out of `BoundedExec`
+
+        adapter, _ = _adapter(Unbounded())
+        (response,) = asyncio.run(adapter.aupload_files([("/tmp/x", b"1")]))
+        assert response.error is not None and "outside the storage base" in response.error
 
     def test_a_batch_over_max_files_is_refused_whole_before_anything_crosses(self):
         fake = InProcessSandbox()
@@ -446,6 +498,66 @@ class TestFilesOut:
             ("there.txt", None),
         ]
         assert responses[-1].content == b"content"
+
+    def test_a_download_outside_the_base_goes_through_the_shell(self):
+        """Deep Agents reads its offloaded history back from `/conversation_history`."""
+        encoded = base64.b64encode(b"# history\n").decode()
+        fake = InProcessSandbox(
+            outputs={"wc -c": "10\n", "base64 <": encoded[:8] + "\n" + encoded[8:]}
+        )
+        adapter, _ = _adapter(fake)
+
+        (response,) = asyncio.run(adapter.adownload_files(["/conversation_history/s.md"]))
+
+        assert response.content == b"# history\n"
+        probe, read = (command for command, _, _ in fake.commands)
+        assert probe.startswith("if [ ! -e /conversation_history/s.md ]")
+        assert read == "base64 < /conversation_history/s.md"
+
+    @pytest.mark.parametrize(
+        ("answer", "error"),
+        [
+            ("missing", "file_not_found"),
+            ("directory", "is_directory"),
+            ("other", "invalid_path"),
+            ("unreadable", "permission_denied"),
+        ],
+    )
+    def test_the_shell_probe_answers_by_code(self, answer: str, error: str):
+        adapter, _ = _adapter(InProcessSandbox(outputs={"wc -c": f"{answer}\n"}))
+        (response,) = asyncio.run(adapter.adownload_files(["/tmp/x"]))
+        assert response.error == error
+
+    def test_a_shell_read_over_the_cap_is_refused_before_and_after_the_read(self):
+        fake = InProcessSandbox(
+            outputs={"wc -c": "3\n", "base64 <": base64.b64encode(b"grown!").decode()}
+        )
+        adapter, _ = _adapter(fake)
+        adapter = MafSandbox(
+            adapter.router,
+            KEY,
+            dataclasses.replace(
+                adapter.spec,
+                files_out=TransferLimits(max_bytes_per_file=4, max_total_bytes=8, max_files=8),
+            ),
+        )
+
+        (grown,) = asyncio.run(adapter.adownload_files(["/tmp/grew"]))
+        assert grown.error is not None and "max_bytes_per_file" in grown.error
+
+        big = InProcessSandbox(outputs={"wc -c": "5\n"})
+        adapter, _ = _adapter(big)
+        adapter = MafSandbox(
+            adapter.router,
+            KEY,
+            dataclasses.replace(
+                adapter.spec,
+                files_out=TransferLimits(max_bytes_per_file=4, max_total_bytes=8, max_files=8),
+            ),
+        )
+        (refused,) = asyncio.run(adapter.adownload_files(["/tmp/big"]))
+        assert refused.error is not None and "max_bytes_per_file" in refused.error
+        assert len(big.commands) == 1  # refused on the probe, never read
 
     def test_a_read_that_comes_back_over_the_cap_is_refused_after_the_fact(self):
         """The protocol has the caller re-count: a backend that buffers first can only refuse late."""

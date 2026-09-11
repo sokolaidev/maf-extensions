@@ -49,7 +49,13 @@ def main() -> None:
 
     root = Path(__file__).resolve().parent.parent
     packages = []
-    for name in ("maf-sandbox", "maf-sandbox-docker", "maf-sandbox-codeact", "maf-sandbox-bicep"):
+    for name in (
+        "maf-sandbox",
+        "maf-sandbox-docker",
+        "maf-sandbox-codeact",
+        "maf-sandbox-bicep",
+        "maf-sandbox-deepagents",
+    ):
         project = tomllib.loads(
             (root / "packages" / name / "pyproject.toml").read_text(encoding="utf-8")
         )["project"]

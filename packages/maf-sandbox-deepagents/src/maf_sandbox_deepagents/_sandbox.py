@@ -10,19 +10,24 @@ is still keyed from the host's request context and purged with the conversation.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
 import math
+import posixpath
+import shlex
 import threading
 import time
 from collections.abc import Coroutine
+from pathlib import PurePosixPath
 from typing import Any
 
 from deepagents.backends.protocol import (
     FILE_NOT_FOUND,
     INVALID_PATH,
     IS_DIRECTORY,
+    PERMISSION_DENIED,
     ExecuteResponse,
     FileDownloadResponse,
     FileUploadResponse,
@@ -110,6 +115,13 @@ _UPLOAD_FAILED = "upload failed; see the host log"
 _DOWNLOAD_FAILED = "download failed; see the host log"
 _SIZE_UNKNOWN = "the sandbox could not report the file's size"
 _TOO_MANY_FILES = "the batch has more files than {direction}.max_files allows"
+_NO_SHELL_ROAD = (
+    "the path is outside the storage base and the backend cannot run a bounded command to reach it"
+)
+
+#: Raw bytes per command on the shell road. Base64 of it is 64 KiB, under the 128 KiB Linux
+#: allows one argument, and ``sh -c`` receives the whole command as one.
+_SHELL_CHUNK_BYTES = 48 * 1024
 _OVER_FILE_CAP = "the file is larger than {direction}.max_bytes_per_file"
 _OVER_TOTAL_CAP = "the batch would exceed {direction}.max_total_bytes"
 
@@ -205,6 +217,15 @@ def _response(result: ExecResult) -> ExecuteResponse:
     return ExecuteResponse(output=output, exit_code=result.exit_code, truncated=False)
 
 
+def _shell_error(stderr: str) -> str:
+    """The Deep Agents code for a failed shell write, read off what the shell said."""
+    if "Permission denied" in stderr:
+        return PERMISSION_DENIED
+    if "Is a directory" in stderr:
+        return IS_DIRECTORY
+    return INVALID_PATH
+
+
 class MafSandbox(BaseSandbox):
     """A :class:`~maf_sandbox.SandboxRouter` as a Deep Agents sandbox.
 
@@ -219,10 +240,12 @@ class MafSandbox(BaseSandbox):
     misconfigured host fails before an agent is built, not on its first command.
 
     Paths are guest paths, as they are for every sandbox Deep Agents ships: the agent's file
-    tools name them absolutely, and the adapter accepts an absolute path inside ``spec.work_dir``
-    or a relative one under it and refuses anything else as ``invalid_path``. The host puts
-    ``spec.work_dir`` in the prompt so the model knows where its files are; a spec leaving the
-    base to the backend is refused, because nothing could then tell the model.
+    tools name them absolutely. Inside ``spec.work_dir`` the adapter's upload and download go
+    through the backend's file plane; outside it, where Deep Agents keeps its offloaded history
+    and its large-edit temporaries, they go through the shell the agent already has, in base64
+    chunks, under the same caps. The host puts ``spec.work_dir`` in the prompt so the model
+    knows where its own files are; a spec leaving the base to the backend is refused, because
+    nothing could then tell the model.
 
     Deep Agents' derived file tools (``ls``, ``read_file``, ``write_file``, ``edit_file``,
     ``glob``, ``grep``) run ``python3`` inside the guest, ``write_file`` for the preflight that
@@ -322,6 +345,14 @@ class MafSandbox(BaseSandbox):
             logger.exception("%s: the sandbox could not be acquired", self._id)
             return None
 
+    def _inside_base(self, path: str) -> bool:
+        """Whether ``path`` names something under the storage base, the file plane's reach."""
+        if not path.startswith("/"):
+            return True
+        base = PurePosixPath(self._spec.work_dir or "/")
+        normalized = PurePosixPath(posixpath.normpath(path))
+        return normalized == base or base in normalized.parents
+
     # --- execute ---------------------------------------------------------------------------
 
     async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
@@ -385,28 +416,68 @@ class MafSandbox(BaseSandbox):
         for path, content in files:
             # Checked before the write it would have prevented, and counted only for what
             # crossed: a refused file leaves the budget where it was.
+            error: str | None
             if len(content) > limits.max_bytes_per_file:
-                refusal = _OVER_FILE_CAP.format(direction="files_in")
-                responses.append(FileUploadResponse(path=path, error=refusal))
-                continue
-            if sent + len(content) > limits.max_total_bytes:
-                refusal = _OVER_TOTAL_CAP.format(direction="files_in")
-                responses.append(FileUploadResponse(path=path, error=refusal))
-                continue
-            try:
-                await sandbox.write_file(path, content, working_directory=STORAGE_BASE)
-            except (ValueError, NotADirectoryError) as refused:
-                # The file plane's own refusals — outside work_dir, through a link, a parent
-                # that is a file — are the guest's shape, safe to name by code.
-                logger.info("%s: upload of %r refused: %s", self._id, path, refused)
-                responses.append(FileUploadResponse(path=path, error=INVALID_PATH))
-            except Exception:
-                logger.exception("%s: upload of %r failed", self._id, path)
-                responses.append(FileUploadResponse(path=path, error=_UPLOAD_FAILED))
+                error = _OVER_FILE_CAP.format(direction="files_in")
+            elif sent + len(content) > limits.max_total_bytes:
+                error = _OVER_TOTAL_CAP.format(direction="files_in")
+            elif self._inside_base(path):
+                error = await self._upload_via_plane(sandbox, path, content)
+            elif isinstance(sandbox, BoundedExec):
+                error = await self._upload_via_shell(sandbox, path, content)
             else:
+                error = _NO_SHELL_ROAD
+            if error is None:
                 sent += len(content)
-                responses.append(FileUploadResponse(path=path))
+            responses.append(FileUploadResponse(path=path, error=error))
         return responses
+
+    async def _upload_via_plane(self, sandbox: Sandbox, path: str, content: bytes) -> str | None:
+        """Write under the base through the file plane; the error code, or ``None``."""
+        try:
+            await sandbox.write_file(path, content, working_directory=STORAGE_BASE)
+        except (ValueError, NotADirectoryError) as refused:
+            # The file plane's own refusals — through a link, a parent that is a file — are
+            # the guest's shape, safe to name by code.
+            logger.info("%s: upload of %r refused: %s", self._id, path, refused)
+            return INVALID_PATH
+        except Exception:
+            logger.exception("%s: upload of %r failed", self._id, path)
+            return _UPLOAD_FAILED
+        return None
+
+    async def _upload_via_shell(
+        self, sandbox: BoundedExec, path: str, content: bytes
+    ) -> str | None:
+        """Write outside the base through the shell the agent already has.
+
+        Deep Agents writes its offloaded history under ``/conversation_history`` and its
+        large-edit temporaries under ``/tmp``, which the file plane, confined to the base,
+        cannot reach; ``execute`` can, so this widens nothing. The caps were applied by the
+        caller. Base64 in chunks, because a command is one argument to ``sh -c``.
+        """
+        target = shlex.quote(path)
+        parent = shlex.quote(posixpath.dirname(path) or "/")
+        encoded = base64.b64encode(content).decode("ascii")
+        step = 4 * (_SHELL_CHUNK_BYTES // 3)
+        commands = [f"mkdir -p {parent} && : > {target}"]
+        commands += [
+            f"printf %s {encoded[start : start + step]} | base64 -d >> {target}"
+            for start in range(0, len(encoded), step)
+        ]
+        for command in commands:
+            result = await sandbox.exec_bounded(
+                command,
+                working_directory=STORAGE_BASE,
+                timeout=self._timeout,
+                max_output_bytes=4096,
+            )
+            if result.exit_code != 0:
+                logger.info(
+                    "%s: shell write of %r failed: %s", self._id, path, result.stderr.strip()
+                )
+                return _shell_error(result.stderr)
+        return None
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         return self._sync.run(self.aupload_files(files))
@@ -422,6 +493,10 @@ class MafSandbox(BaseSandbox):
         over_cap = (_OVER_FILE_CAP if cap == per_file else _OVER_TOTAL_CAP).format(
             direction="files_out"
         )
+        if not self._inside_base(path):
+            if not isinstance(sandbox, BoundedExec):
+                return FileDownloadResponse(path=path, error=_NO_SHELL_ROAD)
+            return await self._download_via_shell(sandbox, path, cap=cap, over_cap=over_cap)
         try:
             entry = await sandbox.stat_file(path, working_directory=STORAGE_BASE)
         except TimeoutError:
@@ -459,6 +534,60 @@ class MafSandbox(BaseSandbox):
         if len(content) > cap:
             # The protocol has the caller re-count: a file can grow after the stat, and a
             # backend whose SDK buffers the whole response can only refuse after the fact.
+            return FileDownloadResponse(path=path, error=over_cap)
+        return FileDownloadResponse(path=path, content=content)
+
+    async def _download_via_shell(
+        self, sandbox: BoundedExec, path: str, *, cap: int, over_cap: str
+    ) -> FileDownloadResponse:
+        """Read outside the base through the shell, under ``cap``; see :meth:`_upload_via_shell`."""
+        target = shlex.quote(path)
+        probe = (
+            f"if [ ! -e {target} ]; then echo missing; "
+            f"elif [ -d {target} ]; then echo directory; "
+            f"elif [ ! -f {target} ]; then echo other; "
+            f"elif [ ! -r {target} ]; then echo unreadable; "
+            f"else wc -c < {target}; fi"
+        )
+        probed = await sandbox.exec_bounded(
+            probe, working_directory=STORAGE_BASE, timeout=self._timeout, max_output_bytes=4096
+        )
+        answer = probed.stdout.strip()
+        if probed.exit_code != 0 or not answer:
+            logger.warning("%s: probe of %r failed: %s", self._id, path, probed.stderr.strip())
+            return FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)
+        if answer == "missing":
+            return FileDownloadResponse(path=path, error=FILE_NOT_FOUND)
+        if answer == "directory":
+            return FileDownloadResponse(path=path, error=IS_DIRECTORY)
+        if answer == "other":
+            return FileDownloadResponse(path=path, error=INVALID_PATH)
+        if answer == "unreadable":
+            return FileDownloadResponse(path=path, error=PERMISSION_DENIED)
+        if not answer.isdigit():
+            logger.warning("%s: probe of %r answered %r", self._id, path, answer)
+            return FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)
+        if int(answer) > cap:
+            return FileDownloadResponse(path=path, error=over_cap)
+        try:
+            # Base64 is 4/3 of the file plus line breaks; the budget bounds a file that grew.
+            read = await sandbox.exec_bounded(
+                f"base64 < {target}",
+                working_directory=STORAGE_BASE,
+                timeout=self._timeout,
+                max_output_bytes=cap * 2 + 4096,
+            )
+        except SandboxExecOutputLimitExceeded:
+            return FileDownloadResponse(path=path, error=over_cap)
+        if read.exit_code != 0:
+            logger.warning("%s: shell read of %r failed: %s", self._id, path, read.stderr.strip())
+            return FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)
+        try:
+            content = base64.b64decode("".join(read.stdout.split()), validate=True)
+        except ValueError:
+            logger.warning("%s: shell read of %r returned no base64", self._id, path)
+            return FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)
+        if len(content) > cap:
             return FileDownloadResponse(path=path, error=over_cap)
         return FileDownloadResponse(path=path, content=content)
 

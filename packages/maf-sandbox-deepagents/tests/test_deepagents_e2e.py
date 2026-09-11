@@ -109,6 +109,41 @@ def test_a_timeout_reports_and_the_next_command_starts_cold():
     asyncio.run(scenario())
 
 
+def test_paths_outside_the_base_go_through_the_shell_and_deep_agents_large_edits_work():
+    """Deep Agents keeps offloaded history under `/conversation_history` and large-edit
+    temporaries under `/tmp`; neither is under the base, so both take the shell road."""
+    adapter = _adapter(_IMAGE, "outside")
+    content = bytes(range(256)) * 800  # 200 KiB, five chunks
+
+    async def scenario():
+        try:
+            (uploaded,) = await adapter.aupload_files([("/tmp/deepagents-e2e/blob.bin", content)])
+            assert uploaded.error is None, uploaded
+            counted = await adapter.aexecute("wc -c < /tmp/deepagents-e2e/blob.bin")
+            assert counted.output.strip() == str(len(content))
+            blob, folder, absent = await adapter.adownload_files(
+                ["/tmp/deepagents-e2e/blob.bin", "/tmp/deepagents-e2e", "/tmp/deepagents-e2e/no"]
+            )
+            assert blob.content == content
+            assert folder.error == "is_directory"
+            assert absent.error == "file_not_found"
+
+            # Deep Agents' own `edit` over 50 KB of payload uploads temporaries under `/tmp`
+            # and replaces server-side; this is the derived tool the shell road exists for.
+            big = f"{_WORK}/big.txt"
+            written = await adapter.awrite(big, "a" * 60_000)
+            assert written.error is None, written
+            edited = await adapter.aedit(big, "a" * 60_000, "b" * 60_000)
+            assert edited.error is None, edited
+            (after,) = await adapter.adownload_files([big])
+            assert after.content == b"b" * 60_000
+        finally:
+            closed = await adapter.aclose()
+            assert closed is True
+
+    asyncio.run(scenario())
+
+
 def test_output_past_the_budget_is_dropped_and_the_sandbox_stays_usable():
     adapter = _adapter(_IMAGE, "budget", max_output_bytes=4096)
 
