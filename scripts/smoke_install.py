@@ -30,6 +30,7 @@ _PACKAGES = {
     "maf-sandbox-acas": "maf_sandbox_acas",
     "maf-sandbox-bicep": "maf_sandbox_bicep",
     "maf-sandbox-codeact": "maf_sandbox_codeact",
+    "maf-sandbox-deepagents": "maf_sandbox_deepagents",
     "maf-sandbox-docker": "maf_sandbox_docker",
     "maf-sandbox-otel": "maf_sandbox_otel",
     "maf-sandbox-wslc": "maf_sandbox_wslc",
@@ -469,6 +470,35 @@ def _smoke_maf_sandbox_wslc() -> str:
     return "backend constructs, declares its egress, and ships the proxy recipe"
 
 
+def _smoke_maf_sandbox_deepagents() -> str:
+    from deepagents.backends.protocol import SandboxBackendProtocol, execute_accepts_timeout
+    from maf_sandbox import (
+        Capability,
+        Isolation,
+        SandboxCapabilityNotSupported,
+        SandboxKey,
+        SandboxRouter,
+    )
+    from maf_sandbox.testing import InProcessSandboxBackend
+    from maf_sandbox_deepagents import REQUIRED_CAPABILITIES, MafSandbox, deepagents_spec
+
+    if not issubclass(MafSandbox, SandboxBackendProtocol):
+        raise SystemExit("FAIL: MafSandbox is not a SandboxBackendProtocol, so no execute tool")
+    if not execute_accepts_timeout(MafSandbox):
+        raise SystemExit("FAIL: execute() does not take the per-command timeout Deep Agents passes")
+    spec = deepagents_spec("smoke:image")
+    if not REQUIRED_CAPABILITIES <= spec.requires or Capability.FILES_OUT not in spec.requires:
+        raise SystemExit(f"FAIL: the spec requires {sorted(spec.requires)}")
+    router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE)
+    try:
+        MafSandbox(router, SandboxKey(scope="s", thread_id="t", agent_dir="a"), spec)
+    except SandboxCapabilityNotSupported:  # the fake declares no FILES_OUT
+        pass
+    else:
+        raise SystemExit("FAIL: a backend without FILES_OUT was admitted")
+    return "adapter constructs, carries a timeout, and a backend lacking FILES_OUT is refused"
+
+
 def _smoke_maf_sandbox_docker() -> str:
     from maf_sandbox import Capability, Egress, Isolation
     from maf_sandbox_docker import (
@@ -517,6 +547,7 @@ _SMOKES = {
     "maf-sandbox-acas": _smoke_maf_sandbox_acas,
     "maf-sandbox-bicep": _smoke_maf_sandbox_bicep,
     "maf-sandbox-codeact": _smoke_maf_sandbox_codeact,
+    "maf-sandbox-deepagents": _smoke_maf_sandbox_deepagents,
     "maf-sandbox-docker": _smoke_maf_sandbox_docker,
     "maf-sandbox-otel": _smoke_maf_sandbox_otel,
     "maf-sandbox-wslc": _smoke_maf_sandbox_wslc,

@@ -63,6 +63,17 @@
         }
       ]
     },
+    "packages/maf-sandbox-deepagents": {
+      "package-name": "maf-sandbox-deepagents",
+      "exclude-paths": ["packages/maf-sandbox-deepagents/tests"],
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "/uv.lock",
+          "jsonpath": "$.package[?(@.name.value=='maf-sandbox-deepagents')].version"
+        }
+      ]
+    },
     "packages/maf-sandbox-docker": {
       "package-name": "maf-sandbox-docker",
       "exclude-paths": ["packages/maf-sandbox-docker/tests"],

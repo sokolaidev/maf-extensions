@@ -1,0 +1,80 @@
+[project]
+name = "maf-sandbox-deepagents"
+version = "0.0.0"
+description = "A maf-sandbox router as a Deep Agents sandbox backend — any backend the router admits (Docker, ACA Sandboxes) behind LangChain's BaseSandbox, with the router's isolation floor and egress policy still enforced."
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+authors = [{ name = "SOKOLAI BV", email = "info@sokolai.com" }]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = [
+    "deepagents",
+    "langchain",
+    "langgraph",
+    "sandbox",
+    "isolation",
+    "ai-agents",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Typing :: Typed",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    # The router and the protocol this adapter drives. Upper-bounded because maf-sandbox has
+    # not reached a stable API, so every release before 1.0.0 may include breaking changes;
+    # moving either end of this range has an order to it — see RELEASING.md. The number is
+    # what `scripts/set_dependents_range.py` moves.
+    "maf-sandbox>=0.38.0,<0.39",
+    # `BaseSandbox` and the response types this adapter answers with. Deep Agents changes its
+    # backend protocol between 0.x minors (0.6 and 0.7 both did), so one minor is admitted.
+    "deepagents>=0.7.13,<0.8",
+]
+
+[project.urls]
+Homepage = "https://www.sokol.ai"
+Source = "https://github.com/sokolaidev/maf-extensions"
+Issues = "https://github.com/sokolaidev/maf-extensions/issues"
+
+[tool.uv.sources]
+maf-sandbox = { workspace = true }
+
+[tool.uv.build-backend]
+module-name = "maf_sandbox_deepagents"
+module-root = "src"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "D100", "D101", "D103", "D104", "E501", "W505", "TD", "FIX", "ERA001"]
+
+[tool.ruff.lint.per-file-ignores]
+# ruff resolves [tool.ruff] per file by the NEAREST ancestor pyproject.toml that has one, so
+# this package carries its own copy rather than inheriting one from the workspace root.
+"tests/**" = ["D101", "D103", "E501", "W505"]
+# `examples/` holds a sample written to the root's rules, parked here until this package is on the
+# index; it keeps those rules so it moves to `samples/` unchanged.
+"examples/**" = ["E501", "W505", "I001"]
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 100
+
+# Self-contained type checking, scoped to this package — strict. `tests/` stays out (fakes,
+# not signal for a strict checker).
+[tool.pyright]
+include = ["src"]
+typeCheckingMode = "strict"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["uv_build>=0.11.24,<0.12.0"]
+build-backend = "uv_build"

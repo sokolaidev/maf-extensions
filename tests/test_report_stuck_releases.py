@@ -37,6 +37,7 @@ _RELEASES = {
     "maf-sandbox-acas": "0.13.0",
     "maf-sandbox-bicep": "0.9.6",
     "maf-sandbox-codeact": "0.7.4",
+    "maf-sandbox-deepagents": "0.1.0",
     "maf-sandbox-docker": "0.8.1",
     "maf-sandbox-otel": "0.1.0",
     "maf-sandbox-wslc": "0.11.2",

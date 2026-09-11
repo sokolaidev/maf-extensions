@@ -121,16 +121,22 @@ jobs:
           docker pull "$MAF_SANDBOX_DOCKER_OBSERVER_IMAGE"
           uv run pytest -q -ra packages/maf-sandbox-docker/tests/test_docker_fingerprint_e2e.py
 
-      - name: Measure Bicep confinement and module cache cleanup
+      - name: Measure Bicep confinement and module cache cleanup, and the Deep Agents adapter
         env:
           MAF_SANDBOX_BICEP_E2E_IMAGE: bicep-sandbox:ci
           MAF_SANDBOX_DOCKER_OBSERVER_IMAGE: python:3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285
+          # The adapter's suite shares this step for the Bicep image it builds: its compiler round
+          # trip runs there, and Deep Agents' own file tools, which run python3 in the guest, on
+          # the CodeAct image the first step already pulled.
+          MAF_SANDBOX_DEEPAGENTS_E2E_IMAGE: mcr.microsoft.com/azurelinux/base/python:3.12
+          MAF_SANDBOX_DEEPAGENTS_E2E_BICEP_IMAGE: bicep-sandbox:ci
         run: |
           set -euo pipefail
           docker build -t "$MAF_SANDBOX_BICEP_E2E_IMAGE" images/bicep-sandbox
           uv run pytest -q -ra \
             packages/maf-sandbox-bicep/tests/test_bicep_cache_e2e.py \
-            packages/maf-sandbox-bicep/tests/test_bicep_confinement_e2e.py
+            packages/maf-sandbox-bicep/tests/test_bicep_confinement_e2e.py \
+            packages/maf-sandbox-deepagents/tests/test_deepagents_e2e.py
 
       - name: Measure confinement on a rootless engine
         run: |

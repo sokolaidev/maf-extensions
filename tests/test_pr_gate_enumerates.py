@@ -66,6 +66,7 @@ class TestTheGateEnumerates:
             "maf-sandbox-acas",
             "maf-sandbox-bicep",
             "maf-sandbox-codeact",
+            "maf-sandbox-deepagents",
             "maf-sandbox-docker",
             "maf-sandbox-otel",
             "maf-sandbox-wslc",

@@ -1,6 +1,6 @@
 name: Publish
 
-# Seven packages share this workflow, so the run's own title has to say which one. Without a
+# Eight packages share this workflow, so the run's own title has to say which one. Without a
 # `run-name` every run is called "Publish", and a deployment-review prompt — in the mobile
 # app especially, where the reviewer sees the title and the job list and nothing else — asks
 # for approval to upload without naming what.
@@ -22,6 +22,7 @@ on:
       - "maf-sandbox-acas-v*"
       - "maf-sandbox-bicep-v*"
       - "maf-sandbox-codeact-v*"
+      - "maf-sandbox-deepagents-v*"
       - "maf-sandbox-docker-v*"
       - "maf-sandbox-otel-v*"
       - "maf-sandbox-wslc-v*"
@@ -37,6 +38,7 @@ on:
           - maf-sandbox-acas
           - maf-sandbox-bicep
           - maf-sandbox-codeact
+          - maf-sandbox-deepagents
           - maf-sandbox-docker
           - maf-sandbox-otel
           - maf-sandbox-wslc

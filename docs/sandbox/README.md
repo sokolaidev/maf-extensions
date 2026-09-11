@@ -48,6 +48,8 @@ The toolkit also ships `agt-sandbox` — five interchangeable providers (Docker,
 
 That the same nouns keep reappearing across all of these — a spec, an allowlist, a mount, a set of interchangeable backends — is the argument the upstream feature request makes: they belong in a contract the framework owns, so that a workload can be written once and every runtime can declare what it truthfully is. Until such a contract exists, this suite is one answer to that, deliberately a small one, and shaped so the others are backends beneath it rather than alternatives beside it.
 
+The shape also runs the other way. [LangChain's Deep Agents](https://docs.langchain.com/oss/python/deepagents/sandboxes) defines a sandbox as an object the host constructs and the agent's `execute` tool runs in, with cloud providers behind it; [`maf-sandbox-deepagents`](../../packages/maf-sandbox-deepagents/) puts this router behind that object, so a LangChain or LangGraph agent gets Docker or ACA Sandboxes through it with the floor, the egress mode and the purge still the router's. What that direction gives up — the kinds, declared outputs, labels — is that package's README.
+
 ## What the suite is
 
 **A backend-neutral protocol that lets an agent's tool run its work in a sandbox — any sandbox — while the host decides which sandboxes qualify.**
