@@ -205,6 +205,51 @@ def test_a_fresh_process_drains_an_orphan_including_failed_setup(engine, failed_
     asyncio.run(scenario())
 
 
+def test_a_disposal_files_a_leftover_window_under_the_key_that_ran_it(engine):
+    """A key addressed to a conversation also sweeps leftovers from the calls inside it.
+
+    That key names no call, so filing the window under it would put the conversation's name on
+    decisions a call made.
+    """
+    conversation = SandboxKey(scope="scope", thread_id="thread", agent_dir="agent")
+    call = replace(conversation, call_id="call-1")
+
+    async def scenario():
+        await engine.backend()._ensure_proxy("workload", call, _SPEC)
+        reader = engine.backend()
+        events = []
+        reader.observe_egress(events.append)
+        await reader.dispose(conversation)
+        assert [event.key for event in events] == [call]
+        assert events[0].decisions[0].host == "example.com"
+        assert not engine.rows
+
+    asyncio.run(scenario())
+
+
+def test_the_callers_key_still_answers_for_a_proxy_that_cannot_say_whose_it_is(engine):
+    """An oversized key is written as an empty label, and a hashed selector cannot be reversed.
+
+    A key-addressed disposal is the one caller that can name such a window anyway, and the
+    fallback above must not have cost it that.
+    """
+    key = SandboxKey(scope="scope", thread_id="thread", agent_dir="agent")
+
+    async def scenario():
+        await engine.backend()._ensure_proxy("workload", key, _SPEC)
+        labels = next(iter(engine.rows.values()))["Config"]["Labels"]
+        labels["maf-sandbox.key.v1"] = ""
+        reader = engine.backend()
+        events = []
+        reader.observe_egress(events.append)
+        await reader.dispose(key)
+        assert [event.key for event in events] == [key]
+        assert events[0].decisions[0].host == "example.com"
+        assert not engine.rows
+
+    asyncio.run(scenario())
+
+
 def test_scope_disposal_can_attribute_a_proxy_while_setup_is_waiting(engine):
     async def scenario():
         backend = engine.backend()

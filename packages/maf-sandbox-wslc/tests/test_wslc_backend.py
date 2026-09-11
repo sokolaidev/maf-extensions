@@ -2982,13 +2982,15 @@ class TestTheProxysOwnDecisionsReachARecord:
         assert seen[0].unreadable is None
 
     def test_absence_without_an_inspected_instance_does_not_invent_a_window(self):
+        """The proxy goes between the acquire and the teardown, which is what a host reboot or
+        somebody else's removal looks like from here: nothing answers for it, so the sweep has
+        no instance to say a window was lost for."""
         seen: list[EgressObserved] = []
         backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         absent = _WslcResult(1, b"", _NOT_FOUND.encode())
-        fake._responder = _machine(
-            running=[_AL], overrides={("container", "logs", "--tail"): absent}
-        )
+        machine = _machine(running=[_AL])
+        fake._responder = lambda args: absent if args[-1] == _AL_PROXY else machine(args)
         backend.observe_egress(seen.append)
         asyncio.run(backend.dispose(_KEY))
         assert seen == []
