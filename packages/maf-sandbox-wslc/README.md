@@ -59,7 +59,7 @@ Egress decisions are read before proxy removal and reported only once that remov
 
 | | |
 |---|---|
-| `acquire(key, spec)` | get-or-create, keyed `(scope, thread, agent)`. A running container is reused, a stopped one started, a missing one created — router-managed calls dispose it at cleanup, so the next call creates fresh |
+| `acquire(key, spec)` | get-or-create, keyed `(scope, thread, agent, call, kind)`. A running container is reused, a stopped one started, a missing one created — router-managed calls dispose it at cleanup, so the next call creates fresh. At `IsolationScope.CONVERSATION` the key's `call_id` is empty and one sandbox serves the conversation's calls; at `IsolationScope.CALL` it names the tool call, so no acquire repeats it and get-or-create finds nothing warm. |
 | `write_file(path, content, *, working_directory)` | a confined tar on stdin to `cp - <container>:/`, with guest-owned file and missing-directory entries |
 | `dispose(key, *, kind=None)` | Deletes the selected kind, or every kind when omitted; retained failures keep their kind for retries; includes proxies and networks |
 | `dispose_scope(scope, thread)` | delete every container for a conversation — **by label, read back from wslc**, not from process memory |

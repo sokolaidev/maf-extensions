@@ -167,7 +167,14 @@ def _key_prefix(key: SandboxKey) -> tuple[str, str, str, str]:
 
 def _sandbox_labels(key: SandboxKey, spec: SandboxSpec) -> dict[str, str]:
     """The labels a sandbox is created with — the same ones `dispose_scope` selects on."""
-    reserved = {_LABEL_SCOPE, _LABEL_THREAD, _LABEL_AGENT, _LABEL_KIND}
+    # `_LABEL_CALL` is reserved for the same reason as the other four, and the reason bites
+    # harder here than on the container backends: those namespace a spec's labels under a
+    # prefix, so a spec cannot spell an ownership label at all, while this service takes them
+    # flat. Without this, a *conversation*-scoped spec carrying `labels={"call": "call-a"}`
+    # writes that label onto its own sandbox — `_call_filters` adds nothing to override it at
+    # this scope — and a later call-scoped disposal for `call-a` selects scope, thread, agent
+    # and `call`, matches the conversation's sandbox, and deletes it.
+    reserved = {_LABEL_SCOPE, _LABEL_THREAD, _LABEL_AGENT, _LABEL_KIND, _LABEL_CALL}
     collisions = reserved.intersection(spec.labels)
     if collisions:
         raise ValueError(f"reserved sandbox labels: {', '.join(sorted(collisions))}")
@@ -1040,10 +1047,12 @@ class AcasSandboxBackend:
 
     def __init__(self, config: AcasSandboxConfig) -> None:
         self._config = config
-        # (scope, thread_id, agent_dir, kind) -> sandbox_id, for this process only.
+        # (scope, thread_id, agent_dir, call_id, kind) -> sandbox_id, for this process only.
         # Keyed on scope so sandboxes from one user's session cannot be reused or deleted by
         # a request in another's, and on kind so two workloads on one agent never share a
         # sandbox — the first spec to arrive would decide the image and egress for both.
+        # `call_id` is empty for a conversation and names one tool call at
+        # `IsolationScope.CALL`, so two calls never collapse onto one entry here.
         # `dispose_scope` treats this as a fast path, never as the source of truth — see its
         # docstring.
         self._registry: dict[tuple[str, str, str, str, str], _Held] = {}

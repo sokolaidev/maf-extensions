@@ -362,3 +362,52 @@ def test_decode_does_not_accept_a_different_key_with_the_same_safe_prefix(engine
         json.dumps(["other", _KEY.thread_id, _KEY.agent_dir, _KEY.call_id]).encode()
     ).decode()
     assert engine.module._key_from_labels(labels) is None
+
+
+def _payload(scope: str, thread: str, agent: str, call: str) -> str:
+    """The `maf-sandbox.key.v1` value for four fields, built the way `_key_label` builds it."""
+    encoded = json.dumps([scope, thread, agent, call], ensure_ascii=True).encode()
+    return base64.urlsafe_b64encode(encoded).decode("ascii")
+
+
+@pytest.mark.parametrize(
+    "label_call, payload_call",
+    [
+        ("call-b", "call-a"),  # both present, disagreeing
+        (None, "call-a"),  # payload names a call the ownership label does not
+        ("call-b", ""),  # a label on a record whose payload is conversation-scoped
+    ],
+    ids=["disagree", "label-absent", "payload-empty"],
+)
+def test_a_call_that_disagrees_with_its_ownership_label_is_not_attributed(
+    engine, label_call, payload_call
+):
+    """The call is a disposal selector, so a payload that disagrees with it must not recover.
+
+    Left unchecked, a reap reads the payload, believes the container belongs to a call that
+    never owned it, and drains and reports that call's egress window from another one's proxy.
+    """
+    key = SandboxKey(scope="scope", thread_id="thread", agent_dir="agent")
+    labels = engine.module._sandbox_labels(key, _SPEC)
+    if label_call is not None:
+        labels["maf-sandbox.call"] = engine.module._label_value(label_call)
+    labels["maf-sandbox.key.v1"] = _payload("scope", "thread", "agent", payload_call)
+
+    assert engine.module._key_from_labels(labels) is None
+
+
+def test_a_call_that_agrees_with_its_ownership_label_still_recovers(engine):
+    """The control: the check above must not refuse the records it exists to admit.
+
+    Both halves — a call-scoped record whose label matches, and a conversation-scoped one that
+    carries no call label at all, which is every container created before this backend served
+    the scope.
+    """
+    called = SandboxKey(scope="scope", thread_id="thread", agent_dir="agent", call_id="call-a")
+    conversation = SandboxKey(scope="scope", thread_id="thread", agent_dir="agent")
+    for key in (called, conversation):
+        labels = engine.module._sandbox_labels(key, _SPEC)
+        labels["maf-sandbox.key.v1"] = _payload(
+            key.scope, key.thread_id, key.agent_dir, key.call_id
+        )
+        assert engine.module._key_from_labels(labels) == key

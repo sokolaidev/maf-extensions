@@ -434,6 +434,18 @@ def _key_from_labels(labels: object) -> SandboxKey | None:
     strings = cast(list[str], parts)
     if any(_label_value(part) != owned.get(label) for label, part in zip(selectors, strings)):
         return None
+    # The call is an ownership selector too — a call-scoped disposal filters on it — so it owes
+    # the same agreement check as the three above, with the asymmetry the write side has:
+    # `_sandbox_labels` omits the label entirely for a conversation-scoped key, so an empty
+    # decoded call must find no label and a non-empty one must match. Unchecked, a record whose
+    # payload and label disagree still recovers a key, and a reap then reports and drains under
+    # a call that never owned the container.
+    call = owned.get(_LABEL_CALL)
+    if strings[3]:
+        if _label_value(strings[3]) != call:
+            return None
+    elif call is not None:
+        return None
     return SandboxKey(
         scope=strings[0], thread_id=strings[1], agent_dir=strings[2], call_id=strings[3]
     )
@@ -1217,8 +1229,10 @@ class DockerSandboxBackend:
         # until then, and that is what keeps an uninstrumented host from paying for the read:
         # every drain is a `docker logs` on a path an acquire waits on.
         self._egress_report: EgressReporter | None = None
-        # (scope, thread_id, agent_dir, kind) -> name: a purge fallback for when the listing
-        # fails, never the truth. Holds the last name acquired per key and kind.
+        # (scope, thread_id, agent_dir, call_id, kind) -> name: a purge fallback for when the
+        # listing fails, never the truth. Holds the last name acquired per key and kind, and
+        # `call_id` is part of that key — empty for a conversation, naming one tool call at
+        # `IsolationScope.CALL`, so two calls never collapse onto one entry here.
         self._registry: dict[tuple[str, str, str, str, str], str] = {}
         # Retry records do not refuse serving; the router owns that decision.
         self._undeleted: dict[tuple[str, str, str, str], set[str]] = {}

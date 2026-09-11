@@ -50,7 +50,7 @@ Acquire checks byte capture for both `EXEC` and `HOST_TOOLS`: working `sh`, `mkd
 
 | | |
 |---|---|
-| `acquire(key, spec)` | get-or-create, keyed `(scope, thread, agent, kind)`. Equivalent egress policies reuse a warm sandbox; changed hosts or mode on a usable instance raise `AcasEgressPolicyConflict`. Dispose the kind before changing policy, or use another key. |
+| `acquire(key, spec)` | get-or-create, keyed `(scope, thread, agent, call, kind)`. Equivalent egress policies reuse a warm sandbox; changed hosts or mode on a usable instance raise `AcasEgressPolicyConflict`. Dispose the kind before changing policy, or use another key. At `IsolationScope.CONVERSATION` the key's `call_id` is empty and one sandbox serves the conversation's calls; at `IsolationScope.CALL` it names the tool call, so no acquire repeats it and get-or-create finds nothing warm. |
 | `dispose(key, *, kind=None)` | Deletes the selected kind, or every kind when omitted; retained failures keep their kind for retries; reaches sandboxes known to this process |
 | `dispose_scope(scope, thread)` | delete every sandbox for a conversation — **from the service, by label**, not from process memory; report an incomplete purge if a local acquire is active, and refuse new local acquires during the purge |
 | `stat_file` / `read_file` / `list_dir` | the pull surface — reads confined to the call's `working_directory`, symlinks and directories refused, a size over the caller's cap refused rather than truncated. Regularity itself cannot be proven here — see below |

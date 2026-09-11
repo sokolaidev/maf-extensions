@@ -6,7 +6,7 @@
 
 Acquire also checks shell invocation for `EXEC` and batches the shell, `mkdir`, `mv` and `nohup` prerequisites for `HOST_TOOLS`. Successful checks are kept with the sandbox's registry entry; failed checks are retryable. A new sandbox refused for missing commands is disposed, while a warm one keeps its identity and existing results. These command checks supplement the observed-removal gate below and do not change its inconclusive-result policy. Neither gate grants deletion authority. See [the ceiling and probe contract](../guest-platform-and-commands.md#decision-3--a-static-ceiling-matched-at-attach-and-a-probe-at-acquire).
 
-The four below `isolation` are fields of this backend's `declarations`.
+The five below `isolation` are fields of this backend's `declarations`.
 
 | Declaration | Value |
 |---|---|
@@ -101,7 +101,7 @@ The [M6 measurement on 2026-09-09](https://github.com/sokolaidev/maf-extensions/
 
 M6 established that named snapshots survive source deletion, can be recovered by a fresh host process, and preserve process memory and disk. They require explicit deletion. SDK 0.1.0b4 rejects ownership labels on restore even though a direct service request accepts them, and restored lifecycle policy must be reapplied and verified. The snapshot quota and exact storage price remain unverified under [#978](https://github.com/sokolaidev/maf-extensions/issues/978); neither is assumed to be zero or unlimited, and neither blocks the decision to withhold the capability. The full measurement remains on that issue.
 
-**Per-key disposal discovers sandboxes through service labels.** `dispose(key, kind=...)` selects sandboxes by the reserved scope, thread, agent and optional kind labels, so it reaches sandboxes another process created. Reserved labels are protected from caller overrides; the registry is a fallback for failed listing, not proof that the service holds no matching sandbox. `instance_id=...` narrows the service result to one ID; a failed ownership query refuses deletion. Disposal waits for the SDK deletion poller to confirm absence, and preserves failed IDs for retry.
+**Per-key disposal discovers sandboxes through service labels.** `dispose(key, kind=...)` selects sandboxes by the reserved scope, thread, agent and optional kind labels — plus the reserved `call` label when the key names a tool call, which is what keeps a call-scoped disposal off a sibling call's sandbox — so it reaches sandboxes another process created. Reserved labels are protected from caller overrides; the registry is a fallback for failed listing, not proof that the service holds no matching sandbox. `instance_id=...` narrows the service result to one ID; a failed ownership query refuses deletion. Disposal waits for the SDK deletion poller to confirm absence, and preserves failed IDs for retry.
 
 **Auto-delete depends on successful policy configuration.** Creation and the later lifecycle update are separate operations. A sandbox left between them can have auto-suspend without auto-delete; suspension preserves resumable state and does not establish a deletion deadline. Recovery for that configuration gap is tracked separately from the deployment's scheduler. [`../operations.md`](../operations.md) describes an independent group sweep using the service's `Stopped` state and stop timestamp, with a one-day stopped retention policy for live verification.
 

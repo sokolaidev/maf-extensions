@@ -6,7 +6,7 @@
 
 The declared capabilities are a ceiling for a conforming image. Acquire checks `sh` for `EXEC` and the external `test` command for `FILES_IN`, including its true and false exit statuses as the root principal the write-path check uses. A shell builtin cannot satisfy that external-command check. Unresolved write ownership also refuses `FILES_IN` at acquire. Successful command checks are cached per engine instance ID; failed checks are retried, and a refused container stays tracked for host disposal. The checks do not strengthen guest-answered path checks or enable reclamation. See [the ceiling and probe contract](../guest-platform-and-commands.md#decision-3--a-static-ceiling-matched-at-attach-and-a-probe-at-acquire).
 
-The four below `isolation` are fields of this backend's `declarations`.
+The five below `isolation` are fields of this backend's `declarations`.
 
 | Declaration | Value |
 |---|---|
@@ -25,7 +25,7 @@ The four below `isolation` are fields of this backend's `declarations`.
 
 ## Lifecycle
 
-Creates land in **about half a second**, which is what makes this the backend to iterate against. Names are derived from a digest of scope, thread, agent dir, kind and egress identity, so acquire and dispose agree without a registry; get-or-create is serialised per `(loop, key, kind)`, because a create names no container until it returns and two racing acquires would each build a network, a proxy and a sandbox. Labels are written at create and both `dispose(key, kind=...)` and `dispose_scope` select on them from the CLI's own listing, with values hashed rather than truncated for the reason every backend here hashes them — a shared prefix would let one conversation's purge delete another's containers.
+Creates land in **about half a second**, which is what makes this the backend to iterate against. Names are derived from a digest of scope, thread, agent dir, kind, egress identity and the key's `call_id` — empty and so absent from the digest at `IsolationScope.CONVERSATION`, which is what leaves a conversation's name exactly what it was — so acquire and dispose agree without a registry; get-or-create is serialised per `(loop, key, kind)`, because a create names no container until it returns and two racing acquires would each build a network, a proxy and a sandbox. Labels are written at create and both `dispose(key, kind=...)` and `dispose_scope` select on them from the CLI's own listing, with values hashed rather than truncated for the reason every backend here hashes them — a shared prefix would let one conversation's purge delete another's containers.
 
 **A spec's mode is enforced or refused, never approximated.** With no proxy image the set is `{CLOSED}` alone, so a workload running `ALLOWLIST` is refused at attach rather than handed the closed run it did not ask for; with one, both modes are enforceable and a spec naming no hosts still resolves to the closed shape. What the modes mean is [`../network.md`](../network.md).
 
