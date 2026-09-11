@@ -3313,7 +3313,7 @@ class TestCleanupAdmission:
     def test_a_timed_out_call_retries_admission_before_acquiring(self):
         class _ShortQueue(SandboxRouter):
             async def enter_call(self, key, spec, *, owner, timeout=0.01):
-                return await super().enter_call(key, spec, owner=owner, timeout=timeout)
+                return await super().enter_call(key, spec, owner=owner, timeout=min(timeout, 0.01))
 
         backend = InProcessSandboxBackend()
         router = _ShortQueue([backend], min_isolation=Isolation.NONE)
@@ -3338,7 +3338,7 @@ class TestCleanupAdmission:
             finally:
                 await router.release_call(_KEY, _SPEC.kind, owner="other")
 
-        asyncio.run(scenario())
+        asyncio.run(asyncio.wait_for(scenario(), timeout=5))
         assert not backend.keys
 
     def test_cleanup_uses_the_admitted_rung_without_reading_declarations_again(self):
