@@ -175,32 +175,31 @@ class TestTheId:
             assert part not in first.id
 
     def test_names_the_sandbox_the_router_reaches(self):
-        """Two adapters over one key, kind and backend reach one sandbox, and say so."""
+        """Two adapters over one router, key and kind reach one sandbox, and say so."""
         first, _ = _adapter()
-        second, _ = _adapter()
+        second = MafSandbox(first.router, KEY, deepagents_spec("img:1"))
         assert first.id == second.id
 
-    def test_differs_by_conversation_kind_and_backend(self):
-        base, _ = _adapter()
+    def test_differs_by_conversation_kind_egress_and_backend_instance(self):
+        """Two backends of one name may reach two engines, so the id tells them apart too."""
+        base, backend = _adapter()
+        router = base.router
         other_thread = MafSandbox(
-            _router(_backend()),
-            dataclasses.replace(KEY, thread_id="thread-2"),
-            deepagents_spec("img:1"),
+            router, dataclasses.replace(KEY, thread_id="thread-2"), deepagents_spec("img:1")
         )
-        other_kind = MafSandbox(_router(_backend()), KEY, deepagents_spec("img:1", kind="shell"))
-        other_backend = MafSandbox(_router(_backend(name="second")), KEY, deepagents_spec("img:1"))
-        other_egress = MafSandbox(
-            _router(_backend()), KEY, deepagents_spec("img:1", egress_allow=("pypi.org",))
+        other_kind = MafSandbox(router, KEY, deepagents_spec("img:1", kind="shell"))
+        other_egress = MafSandbox(router, KEY, deepagents_spec("img:1", egress_allow=("pypi.org",)))
+        other_backend_same_name = MafSandbox(
+            _router(_backend(name=backend.name)), KEY, deepagents_spec("img:1")
         )
-        assert (
-            len({base.id, other_thread.id, other_kind.id, other_backend.id, other_egress.id}) == 5
-        )
+        ids = {base.id, other_thread.id, other_kind.id, other_egress.id, other_backend_same_name.id}
+        assert len(ids) == 5
 
     def test_the_encoding_keeps_field_boundaries(self):
         """A scope ending where a thread begins must not collide with the split moved."""
         shifted = SandboxKey(scope="tenant-", thread_id="athread-1", agent_dir="coder")
         base, _ = _adapter()
-        other = MafSandbox(_router(_backend()), shifted, deepagents_spec("img:1"))
+        other = MafSandbox(base.router, shifted, deepagents_spec("img:1"))
         assert base.id != other.id
 
 

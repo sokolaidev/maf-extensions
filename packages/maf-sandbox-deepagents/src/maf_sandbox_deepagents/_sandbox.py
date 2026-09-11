@@ -317,7 +317,11 @@ class MafSandbox(BaseSandbox):
         self._instance_id: str | None = None
         backend = router.backend_for(spec)
         identity = [
-            "" if backend is None else backend.name,
+            # The backend object, not only its name: two backends may carry one name and
+            # reach two engines (two Docker daemons, two ACA resources), and Deep Agents asks
+            # for an id unique to the backend it is given. The object lives as long as the
+            # router this adapter holds, so its identity cannot be reused under it.
+            "" if backend is None else f"{backend.name}@{id(backend):x}",
             key.scope,
             key.thread_id,
             key.agent_dir,
