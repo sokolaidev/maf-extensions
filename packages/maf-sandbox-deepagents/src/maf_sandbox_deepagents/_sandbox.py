@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import concurrent.futures
 import hashlib
 import json
 import logging
@@ -112,11 +113,13 @@ _UNBOUNDED = (
     "command did not run."
 )
 _UPLOAD_FAILED = "upload failed; see the host log"
-#: A timed-out transfer on the shell road disposes the sandbox, and everything the batch had
-#: put there went with it.
-_UPLOAD_BATCH_LOST = "the sandbox was disposed after a transfer timed out; the batch did not land"
+#: A shell transfer that did not finish — a timeout, an output overflow, the caller leaving —
+#: disposes the sandbox, and everything the batch had put there went with it.
+_UPLOAD_BATCH_LOST = (
+    "the sandbox was disposed after a transfer did not finish; the batch did not land"
+)
 _DOWNLOAD_BATCH_LOST = (
-    "the sandbox was disposed after a transfer timed out; the rest of the batch was not read"
+    "the sandbox was disposed after a transfer did not finish; the rest of the batch was not read"
 )
 _DOWNLOAD_FAILED = "download failed; see the host log"
 _SIZE_UNKNOWN = "the sandbox could not report the file's size"
@@ -184,7 +187,7 @@ class _SyncRunner:
         self._thread: threading.Thread | None = None
         self._guard = threading.Lock()
 
-    def run[T](self, coroutine: Coroutine[Any, Any, T]) -> T:
+    def _started(self) -> asyncio.AbstractEventLoop:
         with self._guard:
             if self._loop is None:
                 self._loop = asyncio.new_event_loop()
@@ -192,8 +195,15 @@ class _SyncRunner:
                     target=self._loop.run_forever, name=self._THREAD_NAME, daemon=True
                 )
                 self._thread.start()
-            loop = self._loop
-        return asyncio.run_coroutine_threadsafe(coroutine, loop).result()
+            return self._loop
+
+    def run[T](self, coroutine: Coroutine[Any, Any, T]) -> T:
+        return self.submit(coroutine).result()
+
+    def submit[T](self, coroutine: Coroutine[Any, Any, T]) -> concurrent.futures.Future[T]:
+        """Run ``coroutine`` on the loop and hand back its future: work that must outlive the
+        caller's loop, joinable from any loop."""
+        return asyncio.run_coroutine_threadsafe(coroutine, self._started())
 
 
 _SYNC = _SyncRunner()
@@ -213,6 +223,14 @@ def _response(result: ExecResult) -> ExecuteResponse:
         parts.extend(f"{label} {line}" for line in result.stderr.strip().splitlines())
     output = "\n".join(parts) if parts else "<no output>"
     return ExecuteResponse(output=output, exit_code=result.exit_code, truncated=False)
+
+
+class _BatchLost(Exception):
+    """The sandbox went in the middle of a batch; ``response`` answers the file that took it."""
+
+    def __init__(self, response: FileDownloadResponse | None = None) -> None:
+        super().__init__()
+        self.response = response
 
 
 def _shell_error(stderr: str) -> str:
@@ -305,8 +323,8 @@ class MafSandbox(BaseSandbox):
         self._max_output_bytes = max_output_bytes
         #: The engine instance the last acquire handed back, and what `aclose` deletes.
         self._instance_id: str | None = None
-        #: A delete still running after a timeout or an overflow; no operation overtakes it.
-        self._disposal: asyncio.Task[bool] | None = None
+        #: A delete still running after a command did not finish; no operation overtakes it.
+        self._disposal: concurrent.futures.Future[bool] | None = None
         backend = router.backend_for(spec)
         identity = [
             "" if backend is None else backend.name,
@@ -355,6 +373,32 @@ class MafSandbox(BaseSandbox):
         self._instance_id = sandbox.instance_id
         return sandbox
 
+    async def _run_bounded(
+        self,
+        sandbox: BoundedExec,
+        instance_id: str,
+        command: str,
+        *,
+        timeout: float,
+        max_output_bytes: int,
+    ) -> ExecResult:
+        """``exec_bounded``, with the instance deleted whenever the command's end is unknown.
+
+        A timeout says the wait ended, an overflow that the host stopped reading, a
+        cancellation that the caller left: none says the guest process stopped, and the
+        backends do not establish it either, so the instance goes before anything reuses it.
+        """
+        try:
+            return await sandbox.exec_bounded(
+                command,
+                working_directory=STORAGE_BASE,
+                timeout=timeout,
+                max_output_bytes=max_output_bytes,
+            )
+        except (TimeoutError, SandboxExecOutputLimitExceeded, asyncio.CancelledError):
+            self._dispose_later(instance_id)
+            raise
+
     def _inside_base(self, path: str) -> bool:
         """Whether ``path`` names something under the storage base, the file plane's reach."""
         if not path.startswith("/"):
@@ -389,20 +433,16 @@ class MafSandbox(BaseSandbox):
         if remaining <= 0:
             return ExecuteResponse(output=_TIMED_OUT.format(seconds=bound), exit_code=None)
         try:
-            result = await sandbox.exec_bounded(
+            result = await self._run_bounded(
+                sandbox,
+                sandbox.instance_id,
                 command,
-                working_directory=STORAGE_BASE,
                 timeout=remaining,
                 max_output_bytes=self._max_output_bytes,
             )
         except TimeoutError:
-            # As below: a timeout says the wait ended, not that the program did.
-            self._dispose_later(sandbox.instance_id)
             return ExecuteResponse(output=_TIMED_OUT.format(seconds=bound), exit_code=None)
         except SandboxExecOutputLimitExceeded:
-            # Nothing establishes that the guest process stopped when the host stopped
-            # reading, so the sandbox goes and the next command starts cold.
-            self._dispose_later(sandbox.instance_id)
             return ExecuteResponse(
                 output=_OUTPUT_DROPPED.format(limit=self._max_output_bytes),
                 exit_code=None,
@@ -432,20 +472,21 @@ class MafSandbox(BaseSandbox):
             # Checked before the write it would have prevented, and counted only for what
             # crossed: a refused file leaves the budget where it was.
             error: str | None
-            if len(content) > limits.max_bytes_per_file:
-                error = _OVER_FILE_CAP.format(direction="files_in")
-            elif sent + len(content) > limits.max_total_bytes:
-                error = _OVER_TOTAL_CAP.format(direction="files_in")
-            elif self._inside_base(path):
-                error = await self._upload_via_plane(sandbox, path, content)
-            elif isinstance(sandbox, BoundedExec):
-                error = await self._upload_via_shell(
-                    sandbox, path, content, instance_id=sandbox.instance_id
-                )
-            else:
-                error = _NO_SHELL_ROAD
-            if error == _UPLOAD_BATCH_LOST:
-                return [FileUploadResponse(path=path, error=error) for path, _ in files]
+            try:
+                if len(content) > limits.max_bytes_per_file:
+                    error = _OVER_FILE_CAP.format(direction="files_in")
+                elif sent + len(content) > limits.max_total_bytes:
+                    error = _OVER_TOTAL_CAP.format(direction="files_in")
+                elif self._inside_base(path):
+                    error = await self._upload_via_plane(sandbox, path, content)
+                elif isinstance(sandbox, BoundedExec):
+                    error = await self._upload_via_shell(
+                        sandbox, path, content, instance_id=sandbox.instance_id
+                    )
+                else:
+                    error = _NO_SHELL_ROAD
+            except _BatchLost:
+                return [FileUploadResponse(path=p, error=_UPLOAD_BATCH_LOST) for p, _ in files]
             if error is None:
                 sent += len(content)
             responses.append(FileUploadResponse(path=path, error=error))
@@ -486,18 +527,19 @@ class MafSandbox(BaseSandbox):
         ]
         for command in commands:
             try:
-                result = await sandbox.exec_bounded(
-                    command,
-                    working_directory=STORAGE_BASE,
-                    timeout=self._timeout,
-                    max_output_bytes=4096,
+                result = await self._run_bounded(
+                    sandbox, instance_id, command, timeout=self._timeout, max_output_bytes=4096
                 )
-            except TimeoutError:
-                # The command may still be running, so the sandbox goes, and with it every
+            except (TimeoutError, SandboxExecOutputLimitExceeded) as unfinished:
+                # The command may still be running, so the sandbox went, and with it every
                 # file this batch had already put there.
-                logger.warning("%s: shell write of %r timed out", self._id, path)
-                self._dispose_later(instance_id)
-                return _UPLOAD_BATCH_LOST
+                logger.warning(
+                    "%s: shell write of %r did not finish: %s",
+                    self._id,
+                    path,
+                    type(unfinished).__name__,
+                )
+                raise _BatchLost() from None
             except Exception:
                 # Per file, as Deep Agents' contract asks, and the provider's words stay in
                 # the log.
@@ -583,13 +625,14 @@ class MafSandbox(BaseSandbox):
             f"else wc -c < {target}; fi"
         )
         try:
-            probed = await sandbox.exec_bounded(
-                probe, working_directory=STORAGE_BASE, timeout=self._timeout, max_output_bytes=4096
+            probed = await self._run_bounded(
+                sandbox, instance_id, probe, timeout=self._timeout, max_output_bytes=4096
             )
-        except TimeoutError:
-            logger.warning("%s: probe of %r timed out", self._id, path)
-            self._dispose_later(instance_id)
-            return FileDownloadResponse(path=path, error=_DOWNLOAD_BATCH_LOST)
+        except (TimeoutError, SandboxExecOutputLimitExceeded) as unfinished:
+            logger.warning(
+                "%s: probe of %r did not finish: %s", self._id, path, type(unfinished).__name__
+            )
+            raise _BatchLost(FileDownloadResponse(path=path, error=_DOWNLOAD_BATCH_LOST)) from None
         answer = probed.stdout.strip()
         if probed.exit_code != 0 or not answer:
             logger.warning("%s: probe of %r failed: %s", self._id, path, probed.stderr.strip())
@@ -609,18 +652,20 @@ class MafSandbox(BaseSandbox):
             return FileDownloadResponse(path=path, error=over_cap)
         try:
             # Base64 is 4/3 of the file plus line breaks; the budget bounds a file that grew.
-            read = await sandbox.exec_bounded(
+            read = await self._run_bounded(
+                sandbox,
+                instance_id,
                 f"base64 < {target}",
-                working_directory=STORAGE_BASE,
                 timeout=self._timeout,
                 max_output_bytes=cap * 2 + 4096,
             )
         except SandboxExecOutputLimitExceeded:
-            return FileDownloadResponse(path=path, error=over_cap)
+            # The file outgrew its cap mid-read, and the read may still be running: this file
+            # is over the cap, and the rest of the batch is not attempted.
+            raise _BatchLost(FileDownloadResponse(path=path, error=over_cap)) from None
         except TimeoutError:
             logger.warning("%s: shell read of %r timed out", self._id, path)
-            self._dispose_later(instance_id)
-            return FileDownloadResponse(path=path, error=_DOWNLOAD_BATCH_LOST)
+            raise _BatchLost(FileDownloadResponse(path=path, error=_DOWNLOAD_BATCH_LOST)) from None
         if read.exit_code != 0:
             logger.warning("%s: shell read of %r failed: %s", self._id, path, read.stderr.strip())
             return FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)
@@ -646,16 +691,21 @@ class MafSandbox(BaseSandbox):
         for path in paths:
             try:
                 response = await self._download(sandbox, path, room=room)
+            except _BatchLost as lost:
+                responses.append(
+                    lost.response or FileDownloadResponse(path=path, error=_DOWNLOAD_BATCH_LOST)
+                )
+                rest = paths[len(responses) :]
+                responses.extend(
+                    FileDownloadResponse(path=p, error=_DOWNLOAD_BATCH_LOST) for p in rest
+                )
+                break
             except Exception:
                 logger.exception("%s: download of %r failed", self._id, path)
                 response = FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)
             if response.content is not None:
                 room -= len(response.content)
             responses.append(response)
-            if response.error == _DOWNLOAD_BATCH_LOST:
-                rest = paths[len(responses) :]
-                responses.extend(FileDownloadResponse(path=p, error=response.error) for p in rest)
-                break
         return responses
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
@@ -682,27 +732,29 @@ class MafSandbox(BaseSandbox):
         """Delete ``instance_id`` after the answer, so cleanup never extends the caller's wait.
 
         The instance is the one the operation itself acquired, never the field, which a
-        concurrent acquire may have moved on. The next operation joins the delete before it
-        acquires, so nothing reaches the instance while it is still being deleted.
+        concurrent acquire may have moved on. The delete runs on the process's own loop, so it
+        outlives the caller's, which ``asyncio.run`` closes on return, and is joinable from any
+        loop; the next operation joins it before it acquires, so nothing reaches the instance
+        while it is still being deleted.
         """
-        task = asyncio.create_task(self._dispose(instance_id))
-        task.add_done_callback(self._disposal_done)
-        self._disposal = task
+        future = _SYNC.submit(self._dispose(instance_id))
+        future.add_done_callback(self._disposal_done)
+        self._disposal = future
 
-    def _disposal_done(self, task: asyncio.Task[bool]) -> None:
-        if task.cancelled():
-            logger.warning("%s: the delete after a timeout was cancelled", self._id)
-        elif (failure := task.exception()) is not None:
-            logger.error("%s: the delete after a timeout failed: %s", self._id, failure)
-        elif not task.result():
-            logger.warning("%s: the delete after a timeout did not land", self._id)
+    def _disposal_done(self, future: concurrent.futures.Future[bool]) -> None:
+        if future.cancelled():
+            logger.warning("%s: the delete after an unfinished command was cancelled", self._id)
+        elif (failure := future.exception()) is not None:
+            logger.error("%s: the delete after an unfinished command failed: %s", self._id, failure)
+        elif not future.result():
+            logger.warning("%s: the delete after an unfinished command did not land", self._id)
 
     async def _join_disposal(self) -> None:
-        disposal = self._disposal
-        if disposal is not None and not disposal.done():
+        pending = self._disposal
+        if pending is not None and not pending.done():
             try:
                 # Shielded: a caller's deadline may cancel the wait, never the delete.
-                await asyncio.shield(disposal)
+                await asyncio.shield(asyncio.wrap_future(pending))
             except Exception:
                 pass  # logged by `_disposal_done`
 

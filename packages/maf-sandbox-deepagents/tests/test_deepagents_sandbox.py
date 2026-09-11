@@ -331,15 +331,37 @@ class TestExecute:
         """A timeout says the wait ended, not that the program did; the next command starts cold."""
         adapter, backend = _adapter(InProcessSandbox(raises=TimeoutError()))
 
-        async def scenario():
-            await adapter.aexecute("sleep 999", timeout=3)
-            return await adapter.aclose()  # joins the delete the timeout started
+        # Two loops on purpose: the delete outlives the loop the timed-out call ran on, and
+        # `aclose` on another loop joins it.
+        asyncio.run(adapter.aexecute("sleep 999", timeout=3))
+        closed = asyncio.run(adapter.aclose())
 
-        assert asyncio.run(scenario()) is True
+        assert closed is True
         # The router's adoption of an unfamiliar instance disposes once; the timeout, once more;
         # `aclose` found nothing left to delete.
         assert backend.disposed == [KEY, KEY]
         assert backend.disposed_kinds[-1] == DEEPAGENTS_KIND
+
+    def test_a_cancelled_command_disposes_the_sandbox_and_stays_cancelled(self):
+        class Hanging(InProcessSandbox):
+            async def exec(self, command, *, working_directory, timeout):
+                await asyncio.sleep(10)
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        adapter, backend = _adapter(Hanging())
+
+        async def scenario():
+            call = asyncio.create_task(adapter.aexecute("sleep 10", timeout=60))
+            await asyncio.sleep(0.05)
+            call.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await call
+            return await adapter.aclose()  # joins the delete the cancellation started
+
+        assert asyncio.run(scenario()) is True
+        assert backend.disposed == [KEY, KEY]
 
     def test_the_delete_after_a_timeout_runs_past_the_answer_and_the_next_call_waits_for_it(
         self, monkeypatch: pytest.MonkeyPatch
@@ -515,6 +537,19 @@ class TestFilesIn:
         ]
         assert backend.disposed[-1] == KEY
 
+    def test_a_shell_upload_whose_command_floods_output_disposes_and_fails_the_batch(self):
+        """Past the 4 KiB budget the write may still be running, as after a timeout."""
+        adapter, backend = _adapter(InProcessSandbox(outputs={"base64 -d": "y" * 5000}))
+
+        async def scenario():
+            responses = await adapter.aupload_files([("/tmp/x", b"1")])
+            await adapter.aclose()
+            return responses
+
+        (response,) = asyncio.run(scenario())
+        assert response.error is not None and "did not land" in response.error
+        assert backend.disposed[-1] == KEY
+
     def test_the_shell_road_needs_a_backend_that_bounds_output(self):
         class Unbounded(InProcessSandbox):
             exec_bounded = None  # type: ignore[assignment]  # opts out of `BoundedExec`
@@ -671,6 +706,30 @@ class TestFilesOut:
         assert second.error is not None and "was not read" in second.error
         assert third.error == second.error
         assert len(fake.commands) == 1  # the probe that timed out; nothing after it ran
+        assert backend.disposed[-1] == KEY
+
+    def test_a_shell_read_that_overflows_is_over_the_cap_and_ends_the_batch(self):
+        """A file that outgrew its cap mid-read may leave the read running: over the cap for
+        it, and the rest of the batch is not attempted."""
+        fake = InProcessSandbox(outputs={"wc -c": "3\n", "base64 <": "x" * 5000})
+        adapter, backend = _adapter(fake)
+        adapter = MafSandbox(
+            adapter.router,
+            KEY,
+            dataclasses.replace(
+                adapter.spec,
+                files_out=TransferLimits(max_bytes_per_file=4, max_total_bytes=8, max_files=8),
+            ),
+        )
+
+        async def scenario():
+            responses = await adapter.adownload_files(["/tmp/grew", "/tmp/next"])
+            await adapter.aclose()
+            return responses
+
+        grew, rest = asyncio.run(scenario())
+        assert grew.error is not None and "max_bytes_per_file" in grew.error
+        assert rest.error is not None and "was not read" in rest.error
         assert backend.disposed[-1] == KEY
 
     def test_a_read_that_comes_back_over_the_cap_is_refused_after_the_fact(self):
