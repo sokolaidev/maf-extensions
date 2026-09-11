@@ -1151,6 +1151,15 @@ class TestExecArgv:
         asyncio.run(sandbox.exec(["true"], working_directory=_WORK, timeout=42))
         assert fake.only("exec").timeout == 42
 
+    def test_both_raw_streams_survive_the_adapter(self):
+        raw = bytes(range(256))
+        overrides = {("exec", "-w", _WORK): _DockerResult(7, raw, "display", raw[::-1])}
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
+        result = asyncio.run(sandbox.exec(["x"], working_directory=_WORK, timeout=5))
+        assert result.stdout_bytes == raw
+        assert result.stderr_bytes == raw[::-1]
+
     def test_stdout_stderr_and_exit_code_are_mapped(self):
         overrides = {("exec", "-w", _WORK): _DockerResult(7, b"out\n", "err\n")}
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
@@ -1383,6 +1392,26 @@ class TestWhichPrincipalACommandCarries:
         sandbox, _fake = self._sandbox(differ, capabilities_dropped=True)
         with pytest.raises(OSError, match=r"Permission denied.*as root: rm: read-only file"):
             asyncio.run(sandbox.reclaim(f"{_WORK}/x", working_directory=_WORK, timeout=30))
+
+    def test_failed_removal_preserves_both_attempts_diagnostic_bytes(self):
+        root = b"root: \xff\xe2\x82\n"
+        guest = b"guest: \xfe\x00\n"
+        differ = {
+            ("exec", "--user", "0"): _DockerResult(1, b"", root.decode("utf-8", "replace"), root),
+            ("exec", "-w"): _DockerResult(2, b"", guest.decode("utf-8", "replace"), guest),
+        }
+        sandbox, _fake = self._sandbox(differ, capabilities_dropped=True)
+        result = asyncio.run(
+            sandbox._removal(
+                ["rm", "-rf", "--", f"{_WORK}/x"],
+                working_directory="/",
+                timeout=30,
+                raise_authority=True,
+            )
+        )
+        assert result.exit_code == 2
+        assert result.stderr_bytes == guest.strip() + b" (as root: " + root.strip() + b")"
+        assert result.stderr == result.stderr_bytes.decode("utf-8", "replace")
 
     def test_a_refused_remove_is_retried_the_same_way(self):
         refused = {("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied")}
@@ -3723,12 +3752,13 @@ class TestTheSeam:
         result = asyncio.run(
             backend._docker(
                 "-c",
-                "import sys; sys.stdout.buffer.write(b'\\x89P'); sys.stderr.write('e'); sys.exit(3)",
+                "import sys; sys.stdout.buffer.write(b'\\x89P'); sys.stderr.buffer.write(b'e\\xff'); sys.exit(3)",
             )
         )
         assert result.returncode == 3
         assert result.stdout == b"\x89P"
-        assert result.stderr == "e"
+        assert result.stderr == "e�"
+        assert result.stderr_bytes == b"e\xff"
 
     def test_stdin_reaches_the_process(self):
         backend = self._backend()

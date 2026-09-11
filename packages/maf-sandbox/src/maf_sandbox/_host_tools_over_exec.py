@@ -399,7 +399,8 @@ class SandboxProgramTimeout(TimeoutError):
         reach: SignalReach = "nothing",
     ) -> None:
         super().__init__(message)
-        self.output = output
+        self.output_bytes = output.encode("utf-8", errors="surrogateescape")
+        self.output = self.output_bytes.decode("utf-8", errors="replace")
         self.output_reason = output_reason
         #: Reach of the launcher's recorded target; separate descendant attempts are audited.
         self.reach = reach
@@ -1640,7 +1641,7 @@ async def _completed(
             producer_owns_stderr=True,
         )
     return ExecResult(
-        stdout=_as_text(output),
+        stdout_bytes=_as_text(output).encode("utf-8", errors="surrogateescape"),
         stderr=_why_no_output(output),
         exit_code=_exit_code_from(finished),
         producer_owns_stderr=True,
@@ -2014,8 +2015,8 @@ async def _read_if_present(
 
     ``exact`` picks how bytes that are not UTF-8 are treated, and the two callers want
     opposite things. A request is data the host acts on, so it decodes strictly. Everything
-    else here is a program's own output, quoted back to a human, where replacing one bad byte
-    beats losing the whole of it.
+    else retains bytes through surrogateescape internally; ExecResult and timeout objects
+    expose exact bytes alongside safe text views at the public boundary.
     """
     entry = await _within(
         deadline,
@@ -2078,7 +2079,7 @@ async def _read_if_present(
         )
         return _TooLarge()
     if not exact:
-        return raw.decode("utf-8", errors="replace")
+        return raw.decode("utf-8", errors="surrogateescape")
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError as invalid:
@@ -2098,7 +2099,10 @@ def _output_clause(printed: str, note: str) -> str:
     will read" is the host talking. A reader who cannot tell them apart is being told the
     program printed a sentence about itself.
     """
-    return f"no output was read — {note}" if note else f"Output so far: {printed[:2000]}"
+    display = (
+        printed[:2000].encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+    )
+    return f"no output was read — {note}" if note else f"Output so far: {display}"
 
 
 async def _final_output(

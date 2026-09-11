@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.16.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.15.0...maf-sandbox-codeact-v0.16.0) (2026-09-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** preserve exec bytes and expose safe text views ([#1100](https://github.com/sokolaidev/maf-extensions/issues/1100))
+* **sandbox:** resolve workload paths against backend storage bases ([#1090](https://github.com/sokolaidev/maf-extensions/issues/1090))
+
+### Features
+
+* **sandbox:** preserve exec bytes and expose safe text views ([#1100](https://github.com/sokolaidev/maf-extensions/issues/1100)) ([69daefa](https://github.com/sokolaidev/maf-extensions/commit/69daefaff889f3a31049cdf9dcf6c707fa5ef39a))
+* **sandbox:** resolve workload paths against backend storage bases ([#1090](https://github.com/sokolaidev/maf-extensions/issues/1090)) ([1d93a39](https://github.com/sokolaidev/maf-extensions/commit/1d93a39e2dc30a7f6ddc5dba17a4a4fc201ff9e9))
+
 ## [0.15.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.14.1...maf-sandbox-codeact-v0.15.0) (2026-09-10)
 
 

@@ -15,6 +15,7 @@ here and a kind never learns where its image is stored.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
 __all__ = ["AcasSandboxConfig"]
 
@@ -49,3 +50,13 @@ class AcasSandboxConfig:
     #: FIFO identically to an empty regular file — same mode, both type flags false — so a
     #: guest can put one where a declared output belongs and the read blocks forever.
     read_timeout_seconds: float = 120.0
+    #: Maximum returned bytes per exec stream; capture retains one extra byte to detect overflow.
+    exec_output_limit_bytes: int = 1 << 20
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.exec_output_limit_bytes, bool)
+            or not isinstance(cast(object, self.exec_output_limit_bytes), int)
+            or self.exec_output_limit_bytes < 1
+        ):
+            raise ValueError("exec_output_limit_bytes must be a positive integer")

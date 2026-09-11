@@ -2733,7 +2733,7 @@ class TestWhatAFinishedRunIsAllowedToSay:
         with pytest.raises(PermissionError, match="the daemon said no"):
             _run(guest, HostToolRun(_registry()))
 
-    def test_output_that_is_not_utf8_comes_back_repaired_rather_than_dropped(self):
+    def test_output_bytes_survive_beside_a_safe_text_view(self):
         """One bad byte in a program's own output must not read as a program that said nothing.
 
         The output is quoted back to a human, so a replacement character beats losing the
@@ -2745,6 +2745,7 @@ class TestWhatAFinishedRunIsAllowedToSay:
         result = _run(guest, HostToolRun(_registry()))
 
         assert result.exit_code == 0
+        assert result.stdout_bytes == b"caf\xe9 done"
         assert result.stdout == "caf� done"
         assert result.stderr == ""
 
@@ -3032,6 +3033,16 @@ class TestWhoseTimeoutItWas:
             _run(wedged, HostToolRun(_registry()), timeout=0.05)
         assert expired.value.output == "step 1 done", "the quote a caller surfaces was not carried"
         assert "step 1 done" in str(expired.value), "the message stopped carrying it too"
+
+    def test_timeout_partial_output_preserves_malformed_bytes(self):
+        guest = _ScriptedGuest([], finish=False)
+        corpus = bytes(range(256)) + b"\xe2\x82"
+        guest.files[_LAYOUT.output] = corpus
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=0.05)
+        assert expired.value.output_bytes == corpus
+        assert expired.value.output == corpus.decode("utf-8", "replace")
+        str(expired.value).encode("utf-8")
 
     def test_the_runs_bound_expiring_before_the_program_starts_is_still_the_runs(self):
         """Budget exhausted during the upload is the run's own timeout, publicly typed.

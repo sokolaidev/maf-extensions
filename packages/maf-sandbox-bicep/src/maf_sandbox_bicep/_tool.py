@@ -602,10 +602,12 @@ async def _run_phase(
         return f"{phase}({label}): Error: exec failed"
     elapsed_ms = int((perf_counter() - started) * 1000)
 
-    diagnostics = parse_sarif(result.stdout or "")
+    diagnostics = parse_sarif(result.stdout_text or "")
     if diagnostics is None:
         logger.warning(
-            "bicep_validate: could not parse SARIF for %r; raw: %.500r", name, result.stdout or ""
+            "bicep_validate: could not parse SARIF for %r; raw: %.500r",
+            name,
+            result.stdout_text or "",
         )
         return f"{phase}({label}): Error: could not parse SARIF output"
     # The one record that says the compiler actually ran. Everything else about a healthy

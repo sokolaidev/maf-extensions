@@ -40,3 +40,28 @@ def test_backend_exec_caps_live_output_before_a_result_exists(engine, channel, d
             )
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("engine", ["docker", "wslc"])
+def test_bounded_backend_preserves_both_binary_streams(engine):
+    async def scenario():
+        if engine == "docker":
+            backend = DockerSandboxBackend(DockerSandboxConfig(docker_path=sys.executable))
+            invoke, sandbox_class = backend._docker, _DockerSandbox
+        else:
+            backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
+            invoke, sandbox_class = backend._wslc, _WslcSandbox
+
+        async def run(*args, **kwargs):
+            script = "import os; os.write(1, bytes(range(256))); os.write(2, bytes(range(255,-1,-1))); raise SystemExit(7)"
+            return await invoke("-c", script, **kwargs)
+
+        sandbox = sandbox_class(cast(Any, run), "one", 5, instance_id="one")
+        result = await sandbox.exec_bounded(
+            "probe", working_directory="/", timeout=5, max_output_bytes=1024
+        )
+        assert result.stdout_bytes == bytes(range(256))
+        assert result.stderr_bytes == bytes(range(255, -1, -1))
+        assert result.exit_code == 7
+
+    asyncio.run(scenario())

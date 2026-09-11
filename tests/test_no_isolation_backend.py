@@ -162,6 +162,27 @@ def test_exec_translates_the_host_root_back_to_the_guest_work_dir():
     asyncio.run(body())
 
 
+def test_exec_preserves_bytes_outside_the_documented_path_translation():
+    async def body():
+        backend, sandbox = await _fresh()
+        try:
+            result = await sandbox.exec(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys; p=bytes(range(256)); sys.stdout.buffer.write(p); sys.stderr.buffer.write(p[::-1])",
+                ],
+                working_directory=_GUEST_WORK_DIR,
+                timeout=10,
+            )
+            assert result.stdout_bytes == bytes(range(256))
+            assert result.stderr_bytes == bytes(range(256))[::-1]
+        finally:
+            await _drop(backend)
+
+    asyncio.run(body())
+
+
 def test_the_reverse_translation_covers_the_uri_spelling_of_the_host_root():
     """A `file://` URI spells a path with forward slashes, and Windows roots do not.
 

@@ -556,6 +556,7 @@ class _DockerResult:
     returncode: int
     stdout: bytes
     stderr: str
+    stderr_bytes: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -804,8 +805,10 @@ class _DockerSandbox:
                 await self._run("rm", "-f", self._name, timeout=self._command_timeout)
             raise
         return ExecResult(
-            stdout=result.stdout.decode("utf-8", errors="replace"),
-            stderr=result.stderr,
+            stdout_bytes=result.stdout,
+            stderr_bytes=result.stderr_bytes
+            if result.stderr_bytes is not None
+            else result.stderr.encode(),
             exit_code=result.returncode,
         )
 
@@ -832,8 +835,10 @@ class _DockerSandbox:
                 await self._run("rm", "-f", self._name, timeout=self._command_timeout)
             raise
         return ExecResult(
-            stdout=result.stdout.decode("utf-8", errors="replace"),
-            stderr=result.stderr,
+            stdout_bytes=result.stdout,
+            stderr_bytes=result.stderr_bytes
+            if result.stderr_bytes is not None
+            else result.stderr.encode(),
             exit_code=result.returncode,
         )
 
@@ -888,7 +893,11 @@ class _DockerSandbox:
         if retried.exit_code == 0 or not removed.stderr.strip():
             return retried
         return replace(
-            retried, stderr=f"{retried.stderr.strip()} (as root: {removed.stderr.strip()})"
+            retried,
+            stderr_bytes=retried.stderr_bytes.strip()
+            + b" (as root: "
+            + removed.stderr_bytes.strip()
+            + b")",
         )
 
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
@@ -2431,7 +2440,7 @@ class DockerSandboxBackend:
                 process, max_output_bytes=max_output_bytes, timeout=timeout
             )
             return _DockerResult(
-                process.returncode or 0, stdout, stderr.decode("utf-8", errors="replace")
+                process.returncode or 0, stdout, stderr.decode("utf-8", errors="replace"), stderr
             )
         if read_limit is not None:
             return await self._read_bounded(process, read_limit, timeout)
@@ -2447,6 +2456,7 @@ class DockerSandboxBackend:
             process.returncode or 0,
             stdout,
             stderr.decode("utf-8", errors="replace"),
+            stderr,
         )
 
     @staticmethod
@@ -2487,7 +2497,7 @@ class DockerSandboxBackend:
                 await asyncio.wait_for(process.communicate(), timeout=timeout)
             raise
         return _DockerResult(
-            process.returncode or 0, stdout, stderr.decode("utf-8", errors="replace")
+            process.returncode or 0, stdout, stderr.decode("utf-8", errors="replace"), stderr
         )
 
     async def _is_running(self, name: str) -> bool:

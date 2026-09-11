@@ -1854,8 +1854,8 @@ def _format_result(result: ExecResult) -> str:
     Empty sections are omitted rather than shown blank, and the trailing newline ``print``
     leaves is dropped, so a one-line program's answer is one line.
     """
-    stdout = (result.stdout or "").rstrip("\n")
-    stderr = (result.stderr or "").rstrip("\n")
+    stdout = (result.stdout_text or "").rstrip("\n")
+    stderr = (result.stderr_text or "").rstrip("\n")
     sections: list[str] = []
     if stdout:
         sections.append(f"stdout:\n{stdout}")
@@ -1880,7 +1880,7 @@ def _format_withheld(result: ExecResult) -> str:
     """
     line = _WITHHELD_EXITED_CLEANLY if result.exit_code == 0 else _WITHHELD_EXITED_WITH_ERROR
     if result.producer_owns_stderr:
-        note = (result.stderr or "").rstrip("\n")
+        note = (result.stderr_text or "").rstrip("\n")
         if note:
             return f"{line}\nnote: {note}"
     return line

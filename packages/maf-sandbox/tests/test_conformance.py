@@ -690,7 +690,28 @@ class _SimulatedGuest:
         return resolved
 
     async def exec(self, command, *, working_directory: str, timeout: float) -> ExecResult:
-        argv = [command] if isinstance(command, str) else list(command)
+        argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
+        if (
+            len(argv) == 3
+            and argv[:2] == ["sh", "-c"]
+            and "exit 7" in argv[2]
+            and "\\000" in argv[2]
+        ):
+            encoded = re.findall(r"printf '([^']*)'", argv[2])
+            out, err = (
+                bytes(int(o, 8) for o in re.findall(r"\\([0-7]{3})", stream)) for stream in encoded
+            )
+            if self._streams.startswith("merged"):
+                merged = out + err
+                if self._streams == "merged-reversed":
+                    merged = err + out
+                elif self._streams == "merged-interleaved":
+                    merged = bytes(byte for pair in zip(out, err, strict=True) for byte in pair)
+                elif self._streams == "merged-corrupt":
+                    merged = merged[:-1] + b"!"
+                return ExecResult(stdout_bytes=merged, exit_code=7, producer_owns_stderr=True)
+            return ExecResult(stdout_bytes=out, stderr_bytes=err, exit_code=7)
+
         # `ln -sfn target path`, which PosixGuestSubject plants links with.
         if argv[0:1] == ["ln"] and argv[1:2] == ["-sfn"] and len(argv) == 4:
             self.symlinks[argv[3]] = argv[2]
@@ -714,7 +735,7 @@ class _SimulatedGuest:
             out, err = re.findall(r"printf %s (\S+)", argv[2])
             if self._streams == "folded":
                 return ExecResult(stdout=out + err)
-            if self._streams == "merged":
+            if self._streams.startswith("merged"):
                 return ExecResult(stdout=out + err, producer_owns_stderr=True)
             if self._streams == "mislabelled":
                 return ExecResult(stdout=out, stderr=err, producer_owns_stderr=True)
@@ -782,7 +803,7 @@ class _SimulatedGuest:
                 return ExecResult(stdout="", stderr="no such file", exit_code=1)
             content = self.contents[operand]
             return ExecResult(
-                stdout=content.decode("utf-8", errors="surrogateescape"),
+                stdout_bytes=content,
             )
         if argv[0:1] == ["printf"]:
             return ExecResult(stdout=argv[1])
@@ -896,15 +917,20 @@ class TestExecConformance:
         assert failures["streams-stay-separate"] is not None
         assert failures["an-argv-sequence-runs"] is None
 
-    def test_a_merge_the_result_declares_is_conformant(self):
+    @pytest.mark.parametrize("streams", ["merged", "merged-reversed", "merged-interleaved"])
+    def test_a_merge_the_result_declares_is_conformant(self, streams):
         """The transport merges and says so, so the probe has to admit that answer.
 
         A suite that failed it would hold a fourth backend to a rule core's own launcher
         breaks — and the field exists precisely so the honest merge is expressible.
         """
-        assert _sim_results(_sim_subject(streams="merged"), run_exec_probes) == dict.fromkeys(
+        assert _sim_results(_sim_subject(streams=streams), run_exec_probes) == dict.fromkeys(
             [p.name for p in EXEC_PROBES], None
         )
+
+    def test_a_declared_merge_does_not_license_corrupting_bytes(self):
+        failures = _sim_results(_sim_subject(streams="merged-corrupt"), run_exec_probes)
+        assert failures["exec-byte-fidelity"] is not None
 
     @pytest.mark.parametrize("streams", ["mislabelled", "echoing"])
     def test_a_declared_ownership_still_owes_an_stderr_with_none_of_the_programs_words(
@@ -1068,7 +1094,7 @@ class TestFilesDeleteConformance:
             run_exec_probes,
         )
         assert failures["a-timeout-raises-timeout-error"] is not None
-        assert "ignored the caller's timeout" in failures["a-timeout-raises-timeout-error"]
+        assert "cleanup allowance" in failures["a-timeout-raises-timeout-error"]
 
     def test_a_non_idempotent_removal_fails_the_missing_path_probe(self):
         """Succeeds on never-seen paths, raises on the repeat — the finally-breaker."""
