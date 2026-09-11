@@ -694,8 +694,8 @@ class TestFilesIn:
         assert commands[0].startswith(
             "export LC_ALL=C; mkdir -p -- /notes && if [ -d /notes/todo.txt ]"
         )
-        assert "base64 -d >> /notes/todo.txt." in commands[1]
-        assert commands[2].startswith("export LC_ALL=C; mv -f -- /notes/todo.txt.")
+        assert "base64 -d >> /notes/.maf-" in commands[1]
+        assert "&& mv -f -- /notes/.maf-" in commands[2]
         assert commands[2].endswith(".part /notes/todo.txt")
         (read,) = asyncio.run(adapter.adownload_files([f"{WORK}/notes/todo.txt"]))
         assert read.content == b"1"
@@ -767,7 +767,7 @@ class TestFilesIn:
             "export LC_ALL=C; mkdir -p -- /tmp && if [ -d /tmp/.deepagents_edit_x_old ]; then "
             "echo 'Is a directory' >&2; exit 1; fi && : > "
         )
-        assert staged.startswith("/tmp/.deepagents_edit_x_old.") and staged.endswith(".part")
+        assert staged.startswith("/tmp/.maf-") and staged.endswith(".part")
         chunks = [
             c.removeprefix("export LC_ALL=C; printf %s ").split(" | ")[0] for c in commands[1:-1]
         ]
@@ -775,7 +775,7 @@ class TestFilesIn:
         assert all(len(chunk) <= 65536 for chunk in chunks)
         assert all(c.endswith(f"base64 -d >> {staged}") for c in commands[1:-1])
         assert base64.b64decode("".join(chunks)) == content
-        assert commands[-1] == f"export LC_ALL=C; mv -f -- {staged} /tmp/.deepagents_edit_x_old"
+        assert commands[-1].endswith(f"&& mv -f -- {staged} /tmp/.deepagents_edit_x_old")
         # A second write over the same path stages beside it under its own name, so two
         # writers admitted together each land a whole file and the last one stands.
         asyncio.run(adapter.aupload_files([("/tmp/.deepagents_edit_x_old", b"again")]))
