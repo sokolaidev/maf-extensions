@@ -438,7 +438,9 @@ class MafSandbox(BaseSandbox):
         if not (call.condemned or deferred):
             await release
             return
-        _SYNC.submit(release).add_done_callback(self._left)
+        # `_SyncRunner.submit` takes the coroutine itself and runs it on the process's loop.
+        released = _SYNC.submit(release)
+        released.add_done_callback(self._left)
 
     def _left(self, future: concurrent.futures.Future[None]) -> None:
         if future.cancelled():
