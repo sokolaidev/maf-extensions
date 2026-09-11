@@ -85,7 +85,8 @@ def test_execute_and_the_file_round_trip():
             # against a backend that already served this sandbox on this one.
             assert adapter.execute("cat out.bin | wc -c").output.strip() == "256"
         finally:
-            assert await adapter.aclose() is True
+            closed = await adapter.aclose()
+            assert closed is True
 
     asyncio.run(scenario())
 
@@ -122,7 +123,8 @@ def test_deep_agents_derived_file_tools_run_over_execute():
         assert listed.entries is not None
         assert any(entry["path"].endswith("todo.txt") for entry in listed.entries)
     finally:
-        assert adapter.close() is True
+        closed = adapter.close()
+        assert closed is True
 
 
 @pytest.mark.skipif(not _BICEP_IMAGE, reason="needs MAF_SANDBOX_DEEPAGENTS_E2E_BICEP_IMAGE")
@@ -137,6 +139,7 @@ def test_the_compiler_answers_through_execute_on_the_bicep_image():
             built = await adapter.aexecute("bicep build main.bicep")
             assert "BCP035" in built.output, built
         finally:
-            assert await adapter.aclose() is True
+            closed = await adapter.aclose()
+            assert closed is True
 
     asyncio.run(scenario())

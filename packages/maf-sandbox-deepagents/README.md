@@ -10,7 +10,7 @@ This package is not affiliated with, endorsed by, or a product of LangChain, Inc
 deepagents  ->  maf_sandbox_deepagents  ->  maf_sandbox (router)  ->  a backend  ->  the sandbox
 ```
 
-A `maf-sandbox` router as a Deep Agents sandbox. Deep Agents gives an agent one `execute` tool over a sandbox object the host constructs, and derives its file tools from that; the cloud providers it ships with (LangSmith, Daytona, E2B, Modal, Runloop, Vercel) each wrap a vendor client. `MafSandbox` is that object over a `SandboxRouter` instead — so a LangChain or LangGraph agent runs its shell in a Docker container, an Azure Container Apps sandbox or a `wslc` container, and the host keeps the router's decisions: a backend below the isolation floor is refused at construction, egress is closed unless the spec names hosts, and the sandbox is keyed from the request context and purged with the conversation.
+A `maf-sandbox` router as a Deep Agents sandbox. Deep Agents gives an agent one `execute` tool over a sandbox object the host constructs, and derives its file tools from that; the cloud providers it ships with (LangSmith, Daytona, E2B, Modal, Runloop, Vercel) each wrap a vendor client. `MafSandbox` is that object over a `SandboxRouter` instead — so a LangChain or LangGraph agent runs its shell in a Docker container or an Azure Container Apps sandbox, and the host keeps the router's decisions: a backend below the isolation floor is refused at construction, egress is closed unless the spec names hosts, and the sandbox is keyed from the request context and purged with the conversation.
 
 It is the suite in the other direction. The packaged kinds (`bicep_validate`, `execute_code`) attach to a Microsoft Agent Framework agent as tools; this package attaches a *backend* to a Deep Agents agent and lets the agent write its own commands. What that gives up is said below.
 
@@ -40,8 +40,8 @@ The sandbox is acquired on the first command and reused warm after that. It live
 | Deep Agents | `maf_sandbox` |
 |---|---|
 | `execute(command, timeout)` | `Sandbox.exec(command, working_directory=".", timeout=...)` — run in the sandbox's storage base, a shell string the backend runs as `sh -c`; `stdout` and `stderr` come back as one stream with `[stderr]` on the second, the way Deep Agents' own backends render it |
-| `upload_files([(path, bytes)])` | `Sandbox.write_file`, one call per file, relative to the storage base; a path outside it or through a link is refused as `invalid_path` |
-| `download_files([path])` | `Sandbox.stat_file` then `Sandbox.read_file`, capped by `spec.files_out.max_bytes_per_file` and refusing rather than truncating; a missing file is `file_not_found`, a directory `is_directory`, a link `invalid_path` |
+| `upload_files([(path, bytes)])` | `Sandbox.write_file`, one call per file, relative to the storage base, under `spec.files_in`: a batch over `max_files` is refused whole, a file over `max_bytes_per_file` or past `max_total_bytes` is refused alone; a path outside the base or through a link is refused as `invalid_path` |
+| `download_files([path])` | `Sandbox.stat_file` then `Sandbox.read_file`, under `spec.files_out`: a batch over `max_files` is refused whole, and each file is read under the smaller of `max_bytes_per_file` and what `max_total_bytes` has left, refusing rather than truncating; a missing file is `file_not_found`, a directory `is_directory`, a link `invalid_path` |
 | `id` | An opaque hash of the key and the kind, because Deep Agents may render it to the model and a scope is often a tenant |
 | `aclose()` | `SandboxRouter.dispose_kind` for this conversation's sandbox of this kind alone, so a packaged kind serving the same conversation keeps its own |
 

@@ -1,7 +1,7 @@
 [project]
 name = "maf-sandbox-deepagents"
 version = "0.0.0"
-description = "A maf-sandbox router as a Deep Agents sandbox backend — any backend the router admits (Docker, ACA Sandboxes, wslc) behind LangChain's BaseSandbox, with the router's isolation floor and egress policy still enforced."
+description = "A maf-sandbox router as a Deep Agents sandbox backend — any backend the router admits (Docker, ACA Sandboxes) behind LangChain's BaseSandbox, with the router's isolation floor and egress policy still enforced."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
 authors = [{ name = "SOKOLAI BV", email = "info@sokolai.com" }]

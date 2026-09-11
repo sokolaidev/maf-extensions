@@ -10,9 +10,9 @@ is still keyed from the host's request context and purged with the conversation.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import hashlib
 import logging
-import threading
 from collections.abc import Coroutine
 from typing import Any
 
@@ -82,10 +82,15 @@ STORAGE_BASE = "."
 SANDBOX_UNAVAILABLE = "Error: sandbox unavailable — the command did not run."
 
 _TIMED_OUT = "Error: the command did not finish within {seconds:g} seconds and was stopped."
+#: Distinct from :data:`SANDBOX_UNAVAILABLE`: the command may have run, and the result is what
+#: did not come back.
+_EXEC_FAILED = "Error: the sandbox did not return the command's result; see the host log."
 _UPLOAD_FAILED = "upload failed; see the host log"
 _DOWNLOAD_FAILED = "download failed; see the host log"
 _SIZE_UNKNOWN = "the sandbox could not report the file's size"
-_OVER_CAP = "the file is larger than files_out.max_bytes_per_file"
+_TOO_MANY_FILES = "the batch has more files than {direction}.max_files allows"
+_OVER_FILE_CAP = "the file is larger than {direction}.max_bytes_per_file"
+_OVER_TOTAL_CAP = "the batch would exceed {direction}.max_total_bytes"
 
 
 def deepagents_spec(
@@ -133,21 +138,10 @@ def _run_sync[T](coroutine: Coroutine[Any, Any, T]) -> T:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coroutine)
-    outcome: list[T] = []
-    failure: list[BaseException] = []
-
-    def run() -> None:
-        try:
-            outcome.append(asyncio.run(coroutine))
-        except BaseException as raised:  # noqa: BLE001 — re-raised on the caller's thread
-            failure.append(raised)
-
-    worker = threading.Thread(target=run, name="maf-sandbox-deepagents", daemon=True)
-    worker.start()
-    worker.join()
-    if failure:
-        raise failure[0]
-    return outcome[0]
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="maf-sandbox-deepagents"
+    ) as worker:
+        return worker.submit(asyncio.run, coroutine).result()
 
 
 def _response(result: ExecResult) -> ExecuteResponse:
@@ -213,11 +207,15 @@ class MafSandbox(BaseSandbox):
         self._key = key
         self._spec = spec
         self._timeout = float(exec_timeout_seconds)
+        backend = router.backend_for(spec)
+        served_by = "" if backend is None else backend.name
         digest = hashlib.sha256(
-            "\0".join((key.scope, key.thread_id, key.agent_dir, spec.kind)).encode()
+            "\0".join((served_by, key.scope, key.thread_id, key.agent_dir, spec.kind)).encode()
         ).hexdigest()
-        # Opaque rather than the key spelled out: Deep Agents may render the id to the model,
-        # and a scope is often a tenant or a user.
+        # The id names the sandbox, as a provider's own id would: two adapters over one key,
+        # kind and backend reach one sandbox through the router's get-or-create, and say so.
+        # Opaque rather than the key spelled out, because Deep Agents may render it to the
+        # model and a scope is often a tenant or a user.
         self._id = f"maf-sandbox-{digest[:16]}"
 
     @property
@@ -262,6 +260,9 @@ class MafSandbox(BaseSandbox):
             result = await sandbox.exec(command, working_directory=STORAGE_BASE, timeout=bound)
         except TimeoutError:
             return ExecuteResponse(output=_TIMED_OUT.format(seconds=bound), exit_code=None)
+        except Exception:
+            logger.exception("%s: the command's result could not be read", self._id)
+            return ExecuteResponse(output=_EXEC_FAILED, exit_code=None)
         return _response(result)
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
@@ -270,11 +271,26 @@ class MafSandbox(BaseSandbox):
     # --- files in --------------------------------------------------------------------------
 
     async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        limits = self._spec.files_in
+        if len(files) > limits.max_files:
+            refusal = _TOO_MANY_FILES.format(direction="files_in")
+            return [FileUploadResponse(path=path, error=refusal) for path, _ in files]
         sandbox = await self._acquire()
         if sandbox is None:
             return [FileUploadResponse(path=path, error=_UPLOAD_FAILED) for path, _ in files]
         responses: list[FileUploadResponse] = []
+        sent = 0
         for path, content in files:
+            # Checked before the write it would have prevented, and counted only for what
+            # crossed: a refused file leaves the budget where it was.
+            if len(content) > limits.max_bytes_per_file:
+                refusal = _OVER_FILE_CAP.format(direction="files_in")
+                responses.append(FileUploadResponse(path=path, error=refusal))
+                continue
+            if sent + len(content) > limits.max_total_bytes:
+                refusal = _OVER_TOTAL_CAP.format(direction="files_in")
+                responses.append(FileUploadResponse(path=path, error=refusal))
+                continue
             try:
                 await sandbox.write_file(path, content, working_directory=STORAGE_BASE)
             except (ValueError, NotADirectoryError) as refused:
@@ -286,6 +302,7 @@ class MafSandbox(BaseSandbox):
                 logger.exception("%s: upload of %r failed", self._id, path)
                 responses.append(FileUploadResponse(path=path, error=_UPLOAD_FAILED))
             else:
+                sent += len(content)
                 responses.append(FileUploadResponse(path=path))
         return responses
 
@@ -294,8 +311,9 @@ class MafSandbox(BaseSandbox):
 
     # --- files out -------------------------------------------------------------------------
 
-    async def _download(self, sandbox: Sandbox, path: str) -> FileDownloadResponse:
-        cap = self._spec.files_out.max_bytes_per_file
+    async def _download(self, sandbox: Sandbox, path: str, *, room: int) -> FileDownloadResponse:
+        """One file, read under the smaller of the per-file cap and ``room``, the batch's rest."""
+        cap = min(self._spec.files_out.max_bytes_per_file, room)
         try:
             entry = await sandbox.stat_file(path, working_directory=STORAGE_BASE)
         except ValueError as refused:
@@ -311,11 +329,11 @@ class MafSandbox(BaseSandbox):
         if entry.size_bytes is None:
             return FileDownloadResponse(path=path, error=_SIZE_UNKNOWN)
         if entry.size_bytes > cap:
-            return FileDownloadResponse(path=path, error=_OVER_CAP)
+            return FileDownloadResponse(path=path, error=self._over_cap(entry.size_bytes))
         try:
             content = await sandbox.read_file(path, working_directory=STORAGE_BASE, max_bytes=cap)
         except SandboxTransferCapExceeded:
-            return FileDownloadResponse(path=path, error=_OVER_CAP)
+            return FileDownloadResponse(path=path, error=self._over_cap(entry.size_bytes))
         except FileNotFoundError:
             return FileDownloadResponse(path=path, error=FILE_NOT_FOUND)
         except IsADirectoryError:
@@ -325,17 +343,32 @@ class MafSandbox(BaseSandbox):
             return FileDownloadResponse(path=path, error=INVALID_PATH)
         return FileDownloadResponse(path=path, content=content)
 
+    def _over_cap(self, size: int) -> str:
+        """Which ceiling a file of ``size`` bytes broke: its own, or what the batch had left."""
+        direction = "files_out"
+        if size > self._spec.files_out.max_bytes_per_file:
+            return _OVER_FILE_CAP.format(direction=direction)
+        return _OVER_TOTAL_CAP.format(direction=direction)
+
     async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        limits = self._spec.files_out
+        if len(paths) > limits.max_files:
+            refusal = _TOO_MANY_FILES.format(direction="files_out")
+            return [FileDownloadResponse(path=path, error=refusal) for path in paths]
         sandbox = await self._acquire()
         if sandbox is None:
             return [FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED) for path in paths]
         responses: list[FileDownloadResponse] = []
+        room = limits.max_total_bytes
         for path in paths:
             try:
-                responses.append(await self._download(sandbox, path))
+                response = await self._download(sandbox, path, room=room)
             except Exception:
                 logger.exception("%s: download of %r failed", self._id, path)
-                responses.append(FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED))
+                response = FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)
+            if response.content is not None:
+                room -= len(response.content)
+            responses.append(response)
         return responses
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:

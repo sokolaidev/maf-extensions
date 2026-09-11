@@ -125,15 +125,19 @@ class TestConstruction:
 
 
 class TestTheId:
-    def test_is_opaque_and_stable(self):
+    def test_is_opaque(self):
         first, _ = _adapter()
-        second, _ = _adapter()
-        assert first.id == second.id
         assert first.id.startswith("maf-sandbox-")
         for part in (KEY.scope, KEY.thread_id, KEY.agent_dir):
             assert part not in first.id
 
-    def test_differs_by_conversation_and_by_kind(self):
+    def test_names_the_sandbox_the_router_reaches(self):
+        """Two adapters over one key, kind and backend reach one sandbox, and say so."""
+        first, _ = _adapter()
+        second, _ = _adapter()
+        assert first.id == second.id
+
+    def test_differs_by_conversation_kind_and_backend(self):
         base, _ = _adapter()
         other_thread = MafSandbox(
             _router(_backend()),
@@ -141,7 +145,8 @@ class TestTheId:
             deepagents_spec("img:1"),
         )
         other_kind = MafSandbox(_router(_backend()), KEY, deepagents_spec("img:1", kind="shell"))
-        assert len({base.id, other_thread.id, other_kind.id}) == 3
+        other_backend = MafSandbox(_router(_backend(name="second")), KEY, deepagents_spec("img:1"))
+        assert len({base.id, other_thread.id, other_kind.id, other_backend.id}) == 4
 
 
 class TestExecute:
@@ -198,6 +203,19 @@ class TestExecute:
         assert "subscription" not in response.output
         assert detail in caplog.text
 
+    def test_a_failure_to_run_is_a_fixed_sentence_with_the_detail_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        detail = "docker exec: subscription 0000-1111 refused"
+        adapter, _ = _adapter(InProcessSandbox(raises=RuntimeError(detail)))
+        with caplog.at_level(logging.ERROR, logger="maf_sandbox_deepagents"):
+            response = asyncio.run(adapter.aexecute("true"))
+        assert response.exit_code is None
+        assert "subscription" not in response.output
+        assert response.output != SANDBOX_UNAVAILABLE
+        assert "result" in response.output
+        assert detail in caplog.text
+
     def test_a_timeout_is_reported_as_one(self):
         adapter, _ = _adapter(InProcessSandbox(raises=TimeoutError()))
         response = asyncio.run(adapter.aexecute("sleep 999", timeout=3))
@@ -241,6 +259,39 @@ class TestFilesIn:
         adapter, _ = _adapter(InProcessSandbox())
         (response,) = asyncio.run(adapter.aupload_files([("../etc/passwd", b"x")]))
         assert response.error == "invalid_path"
+
+    def test_a_batch_over_max_files_is_refused_whole_before_anything_crosses(self):
+        fake = InProcessSandbox()
+        spec = deepagents_spec(
+            "img:1", files_in=TransferLimits(max_bytes_per_file=8, max_total_bytes=8, max_files=1)
+        )
+        adapter = MafSandbox(_router(_backend(fake)), KEY, spec)
+
+        responses = asyncio.run(adapter.aupload_files([("a", b"1"), ("b", b"2")]))
+
+        assert [r.error for r in responses] == [
+            "the batch has more files than files_in.max_files allows"
+        ] * 2
+        assert fake.contents == {}
+
+    def test_each_file_is_held_to_the_per_file_and_total_caps(self):
+        fake = InProcessSandbox()
+        spec = deepagents_spec(
+            "img:1", files_in=TransferLimits(max_bytes_per_file=4, max_total_bytes=6, max_files=8)
+        )
+        adapter = MafSandbox(_router(_backend(fake)), KEY, spec)
+
+        responses = asyncio.run(
+            adapter.aupload_files([("big", b"12345"), ("a", b"1234"), ("b", b"123"), ("c", b"12")])
+        )
+
+        assert [(r.path, r.error) for r in responses] == [
+            ("big", "the file is larger than files_in.max_bytes_per_file"),
+            ("a", None),
+            ("b", "the batch would exceed files_in.max_total_bytes"),
+            ("c", None),
+        ]
+        assert sorted(fake.contents) == [f"{WORK}/a", f"{WORK}/c"]
 
     def test_an_unavailable_sandbox_fails_every_file_without_raising(self):
         adapter, _ = _adapter(acquire_error=RuntimeError("down"))
@@ -293,8 +344,37 @@ class TestFilesOut:
         (response,) = asyncio.run(adapter.adownload_files(["big.bin"]))
 
         assert response.content is None
-        assert response.error is not None
-        assert "max_bytes_per_file" in response.error
+        assert response.error == "the file is larger than files_out.max_bytes_per_file"
+
+    def test_a_batch_over_max_files_is_refused_whole(self):
+        fake = InProcessSandbox(seed_files={f"{WORK}/a": "1", f"{WORK}/b": "2"})
+        spec = deepagents_spec(
+            "img:1", files_out=TransferLimits(max_bytes_per_file=8, max_total_bytes=8, max_files=1)
+        )
+        adapter = MafSandbox(_router(_backend(fake)), KEY, spec)
+
+        responses = asyncio.run(adapter.adownload_files(["a", "b"]))
+
+        assert [r.error for r in responses] == [
+            "the batch has more files than files_out.max_files allows"
+        ] * 2
+
+    def test_the_total_cap_bounds_the_batch_and_a_refused_file_spends_nothing(self):
+        fake = InProcessSandbox(
+            seed_files={f"{WORK}/a": "1234", f"{WORK}/b": "123", f"{WORK}/c": "12"}
+        )
+        spec = deepagents_spec(
+            "img:1", files_out=TransferLimits(max_bytes_per_file=4, max_total_bytes=6, max_files=8)
+        )
+        adapter = MafSandbox(_router(_backend(fake)), KEY, spec)
+
+        responses = asyncio.run(adapter.adownload_files(["a", "b", "c"]))
+
+        assert [(r.path, r.error, r.content) for r in responses] == [
+            ("a", None, b"1234"),
+            ("b", "the batch would exceed files_out.max_total_bytes", None),
+            ("c", None, b"12"),
+        ]
 
 
 class TestTheSynchronousSurface:
@@ -332,7 +412,8 @@ class TestClose:
 
         before = len(backend.disposed)
 
-        assert asyncio.run(adapter.aclose()) is True
+        closed = asyncio.run(adapter.aclose())
+        assert closed is True
 
         assert backend.disposed[before:] == [KEY]
         assert backend.disposed_kinds[before:] == [DEEPAGENTS_KIND]
@@ -341,7 +422,8 @@ class TestClose:
         adapter, backend = _adapter(InProcessSandbox())
         adapter.execute("true")
         before = len(backend.disposed)
-        assert adapter.close() is True
+        closed = adapter.close()
+        assert closed is True
         assert backend.disposed[before:] == [KEY]
 
     def test_the_next_command_after_a_close_starts_a_fresh_sandbox(self):
