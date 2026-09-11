@@ -1,4 +1,4 @@
-"""Measure full Bicep calls and cleanup on Docker, including repeated module restores."""
+"""Measure full Bicep calls and cleanup on Docker, at both cleanup rungs a host can be on."""
 
 from __future__ import annotations
 
@@ -125,6 +125,144 @@ def test_validation_leaves_nothing_behind_and_reuses_the_sandbox(case: str, monk
                 subject = DockerFingerprintSubject(sandbox, observer_image=_OBSERVER)
                 results = await assert_nothing_left_behind(subject, call)
                 assert all(result.passed and not result.skipped for result in results)
+        finally:
+            assert await backend.dispose(key) is None
+
+    asyncio.run(scenario())
+
+
+async def _workload_containers(scope: str) -> frozenset[str]:
+    """Every non-proxy container the daemon still holds for ``scope``, by engine ID.
+
+    Asked of the daemon rather than of the router. What disposal promises is that the instance
+    is gone, and a router that had forgotten an instance it failed to delete would answer that
+    question out of its own ledger and pass. The egress proxy carries the same key labels and
+    is left out: its lifetime is the backend's, and this measures the rung.
+    """
+    listed = await asyncio.create_subprocess_exec(
+        "docker",
+        "ps",
+        "--all",
+        "--no-trunc",
+        "--filter",
+        f"label=maf-sandbox.scope={scope}",
+        "--format",
+        '{{.ID}} {{.Label "maf-sandbox.role"}}',
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await asyncio.wait_for(listed.communicate(), 60)
+    assert listed.returncode == 0, stderr.decode()
+    rows = [line.split(maxsplit=1) for line in stdout.decode().splitlines() if line.strip()]
+    return frozenset(row[0] for row in rows if len(row) == 1 or row[1].strip() != "proxy")
+
+
+@pytest.mark.parametrize("case", ["local", "diagnostics", "modules", "cancelled"])
+def test_the_disposal_default_deletes_the_sandbox_each_call(case: str, monkeypatch):
+    """Measure the rung a host that names no floor gets, against the engine rather than the router.
+
+    This is not another case of the probe above. That one is built around a sandbox an acquire
+    already returned and compares its state either side of the call; under disposal the
+    instance is gone by the time the call ends, so there is nothing left to fingerprint and its
+    ``instance_id`` assertion inverts rather than holding.
+
+    What replaces it is two calls, and the three things that separate the rungs: the container
+    the call ran in is absent from the daemon afterwards, the next call is served a different
+    instance, and that instance carries none of the first call's inputs, module cache or
+    temporary profile. Each round acquires before calling so the identity being looked for
+    afterwards is one the daemon has already confirmed, which is what the reuse probe adopts
+    for.
+
+    ``cancelled`` is this kind's raising call. A failed ``bicep build`` does not raise — the
+    diagnostics are the answer, which ``diagnostics`` covers — so cancellation is the way a
+    body leaves through an exception, and it is the way that matters: a cancelled call's
+    cleanup runs under a two-second grace rather than the reclaim timeout.
+    """
+    if case == "modules" and not _PROXY:
+        pytest.skip("module restore needs MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE")
+
+    async def scenario():
+        egress = Egress.ALLOWLIST if case == "modules" else Egress.CLOSED
+        backend = DockerSandboxBackend(DockerSandboxConfig(egress_proxy_image=_PROXY))
+        # No `min_cleanup`: the floor a deployment gets when it names none, which is the whole
+        # point of the measurement.
+        router = SandboxRouter([backend], min_isolation=backend.isolation)
+        spec = bicep_sandbox_spec(image=_IMAGE, egress=egress)
+        key = SandboxKey(
+            scope="bicep-disposal-" + uuid.uuid4().hex, thread_id="test", agent_dir="test"
+        )
+        source = _MODULE if case == "modules" else "output value string = 'hello'\n"
+        if case == "diagnostics":
+            source = "output value string = missingValue\n"
+        store = InMemoryStore(
+            {"nested/main.bicep": source, "main.bicepparam": "using './nested/main.bicep'\n"}
+        )
+        context = CallerContext(
+            current_scope=lambda: key.scope,
+            current_thread_id=lambda: key.thread_id,
+            list_files=InMemoryStore.list,
+        )
+        tool = make_bicep_tools(router, store, key.agent_dir, context, image=_IMAGE, egress=egress)[
+            0
+        ]
+        files = ["main.bicepparam", "nested/main.bicep"]
+        started = asyncio.Event()
+
+        async def call():
+            if case == "cancelled":
+                started.clear()
+                pending = asyncio.create_task(tool.func(files=files))
+                await started.wait()
+                for _ in range(2):
+                    pending.cancel()
+                    await asyncio.sleep(0)
+                with pytest.raises(asyncio.CancelledError):
+                    await pending
+                return
+            report = str((await tool.func(files=files))[0].text)
+            assert "Error:" not in report, report
+            assert "MODULE RESTORE FAILED" not in report, report
+            if case == "diagnostics":
+                assert "BCP057" in report, report
+            else:
+                assert "[error]" not in report, report
+
+        try:
+            assert router.effective_cleanup(spec) is Cleanup.DISPOSE
+            assert await _workload_containers(key.scope) == frozenset()
+            served: list[str] = []
+            for round_number in range(2):
+                sandbox = await router.acquire(key, spec)
+                instance = sandbox.instance_id
+                # The observable difference from reclaim: the second call is not served the
+                # sandbox the first one ran in, because that one no longer exists.
+                assert instance not in served, served
+                assert await _workload_containers(key.scope) == frozenset({instance})
+                # Nothing of the previous call reached this sandbox. The engine's own diff
+                # against the image is where the inputs, the module cache under the call
+                # directory and the temporary profile beside it would all appear -- a changed
+                # directory is reported as well as an added file, so an empty diff says the
+                # work directory is as the image left it. The first round is the control that
+                # makes the second one's silence mean something.
+                measured = await DockerFingerprintSubject(
+                    sandbox, observer_image=_OBSERVER
+                ).fingerprint()
+                assert measured is not None
+                assert measured.changed_paths == frozenset(), sorted(measured.changed_paths)
+                if case == "cancelled" and round_number == 0:
+                    original_exec = type(sandbox).exec
+
+                    async def observed_exec(self, *args, **kwargs):
+                        started.set()
+                        return await original_exec(self, *args, **kwargs)
+
+                    monkeypatch.setattr(type(sandbox), "exec", observed_exec)
+                served.append(instance)
+                await call()
+                # The daemon, not the router: the sandbox the call ran in is gone, and so is
+                # everything it wrote, whether the call returned a report, reported compiler
+                # errors, or raised.
+                assert await _workload_containers(key.scope) == frozenset()
         finally:
             assert await backend.dispose(key) is None
 
