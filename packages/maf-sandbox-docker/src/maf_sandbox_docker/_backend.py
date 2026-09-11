@@ -1346,37 +1346,41 @@ class DockerSandboxBackend:
     ) -> EgressObserved | None:
         """Read attribution and decisions from the same engine instance, across host processes.
 
-        ``caller_key`` stands in where the proxy's own label cannot be recovered — one written
-        before that label existed, one whose selectors were hashed, or one whose key overran the
-        attribution budget. It never displaces a recovered key: a disposal addressed to a
-        conversation also sweeps leftovers from the calls inside it, and each window belongs to
-        the key that ran behind that proxy rather than to the key that asked for the sweep.
+        ``caller_key`` stands in for a proxy that carries no attribution to read — one written
+        before the label existed, or one whose key overran the budget and was written empty. It
+        never displaces a recovered key, because a disposal addressed to a conversation also
+        sweeps leftovers from the calls inside it, and each window belongs to the key that ran
+        behind that proxy. It never answers for a label that is present and was refused either:
+        that proxy's own metadata is what this could not trust.
         """
         if self._egress_report is None:
             return None
-        key: SandboxKey | None = None
-        instance: str | None = None
         try:
             data = await self._inspect_disposal_target(proxy_id or _proxy_name(name))
             if data is None:
-                return None
-            found = data.get("Id")
-            if proxy_id is not None and found != proxy_id:
                 return None
             metadata = data.get("Config")
             labels = data.get("Labels")
             if labels is None and isinstance(metadata, dict):
                 labels = cast(dict[str, object], metadata).get("Labels")
-            if isinstance(labels, dict) and isinstance(found, str) and found:
-                owned = cast(dict[str, object], labels)
-                if owned.get(_LABEL_ROLE) == "proxy":
-                    instance = found
-                    key = _key_from_labels(owned)
+            if (
+                not isinstance(labels, dict)
+                or cast(dict[str, object], labels).get(_LABEL_ROLE) != "proxy"
+            ):
+                return None
+            owned = cast(dict[str, object], labels)
+            key = _key_from_labels(owned)
+            instance = data.get("Id")
+            if not isinstance(instance, str) or not instance:
+                return None
+            if proxy_id is not None and instance != proxy_id:
+                return None
+            if key is None and owned.get(_LABEL_KEY, "") == "":
+                key = caller_key
+            if key is None:
+                return None
         except Exception as exc:  # noqa: BLE001 - attribution must not block cleanup
             logger.warning("could not attribute proxy %s: %s", name, error_detail(exc))
-        if key is None:
-            key = caller_key
-        if key is None:
             return None
         return await self._drain_the_proxy(name, key, proxy_id=instance)
 

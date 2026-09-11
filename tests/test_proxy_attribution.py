@@ -227,24 +227,51 @@ def test_a_disposal_files_a_leftover_window_under_the_key_that_ran_it(engine):
     asyncio.run(scenario())
 
 
-def test_the_callers_key_still_answers_for_a_proxy_that_cannot_say_whose_it_is(engine):
-    """An oversized key is written as an empty label, and a hashed selector cannot be reversed.
+@pytest.mark.parametrize("shape", ["oversized", "legacy"])
+def test_the_callers_key_still_answers_for_a_proxy_carrying_no_attribution(engine, shape):
+    """The two shapes with nothing to read: an oversized key is written as an empty label, and
+    a proxy predating the label carries none, with selectors `_KEY` had hashed.
 
-    A key-addressed disposal is the one caller that can name such a window anyway, and the
-    fallback above must not have cost it that.
+    A key-addressed disposal is the one caller that can name such a window anyway.
     """
-    key = SandboxKey(scope="scope", thread_id="thread", agent_dir="agent")
 
     async def scenario():
-        await engine.backend()._ensure_proxy("workload", key, _SPEC)
+        await engine.backend()._ensure_proxy("workload", _KEY, _SPEC)
         labels = next(iter(engine.rows.values()))["Config"]["Labels"]
-        labels["maf-sandbox.key.v1"] = ""
+        if shape == "oversized":
+            labels["maf-sandbox.key.v1"] = ""
+        else:
+            del labels["maf-sandbox.key.v1"]
+        assert engine.module._key_from_labels(labels) is None
         reader = engine.backend()
         events = []
         reader.observe_egress(events.append)
-        await reader.dispose(key)
-        assert [event.key for event in events] == [key]
+        await reader.dispose(_KEY)
+        assert [event.key for event in events] == [_KEY]
         assert events[0].decisions[0].host == "example.com"
+        assert not engine.rows
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("payload", ["!", "WyJvdGhlciIsImIiLCJjIiwiZCJd"], ids=["junk", "claims"])
+def test_the_callers_key_does_not_answer_for_a_label_that_was_refused(engine, payload):
+    """A present label that will not decode, or whose values contradict the selectors, is
+    refused deliberately — so the caller's key must not be read as a second opinion on it.
+
+    The sweep would otherwise publish a window under the caller for a container whose own
+    account of itself this just declined to believe.
+    """
+
+    async def scenario():
+        await engine.backend()._ensure_proxy("workload", _KEY, _SPEC)
+        labels = next(iter(engine.rows.values()))["Config"]["Labels"]
+        labels["maf-sandbox.key.v1"] = payload
+        reader = engine.backend()
+        events = []
+        reader.observe_egress(events.append)
+        await reader.dispose(_KEY)
+        assert events == []
         assert not engine.rows
 
     asyncio.run(scenario())
@@ -334,8 +361,12 @@ def test_an_unobserved_backend_does_not_inspect_for_attribution(engine):
     assert engine.calls == []
 
 
+@pytest.mark.parametrize("stand_in", [False, True], ids=["unattributed", "caller-key"])
 @pytest.mark.parametrize("failure", ["absent", "unreadable", "malformed", "role", "id", "mismatch"])
-def test_unattributable_instances_do_not_emit_or_block_cleanup(engine, failure):
+def test_unattributable_instances_do_not_emit_or_block_cleanup(engine, failure, stand_in):
+    """None of these is a proxy with nothing to say about itself, so a caller's key does not
+    rescue any of them: the log is never read, by name or by ID."""
+
     async def scenario():
         backend = engine.backend()
         await backend._ensure_proxy("workload", _KEY, _SPEC)
@@ -360,7 +391,9 @@ def test_unattributable_instances_do_not_emit_or_block_cleanup(engine, failure):
 
         setattr(backend, "_" + engine.name, inspect)
         await backend._drain_attributed_proxy(
-            "workload", "wrong-id" if failure == "mismatch" else None
+            "workload",
+            "wrong-id" if failure == "mismatch" else None,
+            caller_key=_KEY if stand_in else None,
         )
         assert events == []
         assert not any("--tail" in call for call in engine.calls)
