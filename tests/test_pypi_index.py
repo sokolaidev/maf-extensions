@@ -19,6 +19,7 @@ import http.client
 import importlib.util
 import io
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -84,9 +85,9 @@ def _install(monkeypatch: pytest.MonkeyPatch, fake: _Index) -> list[float]:
 @pytest.fixture(autouse=True)
 def _one_index_unless_a_test_says_otherwise(monkeypatch: pytest.MonkeyPatch):
     """A contributor's own index settings would change how many documents each read fetches."""
-    monkeypatch.delenv("UV_INDEX", raising=False)
+    for name in [key for key in os.environ if key.startswith("UV_INDEX")]:
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("UV_DEFAULT_INDEX", raising=False)
-    monkeypatch.delenv("UV_INDEX_STRATEGY", raising=False)
 
 
 class TestADefinitiveReplyIsNotRetried:
@@ -103,8 +104,9 @@ class TestADefinitiveReplyIsNotRetried:
         assert index.read_json(_URL, sleep=pauses.append) is None
         assert len(fake.requests) == 1
 
-    def test_a_4xx_that_is_not_404_raises_at_once(self, monkeypatch):
-        fake = _Index(_http_error(403))
+    @pytest.mark.parametrize("code", [400, 410, 422])
+    def test_a_4xx_that_is_neither_404_nor_a_refusal_raises_at_once(self, monkeypatch, code):
+        fake = _Index(_http_error(code))
         pauses = _install(monkeypatch, fake)
         with pytest.raises(urllib.error.HTTPError):
             index.read_json(_URL, sleep=pauses.append)
@@ -237,13 +239,12 @@ class TestPublishedVersionsAreSortedSemantically:
 
 
 class TestAVersionsMetadataComesFromTheIndexThatCarriesIt:
-    """The simple lookup follows uv's variables; the per-version document has to follow them too.
+    """Warehouse serves `/pypi/<name>/<version>/json` beside its simple index, so both follow
+    the same variables: the same indexes, the same order, the same credentials, and the base's
+    own path and query kept.
 
-    Warehouse serves `/pypi/<name>/<version>/json` beside its simple index. Asked of pypi.org
-    regardless, a version only a rehearsal index holds answers 404, every caller reads that as
-    "no such version" and drops it, and the gate reports the shortfall the rehearsal existed to
-    disprove. Measured on the real indexes: `maf-sandbox-wslc 0.0.1` is 200 on TestPyPI and 404
-    on PyPI.
+    A version one index holds and another does not is the ordinary case, not a corner: a caller
+    reads a 404 as "no such version", so asking the wrong index answers about a different one.
     """
 
     def test_the_rehearsal_index_is_asked_first_and_answers(self, monkeypatch: pytest.MonkeyPatch):
@@ -527,6 +528,63 @@ class TestFirstIndexStopsAtTheFirstMatch:
         monkeypatch.setenv("UV_INDEX_STRATEGY", "whatever-uv-adds-next")
         self._two(monkeypatch, {"versions": ["0.1.0"]}, {"versions": ["9.9.9"]})
         assert index.fetch_published_versions("maf-sandbox") == ["0.1.0"]
+
+
+class TestANamedIndexCarriesTheCredentialUvWouldSend:
+    """uv addresses a named index's credentials by that name, so the name has to survive parsing.
+
+    Stripped, the check reads an authenticated index unauthenticated: refused, or quietly sent
+    to the next index, which is the reader and the resolver disagreeing one layer below where
+    naming the index was meant to settle it.
+    """
+
+    def test_the_header_is_composed_from_uvs_own_variables(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("UV_INDEX", "corp=https://mirror.example/simple/")
+        monkeypatch.setenv("UV_INDEX_CORP_USERNAME", "reader")
+        monkeypatch.setenv("UV_INDEX_CORP_PASSWORD", "secret")
+        fake = _Index({"versions": ["1.0.0"]})
+        _install(monkeypatch, fake)
+        index.fetch_published_versions("maf-sandbox")
+        assert fake.requests[0].get_header("Authorization") == "Basic cmVhZGVyOnNlY3JldA=="
+
+    def test_a_name_uv_would_spell_differently_is_spelled_uvs_way(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("UV_INDEX", "my-corp.eu=https://mirror.example/simple/")
+        monkeypatch.setenv("UV_INDEX_MY_CORP_EU_USERNAME", "reader")
+        assert index.configured_indexes()[0][1] is not None
+
+    def test_an_index_with_no_credentials_sends_none(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("UV_INDEX", "corp=https://mirror.example/simple/")
+        fake = _Index({"versions": ["1.0.0"]})
+        _install(monkeypatch, fake)
+        index.fetch_published_versions("maf-sandbox")
+        assert fake.requests[0].get_header("Authorization") is None
+
+    def test_an_unnamed_index_is_never_given_another_indexs_credential(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("UV_INDEX", "https://mirror.example/simple/")
+        monkeypatch.setenv("UV_INDEX_CORP_USERNAME", "reader")
+        assert index.configured_indexes()[0][1] is None
+
+    def test_a_bare_name_contributes_no_index_as_it_does_for_uv(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """`uv pip install --index somename` resolves from the default index without error."""
+        monkeypatch.setenv("UV_INDEX", "somename")
+        assert index.index_urls() == ("https://pypi.org/simple/",)
+
+    @pytest.mark.parametrize("code", [401, 403])
+    def test_a_refusal_says_the_index_could_not_be_asked(self, monkeypatch, code: int):
+        """Not a `None` that a caller reads as "no such version", and not a bare traceback."""
+        pauses = _install(monkeypatch, _Index(_http_error(code)))
+        with pytest.raises(index.IndexUnreachable) as raised:
+            index.read_json(_URL, sleep=pauses.append)
+        said = str(raised.value)
+        assert "refused the request" in said
+        assert "not a verdict" in said
+        assert pauses == []
 
 
 class TestAnIndexUrlMayCarryACredential:

@@ -20,6 +20,7 @@ until that check was removed, and the readers they are built on are here.
 
 from __future__ import annotations
 
+import base64
 import http.client
 import json
 import os
@@ -60,6 +61,9 @@ _NAMED_INDEX = re.compile(r"^[A-Za-z0-9._-]+=(?=[A-Za-z][A-Za-z0-9+.-]*://)")
 #: What `version` can order and every ceiling in this repository is written as.
 _DOTTED_RELEASE = re.compile(r"^\d+(\.\d+)*$")
 
+#: How ``uv`` spells an index name inside an environment variable.
+_NOT_IN_A_VARIABLE = re.compile(r"[^A-Za-z0-9]")
+
 #: The replies that are the index having a moment rather than answering. One reset reaches here
 #: three ways — wrapped in `URLError` when it lands on the connect, bare when it lands on the
 #: body read, and as a short body when the close was clean — so all three shapes are named.
@@ -94,15 +98,25 @@ def read_json(
     url: str,
     *,
     accept: str | None = None,
+    authorization: str | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict | None:
     """The JSON document at ``url``, or None on a 404.
 
-    Raises ``IndexUnreachable`` when every attempt met a transient failure, and the underlying
-    ``HTTPError`` for any other definitive one. ``sleep`` is injected so a test can pin the
-    retries without waiting for them.
+    Raises ``IndexUnreachable`` when every attempt met a transient failure, when the index
+    refused the request, and the underlying ``HTTPError`` for any other definitive one.
+    ``sleep`` is injected so a test can pin the retries without waiting for them.
+
+    A refusal is ``IndexUnreachable`` rather than a trace because it is the same kind of
+    outcome: the question was not put. ``uv`` reaches credentials this does not — a keyring and
+    a netrc among them — so an index it can open may be one this cannot.
     """
-    request = urllib.request.Request(url, headers={"Accept": accept} if accept else {})
+    headers = {}
+    if accept:
+        headers["Accept"] = accept
+    if authorization:
+        headers["Authorization"] = authorization
+    request = urllib.request.Request(url, headers=headers)
     attempt = 0
     while True:
         attempt += 1
@@ -114,6 +128,14 @@ def read_json(
         except urllib.error.HTTPError as error:
             if error.code == 404:
                 return None
+            if error.code in (401, 403):
+                raise IndexUnreachable(
+                    f"{redacted(url)} refused the request ({error.code}). A named index is "
+                    "authenticated from UV_INDEX_<NAME>_USERNAME and UV_INDEX_<NAME>_PASSWORD "
+                    "here; a keyring or netrc credential uv would use is not available to this "
+                    "check, so the index could not be asked — this is not a verdict on any "
+                    "version."
+                ) from error
             if error.code < 500:
                 raise
             reason = error
@@ -148,29 +170,56 @@ def index_urls() -> tuple[str, ...]:
     resolves from. An entry may carry uv's optional ``<name>=`` prefix, which is not part of the
     URL.
     """
-    named = [_url_of(entry) for entry in os.environ.get(_INDEX_VARIABLE, "").split()]
-    default = _url_of(os.environ.get(_DEFAULT_INDEX_VARIABLE, "").strip()) or _PYPI_SIMPLE
-    seen: dict[str, None] = {}
-    for url in (*named, default):
-        if url:
-            seen[url] = None
-    return tuple(seen)
+    return tuple(url for url, _ in configured_indexes())
 
 
-def _url_of(entry: str) -> str:
-    """One index entry as a URL, dropping the name uv lets it be given under.
+def configured_indexes() -> tuple[tuple[str, str | None], ...]:
+    """Each index base with the ``Authorization`` header ``uv`` would send it, in search order.
+
+    An entry uv admits as ``<name>=<url>`` keeps its name here, because that name is how uv's
+    own ``UV_INDEX_<NAME>_USERNAME`` and ``UV_INDEX_<NAME>_PASSWORD`` address it. Dropped, a
+    check reads an authenticated index unauthenticated and is refused or sent elsewhere, which
+    is the reader and the resolver disagreeing again one layer down.
+
+    A bare name with no URL contributes no index, matching uv, which accepts the form and
+    resolves from the default index.
+    """
+    entries = [_named(entry) for entry in os.environ.get(_INDEX_VARIABLE, "").split()]
+    name, default = _named(os.environ.get(_DEFAULT_INDEX_VARIABLE, "").strip())
+    entries.append((name, default or _PYPI_SIMPLE))
+    seen: dict[str, str | None] = {}
+    for index_name, url in entries:
+        if url and url not in seen:
+            seen[url] = _authorization(index_name) if index_name else None
+    return tuple(seen.items())
+
+
+def _named(entry: str) -> tuple[str, str]:
+    """One index entry as its optional uv name and its URL, or an empty URL if it has none.
 
     The trailing slash is settled on the *path*. Appended to the whole string it lands past a
-    query the index carries, where it is not part of any path and the join below would put a
-    distribution name inside the query.
+    query the index carries, where it is not part of any path and the join in `package_url`
+    would put a distribution name inside the query.
     """
-    url = _NAMED_INDEX.sub("", entry)
-    parsed = urllib.parse.urlsplit(url)
+    match = _NAMED_INDEX.match(entry)
+    name = entry[: match.end() - 1] if match else ""
+    parsed = urllib.parse.urlsplit(entry[match.end() :] if match else entry)
     if not parsed.scheme:
-        return ""
-    return urllib.parse.urlunsplit(
+        return name, ""
+    return name, urllib.parse.urlunsplit(
         (parsed.scheme, parsed.netloc, parsed.path.rstrip("/") + "/", parsed.query, parsed.fragment)
     )
+
+
+def _authorization(name: str) -> str | None:
+    """The Basic header uv composes for a named index, or None when neither variable is set."""
+    key = _NOT_IN_A_VARIABLE.sub("_", name).upper()
+    user = os.environ.get(f"{_INDEX_VARIABLE}_{key}_USERNAME")
+    secret = os.environ.get(f"{_INDEX_VARIABLE}_{key}_PASSWORD")
+    if user is None and secret is None:
+        return None
+    pair = f"{user or ''}:{secret or ''}".encode()
+    return "Basic " + base64.b64encode(pair).decode()
 
 
 def package_url(index: str, distribution: str) -> str:
@@ -203,17 +252,15 @@ def version_document_url(index: str, distribution: str, released: str) -> str:
 def fetch_version_document(distribution: str, released: str) -> dict | None:
     """One version's legacy JSON document, from whichever index carries it.
 
-    The same variables the simple lookup reads, tried in the same order. Asked of pypi.org
-    regardless, a version only a rehearsal index carries answers 404, and a caller reads that as
-    "no such version" and drops it — leaving the gate to report exactly the shortfall the
-    rehearsal was arranged to disprove.
-
+    The same indexes the simple lookup reads, in the same order and with the same credentials.
     An index that is not Warehouse serves no such document and answers 404, which falls through
-    to the next rather than ending the search. There is no per-version ``requires_dist`` in the
+    to the next rather than ending the search; there is no per-version ``requires_dist`` in the
     simple API to fall back to.
     """
-    for index in index_urls():
-        payload = read_json(version_document_url(index, distribution, released))
+    for index, authorization in configured_indexes():
+        payload = read_json(
+            version_document_url(index, distribution, released), authorization=authorization
+        )
         if payload is not None:
             return payload
     return None
@@ -234,8 +281,10 @@ def fetch_simple(distribution: str) -> dict | None:
     """
     merge = os.environ.get(_STRATEGY_VARIABLE, "").strip() in _SEARCHES_EVERY_INDEX
     payloads: list[dict] = []
-    for url in index_urls():
-        payload = read_json(package_url(url, distribution), accept=_SIMPLE_ACCEPT)
+    for url, authorization in configured_indexes():
+        payload = read_json(
+            package_url(url, distribution), accept=_SIMPLE_ACCEPT, authorization=authorization
+        )
         if payload is None:
             continue
         if not merge:
