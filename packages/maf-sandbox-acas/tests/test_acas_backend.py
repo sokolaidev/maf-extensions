@@ -3494,6 +3494,142 @@ def test_reacquire_retries_invalidated_ids_retained_after_disposal(disposal, mon
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("stage", ["resume", "resume_failure", "probe", "prepare"])
+def test_reacquire_refuses_invalidation_during_preparation(stage, monkeypatch):
+    from maf_sandbox import SandboxOutputError
+
+    from maf_sandbox_acas._backend import _AcasSandbox
+
+    client = _SlowCreateGroupClient()
+    backend = _backend_with(client)
+    key = SandboxKey("s", "t", "a")
+    spec = _spec()
+
+    async def scenario():
+        first = await backend.acquire(key, spec)
+        ready, release = asyncio.Event(), asyncio.Event()
+        owner, name = {
+            "resume": (_ResumingSandboxClient, "ensure_running"),
+            "resume_failure": (_ResumingSandboxClient, "ensure_running"),
+            "probe": (backend, "_probe_commands"),
+            "prepare": (_AcasSandbox, "prepare_work_dir"),
+        }[stage]
+        original = getattr(owner, name)
+
+        async def pause(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            ready.set()
+            await release.wait()
+            if stage == "resume_failure":
+                raise RuntimeError("sandbox disappeared while resuming")
+            return result
+
+        with monkeypatch.context() as patch:
+            patch.setattr(owner, name, pause)
+            acquire = asyncio.create_task(backend.acquire(key, spec))
+            await asyncio.wait_for(ready.wait(), 5)
+            try:
+                await first._invalidate_after_exec(SandboxOutputError("capture failed"))
+            finally:
+                release.set()
+            with pytest.raises(SandboxOutputError, match="invalidated during acquire"):
+                await acquire
+        assert client.create_calls == 1
+        replacement = await backend.acquire(key, spec)
+        assert replacement.instance_id != first.instance_id
+
+    asyncio.run(scenario())
+
+
+def test_acquire_return_waits_for_invalidation_on_another_loop(monkeypatch):
+    from maf_sandbox import SandboxOutputError
+
+    from maf_sandbox_acas._backend import _AcasSandbox
+
+    backend = _backend_with(_SlowCreateGroupClient())
+    key, spec = SandboxKey("s", "t", "a"), _spec()
+    first = asyncio.run(backend.acquire(key, spec))
+    ready, finish_prepare = threading.Event(), threading.Event()
+    invalidating, finish_invalidation = threading.Event(), threading.Event()
+    result_waiting = threading.Event()
+    role, lock = threading.local(), threading.Lock()
+
+    class Guard:
+        def __enter__(self):
+            if role.name == "reader" and invalidating.is_set():
+                result_waiting.set()
+            assert lock.acquire(timeout=5)
+            if role.name == "writer":
+                invalidating.set()
+                assert finish_invalidation.wait(5)
+
+        def __exit__(self, *args):
+            lock.release()
+
+    original = _AcasSandbox.prepare_work_dir
+
+    async def prepare(self, spec):
+        await original(self, spec)
+        ready.set()
+        assert finish_prepare.wait(5)
+
+    monkeypatch.setattr(_AcasSandbox, "prepare_work_dir", prepare)
+    monkeypatch.setattr(first._held, "invalidation_guard", Guard())
+
+    def acquire():
+        role.name = "reader"
+        return asyncio.run(backend.acquire(key, spec))
+
+    def invalidate():
+        role.name = "writer"
+        asyncio.run(first._invalidate_after_exec(SandboxOutputError("capture failed")))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        result = pool.submit(acquire)
+        assert ready.wait(5)
+        cleanup = pool.submit(invalidate)
+        try:
+            assert invalidating.wait(5)
+            finish_prepare.set()
+            assert result_waiting.wait(3)
+            assert not result.done()
+        finally:
+            finish_prepare.set()
+            finish_invalidation.set()
+        with pytest.raises(SandboxOutputError, match="invalidated during acquire"):
+            result.result(timeout=5)
+        assert cleanup.result(timeout=5) is None
+
+
+@pytest.mark.parametrize("delete_failed", [False, True])
+def test_capture_invalidation_allows_policy_change_after_deletion(delete_failed):
+    from maf_sandbox import SandboxOutputError
+
+    client = _GuestGroupClient(_guest_removing(True), delete_fails=delete_failed)
+    backend = _backend_with(client)
+    key = SandboxKey("s", "t", "a")
+    original = _spec()
+    changed = replace(original, egress=Egress.ALLOWLIST, egress_allow=("api.example",))
+
+    async def scenario():
+        first = await backend.acquire(key, original)
+        await first._invalidate_after_exec(SandboxOutputError("capture failed"))
+        assert first._held.unusable
+        if delete_failed:
+            with pytest.raises(SandboxOutputError, match="dispose an invalidated sandbox"):
+                await backend.acquire(key, changed)
+            assert client.create_calls == 1
+            assert backend._registry[("s", "t", "a", original.kind)] is first._held
+            client.delete_fails = False
+        replacement = await backend.acquire(key, changed)
+        assert first.instance_id in client.deleted
+        assert replacement.instance_id != first.instance_id
+        assert replacement._held.egress == (Egress.ALLOWLIST, frozenset({"api.example"}))
+        assert client.create_calls == 2
+
+    asyncio.run(scenario())
+
+
 class TestConcurrentAcquire:
     """Get-or-create is serialised per key, because a create cannot be made idempotent here.
 

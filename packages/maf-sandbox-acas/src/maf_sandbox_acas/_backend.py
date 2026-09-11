@@ -466,6 +466,12 @@ class _AcasSandbox:
     def instance_id(self) -> str:
         return self.sandbox_id
 
+    def check_usable(self) -> None:
+        """Refuse an acquire after capture invalidation."""
+        with self._held.invalidation_guard:
+            if self._held.unusable:
+                raise SandboxOutputError("ACAS sandbox was invalidated during acquire")
+
     async def prepare_work_dir(self, spec: SandboxSpec) -> None:
         """Establish the spec's base through the data plane."""
         self._work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
@@ -1098,15 +1104,16 @@ class AcasSandboxBackend:
                 probe serves the writing capabilities but refuses deletion; a successful
                 probe does not establish that the guest is root. Method-scoped egress
                 is also refused because the service matches methods case-insensitively.
-            AcasEgressPolicyConflict: when this key and kind already hold a different
-                egress policy. Successfully dispose the kind through the router or this
-                backend before changing it, or use another key.
+            AcasEgressPolicyConflict: when this key and kind hold a usable sandbox with a
+                different egress policy. Dispose it before changing policy, or use another
+                key. Capture-invalidated instances are deleted before replacement.
         """
         _sandbox_labels(key, spec)
         async with self._acquire_lock((key.scope, key.thread_id, key.agent_dir, spec.kind)):
             sandbox = await self._get_or_create(key, spec)
             async with asyncio.timeout(self._config.read_timeout_seconds):
                 await sandbox.prepare_work_dir(spec)
+            sandbox.check_usable()
             return sandbox
 
     @asynccontextmanager
@@ -1136,13 +1143,15 @@ class AcasSandboxBackend:
         registry_key = (key.scope, key.thread_id, key.agent_dir, spec.kind)
         work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
         held = self._registry.get(registry_key)
-        if held is not None and held.egress != egress:
-            # Replacement could delete an instance another caller is still using.
-            raise AcasEgressPolicyConflict(
-                "ACAS already holds a different egress policy for this key and kind. "
-                "Successfully dispose the kind with SandboxRouter.dispose_kind or "
-                "AcasSandboxBackend.dispose before changing policy, or use a different key."
-            )
+        if held is not None:
+            with held.invalidation_guard:
+                if not held.unusable and held.egress != egress:
+                    # Replacement could delete an instance another caller is still using.
+                    raise AcasEgressPolicyConflict(
+                        "ACAS already holds a different egress policy for this key and kind. "
+                        "Successfully dispose the kind with SandboxRouter.dispose_kind or "
+                        "AcasSandboxBackend.dispose before changing policy, or use a different key."
+                    )
         gc = self._group_client()
         prefix = registry_key[:3]
         scope_key = prefix[:2]
@@ -1183,7 +1192,11 @@ class AcasSandboxBackend:
                 for name in self._undeleted.get(prefix, ())
             ):
                 raise SandboxOutputError("ACAS retained disposal is still pending")
-        if held is not None and held.unusable:
+        unusable = False
+        if held is not None:
+            with held.invalidation_guard:
+                unusable = held.unusable
+        if held is not None and unusable:
             deletion = await self._delete(gc, held.sandbox_id)
             if deletion.failure is not None:
                 raise SandboxOutputError(
@@ -1229,7 +1242,10 @@ class AcasSandboxBackend:
                     key.agent_dir,
                 )
                 return reused
-            self._registry.pop(registry_key, None)
+            with held.invalidation_guard:
+                if held.unusable:
+                    raise SandboxOutputError("ACAS sandbox was invalidated during acquire")
+                self._registry.pop(registry_key, None)
 
         # The hint answers here and nowhere earlier, because here is where a create is about to
         # be paid for: the second workload to meet a refused image is refused without one. A
