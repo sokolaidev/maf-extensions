@@ -597,7 +597,8 @@ class TestTheSynchronousSurface:
         assert len({id(loop) for loop in loops}) == 1
         assert loop_threads() == idle + 1
 
-        assert adapter.close() is True
+        closed = adapter.close()
+        assert closed is True
 
         assert loop_threads() == idle
         # A sync call after close starts a loop again; the sandbox itself is fresh too.
