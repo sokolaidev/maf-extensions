@@ -356,8 +356,8 @@ class TestExecute:
             call = asyncio.create_task(adapter.aexecute("sleep 10", timeout=60))
             await asyncio.sleep(0.05)
             call.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await call
+            await asyncio.wait({call})
+            assert call.cancelled()  # the cancellation reached the caller unchanged
             return await adapter.aclose()  # joins the delete the cancellation started
 
         assert asyncio.run(scenario()) is True
