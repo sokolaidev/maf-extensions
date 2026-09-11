@@ -1256,7 +1256,7 @@ class TestPullSurfaceRefusal:
 class TestStatGuestTarHeader:
     """`_WslcSandbox._stat_guest` at the `_wslc` fake: who answers, and what a lie can buy.
 
-    The header cases first. No shipped `wslc` streams one — measured on 2.9.4.0, `container cp`
+    The header cases first. Nothing streamed one on wslc 2.9.4.0 — measured, `container cp`
     exits 0 and streams nothing for every kind it does not refuse outright — so they pin the
     branch a CLI that grows one would take, not a branch a live write reaches today (#125).
     The probe cases after them are the live shape, and each says which side answered.

@@ -577,7 +577,7 @@ class _WslcSandbox:
         is, so no answer the guest gives can turn a link into a directory the check then
         continues through (#495).
 
-        A tar header is not produced by any shipped ``wslc``, and the branch stays because a
+        No tar header was produced for any kind on wslc 2.9.4.0, and the branch stays because a
         CLI that grows one answers the kind outright and leaves the guest out of it (#125).
         """
         result = await self._run(
