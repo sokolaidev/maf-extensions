@@ -779,9 +779,11 @@ class TestTheSharedConformanceSuites:
         The whole-suite gate raises rather than skipping, so a run against this backend cannot
         report probe results at all; asserting the refusal keeps the call honest (it is what
         the coverage wiring looks for) without pretending skips that the runner never emits.
-        The capability itself is withheld structurally — `remove` raises NotImplementedError,
-        since the check a deletion owes is answered inside the guest (#495) — so unlike acas
-        there is nothing to measure: no mechanism exists behind the gate.
+        The capability itself is withheld structurally — `remove` raises NotImplementedError.
+        Not for want of the check, which the engine now answers for every ancestor a delete
+        would descend through (#495), but because nothing here implements a removal and no
+        branch of that stat reports an owner. So unlike acas there is nothing to measure:
+        no mechanism exists behind the gate.
         """
         scope = f"e2e-{uuid.uuid4()}"
         backend = WslcSandboxBackend(WslcSandboxConfig())

@@ -67,8 +67,11 @@ GUEST_COMMAND_ARGUMENT = "exec"
 #: Packages whose stat is answered inside the guest, and the issue that decides what to do
 #: about it. Being here is a declared posture: the README requirement below is what it costs.
 ANSWERED_INSIDE_THE_GUEST = {
-    "maf-sandbox-wslc": "#495 — the tar header answers no regular file and no link, so the "
-    "entry type comes from `test` run in the container being confined",
+    "maf-sandbox-wslc": "#495 — `container cp` names a directory and a missing path and "
+    "streams nothing for anything else, so which non-directory kind a component is comes "
+    "from `test` run in the container being confined. Bounded rather than removed: the two "
+    "answers that let the check continue come from the engine, and a guest claiming either "
+    "is not believed",
 }
 
 #: The packages a synthetic source is read as living in, for the cases below. Core's own module
