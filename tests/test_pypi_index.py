@@ -236,6 +236,44 @@ class TestPublishedVersionsAreSortedSemantically:
         assert index.fetch_published_versions("maf-sandbox-nothing") is None
 
 
+class TestAnIndexMayCarryWhatThisRepositoryNeverPublishes:
+    """`version` orders dotted releases and raises on the rest, and ceilings are written as one.
+
+    TestPyPI holds `maf-sandbox 0.1.0.post1`, so reading it is not hypothetical: included, it
+    reaches the sort and takes the check out with a `ValueError` over an artifact nothing here
+    has anything to say about.
+    """
+
+    def _carrying(self, monkeypatch: pytest.MonkeyPatch, *versions: str) -> None:
+        monkeypatch.setattr(index, "fetch_simple", lambda _name: {"versions": list(versions)})
+
+    def test_the_post_release_testpypi_actually_holds_does_not_stop_the_sort(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        self._carrying(monkeypatch, "0.1.0", "0.1.0.post1", "0.2.0", "0.33.0", "0.34.0", "0.38.0")
+        assert index.fetch_published_versions("maf-sandbox") == [
+            "0.38.0",
+            "0.34.0",
+            "0.33.0",
+            "0.2.0",
+            "0.1.0",
+        ]
+
+    @pytest.mark.parametrize("odd", ["1.0.0rc1", "1.0.0b2", "1.0.0.dev3", "1.0.0+local", "latest"])
+    def test_nothing_but_a_dotted_release_comes_back(
+        self, monkeypatch: pytest.MonkeyPatch, odd: str
+    ):
+        self._carrying(monkeypatch, "1.0.0", odd)
+        assert index.fetch_published_versions("maf-sandbox") == ["1.0.0"]
+
+    def test_an_index_carrying_only_those_answers_empty_rather_than_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Empty is "published, nothing this can order"; None stays "never published"."""
+        self._carrying(monkeypatch, "0.1.0.post1")
+        assert index.fetch_published_versions("maf-sandbox") == []
+
+
 class TestWhichIndexesAreRead:
     """The checks read exactly what `uv` would resolve from: its variables, in its order.
 
@@ -258,7 +296,41 @@ class TestWhichIndexesAreRead:
     def test_a_query_is_not_mistaken_for_a_name(self, monkeypatch: pytest.MonkeyPatch):
         """The name prefix is recognised by the scheme behind it, so an `=` elsewhere is safe."""
         monkeypatch.setenv("UV_INDEX", "https://mirror.example/simple?token=abc")
-        assert index.index_urls()[0].startswith("https://mirror.example/simple?token=abc")
+        assert index.index_urls()[0] == "https://mirror.example/simple/?token=abc"
+
+
+class TestADistributionIsJoinedOntoThePath:
+    """An index may carry a query, and a name concatenated onto the whole URL lands inside it.
+
+    The request then asks for a package nobody named, against a path the index does not serve —
+    and on an index that authenticates by query, it puts the name where the credential is.
+    """
+
+    @pytest.mark.parametrize(
+        "base",
+        [
+            "https://mirror.example/simple",
+            "https://mirror.example/simple/",
+            "https://mirror.example/simple///",
+        ],
+    )
+    def test_however_the_base_ends_the_path_gains_one_segment(self, base: str):
+        assert (
+            index.package_url(base, "maf-sandbox") == "https://mirror.example/simple/maf-sandbox/"
+        )
+
+    def test_a_query_rides_behind_the_path_rather_than_swallowing_it(self):
+        assert (
+            index.package_url("https://mirror.example/simple/?token=abc", "maf-sandbox")
+            == "https://mirror.example/simple/maf-sandbox/?token=abc"
+        )
+
+    def test_the_document_read_is_the_one_the_path_names(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("UV_INDEX", "https://mirror.example/simple?token=abc")
+        fake = _Index({"versions": ["1.0.0"]})
+        _install(monkeypatch, fake)
+        index.fetch_published_versions("maf-sandbox")
+        assert fake.requests[0].full_url == "https://mirror.example/simple/maf-sandbox/?token=abc"
 
     def test_the_primary_comes_first_and_the_extras_follow(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("UV_INDEX", "https://test.pypi.org/simple/")

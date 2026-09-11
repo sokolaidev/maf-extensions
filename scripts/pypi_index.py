@@ -54,6 +54,9 @@ _SEARCHES_EVERY_INDEX = frozenset({"unsafe-first-match", "unsafe-best-match"})
 #: of it.
 _NAMED_INDEX = re.compile(r"^[A-Za-z0-9._-]+=(?=[A-Za-z][A-Za-z0-9+.-]*://)")
 
+#: What `version` can order and every ceiling in this repository is written as.
+_DOTTED_RELEASE = re.compile(r"^\d+(\.\d+)*$")
+
 #: The replies that are the index having a moment rather than answering. One reset reaches here
 #: three ways — wrapped in `URLError` when it lands on the connect, bare when it lands on the
 #: body read, and as a short body when the close was clean — so all three shapes are named.
@@ -145,13 +148,34 @@ def index_urls() -> tuple[str, ...]:
     default = _url_of(os.environ.get(_DEFAULT_INDEX_VARIABLE, "").strip()) or _PYPI_SIMPLE
     seen: dict[str, None] = {}
     for url in (*named, default):
-        seen[url.rstrip("/") + "/"] = None
+        if url:
+            seen[url] = None
     return tuple(seen)
 
 
 def _url_of(entry: str) -> str:
-    """One index entry as a URL, dropping the name uv lets it be given under."""
-    return _NAMED_INDEX.sub("", entry)
+    """One index entry as a URL, dropping the name uv lets it be given under.
+
+    The trailing slash is settled on the *path*. Appended to the whole string it lands past a
+    query the index carries, where it is not part of any path and the join below would put a
+    distribution name inside the query.
+    """
+    url = _NAMED_INDEX.sub("", entry)
+    parsed = urllib.parse.urlsplit(url)
+    if not parsed.scheme:
+        return ""
+    return urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path.rstrip("/") + "/", parsed.query, parsed.fragment)
+    )
+
+
+def package_url(index: str, distribution: str) -> str:
+    """``distribution``'s simple document under ``index``, joined onto the path."""
+    parsed = urllib.parse.urlsplit(index)
+    path = f"{parsed.path.rstrip('/')}/{distribution}/"
+    return urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment)
+    )
 
 
 def fetch_simple(distribution: str) -> dict | None:
@@ -168,7 +192,7 @@ def fetch_simple(distribution: str) -> dict | None:
     merge = os.environ.get(_STRATEGY_VARIABLE, "").strip() in _SEARCHES_EVERY_INDEX
     payloads: list[dict] = []
     for url in index_urls():
-        payload = read_json(f"{url}{distribution}/", accept=_SIMPLE_ACCEPT)
+        payload = read_json(package_url(url, distribution), accept=_SIMPLE_ACCEPT)
         if payload is None:
             continue
         if not merge:
@@ -185,17 +209,26 @@ def fetch_simple(distribution: str) -> dict | None:
 
 
 def fetch_published_versions(distribution: str) -> list[str] | None:
-    """The published versions of ``distribution``, newest-first, or None if never released.
+    """The published dotted releases of ``distribution``, newest-first, or None if never released.
 
     The ``versions`` array is standardized (PEP 700) but its order carries no meaning, so it is
     sorted here; it names versions only, and whether a release was yanked or what its
     ``requires_dist`` excludes lives in the per-version document, which a caller that cares
     must fetch.
+
+    **Anything that is not a dotted release is left out**, and an index is free to carry one —
+    TestPyPI holds a `maf-sandbox 0.1.0.post1` from years ago. `version` orders dotted releases
+    and raises on the rest, and every ceiling a caller compares against is written as one, so
+    the alternatives were a PEP 440 ordering nothing here would use, or a `ValueError` that
+    takes a check out over an artifact it has nothing to say about. Nothing this repository
+    publishes is anything else: `check_rehearsal_version` refuses to rehearse one and
+    release-please cuts none.
     """
     payload = fetch_simple(distribution)
     if payload is None:
         return None
-    return sorted(payload["versions"], key=version, reverse=True)
+    releases = [text for text in payload["versions"] if _DOTTED_RELEASE.match(text)]
+    return sorted(releases, key=version, reverse=True)
 
 
 def newest_upload(payload: dict) -> str | None:
