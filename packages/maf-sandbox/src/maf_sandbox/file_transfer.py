@@ -9,7 +9,10 @@ caller maps the guest's shape to its own codes once.
 
 A shell transfer whose command's end is unknown — a timeout, an output overflow, a transport
 failure — raises :class:`SandboxShellTransferUnfinished`: the command may still be running and
-a write may have landed in part, so the caller treats the instance as unclean. A transfer the
+a write may have landed in part, so the caller treats the instance as unclean. A caller that is
+cancelled mid-transfer sees ``asyncio.CancelledError`` as usual, untouched, and it means the
+same: the command it was waiting on may still be running, so the instance is unclean, and
+nothing here can take a staged sibling back on the way out. A transfer the
 guest refused raises :class:`SandboxFileRefused` and leaves no part of the file behind; the
 parent directories a write created on its way stay, as they would after a refused
 ``write_file``.
@@ -230,7 +233,7 @@ async def write_file_over_exec(
     :class:`SandboxShellTransferUnfinished`, since the chunks that landed are readable there.
 
     Raises :class:`SandboxFileRefused`, :class:`SandboxShellTransferUnfinished`,
-    :class:`SandboxShellTransferFailed`.
+    :class:`SandboxShellTransferFailed`; a cancellation propagates, and means unclean too.
     """
     _refuse_an_unbounded_timeout(timeout)
     _refuse_what_no_command_can_carry(path)
@@ -325,7 +328,8 @@ async def read_file_over_exec(
     ``max_bytes``, and what decodes is counted again: a file can grow after the probe.
 
     Raises :class:`SandboxFileRefused`, ``SandboxTransferCapExceeded``,
-    :class:`SandboxShellTransferUnfinished`, :class:`SandboxShellTransferFailed`.
+    :class:`SandboxShellTransferUnfinished`, :class:`SandboxShellTransferFailed`; a
+    cancellation propagates, and means unclean too.
     """
     if type(max_bytes) is not int or max_bytes <= 0:
         raise ValueError("max_bytes must be a positive integer")

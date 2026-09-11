@@ -47,6 +47,18 @@ class Answering(InProcessSandbox):
         return ExecResult(stdout=result.stdout, stderr=self._stderr, exit_code=self._exit_code)
 
 
+class _CancellingRead(InProcessSandbox):
+    """The fake whose probe answers and whose read is cancelled underneath the caller."""
+
+    def __init__(self) -> None:
+        super().__init__(outputs={"wc -c": "1\n"})
+
+    async def exec(self, command, *, working_directory, timeout):
+        if "base64 <" in command:
+            raise asyncio.CancelledError()
+        return await super().exec(command, working_directory=working_directory, timeout=timeout)
+
+
 def _commands(fake: InProcessSandbox) -> list[str]:
     return [command for command, _, _ in fake.commands]
 
@@ -242,6 +254,37 @@ class TestTheWrite:
         assert timeouts[:3] == pytest.approx([1.0, 0.6, 0.2])
         assert fake.commands[-1][0].startswith("export LC_ALL=C; rm -f -- /tmp/.maf-")
         assert timeouts[-1] == 10.0  # the take-back's own allowance
+
+    def test_a_cancellation_propagates_untouched(self):
+        """The caller's cancellation is its own; the road neither swallows it nor runs a
+        take-back on the way out, since the command it was waiting on may still be running."""
+
+        class Cancelling(InProcessSandbox):
+            async def exec(self, command, *, working_directory, timeout):
+                if "base64 -d" in command:
+                    raise asyncio.CancelledError()
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        fake = Cancelling()
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                write_file_over_exec(fake, "/tmp/f", b"1", working_directory=WORK, timeout=5)
+            )
+        # Only the first command was recorded: the second was cancelled underneath the caller,
+        # and no take-back followed it.
+        assert len(fake.commands) == 1
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                read_file_over_exec(
+                    _CancellingRead(),
+                    "/tmp/f",
+                    working_directory=WORK,
+                    timeout=5,
+                    max_bytes=8,
+                )
+            )
 
     def test_a_sibling_that_cannot_be_taken_back_is_unfinished(self):
         class Stuck(InProcessSandbox):
