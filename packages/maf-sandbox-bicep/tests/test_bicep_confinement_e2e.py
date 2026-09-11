@@ -134,10 +134,9 @@ def test_validation_leaves_nothing_behind_and_reuses_the_sandbox(case: str, monk
 async def _workload_containers(scope: str) -> frozenset[str]:
     """Every non-proxy container the daemon still holds for ``scope``, by engine ID.
 
-    Asked of the daemon rather than of the router. What disposal promises is that the instance
-    is gone, and a router that had forgotten an instance it failed to delete would answer that
-    question out of its own ledger and pass. The egress proxy carries the same key labels and
-    is left out: its lifetime is the backend's, and this measures the rung.
+    The daemon rather than the router: a router that lost an instance it failed to delete
+    answers out of its own ledger and passes. The egress proxy carries the same key labels and
+    is excluded, its lifetime being the backend's rather than the rung's.
     """
     listed = await asyncio.create_subprocess_exec(
         "docker",
@@ -159,24 +158,12 @@ async def _workload_containers(scope: str) -> frozenset[str]:
 
 @pytest.mark.parametrize("case", ["local", "diagnostics", "modules", "cancelled"])
 def test_the_disposal_default_deletes_the_sandbox_each_call(case: str, monkeypatch):
-    """Measure the rung a host that names no floor gets, against the engine rather than the router.
+    """Measure ``Cleanup.DISPOSE``, the rung a host that names no floor gets, against the engine.
 
-    This is not another case of the probe above. That one is built around a sandbox an acquire
-    already returned and compares its state either side of the call; under disposal the
-    instance is gone by the time the call ends, so there is nothing left to fingerprint and its
-    ``instance_id`` assertion inverts rather than holding.
-
-    What replaces it is two calls, and the three things that separate the rungs: the container
-    the call ran in is absent from the daemon afterwards, the next call is served a different
-    instance, and that instance carries none of the first call's inputs, module cache or
-    temporary profile. Each round acquires before calling so the identity being looked for
-    afterwards is one the daemon has already confirmed, which is what the reuse probe adopts
-    for.
-
-    ``cancelled`` is this kind's raising call. A failed ``bicep build`` does not raise — the
-    diagnostics are the answer, which ``diagnostics`` covers — so cancellation is the way a
-    body leaves through an exception, and it is the way that matters: a cancelled call's
-    cleanup runs under a two-second grace rather than the reclaim timeout.
+    Each round acquires before it calls, so the instance looked for afterwards is one the
+    daemon has already confirmed. ``cancelled`` is the raising call, and the case that carries
+    the risk: a cancelled body's cleanup runs under a two-second grace rather than the reclaim
+    timeout.
     """
     if case == "modules" and not _PROXY:
         pytest.skip("module restore needs MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE")
@@ -184,8 +171,7 @@ def test_the_disposal_default_deletes_the_sandbox_each_call(case: str, monkeypat
     async def scenario():
         egress = Egress.ALLOWLIST if case == "modules" else Egress.CLOSED
         backend = DockerSandboxBackend(DockerSandboxConfig(egress_proxy_image=_PROXY))
-        # No `min_cleanup`: the floor a deployment gets when it names none, which is the whole
-        # point of the measurement.
+        # No `min_cleanup`: the floor a deployment gets when it names none.
         router = SandboxRouter([backend], min_isolation=backend.isolation)
         spec = bicep_sandbox_spec(image=_IMAGE, egress=egress)
         key = SandboxKey(
@@ -234,16 +220,10 @@ def test_the_disposal_default_deletes_the_sandbox_each_call(case: str, monkeypat
             for round_number in range(2):
                 sandbox = await router.acquire(key, spec)
                 instance = sandbox.instance_id
-                # The observable difference from reclaim: the second call is not served the
-                # sandbox the first one ran in, because that one no longer exists.
                 assert instance not in served, served
                 assert await _workload_containers(key.scope) == frozenset({instance})
-                # Nothing of the previous call reached this sandbox. The engine's own diff
-                # against the image is where the inputs, the module cache under the call
-                # directory and the temporary profile beside it would all appear -- a changed
-                # directory is reported as well as an added file, so an empty diff says the
-                # work directory is as the image left it. The first round is the control that
-                # makes the second one's silence mean something.
+                # `docker diff` reports a changed directory as well as an added file, so an
+                # empty diff covers what the previous call wrote under the work directory.
                 measured = await DockerFingerprintSubject(
                     sandbox, observer_image=_OBSERVER
                 ).fingerprint()
@@ -259,9 +239,6 @@ def test_the_disposal_default_deletes_the_sandbox_each_call(case: str, monkeypat
                     monkeypatch.setattr(type(sandbox), "exec", observed_exec)
                 served.append(instance)
                 await call()
-                # The daemon, not the router: the sandbox the call ran in is gone, and so is
-                # everything it wrote, whether the call returned a report, reported compiler
-                # errors, or raised.
                 assert await _workload_containers(key.scope) == frozenset()
         finally:
             assert await backend.dispose(key) is None
