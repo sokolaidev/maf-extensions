@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import posixpath
 import shlex
 import threading
@@ -182,11 +183,19 @@ class _SyncRunner:
     process rather than one per adapter or per call, because a backend may cache a client per
     loop (ACAS does) and never evicts one for a loop that closed; a loop that lives with the
     process leaves it exactly one. Started on the first sync call; the thread is a daemon.
+    A fork carries the loop into the child but not its thread, so the child starts over on
+    its first sync call, under a fresh guard: the inherited one may be held by a thread that
+    did not cross.
     """
 
     _THREAD_NAME = "maf-sandbox-deepagents"
 
     def __init__(self) -> None:
+        self._reset()
+        if hasattr(os, "register_at_fork"):
+            os.register_at_fork(after_in_child=self._reset)
+
+    def _reset(self) -> None:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._guard = threading.Lock()
