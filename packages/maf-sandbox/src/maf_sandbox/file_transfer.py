@@ -74,6 +74,7 @@ _DIAGNOSTICS = (
     ("Permission denied", FileRefusal.PERMISSION_DENIED),
     ("Is a directory", FileRefusal.IS_DIRECTORY),
     ("Not a directory", FileRefusal.INVALID_PATH),
+    ("File exists", FileRefusal.INVALID_PATH),  # `mkdir -p` on a parent that is a file
     ("No such file or directory", FileRefusal.NOT_FOUND),
     ("no such file", FileRefusal.NOT_FOUND),  # busybox's shell, on a redirection
 )

@@ -85,6 +85,7 @@ class TestTheVocabulary:
             ("sh: can't create /x: Permission denied", FileRefusal.PERMISSION_DENIED),
             ("sh: /x: Is a directory", FileRefusal.IS_DIRECTORY),
             ("sh: /f/x: Not a directory", FileRefusal.INVALID_PATH),
+            ("mkdir: can't create directory '/tmp/f': File exists", FileRefusal.INVALID_PATH),
             ("sh: can't open /x: No such file or directory", FileRefusal.NOT_FOUND),
             ("sh: can't open /x: no such file", FileRefusal.NOT_FOUND),
             ("sh: base64: not found", None),
@@ -231,6 +232,20 @@ class TestTheWrite:
         assert refused.value.refusal is FileRefusal.PERMISSION_DENIED
         assert "Permission denied" in refused.value.detail
         assert len(fake.commands) == 1  # nothing after the refusal
+
+    def test_a_parent_that_is_a_file_is_an_invalid_path(self):
+        """`mkdir -p` says `File exists` for the parent itself and `Not a directory` for a
+        deeper ancestor; both are the plane's `NotADirectoryError`, an invalid path."""
+        for words in (
+            "mkdir: can't create directory '/tmp/f': File exists",
+            "mkdir: /tmp/f: Not a directory",
+        ):
+            fake = Answering(exit_code=1, stderr=words)
+            with pytest.raises(SandboxFileRefused) as refused:
+                asyncio.run(
+                    write_file_over_exec(fake, "/tmp/f/x", b"1", working_directory=WORK, timeout=5)
+                )
+            assert refused.value.refusal is FileRefusal.INVALID_PATH
 
     def test_a_failure_the_words_do_not_name_is_not_a_refusal(self):
         fake = Answering(exit_code=127, stderr="sh: base64: not found")
