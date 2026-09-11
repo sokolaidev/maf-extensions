@@ -701,8 +701,15 @@ class _SimulatedGuest:
             out, err = (
                 bytes(int(o, 8) for o in re.findall(r"\\([0-7]{3})", stream)) for stream in encoded
             )
-            if self._streams == "merged":
-                return ExecResult(stdout_bytes=out + err, exit_code=7, producer_owns_stderr=True)
+            if self._streams.startswith("merged"):
+                merged = out + err
+                if self._streams == "merged-reversed":
+                    merged = err + out
+                elif self._streams == "merged-interleaved":
+                    merged = bytes(byte for pair in zip(out, err, strict=True) for byte in pair)
+                elif self._streams == "merged-corrupt":
+                    merged = merged[:-1] + b"!"
+                return ExecResult(stdout_bytes=merged, exit_code=7, producer_owns_stderr=True)
             return ExecResult(stdout_bytes=out, stderr_bytes=err, exit_code=7)
 
         # `ln -sfn target path`, which PosixGuestSubject plants links with.
@@ -728,7 +735,7 @@ class _SimulatedGuest:
             out, err = re.findall(r"printf %s (\S+)", argv[2])
             if self._streams == "folded":
                 return ExecResult(stdout=out + err)
-            if self._streams == "merged":
+            if self._streams.startswith("merged"):
                 return ExecResult(stdout=out + err, producer_owns_stderr=True)
             if self._streams == "mislabelled":
                 return ExecResult(stdout=out, stderr=err, producer_owns_stderr=True)
@@ -910,15 +917,20 @@ class TestExecConformance:
         assert failures["streams-stay-separate"] is not None
         assert failures["an-argv-sequence-runs"] is None
 
-    def test_a_merge_the_result_declares_is_conformant(self):
+    @pytest.mark.parametrize("streams", ["merged", "merged-reversed", "merged-interleaved"])
+    def test_a_merge_the_result_declares_is_conformant(self, streams):
         """The transport merges and says so, so the probe has to admit that answer.
 
         A suite that failed it would hold a fourth backend to a rule core's own launcher
         breaks — and the field exists precisely so the honest merge is expressible.
         """
-        assert _sim_results(_sim_subject(streams="merged"), run_exec_probes) == dict.fromkeys(
+        assert _sim_results(_sim_subject(streams=streams), run_exec_probes) == dict.fromkeys(
             [p.name for p in EXEC_PROBES], None
         )
+
+    def test_a_declared_merge_does_not_license_corrupting_bytes(self):
+        failures = _sim_results(_sim_subject(streams="merged-corrupt"), run_exec_probes)
+        assert failures["exec-byte-fidelity"] is not None
 
     @pytest.mark.parametrize("streams", ["mislabelled", "echoing"])
     def test_a_declared_ownership_still_owes_an_stderr_with_none_of_the_programs_words(

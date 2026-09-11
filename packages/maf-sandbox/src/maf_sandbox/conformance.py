@@ -1468,6 +1468,24 @@ async def _probe_the_streams_stay_separate(
         )
 
 
+def _streams_interleave(actual: bytes, first: bytes, second: bytes) -> bool:
+    if len(actual) != len(first) + len(second):
+        return False
+    positions = {0}
+    for offset, byte in enumerate(actual):
+        following: set[int] = set()
+        for left in positions:
+            right = offset - left
+            if left < len(first) and first[left] == byte:
+                following.add(left + 1)
+            if right < len(second) and second[right] == byte:
+                following.add(left)
+        if not following:
+            return False
+        positions = following
+    return len(first) in positions
+
+
 async def _probe_exec_bytes(subject: ConformanceSubject, paths: ConformancePaths) -> None:
     out, err = b"OUT:" + _BINARY, b"ERR:" + _BINARY[::-1]
 
@@ -1479,8 +1497,12 @@ async def _probe_exec_bytes(subject: ConformanceSubject, paths: ConformancePaths
         result = await subject.sandbox.exec(
             command, working_directory=subject.working_directory, timeout=60
         )
-        expected_out = out + err if result.producer_owns_stderr else out
-        if result.exit_code != 7 or result.stdout_bytes != expected_out:
+        stdout_matches = (
+            _streams_interleave(result.stdout_bytes, out, err)
+            if result.producer_owns_stderr
+            else result.stdout_bytes == out
+        )
+        if result.exit_code != 7 or not stdout_matches:
             raise AssertionError("exec altered stdout bytes or the exit code")
         if not result.producer_owns_stderr and result.stderr_bytes != err:
             raise AssertionError("exec altered stderr bytes")

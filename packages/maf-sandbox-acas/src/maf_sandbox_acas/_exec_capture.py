@@ -12,7 +12,7 @@ import shlex
 from collections.abc import Awaitable, Callable, Sequence
 from uuid import uuid4
 
-from maf_sandbox import ExecResult, SandboxOutputError
+from maf_sandbox import ExecResult, SandboxExecOutputLimitExceeded, SandboxOutputError
 
 Run = Callable[[str], Awaitable[ExecResult]]
 CHUNK_BYTES = 48 * 1024
@@ -44,7 +44,12 @@ printf '%s %s %s %s\\n' {shlex.quote(token)} "$rc" "$out_size" "$err_size"
 
 def manifest(result: ExecResult, token: str, limit: int) -> tuple[int, int, int]:
     """Refuse missing, malformed or over-limit captures before retrieving any bytes."""
-    if result.exit_code or result.stderr_bytes or len(result.stdout_bytes) > 200:
+    if (
+        result.exit_code
+        or result.stderr_bytes
+        or len(result.stdout_bytes) > 200
+        or not result.stdout_bytes.endswith(b"\n")
+    ):
         raise SandboxOutputError("ACAS exec capture did not complete cleanly")
     parts = result.stdout.split()
     if (
@@ -66,7 +71,12 @@ def decode_chunk(result: ExecResult, token: str, expected: int) -> bytes:
     if result.exit_code or result.stderr_bytes or len(result.stdout_bytes) > 2 * CHUNK_BYTES:
         raise SandboxOutputError("ACAS exec capture chunk failed or exceeded its bound")
     lines = result.stdout.splitlines()
-    if len(lines) < 2 or lines[0] != token or lines[-1] != token:
+    if (
+        len(lines) < 2
+        or lines[0] != token
+        or lines[-1] != token
+        or not result.stdout_bytes.endswith(b"\n")
+    ):
         raise SandboxOutputError("ACAS exec capture chunk was truncated")
     try:
         raw = base64.b64decode("".join(lines[1:-1]), validate=True)
@@ -77,7 +87,9 @@ def decode_chunk(result: ExecResult, token: str, expected: int) -> bytes:
     return raw
 
 
-async def capture(command: str | Sequence[str], run: Run, limit: int) -> ExecResult:
+async def capture(
+    command: str | Sequence[str], run: Run, limit: int, *, combined_limit: int | None = None
+) -> ExecResult:
     """Capture, retrieve and remove scratch state under the caller's shared deadline.
 
     The caller must dispose the sandbox on any abnormal end: remote execution survives
@@ -87,6 +99,8 @@ async def capture(command: str | Sequence[str], run: Run, limit: int) -> ExecRes
     directory = "/tmp/" + token
     result = await run(capture_command(command, directory, token, limit))
     status, out_size, err_size = manifest(result, token, limit)
+    if combined_limit is not None and out_size + err_size > combined_limit:
+        raise SandboxExecOutputLimitExceeded("execution output exceeded its byte budget")
     streams: list[bytes] = []
     for name, size in (("stdout", out_size), ("stderr", err_size)):
         chunks: list[bytes] = []

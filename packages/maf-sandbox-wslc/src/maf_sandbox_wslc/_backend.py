@@ -650,7 +650,7 @@ class _WslcSandbox:
                 )
             raise
         return ExecResult(
-            stdout=result.stdout_text, stderr=result.stderr_text, exit_code=result.returncode
+            stdout_bytes=result.stdout, stderr_bytes=result.stderr, exit_code=result.returncode
         )
 
     async def _exec(

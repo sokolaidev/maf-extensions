@@ -26,12 +26,12 @@ from maf_sandbox_acas._exec_capture import (
 @pytest.mark.parametrize(
     "result",
     [
-        ExecResult("token 7 2 2", exit_code=137),
-        ExecResult("token 7 2 2", stderr="truncated"),
+        ExecResult("token 7 2 2\n", exit_code=137),
+        ExecResult("token 7 2 2\n", stderr="truncated"),
         ExecResult("token 7 2"),
-        ExecResult("token -1 2 2"),
-        ExecResult("token 256 2 2"),
-        ExecResult("token 7 11 2"),
+        ExecResult("token -1 2 2\n"),
+        ExecResult("token 256 2 2\n"),
+        ExecResult("token 7 11 2\n"),
     ],
 )
 def test_manifest_refuses_failed_or_over_limit_capture(result):
@@ -39,9 +39,23 @@ def test_manifest_refuses_failed_or_over_limit_capture(result):
         manifest(result, "token", 10)
 
 
+def test_manifest_requires_the_complete_terminal_newline():
+    wire = "token 7 2 2\n"
+    assert manifest(ExecResult(wire), "token", 10) == (7, 2, 2)
+    with pytest.raises(SandboxOutputError):
+        manifest(ExecResult(wire[:-1]), "token", 10)
+
+
+def test_chunk_requires_the_complete_terminal_newline():
+    wire = "token\nAP8=\ntoken\n"
+    assert decode_chunk(ExecResult(wire), "token", 2) == b"\x00\xff"
+    with pytest.raises(SandboxOutputError):
+        decode_chunk(ExecResult(wire[:-1]), "token", 2)
+
+
 @pytest.mark.parametrize(
     "wire",
-    ["token\nAA==", "token\n???\ntoken", "token\nAA==\ntoken", "x" * (2 * CHUNK_BYTES + 1)],
+    ["token\nAA==", "token\n???\ntoken\n", "token\nAA==\ntoken\n", "x" * (2 * CHUNK_BYTES + 1)],
     ids=["truncated", "invalid", "size", "unbounded"],
 )
 def test_chunks_refuse_truncation_corruption_size_change_and_unbounded_data(wire):

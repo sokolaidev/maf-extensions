@@ -3170,6 +3170,57 @@ def _spec():
     return SandboxSpec(kind="bicep", image_id="pinned-id")
 
 
+@pytest.mark.parametrize("disposal", ["key", "kind", "scope"])
+def test_reacquire_retries_invalidated_ids_retained_after_disposal(disposal, monkeypatch):
+    from maf_sandbox import SandboxOutputError
+
+    from maf_sandbox_acas._backend import _Deletion
+
+    client = _SlowCreateGroupClient()
+    backend = _backend_with(client)
+    key = SandboxKey("s", "t", "a")
+    spec = _spec()
+    failed = True
+    attempts = []
+
+    async def delete(group, sandbox_id):
+        attempts.append((sandbox_id, client.create_calls))
+        return (
+            _Deletion(False, DisposalFailure("unreachable", "offline"))
+            if failed
+            else _Deletion(True)
+        )
+
+    monkeypatch.setattr(client, "list_sandboxes", lambda **kwargs: _FakePager([]), raising=False)
+    monkeypatch.setattr(backend, "_delete", delete)
+
+    async def scenario():
+        nonlocal failed
+        first = await backend.acquire(key, spec)
+        first._held.unusable = True
+        if disposal == "scope":
+            assert (await backend.dispose_scope(key.scope, key.thread_id)).undisposed is not None
+        else:
+            assert (
+                await backend.dispose(key, kind=spec.kind if disposal == "kind" else None)
+                is not None
+            )
+        assert not backend._registry
+        assert first.instance_id in backend._invalidated_ids
+        with pytest.raises(SandboxOutputError, match="retained"):
+            await backend.acquire(key, spec)
+        assert client.create_calls == 1
+        assert len(attempts) == 2
+        failed = False
+        replacement = await backend.acquire(key, spec)
+        assert replacement.instance_id != first.instance_id
+        assert attempts[-1] == (first.instance_id, 1)
+        assert client.create_calls == 2
+        assert not backend._invalidated_ids and not backend._undeleted
+
+    asyncio.run(scenario())
+
+
 class TestConcurrentAcquire:
     """Get-or-create is serialised per key, because a create cannot be made idempotent here.
 

@@ -805,8 +805,10 @@ class _DockerSandbox:
                 await self._run("rm", "-f", self._name, timeout=self._command_timeout)
             raise
         return ExecResult(
-            stdout=result.stdout.decode("utf-8", errors="replace"),
-            stderr=result.stderr,
+            stdout_bytes=result.stdout,
+            stderr_bytes=result.stderr_bytes
+            if result.stderr_bytes is not None
+            else result.stderr.encode(),
             exit_code=result.returncode,
         )
 
@@ -2438,7 +2440,7 @@ class DockerSandboxBackend:
                 process, max_output_bytes=max_output_bytes, timeout=timeout
             )
             return _DockerResult(
-                process.returncode or 0, stdout, stderr.decode("utf-8", errors="replace")
+                process.returncode or 0, stdout, stderr.decode("utf-8", errors="replace"), stderr
             )
         if read_limit is not None:
             return await self._read_bounded(process, read_limit, timeout)

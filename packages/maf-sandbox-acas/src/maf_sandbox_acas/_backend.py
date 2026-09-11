@@ -515,6 +515,18 @@ class _AcasSandbox:
         Timeout, cancellation or capture failure invalidates and disposes this entire sandbox,
         including concurrent commands. Deletion has its own bounded cleanup allowance.
         """
+        return await self._capture_exec(
+            command, working_directory=working_directory, timeout=timeout
+        )
+
+    async def _capture_exec(
+        self,
+        command: str | Sequence[str],
+        *,
+        working_directory: str,
+        timeout: float,
+        max_output_bytes: int | None = None,
+    ) -> ExecResult:
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         if self._held.unusable:
             raise SandboxOutputError(
@@ -522,13 +534,22 @@ class _AcasSandbox:
             )
 
         async def run(script: str) -> ExecResult:
+            if max_output_bytes is not None:
+                return await self._exec_text_bounded(
+                    script,
+                    working_directory=working_directory,
+                    timeout=timeout,
+                    max_output_bytes=max_output_bytes,
+                )
             return await self._exec_text(
                 script, working_directory=working_directory, timeout=timeout
             )
 
         try:
             async with asyncio.timeout(timeout):
-                result = await capture(command, run, self._exec_output_limit)
+                result = await capture(
+                    command, run, self._exec_output_limit, combined_limit=max_output_bytes
+                )
                 if self._held.unusable:
                     raise SandboxOutputError(
                         "ACAS sandbox was invalidated by a concurrent exec failure"
@@ -609,7 +630,29 @@ class _AcasSandbox:
         timeout: float,
         max_output_bytes: int,
     ) -> ExecResult:
-        """Bound the encoded execution response before parsing stdout or stderr."""
+        """Capture exact bytes with a combined output cap and a cap on each wire response.
+
+        Encoded framing can exhaust the wire cap before program output reaches its budget.
+        Failure invalidates and disposes the sandbox, as for ordinary exec.
+        """
+        if type(max_output_bytes) is not int or max_output_bytes <= 0:
+            raise ValueError("max_output_bytes must be a positive integer")
+        return await self._capture_exec(
+            command,
+            working_directory=working_directory,
+            timeout=timeout,
+            max_output_bytes=max_output_bytes,
+        )
+
+    async def _exec_text_bounded(
+        self,
+        command: str | Sequence[str],
+        *,
+        working_directory: str,
+        timeout: float,
+        max_output_bytes: int,
+    ) -> ExecResult:
+        """Bound backend control responses before parsing their text fields."""
         from azure.core.exceptions import HttpResponseError
         from azure.core.rest import AsyncHttpResponse, HttpRequest
 
@@ -939,6 +982,7 @@ class AcasSandboxBackend:
         #: never served. An entry lives only while its delete keeps failing.
         self._undeleted: dict[tuple[str, str, str], set[str]] = {}
         self._undeleted_kinds: dict[tuple[str, str, str], dict[str, str]] = {}
+        self._invalidated_ids: set[str] = set()
         self._disposal_tokens: dict[tuple[str, str, str], dict[str, object]] = {}
         self._disposal_guard = threading.Lock()
         # Group clients cached per event loop. An azure-core async client binds its transport
@@ -1076,6 +1120,26 @@ class AcasSandboxBackend:
                 "AcasSandboxBackend.dispose before changing policy, or use a different key."
             )
         gc = self._group_client()
+        prefix = registry_key[:3]
+        with self._disposal_guard:
+            retained = [
+                name
+                for name in self._undeleted.get(prefix, ())
+                if self._undeleted_kinds.get(prefix, {}).get(name) == spec.kind
+                and name in self._invalidated_ids
+            ]
+            kinds = dict.fromkeys(retained, spec.kind)
+            attempted = self._retain_disposals(prefix, retained, kinds)
+        for name in retained:
+            deletion = await self._delete(gc, name)
+            with self._disposal_guard:
+                self._finish_disposals(
+                    prefix, {name: attempted[name]}, [name] if deletion.failure else [], kinds
+                )
+            if deletion.failure is not None:
+                raise SandboxOutputError(
+                    "ACAS could not dispose a retained sandbox; retry disposal before reacquiring"
+                )
         if held is not None and held.unusable:
             deletion = await self._delete(gc, held.sandbox_id)
             if deletion.failure is not None:
@@ -1232,6 +1296,7 @@ class AcasSandboxBackend:
                 tokens.pop(name)
                 names.discard(name)
                 attributed.pop(name, None)
+                self._invalidated_ids.discard(name)
         if not tokens:
             self._disposal_tokens.pop(prefix, None)
         if not names:
@@ -1423,6 +1488,8 @@ class AcasSandboxBackend:
             remembered: list[str] = []
             for entry in mine:
                 held = self._registry.pop(entry)
+                if held.unusable:
+                    self._invalidated_ids.add(held.sandbox_id)
                 remembered.append(held.sandbox_id)
                 attributed[held.sandbox_id] = entry[3]
             retained = sorted(
@@ -1538,7 +1605,9 @@ class AcasSandboxBackend:
                 if k[0] == scope and k[1] == thread_id
             ]
             for k, _ in known:
-                self._registry.pop(k, None)
+                held = self._registry.pop(k, None)
+                if held is not None and held.unusable:
+                    self._invalidated_ids.add(held.sandbox_id)
             for entry, sandbox_id in known:
                 self._undeleted_kinds.setdefault(entry[:3], {})[sandbox_id] = entry[3]
                 self._undeleted.setdefault(entry[:3], set()).add(sandbox_id)

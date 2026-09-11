@@ -49,7 +49,7 @@ def test_cap_is_enforced_before_decoding_and_response_is_closed(stream):
         sandbox = _AcasSandbox(None, 1)
         sandbox._sc = client
         with pytest.raises(SandboxExecOutputLimitExceeded):
-            await sandbox.exec_bounded(
+            await sandbox._exec_text_bounded(
                 "probe", working_directory="child", timeout=1, max_output_bytes=250
             )
         assert pulled == 3 and response.closed
@@ -85,11 +85,11 @@ def test_small_complete_response_preserves_result_or_http_failure(status):
         )
         if status == 500:
             with pytest.raises(HttpResponseError):
-                await sandbox.exec_bounded(
+                await sandbox._exec_text_bounded(
                     "probe", working_directory="/work", timeout=1, max_output_bytes=250
                 )
         else:
-            result = await sandbox.exec_bounded(
+            result = await sandbox._exec_text_bounded(
                 "probe", working_directory="/work", timeout=1, max_output_bytes=250
             )
             assert (result.stdout, result.stderr, result.exit_code) == ("out", "err", 7)
@@ -151,7 +151,7 @@ def test_sdk_pipeline_does_not_buffer_the_http_body(channel, monkeypatch):
             client._endpoint = f"http://127.0.0.1:{port}"
             sandbox = _AcasSandbox(client, read_timeout=1)
             with pytest.raises(SandboxExecOutputLimitExceeded):
-                await sandbox.exec_bounded(
+                await sandbox._exec_text_bounded(
                     "probe", working_directory="/work", timeout=5, max_output_bytes=1024
                 )
             await asyncio.wait_for(finished.wait(), timeout=5)
@@ -189,7 +189,7 @@ def test_response_closes_when_collection_cannot_complete(mode):
             _pipeline=SimpleNamespace(run=send),
         )
         task = asyncio.create_task(
-            _AcasSandbox(client, 1).exec_bounded(
+            _AcasSandbox(client, 1)._exec_text_bounded(
                 "probe",
                 working_directory="/work",
                 timeout=0.05 if mode == "timeout" else 2,

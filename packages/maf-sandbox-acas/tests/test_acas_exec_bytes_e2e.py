@@ -50,6 +50,11 @@ def test_byte_capture_and_failure_disposal(image):
             results = await asyncio.gather(
                 *(sandbox.exec(program, working_directory="/tmp", timeout=60) for _ in range(2))
             )
+            results.append(
+                await sandbox.exec_bounded(
+                    program, working_directory="/tmp", timeout=60, max_output_bytes=131072
+                )
+            )
             for result in results:
                 assert result.stdout_bytes == bytes(range(256)) * 256
                 assert result.stderr_bytes == (bytes(range(256)) * 256)[::-1]
@@ -87,7 +92,9 @@ def test_byte_capture_and_failure_disposal(image):
             ]
             sandbox = await backend.acquire(key, spec)
             task = asyncio.create_task(
-                sandbox.exec("sleep 30", working_directory="/tmp", timeout=60)
+                sandbox.exec_bounded(
+                    "sleep 30", working_directory="/tmp", timeout=60, max_output_bytes=1024
+                )
             )
             await asyncio.sleep(1)
             task.cancel()
