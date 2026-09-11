@@ -86,6 +86,7 @@ def _one_index_unless_a_test_says_otherwise(monkeypatch: pytest.MonkeyPatch):
     """A contributor's own index settings would change how many documents each read fetches."""
     monkeypatch.delenv("UV_INDEX", raising=False)
     monkeypatch.delenv("UV_DEFAULT_INDEX", raising=False)
+    monkeypatch.delenv("UV_INDEX_STRATEGY", raising=False)
 
 
 class TestADefinitiveReplyIsNotRetried:
@@ -236,15 +237,28 @@ class TestPublishedVersionsAreSortedSemantically:
 
 
 class TestWhichIndexesAreRead:
-    """A rehearsal uploads to one index and has to be measured against that one.
+    """The checks read exactly what `uv` would resolve from: its variables, in its order.
 
-    The variables are `uv`'s own, so the set a check reads is the set the install it gates
-    resolves from; a check that asked a different index than the resolver would is the defect
-    this exists to stop (#1121).
+    `UV_INDEX` first and `UV_DEFAULT_INDEX` behind it, PyPI when neither names one, and an
+    entry's optional `<name>=` prefix is not part of its URL.
     """
 
     def test_pypi_is_the_only_index_by_default(self):
         assert index.index_urls() == ("https://pypi.org/simple/",)
+
+    @pytest.mark.parametrize("variable", ["UV_INDEX", "UV_DEFAULT_INDEX"])
+    def test_the_name_uv_lets_an_index_carry_is_not_part_of_its_url(
+        self, monkeypatch: pytest.MonkeyPatch, variable: str
+    ):
+        """`uv pip install --index corp=https://…` is documented and resolves; taken whole it
+        would request `corp=https://mirror.example/simple/maf-sandbox/` and every check fail."""
+        monkeypatch.setenv(variable, "corp=https://mirror.example/simple/")
+        assert "https://mirror.example/simple/" in index.index_urls()
+
+    def test_a_query_is_not_mistaken_for_a_name(self, monkeypatch: pytest.MonkeyPatch):
+        """The name prefix is recognised by the scheme behind it, so an `=` elsewhere is safe."""
+        monkeypatch.setenv("UV_INDEX", "https://mirror.example/simple?token=abc")
+        assert index.index_urls()[0].startswith("https://mirror.example/simple?token=abc")
 
     def test_the_primary_comes_first_and_the_extras_follow(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("UV_INDEX", "https://test.pypi.org/simple/")
@@ -268,15 +282,17 @@ class TestWhichIndexesAreRead:
 
 
 class TestAVersionOnEitherIndexCounts:
-    """The failure that prompted this: 0.38.0 was on TestPyPI and the gate asked PyPI.
+    """Under uv's two `unsafe-` strategies every index is searched, so every index counts.
 
-    Merged rather than first-hit, because a rehearsal index carries one version of interest
-    and years of junk beside it — reading it alone trades one wrong answer for another.
+    `first-index` is the other half and has its own class below. Which one applies is read from
+    `UV_INDEX_STRATEGY` rather than chosen here: a check that merged under a strategy the
+    resolver does not would admit versions the install cannot reach.
     """
 
     def _two(self, monkeypatch: pytest.MonkeyPatch, first: object, second: object) -> _Index:
         monkeypatch.setenv("UV_INDEX", "https://test.pypi.org/simple/")
         monkeypatch.setenv("UV_DEFAULT_INDEX", "https://pypi.org/simple/")
+        monkeypatch.setenv("UV_INDEX_STRATEGY", "unsafe-best-match")
         fake = _Index(first, second)
         _install(monkeypatch, fake)
         return fake
@@ -320,3 +336,71 @@ class TestAVersionOnEitherIndexCounts:
         payload = index.fetch_simple("maf-sandbox")
         assert payload is not None
         assert index.newest_upload(payload) == "2026-09-11T14:00:00Z"
+
+
+class TestFirstIndexStopsAtTheFirstMatch:
+    """uv's default resolves only what the first index carrying the distribution offers.
+
+    A merged read under it would report versions the install cannot reach, which is the same
+    disagreement between check and resolver that naming the indexes exists to end.
+    """
+
+    def _two(self, monkeypatch: pytest.MonkeyPatch, first: object, second: object) -> _Index:
+        monkeypatch.setenv("UV_INDEX", "https://one.example/simple/")
+        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://pypi.org/simple/")
+        fake = _Index(first, second)
+        _install(monkeypatch, fake)
+        return fake
+
+    @pytest.mark.parametrize("strategy", ["", "first-index"])
+    def test_the_second_index_is_never_asked(self, monkeypatch: pytest.MonkeyPatch, strategy: str):
+        if strategy:
+            monkeypatch.setenv("UV_INDEX_STRATEGY", strategy)
+        fake = self._two(monkeypatch, {"versions": ["0.1.0"]}, {"versions": ["9.9.9"]})
+        assert index.fetch_published_versions("maf-sandbox") == ["0.1.0"]
+        assert [request.full_url for request in fake.requests] == [
+            "https://one.example/simple/maf-sandbox/"
+        ]
+
+    def test_an_index_without_it_is_passed_over_rather_than_ending_the_search(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """uv stops at the first index that returns a match, not at the first index asked."""
+        self._two(monkeypatch, _http_error(404), {"versions": ["0.37.0"]})
+        assert index.fetch_published_versions("maf-sandbox") == ["0.37.0"]
+
+    def test_an_unknown_strategy_does_not_widen_the_search(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("UV_INDEX_STRATEGY", "whatever-uv-adds-next")
+        self._two(monkeypatch, {"versions": ["0.1.0"]}, {"versions": ["9.9.9"]})
+        assert index.fetch_published_versions("maf-sandbox") == ["0.1.0"]
+
+
+class TestAnIndexUrlMayCarryACredential:
+    """The annotation reaches the run log, which is readable and never masked."""
+
+    def test_userinfo_and_query_are_replaced(self):
+        assert (
+            index.redacted("https://token:secret@mirror.example/simple/pkg/?key=abc")
+            == "https://***@mirror.example/simple/pkg/?***"
+        )
+
+    def test_the_host_port_and_path_survive_so_the_reader_knows_which_index(self):
+        assert (
+            index.redacted("https://u:p@mirror.example:8443/simple/pkg/")
+            == "https://***@mirror.example:8443/simple/pkg/"
+        )
+
+    def test_a_url_carrying_neither_is_untouched(self):
+        assert index.redacted(_URL) == _URL
+
+    def test_the_unreachable_message_carries_the_redacted_form(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        secret = "https://token:secret@mirror.example/simple/maf-sandbox/"
+        pauses = _install(monkeypatch, _Index(*[_http_error(503)] * index.ATTEMPTS))
+        with pytest.raises(index.IndexUnreachable) as raised:
+            index.read_json(secret, sleep=pauses.append)
+        said = str(raised.value)
+        assert "secret" not in said
+        assert "token" not in said
+        assert "mirror.example/simple/maf-sandbox/" in said

@@ -23,9 +23,11 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 
@@ -42,6 +44,15 @@ _SIMPLE_ACCEPT = "application/vnd.pypi.simple.v1+json"
 _PYPI_SIMPLE = "https://pypi.org/simple/"
 _INDEX_VARIABLE = "UV_INDEX"
 _DEFAULT_INDEX_VARIABLE = "UV_DEFAULT_INDEX"
+_STRATEGY_VARIABLE = "UV_INDEX_STRATEGY"
+
+#: The strategies under which ``uv`` looks past the first index that carries a distribution. Its
+#: default, ``first-index``, does not.
+_SEARCHES_EVERY_INDEX = frozenset({"unsafe-first-match", "unsafe-best-match"})
+
+#: An index may be given as ``<name>=<url>``. The scheme lookahead keeps a query's own ``=`` out
+#: of it.
+_NAMED_INDEX = re.compile(r"^[A-Za-z0-9._-]+=(?=[A-Za-z][A-Za-z0-9+.-]*://)")
 
 #: The replies that are the index having a moment rather than answering. One reset reaches here
 #: three ways — wrapped in `URLError` when it lands on the connect, bare when it lands on the
@@ -51,6 +62,25 @@ _TRANSIENT = (urllib.error.URLError, TimeoutError, ConnectionError, http.client.
 
 class IndexUnreachable(Exception):
     """PyPI did not answer. Never a verdict on a version — the question was not put."""
+
+
+def redacted(url: str) -> str:
+    """``url`` without the parts a private index authenticates with.
+
+    An annotation reaches the run log, which is readable by anyone who can read the repository
+    and is never masked, so a token in an index URL must not travel in one. Scheme, host, port
+    and path stay: they are what a reader needs to tell which index did not answer.
+    """
+    parsed = urllib.parse.urlsplit(url)
+    if not (parsed.username or parsed.password or parsed.query):
+        return url
+    host = parsed.hostname or ""
+    netloc = f"{host}:{parsed.port}" if parsed.port else host
+    if parsed.username or parsed.password:
+        netloc = f"***@{netloc}"
+    return urllib.parse.urlunsplit(
+        (parsed.scheme, netloc, parsed.path, "***" if parsed.query else "", parsed.fragment)
+    )
 
 
 def read_json(
@@ -84,9 +114,9 @@ def read_json(
             reason = error
         if attempt == ATTEMPTS:
             raise IndexUnreachable(
-                f"the index did not answer {url} in {ATTEMPTS} attempts ({reason}). The index was "
-                "unreachable, so this check could not finish — this is not a verdict on any "
-                "version."
+                f"the index did not answer {redacted(url)} in {ATTEMPTS} attempts ({reason}). The "
+                "index was unreachable, so this check could not finish — this is not a verdict "
+                "on any version."
             ) from reason
         sleep(FIRST_PAUSE_SECONDS * 2 ** (attempt - 1))
 
@@ -106,36 +136,44 @@ def admits(version: tuple[int, ...], ceiling: tuple[int, ...]) -> bool:
 def index_urls() -> tuple[str, ...]:
     """The simple-index bases to read, in the order ``uv`` searches them.
 
-    ``UV_INDEX`` before ``UV_DEFAULT_INDEX``, which is uv's own precedence, so a check measures
-    the set the install it gates would get. A TestPyPI rehearsal sets them; everything else
-    reads PyPI.
+    ``UV_INDEX`` before ``UV_DEFAULT_INDEX``, which is uv's precedence, and PyPI when neither
+    names one — read from uv's own variables so a check measures the set the install it gates
+    resolves from. An entry may carry uv's optional ``<name>=`` prefix, which is not part of the
+    URL.
     """
-    extra = os.environ.get(_INDEX_VARIABLE, "").split()
-    default = os.environ.get(_DEFAULT_INDEX_VARIABLE, "").strip() or _PYPI_SIMPLE
+    named = [_url_of(entry) for entry in os.environ.get(_INDEX_VARIABLE, "").split()]
+    default = _url_of(os.environ.get(_DEFAULT_INDEX_VARIABLE, "").strip()) or _PYPI_SIMPLE
     seen: dict[str, None] = {}
-    for url in (*extra, default):
+    for url in (*named, default):
         seen[url.rstrip("/") + "/"] = None
     return tuple(seen)
 
 
+def _url_of(entry: str) -> str:
+    """One index entry as a URL, dropping the name uv lets it be given under."""
+    return _NAMED_INDEX.sub("", entry)
+
+
 def fetch_simple(distribution: str) -> dict | None:
-    """``distribution``'s PEP 691 simple document, or None if no index has it.
+    """``distribution``'s PEP 691 simple document, or None if no index searched has it.
 
     The simple index is fresher than the CDN-cached top-level JSON document, and it is what
     ``uv`` resolves from. A 404 means never released *there*; `read_json` decides the rest.
 
-    Several indexes are merged rather than the first hit winning, because that is what
-    ``UV_INDEX_STRATEGY=unsafe-best-match`` does and the point is to answer the question the
-    install will. A rehearsal index carries one version of interest and years of junk beside
-    it, so reading it alone would trade one wrong answer for another.
+    How many indexes count is ``UV_INDEX_STRATEGY``'s answer rather than one made here. uv's
+    default stops at the first index carrying the distribution and resolves only what that one
+    offers; its two ``unsafe-`` strategies look at the rest. Merging regardless would let a
+    check admit a version the install it gates cannot reach.
     """
-    payloads = [
-        payload
-        for payload in (
-            read_json(f"{url}{distribution}/", accept=_SIMPLE_ACCEPT) for url in index_urls()
-        )
-        if payload is not None
-    ]
+    merge = os.environ.get(_STRATEGY_VARIABLE, "").strip() in _SEARCHES_EVERY_INDEX
+    payloads: list[dict] = []
+    for url in index_urls():
+        payload = read_json(f"{url}{distribution}/", accept=_SIMPLE_ACCEPT)
+        if payload is None:
+            continue
+        if not merge:
+            return payload
+        payloads.append(payload)
     if not payloads:
         return None
     if len(payloads) == 1:

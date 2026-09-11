@@ -474,16 +474,21 @@ class TestTheBuildLoopsDiscoverEveryPackage:
 
 
 class TestTheIndexIsDerivedOnceAndReachesEveryStepThatReadsOne:
-    """A rehearsal uploads to TestPyPI; its gates have to ask TestPyPI whether that worked.
+    """Every step that reads or resolves an index has to say which one, and say the same one.
 
-    They asked PyPI, so rehearsing the core first could not unblock rehearsing anything that
-    depends on it (#1121). The index is resolved beside the package, the version and the
-    registry, for the reason the resolve step already gives for those three.
+    A gate that asks a different index than the resolver measures something nobody installs, so
+    the index is resolved beside the package, the version and the registry, and carried to each
+    step from there.
 
-    The last test enumerates rather than hand-listing: a step that reads an index is one
-    running `uv pip install` or a script that imports `pypi_index`, so a step added later is
-    caught on its own commit rather than on the rehearsal that needed it.
+    The last test enumerates rather than hand-listing: a step reads an index if it runs
+    `uv pip install` or a script importing `pypi_index`, so one added later is caught on its own
+    commit.
     """
+
+    #: All three, exactly: `UV_INDEX` alone leaves the resolver on a different strategy than the
+    #: reader, and it is a prefix of `UV_INDEX_STRATEGY`, so a substring test passes on the one
+    #: variable that decides the least.
+    INDEX_KEYS = frozenset({"UV_INDEX", "UV_DEFAULT_INDEX", "UV_INDEX_STRATEGY"})
 
     RESOLVE = run_block(PUBLISH_WORKFLOW, "Resolve the release")
     WORKFLOW = yaml.safe_load(PUBLISH_WORKFLOW.read_text("utf-8"))
@@ -517,12 +522,12 @@ class TestTheIndexIsDerivedOnceAndReachesEveryStepThatReadsOne:
                     continue
                 if "target == 'pypi'" in gate + str(step.get("if", "")):
                     continue
-                if "UV_INDEX" in str(step.get("env", {})):
+                if self.INDEX_KEYS <= set(step.get("env") or {}):
                     continue
                 unnamed.append(f"{job_name}: {step.get('name', 'unnamed step')}")
         assert not unnamed, (
-            "these steps read an index without saying which, and are not confined to a real "
-            f"release: {unnamed}"
+            "these steps read an index without naming all of "
+            f"{sorted(self.INDEX_KEYS)}, and are not confined to a real release: {unnamed}"
         )
 
 

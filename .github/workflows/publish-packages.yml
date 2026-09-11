@@ -280,7 +280,7 @@ jobs:
           name: dist-${{ needs.build.outputs.package }}
           path: dist/
 
-      # Resolves from the real index with NO local fallback — deliberately opposite of
+      # Resolves from the target's own indexes with NO local fallback — deliberately opposite of
       # tests.yml's copy of this gate. Stops a release whose dependency isn't published yet.
       - name: Install the wheel into a clean environment
         env:
