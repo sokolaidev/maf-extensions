@@ -309,7 +309,9 @@ def test_earlier_snapshot_failures_still_mark_cleanup_unclean(failed_scan, failu
             if " -I -S -c " in str(command) and self.scan == failed_scan:
                 if failure == "unavailable":
                     raise PermissionError("proc unavailable")
-                return dataclasses.replace(result, stdout=payload([], incomplete=True))
+                return dataclasses.replace(
+                    result, stdout_bytes=payload([], incomplete=True).encode()
+                )
             return result
 
     guest, observer = FailedSnapshot(), Recorder()
@@ -358,12 +360,14 @@ def test_degraded_cleanup_snapshot_still_signals_previously_observed_escapees(fa
             if " -I -S -c " in str(command):
                 if self.scan == 2:
                     return dataclasses.replace(
-                        result, stdout=payload([self.program, child, unrelated])
+                        result, stdout_bytes=payload([self.program, child, unrelated]).encode()
                     )
                 if self.scan == 3:
                     if failure == "unavailable":
                         raise PermissionError("proc unavailable")
-                    return dataclasses.replace(result, stdout=payload([unrelated], incomplete=True))
+                    return dataclasses.replace(
+                        result, stdout_bytes=payload([unrelated], incomplete=True).encode()
+                    )
             return result
 
     guest, observer = Degraded(), Recorder()
@@ -643,7 +647,9 @@ def test_cancellation_records_the_interrupted_phase_and_preserves_cleanup(phase)
                         command, working_directory=working_directory, timeout=timeout
                     )
                     if phase == "descendants" and self.scan in (2, 3):
-                        return dataclasses.replace(result, stdout=payload([self.program, child]))
+                        return dataclasses.replace(
+                            result, stdout_bytes=payload([self.program, child]).encode()
+                        )
                     return result
                 return await super().exec(
                     command, working_directory=working_directory, timeout=timeout

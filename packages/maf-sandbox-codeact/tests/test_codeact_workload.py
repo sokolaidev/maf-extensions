@@ -263,7 +263,7 @@ class _CallingSandbox(_ScriptedSandbox):
         self.contents[f"{layout.calls}/0001.request.json"] = json.dumps(
             {"id": "0001", "name": name, "arguments": arguments}
         ).encode()
-        return dataclasses.replace(result, stdout="maf-host-tools: process-v1 4242 4200\n")
+        return dataclasses.replace(result, stdout_bytes=b"maf-host-tools: process-v1 4242 4200\n")
 
     async def stat_file(self, path, *, working_directory):
         self._take_the_answer()
@@ -308,7 +308,7 @@ class _FinishingSandbox(_ProducingSandbox):
         layout = guest_run_layout(working_directory, program=_PROGRAM_FILENAME)
         self.contents[layout.output] = b"ran"
         self.contents[layout.exit_code] = b"0"
-        return dataclasses.replace(result, stdout="maf-host-tools: process-v1 4242 4200\n")
+        return dataclasses.replace(result, stdout_bytes=b"maf-host-tools: process-v1 4242 4200\n")
 
 
 class _RecordingSink:
