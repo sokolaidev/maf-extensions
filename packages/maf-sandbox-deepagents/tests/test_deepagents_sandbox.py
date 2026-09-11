@@ -644,6 +644,20 @@ class TestFilesIn:
         (read,) = asyncio.run(adapter.adownload_files([f"{WORK}/notes/todo.txt"]))
         assert read.content == b"1"
 
+    def test_a_base_spelled_with_dots_still_bounds_the_file_plane(self):
+        """A spec may write the base as `/a/../b`; the backends resolve it, and so must the
+        road choice, or a file under it would take the shell for nothing."""
+        fake = InProcessSandbox()
+        adapter = MafSandbox(
+            _router(_backend(fake)), KEY, deepagents_spec("img:1", work_dir="/maf-sandbox/../b")
+        )
+
+        (response,) = asyncio.run(adapter.aupload_files([("/b/f.txt", b"1")]))
+
+        assert response.error is None
+        assert fake.commands == []  # the file plane, not the shell
+        assert any(path.endswith("b/f.txt") for path in fake.contents)
+
     def test_a_shell_upload_carries_the_bytes_in_chunks_the_shell_can_take(self):
         """Deep Agents' large-edit temporaries land under `/tmp`, outside the base, whole."""
         fake = InProcessSandbox()

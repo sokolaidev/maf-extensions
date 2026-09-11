@@ -117,12 +117,13 @@ _UNBOUNDED = (
 )
 _UPLOAD_FAILED = "upload failed; see the host log"
 #: A shell transfer that did not finish — a timeout, an output overflow, the caller leaving —
-#: disposes the sandbox, and everything the batch had put there went with it.
+#: condemns the sandbox, and everything the batch had put there goes with it. Condemned, not
+#: disposed: the delete is queued with the router and may still be pending, or fail.
 _UPLOAD_BATCH_LOST = (
-    "the sandbox was disposed after a transfer did not finish; the batch did not land"
+    "the sandbox is condemned after a transfer did not finish; the batch did not land"
 )
 _DOWNLOAD_BATCH_LOST = (
-    "the sandbox was disposed after a transfer did not finish; the rest of the batch was not read"
+    "the sandbox is condemned after a transfer did not finish; the rest of the batch was not read"
 )
 _DOWNLOAD_FAILED = "download failed; see the host log"
 _SIZE_UNKNOWN = "the sandbox could not report the file's size"
@@ -484,7 +485,9 @@ class MafSandbox(BaseSandbox):
         """Whether ``path`` names something under the storage base, the file plane's reach."""
         if not path.startswith("/"):
             return True
-        base = PurePosixPath(self._spec.work_dir or "/")
+        # Both sides normalized: a spec may spell the base with `..`, and the backends resolve
+        # it before they confine to it.
+        base = PurePosixPath(posixpath.normpath(self._spec.work_dir or "/"))
         normalized = PurePosixPath(posixpath.normpath(path))
         return normalized == base or base in normalized.parents
 
