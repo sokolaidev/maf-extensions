@@ -502,6 +502,22 @@ class TestTheRead:
                 )
             )
 
+    @pytest.mark.parametrize("timeout", [float("inf"), float("nan"), 0.0, -1.0])
+    def test_the_timeout_must_be_a_finite_positive_number(self, timeout):
+        """An infinite or NaN timeout would pass the deadline arithmetic and bound nothing."""
+        fake = InProcessSandbox()
+        with pytest.raises(ValueError, match="timeout"):
+            asyncio.run(
+                write_file_over_exec(fake, "/tmp/f", b"1", working_directory=WORK, timeout=timeout)
+            )
+        with pytest.raises(ValueError, match="timeout"):
+            asyncio.run(
+                read_file_over_exec(
+                    fake, "/tmp/f", working_directory=WORK, timeout=timeout, max_bytes=8
+                )
+            )
+        assert fake.commands == []
+
 
 def test_the_utilities_the_road_runs_are_the_ones_it_names():
     fake = InProcessSandbox(outputs={"wc -c": "1\n", "base64 <": "eA==\n"})

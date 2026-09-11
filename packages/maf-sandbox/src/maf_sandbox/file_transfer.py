@@ -18,6 +18,7 @@ parent directories a write created on its way stay, as they would after a refuse
 from __future__ import annotations
 
 import base64
+import math
 import posixpath
 import shlex
 import time
@@ -163,6 +164,12 @@ def shell_refusal(stderr: str) -> FileRefusal | None:
     return None
 
 
+def _refuse_an_unbounded_timeout(timeout: float) -> None:
+    """The bound the helpers promise is only one when it is a finite, positive number."""
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be a finite positive number of seconds")
+
+
 def _refuse_what_no_command_can_carry(path: str) -> None:
     """A path with a line break could write a line of its own into a diagnostic, and one with
     a NUL byte cannot reach a shell at all: both are refused before any command is built."""
@@ -225,6 +232,7 @@ async def write_file_over_exec(
     Raises :class:`SandboxFileRefused`, :class:`SandboxShellTransferUnfinished`,
     :class:`SandboxShellTransferFailed`.
     """
+    _refuse_an_unbounded_timeout(timeout)
     _refuse_what_no_command_can_carry(path)
     if posixpath.basename(path) in ("", ".", ".."):
         # A leaf that names a directory: `mkdir -p` on its "parent" would create the target
@@ -236,26 +244,30 @@ async def write_file_over_exec(
     # A sibling of a fixed length: the target's own leaf may already be as long as a name
     # can be.
     staged = shlex.quote(posixpath.join(directory, f".maf-{uuid.uuid4().hex}.part"))
-    encoded = base64.b64encode(content).decode("ascii")
-    step = 4 * (SHELL_CHUNK_BYTES // 3)
     refuse_directory = f"if [ -d {target} ]; then echo 'Is a directory' >&2; exit 1; fi"
-    # `--` before every operand a utility takes: a relative path may begin with a dash. A
-    # redirection's word is never an option, so `>` and `<` need none.
-    commands = [f"mkdir -p -- {parent} && {refuse_directory} && : > {staged}"]
-    commands += [
-        f"printf %s {encoded[start : start + step]} | base64 -d >> {staged}"
-        for start in range(0, len(encoded), step)
-    ]
-    commands.append(f"{refuse_directory} && mv -f -- {staged} {target}")
+    slices = range(0, len(content), SHELL_CHUNK_BYTES)
+    total = len(slices) + 2
+
+    def commands():
+        # Each chunk is encoded as its command is issued, never the whole file at once: the
+        # content has no cap of its own, and a copy of it in base64 would be a third of it
+        # larger again. `--` before every operand a utility takes: a relative path may begin
+        # with a dash. A redirection's word is never an option, so `>` and `<` need none.
+        yield f"mkdir -p -- {parent} && {refuse_directory} && : > {staged}"
+        for start in slices:
+            piece = base64.b64encode(content[start : start + SHELL_CHUNK_BYTES]).decode("ascii")
+            yield f"printf %s {piece} | base64 -d >> {staged}"
+        yield f"{refuse_directory} && mv -f -- {staged} {target}"
+
     deadline = time.monotonic() + timeout
-    for index, command in enumerate(commands):
+    for index, command in enumerate(commands()):
         left = deadline - time.monotonic()
         if left <= 0:
             # Nothing is running: the sibling comes back, and the sandbox is whole.
             if index > 0:
                 await _take_back(sandbox, staged, working_directory=working_directory)
             raise SandboxShellTransferFailed(
-                f"the write of {path!r} ran out of time after {index} of {len(commands)} commands"
+                f"the write of {path!r} ran out of time after {index} of {total} commands"
             )
         result = await _run(
             sandbox,
@@ -317,6 +329,7 @@ async def read_file_over_exec(
     """
     if type(max_bytes) is not int or max_bytes <= 0:
         raise ValueError("max_bytes must be a positive integer")
+    _refuse_an_unbounded_timeout(timeout)
     _refuse_what_no_command_can_carry(path)
     target = shlex.quote(path)
     probe = (
