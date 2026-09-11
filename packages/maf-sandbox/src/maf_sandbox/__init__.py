@@ -220,10 +220,32 @@ from ._router import (
 )
 from ._shim import host_tool_shim
 from .bounded_exec import BoundedExec, SandboxExecOutputLimitExceeded
+from .file_transfer import (
+    FileRefusal,
+    SandboxFileRefused,
+    SandboxShellTransferFailed,
+    SandboxShellTransferUnfinished,
+    entry_refusal,
+    file_refusal,
+    read_file_over_exec,
+    shell_refusal,
+    write_file_over_exec,
+)
+from .sync_runner import SyncRunner
 
 __all__ = [
     "BoundedExec",
     "SandboxExecOutputLimitExceeded",
+    "FileRefusal",
+    "SandboxFileRefused",
+    "SandboxShellTransferFailed",
+    "SandboxShellTransferUnfinished",
+    "entry_refusal",
+    "file_refusal",
+    "read_file_over_exec",
+    "shell_refusal",
+    "write_file_over_exec",
+    "SyncRunner",
     "ProcessAttribution",
     "ProcessCleanup",
     "ProcessCleanupOutcome",
