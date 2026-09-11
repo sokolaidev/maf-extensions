@@ -99,6 +99,14 @@ def _import(path: Path, sample: Path) -> list[str]:
     sys.path.insert(0, str(sample))
     evicted: list[str] = []
     try:
+        # In the cache *before* it executes, which is what a real import does and what module
+        # level can depend on. `@dataclass` is the case that finds this: it resolves each
+        # annotation against `sys.modules[cls.__module__].__dict__`, so a module executing
+        # outside the cache raises `AttributeError: 'NoneType' object has no attribute
+        # '__dict__'` from inside dataclasses — a failure that says nothing about the sample and
+        # does not happen when the same file is run with `uv run agent.py`. The eviction below
+        # takes this entry back out with the rest, since it is keyed on the file's directory.
+        sys.modules[spec.name] = module
         spec.loader.exec_module(module)
     finally:
         sys.path[:] = before

@@ -15,6 +15,19 @@ everywhere, which is why the tidy thread's 0 cannot be the only zero checked.
 The counts it reads come from `docker ps -a`, so a container stopped but not removed still
 counts as left behind — which is the shape a half-finished purge actually leaves.
 
+Acts 5 and 6 add a third direction. They make a reclaim **fail for real** and assert what each
+policy then did: the default disposes the sandbox it could not clean, so the container count goes
+to nought, and `FailedReclaimPolicy.KEEP` leaves it at one with the data still in it. Both are
+read off `docker ps` like everything else here. Beside them the check reads the telemetry the run
+exported, because the handler firing is the whole point of those acts — a healthy run reports
+nothing, so a count of nought would pass while proving nothing (#760).
+
+One assertion there looks like a tautology and is not: `maf_sandbox.call.unclean` must read `0`
+beside a directory that was not removed. That attribute counts what a transport noted about
+processes, never a failed removal, and the sample's whole argument is built on the two being
+separate. If core ever folds them together this goes red — correctly, because the sample's prose
+would then be wrong and the host record it argues for would be redundant.
+
 Exits non-zero listing every reason it failed.
 """
 
@@ -47,16 +60,42 @@ _UNSCOPED_BEFORE = re.compile(r"never scoped per turn\s+-> containers:\s*(\d+)",
 _UNSCOPED_FOUND = re.compile(r"deletes the conversation\s+-> purger found\s+(\d+)", re.IGNORECASE)
 _UNSCOPED_AFTER = re.compile(r"after purge\s+-> containers:\s*(\d+)", re.IGNORECASE)
 
-#: The footer, all three numbers read back from what the run observed.
+#: Act 5: the precondition, and the escalation. The rung has to be `reclaim` or there is no
+#: per-call removal to fail and the act proves nothing; the count is what the disposal did.
+_RUNG = re.compile(r"Cleanup rung for this call:\s*(\S+)", re.IGNORECASE)
+_ESCALATED = re.compile(r"containers after the escalation:\s*(\d+)", re.IGNORECASE)
+
+#: Act 6: the opt-down, measured the same way. One container, still holding the data.
+_KEPT_UNCLEAN = re.compile(r"containers kept after the failure:\s*(\d+)", re.IGNORECASE)
+
+#: Both acts, in order: act 5 first, act 6 second. Two lines each, so these are read as ordered
+#: pairs rather than single answers — which is also why they are not in `_SINGULAR`.
+_CALL_SPAN = re.compile(r"sandbox\.call\s+maf_sandbox\.call\.unclean = (\S+)")
+_DISPOSE_SPAN = re.compile(
+    r"sandbox\.dispose\s+(\d+) record\(s\), maf_sandbox\.disposal\.outcome = (\S+)"
+)
+_RECORDS = re.compile(r"Disposal records for this call:\s*(\d+)", re.IGNORECASE)
+_RECORDED_DISPOSAL = re.compile(r"Recorded disposal:\s*(\S+)", re.IGNORECASE)
+_RECORDED_REASON = re.compile(r"Recorded reason:\s*(.+)")
+#: The call each act's records were selected by. Two distinct ones, or the second act read the
+#: first act's records and every value below it is the wrong act's.
+_COLLECTED_FOR = re.compile(r"what a collector received for call\s+([0-9a-f]{32}):", re.IGNORECASE)
+
+#: What the handler writes when the framework could not tell it a path, and what the sample
+#: prints for a record that was never made. Either one in a reason is a failed assertion.
+_NOT_RECORDED = ("(absent)", "(no record)")
+
+#: The footer, every number read back from what the run observed.
 _FOOTER = re.compile(
-    r"Completed\s+(\d+)\s+of\s+4\s+acts\.\s+Purger found\s+(\d+)\s+on a purged thread and\s+"
-    r"(\d+)\s+on an unscoped one\.\s+Containers left behind:\s*(\d+)\.",
+    r"Completed\s+(\d+)\s+of\s+6\s+acts\.\s+Purger found\s+(\d+)\s+on a purged thread and\s+"
+    r"(\d+)\s+on an unscoped one\.\s+Kept after a failed reclaim:\s*(\d+)\.\s+"
+    r"Reclaim failures recorded:\s*(\d+)\.\s+Containers left behind:\s*(\d+)\.",
     re.IGNORECASE,
 )
 
 
 #: Each pattern with what it answers for, so a repeated line can be named. Every one reports a
-#: single act of a fixed four-act run, and this stream carries no model prose to confuse them.
+#: single act of a fixed six-act run, and this stream carries no model prose to confuse them.
 _SINGULAR = (
     ("the reuse count", _REUSE_COUNT),
     ("the containers kept", _KEPT),
@@ -66,6 +105,9 @@ _SINGULAR = (
     ("the unscoped containers before the purge", _UNSCOPED_BEFORE),
     ("what the unscoped purge found", _UNSCOPED_FOUND),
     ("the unscoped containers after the purge", _UNSCOPED_AFTER),
+    ("the cleanup rung", _RUNG),
+    ("the containers after the escalation", _ESCALATED),
+    ("the containers kept after the failure", _KEPT_UNCLEAN),
     ("the footer", _FOOTER),
 )
 
@@ -171,8 +213,113 @@ def assess(output: str) -> list[str]:
             "thread before computing it"
         )
 
+    failures.extend(_assess_the_cleanup_that_failed(output))
     failures.extend(_assess_each_line_appears_once(output))
     failures.extend(_assess_footer(output))
+    return failures
+
+
+def _assess_the_cleanup_that_failed(output: str) -> list[str]:
+    """Acts 5 and 6: a reclaim that really failed, what each policy did, and what was recorded."""
+    failures: list[str] = []
+
+    rung = _one(_RUNG, output)
+    if rung is None:
+        failures.append("act 5 did not report the cleanup rung it ran at")
+    elif rung != "reclaim":
+        failures.append(
+            f"the cleanup rung was {rung!r}, expected 'reclaim' — at any other rung the call's "
+            "own directory is never removed on its own, so nothing in acts 5 and 6 was exercised "
+            "and their passing numbers would mean nothing"
+        )
+
+    escalated = _one(_ESCALATED, output)
+    if escalated is None:
+        failures.append("act 5 did not report the container count after the escalation")
+    elif int(escalated) != 0:
+        failures.append(
+            f"{escalated} container(s) after a reclaim that failed, expected 0 — the framework "
+            "disposes a sandbox it could not clean, and one left running is the leak the "
+            "escalation exists to prevent"
+        )
+
+    kept_unclean = _one(_KEPT_UNCLEAN, output)
+    if kept_unclean is None:
+        failures.append("act 6 did not report the container count under FailedReclaimPolicy.KEEP")
+    elif int(kept_unclean) != 1:
+        failures.append(
+            f"{kept_unclean} container(s) under FailedReclaimPolicy.KEEP, expected exactly 1 — "
+            "the setting's whole effect is that the sandbox stays, and a 0 here means the two "
+            "policies did the same thing"
+        )
+
+    failures.extend(_assess_what_was_recorded(output))
+    return failures
+
+
+def _assess_what_was_recorded(output: str) -> list[str]:
+    """The telemetry both acts exported, read as ordered pairs: act 5 first, act 6 second.
+
+    This is the half no healthy run reaches. A reclaim that never fails calls no handler, so
+    every one of these lines is absent from a sample whose failure stopped being forced — which
+    is the silent pass this check exists to make impossible (#760).
+    """
+    failures: list[str] = []
+
+    disposals = _RECORDED_DISPOSAL.findall(output)
+    if disposals != ["disposed", "kept"]:
+        failures.append(
+            f"the recorded disposals were {disposals}, expected ['disposed', 'kept'] — the "
+            "handler runs after the framework has already acted, and these are what it was told "
+            "each policy did. Anything else means the handler did not fire for both acts, or "
+            "the two policies are no longer distinguishable to a host"
+        )
+
+    records = _RECORDS.findall(output)
+    if records != ["2", "1"]:
+        failures.append(
+            f"the disposal record counts were {records}, expected ['2', '1'] — act 5 records the "
+            "router's adoption cleanup and the escalation, act 6 only the adoption, and the "
+            "sample's argument is that neither act's records say which was which"
+        )
+
+    reasons = _RECORDED_REASON.findall(output)
+    if len(reasons) != 2:
+        failures.append(f"{len(reasons)} recorded reason(s), expected 2 — one per failed cleanup")
+    for reason in reasons:
+        if reason.strip() in _NOT_RECORDED or len(reason.strip()) < 20:
+            failures.append(
+                f"a recorded reason was {reason.strip()!r} — `ReclaimFailure.reason` is this "
+                "stack's own sentence for what did not happen, and it is one of the three facts "
+                "the host record exists to carry"
+            )
+
+    unclean = _CALL_SPAN.findall(output)
+    if unclean != ["0", "0"]:
+        failures.append(
+            f"maf_sandbox.call.unclean read {unclean}, expected ['0', '0'] — that attribute "
+            "counts what a transport noted about processes it could not prove it stopped, never "
+            "a removal that failed. If it now counts these too, this sample's argument for a "
+            "host record is out of date and its prose needs rewriting rather than its numbers"
+        )
+
+    dispose_spans = _DISPOSE_SPAN.findall(output)
+    if [outcome for _, outcome in dispose_spans] != ["gone", "gone"]:
+        failures.append(
+            f"the disposal outcomes were {[o for _, o in dispose_spans]}, expected "
+            "['gone', 'gone'] — a disposal the backend reported as failed is a different story "
+            "from the one these acts tell, and the container counts above would not be reliable"
+        )
+
+    collected = _COLLECTED_FOR.findall(output)
+    if len(collected) != 2:
+        failures.append(f"{len(collected)} record set(s) were reported, expected 2 — one per act")
+    elif collected[0] == collected[1]:
+        failures.append(
+            "both acts reported records for the same call id, so act 6 read act 5's records — "
+            "the selection is on the call id precisely so the two cannot be confused"
+        )
+
     return failures
 
 
@@ -180,14 +327,28 @@ def _assess_footer(output: str) -> list[str]:
     footer = _FOOTER.search(output)
     if footer is None:
         return ["no footer line — the sample did not run to completion"]
-    acts, tidy, unscoped, leftover = (int(group) for group in footer.groups())
+    acts, tidy, unscoped, kept_unclean, reported, leftover = (
+        int(group) for group in footer.groups()
+    )
     failures: list[str] = []
-    if acts != 4:
-        failures.append(f"only {acts} of 4 acts completed — the sample stopped part-way")
+    if acts != 6:
+        failures.append(f"only {acts} of 6 acts completed — the sample stopped part-way")
     if (tidy, unscoped) != (0, 1):
         failures.append(
             f"the footer reports {tidy} and {unscoped} where the acts reported 0 and 1 — the "
             "summary and the run disagree"
+        )
+    if kept_unclean != 1:
+        failures.append(
+            f"the footer reports {kept_unclean} kept after a failed reclaim, expected 1 — the "
+            "summary and act 6 disagree"
+        )
+    if reported != 2:
+        failures.append(
+            f"{reported} reclaim failure(s) recorded, expected 2 — this is counted off the "
+            "exporter rather than kept in a variable, so it is what a collector received and "
+            "not what the handler believes it sent. Nought is what this sample existed to stop "
+            "passing (#760)"
         )
     if leftover != 0:
         failures.append(
@@ -214,7 +375,10 @@ def main(argv: list[str]) -> int:
         for reason in failures:
             print(f"  - {reason}", file=sys.stderr)
         return 1
-    print("OK  reuse within a turn, disposal at its end, and the delete path catching the rest")
+    print(
+        "OK  reuse within a turn, disposal at its end, the delete path catching the rest, and "
+        "a reclaim that failed reported to the host both ways"
+    )
     return 0
 
 

@@ -30,8 +30,47 @@ _HEALTHY = """\
   a thread never scoped per turn -> containers: 1
   user deletes the conversation  -> purger found 1
   and docker agrees, after purge -> containers: 0
-Completed 4 of 4 acts. Purger found 0 on a purged thread and 1 on an unscoped one. Containers left behind: 0.
+== 5. When the cleanup cannot run: the framework acts, then tells you ==
+  [measured] Cleanup rung for this call: reclaim
+  containers after the escalation: 0
+  what a collector received for call 89228eec4a9f45dfa278d980f0097bcf:
+    sandbox.call                 maf_sandbox.call.unclean = 0
+    sandbox.dispose              2 record(s), maf_sandbox.disposal.outcome = gone
+    app.sandbox.reclaim_failure  app.reclaim.disposal = disposed
+  [measured] Disposal records for this call: 2
+  [measured] Recorded disposal: disposed
+  [measured] Recorded reason: the removal call failed: OSError: could not reclaim /maf-sandbox/work/89228eec: rm exited 1
+== 6. `FailedReclaimPolicy.KEEP`: the same failure, kept on purpose ==
+  containers kept after the failure: 1
+  what a collector received for call 7166ba1535e8415c98cf8d203fa1eb79:
+    sandbox.call                 maf_sandbox.call.unclean = 0
+    sandbox.dispose              1 record(s), maf_sandbox.disposal.outcome = gone
+    app.sandbox.reclaim_failure  app.reclaim.disposal = kept
+  [measured] Disposal records for this call: 1
+  [measured] Recorded disposal: kept
+  [measured] Recorded reason: the removal call failed: OSError: could not reclaim /maf-sandbox/work/7166ba15: rm exited 1
+Completed 6 of 6 acts. Purger found 0 on a purged thread and 1 on an unscoped one. Kept after a failed reclaim: 1. Reclaim failures recorded: 2. Containers left behind: 0.
 """
+
+#: Every line acts 5 and 6 print only because a cleanup failed. Removing them is what a run
+#: whose forced failure stopped being forced looks like: four healthy acts, two quiet ones, and
+#: a handler nobody called — the silent pass this check exists to refuse (#760).
+_ONLY_WHEN_IT_FAILED = (
+    "  [measured] Recorded disposal: ",
+    "  [measured] Recorded reason: ",
+    "  [measured] Disposal records for this call: ",
+    "  what a collector received for call ",
+    "    sandbox.call ",
+    "    sandbox.dispose ",
+    "    app.sandbox.reclaim_failure ",
+)
+
+
+def _without_the_handlers_records(output: str) -> str:
+    """``output`` with every line only a fired handler produces removed."""
+    return "\n".join(
+        line for line in output.splitlines() if not line.startswith(_ONLY_WHEN_IT_FAILED)
+    )
 
 
 class TestHealthyRun:
@@ -161,12 +200,108 @@ class TestTheFooter:
         assert any("summary and the run disagree" in r for r in reasons), reasons
 
     def test_a_partial_run_is_caught(self):
-        reasons = check.assess(_HEALTHY.replace("Completed 4 of 4", "Completed 2 of 4"))
-        assert any("2 of 4 acts completed" in r for r in reasons), reasons
+        reasons = check.assess(_HEALTHY.replace("Completed 6 of 6", "Completed 2 of 6"))
+        assert any("2 of 6 acts completed" in r for r in reasons), reasons
 
     def test_a_truncated_run_has_no_footer(self):
-        cut = _HEALTHY[: _HEALTHY.index("Completed 4 of 4")]
+        cut = _HEALTHY[: _HEALTHY.index("Completed 6 of 6")]
         assert any("did not run to completion" in r for r in check.assess(cut))
+
+    def test_a_footer_reporting_no_reclaim_failures_is_caught(self):
+        """The one number here that fails on nought, and the reason this check was extended.
+
+        Every other footer value is a leak count that passes at zero. This one passes at two:
+        a handler nothing ever calls reports nought and a check reading it agrees (#760).
+        """
+        reasons = check.assess(
+            _HEALTHY.replace("Reclaim failures recorded: 2", "Reclaim failures recorded: 0")
+        )
+        assert any("0 reclaim failure(s) recorded" in r for r in reasons), reasons
+
+    def test_a_footer_disagreeing_about_what_was_kept_is_caught(self):
+        reasons = check.assess(
+            _HEALTHY.replace("Kept after a failed reclaim: 1", "Kept after a failed reclaim: 0")
+        )
+        assert any("kept after a failed reclaim, expected 1" in r for r in reasons), reasons
+
+
+class TestTheCleanupThatFailed:
+    """Acts 5 and 6: the only place in the suite where `on_reclaim_failure` is called at all."""
+
+    def test_a_rung_below_reclaim_means_nothing_was_exercised(self):
+        """At any other rung the call's directory is never removed on its own.
+
+        The container counts would still read 0 and 1 for unrelated reasons, so without this the
+        acts could pass having demonstrated nothing.
+        """
+        reasons = check.assess(
+            _HEALTHY.replace(
+                "Cleanup rung for this call: reclaim", "Cleanup rung for this call: dispose"
+            )
+        )
+        assert any("expected 'reclaim'" in r for r in reasons), reasons
+
+    def test_an_escalation_that_left_the_container_running_is_caught(self):
+        reasons = check.assess(
+            _HEALTHY.replace(
+                "containers after the escalation: 0", "containers after the escalation: 1"
+            )
+        )
+        assert any("after a reclaim that failed, expected 0" in r for r in reasons), reasons
+
+    def test_keep_behaving_like_dispose_is_caught(self):
+        """The two policies collapsing is the failure act 6 exists to rule out."""
+        reasons = check.assess(
+            _HEALTHY.replace(
+                "containers kept after the failure: 1", "containers kept after the failure: 0"
+            )
+        )
+        assert any("expected exactly 1" in r for r in reasons), reasons
+
+    def test_a_handler_that_never_fired_is_caught(self):
+        """The silent pass: every act healthy, every leak count nought, and no record made."""
+        reasons = check.assess(_without_the_handlers_records(_HEALTHY))
+        assert any("expected ['disposed', 'kept']" in r for r in reasons), reasons
+        assert any("0 recorded reason(s)" in r for r in reasons), reasons
+
+    def test_a_reason_that_was_not_recorded_is_caught(self):
+        """`(absent)` is what the sample prints for an attribute that stopped being written."""
+        reasons = check.assess(
+            _HEALTHY.replace(
+                "Recorded reason: the removal call failed: OSError: could not reclaim "
+                "/maf-sandbox/work/89228eec: rm exited 1",
+                "Recorded reason: (absent)",
+            )
+        )
+        assert any("one of the three facts" in r for r in reasons), reasons
+
+    def test_unclean_counting_the_failed_removal_is_caught(self):
+        """Not a defect if it changes — but the sample's argument would no longer hold.
+
+        `maf_sandbox.call.unclean` counts processes a transport could not prove it stopped. The
+        acts argue that a host needs its own record because that attribute does not see a
+        removal. If core ever folds the two together, this fails and the prose gets rewritten.
+        """
+        reasons = check.assess(
+            _HEALTHY.replace("maf_sandbox.call.unclean = 0", "maf_sandbox.call.unclean = 1", 1)
+        )
+        assert any("expected ['0', '0']" in r for r in reasons), reasons
+
+    def test_the_second_act_reading_the_first_act_s_records_is_caught(self):
+        """What `for_call` selecting on the call id prevents, asserted from the output."""
+        reasons = check.assess(
+            _HEALTHY.replace("7166ba1535e8415c98cf8d203fa1eb79", "89228eec4a9f45dfa278d980f0097bcf")
+        )
+        assert any("act 6 read act 5's records" in r for r in reasons), reasons
+
+    def test_the_disposal_record_counts_are_read_in_order(self):
+        """Two for act 5 and one for act 6, and swapping them is caught."""
+        reasons = check.assess(
+            _HEALTHY.replace(
+                "Disposal records for this call: 2", "Disposal records for this call: 1"
+            )
+        )
+        assert any("expected ['2', '1']" in r for r in reasons), reasons
 
 
 class TestEmptyOutput:
