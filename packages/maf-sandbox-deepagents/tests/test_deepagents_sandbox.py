@@ -260,8 +260,9 @@ class TestExecute:
         assert response.exit_code is None
         assert "8 bytes" in response.output
         assert "1" not in response.output.replace("8 bytes", "")
-        # Nothing says the program stopped when the host stopped reading, so the sandbox goes.
-        assert backend.disposed[before:] == [KEY]
+        # Nothing says the program stopped when the host stopped reading, so the sandbox goes;
+        # `aclose` then names the same instance again, a no-op under the protocol.
+        assert backend.disposed[before:] == [KEY, KEY]
 
     def test_a_sandbox_that_cannot_bound_output_runs_nothing(
         self, caplog: pytest.LogCaptureFixture
@@ -327,6 +328,57 @@ class TestExecute:
         assert "result" in response.output
         assert detail in caplog.text
 
+    def test_a_failure_to_run_condemns_the_sandbox_too(self):
+        """The result did not come back, so the command's end is as unknown as after a timeout."""
+        adapter, backend = _adapter(InProcessSandbox(raises=RuntimeError("transport gone")))
+
+        async def scenario():
+            await adapter.aexecute("true")
+            return await adapter.aclose()
+
+        assert asyncio.run(scenario()) is True
+        # Adoption, the queued delete, and `aclose` naming the instance again (a no-op).
+        assert backend.disposed == [KEY, KEY, KEY]
+        assert backend.disposed_instances[1] == backend.disposed_instances[2]
+
+    def test_a_cancelled_acquire_releases_its_admission(self, monkeypatch: pytest.MonkeyPatch):
+        """An admission that outlived its call would block an exclusive close for good."""
+        adapter, _ = _adapter(InProcessSandbox())
+        acquire = adapter.router.acquire
+
+        async def hanging_acquire(*args, **kwargs):
+            await asyncio.sleep(10)
+            return await acquire(*args, **kwargs)
+
+        async def scenario():
+            monkeypatch.setattr(adapter.router, "acquire", hanging_acquire)
+            call = asyncio.create_task(adapter.aexecute("true", timeout=60))
+            await asyncio.sleep(0.05)
+            call.cancel()
+            await asyncio.wait({call})
+            assert call.cancelled()
+            monkeypatch.setattr(adapter.router, "acquire", acquire)
+            return await asyncio.wait_for(adapter.aclose(), 2)
+
+        assert asyncio.run(scenario()) is True
+
+    def test_a_queued_delete_that_failed_is_retried_by_close(self):
+        fake = InProcessSandbox(raises=TimeoutError())
+        adapter, backend = _adapter(fake)
+
+        async def scenario():
+            await adapter.aexecute("true")  # warm, and adopted
+            backend.dispose_failure = DisposalFailure("timeout", "still there")
+            await adapter.aexecute("sleep 999", timeout=3)  # the queued delete fails
+            failed = await adapter.aclose()  # retries, and fails the same way
+            backend.dispose_failure = None
+            return failed, await adapter.aclose()
+
+        failed, retried = asyncio.run(scenario())
+        assert failed is False
+        assert retried is True
+        assert backend.disposed_instances[-1] == fake.instance_id
+
     def test_a_timeout_disposes_the_sandbox(self):
         """A timeout says the wait ended, not that the program did; the next command starts cold."""
         adapter, backend = _adapter(InProcessSandbox(raises=TimeoutError()))
@@ -337,9 +389,11 @@ class TestExecute:
         closed = asyncio.run(adapter.aclose())
 
         assert closed is True
-        # The router's adoption of an unfamiliar instance disposes once; the timeout, once more;
-        # `aclose` found nothing left to delete.
-        assert backend.disposed == [KEY, KEY]
+        # The router's adoption of an unfamiliar instance disposes once; the queued delete,
+        # once more; `aclose` names the same instance again, a no-op under the protocol that
+        # the fake records, so a delete that failed would be retried there.
+        assert backend.disposed == [KEY, KEY, KEY]
+        assert backend.disposed_instances[1] == backend.disposed_instances[2]
         assert backend.disposed_kinds[-1] == DEEPAGENTS_KIND
 
     def test_a_parallel_healthy_call_finishes_before_the_delete_a_timeout_started(self):
@@ -370,9 +424,11 @@ class TestExecute:
 
         assert slow.exit_code is None
         assert healthy.output == "ok"
-        # The delete the timeout started landed exactly once, and only after the healthy call.
+        # Only the adoption's own delete had happened when the healthy call finished; the
+        # queued delete landed after it.
+        assert disposed_when_healthy_done == [1]
+        assert len(backend.disposed) >= 2
         assert backend.disposed[-1] == KEY
-        assert disposed_when_healthy_done == [len(backend.disposed) - 1]
 
     def test_a_sibling_adapters_call_finishes_before_the_delete_this_ones_timeout_started(self):
         """Two adapters over one router, key and kind share one instance; the lifecycle that
@@ -472,7 +528,9 @@ class TestExecute:
             return await adapter.aclose()  # joins the delete the cancellation started
 
         assert asyncio.run(scenario()) is True
-        assert backend.disposed == [KEY, KEY]
+        # Adoption, the queued delete, and `aclose` naming the instance again (a no-op).
+        assert backend.disposed == [KEY, KEY, KEY]
+        assert backend.disposed_instances[1] == backend.disposed_instances[2]
 
     def test_the_delete_after_a_timeout_runs_past_the_answer_and_the_next_call_waits_for_it(
         self, monkeypatch: pytest.MonkeyPatch
@@ -624,16 +682,24 @@ class TestFilesIn:
         (response,) = asyncio.run(adapter.aupload_files([("/etc/x", b"1")]))
         assert response.error == "permission_denied"
 
-    def test_a_shell_upload_that_raises_answers_per_file_with_the_detail_logged(
+    def test_a_shell_upload_that_raises_fails_the_batch_with_the_detail_logged(
         self, caplog: pytest.LogCaptureFixture
     ):
+        """A failure that kept the result from coming back is an unknown end, as a timeout is."""
         detail = "docker exec: subscription 0000-1111 refused"
-        adapter, _ = _adapter(InProcessSandbox(raises=RuntimeError(detail)))
+        adapter, backend = _adapter(InProcessSandbox(raises=RuntimeError(detail)))
+
+        async def scenario():
+            responses = await adapter.aupload_files([("/tmp/x", b"1")])
+            await adapter.aclose()
+            return responses
+
         with caplog.at_level(logging.ERROR, logger="maf_sandbox_deepagents"):
-            (response,) = asyncio.run(adapter.aupload_files([("/tmp/x", b"1")]))
-        assert response.error is not None and "host log" in response.error
+            (response,) = asyncio.run(scenario())
+        assert response.error is not None and "did not land" in response.error
         assert "subscription" not in response.error
         assert detail in caplog.text
+        assert backend.disposed[-1] == KEY
 
     def test_a_shell_upload_that_times_out_disposes_and_fails_the_batch(self):
         adapter, backend = _adapter(InProcessSandbox(raises=TimeoutError()))

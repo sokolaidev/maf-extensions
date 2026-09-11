@@ -398,6 +398,12 @@ class MafSandbox(BaseSandbox):
                 call = _Call(owner, admission)
                 try:
                     sandbox = await self._router.acquire(self._key, self._spec)
+                except asyncio.CancelledError:
+                    # The deadline, or the caller leaving: the admission must not outlive
+                    # the call, or an exclusive close and every queued delete wait on it.
+                    await self._leave(call, deferred=True)
+                    call = None
+                    raise
                 except Exception:
                     logger.exception("%s: the sandbox could not be acquired", self._id)
                     await self._leave(call)
@@ -412,7 +418,8 @@ class MafSandbox(BaseSandbox):
 
     def _condemn(self, call: _Call) -> None:
         """Queue the instance's delete with the router, for when the last call over this key
-        leaves; the field only names what `aclose` deletes, so it forgets a condemned one."""
+        leaves. `aclose` keeps naming the instance: a delete that failed is retried there, and
+        one that landed makes that a no-op under the protocol."""
         if call.condemned or call.sandbox is None:
             return
         call.condemned = True
@@ -424,8 +431,6 @@ class MafSandbox(BaseSandbox):
             owner=call.owner,
             rung=Cleanup.DISPOSE,
         )
-        if self._instance_id == call.sandbox.instance_id:
-            self._instance_id = None
 
     async def _leave(self, call: _Call, *, deferred: bool = False) -> None:
         """Release the admission; the last call out runs whatever delete was queued.
@@ -458,8 +463,9 @@ class MafSandbox(BaseSandbox):
         """``exec_bounded``, with the instance condemned whenever the command's end is unknown.
 
         A timeout says the wait ended, an overflow that the host stopped reading, a
-        cancellation that the caller left: none says the guest process stopped, and the
-        backends do not establish it either, so the instance goes before anything reuses it.
+        cancellation that the caller left, and any other failure that the result did not come
+        back: none says the guest process stopped, and the backends do not establish it
+        either, so the instance goes before anything reuses it.
         """
         sandbox = call.sandbox
         assert isinstance(sandbox, BoundedExec)
@@ -470,7 +476,7 @@ class MafSandbox(BaseSandbox):
                 timeout=timeout,
                 max_output_bytes=max_output_bytes,
             )
-        except (TimeoutError, SandboxExecOutputLimitExceeded, asyncio.CancelledError):
+        except BaseException:
             self._condemn(call)
             raise
 
@@ -618,10 +624,10 @@ class MafSandbox(BaseSandbox):
                 )
                 raise _BatchLost() from None
             except Exception:
-                # Per file, as Deep Agents' contract asks, and the provider's words stay in
-                # the log.
+                # The command's end is unknown here too, so the batch ends the same way; the
+                # provider's words stay in the log.
                 logger.exception("%s: shell write of %r failed", self._id, path)
-                return _UPLOAD_FAILED
+                raise _BatchLost() from None
             if result.exit_code != 0:
                 logger.info(
                     "%s: shell write of %r failed: %s", self._id, path, result.stderr.strip()
@@ -710,6 +716,9 @@ class MafSandbox(BaseSandbox):
                 "%s: probe of %r did not finish: %s", self._id, path, type(unfinished).__name__
             )
             raise _BatchLost(FileDownloadResponse(path=path, error=_DOWNLOAD_BATCH_LOST)) from None
+        except Exception:
+            logger.exception("%s: probe of %r failed", self._id, path)
+            raise _BatchLost(FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)) from None
         answer = probed.stdout.strip()
         if probed.exit_code != 0 or not answer:
             logger.warning("%s: probe of %r failed: %s", self._id, path, probed.stderr.strip())
@@ -739,6 +748,9 @@ class MafSandbox(BaseSandbox):
         except TimeoutError:
             logger.warning("%s: shell read of %r timed out", self._id, path)
             raise _BatchLost(FileDownloadResponse(path=path, error=_DOWNLOAD_BATCH_LOST)) from None
+        except Exception:
+            logger.exception("%s: shell read of %r failed", self._id, path)
+            raise _BatchLost(FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)) from None
         if read.exit_code != 0:
             logger.warning("%s: shell read of %r failed: %s", self._id, path, read.stderr.strip())
             return FileDownloadResponse(path=path, error=_DOWNLOAD_FAILED)
