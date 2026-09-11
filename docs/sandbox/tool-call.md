@@ -4,9 +4,9 @@
 
 Several problems turn out to be one: how a kind cleans up after itself, which layer knows how to delete, what happens when two calls share a sandbox, and who decides where a workload's files go. None can be answered without first answering what a tool call is, what it owns, and how long anything lives. In one sentence:
 
-> **A sandbox lives for the conversation, what a call writes should live for the call, and nothing bridges the two.**
+> **A sandbox lives for the conversation by default, what a call writes should live for the call, and nothing bridges the two.**
 
-`acquire` is get-or-create, so anything a kind writes survives the whole conversation and is readable by every later call in the same sandbox.
+`acquire` is get-or-create, so anything a kind writes survives the whole conversation and is readable by every later call in the same sandbox. That is the default scope and the one this page describes throughout; a workload that cannot accept it declares `isolation_scope=IsolationScope.CALL` and is served a sandbox created for the call and deleted when it returns, so there is no later call to read what it wrote — see the Status row below and [`backends/README.md`](backends/README.md) for which backends serve it.
 
 ## Four lifetimes
 
@@ -21,7 +21,7 @@ sandbox    one per (scope, thread_id, agent_dir, kind)   conversation
 
 The nesting is real; **the sandbox is not its root.** It sits beside the chain. A binding is built once, before any key exists, and reads scope and thread per call — so one binding reaches as many sandboxes as it serves conversations; and a workload shipping two tools builds two bindings against one sandbox. Neither is "per" the other. They get confused because they coincide in the single-tool, single-conversation case every test exercises.
 
-Four lines is the terse form; the bars below put the same four lifetimes on one time axis, where the coincidence that confuses them comes apart.
+Four lines is the terse form; the bars below put the same four lifetimes on one time axis, where the coincidence that confuses them comes apart. The bars draw the default conversation scope: at `IsolationScope.CALL` each amber call bar would carry a teal sandbox bar of its own rather than sharing one.
 
 ![Four lifetimes drawn as bars on one left-to-right time axis. The binding is the topmost bar and spans the whole axis — one per tool, built once before any key exists, holding host configuration only and reading scope and thread per call — while two teal sandbox bars with different spans sit beside it rather than under it, one per conversation, keyed by scope, thread, agent dir and kind. Inside the first conversation's span three amber call bars run in sequence over the one warm sandbox, each ending in a tick, the finally that removes the guest path that call owns; exactly one of them carries a thinner, sharp-cornered run bar — 0..1 per call, host-tools transport only — and the other two carry none. The second conversation carries a call of its own, because one binding reaches as many sandboxes as it serves conversations. Both sandbox bars outlive every call in them and end only with the conversation, where disposal is best-effort and purge asks every registered backend.](assets/four-lifetimes.svg)
 

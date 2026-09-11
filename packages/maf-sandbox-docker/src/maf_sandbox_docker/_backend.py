@@ -2052,7 +2052,17 @@ class DockerSandboxBackend:
                     isinstance(proxy_labels, dict)
                     and all(
                         cast(dict[str, object], proxy_labels).get(label) == labels.get(label)
-                        for label in (_LABEL_SCOPE, _LABEL_THREAD, _LABEL_AGENT, _LABEL_KIND)
+                        # `_LABEL_CALL` included, so this check verifies the whole identity the
+                        # name derives from rather than the four fields it used to. Both sides
+                        # are read with `.get`, so a conversation-scoped pair — neither carrying
+                        # the label — still matches on `None == None`.
+                        for label in (
+                            _LABEL_SCOPE,
+                            _LABEL_THREAD,
+                            _LABEL_AGENT,
+                            _LABEL_KIND,
+                            _LABEL_CALL,
+                        )
                     )
                     and cast(dict[str, object], proxy_labels).get(_LABEL_ROLE) == "proxy"
                 ):

@@ -67,30 +67,13 @@ The operator pauses and drains acquisitions and restarts in the selected scopes 
 
 ## One sandbox per call
 
-A spec asking for `IsolationScope.CALL` is served here rather than refused. What entitles this
-backend to declare it is that `SandboxKey.call_id` reaches all three things that decide which
-container an acquire resolves to and which one a disposal removes: the **container name**, which
-folds the call id as a `call:`-tagged part; the **registry entry**, filed under
-`(scope, thread, agent, call, kind)`; and the **label** a disposal selects on,
-`maf-sandbox.call`. Two acquires differing only in `call_id` are therefore two containers, and
-ending one call leaves the sibling call of the same assistant message running — which is the
-property `maf_sandbox.conformance.assert_call_scope_conformance` measures, and which the live
-suite here answers against a real engine.
+A spec asking for `IsolationScope.CALL` is served here rather than refused. What entitles this backend to declare it is that `SandboxKey.call_id` reaches all three things that decide which container an acquire resolves to and which one a disposal removes: the **container name**, which folds the call id as a `call:`-tagged part; the **registry entry**, filed under `(scope, thread, agent, call, kind)`; and the **label** a disposal selects on, `maf-sandbox.call`. Two acquires differing only in `call_id` are therefore two containers, and ending one call leaves the sibling call of the same assistant message running — which is the property `maf_sandbox.conformance.assert_call_scope_conformance` measures, and which the live suite here answers against a real engine.
 
-**A conversation-scoped key is byte-for-byte what it was.** The call id is appended to the name
-only when it is non-empty, and the label is written only then, so a container created by a
-release before this one is still found by name and still reached by the label selector. The tag
-is what keeps the two optional name parts apart: untagged, a sandbox with an allowlist and no
-call would share a name with a call whose id spelled that allowlist.
+**A conversation-scoped key is byte-for-byte what it was.** The call id is appended to the name only when it is non-empty, and the label is written only then, so a container created by a release before this one is still found by name and still reached by the label selector. The tag is what keeps the two optional name parts apart: untagged, a sandbox with an allowlist and no call would share a name with a call whose id spelled that allowlist.
 
-**The conversation's purge is still the backstop.** `dispose_scope` selects on scope and thread
-alone, never on the call, so a per-call container whose own delete did not land is reached when
-the conversation ends. That delete is reported and the key is not marked unclean: a call-scoped
-key has no next acquire to refuse.
+**The conversation's purge is still the backstop.** `dispose_scope` selects on scope and thread alone, never on the call, so a per-call container whose own delete did not land is reached when the conversation ends. That delete is reported and the key is not marked unclean: a call-scoped key has no next acquire to refuse.
 
-**What it costs is a cold start per call**, which is the trade the scope exists to offer rather
-than a regression — the default is still `conversation`, and a host raises the floor with
-`SandboxRouter(min_isolation_scope=...)` or a spec raises it for itself.
+**What it costs is a cold start per call**, which is the trade the scope exists to offer rather than a regression — the default is still `conversation`, and a host raises the floor with `SandboxRouter(min_isolation_scope=...)` or a spec raises it for itself.
 
 ## Status
 

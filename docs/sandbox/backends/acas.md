@@ -111,28 +111,13 @@ M6 established that named snapshots survive source deletion, can be recovered by
 
 ## One sandbox per call
 
-A spec asking for `IsolationScope.CALL` is served here rather than refused. This backend mints no
-name of its own — the service issues the sandbox id — so the whole of its call-scope identity is
-the **registry entry**, filed under `(scope, thread, agent, call, kind)`, and the **service
-label** a disposal selects on, `call`. Two acquires differing only in `call_id` miss each other
-in the registry and are two microVMs; a disposal that names a call selects that label and leaves
-the sibling call of the same assistant message running. That is the property
-`maf_sandbox.conformance.assert_call_scope_conformance` measures, and the live suite here answers
-it against the service.
+A spec asking for `IsolationScope.CALL` is served here rather than refused. This backend mints no name of its own — the service issues the sandbox id — so the whole of its call-scope identity is the **registry entry**, filed under `(scope, thread, agent, call, kind)`, and the **service label** a disposal selects on, `call`. Two acquires differing only in `call_id` miss each other in the registry and are two microVMs; a disposal that names a call selects that label and leaves the sibling call of the same assistant message running. That is the property `maf_sandbox.conformance.assert_call_scope_conformance` measures, and the live suite here answers it against the service.
 
-**A conversation-scoped key carries exactly the labels it carried before.** The `call` label is
-written only when the key names a call, so a sandbox created by an earlier release is still
-reached by a selector that does not mention it.
+**A conversation-scoped key carries exactly the labels it carried before.** The `call` label is written only when the key names a call, so a sandbox created by an earlier release is still reached by a selector that does not mention it.
 
-**The conversation's purge is still the backstop.** `dispose_scope` selects on scope and thread
-alone, never on the call, so a per-call sandbox whose own delete did not land is reached when the
-conversation ends — which matters more here than elsewhere, because what is left running is
-billable.
+**The conversation's purge is still the backstop.** `dispose_scope` selects on scope and thread alone, never on the call, so a per-call sandbox whose own delete did not land is reached when the conversation ends — which matters more here than elsewhere, because what is left running is billable.
 
-**What it costs is a cold create per call**, and on this backend that is the most expensive cold
-start of the three: a warm resume is seconds where a create is minutes. The default is still
-`conversation`; a host raises the floor with `SandboxRouter(min_isolation_scope=...)` or a spec
-raises it for itself.
+**What it costs is a cold create per call**, and on this backend that is the most expensive cold start of the three: a warm resume is seconds where a create is minutes. The default is still `conversation`; a host raises the floor with `SandboxRouter(min_isolation_scope=...)` or a spec raises it for itself.
 
 ## Status
 
