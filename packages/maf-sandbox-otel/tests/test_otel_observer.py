@@ -11,6 +11,7 @@ import asyncio
 import dataclasses
 import json
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,6 +31,9 @@ from maf_sandbox import (
     IsolationScope,
     LandedOutput,
     OutputsCollected,
+    ProcessCleanup,
+    ProcessesObserved,
+    ProcessInfo,
     SandboxAcquired,
     SandboxDisposed,
     SandboxKey,
@@ -51,6 +55,7 @@ from opentelemetry.sdk.metrics.export import (
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.sdk.trace.sampling import ALWAYS_OFF, ALWAYS_ON
 from opentelemetry.trace import StatusCode
 
 from maf_sandbox_otel import (
@@ -176,9 +181,9 @@ class Recorded:
         return total
 
 
-def build(*, sensitive: bool = False) -> Recorded:
+def build(*, sensitive: bool = False, sampled: bool = True) -> Recorded:
     spans = InMemorySpanExporter()
-    tracer_provider = TracerProvider()
+    tracer_provider = TracerProvider(sampler=ALWAYS_ON if sampled else ALWAYS_OFF)
     tracer_provider.add_span_processor(SimpleSpanProcessor(spans))
     logs = InMemoryLogRecordExporter()
     logger_provider = LoggerProvider()
@@ -196,6 +201,70 @@ def build(*, sensitive: bool = False) -> Recorded:
         metrics=metrics,
         tracer_provider=tracer_provider,
     )
+
+
+@pytest.mark.parametrize("sensitive", [False, True])
+def test_process_audit_logs_survive_trace_sampling_and_apply_redaction(sensitive):
+    recorded = build(sensitive=sensitive, sampled=False)
+    event = ProcessesObserved(
+        key=KEY,
+        instance_id="instance",
+        run_id="run",
+        snapshot_id="snapshot",
+        phase="after_cleanup",
+        timestamp=123.5,
+        seconds=0.1,
+        call="call-1",
+        processes=(
+            ProcessInfo(
+                123,
+                100,
+                100,
+                100,
+                1234,
+                "S",
+                uid=1000,
+                argv=("python", "private.py"),
+                command="python private.py",
+                cwd="/private",
+                attribution="descendant",
+            ),
+        ),
+    )
+    with recorded.tracer_provider.get_tracer("host").start_as_current_span("call") as span:
+        trace_id = span.get_span_context().trace_id
+        recorded.observer.processes_observed(event)
+        recorded.observer.process_cleanup(
+            ProcessCleanup(
+                key=KEY,
+                instance_id="instance",
+                run_id="run",
+                pid=123,
+                pgid=None,
+                outcome="refused",
+                reach="nothing",
+                seconds=0.2,
+                start_ticks=1234,
+                call="call-1",
+            )
+        )
+    assert recorded.span_names() == []
+    attrs = recorded.log_attributes("sandbox.process.observed")
+    assert attrs["process.pid"] == 123
+    assert attrs["process.user.id"] == 1000
+    assert attrs["maf_sandbox.run_id"] == "run"
+    assert attrs["maf_sandbox.process.attribution"] == "descendant"
+    if sensitive:
+        assert attrs["process.command"] == "python private.py"
+        assert attrs["process.command_args"] == ("python", "private.py")
+    else:
+        assert "process.command" not in attrs
+        assert "private" not in json.dumps(attrs)
+    assert all(r.log_record.trace_id == trace_id for r in recorded.logs.get_finished_logs())
+    assert recorded.log_attributes("sandbox.process.snapshot")["maf_sandbox.process.survivors"] == 1
+    assert recorded.log_attributes("sandbox.process.cleanup")["process.start_ticks"] == 1234
+    assert recorded.counter("maf_sandbox.process.snapshots") == 1
+    assert recorded.counter("maf_sandbox.process.cleanups") == 1
 
 
 def an_acquire(
@@ -1284,3 +1353,95 @@ class TestARecordNamesTheCallItCameFrom:
             "call-one",
             "call-two",
         }
+
+
+@pytest.mark.parametrize(
+    "outcome,signal",
+    [
+        ("sent", "SIGKILL"),
+        ("refused", "SIGKILL"),
+        ("refused", None),
+        ("unrecorded", None),
+        ("unknown", None),
+    ],
+)
+def test_cleanup_signal_attribute_requires_a_recorded_attempt(outcome, signal):
+    recorded = build(sampled=False)
+    recorded.observer.process_cleanup(
+        ProcessCleanup(
+            key=KEY,
+            instance_id="instance",
+            run_id="run",
+            pid=123,
+            pgid=100,
+            outcome=outcome,
+            reach="group" if outcome == "sent" else "nothing",
+            signal=signal,
+            seconds=0.1,
+        )
+    )
+    attributes = recorded.log_attributes("sandbox.process.cleanup")
+    assert attributes["maf_sandbox.process.outcome"] == outcome
+    if signal is None:
+        assert "maf_sandbox.process.signal" not in attributes
+    else:
+        assert attributes["maf_sandbox.process.signal"] == signal
+
+
+@pytest.mark.parametrize("sampled", [False, True])
+def test_launcher_pid_replacement_reaches_otel_after_the_replacement_disappears(sampled):
+    from maf_sandbox import _host_tools_over_exec as transport
+    from maf_sandbox._processes import ProcessTracker
+    from maf_sandbox.testing import InProcessSandbox
+
+    recorded = build(sampled=sampled)
+    original = ProcessInfo(81, 80, 80, 80, 100, "S")
+    replacement = dataclasses.replace(original, start_ticks=200)
+
+    class Guest(InProcessSandbox):
+        scans = 0
+
+        async def exec(self, command, *, working_directory, timeout):
+            assert " -I -S -c " in command, "a replacement must never be signalled"
+            self.scans += 1
+            row = dataclasses.asdict(replacement)
+            row.pop("attribution")
+            return maf_sandbox.ExecResult(
+                stdout=json.dumps(
+                    {"processes": [row] if self.scans == 1 else [], "incomplete": False}
+                ),
+                exit_code=0,
+            )
+
+    async def scenario():
+        guest = Guest()
+        run = maf_sandbox.HostToolRun(maf_sandbox.HostToolRegistry(observer=recorded.observer))
+        layout = maf_sandbox.guest_run_layout("/work/run")
+        tracker = ProcessTracker(guest, run, "python3", layout.directory)
+        tracker.pid, tracker.pgid, tracker.phase = 81, 80, "after_launch"
+        tracker.attribute((original,))
+        launcher = transport._WhatTheLauncherSaid(tracker=tracker, pid=81, pgid=80, executed=True)
+        assert await transport._stop_the_program(
+            guest, layout, until=time.monotonic() + 2, launcher=launcher
+        ) == ("absent", "nothing")
+
+    asyncio.run(scenario())
+    attributes = recorded.log_attributes("sandbox.process.cleanup")
+    assert attributes["maf_sandbox.process.outcome"] == "replaced"
+    assert attributes["maf_sandbox.process.reach"] == "nothing"
+    assert "maf_sandbox.process.signal" not in attributes
+    logs = [
+        item.log_record
+        for item in recorded.logs.get_finished_logs()
+        if item.log_record.event_name == "sandbox.process.cleanup"
+    ]
+    assert len(logs) == 1 and logs[0].severity_text == "WARN"
+    assert recorded.counter("maf_sandbox.process.cleanups") == 1
+    spans = recorded.spans.get_finished_spans()
+    if sampled:
+        cleanup = [span for span in spans if span.name == "sandbox.process.cleanup"]
+        assert len(cleanup) == 1
+        assert cleanup[0].status.status_code is StatusCode.ERROR
+        assert cleanup[0].status.description == "replaced"
+    else:
+        assert not spans

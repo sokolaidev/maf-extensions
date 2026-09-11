@@ -166,14 +166,11 @@ ISOLATION_SCOPE_RANK: Mapping[IsolationScope, int] = {
 class Cleanup(StrEnum):
     """Cleanup performed when a call ends, ordered weakest first by CLEANUP_RANK.
 
-    Reuse requires workload/backend evidence; otherwise cleanup resolves to DISPOSE.
+    Reuse requires explicit host permission; the default is DISPOSE.
     IsolationScope.CALL always disposes. See SandboxRouter.effective_cleanup."""
 
     #: Remove the call's own guest directory; the rest of the sandbox stays as the call left it.
-    #: Established only by :attr:`SandboxSpec.confined_to_guest_call_path` over a backend
-    #: declaring :data:`Capability.RECLAIM` — the kind claims every byte it writes lands under
-    #: its call path and nothing it starts outlives the call, and the backend can take that
-    #: directory.  Neither half alone establishes it.
+    #: Requires Capability.RECLAIM and a host accepting residual filesystem and process state.
     RECLAIM = "reclaim"
     #: Restore the sandbox to the state it had before any input reached it.  Established by a
     #: backend declaring :data:`Capability.SNAPSHOT` and implementing :meth:`Sandbox.reset`.
@@ -181,7 +178,7 @@ class Cleanup(StrEnum):
     RESET = "reset"
     #: Delete the sandbox; the conversation's next call creates one.  Established by
     #: construction everywhere, which is what makes the resolution below total and what makes
-    #: this the honest default for a workload that claims nothing.
+    #: this the default unless the host explicitly accepts reuse.
     DISPOSE = "dispose"
 
 
@@ -280,8 +277,8 @@ class Capability(StrEnum):
     #: A platform-attached identity scoped to the sandbox itself.
     ATTACHED_IDENTITY = "attached_identity"
     #: Backend evidence for :data:`Cleanup.RECLAIM`; forbidden in :attr:`SandboxSpec.requires`.
-    #: Reuse also requires workload confinement. Without this declaration, cleanup resolves
-    #: to RESET where SNAPSHOT is available, otherwise DISPOSE.
+    #: Reuse requires explicit host opt-in; workload confinement is advisory. Without this
+    #: declaration, cleanup resolves to RESET where permitted and available, otherwise DISPOSE.
     RECLAIM = "reclaim"
     #: Enforce literal HTTP methods on allowlist entries, within ``egress_method_tokens``.
     EGRESS_METHODS = "egress_methods"
@@ -775,10 +772,9 @@ class SandboxSpec:
     it is not the default.  Like ``egress`` it is normalised on construction: a plain string
     serves exactly as the member does, and anything else raises here.
 
-    ``confined_to_guest_call_path`` claims that every write stays under the guest call path
-    and no started process outlives the call. Together with Capability.RECLAIM, it permits
-    warm reuse. The default is False; a kind claiming confinement owes a real-backend
-    filesystem and process probe through ``maf_sandbox.conformance.assert_nothing_left_behind``.
+    ``confined_to_guest_call_path`` describes a kind that attempts to confine its changes to
+    the guest call path. It neither proves cleanliness nor authorizes reuse. The host must
+    explicitly lower its cleanup floor to permit reuse, including for unconfined kinds.
 
     ``min_cleanup`` may raise the host's floor, never lower it. None adds no constraint.
     DISPOSE is always available, so a stronger floor costs cleanup rather than refusing a spec.

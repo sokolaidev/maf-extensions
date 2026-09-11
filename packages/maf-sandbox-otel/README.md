@@ -12,6 +12,10 @@
 pip install maf-sandbox-otel
 ```
 
+## Process audit logs
+
+The registry observer receives bounded process snapshots around supervised runs and every process cleanup attempt. This package exports `sandbox.process.snapshot`, `sandbox.process.observed` and `sandbox.process.cleanup` logs even when traces are sampled out. Per-process logs include PID, user IDs, ancestry, start ticks, state, resource usage and attribution. Enable `record_sensitive_data=True` on the audit observer to include commands, argv, usernames and paths; the default redacts those fields. Collection failures and truncation are explicit. Snapshots are guest-observed evidence and cannot establish that a sandbox is completely clean.
+
 ## Wiring
 
 There are two registration points because there are two host-policy objects, and a host that wires one records only that half.

@@ -54,6 +54,7 @@ from typing import Literal, Protocol, runtime_checkable
 
 from ._containment import CONTAINED, escapes_containment
 from ._error_detail import error_detail
+from ._process_info import ProcessInfo, ProcessPhase
 from ._protocol import (
     BackendDeclarations,
     DisposalFailure,
@@ -80,6 +81,10 @@ __all__ = [
     "LandedOutput",
     "ObservesEgress",
     "OutputsCollected",
+    "ProcessesObserved",
+    "ProcessCleanup",
+    "ProcessCleanupOutcome",
+    "ProcessCleanupReach",
     "SandboxAcquired",
     "SandboxDisposed",
     "SandboxEvent",
@@ -572,6 +577,57 @@ class ToolCallEnded(SandboxEvent):
         observer.tool_call_ended(self)
 
 
+@dataclass(frozen=True)
+class ProcessesObserved(SandboxEvent):
+    """A bounded process snapshot; missing observations never establish an empty sandbox."""
+
+    key: SandboxKey | None
+    instance_id: str
+    run_id: str
+    snapshot_id: str
+    phase: ProcessPhase
+    timestamp: float
+    seconds: float
+    processes: tuple[ProcessInfo, ...]
+    incomplete: bool = False
+    unavailable: str | None = None
+    source: str = "guest_proc"
+    call: str | None = None
+
+    def deliver_to(self, observer: SandboxObserver) -> None:
+        observer.processes_observed(self)
+
+
+#: A recorded cleanup result, including skipped actions and unavailable observations.
+ProcessCleanupOutcome = Literal["sent", "absent", "refused", "replaced", "unrecorded", "unknown"]
+
+#: The target a signal reached; success does not establish that its descendants terminated.
+ProcessCleanupReach = Literal["group", "program", "nothing"]
+
+
+@dataclass(frozen=True)
+class ProcessCleanup(SandboxEvent):
+    """A cleanup decision for a retained identity, not proof of termination.
+
+    ``signal`` names a recorded attempt; ``None`` also covers unavailable signal results.
+    """
+
+    key: SandboxKey | None
+    instance_id: str
+    run_id: str
+    pid: int | None
+    pgid: int | None
+    outcome: ProcessCleanupOutcome
+    reach: ProcessCleanupReach
+    seconds: float
+    call: str | None = None
+    start_ticks: int | None = None
+    signal: str | None = None
+
+    def deliver_to(self, observer: SandboxObserver) -> None:
+        observer.process_cleanup(self)
+
+
 class SandboxObserver:
     """A host's record of what a sandbox did.  Subclass it and override what you want.
 
@@ -617,6 +673,12 @@ class SandboxObserver:
     def tool_call_ended(self, event: ToolCallEnded) -> None:
         """A sandboxed tool call returned, and its reclaim finished."""
 
+    def processes_observed(self, event: ProcessesObserved) -> None:
+        """Processes seen at one boundary of a supervised run."""
+
+    def process_cleanup(self, event: ProcessCleanup) -> None:
+        """A supervised run attempted process cleanup."""
+
 
 #: Every event method on :class:`SandboxObserver`, written down once so the registration check
 #: and the exhaustiveness test read the same list.
@@ -629,6 +691,8 @@ EVENT_METHODS: tuple[str, ...] = (
     "store_file_read",
     "outputs_collected",
     "tool_call_ended",
+    "processes_observed",
+    "process_cleanup",
 )
 
 

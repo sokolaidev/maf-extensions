@@ -45,6 +45,8 @@ from maf_sandbox import (
     OutputDisposition,
     OutputsCollected,
     OutputSink,
+    ProcessCleanup,
+    ProcessesObserved,
     SandboxAcquired,
     SandboxBackendNotPermitted,
     SandboxCapabilityNotSupported,
@@ -122,6 +124,12 @@ class _Recorder(SandboxObserver):
     def tool_call_ended(self, event: ToolCallEnded) -> None:
         self._seen(event)
 
+    def processes_observed(self, event: ProcessesObserved) -> None:
+        self._seen(event)
+
+    def process_cleanup(self, event: ProcessCleanup) -> None:
+        self._seen(event)
+
     def only(self, kind: type[SandboxEvent]) -> list:
         return [event for event in self.events if isinstance(event, kind)]
 
@@ -191,6 +199,26 @@ class TestTheEventVocabulary:
 def _every_event() -> list[SandboxEvent]:
     """One of each, so the routing and containment tests cannot miss a class."""
     return [
+        ProcessesObserved(
+            key=_KEY,
+            instance_id="instance",
+            run_id="run",
+            snapshot_id="snapshot",
+            phase="before_launch",
+            timestamp=1,
+            seconds=0.1,
+            processes=(),
+        ),
+        ProcessCleanup(
+            key=_KEY,
+            instance_id="instance",
+            run_id="run",
+            pid=100,
+            pgid=99,
+            outcome="sent",
+            reach="group",
+            seconds=0.1,
+        ),
         SandboxAcquired(
             key=_KEY,
             spec=_SPEC,

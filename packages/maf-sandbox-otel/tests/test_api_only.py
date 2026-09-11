@@ -24,6 +24,8 @@ from maf_sandbox import (
     IsolationScope,
     LandedOutput,
     OutputsCollected,
+    ProcessCleanup,
+    ProcessesObserved,
     SandboxAcquired,
     SandboxDisposed,
     SandboxKey,
@@ -73,6 +75,26 @@ def every_event() -> list[object]:
     `TestTheObserverCoversEveryEvent` is what does that.
     """
     return [
+        ProcessesObserved(
+            key=KEY,
+            instance_id="instance",
+            run_id="run",
+            snapshot_id="snapshot",
+            phase="before_launch",
+            timestamp=1,
+            seconds=0.1,
+            processes=(),
+        ),
+        ProcessCleanup(
+            key=KEY,
+            instance_id="instance",
+            run_id="run",
+            pid=100,
+            pgid=99,
+            outcome="sent",
+            reach="group",
+            seconds=0.1,
+        ),
         SandboxAcquired(
             key=KEY,
             spec=SandboxSpec(kind="execute_code", egress=Egress.CLOSED),

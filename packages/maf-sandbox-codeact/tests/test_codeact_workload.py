@@ -249,6 +249,8 @@ class _CallingSandbox(_ScriptedSandbox):
         self._outstanding: GuestRunLayout | None = None
 
     async def exec(self, command, *, working_directory, timeout):
+        if " -I -S -c " in str(command):
+            return ExecResult(stdout='{"processes": [], "incomplete": false}', exit_code=0)
         working_directory = self._working_directory(working_directory)
         result = await super().exec(command, working_directory=working_directory, timeout=timeout)
         if str(command).startswith("kill") or _is_core_removal(command):
@@ -261,7 +263,7 @@ class _CallingSandbox(_ScriptedSandbox):
         self.contents[f"{layout.calls}/0001.request.json"] = json.dumps(
             {"id": "0001", "name": name, "arguments": arguments}
         ).encode()
-        return result
+        return dataclasses.replace(result, stdout="maf-host-tools: process-v1 4242 4200\n")
 
     async def stat_file(self, path, *, working_directory):
         self._take_the_answer()
@@ -296,6 +298,8 @@ class _FinishingSandbox(_ProducingSandbox):
         return guest_run_layout(working_directory, program=_PROGRAM_FILENAME).work
 
     async def exec(self, command, *, working_directory, timeout):
+        if " -I -S -c " in str(command):
+            return ExecResult(stdout='{"processes": [], "incomplete": false}', exit_code=0)
         working_directory = self._working_directory(working_directory)
         result = await super().exec(command, working_directory=working_directory, timeout=timeout)
         if str(command).startswith("kill") or _is_core_removal(command):
@@ -304,7 +308,7 @@ class _FinishingSandbox(_ProducingSandbox):
         layout = guest_run_layout(working_directory, program=_PROGRAM_FILENAME)
         self.contents[layout.output] = b"ran"
         self.contents[layout.exit_code] = b"0"
-        return result
+        return dataclasses.replace(result, stdout="maf-host-tools: process-v1 4242 4200\n")
 
 
 class _RecordingSink:
@@ -651,10 +655,17 @@ class TestCodeactSandboxSpec:
         [
             (False, Cleanup.RECLAIM, Cleanup.DISPOSE),
             (True, Cleanup.RECLAIM, Cleanup.RESET),
+            (True, Cleanup.RESET, Cleanup.RESET),
             (True, Cleanup.DISPOSE, Cleanup.DISPOSE),
         ],
     )
-    def test_each_call_cleans_above_reclaim(self, snapshot, floor, expected):
+    def test_each_call_respects_the_hosts_explicit_cleanup_policy(self, snapshot, floor, expected):
+        if (
+            floor is Cleanup.RECLAIM
+            and inspect.signature(SandboxRouter).parameters["min_cleanup"].default
+            is Cleanup.DISPOSE
+        ):
+            expected = Cleanup.RECLAIM
         cleanups_at_exec: list[tuple[int, int]] = []
 
         class _CleanupRecordingSandbox(_ScriptedSandbox):
@@ -678,9 +689,12 @@ class TestCodeactSandboxSpec:
             _run(tool, "print('hi')")
             assert len(cleanups_at_exec) == count
             resets, disposals = cleanups_at_exec[-1]
-            assert sandbox.reclaims == []
+            assert len(sandbox.reclaims) == (count if expected is Cleanup.RECLAIM else 0)
             assert backend.specs[-1].confined_to_guest_call_path is False
-            if expected is Cleanup.RESET:
+            if expected is Cleanup.RECLAIM:
+                assert len(backend.disposed) == disposals
+                assert len(sandbox.resets) == resets
+            elif expected is Cleanup.RESET:
                 assert len(sandbox.resets) == resets + 1
                 assert len(backend.disposed) == disposals
             else:
@@ -3090,12 +3104,12 @@ class _StallingSandbox(_ScriptedSandbox):
     async def exec(self, command, *, working_directory, timeout):
         working_directory = self._working_directory(working_directory)
         result = await super().exec(command, working_directory=working_directory, timeout=timeout)
-        if str(command).startswith("kill") or _is_core_removal(command):
+        if not str(command).startswith("sh "):
             # Neither starts a program, so neither is a run this fake should record.
             return result
         layout = guest_run_layout(working_directory, program=_PROGRAM_FILENAME)
         self.contents[layout.output] = self.printed
-        return result
+        return ExecResult(stdout="maf-host-tools: process-v1 4242 4200\n", exit_code=0)
 
 
 class _SlowToTakeTheLauncherSandbox(_ScriptedSandbox):

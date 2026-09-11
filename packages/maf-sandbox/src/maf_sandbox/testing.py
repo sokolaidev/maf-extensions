@@ -45,6 +45,7 @@ from ._protocol import (
     ScopePurge,
     SourceIntegrity,
 )
+from .bounded_exec import SandboxExecOutputLimitExceeded
 from .conformance import SandboxFingerprint
 from .paths import (
     confine_resolve_guest_delete_path,
@@ -332,6 +333,25 @@ class InProcessSandbox:
             if marker in joined:
                 return ExecResult(stdout=output)
         return ExecResult(stdout=self._default_stdout)
+
+    async def exec_bounded(
+        self,
+        command: str | Sequence[str],
+        *,
+        working_directory: str,
+        timeout: float,
+        max_output_bytes: int,
+    ) -> ExecResult:
+        """Apply the output budget to the fake's already resident, scripted result."""
+        if type(max_output_bytes) is not int or max_output_bytes <= 0:
+            raise ValueError("max_output_bytes must be a positive integer")
+        result = await self.exec(command, working_directory=working_directory, timeout=timeout)
+        if (
+            len(result.stdout.encode("utf-8")) + len(result.stderr.encode("utf-8"))
+            > max_output_bytes
+        ):
+            raise SandboxExecOutputLimitExceeded("execution output exceeded its byte budget")
+        return result
 
     async def run_code(self, code: str, *, timeout: float) -> ExecResult:
         """Record the program and return scripted output, on the same rules as :meth:`exec`.

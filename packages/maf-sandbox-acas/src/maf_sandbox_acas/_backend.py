@@ -12,6 +12,7 @@ that configures nothing already permits this backend.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import posixpath
 import shlex
@@ -39,6 +40,7 @@ from maf_sandbox import (
     SandboxCapabilityNotSupported,
     SandboxEgressNotEnforced,
     SandboxEntry,
+    SandboxExecOutputLimitExceeded,
     SandboxKey,
     SandboxLimits,
     SandboxOutputError,
@@ -517,6 +519,66 @@ class _AcasSandbox:
             stderr=getattr(result, "stderr", "") or "",
             exit_code=getattr(result, "exit_code", 0) or 0,
         )
+
+    async def exec_bounded(
+        self,
+        command: str | Sequence[str],
+        *,
+        working_directory: str,
+        timeout: float,
+        max_output_bytes: int,
+    ) -> ExecResult:
+        """Bound the encoded execution response before parsing stdout or stderr."""
+        from azure.core.exceptions import HttpResponseError
+        from azure.core.rest import AsyncHttpResponse, HttpRequest
+
+        if type(max_output_bytes) is not int or max_output_bytes <= 0:
+            raise ValueError("max_output_bytes must be a positive integer")
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
+        sc = self._sc
+        request = HttpRequest(
+            "POST",
+            f"{sc._endpoint}{sc._sbx_path}/executeShellCommand",
+            params={_QUERY_API_VERSION: sc._api_version},
+            headers={"Accept-Encoding": "identity"},
+            json={
+                "command": command if isinstance(command, str) else shlex.join(command),
+                "workingDirectory": working_directory,
+            },
+        )
+        async with asyncio.timeout(timeout):
+            # SDK exec and its error helper expect a fully buffered response.
+            answer = await sc._pipeline.run(request, stream=True, auto_decompress=False)
+            response = cast(AsyncHttpResponse, answer.http_response)
+            try:
+                if response.headers.get("Content-Encoding", "identity").lower() != "identity":
+                    raise ValueError("bounded execution requires an uncompressed response")
+                body = bytearray()
+                async for chunk in response.iter_raw():
+                    if len(body) + len(chunk) > max_output_bytes:
+                        raise SandboxExecOutputLimitExceeded(
+                            "execution response exceeded its byte budget"
+                        )
+                    body.extend(chunk)
+                if response.status_code >= 400:
+                    raise HttpResponseError(
+                        message=f"bounded execution failed with HTTP {response.status_code}"
+                    )
+                decoded: Any = json.loads(body)
+                if not isinstance(decoded, dict):
+                    raise ValueError("invalid execution response")
+                payload = cast(dict[str, Any], decoded)
+                stdout, stderr = payload.get("stdout") or "", payload.get("stderr") or ""
+                exit_code = payload.get("exitCode") or 0
+                if (
+                    not isinstance(stdout, str)
+                    or not isinstance(stderr, str)
+                    or type(exit_code) is not int
+                ):
+                    raise ValueError("invalid execution response")
+                return ExecResult(stdout=stdout, stderr=stderr, exit_code=exit_code)
+            finally:
+                await response.close()
 
     async def probe_guest_removal(self) -> bool | None:
         """Check guest removal compatibility; this cannot establish workload authority."""

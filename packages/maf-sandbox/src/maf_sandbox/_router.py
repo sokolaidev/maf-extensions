@@ -659,9 +659,9 @@ class SandboxRouter:
             already did. Raised to :data:`~maf_sandbox.IsolationScope.CALL` it gives every
             workload this router serves a sandbox of its own per call, whatever the workload's
             own spec asks for, and refuses a backend that cannot create one.
-        min_cleanup: Weakest cleanup this host accepts. Defaults to :data:`Cleanup.RECLAIM`,
-            which permits reuse only when the workload and backend establish it. Without a
-            confinement claim or snapshot capability, cleanup still resolves to disposal.
+        min_cleanup: Weakest cleanup this host accepts. Defaults to :data:`Cleanup.DISPOSE`.
+            Choosing RECLAIM explicitly accepts residual state even for unconfined kinds;
+            directory reclamation and supervised process cleanup remain best-effort.
             A spec may raise this floor, never lower it.
         selected: Name of the backend to use. ``None`` picks the first registered one, which
             with a single backend is the whole selection story and stays correct when more
@@ -730,7 +730,7 @@ class SandboxRouter:
         *,
         min_isolation: Isolation = Isolation.MICROVM,
         min_isolation_scope: IsolationScope = IsolationScope.CONVERSATION,
-        min_cleanup: Cleanup = Cleanup.RECLAIM,
+        min_cleanup: Cleanup = Cleanup.DISPOSE,
         selected: str | None = None,
         selection: Selection = Selection.FIXED,
         denied_capabilities: Iterable[Capability] = (),
@@ -770,11 +770,7 @@ class SandboxRouter:
         ] = weakref.WeakKeyDictionary()
         self._min_isolation = Isolation(str(min_isolation))
         self._min_isolation_scope = IsolationScope(str(min_isolation_scope))
-        # The host's floor, and the ladder's weakest rung by default — which is *not* a default
-        # of "reclaim". What a call actually ends on is the weakest rung the spec and the
-        # backend establish at or above this, and a spec that claims nothing establishes only
-        # DISPOSE, so silence here still leaves nothing behind. Raising it is how a host
-        # overrides a kind's claim without arguing with the kind.
+        # Only the host may accept reuse; a spec can require stronger cleanup, never weaker.
         self._min_cleanup = Cleanup(str(min_cleanup))
         # Admission closes before cleanup can remove a running sibling's sandbox.
         self._slots = ExclusiveSlots()
@@ -1049,9 +1045,9 @@ class SandboxRouter:
         return max(self._min_cleanup, spec.min_cleanup, key=CLEANUP_RANK.__getitem__)
 
     def effective_cleanup(self, spec: SandboxSpec) -> Cleanup:
-        """Resolve cleanup from the serving backend, workload evidence and host/spec floors.
+        """Resolve cleanup from backend capabilities and host/spec floors.
 
-        CALL scope always disposes. Other scopes choose the cheapest established rung meeting
+        CALL scope always disposes. Other scopes choose the weakest available rung meeting
         both floors; DISPOSE is always available. An unservable spec raises the same refusal as
         ensure_can_serve."""
         backend = self._refuse_unless_backend_can_serve(spec)

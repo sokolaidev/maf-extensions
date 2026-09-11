@@ -112,6 +112,10 @@ from ._observer import (
     LandedOutput,
     ObservesEgress,
     OutputsCollected,
+    ProcessCleanup,
+    ProcessCleanupOutcome,
+    ProcessCleanupReach,
+    ProcessesObserved,
     SandboxAcquired,
     SandboxDisposed,
     SandboxEvent,
@@ -148,6 +152,7 @@ from ._outputs import (
     spec_lands_artifacts,
     validate_artifact_name,
 )
+from ._process_info import ProcessAttribution, ProcessInfo, ProcessPhase
 from ._protocol import (
     CLEANUP_RANK,
     DEFAULT_BACKEND_DECLARATIONS,
@@ -214,8 +219,18 @@ from ._router import (
     Selection,
 )
 from ._shim import host_tool_shim
+from .bounded_exec import BoundedExec, SandboxExecOutputLimitExceeded
 
 __all__ = [
+    "BoundedExec",
+    "SandboxExecOutputLimitExceeded",
+    "ProcessAttribution",
+    "ProcessCleanup",
+    "ProcessCleanupOutcome",
+    "ProcessCleanupReach",
+    "ProcessInfo",
+    "ProcessPhase",
+    "ProcessesObserved",
     "EgressDecision",
     "EgressDecisionCode",
     "EgressObserved",

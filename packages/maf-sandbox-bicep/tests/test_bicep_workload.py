@@ -24,7 +24,7 @@ from types import MappingProxyType
 from typing import Any
 
 import pytest
-from maf_sandbox import CallerContext, Egress, SandboxRouter
+from maf_sandbox import CallerContext, Cleanup, Egress, SandboxRouter
 from maf_sandbox.testing import InMemoryStore, InProcessSandbox, InProcessSandboxBackend
 
 import maf_sandbox_bicep._tool as _tool_module
@@ -161,7 +161,7 @@ def _tool(
         # Below the default floor: this suite exercises the fake backend, not the floor. Read
         # off the backend rather than named, so renaming the ladder's bottom rung is not a
         # change to this package.
-        SandboxRouter([backend], min_isolation=backend.isolation),
+        SandboxRouter([backend], min_isolation=backend.isolation, min_cleanup=Cleanup.RECLAIM),
         store,
         "devops-engineer",
         _context(store, thread_id=thread_id),
@@ -1548,7 +1548,9 @@ class TestBicepSandboxSpec:
         )
         spec = bicep_sandbox_spec(egress=egress)
         assert spec.confined_to_guest_call_path is True
-        router = SandboxRouter([backend], min_isolation=backend.isolation)
+        router = SandboxRouter(
+            [backend], min_isolation=backend.isolation, min_cleanup=Cleanup.RECLAIM
+        )
         assert router.effective_cleanup(spec) is Cleanup.RECLAIM
         strict = SandboxRouter(
             [backend], min_isolation=backend.isolation, min_cleanup=Cleanup.DISPOSE

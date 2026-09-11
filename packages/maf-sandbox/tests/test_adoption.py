@@ -46,6 +46,7 @@ def router(subject, *, keep=False):
     return SandboxRouter(
         [subject],
         min_isolation=Isolation.NONE,
+        min_cleanup=Cleanup.RECLAIM,
         reclaim=ReclaimConfig(
             timeout=0.02,
             failed_reclaim_policy=FailedReclaimPolicy.KEEP if keep else FailedReclaimPolicy.DISPOSE,
@@ -292,7 +293,7 @@ def test_new_wrappers_share_engine_identity_and_replacements_are_adopted(monkeyp
 def test_successful_end_of_call_reset_is_already_known():
     subject = backend(snapshot=True)
     current = router(subject)
-    spec = dataclasses.replace(SPEC, confined_to_guest_call_path=False)
+    spec = dataclasses.replace(SPEC, confined_to_guest_call_path=False, min_cleanup=Cleanup.RESET)
 
     async def scenario():
         admission = await current.enter_call(KEY, spec, owner="call")

@@ -72,6 +72,24 @@ def _tool(router, spec, use):
     return getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
 
 
+def test_default_disposes_even_a_confined_kind_after_every_call():
+    backend = InProcessSandboxBackend(sandbox_per_key=True, declarations=_DECLARATIONS)
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+    seen = []
+
+    async def use(sandbox, guest_path, target):
+        seen.append(sandbox)
+
+    async def scenario():
+        tool = _tool(router, _SPEC, use)
+        await tool(target="first")
+        await tool(target="second")
+        assert seen[0] is not seen[1]
+        assert backend.disposed == [_KEY, _KEY]
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize(
     "spec,rung",
     [
@@ -83,7 +101,7 @@ def _tool(router, spec, use):
 )
 def test_rungs_remove_call_state_and_preserve_a_warm_sibling(spec, rung):
     backend = InProcessSandboxBackend(sandbox_per_key=True, declarations=_DECLARATIONS)
-    router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE, min_cleanup=Cleanup.RECLAIM)
     sibling_spec = dataclasses.replace(_SPEC, kind="sibling")
     served = []
 
@@ -150,7 +168,7 @@ def test_an_unclaimed_spec_disposes_by_default_and_next_call_gets_a_fresh_sandbo
 @pytest.mark.parametrize("expire", [False, True])
 def test_concurrent_bodies_drain_before_cleanup_and_block_a_third(rung, expire, monkeypatch):
     backend = InProcessSandboxBackend(sandbox_per_key=True, declarations=_DECLARATIONS)
-    router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE, min_cleanup=Cleanup.RECLAIM)
     spec = dataclasses.replace(_SPEC, min_cleanup=rung)
     first_entered, second_entered = asyncio.Event(), asyncio.Event()
     release_first = asyncio.Event()
@@ -232,6 +250,7 @@ def test_failed_reset_escalates_and_failed_disposal_obeys_host_policy(
     )
     router = SandboxRouter(
         [backend],
+        min_cleanup=Cleanup.RECLAIM,
         min_isolation=Isolation.NONE,
         reclaim=ReclaimConfig(failed_reclaim_policy=policy),
     )
@@ -288,6 +307,7 @@ def test_failed_reclaim_waits_for_running_sibling_and_reports_after_cleanup(poli
 
     router = SandboxRouter(
         [backend],
+        min_cleanup=Cleanup.RECLAIM,
         min_isolation=Isolation.NONE,
         reclaim=ReclaimConfig(failed_reclaim_policy=policy, on_failure=report),
     )

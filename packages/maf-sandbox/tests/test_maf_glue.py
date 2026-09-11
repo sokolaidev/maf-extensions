@@ -174,6 +174,7 @@ _SINK = OutputSink(deliver=_deliver)
 
 def _router(*backends, warm=True, **kwargs):
     """Use an already-served sandbox for call-body and end-of-call cleanup tests."""
+    kwargs.setdefault("min_cleanup", Cleanup.RECLAIM)
     router = SandboxRouter(list(backends), min_isolation=Isolation.NONE, **kwargs)
     if warm:
         for backend in backends:
@@ -2659,7 +2660,9 @@ class _PerKeyBackend(InProcessSandboxBackend):
 class TestTheStrongRungsHonourTheCallsOwnBound:
     """RESET and DISPOSE use the call's cleanup bound, including cancellation grace."""
 
-    _SPEC = dataclasses.replace(_SPEC, confined_to_guest_call_path=False)
+    _SPEC = dataclasses.replace(
+        _SPEC, confined_to_guest_call_path=False, min_cleanup=Cleanup.DISPOSE
+    )
 
     def test_an_explicit_reclaim_timeout_bounds_the_disposal(self):
         class _Slow(InProcessSandboxBackend):
@@ -2692,7 +2695,9 @@ class TestAHeldSandboxIsGivenBackHoweverTheCleanupEnds:
     for an owner that has already gone, and marking the key unclean does not release it."""
 
     _OTHER = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-9")
-    _SPEC = dataclasses.replace(_SPEC, confined_to_guest_call_path=False)
+    _SPEC = dataclasses.replace(
+        _SPEC, confined_to_guest_call_path=False, min_cleanup=Cleanup.DISPOSE
+    )
 
     def test_cancelled_disposal_retries_only_unfinished_instances(self):
         first, second = InProcessSandbox(), InProcessSandbox()
@@ -3402,7 +3407,9 @@ class TestCleanupAdmission:
 
         backend = _BlockedAcquire(sandbox_per_key=True)
         router = _router(backend)
-        spec = dataclasses.replace(_SPEC, confined_to_guest_call_path=False)
+        spec = dataclasses.replace(
+            _SPEC, confined_to_guest_call_path=False, min_cleanup=Cleanup.DISPOSE
+        )
 
         def build(session):
             async def widget_run(target: str) -> str:
