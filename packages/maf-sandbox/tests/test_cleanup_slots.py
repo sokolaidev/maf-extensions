@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -378,3 +379,89 @@ class TestWaiterLoopShutdown:
                 slots._wake((_KEY, _KIND))
         finally:
             loop.close()
+
+
+class TestTheBoundIsPerCallAhead:
+    """A waiter's bound restarts as each call ahead leaves, so a finite queue is waited out
+    while a stuck holder still expires it."""
+
+    def test_the_last_of_three_gets_in_although_the_queue_outlasts_its_bound(self):
+        slots = ExclusiveSlots()
+        hold, bound = 0.2, 0.3
+
+        async def call(owner: str, started: list[str]) -> None:
+            await slots.take(_KEY, _KIND, owner=owner, exclusive=True, timeout=bound)
+            started.append(owner)
+            await asyncio.sleep(hold)
+            slots.release(_KEY, _KIND, owner=owner)
+
+        async def scenario() -> list[str]:
+            started: list[str] = []
+            calls = []
+            for owner in ("call-1", "call-2", "call-3"):
+                calls.append(asyncio.create_task(call(owner, started)))
+                await asyncio.sleep(0.02)
+            await asyncio.gather(*calls)
+            return started
+
+        # The third waits about two holds, longer than its bound; each hold alone is shorter.
+        assert _run(scenario()) == ["call-1", "call-2", "call-3"]
+
+    def test_a_waiter_giving_up_does_not_restart_the_bound_of_one_still_waiting(self):
+        slots = ExclusiveSlots()
+
+        async def scenario() -> float:
+            holding = asyncio.Event()
+            let_go = asyncio.Event()
+
+            async def holder() -> None:
+                await slots.take(_KEY, _KIND, owner=OWNER, exclusive=True, timeout=5)
+                holding.set()
+                await let_go.wait()
+                slots.release(_KEY, _KIND, owner=OWNER)
+
+            first = asyncio.create_task(holder())
+            await holding.wait()
+
+            async def patient() -> float:
+                started = asyncio.get_running_loop().time()
+                with pytest.raises(TimeoutError):
+                    await slots.take(_KEY, _KIND, owner=RIVAL, exclusive=True, timeout=0.25)
+                return asyncio.get_running_loop().time() - started
+
+            waiting = asyncio.create_task(patient())
+            await asyncio.sleep(0.02)
+            with pytest.raises(TimeoutError):
+                await slots.take(_KEY, _KIND, owner="call-3", exclusive=True, timeout=0.2)
+            elapsed = await waiting
+            let_go.set()
+            await first
+            return elapsed
+
+        # Woken by the other waiter's exit and still refused at its own bound, not a fresh one.
+        assert _run(scenario()) < 0.4
+
+    def test_a_waiter_on_another_loop_has_its_bound_renewed_too(self):
+        """The renewal is plain data under the guard, so it must reach a waiter whose future
+        lives on a loop the releases never run on."""
+        slots = ExclusiveSlots()
+        bound, gap = 0.3, 0.2
+        queued = threading.Event()
+        _run(slots.take(_KEY, _KIND, owner=OWNER, exclusive=False, timeout=1))
+        _run(slots.take(_KEY, _KIND, owner=RIVAL, exclusive=False, timeout=1))
+
+        async def other_loop() -> None:
+            queued.set()
+            await slots.take(_KEY, _KIND, owner="call-3", exclusive=True, timeout=bound)
+            slots.release(_KEY, _KIND, owner="call-3")
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            waiting = pool.submit(lambda: _run(other_loop()))
+            assert queued.wait(1)
+            time.sleep(gap)
+            slots.release(_KEY, _KIND, owner=OWNER)
+            time.sleep(gap)
+            slots.release(_KEY, _KIND, owner=RIVAL)
+            # Two gaps, each inside the bound and together past it: only renewal admits it.
+            waiting.result(timeout=2)
+        assert not slots._slots

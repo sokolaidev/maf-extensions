@@ -1825,9 +1825,16 @@ class SandboxRouter:
 
         Ordinary bodies overlap until cleanup starts draining the entry. Retain the admission
         for acquire and cleanup, then await finish_call or release_call. Explicit exclusive use
-        excludes every sibling; waiting is bounded by timeout."""
+        excludes every sibling, and a spec asking ``exclusive_admission`` is held that way
+        whatever ``exclusive`` says. ``timeout`` bounds the wait per call ahead."""
         backend = self._refuse_unless_backend_can_serve(spec)
-        await self._slots.take(key, spec.kind, owner=owner, exclusive=exclusive, timeout=timeout)
+        await self._slots.take(
+            key,
+            spec.kind,
+            owner=owner,
+            exclusive=exclusive or spec.exclusive_admission,
+            timeout=timeout,
+        )
         try:
             self._refuse_host_denials(spec)
             self._refuse_unless_this_backend_can_serve(backend, spec)
@@ -1866,6 +1873,14 @@ class SandboxRouter:
             ),
         )
 
+    def renew_call(self, key: SandboxKey, kind: str) -> None:
+        """Restart the admission wait of everyone queued on this entry.
+
+        For a cleanup step a call runs under its own bound while still holding the entry, so a
+        waiter budgeted for one step is not charged for the steps before it.
+        """
+        self._slots.renew(key, kind)
+
     def drain_call(self, key: SandboxKey, kind: str, *, owner: str) -> None:
         """Block entrants while a finished call waits for its last acquire to return."""
         self._slots.drain(key, kind, owner=owner)
@@ -1883,6 +1898,8 @@ class SandboxRouter:
                     key, one.spec, one.backend, one.rung, one.sandbox, one.unclean, one.timeout
                 )
                 self._slots.complete(one, failure)
+                # Each target is bounded on its own, so each one that lands renews the wait.
+                self._slots.renew(key, kind)
         except (asyncio.CancelledError, GeneratorExit):
             logger.warning("sandbox router: cleanup was cancelled during the disposal or reset")
             raise

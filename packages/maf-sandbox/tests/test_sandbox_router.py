@@ -2699,8 +2699,18 @@ class TestSpecDefaults:
             "egress",
             "requires_os_family",
             "host_tools",
+            "isolation_scope",
+            "confined_to_guest_call_path",
+            "min_cleanup",
+            "exclusive_admission",
         ]
         assert names[: len(settled)] == settled
+
+    def test_a_spec_shares_its_sandbox_between_calls_unless_it_asks_not_to(self):
+        """The ask is the kind's and off by default, so a spec written before it existed keeps
+        the overlap the gate permits."""
+        assert SandboxSpec(kind="test").exclusive_admission is False
+        assert SandboxSpec(kind="test", exclusive_admission=True).exclusive_admission is True
 
     @pytest.mark.parametrize("direction", ["files_in", "files_out"])
     def test_both_transfer_directions_ask_for_the_shared_default(self, direction: str):

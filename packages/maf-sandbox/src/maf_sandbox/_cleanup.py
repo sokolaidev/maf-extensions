@@ -26,7 +26,7 @@ __all__ = [
     "resolve_cleanup",
 ]
 
-#: Bounds waiting for an incompatible call, including its body and cleanup.
+#: Bounds waiting for each incompatible call ahead, its body and cleanup together.
 QUEUED_CALL_TIMEOUT = 120.0
 
 
@@ -83,6 +83,8 @@ class _Slot:
     exclusive: str | None = None
     #: One per waiting call, each on the loop that registered it.
     waiters: list[_Waiter] = field(default_factory=list[_Waiter])
+    #: Advances when a holder leaves or admission reopens, restarting each waiter's bound.
+    generation: int = 0
 
 
 class ExclusiveSlots:
@@ -100,14 +102,22 @@ class ExclusiveSlots:
     async def take(
         self, key: SandboxKey, kind: str, *, owner: str, exclusive: bool, timeout: float
     ) -> None:
-        """Hold the sandbox; raise TimeoutError if incompatible owners outlast the bound."""
+        """Hold the sandbox; raise TimeoutError when a call ahead outlasts ``timeout``.
+
+        The bound restarts whenever a holder leaves or admission reopens, so it is per call
+        ahead rather than per wait: a queue of finite calls is waited out, a stuck one is not.
+        """
         at = (key, kind)
         loop = asyncio.get_running_loop()
         deadline = time.monotonic() + timeout
+        seen: int | None = None
         queued: _Waiter | None = None
         while True:
             with self._guard:
                 slot = self._slots.setdefault(at, _Slot())
+                if seen is not None and seen != slot.generation:
+                    deadline = time.monotonic() + timeout
+                seen = slot.generation
                 slot.waiters = [one for one in slot.waiters if not one.loop.is_closed()]
                 ahead = slot.waiters[: slot.waiters.index(queued)] if queued else slot.waiters
                 free = (
@@ -197,6 +207,7 @@ class ExclusiveSlots:
                 slot.shared.discard(owner)
             else:
                 return []
+            slot.generation += 1
             if not slot.shared and slot.exclusive is None and slot.pending:
                 slot.state = "cleaning"
                 return list(slot.pending.values())
@@ -230,6 +241,20 @@ class ExclusiveSlots:
         for waiter in waiters:
             _notify(waiter)
 
+    def renew(self, key: SandboxKey, kind: str) -> None:
+        """Restart every waiter's bound now that one cleanup target has landed.
+
+        Targets are cleaned one after another, so a waiter holding a budget for a single
+        target would refuse a caller whose predecessor is still inside a later target's bounds.
+        """
+        at = (key, kind)
+        with self._guard:
+            slot = self._slots.get(at)
+            if slot is None:
+                return
+            slot.generation += 1
+        self._wake(at)
+
     def cleaned(self, key: SandboxKey, kind: str) -> None:
         """Reopen admission only after every claimed record has reached its completion path."""
         at = (key, kind)
@@ -239,6 +264,7 @@ class ExclusiveSlots:
                 raise RuntimeError("unfinished cleanup cannot reopen admission")
             slot.pending.clear()
             slot.state = "serving"
+            slot.generation += 1
             self._drop_if_idle(at, slot)
         self._wake(at)
 

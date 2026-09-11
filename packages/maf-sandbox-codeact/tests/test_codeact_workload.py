@@ -650,6 +650,77 @@ class TestCodeactSandboxSpec:
         )
         assert spec.confined_to_guest_call_path is False
 
+    @pytest.mark.parametrize("outputs", list(CodeactOutputs))
+    @pytest.mark.parametrize("with_host_tools", [False, True])
+    def test_calls_of_this_kind_run_one_at_a_time(self, outputs, with_host_tools):
+        registry = HostToolRegistry()
+        registry.register(_exchange_rate)
+        spec = codeact_sandbox_spec(
+            outputs=outputs, host_tools=registry if with_host_tools else None
+        )
+        assert spec.exclusive_admission is True
+
+    def test_two_calls_in_one_message_run_one_at_a_time(self):
+        first_running, release_first = asyncio.Event(), asyncio.Event()
+        order: list[str] = []
+
+        class _Blocking(_ScriptedSandbox):
+            async def exec(self, command, *, working_directory, timeout):
+                program = not _is_core_removal(command)
+                if program:
+                    order.append("start")
+                    if len(order) == 1:
+                        first_running.set()
+                        await release_first.wait()
+                result = await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+                if program:
+                    order.append("end")
+                return result
+
+        fn = _callable(_tool(_backend(_Blocking())))
+
+        async def scenario():
+            first = asyncio.create_task(fn(code="print('a')"))
+            await first_running.wait()
+            second = asyncio.create_task(fn(code="print('b')"))
+            await asyncio.sleep(0.05)
+            assert order == ["start"]
+            assert not second.done()
+            release_first.set()
+            await first
+            await second
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+        assert order == ["start", "end", "start", "end"]
+
+    def test_the_program_bound_is_what_a_call_waits_per_call_ahead(self):
+        from maf_sandbox import ReclaimConfig
+
+        seen = []
+
+        class _Recording(SandboxRouter):
+            async def enter_call(self, key, spec, *, owner, timeout=120.0, exclusive=False):
+                seen.append((timeout, spec.exclusive_admission))
+                return await super().enter_call(
+                    key, spec, owner=owner, timeout=timeout, exclusive=exclusive
+                )
+
+        backend = _backend(_ScriptedSandbox())
+        router = _Recording(
+            [backend], min_isolation=backend.isolation, reclaim=ReclaimConfig(timeout=3)
+        )
+        tool = make_codeact_tools(
+            router,
+            "data-analyst",
+            _context(),
+            image="registry.invalid/python:3.13",
+            exec_timeout_seconds=45,
+        )[0]
+        _run(tool, "print('hi')")
+        assert seen == [(51.0, True)]
+
     @pytest.mark.parametrize(
         ("snapshot", "floor", "expected"),
         [

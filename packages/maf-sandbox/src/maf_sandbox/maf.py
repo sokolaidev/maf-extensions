@@ -61,7 +61,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
-from ._cleanup import PendingCleanup
+from ._cleanup import QUEUED_CALL_TIMEOUT, PendingCleanup
 from ._containment import CONTAINED, escapes_containment
 from ._effective_state import (
     EffectiveState,
@@ -1259,6 +1259,8 @@ class SandboxToolSession:
         output_sink: OutputSink | None = None,
         file_store_provenance: FileStoreProvenance | None = None,
         requires_file_integrity: SourceIntegrity | None = None,
+        admission_timeout: float | None = None,
+        cleanup_timeout: float | None = None,
     ) -> None:
         self._router = router
         self._context = context
@@ -1274,6 +1276,12 @@ class SandboxToolSession:
             else SourceIntegrity(str(requires_file_integrity))
         )
         self._log_prefix = _prefixed(name)
+        self._admission_timeout = (
+            QUEUED_CALL_TIMEOUT if admission_timeout is None else admission_timeout
+        )
+        self._cleanup_timeout = (
+            router.reclaim.timeout if cleanup_timeout is None else cleanup_timeout
+        )
 
     @property
     def spec(self) -> SandboxSpec:
@@ -1752,7 +1760,13 @@ class SandboxToolSession:
             admission = call.entered.get(at)
             if admission is not None:
                 return admission
-            admission = await self._router.enter_call(key, self._spec, owner=call.id)
+            admission = await self._router.enter_call(
+                key,
+                self._spec,
+                owner=call.id,
+                # Failed reclaim or reset can spend a second bound on disposal.
+                timeout=self._admission_timeout + 2 * self._cleanup_timeout,
+            )
             if call.closed:
                 await self._router.release_call(key, self._spec.kind, owner=call.id)
                 raise _CallClosed(
@@ -2009,6 +2023,10 @@ async def _clean_each_sandbox(
                         path,
                     )
                     raise
+                finally:
+                    # This instance's removal had a bound of its own, and the instances after it
+                    # still have theirs, so a waiter is not charged for the ones already done.
+                    router.renew_call(key, spec.kind)
                 if reason is not None:
                     logger.warning(f"{prefix}: %s was not reclaimed: %s", path, reason)
                     reasons.insert(0, reason)
@@ -2296,6 +2314,7 @@ def sandboxed_tool(
     standing_guidance: Iterable[str] = (),
     on_reclaim_failure: Callable[[ReclaimFailure], Awaitable[None]] | None = None,
     reclaim_timeout: float | None = None,
+    admission_timeout: float | None = None,
     file_store_provenance: FileStoreProvenance | None = None,
     requires_file_integrity: SourceIntegrity | None = None,
     logger: logging.Logger | None = None,
@@ -2445,6 +2464,17 @@ def sandboxed_tool(
             was **cancelled** gets :data:`_CANCELLED_CALL_GRACE` instead, or this, whichever is
             smaller: its caller's deadline has already passed, and the removal must not extend
             one that has.
+        admission_timeout: Seconds this call waits for each call ahead of it on the same
+            sandbox: that call's body bound plus twice this tool's cleanup bound, allowing
+            reclaim or reset followed by disposal. The cleanup bound is ``reclaim_timeout``
+            where set and the router's ``reclaim.timeout`` otherwise. That pair is the budget
+            for one cleanup step; the wait restarts as each call ahead leaves and as each of
+            its cleanup steps completes, the removal of each instance it held and then each
+            whole-instance reset or disposal, so a call holding several instances is not charged
+            against a single budget. A call ahead that outlasts it answers busy. Default
+            ``None`` is the framework's queued-call bound (``120.0``). An ordinary call waits
+            only while the sandbox drains or cleans; a spec asking ``exclusive_admission``
+            waits for every sibling, so a kind that asks should pass the bound its body has.
         logger: Where the failure ladder writes its detail. Defaults to this module's logger;
             pass the workload's own so its records keep the workload's logger name.
     """
@@ -2489,6 +2519,13 @@ def sandboxed_tool(
             f"{effective_timeout}. It bounds a removal that runs in a `finally`, so an infinite "
             "one is a tool call that never returns."
         )
+    if admission_timeout is not None and (
+        not math.isfinite(admission_timeout) or admission_timeout <= 0
+    ):
+        raise ValueError(
+            f"{name}: admission_timeout must be a finite positive number of seconds, not "
+            f"{admission_timeout}. It bounds the wait for each call ahead of this one."
+        )
     effective_on_failure = (
         on_reclaim_failure if on_reclaim_failure is not None else router.reclaim.on_failure
     )
@@ -2518,6 +2555,8 @@ def sandboxed_tool(
         output_sink=output_sink,
         file_store_provenance=file_store_provenance,
         requires_file_integrity=requires_file_integrity,
+        admission_timeout=admission_timeout,
+        cleanup_timeout=effective_timeout,
     )
     properties = (
         dict(declarations)
