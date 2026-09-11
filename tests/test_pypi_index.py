@@ -14,6 +14,7 @@ wrong quietly: a lexical order puts 0.9.0 above 0.10.0 and every caller reads th
 
 from __future__ import annotations
 
+import base64
 import email.message
 import http.client
 import importlib.util
@@ -314,42 +315,61 @@ class TestAVersionsMetadataComesFromTheIndexThatCarriesIt:
         assert index.version_document_url(base, "maf-sandbox", "0.38.0") == expected
 
 
-class TestAnIndexMayCarryWhatThisRepositoryNeverPublishes:
-    """`version` orders dotted releases and raises on the rest, and ceilings are written as one.
+class TestEveryVersionAnIndexCarriesIsReported:
+    """Dropping a version a range admits gates on a set the install it guards does not resolve.
 
-    An index may carry a pre-release, a post-release or a local version; included, one reaches
-    the sort and takes the check out with a `ValueError` over an artifact nothing here has
-    anything to say about. The accepted shape is a dotted release and only that.
+    `0.38.0.post1` satisfies `>=0.38.0,<0.39` and a resolver may select it, so it has to reach
+    the caller. `version` answers the release segment, which is what a `<ceiling` bound is
+    written against; `sort_key` carries PEP 440's precedence.
     """
 
     def _carrying(self, monkeypatch: pytest.MonkeyPatch, *versions: str) -> None:
         monkeypatch.setattr(index, "fetch_simple", lambda _name: {"versions": list(versions)})
 
-    def test_the_post_release_testpypi_actually_holds_does_not_stop_the_sort(
+    def test_a_post_release_comes_back_and_sorts_above_its_own_release(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        self._carrying(monkeypatch, "0.1.0", "0.1.0.post1", "0.2.0", "0.33.0", "0.34.0", "0.38.0")
+        self._carrying(monkeypatch, "0.1.0", "0.1.0.post1", "0.2.0", "0.38.0")
         assert index.fetch_published_versions("maf-sandbox") == [
             "0.38.0",
-            "0.34.0",
-            "0.33.0",
             "0.2.0",
+            "0.1.0.post1",
             "0.1.0",
         ]
 
-    @pytest.mark.parametrize("odd", ["1.0.0rc1", "1.0.0b2", "1.0.0.dev3", "1.0.0+local", "latest"])
-    def test_nothing_but_a_dotted_release_comes_back(
-        self, monkeypatch: pytest.MonkeyPatch, odd: str
+    @pytest.mark.parametrize(
+        ("odd", "expected"),
+        [
+            ("1.0.0rc1", ["1.0.0", "1.0.0rc1"]),
+            ("1.0.0b2", ["1.0.0", "1.0.0b2"]),
+            ("1.0.0.dev3", ["1.0.0", "1.0.0.dev3"]),
+            ("1.0.0.post1", ["1.0.0.post1", "1.0.0"]),
+        ],
+    )
+    def test_each_pep440_shape_is_ordered_rather_than_dropped(
+        self, monkeypatch: pytest.MonkeyPatch, odd: str, expected: list[str]
     ):
         self._carrying(monkeypatch, "1.0.0", odd)
-        assert index.fetch_published_versions("maf-sandbox") == ["1.0.0"]
+        assert index.fetch_published_versions("maf-sandbox") == expected
 
-    def test_an_index_carrying_only_those_answers_empty_rather_than_none(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        """Empty is "published, nothing this can order"; None stays "never published"."""
-        self._carrying(monkeypatch, "0.1.0.post1")
-        assert index.fetch_published_versions("maf-sandbox") == []
+    def test_a_range_admits_a_post_release_by_its_release_segment(self):
+        assert index.version("0.38.0.post1") == (0, 38, 0)
+        assert index.admits(index.version("0.38.0.post1"), (0, 39))
+        assert not index.admits(index.version("0.39.0.post1"), (0, 39))
+
+    def test_the_whole_order_is_pep_440s(self):
+        """The one part that is not "nothing sorts last": a dev release with no pre sorts below
+        one with a pre, so `1.0.dev1` precedes `1.0a1`."""
+        assert sorted(
+            ["1.0", "1.0a1", "2!0.1", "1.0.post1", "1.0.dev1", "1.0rc1", "1.0b1"],
+            key=index.sort_key,
+        ) == ["1.0.dev1", "1.0a1", "1.0b1", "1.0rc1", "1.0", "1.0.post1", "2!0.1"]
+
+    @pytest.mark.parametrize("nonsense", ["latest", "", "1.0.0-beta-final", "v"])
+    def test_something_that_is_not_a_version_still_raises(self, nonsense: str):
+        """A refusal, not a silent drop: an index answering this is not a set to gate on."""
+        with pytest.raises(ValueError):
+            index.sort_key(nonsense)
 
 
 class TestWhichIndexesAreRead:
@@ -590,6 +610,14 @@ class TestANamedIndexCarriesTheCredentialUvWouldSend:
             ("https://mirror.example/simple/", "Basic cmVhZGVyOnNlY3JldA=="),
         )
 
+    def test_a_percent_encoded_credential_is_decoded_the_way_uv_reads_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """`urlsplit` leaves `p%40ss` encoded; uv authenticates as `p@ss`, a different secret."""
+        monkeypatch.setenv("UV_INDEX", "https://reader:p%40ss@mirror.example/simple/")
+        expected = "Basic " + base64.b64encode(b"reader:p@ss").decode()
+        assert index.configured_indexes()[0][1] == expected
+
     def test_an_unnamed_index_is_never_given_another_indexs_credential(
         self, monkeypatch: pytest.MonkeyPatch
     ):
@@ -614,6 +642,50 @@ class TestANamedIndexCarriesTheCredentialUvWouldSend:
         assert "refused the request" in said
         assert "not a verdict" in said
         assert pauses == []
+
+
+class TestACredentialStaysAtItsOrigin:
+    """urllib copies every header across a redirect, `Authorization` included.
+
+    A mirror answering 302 towards another host would otherwise hand that host the private
+    index's credential. The redirect is still followed; only the header is dropped, and only
+    when scheme, host or port changes.
+    """
+
+    def _following(self, first: str, then: str) -> urllib.request.Request:
+        handler = index._CredentialStaysAtItsOrigin()  # noqa: SLF001
+        request = urllib.request.Request(first, headers={"Authorization": "Basic SECRET"})
+        following = handler.redirect_request(
+            request, io.BytesIO(b""), 302, "Found", email.message.Message(), then
+        )
+        assert following is not None
+        return following
+
+    @pytest.mark.parametrize(
+        "elsewhere",
+        [
+            "https://other.example/simple/pkg/",
+            "http://mirror.example/simple/pkg/",
+            "https://mirror.example:8443/simple/pkg/",
+        ],
+        ids=["host", "scheme", "port"],
+    )
+    def test_a_redirect_off_the_origin_drops_the_credential(self, elsewhere: str):
+        following = self._following("https://mirror.example/simple/pkg/", elsewhere)
+        assert following.get_header("Authorization") is None
+
+    def test_a_redirect_within_the_origin_keeps_it(self):
+        following = self._following(
+            "https://mirror.example/simple/pkg/", "https://mirror.example/simple/pkg/index.html"
+        )
+        assert following.get_header("Authorization") == "Basic SECRET"
+
+    def test_the_installed_opener_carries_the_handler(self):
+        """Installed globally, so a call site that forgot it would leak rather than fail."""
+        assert any(
+            isinstance(handler, index._CredentialStaysAtItsOrigin)  # noqa: SLF001
+            for handler in index._OPENER.handlers  # noqa: SLF001
+        )
 
 
 class TestAnIndexUrlMayCarryACredential:

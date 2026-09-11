@@ -58,8 +58,18 @@ _SEARCHES_EVERY_INDEX = frozenset({"unsafe-best-match"})
 #: of it.
 _NAMED_INDEX = re.compile(r"^[A-Za-z0-9._-]+=(?=[A-Za-z][A-Za-z0-9+.-]*://)")
 
-#: What `version` can order and every ceiling in this repository is written as.
-_DOTTED_RELEASE = re.compile(r"^\d+(\.\d+)*$")
+#: PEP 440, as much of it as an index can hand back: epoch, release, pre, post, dev and local.
+_PEP440 = re.compile(
+    r"^\s*v?(?:(?P<epoch>\d+)!)?(?P<release>\d+(?:\.\d+)*)"
+    r"(?:[-_.]?(?P<pre_letter>a|b|c|rc|alpha|beta|pre|preview)[-_.]?(?P<pre_number>\d*))?"
+    r"(?:-(?P<post_bare>\d+)|[-_.]?(?P<post_letter>post|rev|r)[-_.]?(?P<post_number>\d*))?"
+    r"(?:[-_.]?dev(?P<dev_number>\d*))?"
+    r"(?:\+(?P<local>[a-z0-9]+(?:[-_.][a-z0-9]+)*))?\s*$",
+    re.IGNORECASE,
+)
+
+#: Pre-release letters in PEP 440's order, with their spellings folded onto one another.
+_PRE_ORDER = {"a": 0, "alpha": 0, "b": 1, "beta": 1, "c": 2, "rc": 2, "pre": 2, "preview": 2}
 
 #: How ``uv`` spells an index name inside an environment variable.
 _NOT_IN_A_VARIABLE = re.compile(r"[^A-Za-z0-9]")
@@ -72,6 +82,40 @@ _TRANSIENT = (urllib.error.URLError, TimeoutError, ConnectionError, http.client.
 
 class IndexUnreachable(Exception):
     """PyPI did not answer. Never a verdict on a version — the question was not put."""
+
+
+class _CredentialStaysAtItsOrigin(urllib.request.HTTPRedirectHandler):
+    """Drop ``Authorization`` when a redirect leaves the origin it was minted for.
+
+    urllib copies every header across a redirect, so a mirror answering 302 towards another host
+    hands that host a private index's credential. Scheme, host and port have to match for it to
+    travel; the request is still followed without it.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ANN201
+        following = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if following is None or _same_origin(req.full_url, following.full_url):
+            return following
+        for store in (following.headers, following.unredirected_hdrs):
+            for key in [name for name in store if name.lower() == "authorization"]:
+                del store[key]
+        return following
+
+
+def _same_origin(one: str, other: str) -> bool:
+    """Whether two URLs share a scheme, host and port, case-folded as a URL is."""
+    first, second = urllib.parse.urlsplit(one), urllib.parse.urlsplit(other)
+    return (first.scheme.lower(), first.hostname, first.port) == (
+        second.scheme.lower(),
+        second.hostname,
+        second.port,
+    )
+
+
+#: Installed globally rather than passed at each call site, so no reader has to remember: every
+#: `urlopen` below goes through it, and a caller that forgot would leak rather than fail.
+_OPENER = urllib.request.build_opener(_CredentialStaysAtItsOrigin)
+urllib.request.install_opener(_OPENER)
 
 
 def redacted(url: str) -> str:
@@ -151,8 +195,43 @@ def read_json(
 
 
 def version(text: str) -> tuple[int, ...]:
-    """The dotted release as a tuple of ints."""
-    return tuple(int(part) for part in text.split("."))
+    """The release segment as a tuple of ints, which is what a ``<ceiling`` bound is written as.
+
+    A pre-, post-, dev- or local-version answers its release: ``0.38.0.post1`` is ``(0, 38, 0)``,
+    and that is what decides whether a range admits it — ``>=0.38.0,<0.39`` does. `sort_key`
+    orders two of them; this only places one against a bound.
+    """
+    match = _PEP440.match(text)
+    if match is None:
+        raise ValueError(f"{text!r} is not a PEP 440 version")
+    return tuple(int(part) for part in match.group("release").split("."))
+
+
+def sort_key(text: str) -> tuple[object, ...]:
+    """PEP 440's ordering: epoch, release, then dev before pre before final before post.
+
+    The absent-pre sentinel carries the rule that a dev release with no pre sorts *below* one
+    with a pre, which is the only part of this order that is not simply "nothing sorts last".
+    """
+    match = _PEP440.match(text)
+    if match is None:
+        raise ValueError(f"{text!r} is not a PEP 440 version")
+    release = tuple(int(part) for part in match.group("release").split("."))
+    post_number = match.group("post_bare") or match.group("post_number")
+    has_post = bool(match.group("post_letter") or match.group("post_bare"))
+    has_dev = match.group("dev_number") is not None
+    if match.group("pre_letter"):
+        pre = (_PRE_ORDER[match.group("pre_letter").lower()], int(match.group("pre_number") or 0))
+    else:
+        pre = (-1, 0) if has_dev and not has_post else (len(set(_PRE_ORDER.values())), 0)
+    return (
+        int(match.group("epoch") or 0),
+        release,
+        pre,
+        (1, int(post_number or 0)) if has_post else (0, 0),
+        (0, int(match.group("dev_number") or 0)) if has_dev else (1, 0),
+        match.group("local") or "",
+    )
 
 
 def admits(version: tuple[int, ...], ceiling: tuple[int, ...]) -> bool:
@@ -225,7 +304,14 @@ def _named(entry: str) -> tuple[str, str, str | None]:
             parsed.fragment,
         )
     )
-    return name, url, _basic(parsed.username, parsed.password)
+    # Percent-decoded, because `urlsplit` does not: a password written `p%40ss` in a URL is
+    # `p@ss` to uv, and the two authenticate as different credentials.
+    return name, url, _basic(_decoded(parsed.username), _decoded(parsed.password))
+
+
+def _decoded(part: str | None) -> str | None:
+    """One userinfo component as its characters rather than its percent-encoding."""
+    return None if part is None else urllib.parse.unquote(part)
 
 
 def _authorization(name: str) -> str | None:
@@ -330,18 +416,15 @@ def fetch_published_versions(distribution: str) -> list[str] | None:
     ``requires_dist`` excludes lives in the per-version document, which a caller that cares
     must fetch.
 
-    **Anything that is not a dotted release is left out**, and an index is free to carry a
-    pre-release, a post-release or a local version. `version` orders dotted releases and raises
-    on the rest, and every ceiling a caller compares against is written as one, so the
-    alternatives are a PEP 440 ordering nothing here would use or a `ValueError` over an
-    artifact this has nothing to say about. Nothing this repository publishes is anything else:
-    `check_rehearsal_version` refuses to rehearse one and release-please cuts none.
+    A pre-, post-, dev- or local-version is carried like any other. An index is free to hold
+    one, a range this repository writes can admit it — ``0.38.0.post1`` satisfies
+    ``>=0.38.0,<0.39`` — and a resolver may select it, so a reader that dropped it would gate
+    on a different set than the install it guards.
     """
     payload = fetch_simple(distribution)
     if payload is None:
         return None
-    releases = [text for text in payload["versions"] if _DOTTED_RELEASE.match(text)]
-    return sorted(releases, key=version, reverse=True)
+    return sorted(payload["versions"], key=sort_key, reverse=True)
 
 
 def newest_upload(payload: dict) -> str | None:
