@@ -175,13 +175,16 @@ def _assess_compiles(block: str, compiles: int) -> list[str]:
 
 
 def _assess_reply(reply: str, block: str) -> list[str]:
-    """The diagnostics have to reach the model, not merely the log.
+    """`_REQUIRED_RULES` has to reach the model, not merely the log — and only those.
 
-    Held to what the block actually reports rather than to `_REQUIRED_RULES`, so a run whose
-    compiler reported one of them is not also failed here for the other. Rule ids are opaque
-    tokens the sample tells the model to echo verbatim, so a bare substring is the right test:
-    requiring a *rendered* level is what failed three healthy releases of the sibling sample,
-    when one run wrote `**error**` where the pattern wanted `[error]`.
+    Two narrowings, each deliberate. Only a required rule the block *also* reports is demanded,
+    so a compile that produced one of them is not failed for the other's absence. And only the
+    required ones: a rule the compiler grows later is not something this sample asked the model
+    about, so demanding every id the SARIF carries would put a release at the mercy of the
+    CLI's rule set. Two opaque ids already say the answer came from the compiler.
+
+    The match is a bare substring on the id, never on a rendered level: the model writes that
+    prose, and a checker reading its markup refuses runs that did everything right.
     """
     reported = diagnostics(block)
     said = reply.lower()

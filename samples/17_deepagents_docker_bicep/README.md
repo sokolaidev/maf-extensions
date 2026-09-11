@@ -49,7 +49,7 @@ uv run agent.py
 | `AZURE_OPENAI_ENDPOINT` | Optional. Set it and the Azure road is taken; e.g. `https://my-resource.openai.azure.com` |
 | `AZURE_OPENAI_CHAT_MODEL` | The chat deployment name. Required on the Azure road |
 | `OPENAI_CHAT_MODEL` | The model name the endpoint serves. Defaults to Ollama's `minimax-m3:cloud` |
-| `OPENAI_BASE_URL` | The endpoint; unset means OpenAI's own. Defaults to Ollama's `http://localhost:11434/v1` |
+| `OPENAI_BASE_URL` | The endpoint. Unset it is Ollama's `http://localhost:11434/v1`, so reaching OpenAI itself means naming `https://api.openai.com/v1` here |
 | `OPENAI_API_KEY` | Key for that endpoint. A local server that ignores it still wants something non-empty, so a placeholder is substituted |
 
 With the image reference unset, or with an endpoint named and no deployment beside it, the program says which variable is missing and exits non-zero rather than running.

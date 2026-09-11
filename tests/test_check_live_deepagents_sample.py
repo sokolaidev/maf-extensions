@@ -128,9 +128,9 @@ _STATUS = "\n[Command failed with exit code 1]"
 _BUILD_RESULT = "\n".join(f"[stderr] {line}" for line in _SARIF.splitlines()) + _STATUS
 _LINT_RESULT = _SARIF + _STATUS
 
-#: The model's own summary, written in the markup that failed three healthy releases of the
-#: sibling sample. Keeping it here rather than in a single regression case is the point: every
-#: green assertion in this file is made over a reply the old check would have called prose.
+#: The model's own summary, in the markup a model reaches for: bold levels, backticked ids, a
+#: numbered list. It is the default reply for every case below rather than a case of its own,
+#: which is what holds the checker to reading nothing in a reply but the ids.
 _REPLY = (
     "I ran both commands in the sandbox. The compiler returned three diagnostics:\n\n"
     "1. **error** `no-unused-params` — `main.bicep:21`\n"
@@ -428,6 +428,18 @@ class TestTheDiagnosticsHaveToReachTheModel:
         )
         reasons = check.assess(one_rule)
         assert not any("never names" in r for r in reasons), reasons
+
+    def test_a_rule_beyond_the_required_two_is_not_demanded_of_the_reply(self):
+        """The other half of the same narrowing, and the one that decides a release.
+
+        `use-recent-api-versions` is read from the block, where it is the tell that the config
+        was found. Requiring the model to echo it too would tie a live check to the compiler's
+        rule set: a CLI that grows a linter rule reds a release over a diagnostic this sample
+        never asked about.
+        """
+        assert "use-recent-api-versions" in check.diagnostics(_block(_HEALTHY))
+        passing = _run(_BUILD_RESULT, reply="no-unused-params came back at error, and BCP035.")
+        assert check.assess(passing) == []
 
 
 class TestTheRuleSetTheRepositoryAskedFor:
