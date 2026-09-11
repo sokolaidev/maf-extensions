@@ -1159,11 +1159,11 @@ class TestTheSynchronousSurface:
             warnings.simplefilter("ignore", DeprecationWarning)
             pid = os.fork()
         if pid == 0:  # pragma: no cover - the child reports through its exit status
+            ok = False
             try:
                 ok = adapter.execute("echo hi").output == "hi"
-            except BaseException:
-                ok = False
-            os._exit(0 if ok else 1)
+            finally:
+                os._exit(0 if ok else 1)
         deadline = time.monotonic() + 30
         while True:
             waited, status = os.waitpid(pid, os.WNOHANG)
