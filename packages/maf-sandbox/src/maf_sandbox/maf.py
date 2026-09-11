@@ -2023,6 +2023,10 @@ async def _clean_each_sandbox(
                         path,
                     )
                     raise
+                finally:
+                    # This instance's removal had a bound of its own, and the instances after it
+                    # still have theirs, so a waiter is not charged for the ones already done.
+                    router.renew_call(key, spec.kind)
                 if reason is not None:
                     logger.warning(f"{prefix}: %s was not reclaimed: %s", path, reason)
                     reasons.insert(0, reason)
@@ -2464,8 +2468,9 @@ def sandboxed_tool(
             sandbox: that call's body bound plus twice this tool's cleanup bound, allowing
             reclaim or reset followed by disposal. The cleanup bound is ``reclaim_timeout``
             where set and the router's ``reclaim.timeout`` otherwise. That pair is the budget
-            for one sandbox instance; the wait restarts as each call ahead leaves and as each of
-            its cleanup targets lands, so a call holding several instances is not charged
+            for one cleanup step; the wait restarts as each call ahead leaves and as each of
+            its cleanup steps completes, the removal of each instance it held and then each
+            whole-instance reset or disposal, so a call holding several instances is not charged
             against a single budget. A call ahead that outlasts it answers busy. Default
             ``None`` is the framework's queued-call bound (``120.0``). An ordinary call waits
             only while the sandbox drains or cleans; a spec asking ``exclusive_admission``

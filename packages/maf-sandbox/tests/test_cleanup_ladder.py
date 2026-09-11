@@ -547,3 +547,72 @@ def test_admission_waits_for_failed_cleanup_then_disposal(rung, failure):
         assert not router._slots._slots
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+
+
+def test_a_waiter_is_renewed_as_each_held_instance_is_reclaimed():
+    """A RECLAIM call removes every instance it holds before releasing the entry, each under its
+    own bound. Charging a waiter for all of them refuses it while the predecessor is still
+    inside every bound it was given."""
+    bound, stage, held = 0.3, 0.25, 4
+
+    class _SlowReclaim(InProcessSandbox):
+        async def reclaim(self, directory, *, working_directory, timeout):
+            await asyncio.sleep(stage)
+            await super().reclaim(directory, working_directory=working_directory, timeout=timeout)
+
+    sandboxes = [_SlowReclaim() for _ in range(held)]
+
+    class _OneInstancePerAcquire(InProcessSandboxBackend):
+        async def acquire(self, key, spec):
+            self.keys.append(key)
+            self.specs.append(spec)
+            serving = sandboxes[min(len(self.keys) - 1, held - 1)]
+            await serving.prepare_work_dir(spec)
+            return serving
+
+    backend = _OneInstancePerAcquire(sandboxes[0], declarations=_DECLARATIONS)
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE, min_cleanup=Cleanup.RECLAIM)
+    for sandbox in sandboxes:
+        router._remember_instance(_KEY, _EXCLUSIVE.kind, backend, sandbox)
+    reclaimed = []
+
+    def build(session):
+        async def run(target: str) -> str:
+            key = session.key()
+            assert not isinstance(key, str)
+            session.guest_call_path()
+            for _ in range(held):
+                answer = await session.acquire(key)
+                if isinstance(answer, str):
+                    return answer
+            reclaimed.append(target)
+            return target
+
+        return run
+
+    tool = sandboxed_tool(
+        build,
+        router=router,
+        context=CallerContext(
+            current_scope=lambda: _KEY.scope,
+            current_thread_id=lambda: _KEY.thread_id,
+            list_files=InMemoryStore.list,
+        ),
+        agent_dir=_KEY.agent_dir,
+        spec=_EXCLUSIVE,
+        name="run",
+        logger=logging.getLogger(__name__),
+        admission_timeout=0.05,
+        reclaim_timeout=bound,
+    )[0]
+    fn = getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
+
+    async def scenario():
+        first = asyncio.create_task(fn(target="first"))
+        await asyncio.sleep(0.05)
+        second = asyncio.create_task(fn(target="second"))
+        return await asyncio.gather(first, second)
+
+    answers = asyncio.run(asyncio.wait_for(scenario(), timeout=30))
+    assert not [one for one in answers if "another call is using the sandbox" in one]
+    assert reclaimed == ["first", "second"]

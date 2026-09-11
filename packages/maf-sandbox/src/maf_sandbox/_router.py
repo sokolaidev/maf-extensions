@@ -1873,6 +1873,14 @@ class SandboxRouter:
             ),
         )
 
+    def renew_call(self, key: SandboxKey, kind: str) -> None:
+        """Restart the admission wait of everyone queued on this entry.
+
+        For a cleanup step a call runs under its own bound while still holding the entry, so a
+        waiter budgeted for one step is not charged for the steps before it.
+        """
+        self._slots.renew(key, kind)
+
     def drain_call(self, key: SandboxKey, kind: str, *, owner: str) -> None:
         """Block entrants while a finished call waits for its last acquire to return."""
         self._slots.drain(key, kind, owner=owner)
