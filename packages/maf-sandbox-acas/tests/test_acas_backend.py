@@ -3630,7 +3630,7 @@ def test_capture_invalidation_allows_policy_change_after_deletion(delete_failed)
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("operation", ["key", "kind", "scope"])
+@pytest.mark.parametrize("operation", ["key", "kind"])
 @pytest.mark.parametrize("older_failed", [False, True])
 @pytest.mark.parametrize("newer_failed", [False, True])
 def test_invalidated_acquire_reconciles_concurrent_disposal(
@@ -3669,12 +3669,7 @@ def test_invalidated_acquire_reconciles_concurrent_disposal(
         acquire = asyncio.create_task(backend.acquire(key, spec))
         await asyncio.wait_for(started.wait(), 5)
         try:
-            if operation == "scope":
-                failure = (await backend.dispose_scope(key.scope, key.thread_id)).undisposed
-            else:
-                failure = await backend.dispose(
-                    key, kind=spec.kind if operation == "kind" else None
-                )
+            failure = await backend.dispose(key, kind=spec.kind if operation == "kind" else None)
             assert (failure is not None) == newer_failed
         finally:
             release.set()
@@ -3693,6 +3688,165 @@ def test_invalidated_acquire_reconciles_concurrent_disposal(
         assert replacement.instance_id != first.instance_id and client.create_calls == 2
         assert calls == (3 if newer_failed else 2)
         assert not backend._undeleted and not backend._disposal_tokens
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=10))
+
+
+@pytest.mark.parametrize("stage", ["create", "resume", "prepare"])
+def test_scope_purge_reports_active_acquisition(stage, monkeypatch):
+    from maf_sandbox_acas._backend import _AcasSandbox
+
+    client = _GuestGroupClient(_guest_removing(True))
+    backend = _backend_with(client)
+    key, spec = SandboxKey("s", "t", "a"), _spec()
+
+    async def scenario():
+        if stage != "create":
+            await backend.acquire(key, spec)
+        owner, name = {
+            "create": (client, "begin_create_sandbox"),
+            "resume": (_GuestSandboxClient, "ensure_running"),
+            "prepare": (_AcasSandbox, "prepare_work_dir"),
+        }[stage]
+        original = getattr(owner, name)
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def pause(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            started.set()
+            await release.wait()
+            return result
+
+        with monkeypatch.context() as patch:
+            patch.setattr(owner, name, pause)
+            acquire = asyncio.create_task(backend.acquire(key, spec))
+            await asyncio.wait_for(started.wait(), 5)
+            try:
+                purge = await backend.dispose_scope(key.scope, key.thread_id)
+                assert purge.disposed == 0 and purge.undisposed is not None
+                assert purge.undisposed.code == "unknown"
+                assert not client.deleted
+            finally:
+                release.set()
+            result = await acquire
+        purge = await backend.dispose_scope(key.scope, key.thread_id)
+        assert purge.undisposed is None and purge.disposed == 1
+        assert client.deleted == [result.instance_id]
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=10))
+
+
+@pytest.mark.parametrize("stage", ["listing", "deletion"])
+def test_scope_purge_refuses_new_acquires_without_blocking_other_scopes(stage, monkeypatch):
+    from maf_sandbox import SandboxOutputError
+
+    client = _GuestGroupClient(_guest_removing(True))
+    backend = _backend_with(client)
+    key, spec = SandboxKey("s", "t", "a"), _spec()
+
+    async def scenario():
+        if stage == "deletion":
+            await backend.acquire(key, spec)
+        name = "_list_thread_sandbox_ids" if stage == "listing" else "_delete"
+        original = getattr(backend, name)
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def pause(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            started.set()
+            await release.wait()
+            return result
+
+        with monkeypatch.context() as patch:
+            patch.setattr(backend, name, pause)
+            purge = asyncio.create_task(backend.dispose_scope(key.scope, key.thread_id))
+            await asyncio.wait_for(started.wait(), 5)
+            try:
+                creates = client.create_calls
+                for scoped_key, scoped_spec in (
+                    (key, spec),
+                    (replace(key, agent_dir="other"), spec),
+                    (key, replace(spec, kind="other")),
+                ):
+                    with pytest.raises(SandboxOutputError, match="scope disposal is in progress"):
+                        await backend.acquire(scoped_key, scoped_spec)
+                assert client.create_calls == creates
+                for other in (replace(key, scope="other"), replace(key, thread_id="other")):
+                    assert (await backend.acquire(other, spec)).instance_id
+            finally:
+                release.set()
+            assert (await purge).undisposed is None
+        assert (await backend.acquire(key, spec)).instance_id
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=10))
+
+
+def test_scope_purge_refuses_acquire_on_another_event_loop(monkeypatch):
+    from maf_sandbox import SandboxOutputError
+
+    backend = _backend_with(_GuestGroupClient(_guest_removing(True)))
+    key = SandboxKey("s", "t", "a")
+    started, release = threading.Event(), threading.Event()
+
+    async def listed(*args, **kwargs):
+        started.set()
+        assert release.wait(5)
+        return []
+
+    monkeypatch.setattr(backend, "_list_thread_sandbox_ids", listed)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        purge = pool.submit(asyncio.run, backend.dispose_scope(key.scope, key.thread_id))
+        try:
+            assert started.wait(5)
+            with pytest.raises(SandboxOutputError, match="scope disposal is in progress"):
+                asyncio.run(backend.acquire(key, _spec()))
+        finally:
+            release.set()
+        assert purge.result(timeout=5).undisposed is None
+    assert asyncio.run(backend.acquire(key, _spec())).instance_id
+
+
+@pytest.mark.parametrize("first_end", ["success", "failure", "cancel"])
+def test_overlapping_scope_purges_keep_admission_closed_until_both_finish(first_end, monkeypatch):
+    from maf_sandbox import SandboxOutputError
+
+    backend = _backend_with(_GuestGroupClient(_guest_removing(True)))
+    key = SandboxKey("s", "t", "a")
+
+    async def scenario():
+        started = [asyncio.Event(), asyncio.Event()]
+        release = [asyncio.Event(), asyncio.Event()]
+        calls = 0
+
+        async def listed(*args, **kwargs):
+            nonlocal calls
+            index = calls
+            calls += 1
+            started[index].set()
+            await release[index].wait()
+            return None if index == 0 and first_end == "failure" else []
+
+        monkeypatch.setattr(backend, "_list_thread_sandbox_ids", listed)
+        first = asyncio.create_task(backend.dispose_scope(key.scope, key.thread_id))
+        await asyncio.wait_for(started[0].wait(), 5)
+        second = asyncio.create_task(backend.dispose_scope(key.scope, key.thread_id))
+        await asyncio.wait_for(started[1].wait(), 5)
+        try:
+            if first_end == "cancel":
+                first.cancel()
+            release[0].set()
+            outcome = (await asyncio.gather(first, return_exceptions=True))[0]
+            if first_end == "cancel":
+                assert isinstance(outcome, asyncio.CancelledError)
+            else:
+                assert isinstance(outcome, ScopePurge)
+                assert (outcome.undisposed is not None) == (first_end == "failure")
+            with pytest.raises(SandboxOutputError, match="scope disposal is in progress"):
+                await backend.acquire(key, _spec())
+        finally:
+            release[1].set()
+        assert (await second).undisposed is None
+        assert (await backend.acquire(key, _spec())).instance_id
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=10))
 

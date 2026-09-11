@@ -58,7 +58,6 @@ The probe runs only when a spec requires `EXEC`, `FILES_OUT`, `HOST_TOOLS` or `F
 
 **Which images are in the gate:** images whose guests cannot remove the probe file, and, for `FILES_DELETE`, images whose removal probe is inconclusive. The prebuilt images and shipped `bicep-sandbox` and `diagram-sandbox` images run as root; they still have to pass the observation. An image needs a working `rm` for the probe, independently of the commands its workload needs.
 
-
 ## `run_code` answers, and what it answers is a refusal
 
 `run_code` is a `Sandbox` method rather than an optional extra, so this backend implements it — as a raise. Not for want of an interpreter, since the image may well carry one, but because *which* runtime an image carries is a property of the image, and this backend resolves an image reference without looking inside it. Declaring `RUN_CODE` would be a claim about someone else's artefact. A workload that wants a runtime by name invokes it through `exec` and owns that assumption itself; the router refuses a spec requiring the capability before any caller arrives, so the `NotImplementedError` is the honest floor under a caller that skipped the check. It is the same asymmetry `remove` sits on the other side of, further down: a mechanism may exist and stay undeclared, and a capability may never be declared without one.
@@ -92,6 +91,8 @@ Refusing a symlink narrows an entry to *not a link and not a directory*. It does
 The data plane's `delete_file` acts as the host and resolves linked parents, even though directly named and interior links are unlinked ([#708](https://github.com/sokolaidev/maf-extensions/pull/708)). It provides no ownership evidence to establish that the guest cannot replace an ancestor. A file-plane-created directory does not establish ownership of pre-existing ancestors, and `work_dir` may name a custom path. These constraints prevent this backend from establishing safe reach for a host-authority recursive deletion ([#710](https://github.com/sokolaidev/maf-extensions/issues/710)).
 
 ## Lifecycle
+
+ACAS admission checks apply to direct backend callers as well as router users. Retained cleanup is retried before replacement; unsuccessful cleanup raises `SandboxOutputError` from acquire. Scope purge reports `ScopePurge(0, DisposalFailure("unknown", ...))` if acquisition for that scope and thread is active on this backend, so callers must retry after it finishes. Once purge is admitted, new acquires for that scope and thread raise `SandboxOutputError` until every overlapping purge finishes. Other scopes and threads remain available. This barrier is local to the backend object; hosts must stop new conversation work across replicas before purging.
 
 **ACAS withholds `SNAPSHOT` and retains disposal.** `Sandbox.reset` refuses, so the cleanup ladder has no `RESET` rung on this backend. Warm reuse through reclamation requires explicit host opt-in and the backend's `RECLAIM` declaration, which ACAS also withholds. Kind confinement metadata is advisory. The service supports snapshot restoration; this backend deliberately withholds `SNAPSHOT` because the measurements below establish no consistent cleanup benefit. Acquisition retains its get-or-create mechanism.
 

@@ -1465,6 +1465,10 @@ class SandboxBackend(Protocol):
         expects one, and only one of them is remembered.  Serialise the get-or-create, or
         derive a name the provider will reject a duplicate of.
 
+        A backend may retry retained disposal before acquisition and refuse acquisition
+        while cleanup remains pending or a scope purge is active. Direct callers must handle
+        these admission failures; the router also enforces its own unclean-key guard.
+
         ``key`` may carry a :attr:`SandboxKey.call_id`, and it is part of a sandbox's identity
         exactly as the other three fields are.  A backend deriving its name from three of the
         four hands one sandbox to two calls that asked not to share, so fold the whole key —
@@ -1484,7 +1488,8 @@ class SandboxBackend(Protocol):
 
         Return DisposalFailure when a sandbox may remain, or None when no failure is known.
         Callers branch on its code; detail is for logs. Use unknown when the cause is uncertain.
-        Retry bookkeeping does not refuse acquire; that guard belongs to the router."""
+        A backend may refuse acquire until retained cleanup succeeds. The router separately
+        refuses reuse of keys it tracks as unclean."""
         ...
 
     async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
@@ -1493,6 +1498,9 @@ class SandboxBackend(Protocol):
         Returns how many went and, like :meth:`dispose`, why any is still there. A conversation
         delete that silently deleted nothing would otherwise read as a clean sweep, and the
         router would reopen every key it had refused for that conversation.
+        Hosts must stop new work for the conversation across replicas before purging it;
+        backend-local admission checks cannot fence creation in another process. A backend
+        may report an incomplete purge when acquisition is still in progress.
         """
         ...
 

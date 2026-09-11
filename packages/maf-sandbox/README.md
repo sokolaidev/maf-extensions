@@ -378,6 +378,8 @@ InProcessSandboxBackend(
 
 `kind` restricts deletion to that workload, including retained failures on retry; `None` deletes every kind. `instance_id` selects one physical sandbox within the key and optional kind. The example assumes the client accepts both selectors, verifies engine ownership and treats an absent ID as a no-op without selecting a replacement. Backends must also implement `reset(timeout=...)`, raising `NotImplementedError` when they do not declare `SNAPSHOT`.
 
+A backend may retry retained cleanup before acquisition and refuse acquire while cleanup remains pending or a scope purge is active. Direct backend callers must handle these admission failures; the router separately enforces its unclean-key guard. Before purging a conversation, stop new work for it across replicas: a local backend guard cannot prevent another process from creating a sandbox. An incomplete purge must be retried.
+
 **The code is the contract; the detail is not.** `DisposalCode` is a closed set — `unreachable`, `timeout`, `refused`, `unlisted`, `unknown` — and it is what a caller acts on: retry an `unreachable`, raise the bound on a `timeout`, put a `refused` in front of a human, since it is a missing role far more often than anything transient. `detail` is the backend's own sentence, for a log, never to be parsed.
 
 ```python

@@ -1030,6 +1030,7 @@ class AcasSandboxBackend:
         #: tool call, and a warning per call is noise rather than a signal.
         self._warned_about_the_guest: set[tuple[tuple[str, str], str]] = set()
         self._acquisitions: dict[tuple[str, str, str, str], Future[None]] = {}
+        self._scope_purges: dict[tuple[str, str], int] = {}
         self._acquire_guard = threading.Lock()
 
     @property
@@ -1126,6 +1127,8 @@ class AcasSandboxBackend:
         """Serialize one registry key across event loops without blocking their threads."""
         while True:
             with self._acquire_guard:
+                if registry_key[:2] in self._scope_purges:
+                    raise SandboxOutputError("ACAS scope disposal is in progress; retry acquire")
                 active = self._acquisitions.get(registry_key)
                 if active is None:
                     owned: Future[None] = Future()
@@ -1680,6 +1683,28 @@ class AcasSandboxBackend:
         return None
 
     async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
+        """Purge a scope while refusing new local acquires; report active acquires as incomplete."""
+        scope_key = (scope, thread_id)
+        with self._acquire_guard:
+            if any(key[:2] == scope_key for key in self._acquisitions):
+                return ScopePurge(
+                    0,
+                    DisposalFailure(
+                        "unknown", "ACAS acquisition is in progress; retry scope purge"
+                    ),
+                )
+            self._scope_purges[scope_key] = self._scope_purges.get(scope_key, 0) + 1
+        try:
+            return await self._dispose_scope(scope, thread_id)
+        finally:
+            with self._acquire_guard:
+                remaining = self._scope_purges[scope_key] - 1
+                if remaining:
+                    self._scope_purges[scope_key] = remaining
+                else:
+                    del self._scope_purges[scope_key]
+
+    async def _dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
         """Delete sandboxes labelled ``(scope, thread_id)`` and report what stayed.
 
         Labels reach sandboxes created elsewhere; registry and retry records cover failed
