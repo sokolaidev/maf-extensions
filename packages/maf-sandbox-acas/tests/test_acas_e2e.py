@@ -1239,11 +1239,13 @@ class TestComingBackToTheSharedSandbox:
     ``GlobalSandboxNotRunning``, which is how a full run reached the exec probes below and
     failed on the first file they plant.
 
-    **Stopped through the service rather than waited for.** Waiting costs this suite the whole
-    suspend interval to reach a state one call reaches in seconds, and a run that waited and
-    was not stopped would pass having measured nothing. The stop poller returns only once the
-    service reports the sandbox down, so what follows is asked of a sandbox that is really
-    stopped.
+    **What it needs is the stopped state, not credit for producing it.** A full run arrives
+    here with the sandbox already down — measured, and the first version of this test failed
+    on it: `begin_stop` answers 409 for a sandbox that is not running, so provoking
+    unconditionally is a test that only works when the gap did not do its job. So the state is
+    read first and stopped only if it has to be, and asserted either way. Reading it is also
+    what keeps this honest: waiting out the suspend interval instead would cost the suite a
+    minute, and a run that waited and was not stopped would pass having measured nothing.
 
     Placed here, at the end of the gap, because the probe classes after it all depend on the
     answer. It adds no sandbox: the stop and the return are both the shared one.
@@ -1252,11 +1254,14 @@ class TestComingBackToTheSharedSandbox:
     def test_a_stopped_sandbox_is_resumed_rather_than_replaced(self, loop, live):
         sandbox_id = live.sandbox.sandbox_id
 
-        async def stop_through_the_service() -> str:
+        async def the_state_the_calls_below_meet() -> str:
             # Past the backend, as `service_link_delete` above reaches past it: stopping a
             # sandbox is not something this backend offers, and a test that asked the code
             # under test to set up its own provocation would be asking the wrong thing.
             client = live.sandbox._sc  # noqa: SLF001 — the provocation, not the measurement
+            state = str((await client.get()).state or "")
+            if state.lower() != "running":
+                return state
             poller = await client.begin_stop()
             await poller.result()
             # Read back rather than taken from the poller: what the calls below run into is the
@@ -1264,8 +1269,8 @@ class TestComingBackToTheSharedSandbox:
             # would let the rest of this test pass having stopped nothing.
             return str((await client.get()).state or "")
 
-        state = loop.run_until_complete(stop_through_the_service())
-        assert state and state.lower() != "running", f"the sandbox did not stop: {state!r}"
+        state = loop.run_until_complete(the_state_the_calls_below_meet())
+        assert state and state.lower() != "running", f"the sandbox is not stopped: {state!r}"
 
         # The call that failed: a write through the data plane, which starts nothing.
         planted = f"{_WORK}/resumed-{uuid.uuid4().hex[:12]}"
