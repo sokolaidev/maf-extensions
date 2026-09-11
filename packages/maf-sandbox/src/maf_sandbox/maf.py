@@ -1260,6 +1260,7 @@ class SandboxToolSession:
         file_store_provenance: FileStoreProvenance | None = None,
         requires_file_integrity: SourceIntegrity | None = None,
         admission_timeout: float | None = None,
+        cleanup_timeout: float | None = None,
     ) -> None:
         self._router = router
         self._context = context
@@ -1277,6 +1278,12 @@ class SandboxToolSession:
         self._log_prefix = _prefixed(name)
         self._admission_timeout = (
             QUEUED_CALL_TIMEOUT if admission_timeout is None else admission_timeout
+        )
+        # The bound the cleanup between two holds actually gets, which a tool may raise above
+        # the router's. Waiting for less would refuse a caller while its predecessor is still
+        # inside the bound its own tool set.
+        self._cleanup_timeout = (
+            router.reclaim.timeout if cleanup_timeout is None else cleanup_timeout
         )
 
     @property
@@ -1760,8 +1767,8 @@ class SandboxToolSession:
                 key,
                 self._spec,
                 owner=call.id,
-                # Per call ahead: its body, then the cleanup the router bounds itself.
-                timeout=self._admission_timeout + self._router.reclaim.timeout,
+                # Per call ahead: its body, then the cleanup that call's own bound permits.
+                timeout=self._admission_timeout + self._cleanup_timeout,
             )
             if call.closed:
                 await self._router.release_call(key, self._spec.kind, owner=call.id)
@@ -2457,8 +2464,9 @@ def sandboxed_tool(
             smaller: its caller's deadline has already passed, and the removal must not extend
             one that has.
         admission_timeout: Seconds this call waits for each call ahead of it on the same
-            sandbox: that call's body bound, to which the router's ``reclaim.timeout`` is added
-            for the cleanup between holds. The wait restarts as each call ahead leaves, and a
+            sandbox: that call's body bound, to which this tool's own cleanup bound is added
+            for the cleanup between holds, ``reclaim_timeout`` where it is set and the router's
+            ``reclaim.timeout`` otherwise. The wait restarts as each call ahead leaves, and a
             call ahead that outlasts it makes this one answer with the busy message. Default
             ``None`` is the framework's queued-call bound (``120.0``). An ordinary call waits
             only while the sandbox drains or cleans; a spec asking ``exclusive_admission``
@@ -2544,6 +2552,7 @@ def sandboxed_tool(
         file_store_provenance=file_store_provenance,
         requires_file_integrity=requires_file_integrity,
         admission_timeout=admission_timeout,
+        cleanup_timeout=effective_timeout,
     )
     properties = (
         dict(declarations)

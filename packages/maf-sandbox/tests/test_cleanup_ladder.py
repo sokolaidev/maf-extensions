@@ -454,3 +454,33 @@ def test_an_admission_bound_must_be_finite_and_positive(bad):
 
     with pytest.raises(ValueError, match="admission_timeout must be a finite positive"):
         _tool(router, _SPEC, use, admission_timeout=bad)
+
+
+@pytest.mark.parametrize("stated", [None, 7.5])
+def test_the_wait_adds_the_tools_own_cleanup_bound_rather_than_the_routers(stated):
+    """A tool may raise the cleanup bound above the router's, and the cleanup between two
+    holds then gets the raised one. A waiter allowing only the router's would refuse a caller
+    whose predecessor was still inside the bound its own tool set."""
+    seen = []
+
+    class _Recording(SandboxRouter):
+        async def enter_call(
+            self, key, spec, *, owner, timeout=QUEUED_CALL_TIMEOUT, exclusive=False
+        ):
+            seen.append(timeout)
+            return await super().enter_call(
+                key, spec, owner=owner, timeout=timeout, exclusive=exclusive
+            )
+
+    backend = InProcessSandboxBackend(sandbox_per_key=True, declarations=_DECLARATIONS)
+    router = _Recording([backend], min_isolation=Isolation.NONE, reclaim=ReclaimConfig(timeout=2.5))
+
+    async def use(sandbox, guest_path, target):
+        pass
+
+    async def scenario():
+        run = _tool(router, _SPEC, use, admission_timeout=stated, reclaim_timeout=90.0)
+        await run(target="x")
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+    assert seen == [(QUEUED_CALL_TIMEOUT if stated is None else stated) + 90.0]
