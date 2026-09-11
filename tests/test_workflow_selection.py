@@ -41,7 +41,9 @@ def test_workflow_marker_discovers_a_new_module(tmp_path: Path):
     result = subprocess.run(
         [pwsh, "-NoProfile", "-NonInteractive", "-File", str(wrapper), "-Python", sys.executable],
         capture_output=True,
-        env=os.environ | {"PYTHONUTF8": "0"},
+        # The byte match below needs plain output, whatever colour the caller's environment
+        # forces: `PY_COLORS` outranks `NO_COLOR` in pytest, and `FORCE_COLOR` loses to both.
+        env=os.environ | {"PYTHONUTF8": "0", "NO_COLOR": "1", "PY_COLORS": "0"},
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert (tmp_path / "discovered").exists()
