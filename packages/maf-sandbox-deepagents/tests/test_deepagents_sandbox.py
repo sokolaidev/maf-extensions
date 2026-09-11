@@ -241,15 +241,20 @@ class TestExecute:
 
     def test_output_past_the_budget_is_dropped_whole_and_said_so(self):
         fake = InProcessSandbox(outputs={"seq": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n"})
-        adapter, _ = _adapter(fake)
+        adapter, backend = _adapter(fake)
         adapter = MafSandbox(adapter.router, KEY, adapter.spec, max_output_bytes=8)
 
+        # Warm first: the router's adoption of an unfamiliar instance disposes once on its own.
+        asyncio.run(adapter.aexecute("true"))
+        before = len(backend.disposed)
         response = asyncio.run(adapter.aexecute("seq 10"))
 
         assert response.truncated is True
         assert response.exit_code is None
         assert "8 bytes" in response.output
         assert "1" not in response.output.replace("8 bytes", "")
+        # Nothing says the program stopped when the host stopped reading, so the sandbox goes.
+        assert backend.disposed[before:] == [KEY]
 
     def test_a_sandbox_that_cannot_bound_output_runs_nothing(
         self, caplog: pytest.LogCaptureFixture
@@ -702,8 +707,9 @@ class TestTheSynchronousSurface:
         with pytest.raises(ValueError, match="timeout"):
             asyncio.run(scenario())
 
-    def test_one_loop_serves_every_sync_call_until_close(self):
-        """A backend may cache a client per loop, so the sync surface must not mint one per call."""
+    def test_one_loop_serves_every_sync_call_of_every_adapter(self):
+        """A backend may cache a client per loop and never evict one, so the sync surface runs
+        one loop for the process, not one per adapter or per call."""
         # The loop objects themselves, held so a collected loop's address cannot be reused.
         loops: list[asyncio.AbstractEventLoop] = []
 
@@ -714,31 +720,24 @@ class TestTheSynchronousSurface:
                     command, working_directory=working_directory, timeout=timeout
                 )
 
-        def loop_threads() -> int:
-            return sum(t.name == "maf-sandbox-deepagents" for t in threading.enumerate())
-
-        adapter, _ = _adapter(Recording())
-        idle = loop_threads()
-        adapter.execute("true")
-        adapter.upload_files([("f", b"1")])
-        adapter.execute("true")
-        assert len({id(loop) for loop in loops}) == 1
-        assert loop_threads() == idle + 1
-
-        closed = adapter.close()
+        first, _ = _adapter(Recording())
+        second, _ = _adapter(Recording())
+        first.execute("true")
+        first.upload_files([("f", b"1")])
+        second.execute("true")
+        closed = first.close()
         assert closed is True
+        second.execute("true")
 
-        assert loop_threads() == idle
-        # A sync call after close starts a loop again; the sandbox itself is fresh too.
-        adapter.execute("true")
-        assert len({id(loop) for loop in loops}) == 2
-        adapter.close()
-        assert loop_threads() == idle
+        assert len({id(loop) for loop in loops}) == 1
+        assert sum(t.name == "maf-sandbox-deepagents" for t in threading.enumerate()) == 1
+        second.close()
 
 
 class TestClose:
     def test_disposes_this_kind_for_this_conversation(self):
-        adapter, backend = _adapter(InProcessSandbox())
+        fake = InProcessSandbox()
+        adapter, backend = _adapter(fake)
         asyncio.run(adapter.aexecute("true"))
 
         before = len(backend.disposed)
@@ -748,6 +747,14 @@ class TestClose:
 
         assert backend.disposed[before:] == [KEY]
         assert backend.disposed_kinds[before:] == [DEEPAGENTS_KIND]
+        # The one instance this adapter acquired, never a sweep of the key.
+        assert backend.disposed_instances[before:] == [fake.instance_id]
+
+    def test_a_close_before_any_acquire_deletes_nothing(self):
+        adapter, backend = _adapter(InProcessSandbox())
+        closed = asyncio.run(adapter.aclose())
+        assert closed is True
+        assert backend.disposed == []
 
     def test_the_synchronous_close_is_the_same_call(self):
         adapter, backend = _adapter(InProcessSandbox())

@@ -161,13 +161,14 @@ def deepagents_spec(
 
 
 class _SyncRunner:
-    """One long-lived loop on a thread of its own, for the synchronous surface.
+    """One loop on a thread of its own, shared by every adapter in the process, for the
+    synchronous surface.
 
     Deep Agents calls that surface from sync tools, which LangGraph runs on a worker thread
     with no loop, and a caller holding a running loop cannot nest another. One loop for the
-    adapter's life rather than one per call, because a backend may cache a client per loop
-    (ACAS does) and would otherwise hold one per call until its shutdown. Started on the first
-    sync call, stopped by :meth:`stop`.
+    process rather than one per adapter or per call, because a backend may cache a client per
+    loop (ACAS does) and never evicts one for a loop that closed; a loop that lives with the
+    process leaves it exactly one. Started on the first sync call; the thread is a daemon.
     """
 
     _THREAD_NAME = "maf-sandbox-deepagents"
@@ -188,17 +189,8 @@ class _SyncRunner:
             loop = self._loop
         return asyncio.run_coroutine_threadsafe(coroutine, loop).result()
 
-    def stop(self) -> None:
-        """Stop and close the loop; a no-op from its own thread, which cannot join itself."""
-        with self._guard:
-            loop, thread = self._loop, self._thread
-            if thread is None or thread is threading.current_thread():
-                return
-            self._loop = self._thread = None
-        assert loop is not None
-        loop.call_soon_threadsafe(loop.stop)
-        thread.join()
-        loop.close()
+
+_SYNC = _SyncRunner()
 
 
 def _response(result: ExecResult) -> ExecuteResponse:
@@ -305,7 +297,8 @@ class MafSandbox(BaseSandbox):
         self._spec = spec
         self._timeout = float(exec_timeout_seconds)
         self._max_output_bytes = max_output_bytes
-        self._sync = _SyncRunner()
+        #: The engine instance the last acquire handed back, and what `aclose` deletes.
+        self._instance_id: str | None = None
         backend = router.backend_for(spec)
         identity = [
             "" if backend is None else backend.name,
@@ -346,10 +339,12 @@ class MafSandbox(BaseSandbox):
     async def _acquire(self) -> Sandbox | None:
         """The conversation's sandbox, or ``None`` with the reason in the log."""
         try:
-            return await self._router.acquire(self._key, self._spec)
+            sandbox = await self._router.acquire(self._key, self._spec)
         except Exception:
             logger.exception("%s: the sandbox could not be acquired", self._id)
             return None
+        self._instance_id = sandbox.instance_id
+        return sandbox
 
     def _inside_base(self, path: str) -> bool:
         """Whether ``path`` names something under the storage base, the file plane's reach."""
@@ -394,6 +389,9 @@ class MafSandbox(BaseSandbox):
         except TimeoutError:
             return ExecuteResponse(output=_TIMED_OUT.format(seconds=bound), exit_code=None)
         except SandboxExecOutputLimitExceeded:
+            # Nothing establishes that the guest process stopped when the host stopped
+            # reading, so the sandbox goes and the next command starts cold.
+            await self._dispose()
             return ExecuteResponse(
                 output=_OUTPUT_DROPPED.format(limit=self._max_output_bytes),
                 exit_code=None,
@@ -405,7 +403,7 @@ class MafSandbox(BaseSandbox):
         return _response(result)
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-        return self._sync.run(self.aexecute(command, timeout=timeout))
+        return _SYNC.run(self.aexecute(command, timeout=timeout))
 
     # --- files in --------------------------------------------------------------------------
 
@@ -495,7 +493,7 @@ class MafSandbox(BaseSandbox):
         return None
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
-        return self._sync.run(self.aupload_files(files))
+        return _SYNC.run(self.aupload_files(files))
 
     # --- files out -------------------------------------------------------------------------
 
@@ -628,25 +626,33 @@ class MafSandbox(BaseSandbox):
         return responses
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        return self._sync.run(self.adownload_files(paths))
+        return _SYNC.run(self.adownload_files(paths))
 
     # --- lifecycle -------------------------------------------------------------------------
 
     async def aclose(self) -> bool:
         """Delete this conversation's sandbox; ``False`` when the delete did not land.
 
-        Deletes this kind alone, so a packaged kind serving the same conversation keeps its own.
-        The router's ``dispose_scope`` on the host's conversation-delete path is the backstop for
-        a sandbox no ``aclose`` reached.
+        Deletes the one instance this adapter acquired, so a packaged kind serving the same
+        conversation, or another adapter over the same key with a different backend or egress,
+        keeps its own; before any acquire there is nothing to delete. The router's
+        ``dispose_scope`` on the host's conversation-delete path is the backstop for a sandbox
+        no ``aclose`` reached.
         """
-        disposed = await self._router.dispose_kind(
-            self._key, self._spec.kind, timeout=self._router.reclaim.timeout
+        return await self._dispose()
+
+    async def _dispose(self) -> bool:
+        instance_id = self._instance_id
+        if instance_id is None:
+            return True
+        self._instance_id = None
+        return await self._router.dispose_kind(
+            self._key,
+            self._spec.kind,
+            instance_id=instance_id,
+            timeout=self._router.reclaim.timeout,
         )
-        self._sync.stop()
-        return disposed
 
     def close(self) -> bool:
-        """Synchronous :meth:`aclose`, which also stops the loop the sync surface ran on."""
-        disposed = self._sync.run(self.aclose())
-        self._sync.stop()
-        return disposed
+        """Synchronous :meth:`aclose`."""
+        return _SYNC.run(self.aclose())
