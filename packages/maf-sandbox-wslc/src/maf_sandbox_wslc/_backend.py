@@ -110,17 +110,33 @@ _LABEL_VALUE_MAX = 63
 _LABEL_VALUE_SAFE = re.compile(r"[A-Za-z0-9._-]+")
 _LABEL_VALUE_DIGEST = re.compile(r"sha256-[0-9a-f]{48}")
 
-# Guest-answered path checks cannot license root reclamation; cleanup requires disposal.
+# No branch of this engine's stat carries an owner, so nothing raised here can be licensed;
+# cleanup requires disposal.
 _CAPABILITIES = frozenset({Capability.EXEC, Capability.FILES_IN})
 
 #: `wslc` exits non-zero for a container that is not there, so removal is judged by this.
 _NOT_FOUND = "WSLC_E_CONTAINER_NOT_FOUND"
-# `container cp` reports a missing guest path with this code on the live CLI.
+# The codes `container cp` ends a failure with, on wslc 2.9.4.0. `E_FAIL` covers both a
+# directory and a non-directory component, so it takes the message below to tell them apart.
 _PATH_NOT_FOUND = "ERROR_PATH_NOT_FOUND"
-# A directory cannot be streamed to stdout, but this diagnostic proves it exists and is a directory.
+_COPY_FAILED = "E_FAIL"
 _DIRECTORY_COPY_ERROR = "cannot copy a directory to a file path"
-# `container cp` uses the docker engine's wording; confirm this branch on a live WSL host.
+# The docker-engine spelling of container absence, kept for `stop`, `logs` and `inspect`.
+# `container cp` answers `_NOT_FOUND` for a missing container and its own codes for a path, so
+# :func:`_copy_verdict` reads those instead.
 _NO_SUCH = "no such"
+
+#: The engine's own verdict, and the last one wins.  A copy diagnostic quotes the guest path
+#: above this line, so a code matched anywhere in the text is the caller's path choosing the
+#: answer — and both answers :func:`_copy_verdict` gives are ones the path check continues past.
+_ERROR_CODE_LINE = re.compile(r"^Error code: (\S+)\s*$", re.MULTILINE)
+
+#: The same reasoning for the message: anchored to a line, so an echoed path cannot supply it.
+_DIRECTORY_COPY_LINE = re.compile(rf"^{re.escape(_DIRECTORY_COPY_ERROR)}", re.MULTILINE | re.I)
+
+#: Refused in a guest path before the engine is asked.  A newline would let a path forge a line
+#: of the engine's own, which is the one thing the anchoring above cannot see through.
+_FORGEABLE = ("\n", "\r", "\0")
 
 #: What `run --name` reports when the name is taken — the one create failure that is recoverable.
 #: `network create` reports the same code for a taken network name.
@@ -285,12 +301,31 @@ def _network_name(container: str) -> str:
     return f"{container}{_NET_SUFFIX}"
 
 
+def _copy_verdict(stderr: str) -> str | None:
+    """What a failed ``container cp`` says a path is: ``"absent"``, ``"directory"``, or nothing.
+
+    Both answers let the filesystem path check carry on, so both are read from the engine's own
+    verdict line rather than from anywhere in the text.  The diagnostic above it quotes the
+    guest path, and a path is the caller's to spell.
+    """
+    codes = _ERROR_CODE_LINE.findall(stderr)
+    if not codes:
+        return None
+    if codes[-1] == _PATH_NOT_FOUND:
+        return "absent"
+    if codes[-1] == _COPY_FAILED and _DIRECTORY_COPY_LINE.search(stderr):
+        return "directory"
+    return None
+
+
 def _reads_as_absent(stderr: str) -> bool:
     """Whether ``stderr`` is this engine saying the container is not there.
 
-    Two spellings, and a caller has to accept both: ``_NOT_FOUND`` is what ``container remove``
-    and ``container inspect`` answer with, ``_NO_SUCH`` the docker-engine wording ``container
-    cp`` borrows.
+    Two spellings, and a caller has to accept both: ``_NOT_FOUND`` is what ``container remove``,
+    ``container stop`` and ``container inspect`` answer with, ``_NO_SUCH`` the docker-engine
+    wording, kept because a second spelling of absence costs a removal nothing.  This reads
+    whether a *container* is gone.  ``container cp`` was measured to use ``_NOT_FOUND`` for that
+    and its own code for a missing path, so :meth:`_stat_guest` does not come through here.
     """
     lowered = stderr.lower()
     return _NOT_FOUND.lower() in lowered or _NO_SUCH in lowered
@@ -559,7 +594,22 @@ class _WslcSandbox:
         return entry
 
     async def _stat_guest(self, guest: str, rel: str) -> SandboxEntry | None:
-        """Stat an absolute guest path from the first container-cp tar header."""
+        """Stat an absolute guest path: the engine settles the kind, the guest splits the rest.
+
+        Measured on wslc 2.9.4.0, ``container cp`` refuses a missing path and a directory with
+        a diagnostic apiece and exits 0 for everything else.  Those two are the answers
+        :func:`~maf_sandbox.paths.refuse_symlinked_ancestors` continues past, and both come from
+        **outside** the container; :meth:`_non_directory_kind` is asked only which non-directory
+        kind an exit-0 path is, so no answer the guest gives carries the check through a link.
+
+        No tar header was produced for any kind on that version, and the branch stays because a
+        CLI that grows one answers the kind outright and leaves the guest out of it (#125).
+        """
+        if any(character in guest for character in _FORGEABLE):
+            raise ValueError(
+                f"refusing to stat {rel!r}: a guest path carrying a newline or a NUL could "
+                f"forge a line of the engine's own diagnostic, which is what decides this"
+            )
         result = await self._run(
             "container",
             "cp",
@@ -569,18 +619,29 @@ class _WslcSandbox:
             read_limit=_TAR_BLOCK,
         )
         if result.returncode != 0 and not result.stdout:
-            error_text = result.stderr_text.lower()
-            if _NO_SUCH in error_text or _PATH_NOT_FOUND.lower() in error_text:
+            verdict = _copy_verdict(result.stderr_text)
+            if verdict == "absent":
                 return None
-            if _DIRECTORY_COPY_ERROR in error_text:
+            if verdict == "directory":
                 return SandboxEntry(path=rel, kind=EntryKind.DIRECTORY, size_bytes=None)
             raise RuntimeError(f"wslc could not stat {rel}: {result.stderr_text.strip()}")
         if len(result.stdout) < _TAR_BLOCK:
-            # WSLC streams an empty response for regular files and links, which is a shape
-            # question the guest can still settle; the tar header remains the fast path where
-            # the CLI provides one.
-            return await stat_by_asking_the_guest_as_root(self._test_in_guest, guest, rel)
+            kind = await self._non_directory_kind(guest, rel)
+            return SandboxEntry(path=rel, kind=kind, size_bytes=None)
         return sandbox_entry_from_tar_header(tar_header_from_block(result.stdout[:_TAR_BLOCK]), rel)
+
+    async def _non_directory_kind(self, guest: str, rel: str) -> EntryKind:
+        """Which non-directory kind sits at ``guest``, asked of the guest and capped here.
+
+        The engine accepted this path as a copy source, so it is neither absent nor a directory
+        and ``test`` is asked only whether it is a link.  **Directory and absent are not answers
+        it may give**: both would carry the check onward, and the engine has already ruled them
+        out, so either becomes :data:`~maf_sandbox.EntryKind.OTHER` and refuses.
+        """
+        entry = await stat_by_asking_the_guest_as_root(self._test_in_guest, guest, rel)
+        if entry is None or entry.kind is EntryKind.DIRECTORY:
+            return EntryKind.OTHER
+        return entry.kind
 
     async def _test_in_guest(self, argv: Sequence[str]) -> int:
         """One ``container exec --user 0``, answering its exit status for the guest-side stat.
@@ -685,9 +746,9 @@ class _WslcSandbox:
         """Not supported: this backend declares neither :data:`~maf_sandbox.Capability.FILES_OUT`
         nor :data:`~maf_sandbox.Capability.FILES_LIST`.
 
-        ``wslc`` shares the docker engine's ``container cp`` tar stream, so a stat-from-header
-        path is buildable here — but it was never wired, and the router refuses a spec requiring
-        either capability before a workload runs, so a well-formed caller never reaches here.
+        ``wslc`` has no container-to-stdout form of ``container cp`` to read a tar header from
+        (#125), and the router refuses a spec requiring either capability before a workload
+        runs, so a well-formed caller never reaches here.
         The raise is the honest floor under one that skipped the check: an :class:`AttributeError`
         from a missing method names neither the backend nor the file, and reads as unrelated to
         a ``write_file`` that had just succeeded.  See :mod:`maf_sandbox.conformance` for the
@@ -737,18 +798,20 @@ class _WslcSandbox:
         :data:`~maf_sandbox.Capability.FILES_DELETE`.
 
         Not for want of ``rm``, nor of the filesystem path check: :meth:`write_file` runs that
-        check over ``_stat_guest``, whose answer for a regular file and a link comes from
-        ``test`` inside the container being confined (#495).  A misplaced write is one file; a
-        recursive removal through an ancestor the guest misreported is a tree outside
-        ``working_directory``.  Nor could such a removal's authority be licensed: no branch of
-        that stat carries an owner, so the reach rule has nothing to read (#839).
+        check over ``_stat_guest``, and an ancestor a removal would descend through is settled
+        by the engine rather than by the container (#495).  What is missing is the rest of what
+        a removal owes.  Nothing here implements one or answers the shared delete probes, and no
+        branch of that stat carries an owner, so the reach rule has nothing to read and nothing
+        raised could be licensed (#839) — a removal here would run at the guest's own authority,
+        which is a capability decision this backend has not taken rather than a check it lacks.
         """
         raise NotImplementedError(
-            "the wslc backend does not support FILES_DELETE: it runs the filesystem path check, "
-            "but the entry kind that decides an escape is answered by the container being "
-            "confined, which a recursive delete must not rest on. Remove through exec if the "
-            "workload already requires it, or declare a backend whose engine answers that check. "
-            f"Guest principal: {self.guest_principal}."
+            "the wslc backend does not support FILES_DELETE: it runs the filesystem path check "
+            "for writes, but implements no removal and has answered none of the shared delete "
+            "probes, and this engine reports no owner for any component, so a removal here "
+            "could not be licensed to run with more authority than the guest. Remove through "
+            "exec if the workload already requires it, or declare a backend that declares "
+            f"FILES_DELETE. Guest principal: {self.guest_principal}."
         )
 
     async def reset(self, *, timeout: float) -> None:
@@ -760,9 +823,9 @@ class _WslcSandbox:
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
         """Unsupported: the engine cannot establish ancestor ownership for a raised delete."""
         raise NotImplementedError(
-            "the wslc backend does not support RECLAIM: its file plane writes as root, "
-            "but guest-answered path checks cannot license a recursive delete as root. "
-            f"Guest principal: {self.guest_principal}. Dispose the sandbox instead."
+            "the wslc backend does not support RECLAIM: its file plane writes as root, but no "
+            "branch of its path check reports an owner, so nothing licenses a recursive delete "
+            f"as root. Guest principal: {self.guest_principal}. Dispose the sandbox instead."
         )
 
 
