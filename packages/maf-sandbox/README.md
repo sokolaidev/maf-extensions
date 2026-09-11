@@ -201,6 +201,43 @@ The contract says what may be called; it does not say how a host-tool call *reac
 
 It costs round trips — several backend calls per host-tool call, plus polling, plus one on every return to reclaim, and one more to stop the program on a run that overran. It serves one outstanding call at a time. This module's own docstring counts those costs exactly, beside the code that decides them; whether the trade is worth it is a measurement rather than an assumption.
 
+## Files outside the base, and a synchronous surface
+
+Two helpers a host or a kind composes; the protocol requires neither. Both came out of the Deep Agents adapter's review ([#1108](https://github.com/sokolaidev/maf-extensions/issues/1108)): every consumer of the file plane meets the same questions, so the answers live here once.
+
+**`maf_sandbox.file_transfer` — files over the shell, and one vocabulary for what the plane refuses.** The file plane (`stat_file`, `read_file`, `write_file`) is confined to the working directory it is called against. A host that has to reach outside it — a framework that keeps its own state under `/tmp` or a root-level directory — has `exec`, which is unconfined anyway, so `write_file_over_exec` and `read_file_over_exec` widen nothing the guest had not already opened. They run over `BoundedExec`: a write goes in base64 chunks into a sibling of the target named for the call and is moved into place once the last chunk landed, so a reader, or a second writer over the same path, sees a whole file and never an interleaving of two; a read is probed first, under a budget sized for base64 of the cap, and counted again after decoding, because a file can grow between the probe and the read. The probe does not read absence off `test -e`, which is false for a file behind an unsearchable ancestor as for an absent one: when it is false the probe opens the path and lets the shell's own error tell `permission_denied` from `not_found`. The road costs the utilities it runs — `SHELL_UTILITIES`: `sh`, `mkdir`, `mv`, `rm`, `base64`, `wc` — which an `EXEC` probe checking only `sh` does not establish; that is the image's to carry. What the guest refuses, on either road, is one `FileRefusal` (`not_found`, `is_directory`, `permission_denied`, `invalid_path`), raised as `SandboxFileRefused` by the shell road and read off the plane's exceptions by `file_refusal(exc)` — which answers `PermissionError` before the `OSError` it subclasses, and `SandboxTransferCapExceeded` and a timeout as no refusal at all — and off a stat by `entry_refusal(entry)`. A shell transfer whose command's end is unknown raises `SandboxShellTransferUnfinished`: the command may still be running and a write may have landed in part, so the caller treats the instance as unclean, the way it treats a timed-out `exec`. A caller cancelled mid-transfer sees `asyncio.CancelledError` as usual, and it means the same thing: condemn the instance on the way out, as the Deep Agents adapter does.
+
+```python
+from maf_sandbox import (
+    FileRefusal,
+    SandboxFileRefused,
+    SandboxShellTransferUnfinished,
+    file_refusal,
+    read_file_over_exec,
+    write_file_over_exec,
+)
+
+
+async def put_and_get(sandbox, base: str) -> bytes:
+    try:
+        await write_file_over_exec(sandbox, "/tmp/state.json", b"{}", working_directory=base, timeout=30)
+        return await read_file_over_exec(
+            sandbox, "/tmp/state.json", working_directory=base, timeout=30, max_bytes=1 << 20
+        )
+    except SandboxFileRefused as refused:
+        assert refused.refusal in FileRefusal
+        raise
+    except SandboxShellTransferUnfinished:
+        raise  # the instance is unclean: dispose it, or queue its cleanup with the router
+
+
+def code_for(error: BaseException) -> str:
+    refusal = file_refusal(error)
+    return "failed" if refusal is None else refusal.value
+```
+
+**`maf_sandbox.sync_runner` — one loop on a daemon thread.** A framework that calls a sandbox from synchronous tools on worker threads has no loop there, and a caller already holding a running loop cannot nest another. `SyncRunner().run(coroutine)` runs it on one loop of its own and waits on a future, from any thread. One loop for the process rather than one per call, because a backend may cache a client per loop (ACAS does) and never evict one for a loop that closed. A fork carries the loop into the child but not its thread, so the runner resets under `os.register_at_fork`, with a fresh guard, and the child's first call starts its own; without that reset the child waits forever on a future nothing serves.
+
 ## A result the model may read half of
 
 A body returns a string or a list of unlabelled `Content` items. To keep a standing sentence readable beside diagnostics, commit it with `sandboxed_tool(..., standing_guidance=(RECOVERY_ROUTE,))` and return it last on every path:
