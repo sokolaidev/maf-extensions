@@ -143,9 +143,9 @@ def shell_refusal(stderr: str) -> FileRefusal | None:
     The words are libc's under the C locale, which every command here runs under, and they
     end the line: the path before them is the model's text and is not read. The last line is
     read first, since the diagnostic that ended the command is the last one written, and a
-    path cannot start a line of its own: both roads refuse a path that carries a line break
-    before any command runs. A missing utility or an I/O error names no refusal and is the
-    transfer failing, not the path.
+    path cannot start a line of its own: both roads refuse a path that carries a line break,
+    or a NUL byte no command could carry, before any command runs. A missing utility or an
+    I/O error names no refusal and is the transfer failing, not the path.
     """
     for line in reversed(stderr.splitlines()):
         line = line.rstrip()
@@ -155,8 +155,11 @@ def shell_refusal(stderr: str) -> FileRefusal | None:
     return None
 
 
-def _refuse_a_line_break(path: str) -> None:
-    """A path with a line break could write a line of its own into a diagnostic."""
+def _refuse_what_no_command_can_carry(path: str) -> None:
+    """A path with a line break could write a line of its own into a diagnostic, and one with
+    a NUL byte cannot reach a shell at all: both are refused before any command is built."""
+    if "\0" in path:
+        raise SandboxFileRefused(FileRefusal.INVALID_PATH, "the path contains a NUL byte")
     if "\n" in path or "\r" in path:
         raise SandboxFileRefused(FileRefusal.INVALID_PATH, "the path contains a line break")
 
@@ -211,7 +214,7 @@ async def write_file_over_exec(
     Raises :class:`SandboxFileRefused`, :class:`SandboxShellTransferUnfinished`,
     :class:`SandboxShellTransferFailed`.
     """
-    _refuse_a_line_break(path)
+    _refuse_what_no_command_can_carry(path)
     target = shlex.quote(path)
     directory = posixpath.dirname(path)
     parent = shlex.quote(directory or ".")
@@ -290,7 +293,7 @@ async def read_file_over_exec(
     """
     if type(max_bytes) is not int or max_bytes <= 0:
         raise ValueError("max_bytes must be a positive integer")
-    _refuse_a_line_break(path)
+    _refuse_what_no_command_can_carry(path)
     target = shlex.quote(path)
     probe = (
         f"if [ ! -e {target} ]; then ( : < {target} ) 2>&1; echo missing; "

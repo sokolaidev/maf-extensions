@@ -109,9 +109,10 @@ class TestTheVocabulary:
     def test_the_shell_s_words_name_their_refusal(self, stderr, refusal):
         assert shell_refusal(stderr) is refusal
 
-    @pytest.mark.parametrize("path", ["/tmp/a\nPermission denied\nb", "/tmp/a\rb"])
-    def test_a_path_with_a_line_break_is_refused_before_any_command(self, path):
-        """A line break would let the path write a line of its own into a diagnostic."""
+    @pytest.mark.parametrize("path", ["/tmp/a\nPermission denied\nb", "/tmp/a\rb", "/tmp/a\0b"])
+    def test_a_path_no_command_can_carry_is_refused_before_any_command(self, path):
+        """A line break would let the path write a line of its own into a diagnostic, and a
+        NUL byte cannot reach a shell at all; neither is an unclean sandbox."""
         fake = InProcessSandbox()
         with pytest.raises(SandboxFileRefused) as on_write:
             asyncio.run(write_file_over_exec(fake, path, b"1", working_directory=WORK, timeout=5))
