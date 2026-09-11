@@ -63,6 +63,7 @@ class TestTheVocabulary:
             (OSError("not a regular file"), FileRefusal.INVALID_PATH),
             (SandboxTransferCapExceeded("over the cap"), None),
             (TimeoutError("late"), None),
+            (ConnectionResetError("the transport"), None),
             (RuntimeError("the transport"), None),
         ],
     )

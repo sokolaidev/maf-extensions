@@ -88,11 +88,12 @@ class SandboxShellTransferFailed(RuntimeError):
 def file_refusal(error: BaseException) -> FileRefusal | None:
     """The refusal a file-plane exception names, or ``None`` when it names none.
 
-    A cap and a timeout are not refusals of the path, and both subclass what a refusal is
-    (``SandboxTransferCapExceeded`` is a ``ValueError``), so they are answered first; a
-    ``PermissionError`` is an ``OSError``, so it comes before the branch that folds the rest.
+    A cap, a timeout and a lost connection are not refusals of the path, and each subclasses
+    what a refusal is (``SandboxTransferCapExceeded`` is a ``ValueError``, the other two are
+    ``OSError``), so they are answered first; a ``PermissionError`` is an ``OSError`` too, so
+    it comes before the branch that folds the rest.
     """
-    if isinstance(error, (SandboxTransferCapExceeded, TimeoutError)):
+    if isinstance(error, (SandboxTransferCapExceeded, TimeoutError, ConnectionError)):
         return None
     if isinstance(error, PermissionError):
         return FileRefusal.PERMISSION_DENIED
