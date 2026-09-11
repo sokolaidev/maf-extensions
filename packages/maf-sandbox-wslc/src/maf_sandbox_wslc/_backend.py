@@ -344,15 +344,18 @@ def _container_name(key: SandboxKey, kind: str, egress_id: str = "") -> str:
     parts = [key.scope, key.thread_id, key.agent_dir, kind]
     if egress_id:
         parts.append(egress_id)
-    if key.call_id:
-        # Tagged, and appended only when the key names a call: a conversation-scoped key hashes
-        # exactly the parts it hashed before this backend served the call scope, so an upgrade
-        # keeps finding the container it already created. The tag is what keeps the two optional
-        # parts apart — an untagged call id would give `(egress="x", call="")` and
-        # `(egress="", call="x")` one name — and `_egress_id` is empty or `allow:`-tagged, so
-        # the two vocabularies cannot meet.
-        parts.append(f"call:{key.call_id}")
     digest = sha256("|".join(parts).encode("utf-8"))
+    if key.call_id:
+        # Folded into the *digest* rather than into the joined string, because the parts above
+        # are joined by `|` with nothing length-prefixing them: appended as text, a call part
+        # would be spellable by a crafted `kind`, and `kind="k|call:x"` with no call would hash
+        # to the same name as `kind="k"` with `call_id="x"` — two sandboxes the backend could
+        # then neither create nor dispose independently while declaring it serves both.
+        # Hashing the finished digest with the call makes the call's *presence* structural: a
+        # conversation name is `H(joined)` and a call name is `H(hex(H(joined)) | call | id)`,
+        # so no spelling of the joined parts can produce one of the other shape. A conversation
+        # key never reaches this branch, so its name is byte-for-byte what it always was.
+        digest = sha256(digest.hexdigest().encode("ascii") + b"|call|" + key.call_id.encode())
     return f"maf-sandbox-wslc-{digest.hexdigest()[:12]}"
 
 

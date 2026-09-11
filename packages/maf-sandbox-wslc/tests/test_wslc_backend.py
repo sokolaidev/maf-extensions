@@ -3300,6 +3300,16 @@ class TestTheIsolationScope:
         """
         assert _container_name(_CALL_A, _SPEC.kind) != _container_name(_CALL_B, _SPEC.kind)
 
+    def test_a_crafted_kind_cannot_spell_the_call_component(self):
+        """The parts are joined by `|` with nothing length-prefixing them, so a call appended as
+        text would be spellable by a `kind`. `kind="k|call:x"` with no call and `kind="k"` with
+        `call_id="x"` would then be one container the backend could neither create nor dispose
+        independently, while declaring it serves both.
+        """
+        forged = _container_name(_KEY, "k|call:x")
+        genuine = _container_name(replace(_KEY, call_id="x"), "k")
+        assert forged != genuine
+
     def test_a_call_id_cannot_be_read_as_an_egress_id(self):
         """Both optional parts are appended, so an untagged call id would let a sandbox with an
         allowlist and no call share a name with a call whose id spelled that allowlist.

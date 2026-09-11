@@ -81,7 +81,7 @@ def test_engine_discovery_preserves_same_kind_sibling_and_replacement():
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("boundary", ["scope", "thread_id", "agent_dir", "kind"])
+@pytest.mark.parametrize("boundary", ["scope", "thread_id", "agent_dir", "kind", "call_id"])
 def test_foreign_ownership_never_deletes_an_id(boundary):
     engine = _Engine()
     engine.add("a" * 64, "first")
