@@ -249,8 +249,8 @@ class MafSandbox(BaseSandbox):
 
     Deep Agents' derived file tools (``ls``, ``read_file``, ``write_file``, ``edit_file``,
     ``glob``, ``grep``) run ``python3`` inside the guest, ``write_file`` for the preflight that
-    creates the parent directory before it uploads; on an image without it only ``execute``
-    and this class's own upload and download work. The image is the host's to choose.
+    creates the parent directory before it uploads; on an image without it only ``execute``,
+    ``delete`` and this class's own upload and download work. The image is the host's to choose.
 
     Every command runs under ``max_output_bytes``, enforced by the backend before it buffers
     the output: the model writes the command, so what it prints is bounded on the host or the
@@ -466,12 +466,21 @@ class MafSandbox(BaseSandbox):
             for start in range(0, len(encoded), step)
         ]
         for command in commands:
-            result = await sandbox.exec_bounded(
-                command,
-                working_directory=STORAGE_BASE,
-                timeout=self._timeout,
-                max_output_bytes=4096,
-            )
+            try:
+                result = await sandbox.exec_bounded(
+                    command,
+                    working_directory=STORAGE_BASE,
+                    timeout=self._timeout,
+                    max_output_bytes=4096,
+                )
+            except TimeoutError:
+                logger.warning("%s: shell write of %r timed out", self._id, path)
+                return _UPLOAD_FAILED
+            except Exception:
+                # Per file, as Deep Agents' contract asks, and the provider's words stay in
+                # the log.
+                logger.exception("%s: shell write of %r failed", self._id, path)
+                return _UPLOAD_FAILED
             if result.exit_code != 0:
                 logger.info(
                     "%s: shell write of %r failed: %s", self._id, path, result.stderr.strip()

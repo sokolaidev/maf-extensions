@@ -29,7 +29,7 @@ SARIF rather than the plain format for a measured reason: with an error in the f
   docker build -t bicep-sandbox:local images/bicep-sandbox
   ```
 
-  It carries the Bicep CLI and `bicepconfig.json` and **no Python**. Deep Agents' `ls`, `read_file`, `edit_file`, `glob` and `grep` tools run `python3` inside the guest, and `write_file` runs a Python preflight there before it uploads, so on this image only `execute` works, and the system prompt tells the model so. The host puts `main.bicep` in the sandbox with the adapter's own `upload_files`, which goes through the backend's file plane and needs nothing in the image.
+  It carries the Bicep CLI and `bicepconfig.json` and **no Python**. Deep Agents' `ls`, `read_file`, `edit_file`, `glob` and `grep` tools run `python3` inside the guest, and `write_file` runs a Python preflight there before it uploads, so on this image only `execute` and `delete` work, and the system prompt tells the model so. The host puts `main.bicep` in the sandbox with the adapter's own `upload_files`, which goes through the backend's file plane and needs nothing in the image.
 
 - **An OpenAI-compatible chat endpoint** whose model can call a tool: OpenAI itself, a router such as OpenRouter (`OPENAI_BASE_URL=https://openrouter.ai/api/v1`, a model name like `openai/gpt-4o-mini`), or a local server (Ollama, vLLM, LM Studio) — the same road samples 02 and 04 take.
 

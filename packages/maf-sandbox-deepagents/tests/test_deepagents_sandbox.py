@@ -417,6 +417,17 @@ class TestFilesIn:
         (response,) = asyncio.run(adapter.aupload_files([("/etc/x", b"1")]))
         assert response.error == "permission_denied"
 
+    def test_a_shell_upload_that_raises_answers_per_file_with_the_detail_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        detail = "docker exec: subscription 0000-1111 refused"
+        adapter, _ = _adapter(InProcessSandbox(raises=RuntimeError(detail)))
+        with caplog.at_level(logging.ERROR, logger="maf_sandbox_deepagents"):
+            (response,) = asyncio.run(adapter.aupload_files([("/tmp/x", b"1")]))
+        assert response.error is not None and "host log" in response.error
+        assert "subscription" not in response.error
+        assert detail in caplog.text
+
     def test_the_shell_road_needs_a_backend_that_bounds_output(self):
         class Unbounded(InProcessSandbox):
             exec_bounded = None  # type: ignore[assignment]  # opts out of `BoundedExec`
