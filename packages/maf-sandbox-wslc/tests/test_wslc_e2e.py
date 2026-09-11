@@ -140,6 +140,40 @@ def _names_on_the_machine(name: str) -> list[str]:
     return [row["Name"] for row in rows if row.get("Name") == name]
 
 
+def _the_image_ships(path: str, image: str) -> bool:
+    """Whether ``image`` already carries ``path``, read from a throwaway container.
+
+    Runs before acquisition, which prepares the base and leaves every fixture looking
+    alike, and as root, so an untraversable parent cannot hide a path that is there. The
+    answer is a word the guest prints, not an exit code: wslc reports a missing image as
+    exit 1 as well, and one caller expects the path while the other expects its absence,
+    so an engine failure must not read as either answer.
+    """
+    probe = subprocess.run(
+        [
+            "wslc",
+            "container",
+            "run",
+            "--rm",
+            "--user",
+            "0",
+            image,
+            "sh",
+            "-c",
+            'if [ -e "$1" ]; then echo present; else echo absent; fi',
+            "sh",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    answer = probe.stdout.strip()
+    if answer not in ("present", "absent"):
+        raise RuntimeError(f"probing {image} for {path} answered {answer!r}: {probe.stderr}")
+    return answer == "present"
+
+
 @pytest.mark.parametrize(
     "command,capability", [("sh", Capability.EXEC), ("test", Capability.FILES_IN)]
 )
@@ -854,6 +888,10 @@ class TestAGuestThatIsNotRoot:
 
     def test_the_guest_can_modify_inputs_and_create_outputs(self):
         """The file plane's inputs and missing directories belong to the image's user."""
+        assert not _the_image_ships(_WORK, str(_NONROOT_IMAGE)), (
+            f"this fixture must not ship {_WORK}: what the ownership checks below read is "
+            "what acquire created"
+        )
         scope = f"e2e-{uuid.uuid4()}"
         backend = WslcSandboxBackend(WslcSandboxConfig())
 
@@ -930,6 +968,10 @@ def test_a_guest_owned_work_dir_answers_the_reach_probe():
     scope = f"e2e-{uuid.uuid4()}"
     backend = WslcSandboxBackend(WslcSandboxConfig())
     spec = SandboxSpec(kind="e2e-guest-owned", image=_GUEST_OWNED_IMAGE, work_dir=_WORK)
+    assert _the_image_ships(_WORK, str(_GUEST_OWNED_IMAGE)), (
+        f"this fixture must ship a guest-owned {_WORK}: preserving a directory that is "
+        "already there is what the stat comparison below measures"
+    )
 
     async def scenario() -> None:
         sandbox = await backend.acquire(_key(scope), spec)
