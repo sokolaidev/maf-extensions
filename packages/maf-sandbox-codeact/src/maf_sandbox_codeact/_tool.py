@@ -193,6 +193,10 @@ def codeact_sandbox_spec(
     No ``min_isolation`` is deliberate: this kind runs only what the model wrote, so the
     host's floor governs.
 
+    ``exclusive_admission`` is set: a model-written program can read whatever a sibling call
+    shared into the sandbox or wrote there, so two calls in one assistant message queue on
+    the conversation's sandbox rather than run in it together.
+
     ``egress_allow`` is the **deployment's** half of the allowlist, and it is empty by default,
     so a caller that says nothing gets a sandbox with no network — what this kind has always
     been.  The other half is :data:`_KIND_EGRESS`, what the kind needs to function: empty,
@@ -353,7 +357,9 @@ def make_codeact_tools(
         image: OCI reference of a sandbox image with a Python interpreter on its path.
         image_id: A backend-native disk-image id, skipping resolution.
         exec_timeout_seconds: Per-program bound. A sandbox that stops answering must not hold
-            the caller's turn open.
+            the caller's turn open. Also what a call waits for each call ahead of it on the
+            sandbox, since calls of this kind run one at a time; a number that is not a bound
+            leaves that wait at the framework's own.
         files_in: What one call may share into the sandbox. Enforced here, because no backend's
             ``write_file`` knows the workload's caps — a spec that declared a bound nothing
             applied would be worse than one that declared none.
@@ -510,6 +516,13 @@ def make_codeact_tools(
         agent_dir=agent_dir,
         spec=spec,
         name=EXECUTE_CODE_TOOL_NAME,
+        # What a call ahead may hold the sandbox for: its program's bound, where that is one.
+        # A degenerate number is tolerated with no registry, so it is not stated as a bound.
+        admission_timeout=(
+            exec_timeout_seconds
+            if math.isfinite(exec_timeout_seconds) and exec_timeout_seconds > 0
+            else None
+        ),
         approval_mode="always_require" if approval_gated else "never_require",
         also_carries_out=registry_carries_out,
         # Withheld or not: what comes back is chosen by a program the model wrote, an exit bit
@@ -645,6 +658,8 @@ def _codeact_spec(
         work_dir=None,
         # Model-written code can write outside the call path and leave processes running.
         confined_to_guest_call_path=False,
+        # And read whatever a sibling call put in the sandbox, so calls run one at a time.
+        exclusive_admission=True,
         requires=frozenset(requires),
         outputs_named_at_call_time=collects,
         files_in=files_in,

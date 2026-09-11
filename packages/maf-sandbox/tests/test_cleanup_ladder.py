@@ -20,6 +20,7 @@ from maf_sandbox import (
     SandboxSpec,
     SandboxUnclean,
 )
+from maf_sandbox._cleanup import QUEUED_CALL_TIMEOUT
 from maf_sandbox.maf import sandboxed_tool
 from maf_sandbox.testing import (
     FAKE_BACKEND_DECLARATIONS,
@@ -41,7 +42,7 @@ def _stored(path):
     return f"/maf-sandbox/work/{path}"
 
 
-def _tool(router, spec, use):
+def _tool(router, spec, use, **kw):
     def build(session):
         async def run(target: str) -> str:
             key = session.key()
@@ -68,6 +69,7 @@ def _tool(router, spec, use):
         spec=spec,
         name="run",
         logger=logging.getLogger(__name__),
+        **kw,
     )[0]
     return getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
 
@@ -355,3 +357,100 @@ def test_failed_reclaim_waits_for_running_sibling_and_reports_after_cleanup(poli
         assert not router._slots._slots
 
     asyncio.run(asyncio.wait_for(scenario(), 3))
+
+
+_EXCLUSIVE = dataclasses.replace(_SPEC, exclusive_admission=True)
+
+
+@pytest.mark.parametrize("rung", [Cleanup.RECLAIM, Cleanup.DISPOSE])
+def test_an_exclusive_kind_runs_one_call_at_a_time(rung):
+    backend = InProcessSandboxBackend(sandbox_per_key=True, declarations=_DECLARATIONS)
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE, min_cleanup=rung)
+    first_entered, release_first = asyncio.Event(), asyncio.Event()
+    served, paths, entered = {}, {}, []
+
+    async def use(sandbox, guest_path, target):
+        entered.append(target)
+        served[target], paths[target] = sandbox, guest_path
+        if target == "first":
+            first_entered.set()
+            await release_first.wait()
+        else:
+            # The call ahead was cleaned before this one was admitted, whichever rung ran.
+            assert _stored(f"{paths['first']}/payload") not in sandbox.contents
+
+    async def scenario():
+        run = _tool(router, _EXCLUSIVE, use)
+        first = asyncio.create_task(run(target="first"))
+        await first_entered.wait()
+        second = asyncio.create_task(run(target="second"))
+        await asyncio.sleep(0.05)
+        assert entered == ["first"]
+        assert not second.done()
+        release_first.set()
+        assert await first == paths["first"]
+        assert await second == paths["second"]
+        assert entered == ["first", "second"]
+        if rung is Cleanup.RECLAIM:
+            assert served["first"] is served["second"]
+            assert not backend.disposed
+        else:
+            assert served["first"] is not served["second"]
+            assert backend.disposed == [_KEY, _KEY]
+        assert not router._slots._slots
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+
+
+def test_the_router_holds_an_exclusive_spec_that_way_without_being_told():
+    backend = InProcessSandboxBackend(sandbox_per_key=True, declarations=_DECLARATIONS)
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+
+    async def scenario():
+        await router.enter_call(_KEY, _EXCLUSIVE, owner="first")
+        with pytest.raises(TimeoutError):
+            await router.enter_call(_KEY, _EXCLUSIVE, owner="second", timeout=0.01)
+        await router.release_call(_KEY, _EXCLUSIVE.kind, owner="first")
+        await router.enter_call(_KEY, _EXCLUSIVE, owner="second", timeout=1)
+        await router.release_call(_KEY, _EXCLUSIVE.kind, owner="second")
+        assert not router._slots._slots
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+
+
+@pytest.mark.parametrize("stated", [None, 7.5])
+def test_a_call_waits_its_stated_bound_plus_the_cleanup_bound_per_call_ahead(stated):
+    seen = []
+
+    class _Recording(SandboxRouter):
+        async def enter_call(
+            self, key, spec, *, owner, timeout=QUEUED_CALL_TIMEOUT, exclusive=False
+        ):
+            seen.append(timeout)
+            return await super().enter_call(
+                key, spec, owner=owner, timeout=timeout, exclusive=exclusive
+            )
+
+    backend = InProcessSandboxBackend(sandbox_per_key=True, declarations=_DECLARATIONS)
+    router = _Recording([backend], min_isolation=Isolation.NONE, reclaim=ReclaimConfig(timeout=2.5))
+
+    async def use(sandbox, guest_path, target):
+        pass
+
+    async def scenario():
+        await _tool(router, _SPEC, use, admission_timeout=stated)(target="x")
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+    assert seen == [(QUEUED_CALL_TIMEOUT if stated is None else stated) + 2.5]
+
+
+@pytest.mark.parametrize("bad", [0, -1.0, float("inf"), float("nan")])
+def test_an_admission_bound_must_be_finite_and_positive(bad):
+    backend = InProcessSandboxBackend(sandbox_per_key=True, declarations=_DECLARATIONS)
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+
+    async def use(sandbox, guest_path, target):
+        pass
+
+    with pytest.raises(ValueError, match="admission_timeout must be a finite positive"):
+        _tool(router, _SPEC, use, admission_timeout=bad)

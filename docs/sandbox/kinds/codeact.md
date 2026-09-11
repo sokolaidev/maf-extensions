@@ -22,7 +22,7 @@ Four channels exist and none is on by default: a file store, an output sink, a h
 
 ## `requires` is assembled from the wired channels
 
-`_codeact_spec` builds the set rather than stating one, at [`_tool.py:612`](../../../packages/maf-sandbox-codeact/src/maf_sandbox_codeact/_tool.py):
+`_codeact_spec` builds the set rather than stating one, at [`_tool.py:625`](../../../packages/maf-sandbox-codeact/src/maf_sandbox_codeact/_tool.py):
 
 ```python
 collects = outputs is not CodeactOutputs.NONE
@@ -43,7 +43,7 @@ Two consequences worth stating plainly. A registry drops wslc twice over — it 
 
 ## Egress: a derived mode, closed by default
 
-The spec carries **one mode**, and this kind computes it rather than accepting it: `_effective_egress` ([`_tool.py:547`](../../../packages/maf-sandbox-codeact/src/maf_sandbox_codeact/_tool.py)) unions what the kind needs with what the deployment added, and `egress = Egress.ALLOWLIST if effective_egress else Egress.CLOSED`. Named hosts run `ALLOWLIST` with those hosts as the payload; no hosts at all runs `CLOSED`, which is what a caller that says nothing gets — the program computes and cannot fetch. Method-scoped `EgressRule` entries pass through the same factories and derive `EGRESS_METHODS` in `required_capabilities`; the router also matches their literal tokens against the backend declaration. The [network policy](../network.md#method-scoped-allow-entries) defines normalization, refusal and the remaining backend adoption work.
+The spec carries **one mode**, and this kind computes it rather than accepting it: `_effective_egress` ([`_tool.py:560`](../../../packages/maf-sandbox-codeact/src/maf_sandbox_codeact/_tool.py)) unions what the kind needs with what the deployment added, and `egress = Egress.ALLOWLIST if effective_egress else Egress.CLOSED`. Named hosts run `ALLOWLIST` with those hosts as the payload; no hosts at all runs `CLOSED`, which is what a caller that says nothing gets — the program computes and cannot fetch. Method-scoped `EgressRule` entries pass through the same factories and derive `EGRESS_METHODS` in `required_capabilities`; the router also matches their literal tokens against the backend declaration. The [network policy](../network.md#method-scoped-allow-entries) defines normalization, refusal and the remaining backend adoption work.
 
 **`UNRESTRICTED` is not expressible, and that is the design rather than an omission.** This sandbox runs model-written code, and unconfined model-written code reaching anything is the exfiltration case an allowlist exists to prevent. There is no argument to pass and no host list that produces it: the derivation has two outcomes and neither is the open posture. Where [`bicep`](bicep.md) takes a mode as an argument — a fixed compiler is low-risk unconfined, and the in-process dev sample needs it — this kind refuses to offer one.
 
@@ -73,6 +73,8 @@ The layout inside it depends on whether a registry is wired, and the kind derive
 The two-directory split is why the transport's names are not reserved against a model-supplied one: there is nothing for the two to collide over. `program.py` stays reserved in the flat case, and each reservation carries its own refusal clause, because the two are reserved for opposite reasons — this tool *writes* the program and only *reads* the manifest.
 
 Caps are checked before the read they would have prevented, not after: the file count before the listing, the program's own bytes before the store is touched, each shared file's as it arrives. A bound that answers only once everything is in memory has already spent what it exists to bound.
+
+**Calls run one at a time.** The spec sets `exclusive_admission`, so two `execute_code` calls in one assistant message queue on the conversation's sandbox rather than run in it together. The reason is the one that keeps this kind unconfined: a model-written program reads whatever a sibling call shared in or wrote, and a withheld call's inputs are exactly what a sibling must not print. A queued call waits `exec_timeout_seconds` plus the router's reclaim bound for each call ahead of it, then answers busy. Under the default `DISPOSE` cleanup each call pays a disposal, which one call per turn already paid.
 
 ## The empty registry is the security story
 
@@ -156,6 +158,7 @@ There are two ways out and the choice is still not made. A **matcher disjunction
 | The two records this kind is the only source of — a collection, and a host-tool call keyed to the sandbox it ran in | shipped — `collect_outputs` is passed `session.observer` and the key `_execute` already took for its acquire, and `HostToolRun` is passed that same key, so an `OutputsCollected` and a `HostToolCalled` join to the conversation rather than to a run id nothing else names. Nothing is emitted for a host that registered no observer, which is the seam's rule and not this kind's | [#949](https://github.com/sokolaidev/maf-extensions/issues/949) (closed) by [#959](https://github.com/sokolaidev/maf-extensions/pull/959) (merged) |
 | Host-tool calling wired, with the round trip measured on a live backend | shipped | [#133](https://github.com/sokolaidev/maf-extensions/issues/133) (open umbrella, parts A–C landed); cost measured in [#302](https://github.com/sokolaidev/maf-extensions/issues/302) (closed) |
 | A fresh call directory per call, reclaimed by the framework | shipped | [#496](https://github.com/sokolaidev/maf-extensions/pull/496) (merged), kinds wired in [#500](https://github.com/sokolaidev/maf-extensions/pull/500) (merged) |
+| Calls of this kind run one at a time in a sandbox | shipped — `exclusive_admission` on the spec, and `exec_timeout_seconds` as the wait for each call ahead | [#1129](https://github.com/sokolaidev/maf-extensions/issues/1129) (closed) |
 | Two-halved `egress_allow`, closed by default, validated entries | shipped | [#403](https://github.com/sokolaidev/maf-extensions/issues/403) (open) — the empty half still cannot say whether it means "needs none" or "nobody asked" |
 | The mode is derived from the union rather than passed: hosts run `ALLOWLIST`, none runs `CLOSED`, `UNRESTRICTED` is not expressible | shipped | [#525](https://github.com/sokolaidev/maf-extensions/issues/525) (closed), CodeAct delivered in [#530](https://github.com/sokolaidev/maf-extensions/pull/530) (merged) and remaining Bicep work in [#1085](https://github.com/sokolaidev/maf-extensions/pull/1085) (merged), under [#265](https://github.com/sokolaidev/maf-extensions/issues/265) (closed) |
 | A `RUN_CODE`-only backend serving this kind: matcher disjunction or a second spec | open — undecided, and costing nothing yet because no backend declares `RUN_CODE` | [#425](https://github.com/sokolaidev/maf-extensions/issues/425) (open); the method itself shipped, [#381](https://github.com/sokolaidev/maf-extensions/issues/381) (closed) |

@@ -1825,9 +1825,16 @@ class SandboxRouter:
 
         Ordinary bodies overlap until cleanup starts draining the entry. Retain the admission
         for acquire and cleanup, then await finish_call or release_call. Explicit exclusive use
-        excludes every sibling; waiting is bounded by timeout."""
+        excludes every sibling, and a spec asking ``exclusive_admission`` is held that way
+        whatever ``exclusive`` says. ``timeout`` bounds the wait per call ahead."""
         backend = self._refuse_unless_backend_can_serve(spec)
-        await self._slots.take(key, spec.kind, owner=owner, exclusive=exclusive, timeout=timeout)
+        await self._slots.take(
+            key,
+            spec.kind,
+            owner=owner,
+            exclusive=exclusive or spec.exclusive_admission,
+            timeout=timeout,
+        )
         try:
             self._refuse_host_denials(spec)
             self._refuse_unless_this_backend_can_serve(backend, spec)

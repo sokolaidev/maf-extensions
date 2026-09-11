@@ -814,6 +814,15 @@ class SandboxSpec:
 
     ``min_cleanup`` may raise the host's floor, never lower it. None adds no constraint.
     DISPOSE is always available, so a stronger floor costs cleanup rather than refusing a spec.
+
+    ``exclusive_admission`` asks that no two calls of this kind run in one sandbox at once: the
+    router admits such a call only when nothing holds the sandbox, and admits nothing else
+    until it leaves.  Calls of other kinds are unaffected, since they never share one.  It is
+    for a kind whose program can reach beyond its own call path, which model-written code does.
+    Under the default ``DISPOSE`` cleanup every such call is the last one out and pays a
+    disposal, and a waiting call is refused as busy once a call ahead of it outlasts the bound
+    ``sandboxed_tool`` sets with ``admission_timeout``.  Like the gate it holds, it coordinates
+    one router; several routers over one conversation need :data:`IsolationScope.CALL`.
     """
 
     kind: str
@@ -850,6 +859,8 @@ class SandboxSpec:
     confined_to_guest_call_path: bool = False
     # Appended after it, for that same reason.
     min_cleanup: Cleanup | None = None
+    # Appended after it, for that same reason.
+    exclusive_admission: bool = False
 
     @property
     def required_capabilities(self) -> frozenset[Capability]:
