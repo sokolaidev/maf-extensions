@@ -208,6 +208,32 @@ class TestTheWrite:
         staged = first.split(" : > ")[1]
         assert last == f"export LC_ALL=C; rm -f -- {staged}"
 
+    def test_one_deadline_bounds_the_whole_write(self, monkeypatch: pytest.MonkeyPatch):
+        """Each command gets what the deadline has left, and a write that runs out between two
+        commands takes its sibling back and fails with the sandbox whole."""
+        clock = [100.0]
+
+        class Slow(InProcessSandbox):
+            async def exec(self, command, *, working_directory, timeout):
+                clock[0] += 0.4  # each command spends this much of the caller's time
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        monkeypatch.setattr("maf_sandbox.file_transfer.time.monotonic", lambda: clock[0])
+        fake = Slow()
+        content = b"x" * (SHELL_CHUNK_BYTES * 3)  # three chunks: five commands in all
+
+        with pytest.raises(SandboxShellTransferFailed, match="ran out of time after 3 of 5"):
+            asyncio.run(
+                write_file_over_exec(fake, "/tmp/f", content, working_directory=WORK, timeout=1.0)
+            )
+
+        timeouts = [timeout for _, _, timeout in fake.commands]
+        assert timeouts[:3] == pytest.approx([1.0, 0.6, 0.2])
+        assert fake.commands[-1][0].startswith("export LC_ALL=C; rm -f -- /tmp/.maf-")
+        assert timeouts[-1] == 10.0  # the take-back's own allowance
+
     def test_a_sibling_that_cannot_be_taken_back_is_unfinished(self):
         class Stuck(InProcessSandbox):
             async def exec(self, command, *, working_directory, timeout):
@@ -431,6 +457,33 @@ class TestTheRead:
                 read_file_over_exec(fake, "/tmp/x", working_directory=WORK, timeout=5, max_bytes=64)
             )
         assert unfinished.value.over_cap is False
+
+    def test_one_deadline_bounds_the_probe_and_the_read(self, monkeypatch: pytest.MonkeyPatch):
+        clock = [100.0]
+
+        class Slow(InProcessSandbox):
+            async def exec(self, command, *, working_directory, timeout):
+                clock[0] += 0.7
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        monkeypatch.setattr("maf_sandbox.file_transfer.time.monotonic", lambda: clock[0])
+        fake = Slow(outputs={"wc -c": "3\n", "base64 <": "eHh4\n"})
+        content = asyncio.run(
+            read_file_over_exec(fake, "/tmp/x", working_directory=WORK, timeout=1.0, max_bytes=8)
+        )
+        assert content == b"xxx"
+        assert [timeout for _, _, timeout in fake.commands] == pytest.approx([1.0, 0.3])
+
+        slower = Slow(outputs={"wc -c": "3\n"})
+        with pytest.raises(SandboxShellTransferFailed, match="ran out of time after the probe"):
+            asyncio.run(
+                read_file_over_exec(
+                    slower, "/tmp/x", working_directory=WORK, timeout=0.5, max_bytes=8
+                )
+            )
+        assert len(slower.commands) == 1
 
     def test_the_cap_must_be_a_positive_integer(self):
         with pytest.raises(ValueError, match="max_bytes"):

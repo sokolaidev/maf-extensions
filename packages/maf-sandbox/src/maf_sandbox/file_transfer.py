@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import posixpath
 import shlex
+import time
 import uuid
 from enum import StrEnum
 
@@ -56,6 +57,10 @@ _ANSWER_BYTES = 4096
 #: Every command's prefix: the diagnostics this module reads are libc's, and a localised
 #: guest would word them otherwise.
 _C_LOCALE = "export LC_ALL=C; "
+
+#: What taking a failed write back may spend beyond the caller's deadline: the removal is
+#: one short command, and a deadline already spent is no reason to leave the chunks there.
+_TAKE_BACK_SECONDS = 10.0
 
 
 class FileRefusal(StrEnum):
@@ -204,7 +209,10 @@ async def write_file_over_exec(
 ) -> None:
     """Write ``content`` to ``path`` through the shell, whole or not at all.
 
-    Base64 in chunks of :data:`SHELL_CHUNK_BYTES`, into a sibling in the target's directory
+    ``timeout`` bounds the whole write, every chunk included; a write that runs out of time
+    between two commands takes its sibling back, under :data:`_TAKE_BACK_SECONDS` of its
+    own, and raises :class:`SandboxShellTransferFailed`, the sandbox whole. Base64 in chunks
+    of :data:`SHELL_CHUNK_BYTES`, into a sibling in the target's directory
     named for this call alone and moved into place once the last chunk landed, so a reader,
     or a second writer over the same path, sees a whole file and never an interleaving of
     two. Parent directories are created. A directory at ``path`` is refused, not entered:
@@ -235,34 +243,41 @@ async def write_file_over_exec(
         for start in range(0, len(encoded), step)
     ]
     commands.append(f"{refuse_directory} && mv -f -- {staged} {target}")
+    deadline = time.monotonic() + timeout
     for index, command in enumerate(commands):
+        left = deadline - time.monotonic()
+        if left <= 0:
+            # Nothing is running: the sibling comes back, and the sandbox is whole.
+            if index > 0:
+                await _take_back(sandbox, staged, working_directory=working_directory)
+            raise SandboxShellTransferFailed(
+                f"the write of {path!r} ran out of time after {index} of {len(commands)} commands"
+            )
         result = await _run(
             sandbox,
             command,
             working_directory=working_directory,
-            timeout=timeout,
+            timeout=left,
             budget=_ANSWER_BYTES,
         )
         if result.exit_code == 0:
             continue
         detail = result.stderr.strip()
         if index > 0:
-            await _take_back(sandbox, staged, working_directory=working_directory, timeout=timeout)
+            await _take_back(sandbox, staged, working_directory=working_directory)
         refusal = shell_refusal(detail)
         if refusal is None:
             raise SandboxShellTransferFailed(f"the write of {path!r} failed: {detail}")
         raise SandboxFileRefused(refusal, detail)
 
 
-async def _take_back(
-    sandbox: BoundedExec, staged: str, *, working_directory: str, timeout: float
-) -> None:
+async def _take_back(sandbox: BoundedExec, staged: str, *, working_directory: str) -> None:
     """Remove the staged sibling a failed write left; not established is unfinished."""
     removed = await _run(
         sandbox,
         f"rm -f -- {staged}",
         working_directory=working_directory,
-        timeout=timeout,
+        timeout=_TAKE_BACK_SECONDS,
         budget=_ANSWER_BYTES,
     )
     if removed.exit_code != 0:
@@ -286,7 +301,9 @@ async def read_file_over_exec(
 ) -> bytes:
     """Read the regular file at ``path`` through the shell, refusing anything over ``max_bytes``.
 
-    A probe classifies the path first. ``test -e`` is false for a file behind an unsearchable
+    ``timeout`` bounds the probe and the read together; a read that runs out of time between
+    the two raises :class:`SandboxShellTransferFailed`, nothing running. A probe classifies
+    the path first. ``test -e`` is false for a file behind an unsearchable
     ancestor as for an absent one, so when it is false the probe opens the path and lets the
     shell's own error tell the two apart. The read runs under a budget sized for base64 of
     ``max_bytes``, and what decodes is counted again: a file can grow after the probe.
@@ -305,6 +322,7 @@ async def read_file_over_exec(
         f"elif [ ! -r {target} ]; then echo unreadable; "
         f"else wc -c < {target}; fi"
     )
+    deadline = time.monotonic() + timeout
     probed = await _run(
         sandbox, probe, working_directory=working_directory, timeout=timeout, budget=_ANSWER_BYTES
     )
@@ -330,12 +348,15 @@ async def read_file_over_exec(
         raise SandboxTransferCapExceeded(
             f"{path!r} is {answer} bytes and the caller allowed {max_bytes}"
         )
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise SandboxShellTransferFailed(f"the read of {path!r} ran out of time after the probe")
     # Base64 is 4/3 of the file plus line breaks; the budget bounds a file that grew.
     read = await _run(
         sandbox,
         f"base64 < {target}",
         working_directory=working_directory,
-        timeout=timeout,
+        timeout=left,
         budget=max_bytes * 2 + _ANSWER_BYTES,
         reading=True,
     )
