@@ -305,6 +305,8 @@ class MafSandbox(BaseSandbox):
         self._max_output_bytes = max_output_bytes
         #: The engine instance the last acquire handed back, and what `aclose` deletes.
         self._instance_id: str | None = None
+        #: A delete still running after a timeout or an overflow; no operation overtakes it.
+        self._disposal: asyncio.Task[bool] | None = None
         backend = router.backend_for(spec)
         identity = [
             "" if backend is None else backend.name,
@@ -344,6 +346,7 @@ class MafSandbox(BaseSandbox):
 
     async def _acquire(self) -> Sandbox | None:
         """The conversation's sandbox, or ``None`` with the reason in the log."""
+        await self._join_disposal()
         try:
             sandbox = await self._router.acquire(self._key, self._spec)
         except Exception:
@@ -394,12 +397,12 @@ class MafSandbox(BaseSandbox):
             )
         except TimeoutError:
             # As below: a timeout says the wait ended, not that the program did.
-            await self._dispose()
+            self._dispose_later(sandbox.instance_id)
             return ExecuteResponse(output=_TIMED_OUT.format(seconds=bound), exit_code=None)
         except SandboxExecOutputLimitExceeded:
             # Nothing establishes that the guest process stopped when the host stopped
             # reading, so the sandbox goes and the next command starts cold.
-            await self._dispose()
+            self._dispose_later(sandbox.instance_id)
             return ExecuteResponse(
                 output=_OUTPUT_DROPPED.format(limit=self._max_output_bytes),
                 exit_code=None,
@@ -436,7 +439,9 @@ class MafSandbox(BaseSandbox):
             elif self._inside_base(path):
                 error = await self._upload_via_plane(sandbox, path, content)
             elif isinstance(sandbox, BoundedExec):
-                error = await self._upload_via_shell(sandbox, path, content)
+                error = await self._upload_via_shell(
+                    sandbox, path, content, instance_id=sandbox.instance_id
+                )
             else:
                 error = _NO_SHELL_ROAD
             if error == _UPLOAD_BATCH_LOST:
@@ -461,7 +466,7 @@ class MafSandbox(BaseSandbox):
         return None
 
     async def _upload_via_shell(
-        self, sandbox: BoundedExec, path: str, content: bytes
+        self, sandbox: BoundedExec, path: str, content: bytes, *, instance_id: str
     ) -> str | None:
         """Write outside the base through the shell the agent already has.
 
@@ -491,7 +496,7 @@ class MafSandbox(BaseSandbox):
                 # The command may still be running, so the sandbox goes, and with it every
                 # file this batch had already put there.
                 logger.warning("%s: shell write of %r timed out", self._id, path)
-                await self._dispose()
+                self._dispose_later(instance_id)
                 return _UPLOAD_BATCH_LOST
             except Exception:
                 # Per file, as Deep Agents' contract asks, and the provider's words stay in
@@ -522,7 +527,9 @@ class MafSandbox(BaseSandbox):
         if not self._inside_base(path):
             if not isinstance(sandbox, BoundedExec):
                 return FileDownloadResponse(path=path, error=_NO_SHELL_ROAD)
-            return await self._download_via_shell(sandbox, path, cap=cap, over_cap=over_cap)
+            return await self._download_via_shell(
+                sandbox, path, cap=cap, over_cap=over_cap, instance_id=sandbox.instance_id
+            )
         try:
             entry = await sandbox.stat_file(path, working_directory=STORAGE_BASE)
         except TimeoutError:
@@ -564,7 +571,7 @@ class MafSandbox(BaseSandbox):
         return FileDownloadResponse(path=path, content=content)
 
     async def _download_via_shell(
-        self, sandbox: BoundedExec, path: str, *, cap: int, over_cap: str
+        self, sandbox: BoundedExec, path: str, *, cap: int, over_cap: str, instance_id: str
     ) -> FileDownloadResponse:
         """Read outside the base through the shell, under ``cap``; see :meth:`_upload_via_shell`."""
         target = shlex.quote(path)
@@ -581,7 +588,7 @@ class MafSandbox(BaseSandbox):
             )
         except TimeoutError:
             logger.warning("%s: probe of %r timed out", self._id, path)
-            await self._dispose()
+            self._dispose_later(instance_id)
             return FileDownloadResponse(path=path, error=_DOWNLOAD_BATCH_LOST)
         answer = probed.stdout.strip()
         if probed.exit_code != 0 or not answer:
@@ -612,7 +619,7 @@ class MafSandbox(BaseSandbox):
             return FileDownloadResponse(path=path, error=over_cap)
         except TimeoutError:
             logger.warning("%s: shell read of %r timed out", self._id, path)
-            await self._dispose()
+            self._dispose_later(instance_id)
             return FileDownloadResponse(path=path, error=_DOWNLOAD_BATCH_LOST)
         if read.exit_code != 0:
             logger.warning("%s: shell read of %r failed: %s", self._id, path, read.stderr.strip())
@@ -665,12 +672,41 @@ class MafSandbox(BaseSandbox):
         ``dispose_scope`` on the host's conversation-delete path is the backstop for a sandbox
         no ``aclose`` reached.
         """
-        return await self._dispose()
-
-    async def _dispose(self) -> bool:
+        await self._join_disposal()
         instance_id = self._instance_id
         if instance_id is None:
             return True
+        return await self._dispose(instance_id)
+
+    def _dispose_later(self, instance_id: str) -> None:
+        """Delete ``instance_id`` after the answer, so cleanup never extends the caller's wait.
+
+        The instance is the one the operation itself acquired, never the field, which a
+        concurrent acquire may have moved on. The next operation joins the delete before it
+        acquires, so nothing reaches the instance while it is still being deleted.
+        """
+        task = asyncio.create_task(self._dispose(instance_id))
+        task.add_done_callback(self._disposal_done)
+        self._disposal = task
+
+    def _disposal_done(self, task: asyncio.Task[bool]) -> None:
+        if task.cancelled():
+            logger.warning("%s: the delete after a timeout was cancelled", self._id)
+        elif (failure := task.exception()) is not None:
+            logger.error("%s: the delete after a timeout failed: %s", self._id, failure)
+        elif not task.result():
+            logger.warning("%s: the delete after a timeout did not land", self._id)
+
+    async def _join_disposal(self) -> None:
+        disposal = self._disposal
+        if disposal is not None and not disposal.done():
+            try:
+                # Shielded: a caller's deadline may cancel the wait, never the delete.
+                await asyncio.shield(disposal)
+            except Exception:
+                pass  # logged by `_disposal_done`
+
+    async def _dispose(self, instance_id: str) -> bool:
         disposed = await self._router.dispose_kind(
             self._key,
             self._spec.kind,

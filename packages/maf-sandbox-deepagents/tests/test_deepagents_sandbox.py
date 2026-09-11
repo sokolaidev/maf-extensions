@@ -248,7 +248,13 @@ class TestExecute:
         # Warm first: the router's adoption of an unfamiliar instance disposes once on its own.
         asyncio.run(adapter.aexecute("true"))
         before = len(backend.disposed)
-        response = asyncio.run(adapter.aexecute("seq 10"))
+
+        async def scenario():
+            response = await adapter.aexecute("seq 10")
+            await adapter.aclose()  # joins the delete the overflow started
+            return response
+
+        response = asyncio.run(scenario())
 
         assert response.truncated is True
         assert response.exit_code is None
@@ -324,10 +330,57 @@ class TestExecute:
     def test_a_timeout_disposes_the_sandbox(self):
         """A timeout says the wait ended, not that the program did; the next command starts cold."""
         adapter, backend = _adapter(InProcessSandbox(raises=TimeoutError()))
-        asyncio.run(adapter.aexecute("sleep 999", timeout=3))
-        # The router's adoption of an unfamiliar instance disposes once; the timeout, once more.
+
+        async def scenario():
+            await adapter.aexecute("sleep 999", timeout=3)
+            return await adapter.aclose()  # joins the delete the timeout started
+
+        assert asyncio.run(scenario()) is True
+        # The router's adoption of an unfamiliar instance disposes once; the timeout, once more;
+        # `aclose` found nothing left to delete.
         assert backend.disposed == [KEY, KEY]
         assert backend.disposed_kinds[-1] == DEEPAGENTS_KIND
+
+    def test_the_delete_after_a_timeout_runs_past_the_answer_and_the_next_call_waits_for_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        disposed_when_run: list[int] = []
+
+        class OnceSlow(InProcessSandbox):
+            async def exec(self, command, *, working_directory, timeout):
+                if not self.commands:
+                    self.commands.append((str(command), working_directory, timeout))
+                    raise TimeoutError()
+                disposed_when_run.append(len(backend.disposed))
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        adapter, backend = _adapter(OnceSlow())
+        dispose_kind = adapter.router.dispose_kind
+
+        async def slow_dispose_kind(*args, **kwargs):
+            await asyncio.sleep(0.3)
+            return await dispose_kind(*args, **kwargs)
+
+        async def scenario():
+            monkeypatch.setattr(adapter.router, "dispose_kind", slow_dispose_kind)
+            started = time.monotonic()
+            timed_out = await adapter.aexecute("sleep 999", timeout=5)
+            answered_after = time.monotonic() - started
+            in_flight = len(backend.disposed)
+            again = await adapter.aexecute("true")
+            return timed_out, answered_after, in_flight, again
+
+        timed_out, answered_after, in_flight, again = asyncio.run(scenario())
+
+        assert timed_out.exit_code is None
+        assert answered_after < 0.2  # the 0.3-second delete did not extend the answer
+        assert in_flight == 1  # the adoption's own; the timeout's delete was still running
+        assert again.exit_code == 0
+        # By the time the next command ran, the delete had landed (and nothing ran after it).
+        assert len(backend.disposed) >= 2
+        assert disposed_when_run == [len(backend.disposed)]
 
     def test_a_timeout_is_reported_as_one_and_claims_no_stop(self):
         adapter, _ = _adapter(InProcessSandbox(raises=TimeoutError()))
@@ -449,7 +502,13 @@ class TestFilesIn:
 
     def test_a_shell_upload_that_times_out_disposes_and_fails_the_batch(self):
         adapter, backend = _adapter(InProcessSandbox(raises=TimeoutError()))
-        responses = asyncio.run(adapter.aupload_files([("kept.txt", b"1"), ("/tmp/x", b"2")]))
+
+        async def scenario():
+            responses = await adapter.aupload_files([("kept.txt", b"1"), ("/tmp/x", b"2")])
+            await adapter.aclose()  # joins the delete the timeout started
+            return responses
+
+        responses = asyncio.run(scenario())
         assert [r.error is not None and "did not land" in r.error for r in responses] == [
             True,
             True,
@@ -601,9 +660,13 @@ class TestFilesOut:
     def test_a_shell_download_that_times_out_disposes_and_ends_the_batch(self):
         fake = InProcessSandbox(raises=TimeoutError(), seed_files={f"{WORK}/a.txt": "1"})
         adapter, backend = _adapter(fake)
-        first, second, third = asyncio.run(
-            adapter.adownload_files([f"{WORK}/a.txt", "/tmp/x", "/tmp/y"])
-        )
+
+        async def scenario():
+            responses = await adapter.adownload_files([f"{WORK}/a.txt", "/tmp/x", "/tmp/y"])
+            await adapter.aclose()  # joins the delete the timeout started
+            return responses
+
+        first, second, third = asyncio.run(scenario())
         assert first.content == b"1"
         assert second.error is not None and "was not read" in second.error
         assert third.error == second.error
