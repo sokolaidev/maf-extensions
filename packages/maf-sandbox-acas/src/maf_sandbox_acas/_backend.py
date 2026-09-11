@@ -1248,7 +1248,10 @@ class AcasSandboxBackend:
             )
             await self._probe_commands(spec, created, held)
         except SandboxCapabilityNotSupported:
-            self._registry.pop(registry_key, None)
+            with self._disposal_guard:
+                if held.unusable:
+                    self._invalidated_ids.add(held.sandbox_id)
+                self._registry.pop(registry_key, None)
             await self._release_the_refused(gc, key, sc.sandbox_id, kind=spec.kind)
             raise
         return created

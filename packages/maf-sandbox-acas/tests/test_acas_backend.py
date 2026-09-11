@@ -3170,6 +3170,54 @@ def _spec():
     return SandboxSpec(kind="bicep", image_id="pinned-id")
 
 
+@pytest.mark.parametrize("failure", ["exit", "exception"])
+def test_fresh_capture_probe_failure_retries_deletion_before_replacement(failure, monkeypatch):
+    from maf_sandbox import SandboxOutputError
+
+    client = _GuestGroupClient(_guest_removing(True), delete_fails=True)
+    backend = _backend_with(client)
+    key = SandboxKey("s", "t", "a")
+    spec = _spec()
+    original_exec = _GuestSandboxClient.exec
+    original_delete = _GuestSandboxClient.begin_delete
+    attempts = []
+    fail_probe = True
+
+    async def exec_probe(self, command, *, working_directory):
+        if fail_probe and "maf-exec-probe-" in command:
+            if failure == "exception":
+                raise OSError("capture unavailable")
+            return SimpleNamespace(stdout="", stderr="capture unavailable", exit_code=125)
+        return await original_exec(self, command, working_directory=working_directory)
+
+    async def delete(self):
+        attempts.append((self.sandbox_id, client.create_calls))
+        return await original_delete(self)
+
+    monkeypatch.setattr(_GuestSandboxClient, "exec", exec_probe)
+    monkeypatch.setattr(_GuestSandboxClient, "begin_delete", delete)
+
+    async def scenario():
+        nonlocal fail_probe
+        with pytest.raises(SandboxCapabilityNotSupported, match="exec-capture"):
+            await backend.acquire(key, spec)
+        assert not backend._registry
+        assert backend._undeleted[("s", "t", "a")] == {"sbx-1"}
+        assert attempts == [("sbx-1", 1), ("sbx-1", 1)]
+        fail_probe = False
+        with pytest.raises(SandboxOutputError, match="retained"):
+            await backend.acquire(key, spec)
+        assert backend._invalidated_ids == {"sbx-1"}
+        assert client.create_calls == 1 and attempts[-1] == ("sbx-1", 1)
+        client.delete_fails = False
+        replacement = await backend.acquire(key, spec)
+        assert replacement.instance_id == "sbx-2"
+        assert attempts[-1] == ("sbx-1", 1)
+        assert not backend._undeleted and not backend._invalidated_ids
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("disposal", ["key", "kind", "scope"])
 def test_reacquire_retries_invalidated_ids_retained_after_disposal(disposal, monkeypatch):
     from maf_sandbox import SandboxOutputError
