@@ -17,7 +17,7 @@ import logging
 import posixpath
 import shlex
 import threading
-from collections.abc import AsyncGenerator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from concurrent.futures import Future
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -402,6 +402,13 @@ class _Held:
     probed: bool = False
     commands: set[str] = field(default_factory=set[str])
     unusable: bool = False
+    on_invalidate: Callable[[_Held], None] | None = field(
+        default=None, kw_only=True, repr=False, compare=False
+    )
+    invalidation: Future[None] | None = field(default=None, init=False, repr=False, compare=False)
+    invalidation_guard: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False, compare=False
+    )
     egress: tuple[Egress, frozenset[str]] = field(kw_only=True)
     work_dir: str = "/maf-sandbox/work"
 
@@ -560,8 +567,29 @@ class _AcasSandbox:
             raise
 
     async def _invalidate_after_exec(self, failure: BaseException) -> None:
-        self._held.unusable = True
-        cleanup = asyncio.create_task(self._discard_after_exec())
+        with self._held.invalidation_guard:
+            completion = self._held.invalidation
+            owns_cleanup = completion is None
+            if completion is None:
+                if self._held.on_invalidate is None:
+                    self._held.unusable = True
+                else:
+                    self._held.on_invalidate(self._held)
+                completion = self._held.invalidation = Future()
+
+        if owns_cleanup:
+
+            def completed(task: asyncio.Task[None]) -> None:
+                try:
+                    task.result()
+                except BaseException as error:
+                    completion.set_exception(error)
+                else:
+                    completion.set_result(None)
+
+            discard = asyncio.create_task(self._discard_after_exec())
+            discard.add_done_callback(completed)
+        cleanup = asyncio.wrap_future(completion)
         while not cleanup.done():
             try:
                 await asyncio.shield(cleanup)
@@ -1224,7 +1252,9 @@ class AcasSandboxBackend:
             key.agent_dir,
         )
         # Register immediately, so the sandbox is reachable by purge even if configure fails.
-        held = self._registry[registry_key] = _Held(sc.sandbox_id, egress=egress, work_dir=work_dir)
+        held = self._registry[registry_key] = _Held(
+            sc.sandbox_id, egress=egress, work_dir=work_dir, on_invalidate=self._mark_invalidated
+        )
         try:
             await self._configure(sc)
         except Exception as exc:  # noqa: BLE001
@@ -1269,6 +1299,13 @@ class AcasSandboxBackend:
                 )
 
         await probe_commands(spec, held.commands, run)
+
+    def _mark_invalidated(self, held: _Held) -> None:
+        """Publish invalidation atomically with removal from the registry."""
+        with self._disposal_guard:
+            held.unusable = True
+            if any(held.sandbox_id in names for names in self._undeleted.values()):
+                self._invalidated_ids.add(held.sandbox_id)
 
     def _retain_disposals(
         self, prefix: tuple[str, str, str], names: Sequence[str], kinds: Mapping[str, str]

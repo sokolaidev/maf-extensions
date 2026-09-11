@@ -3219,6 +3219,52 @@ def test_fresh_capture_probe_failure_retries_deletion_before_replacement(failure
 
 
 @pytest.mark.parametrize("disposal", ["key", "kind", "scope"])
+@pytest.mark.parametrize("reuse", [False, True])
+def test_exec_invalidation_after_failed_disposal_blocks_replacement(disposal, reuse, monkeypatch):
+    from maf_sandbox import SandboxOutputError
+
+    import maf_sandbox_acas._backend as module
+
+    client = _GuestGroupClient(_guest_removing(True), delete_fails=True)
+    backend = _backend_with(client)
+    key = SandboxKey("s", "t", "a")
+    spec = _spec()
+
+    async def scenario():
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def capture(*args, **kwargs):
+            started.set()
+            await release.wait()
+            raise SandboxOutputError("capture failed")
+
+        monkeypatch.setattr(module, "capture", capture)
+        sandbox = await backend.acquire(key, spec)
+        if reuse:
+            sandbox = await backend.acquire(key, spec)
+        task = asyncio.create_task(sandbox.exec("program", working_directory="/", timeout=10))
+        await started.wait()
+        if disposal == "scope":
+            assert (await backend.dispose_scope(key.scope, key.thread_id)).undisposed is not None
+        else:
+            assert await backend.dispose(key, kind=spec.kind if disposal == "kind" else None)
+        assert not backend._registry and not sandbox._held.unusable
+        release.set()
+        with pytest.raises(SandboxOutputError, match="capture failed"):
+            await task
+        with pytest.raises(SandboxOutputError, match="retained"):
+            await backend.acquire(key, spec)
+        assert client.create_calls == 1
+        client.delete_fails = False
+        replacement = await backend.acquire(key, spec)
+        assert client.deleted[-1] == sandbox.instance_id
+        assert replacement.instance_id != sandbox.instance_id
+        assert not backend._invalidated_ids and not backend._undeleted
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("disposal", ["key", "kind", "scope"])
 def test_reacquire_retries_invalidated_ids_retained_after_disposal(disposal, monkeypatch):
     from maf_sandbox import SandboxOutputError
 

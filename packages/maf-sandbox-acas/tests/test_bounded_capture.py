@@ -6,7 +6,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from maf_sandbox import SandboxExecOutputLimitExceeded, SandboxOutputError
+from maf_sandbox import ExecResult, SandboxExecOutputLimitExceeded, SandboxOutputError
 
 from maf_sandbox_acas._backend import _AcasSandbox
 
@@ -83,6 +83,74 @@ def test_bounded_capture_preserves_binary_streams_and_cleans_scratch():
         assert (result.stdout_bytes, result.stderr_bytes, result.exit_code) == (out, err, 7)
         assert service.cleaned and not service.deleted
         assert service.closed == service.calls == 4
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("second_outcome", ["success", "failure", "cancel"])
+@pytest.mark.parametrize("delete_fails", [False, True])
+def test_concurrent_handles_share_invalidation_cleanup(second_outcome, delete_fails, monkeypatch):
+    import maf_sandbox_acas._backend as module
+
+    async def scenario():
+        started = [asyncio.Event(), asyncio.Event()]
+        release = [asyncio.Event(), asyncio.Event()]
+        second_leaving = asyncio.Event()
+        deleting, finish_delete = asyncio.Event(), asyncio.Event()
+        delete_calls = 0
+
+        async def capture(command, *args, **kwargs):
+            index = int(command)
+            started[index].set()
+            try:
+                await release[index].wait()
+                if index == 0 or second_outcome == "failure":
+                    raise SandboxOutputError("capture failed")
+                return ExecResult(stdout_bytes=b"ok", exit_code=0)
+            finally:
+                if index == 1:
+                    second_leaving.set()
+
+        service = _CaptureService(b"", b"")
+
+        async def delete():
+            nonlocal delete_calls
+            delete_calls += 1
+            deleting.set()
+            await finish_delete.wait()
+            if delete_fails:
+                raise RuntimeError("delete unavailable")
+            return service
+
+        monkeypatch.setattr(module, "capture", capture)
+        monkeypatch.setattr(service, "begin_delete", delete)
+        first = _AcasSandbox(service, 10)
+        second = _AcasSandbox(service, 10, held=first._held)
+        tasks = [
+            asyncio.create_task(first.exec("0", working_directory="/", timeout=10)),
+            asyncio.create_task(
+                second.exec_bounded("1", working_directory="/", timeout=10, max_output_bytes=50)
+            ),
+        ]
+        await asyncio.gather(*(event.wait() for event in started))
+        release[0].set()
+        await deleting.wait()
+        if second_outcome == "cancel":
+            tasks[1].cancel()
+        else:
+            release[1].set()
+        await second_leaving.wait()
+        assert not any(task.done() for task in tasks)
+        assert delete_calls == 1
+        finish_delete.set()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        assert isinstance(results[0], SandboxOutputError)
+        expected = asyncio.CancelledError if second_outcome == "cancel" else SandboxOutputError
+        assert isinstance(results[1], expected)
+        assert delete_calls == 1
+        for result in results:
+            if not isinstance(result, asyncio.CancelledError):
+                assert bool(getattr(result, "__notes__", [])) is delete_fails
 
     asyncio.run(scenario())
 
