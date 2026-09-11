@@ -19,9 +19,8 @@ from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 class _StoppableSandbox:
     """A sandbox the service stops when it goes idle, refusing calls until it is resumed.
 
-    What the data plane really answers is HTTP 409 ``GlobalSandboxNotRunning``; the exception
-    type is not what is being pinned here, only that a stopped sandbox refuses and that
-    nothing short of another ``acquire`` puts it back.
+    The real plane answers HTTP 409; the exception type is not what these pin, only that a
+    stopped sandbox refuses and that nothing short of another ``acquire`` puts it back.
     """
 
     def __init__(self, instance_id: str) -> None:
@@ -119,10 +118,7 @@ def test_live_suite_resolves_its_fixtures_without_running_them():
 def test_a_stopped_sandbox_is_resumed_before_the_call_that_needs_it(monkeypatch):
     """`_Live.run` returns through ``acquire`` first, so an idle gap does not fail a probe.
 
-    The live suite cannot run on a pull request, so the behaviour keeping its shared fixture
-    usable across the whole module is pinned here instead (#1097). The gap is real there: the
-    fixtures for the other images each create and probe a sandbox of their own, minutes during
-    which this one is idle and the service's auto-suspend timer stops it.
+    Pinned here because the live suite that relies on it never runs on a pull request (#1097).
     """
     suite = _live_suite()
     sandbox = _StoppableSandbox("sandbox-1")
@@ -144,7 +140,7 @@ def test_a_sandbox_that_was_replaced_rather_than_resumed_is_reported(monkeypatch
     """A failed resume creates a replacement, and the coroutine already built cannot use it.
 
     Caught rather than run against: the call would land on a guest holding none of the state
-    the probes around it planted, and the failure would name whatever they assert next.
+    the probes around it planted, and fail somewhere else entirely.
     """
     suite = _live_suite()
     sandbox = _StoppableSandbox("sandbox-1")

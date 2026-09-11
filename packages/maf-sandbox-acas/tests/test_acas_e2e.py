@@ -164,14 +164,10 @@ def _key(scope: str) -> SandboxKey:
 class _Live:
     """One acquired sandbox, its backend, the spec that acquired it, and their loop.
 
-    **`run` goes back through `acquire` before it awaits anything (#1097).** The service
-    suspends a sandbox left idle for ``auto_suspend_seconds``, and the data plane does not
-    start a suspended one: it answers HTTP 409 ``GlobalSandboxNotRunning``. The shared sandbox
-    below waits out whole fixtures that create and probe their own, which is minutes, so being
-    suspended on return is the ordinary case here rather than a corner — the exec probes ran
-    into it while planting their first file. Returning through `acquire` is what a host does
-    between turns, and on a warm key requiring nothing it costs one control-plane read, plus a
-    resume where there is something to resume.
+    `run` returns through `acquire` before it awaits anything, and must: the service suspends a
+    sandbox left idle for ``auto_suspend_seconds``, the data plane does not start a suspended
+    one, and the gaps between this module's classes are longer than that interval. On a warm
+    key requiring nothing the return costs one control-plane read (#1097).
     """
 
     def __init__(
@@ -195,11 +191,8 @@ class _Live:
     async def _after_resuming(self, coroutine: Coroutine[Any, Any, Any]) -> Any:
         try:
             reacquired = await self.backend.acquire(self.key, self.spec)
-            # The sandbox is kept rather than swapped in: a wrapper addresses its sandbox by
-            # id, so the one the fixture yielded answers again as soon as the service has that
-            # sandbox running. What nothing here survives is a *replacement* — `acquire` makes
-            # one where a resume failed, and every coroutine already built still addresses the
-            # sandbox that went away.
+            # `acquire` creates a replacement where a resume failed, and every coroutine the
+            # caller already built still addresses the sandbox that went away.
             assert reacquired.instance_id == self.sandbox.instance_id, (
                 f"the {self.spec.kind!r} sandbox was replaced rather than resumed: "
                 f"{self.sandbox.instance_id} -> {reacquired.instance_id}"
@@ -1230,34 +1223,29 @@ class TestAnImageWhoseGuestIsNotRoot:
             loop.run_until_complete(cold.aclose())
 
 
+#: What `begin_stop` polls for and what `ensure_running` resumes from. The probe below needs
+#: one of these rather than merely "not running": a `Starting` sandbox still serves the data
+#: plane, and a `Failed` one serves nothing a resume can recover.
+_STOPPED_STATES = frozenset({"stopped", "suspended", "idle"})
+
+
 class TestComingBackToTheSharedSandbox:
-    """The idle gap the fixtures above leave, made deterministic (#1097).
+    """Return to the shared sandbox once the service has stopped it (#1097).
 
-    The shared sandbox sits untouched for minutes while they create and probe their own, and
-    the service's auto-suspend timer stops it somewhere inside that window. Nothing says so
-    until the next call: the data plane refuses a stopped sandbox with HTTP 409
-    ``GlobalSandboxNotRunning``, which is how a full run reached the exec probes below and
-    failed on the first file they plant.
+    The precondition is the stopped state, not this test producing it: the idle gap above can
+    leave the sandbox already down, and `begin_stop` answers 409 for one that is not running.
+    So the state is read, stopped only where it is still running, and asserted either way —
+    asserting it is what stops this passing over a sandbox that never stopped.
 
-    **What it needs is the stopped state, not credit for producing it.** A full run arrives
-    here with the sandbox already down — measured, and the first version of this test failed
-    on it: `begin_stop` answers 409 for a sandbox that is not running, so provoking
-    unconditionally is a test that only works when the gap did not do its job. So the state is
-    read first and stopped only if it has to be, and asserted either way. Reading it is also
-    what keeps this honest: waiting out the suspend interval instead would cost the suite a
-    minute, and a run that waited and was not stopped would pass having measured nothing.
-
-    Placed here, at the end of the gap, because the probe classes after it all depend on the
-    answer. It adds no sandbox: the stop and the return are both the shared one.
+    It adds no sandbox, and belongs ahead of the probe classes below, which depend on its answer.
     """
 
     def test_a_stopped_sandbox_is_resumed_rather_than_replaced(self, loop, live):
         sandbox_id = live.sandbox.sandbox_id
 
         async def the_state_the_calls_below_meet() -> str:
-            # Past the backend, as `service_link_delete` above reaches past it: stopping a
-            # sandbox is not something this backend offers, and a test that asked the code
-            # under test to set up its own provocation would be asking the wrong thing.
+            # Past the backend, as `service_link_delete` above does: this backend offers no
+            # way to stop a sandbox, and the code under test must not set up its own probe.
             client = live.sandbox._sc  # noqa: SLF001 — the provocation, not the measurement
             state = str((await client.get()).state or "")
             if state.lower() != "running":
@@ -1270,9 +1258,9 @@ class TestComingBackToTheSharedSandbox:
             return str((await client.get()).state or "")
 
         state = loop.run_until_complete(the_state_the_calls_below_meet())
-        assert state and state.lower() != "running", f"the sandbox is not stopped: {state!r}"
+        assert state.lower() in _STOPPED_STATES, f"the sandbox is not stopped: {state!r}"
 
-        # The call that failed: a write through the data plane, which starts nothing.
+        # A data-plane call, because that is the plane which refuses a stopped sandbox.
         planted = f"{_WORK}/resumed-{uuid.uuid4().hex[:12]}"
         live.run(live.sandbox.write_file(f"{planted}/back.txt", "back\n", working_directory=_WORK))
         read_back = live.run(
@@ -1283,10 +1271,8 @@ class TestComingBackToTheSharedSandbox:
         assert read_back.exit_code == 0, read_back.stderr
         assert read_back.stdout == "back\n"
 
-        # And the sandbox that answered is the one that was stopped. The registry is where
-        # `acquire` records what it holds, so a replacement — which is what it creates when a
-        # resume fails — would be a different id here, on a guest with none of this suite's
-        # state and none of its remaining probes' assumptions.
+        # The registry is where `acquire` records what it holds, so a replacement would be a
+        # different id here, on a guest with none of the state the probes below assume.
         held = [entry.sandbox_id for entry in live.backend._registry.values()]  # noqa: SLF001
         assert held == [sandbox_id], "the shared sandbox was replaced rather than resumed"
 
