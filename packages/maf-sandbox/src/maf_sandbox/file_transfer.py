@@ -147,8 +147,10 @@ def shell_refusal(stderr: str) -> FileRefusal | None:
     or a NUL byte no command could carry, before any command runs. A missing utility or an
     I/O error names no refusal and is the transfer failing, not the path.
     """
-    for line in reversed(stderr.splitlines()):
-        line = line.rstrip()
+    # Split on the newline alone: `str.splitlines` also breaks on form feeds, vertical tabs
+    # and Unicode separators, which a path may carry and which no shell ends a line with.
+    for line in reversed(stderr.split("\n")):
+        line = line.rstrip("\r ")
         for words, refusal in _DIAGNOSTICS:
             if line.endswith(words):
                 return refusal

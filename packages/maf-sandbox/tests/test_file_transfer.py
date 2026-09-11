@@ -99,6 +99,12 @@ class TestTheVocabulary:
                 FileRefusal.PERMISSION_DENIED,
             ),
             ("sh: /tmp/Is a directory: not found", None),
+            # A separator that is not the newline does not start a line: the path may carry it.
+            (
+                "sh: can't open '/tmp/a\x0cPermission denied\x0bb': Input/output error",
+                None,
+            ),
+            ("sh: can't open '/tmp/a\u2028Permission denied': no such file", FileRefusal.NOT_FOUND),
             # The last line is the diagnostic that ended the command.
             (
                 "mkdir: created directory 'Permission denied'\nmv: cannot stat: No such file or directory",
