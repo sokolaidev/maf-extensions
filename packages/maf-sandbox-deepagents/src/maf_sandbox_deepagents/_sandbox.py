@@ -434,7 +434,9 @@ class MafSandbox(BaseSandbox):
         delete never extends the caller's wait and outlives a loop ``asyncio.run`` closes on
         return; the next call over the key is admitted once it is done.
         """
-        release = self._router.release_call(self._key, self._spec.kind, owner=call.owner)
+        release: Coroutine[Any, Any, None] = self._router.release_call(
+            self._key, self._spec.kind, owner=call.owner
+        )
         if not (call.condemned or deferred):
             await release
             return
