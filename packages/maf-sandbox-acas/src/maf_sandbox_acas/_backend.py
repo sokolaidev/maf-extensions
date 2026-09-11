@@ -260,7 +260,7 @@ _LIMITS = SandboxLimits(files_in=_FILES_LIMITS, files_out=_FILES_LIMITS)
 #
 # Three capabilities are a ceiling: acquire checks removal from a file-plane directory before
 # serving FILES_DELETE and conservatively refuses writing workloads on a completed failure.
-# FILES_IN stays, with the residual write_file states (#951).
+# FILES_IN stays, with the residual write_file states (#1131).
 _DECLARATIONS = BackendDeclarations(
     capabilities=frozenset(
         {
@@ -504,13 +504,15 @@ class _AcasSandbox:
         followed — and this plane acts as the host, so the bytes land root-owned at a path the
         guest could not have written itself.  On a root image that is a confinement failure and
         nothing more, since the guest was already root.  On a non-root one it is more than the
-        guest had, which is the reach rule :meth:`~maf_sandbox.Sandbox.reclaim` states.
+        guest had, which is the reach rule :class:`~maf_sandbox.Sandbox` states for the whole
+        file surface, writes included.
 
-        Stated rather than refused, where :meth:`remove` is refused: the protocol states the
-        reach rule for removals and says nothing yet about writes (#951), and withholding
-        ``FILES_IN`` would leave this backend no in-door at all on such an image.  Closing it
-        properly needs ownership in the data plane's stat payload, the same upstream read #710
-        needs — see ``docs/sandbox/backends/acas.md``.
+        Stated rather than refused, for the one reason that still holds: withholding
+        ``FILES_IN`` would leave this backend no in-door at all on such an image.
+        :meth:`remove` takes another answer the rule offers and runs as the guest (#1029);
+        whether this write should follow it is #1131.  A per-component gate is not among the
+        answers available here, since the data plane's stat payload carries no owner to build
+        one from — see ``docs/sandbox/backends/acas.md``.
         """
         # `create_dirs=True` is the SDK's own default, and it is passed explicitly anyway.
         # A workload may hand us a nested path — `infra/main.bicep` is the example in the
