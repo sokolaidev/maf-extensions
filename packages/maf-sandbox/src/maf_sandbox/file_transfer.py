@@ -226,6 +226,10 @@ async def write_file_over_exec(
     :class:`SandboxShellTransferFailed`.
     """
     _refuse_what_no_command_can_carry(path)
+    if posixpath.basename(path) in ("", ".", ".."):
+        # A leaf that names a directory: `mkdir -p` on its "parent" would create the target
+        # itself as one before anything could refuse it.
+        raise SandboxFileRefused(FileRefusal.INVALID_PATH, "the path names a directory, not a file")
     target = shlex.quote(path)
     directory = posixpath.dirname(path)
     parent = shlex.quote(directory or ".")

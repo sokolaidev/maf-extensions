@@ -186,6 +186,15 @@ class TestTheWrite:
         assert first.startswith("export LC_ALL=C; mkdir -p -- -dir && if [ -d -dir/-file ]")
         assert "&& mv -f -- -dir/.maf-" in last and last.endswith(".part -dir/-file")
 
+    @pytest.mark.parametrize("path", ["/tmp/new/", "/tmp/.", "/tmp/..", "trailing/"])
+    def test_a_leaf_that_names_a_directory_is_refused_before_any_command(self, path):
+        """`mkdir -p` on such a path's "parent" would create the target itself as a directory."""
+        fake = InProcessSandbox()
+        with pytest.raises(SandboxFileRefused) as refused:
+            asyncio.run(write_file_over_exec(fake, path, b"1", working_directory=WORK, timeout=5))
+        assert refused.value.refusal is FileRefusal.INVALID_PATH
+        assert fake.commands == []
+
     def test_a_write_refused_part_way_takes_its_sibling_back(self):
         class Full(InProcessSandbox):
             async def exec(self, command, *, working_directory, timeout):

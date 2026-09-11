@@ -58,6 +58,7 @@ def test_one_loop_serves_every_call_from_every_thread():
         worker.join()
     seen.append(runner.run(_loop_id()))
 
+    assert len(seen) == len(workers) + 1  # every worker answered, not only the parent
     assert len(set(seen)) == 1
     assert sum(t.name == "sync-under-test" for t in threading.enumerate()) == 1
 
