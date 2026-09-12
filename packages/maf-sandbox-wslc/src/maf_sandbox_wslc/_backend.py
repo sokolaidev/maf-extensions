@@ -336,13 +336,18 @@ def _selectors_name(labels: dict[str, object], key: SandboxKey) -> bool:
     instead: a sweep reaches names from its own registry as well as from the label query, and
     only the query has already proved ownership.  Hashed selectors compare equal here, since
     ``_label_value`` is what wrote them.
+
+    ``_LABEL_CALL`` is part of it, so a conversation's key does not name a call's container.
+    A conversation-scoped key expects the label absent, which is what :func:`_sandbox_labels`
+    writes, so both sides read ``None``.
     """
     return all(
-        labels.get(label) == _label_value(part)
-        for label, part in (
-            (_LABEL_SCOPE, key.scope),
-            (_LABEL_THREAD, key.thread_id),
-            (_LABEL_AGENT, key.agent_dir),
+        labels.get(label) == expected
+        for label, expected in (
+            (_LABEL_SCOPE, _label_value(key.scope)),
+            (_LABEL_THREAD, _label_value(key.thread_id)),
+            (_LABEL_AGENT, _label_value(key.agent_dir)),
+            (_LABEL_CALL, _label_value(key.call_id) if key.call_id else None),
         )
     )
 

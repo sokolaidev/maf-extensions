@@ -286,6 +286,31 @@ def test_the_callers_key_does_not_answer_for_a_proxy_it_is_not_shown_to_own(
     asyncio.run(scenario())
 
 
+def test_a_conversations_key_does_not_stand_in_for_a_calls_unreadable_proxy(engine):
+    """The call label is ownership too, so a conversation's key does not name a call's proxy.
+
+    Without the call in the comparison, the one leftover whose attribution cannot be recovered
+    is filed under the conversation — the defect this whole path exists to prevent, surviving
+    in its fallback.
+    """
+    conversation = SandboxKey(scope="scope", thread_id="thread", agent_dir="agent")
+    call = replace(conversation, call_id="call-1")
+
+    async def scenario():
+        await engine.backend()._ensure_proxy("workload", call, _SPEC)
+        labels = next(iter(engine.rows.values()))["Config"]["Labels"]
+        assert labels["maf-sandbox.call"] == engine.module._label_value(call.call_id)
+        labels["maf-sandbox.key.v1"] = ""
+        reader = engine.backend()
+        events = []
+        reader.observe_egress(events.append)
+        await reader.dispose(conversation)
+        assert events == []
+        assert not engine.rows
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("payload", ["!", "WyJvdGhlciIsImIiLCJjIiwiZCJd"], ids=["junk", "claims"])
 def test_the_callers_key_does_not_answer_for_a_label_that_was_refused(engine, payload):
     """A present label that will not decode, or whose values contradict the selectors, is
