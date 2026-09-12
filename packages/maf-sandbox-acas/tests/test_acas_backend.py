@@ -2508,19 +2508,33 @@ class TestTheWriteRoad:
 
         lines = script.splitlines()
         assert len(lines) == 3, script
-        assert "> /base/.maf-write-probe-1 " in lines[0] and "echo write" in lines[0]
-        assert "mkdir mv base64" in lines[1] and "exit 0" in lines[1]
-        assert lines[2] == "echo utilities"
+        assert "mkdir mv rm base64" in lines[0] and "exit 0" in lines[0]
+        assert lines[1] == "echo utilities"
+        assert "> /base/.maf-write-probe-1 " in lines[2] and "echo write" in lines[2]
+
+    def test_an_image_that_cannot_remove_the_probe_file_never_creates_one(self):
+        """The gate runs before the redirection, and `rm` is in it.
+
+        Creating the probe file first would leave it in the workload's base on an image whose
+        `rm` is missing — a dotfile the road then declines to use, in a directory this backend
+        also serves `FILES_LIST` from.
+        """
+        from maf_sandbox_acas._backend import _SHELL_WRITE_UTILITIES, _write_road_script
+
+        lines = _write_road_script("/base/probe").splitlines()
+
+        assert "rm" in _SHELL_WRITE_UTILITIES
+        gate = next(index for index, line in enumerate(lines) if line.startswith("for utility"))
+        creates = next(index for index, line in enumerate(lines) if "> /base/probe" in line)
+        assert gate < creates, lines
+        assert "exit 0" in lines[gate], lines[gate]
 
     def test_no_word_the_guest_prints_keeps_the_data_plane(self):
-        """The probe must not let the guest switch off the bound that exists to bind it.
+        """Only "as the guest" is reachable from anything the guest prints.
 
-        The obvious third question — can the guest rewrite what the plane landed — is the root
-        image's own answer and would save the shell road's cost there. It cannot be asked: the
-        answer arrives as the guest's stdout, the service reports no owner to stand behind it,
-        and a guest that can write in this base can replace the planted file between the
-        plane's write and the command reading it. So every road except "as the guest" has to be
-        unreachable from anything the guest says, and this enumerates that it is.
+        The guarantee is that no stdout retains the data plane, so a probe answer cannot raise
+        the authority a write runs at. The invented word is in the list because a future
+        question would arrive as one.
         """
         answers = ["", "write", "utilities", "write utilities", "reach write utilities"]
 
@@ -2533,15 +2547,9 @@ class TestTheWriteRoad:
             "write utilities",
             "reach write utilities",
         ], roads
-        # The second of those is the point: a word invented to retain the plane is ignored, so
-        # the guest's only reachable outcomes are the guest road and the road main already had.
 
     def test_the_probe_leaves_nothing_for_the_plane_to_take_back(self):
-        """The guest's own file, removed by the script, and the plane places nothing at all.
-
-        It used to plant one, and that plant was half of what made the third question
-        forgeable. Asserting the plane is untouched is what stops it coming back.
-        """
+        """The plane places nothing: the probe's file is the guest's own, and it removes it."""
         client = _WriteRoadClient("write\nutilities\n")
 
         asyncio.run(_road_sandbox(client).probe_write_road())
@@ -2552,16 +2560,14 @@ class TestTheWriteRoad:
         assert f"rm -f -- {planted}" in client.commands[0]
 
     def test_a_refused_redirection_answers_rather_than_ending_the_script(self):
-        """`:` is a POSIX special builtin: a redirection it cannot make exits the shell.
+        """A redirection failing on `:` would exit the shell, not the line, and end the script.
 
-        That is the guest this probe exists to describe, so the natural `: > file` spelling
-        would end the script on its first line and every non-root image would read as having
-        no road at all. `true` is a regular builtin, and its `2>/dev/null` comes before the
-        open so the guest's own diagnostic never reaches the answer.
+        `true` is a regular builtin and merely fails, and its `2>/dev/null` comes before the
+        open so the guest's diagnostic never reaches the answer.
         """
         from maf_sandbox_acas._backend import _write_road_script
 
-        line = _write_road_script("/base/probe").splitlines()[0]
+        line = _write_road_script("/base/probe").splitlines()[-1]
 
         assert line.startswith("true 2>/dev/null > "), line
         assert not line.startswith(":"), line
@@ -2572,8 +2578,8 @@ class TestTheWriteRoad:
         script = _write_road_script("/base; rm -rf /")
 
         assert "'/base; rm -rf /'" in script
-        assert shlex.split(script.splitlines()[0])[:3] == ["true", "2>/dev/null", ">"]
-        assert shlex.split(script.splitlines()[0])[3] == "/base; rm -rf /"
+        assert shlex.split(script.splitlines()[-1])[:3] == ["true", "2>/dev/null", ">"]
+        assert shlex.split(script.splitlines()[-1])[3] == "/base; rm -rf /"
 
     def test_a_guest_that_can_write_its_base_takes_the_shell_road(self):
         client = _WriteRoadClient("write\nutilities\n")
@@ -2695,14 +2701,12 @@ class TestTheWriteRoad:
         assert set(_REFUSAL_ERRORS) == set(FileRefusal)
 
     def test_the_road_runs_from_the_root_and_not_the_callers_directory(self):
-        """A shell inherits a working directory for real; the data plane only did arithmetic.
+        """A shell inherits a working directory for real, so the road must not take the caller's.
 
-        A caller may name one that is a link, one the confinement check refused, or one that is
-        not there — all answered by the check on the plane, and all a failure to *start* for a
-        shell, which on this backend invalidates and disposes the sandbox. The live FILES_IN
-        suite is made of exactly those directories, and it condemned the shared sandbox on the
-        first probe until the road stopped inheriting them. `guest` is absolute and already
-        confined, so nothing about where the bytes land depends on the cwd.
+        One that is a link, refused by the confinement check, or absent is a refusal on the
+        plane and a failure to *start* for a shell, which invalidates and disposes the sandbox.
+        `guest` is absolute and already confined, so nothing about where the bytes land
+        depends on the cwd.
         """
         guest = _GuestRoadSandbox(_WriteRoadClient())
 
@@ -2731,13 +2735,12 @@ class TestTheWriteRoad:
         assert -(-(32 * 1024 * 1024) // SHELL_CHUNK_BYTES) + 2 == 685
 
     def test_a_deadline_that_expires_between_commands_leaves_the_sandbox_whole(self):
-        """The half of the failure story the docstring used to get wrong.
+        """A transfer deadline is not an exec failure, so it must not condemn the instance.
 
-        `write_file_over_exec` checks its own deadline *before* issuing each command, so one
-        that has run out takes the staged sibling back and raises with nothing in flight —
-        no exec failed, so nothing invalidates. Only a command failing while running does
-        that. The take-back being the last command is what separates the two here: an
-        in-flight failure would not have reached it.
+        `write_file_over_exec` checks its deadline *before* issuing each command, so one that
+        has run out takes the staged sibling back with nothing in flight. The take-back being
+        the last command issued is what separates the two here: an in-flight failure would
+        never have reached it.
         """
         guest = _GuestRoadSandbox(_WriteRoadClient(), read_timeout=0.05, each=0.04)
 
@@ -4232,9 +4235,8 @@ class TestConcurrentAcquire:
                 "sbx-1",
                 egress=(Egress.CLOSED, frozenset()),
                 commands={"sh", "exec-capture"},
-                # This fake's guest answers nothing, which is no road — the data plane, as
-                # before #1131. Spelled out because `None` and `False` mean different things
-                # here: unprobed, against probed and refused.
+                # This fake's guest answers nothing, which is no road. Spelled out because
+                # `None` and `False` differ here: unprobed, against probed and refused.
                 write_road=False,
             )
         }

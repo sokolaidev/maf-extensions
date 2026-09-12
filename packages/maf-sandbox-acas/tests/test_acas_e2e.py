@@ -638,12 +638,11 @@ class TestFilesInAgainstTheRealService:
         assert not skipped, f"probes skipped against a backend that declares FILES_IN: {skipped}"
 
     def test_the_probes_above_ran_over_the_road_they_are_meant_to(self, live: _Live):
-        """The control for the whole class since #1131, and it costs nothing.
+        """The control for the whole class, and it costs nothing.
 
-        This image's guest can write its base, so every write above went through the guest
-        rather than the data plane. Without this, a road that silently fell back would leave
-        the same probes green over the plane and the fidelity they establish would be the
-        plane's — which is what they established before this backend had a road at all.
+        This image's guest can write its base, so the probes above went through the guest.
+        Without this, a road that fell back to the data plane would leave them green and the
+        fidelity they establish would be the plane's.
         """
         assert live.sandbox._held.write_road is True  # noqa: SLF001 — the chosen road
 
