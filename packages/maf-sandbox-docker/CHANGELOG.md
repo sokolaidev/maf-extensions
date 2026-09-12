@@ -2,6 +2,11 @@
 
 ## [0.20.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.19.0...maf-sandbox-docker-v0.20.0) (2026-09-12)
 
+> **Correction, added after the release.** **No wheel for this version reached PyPI.** The publish failed after release-please had already created the tag and the GitHub Release, both immutable here, so the number is spent. Everything listed below ships in the next published release of this package, cut as **0.20.1** in [#1184](https://github.com/sokolaidev/maf-extensions/pull/1184) — including the breaking change, which therefore reaches consumers under a patch version.
+>
+> The failing step was *The release's own packages install together*. `maf-sandbox-codeact` had already moved its core range onto the `maf-sandbox` 0.39 line while every other package in the suite still required `>=0.38.0,<0.39`, so the seven wheels this release built could not resolve into one environment. [#1179](https://github.com/sokolaidev/maf-extensions/pull/1179) unified the ranges, and merged after this release had already been cut.
+>
+> Left in place rather than deleted: the generated entries are the honest record of what release-please saw. They are accurate about what this repository released; they are wrong only about what the index carries.
 
 ### ⚠ BREAKING CHANGES
 
