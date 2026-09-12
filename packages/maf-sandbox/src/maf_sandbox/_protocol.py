@@ -273,9 +273,8 @@ def _validated_egress_method(method: object) -> HttpMethod | str:
         raise ValueError(f"egress method must be an HTTP token, got {method!r}")
     if method != method.upper():
         raise ValueError(
-            f"egress method {method!r} is not uppercase; write {method.upper()!r}. No backend "
-            "distinguishes a method's case, so naming a lowercase one would ask for a rule "
-            "nothing enforces."
+            f"egress method {method!r} is not uppercase; write {method.upper()!r}. A rule "
+            "names a verb rather than a spelling, so a method has one canonical case."
         )
     try:
         return HttpMethod(method)
@@ -290,11 +289,11 @@ class EgressRule:
     Method scope narrows a channel; it does not close it. GET can still send data through
     URLs, headers and request content.
 
-    **Case is not part of the rule.** A lowercase token is refused, because the mechanisms
-    that enforce this match a method case-insensitively and the distinction would not
-    survive. What a rule guarantees is the *verb*: it never admits one it does not name.
-    Which spelling of a named verb reaches is not guaranteed in either direction.
-    ``docs/sandbox/network.md`` carries the evidence.
+    **Case is not part of the rule.** A lowercase token is refused: a rule names a verb
+    rather than a spelling, so a method has one canonical case. What a rule guarantees is
+    the *verb* — it never admits one it does not name — and which spelling of a named verb
+    reaches is not guaranteed in either direction. ``docs/sandbox/network.md`` carries the
+    evidence behind that.
     """
 
     host: str
