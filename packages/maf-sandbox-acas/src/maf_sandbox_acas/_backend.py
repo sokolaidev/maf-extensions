@@ -243,8 +243,9 @@ _REMOVAL_HINT_TTL_S = 60.0
 #: the data plane. A missing utility keeps the plane rather than failing every write.
 _SHELL_WRITE_UTILITIES = ("mkdir", "mv", "base64")
 
-#: The three words the write-road probe's script answers with, one per line it reaches.
-_PLANE_IS_WITHIN_REACH = "reach"
+#: The two words the write-road probe's script answers with, one per line it reaches. Neither
+#: retains the data plane, which is what keeps a guest's stdout from raising its own authority
+#: — see :meth:`_AcasSandbox.probe_write_road`.
 _A_GUEST_WRITE_LANDS = "write"
 _THE_UTILITIES_ARE_THERE = "utilities"
 
@@ -524,13 +525,14 @@ _REFUSAL_ERRORS: Mapping[FileRefusal, type[OSError] | type[ValueError]] = {
 }
 
 
-def _write_road_script(planted: str, wanted: str) -> str:
+def _write_road_script(wanted: str) -> str:
     """The one guest command behind :meth:`_AcasSandbox.probe_write_road`.
 
     Each line answers with a word or says nothing, so a line the guest refuses reads as that
-    answer being no rather than as the probe failing. Truncation is the write test — each file
-    is the probe's own and has nothing to keep — and the removal that follows it is the
-    parent's permission, which truncation does not establish.
+    answer being no rather than as the probe failing. Creating the file is the write test and
+    removing it is the parent's permission, which creating does not establish; both run on a
+    path named for this call, so the script leaves nothing behind and the plane has nothing to
+    take back.
 
     **The command carrying the redirection is ``true``, and its ``2>/dev/null`` comes first.**
     A redirection that fails on a POSIX *special* builtin — ``:`` is one — exits the shell, so
@@ -539,12 +541,10 @@ def _write_road_script(planted: str, wanted: str) -> str:
     regular builtin and merely fails. Redirections are applied left to right, so silencing
     stderr before the open is what keeps the guest's diagnostics out of the answer.
     """
-    plane, guest = shlex.quote(planted), shlex.quote(wanted)
+    guest = shlex.quote(wanted)
     utilities = " ".join(_SHELL_WRITE_UTILITIES)
     return "\n".join(
         (
-            f"true 2>/dev/null > {plane} && rm -f -- {plane} 2>/dev/null "
-            f"&& echo {_PLANE_IS_WITHIN_REACH}",
             f"true 2>/dev/null > {guest} && rm -f -- {guest} 2>/dev/null "
             f"&& echo {_A_GUEST_WRITE_LANDS}",
             f'for utility in {utilities}; do command -v "$utility" >/dev/null 2>&1 || exit 0; done',
@@ -614,20 +614,28 @@ class _AcasSandbox:
         symlinked parent, so a guest that replaces a checked component in between has the write
         followed.  What that costs is decided by authority rather than by atomicity: a write
         that runs as the guest reaches nothing the guest could reach anyway.  So
-        :meth:`probe_write_road` asks once, at acquire, whether what the plane lands in this
-        base is already the guest program's to rewrite and to remove — on a root image it is,
-        the two principals being one — and where it is not, and a guest-authority write lands
-        there, writes run through :func:`~maf_sandbox.write_file_over_exec` instead.
+        :meth:`probe_write_road` asks once, at acquire, whether a guest-authority write lands
+        in this base and whether the utilities the road runs are there, and where both hold the
+        write goes through :func:`~maf_sandbox.write_file_over_exec`.
 
-        Where neither holds — a base the guest cannot write into, or an image missing the
-        utilities the shell road runs — the plane keeps the write and the residual is stated
-        rather than withheld: ``FILES_IN`` is this backend's only in-door and withholding it
-        would leave none.  ``docs/sandbox/backends/acas.md`` carries what is left.
+        Where either does not — a base the guest cannot write into, or an image missing one of
+        those utilities — the plane keeps the write and the residual is stated rather than
+        withheld: ``FILES_IN`` is this backend's only in-door and withholding it would leave
+        none.  ``docs/sandbox/backends/acas.md`` carries what is left.
 
-        The shell road costs three guest commands against the plane's one round trip (measured
-        0.44 s against 0.21 s), and it carries ``exec``'s own failure semantics: a write that
-        times out or overruns its capture invalidates and disposes the sandbox, where a refused
-        plane write leaves it whole.
+        **The shell road's cost is per chunk, not per write.**  It runs two control commands
+        plus one command for every :data:`~maf_sandbox.file_transfer.SHELL_CHUNK_BYTES` of
+        content — 48 KiB — so a file under that costs three guest commands (measured 0.44 s
+        against the plane's 0.21 s) and one at this backend's 32 MiB ``files_in`` ceiling costs
+        685, sequentially.  ``read_timeout_seconds`` bounds the whole transfer, so a large file
+        on a slow link is refused where the plane would have taken it.
+
+        **Two failures, and only one of them costs the sandbox.**  A deadline that expires
+        *between* commands takes the staged sibling back and raises
+        ``SandboxShellTransferFailed`` with the sandbox whole, because nothing was running.  A
+        command that fails *in flight* — its own timeout, a capture failure, an output overrun
+        — invalidates and disposes the sandbox the way any :meth:`exec` failure does.  A
+        refused plane write leaves it whole either way.
         """
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         guest = await confine_resolve_guest_write_path(
@@ -886,10 +894,15 @@ class _AcasSandbox:
     async def choose_write_road(self, spec: SandboxSpec) -> None:
         """Settle this sandbox's write road once, on the acquire that first asks to write.
 
-        After :meth:`prepare_work_dir`, because the probe writes in the base and a base that
-        does not exist yet answers nothing. An unreachable probe leaves the road unchosen and
-        the next acquire asks again: the plane serves meanwhile, which is what this backend did
-        before there was a road to choose, so a probe that cannot complete withholds nothing.
+        After :meth:`prepare_work_dir`, because the probe has the guest write in the base and a
+        base that does not exist yet answers nothing. An unreachable probe leaves the road
+        unchosen and the next acquire asks again: the plane serves meanwhile, which is what
+        this backend did before there was a road to choose, so a probe that cannot complete
+        withholds nothing.
+
+        Once, and on the first acquire that asks to write, which for a ``FILES_IN`` workload's
+        own sandbox is the create — before anything of that workload has run. What that timing
+        is worth, and what it is not, is in :meth:`probe_write_road`.
         """
         if Capability.FILES_IN not in spec.required_capabilities:
             return
@@ -915,63 +928,45 @@ class _AcasSandbox:
             )
 
     async def probe_write_road(self) -> bool:
-        """Does a write have to run as the guest to stay inside the guest's reach?
+        """Can a write run as the guest, in this base, on this image?
 
-        Three answers from one control command over a file the plane has just landed in the
-        base: whether the guest can rewrite and remove it, whether a guest-authority write
-        lands beside it, and whether the utilities the shell road runs are there. The plane
-        keeps the write when what it lands is already the guest program's, which is the root
-        image and the common case — the shell road would bound nothing there and cost three
-        commands for it.
+        Two answers from one control command: whether a guest-authority write lands in the
+        base, and whether the utilities the shell road runs are there. Both yes and the write
+        runs as the guest; anything else and the data plane keeps it.
 
-        Outcome-only, and necessary rather than sufficient, for the reason
-        ``maf_sandbox.conformance``'s own write probe gives: rewriting one root-owned file at
-        the base is what a guest with the plane's authority can do, not proof that it has it
-        everywhere. The road it selects is the safe side of that: where the answer is no, the
-        write runs as the guest and cannot reach past it.
+        **It does not ask whether the plane is already within the guest's reach, and must
+        not.** That question has an obvious probe — land a file with the plane, have the guest
+        rewrite and remove it — and it is unsound in the one direction that matters: the answer
+        comes back as the guest's own stdout, so a word it prints would be what retains host
+        authority. The service reports no owner, so nothing host-controlled can stand behind
+        such a word, and a guest that can write in this base can also replace the planted file
+        between the plane's write and the command that reads it. Both make the bound this
+        backend advertises switchable by the program it exists to bound.
 
-        The probe file is a dotfile named for this call, and the plane takes back whatever the
-        guest did not.
+        What is left cannot do that. ``no`` to either question keeps the data plane — which is
+        where this backend already was before there was a road — so **no answer the guest can
+        give raises the authority a write runs at.** A guest that lies costs itself the road
+        and nothing else.
+
+        The honest limit is when it runs. At the create a ``FILES_IN`` workload's sandbox gets,
+        nothing of that workload has run yet and there is no one to answer falsely. On a warm
+        sandbox first asked to write after something already ran, a detached guest process can
+        deny the probe its own base and keep the plane; that is the residual
+        ``docs/sandbox/backends/acas.md`` states, not a new one.
         """
-        from azure.core.exceptions import ResourceNotFoundError
-
-        stamp = uuid4().hex
-        planted = f"{self._work_dir}/.maf-write-probe-{stamp}"
-        wanted = f"{self._work_dir}/.maf-write-probe-{stamp}.guest"
-        answered = ""
-        try:
-            async with asyncio.timeout(_PROBE_TIMEOUT_S):
-                await self._sc.write_file(planted, b"probe", create_dirs=True)
-                answered = (
-                    await self._exec_text(
-                        ["sh", "-c", _write_road_script(planted, wanted)],
-                        working_directory=_GUEST_PROBE_WORKING_DIRECTORY,
-                        timeout=_PROBE_TIMEOUT_S,
-                    )
-                ).stdout
-        finally:
-            try:
-                async with asyncio.timeout(_PROBE_TIMEOUT_S):
-                    await self._sc.delete_file(planted, recursive=False)
-            except ResourceNotFoundError:
-                # The guest removed it, which is one of the answers being read.
-                pass
-            except Exception as cleanup_failed:  # noqa: BLE001 - keep the probe's own answer
-                logger.warning(
-                    "acas: could not clean write probe %s in sandbox %s: %s",
-                    planted,
-                    self.sandbox_id,
-                    error_detail(cleanup_failed),
+        wanted = f"{self._work_dir}/.maf-write-probe-{uuid4().hex}"
+        async with asyncio.timeout(_PROBE_TIMEOUT_S):
+            answered = (
+                await self._exec_text(
+                    ["sh", "-c", _write_road_script(wanted)],
+                    working_directory=_GUEST_PROBE_WORKING_DIRECTORY,
+                    timeout=_PROBE_TIMEOUT_S,
                 )
+            ).stdout
+        # No cleanup clause: the file is the guest's own and the script removes it, so nothing
+        # the plane placed is left to take back.
         said = set(answered.split())
-        return (
-            _PLANE_IS_WITHIN_REACH not in said
-            and {
-                _A_GUEST_WRITE_LANDS,
-                _THE_UTILITIES_ARE_THERE,
-            }
-            <= said
-        )
+        return {_A_GUEST_WRITE_LANDS, _THE_UTILITIES_ARE_THERE} <= said
 
     async def probe_guest_removal(self) -> bool | None:
         """Check guest removal compatibility; this cannot establish workload authority."""
