@@ -41,11 +41,11 @@ def test_context_switch_keeps_acquire_freeze_and_disposal_on_their_engine(
     name = _container_name(key, spec.kind)
 
     async def scenario():
-        client("context", "use", "first")
+        client("context", "use", "second" if selection == "host" else "first")
         if selection == "host":
             monkeypatch.setenv("DOCKER_HOST", _FIRST)
         first = await DockerSandboxBackend.create(DockerSandboxConfig())
-        client("context", "use", "second")
+        client("context", "use", "first" if selection == "host" else "second")
         if selection == "host":
             monkeypatch.setenv("DOCKER_HOST", _SECOND)
         second = await DockerSandboxBackend.create(DockerSandboxConfig())
@@ -56,6 +56,12 @@ def test_context_switch_keeps_acquire_freeze_and_disposal_on_their_engine(
             second_id = await second._docker("inspect", "--format", "{{.Id}}", name)
             assert first_id.returncode == second_id.returncode == 0
             assert first_id.stdout != second_id.stdout
+            assert first_id.stdout.decode().strip() == client(
+                "--context", "first", "inspect", "--format", "{{.Id}}", name
+            )
+            assert second_id.stdout.decode().strip() == client(
+                "--context", "second", "inspect", "--format", "{{.Id}}", name
+            )
             async with first._frozen(name):
                 assert not _Freezes.claimed(second._freeze_key(name))
                 await second.acquire(key, spec)
