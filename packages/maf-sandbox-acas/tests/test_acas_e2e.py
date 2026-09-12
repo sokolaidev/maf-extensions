@@ -34,7 +34,8 @@ suite that quietly skips a third of itself is the shape of a green run that atta
 **Cost discipline.** The acquire-directory probe adds one sandbox per configured image to the
 four sandboxes used by the other probes, and two more only where
 ``MAF_SANDBOX_ACAS_E2E_NONROOT_IMAGE`` names one whose guest is not root — the non-root class
-shares one, and the cold-refusal probe creates a second that the backend under test deletes. The probes and refusals share one,
+shares one, the cold-refusal probe creates a second that the backend under test deletes, and the
+write-road class needs a third, on a base its guest can write into. The probes and refusals share one,
 acquired by a module-scoped fixture and disposed at the end; the lifecycle test needs its own
 because it disposes as the thing under test; the prebuilt-image test needs its own because a
 bare catalogue name is only evidence if it boots one; the egress leg needs its own because only
@@ -636,6 +637,15 @@ class TestFilesInAgainstTheRealService:
         skipped = {result.probe.name: result.skipped for result in results if result.skipped}
         assert not skipped, f"probes skipped against a backend that declares FILES_IN: {skipped}"
 
+    def test_the_probes_above_ran_over_the_road_they_are_meant_to(self, live: _Live):
+        """The control for the whole class, and it costs nothing.
+
+        This image's guest can write its base, so the probes above went through the guest.
+        Without this, a road that fell back to the data plane would leave them green and the
+        fidelity they establish would be the plane's.
+        """
+        assert live.sandbox._held.write_road is True  # noqa: SLF001 — the chosen road
+
 
 class TestFilesDeleteAgainstTheRealService:
     """The declared FILES_DELETE capability is exercised by the shared probes."""
@@ -1229,6 +1239,123 @@ class TestAnImageWhoseGuestIsNotRoot:
             loop.run_until_complete(cold.dispose_scope(scope, "thread-1"))
             loop.run_until_complete(cold.aclose())
 
+    def test_a_base_the_guest_cannot_write_keeps_the_data_plane(self, nonroot: _Live):
+        """The fallback #1131 turns on, on the base every deployment gets by default.
+
+        `/maf-sandbox/work` is the file plane's own, root-owned and `0755`, so a write running
+        as this guest would be refused where the plane's lands. The in-door is never withheld,
+        so the plane keeps the write and the residual is stated — see `docs/sandbox/backends`.
+        """
+        assert nonroot.sandbox._held.write_road is False  # noqa: SLF001 — the chosen road
+
+        planted = f"{_WORK}/plane-{uuid.uuid4().hex[:12]}.txt"
+        nonroot.run(nonroot.sandbox.write_file(planted, "in\n", working_directory=_WORK))
+        owner = nonroot.run(
+            nonroot.sandbox.exec(
+                ["stat", "-c", "%u", planted], working_directory=_WORK, timeout=_EXEC_TIMEOUT
+            )
+        )
+        assert owner.stdout.strip() == "0", "the data plane stopped landing files as root"
+
+
+class TestTheWriteRoadOnAGuestThatCanWrite:
+    """A write that runs as the guest, and what a swapped parent then costs (#1131, #456).
+
+    One more billable sandbox where the environment names a non-root image, and none otherwise.
+    It needs a base the *guest* can write into, which `/maf-sandbox/work` is not — the file
+    plane creates it root-owned — so this one is based on `/tmp`, which every Linux image ships
+    world-writable and which therefore exists before any plane call. That is the shape where
+    the residual is live: the guest owns directories on the path and can swap them.
+    """
+
+    @pytest.fixture(scope="class")
+    def writing(self, loop):
+        if not _NONROOT_IMAGE:
+            pytest.skip("needs MAF_SANDBOX_ACAS_E2E_NONROOT_IMAGE")
+        backend = AcasSandboxBackend(_config())
+        scope = f"e2e-write-road-{uuid.uuid4()}"
+        key = _key(scope)
+        spec = SandboxSpec(
+            kind="e2e-write-road",
+            image=_NONROOT_IMAGE,
+            work_dir="/tmp",
+            requires=frozenset({Capability.EXEC, Capability.FILES_IN}),
+        )
+        try:
+            sandbox = loop.run_until_complete(backend.acquire(key, spec))
+            yield _Live(loop, backend, key, spec, sandbox)
+        finally:
+            loop.run_until_complete(backend.dispose_scope(scope, "thread-1"))
+            loop.run_until_complete(backend.aclose())
+
+    def test_the_probe_chose_the_guest(self, writing: _Live):
+        """The control: with the road unchosen, everything below would measure the plane."""
+        assert writing.sandbox._held.write_road is True  # noqa: SLF001 — the chosen road
+        answered = writing.run(
+            writing.sandbox.exec("id -u", working_directory="/tmp", timeout=_EXEC_TIMEOUT)
+        )
+        assert answered.stdout.strip() != "0", "this image's guest is root, so nothing is bounded"
+
+    def test_a_write_lands_guest_owned(self, writing: _Live):
+        """What the reach rule asks of a write: the guest program can change what it got."""
+        planted = f"/tmp/given-{uuid.uuid4().hex[:12]}.txt"
+        writing.run(writing.sandbox.write_file(planted, "in\n", working_directory="/tmp"))
+
+        answered = writing.run(
+            writing.sandbox.exec(
+                [
+                    "sh",
+                    "-c",
+                    f'stat -c %u -- "{planted}"; : >> "{planted}" && rm -f -- "{planted}"',
+                ],
+                working_directory="/tmp",
+                timeout=_EXEC_TIMEOUT,
+            )
+        )
+        assert answered.exit_code == 0, answered.stderr
+        assert (
+            answered.stdout.strip()
+            == writing.run(
+                writing.sandbox.exec("id -u", working_directory="/tmp", timeout=_EXEC_TIMEOUT)
+            ).stdout.strip()
+        ), "the write landed as someone the guest program is not"
+
+    def test_a_write_the_guest_could_not_have_made_is_refused(self, writing: _Live):
+        """What a won race costs, reached without racing for it.
+
+        A swapped parent sends a write somewhere the confinement check never saw; what that
+        somewhere costs is decided by the principal running the write, not by the swap. So the
+        assertion is about the principal, and `/etc` is a destination reached here by an
+        absolute working directory rather than by winning a race — a race probe can show the
+        window exists and never that it is closed, which is the wrong shape for a gate.
+
+        The control matters as much as the refusal: the data plane puts bytes in `/etc` on this
+        very sandbox, so the refusal below is the road's and not the service declining
+        everything.
+        """
+        client = writing.sandbox._sc  # noqa: SLF001 — the control, past the road under test
+        control = f"/etc/maf-1131-control-{uuid.uuid4().hex[:12]}"
+        writing.run(client.write_file(control, b"the plane reaches here\n"))
+        reached = writing.run(
+            writing.sandbox.exec(
+                ["stat", "-c", "%u", control], working_directory="/tmp", timeout=_EXEC_TIMEOUT
+            )
+        )
+        assert reached.exit_code == 0 and reached.stdout.strip() == "0", reached.stderr
+
+        refused = f"/etc/maf-1131-{uuid.uuid4().hex[:12]}"
+        with pytest.raises(PermissionError):
+            writing.run(writing.sandbox.write_file(refused, "host\n", working_directory="/etc"))
+
+        absent = writing.run(
+            writing.sandbox.exec(
+                ["sh", "-c", f'test -e "{refused}" && echo landed || echo absent'],
+                working_directory="/tmp",
+                timeout=_EXEC_TIMEOUT,
+            )
+        )
+        assert absent.stdout.strip() == "absent", f"host-authority bytes reached {refused}"
+
 
 #: What `begin_stop` polls for and what `ensure_running` resumes from. The probe below needs
 #: one of these rather than merely "not running": a `Starting` sandbox still serves the data
@@ -1266,6 +1393,24 @@ class TestComingBackToTheSharedSandbox:
 
         state = loop.run_until_complete(the_state_the_calls_below_meet())
         assert state.lower() in _STOPPED_STATES, f"the sandbox is not stopped: {state!r}"
+
+        # Freezing the guest is what closes docker's check-then-act window around its three
+        # `cp` members (#1130), and suspension is this service's nearest analogue. It cannot be
+        # used that way, and this is where that is measured rather than assumed (#1131): the
+        # data plane answers a stopped sandbox 409 `GlobalSandboxNotRunning` and serves nothing.
+        # Read through the SDK client, past the backend, because `_Live.run` resumes first.
+        from azure.core.exceptions import HttpResponseError
+
+        client = live.sandbox._sc  # noqa: SLF001 — the provocation, not the measurement
+        for refused in (
+            client.stat_file(f"{_WORK}/back.txt"),
+            client.read_file(f"{_WORK}/back.txt"),
+            client.write_file(f"{_WORK}/while-stopped.txt", b"z"),
+        ):
+            with pytest.raises(HttpResponseError) as answered:
+                loop.run_until_complete(refused)
+            assert answered.value.status_code == 409, answered.value
+            assert "not running" in str(answered.value).lower(), answered.value
 
         # A data-plane call, because that is the plane which refuses a stopped sandbox.
         planted = f"{_WORK}/resumed-{uuid.uuid4().hex[:12]}"

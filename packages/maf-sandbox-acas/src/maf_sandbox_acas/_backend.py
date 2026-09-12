@@ -53,6 +53,13 @@ from maf_sandbox import (
     error_detail,
     fold_disposal_failures,
 )
+from maf_sandbox.file_transfer import (
+    FileRefusal,
+    SandboxFileRefused,
+    SandboxShellTransferFailed,
+    SandboxShellTransferUnfinished,
+    write_file_over_exec,
+)
 from maf_sandbox.paths import (
     confine_resolve_guest_delete_path,
     confine_resolve_guest_list_path,
@@ -220,14 +227,29 @@ _NEEDS_OBSERVED_REMOVAL = frozenset({Capability.FILES_DELETE})
 #: EXEC earns a warning rather than a refusal: stdout-only commands need no writing guest.
 _PROBE_WHEN_REQUIRED = _NEEDS_A_WRITING_GUEST | _NEEDS_OBSERVED_REMOVAL | {Capability.EXEC}
 
-#: The probe must not depend on a workload directory that does not exist at acquire.
-_GUEST_PROBE_WORKING_DIRECTORY = "/"
+#: Where this backend's own guest commands run. Never a workload's working directory: that may
+#: be a link, may be one the confinement check refused, or may not exist at acquire, and a shell
+#: handed it fails to start where the data plane only did path arithmetic with it. Every path
+#: these commands touch is absolute and already confined, so the cwd decides nothing.
+_GUEST_COMMAND_WORKING_DIRECTORY = "/"
 
 #: One bound for preparation, exec and observation; cleanup has its own equal bound.
 _PROBE_TIMEOUT_S = 30.0
 
 #: Bound stale pre-create refusals without paying for a sandbox on every rejected acquire.
 _REMOVAL_HINT_TTL_S = 60.0
+
+#: What :func:`~maf_sandbox.write_file_over_exec` runs in the guest, checked before the probe
+#: creates anything. ``sh`` is not here because an image without it cannot run the probe at all;
+#: ``wc`` is not because it belongs to the read road, which this backend serves through the data
+#: plane. A missing utility keeps the plane rather than failing every write.
+_SHELL_WRITE_UTILITIES = ("mkdir", "mv", "rm", "base64")
+
+#: The two words the write-road probe's script answers with, one per line it reaches. Neither
+#: retains the data plane, which is what keeps a guest's stdout from raising its own authority
+#: — see :meth:`_AcasSandbox.probe_write_road`.
+_A_GUEST_WRITE_LANDS = "write"
+_THE_UTILITIES_ARE_THERE = "utilities"
 
 
 def _image_identity(spec: SandboxSpec) -> tuple[str, str]:
@@ -297,7 +319,8 @@ _LIMITS = SandboxLimits(files_in=_FILES_LIMITS, files_out=_FILES_LIMITS)
 #
 # Three capabilities are a ceiling: acquire checks removal from a file-plane directory before
 # serving FILES_DELETE and conservatively refuses writing workloads on a completed failure.
-# FILES_IN stays, with the residual write_file states (#1131).
+# FILES_IN is never withheld — it is this backend's only in-door — and acquire instead chooses
+# which principal its writes run as, per sandbox (#1131). See `_AcasSandbox.write_file`.
 _DECLARATIONS = BackendDeclarations(
     capabilities=frozenset(
         {
@@ -435,15 +458,20 @@ def _listed_entry_path(payload: Mapping[str, Any], *, listed: str, working_direc
 
 @dataclass
 class _Held:
-    """A sandbox this backend is holding, and its guest removal compatibility result.
+    """A sandbox this backend is holding, its removal compatibility result and its write road.
 
-    The verdict lives on the entry so it cannot outlive the sandbox it describes.
+    Both verdicts live on the entry so they cannot outlive the sandbox they describe.
     ``probed`` separates an inconclusive completed probe from one that must be retried.
     """
 
     sandbox_id: str
     removal: bool | None = None
     probed: bool = False
+    #: Which road this sandbox's writes take, or ``None`` before the road was chosen. ``True``
+    #: is the shell, ``False`` the data plane; see :meth:`_AcasSandbox.probe_write_road`. It
+    #: lives here rather than on the wrapper because the answer describes the guest and its
+    #: base, and a held sandbox cannot change either.
+    write_road: bool | None = None
     commands: set[str] = field(default_factory=set[str])
     unusable: bool = False
     invalidation: Future[None] | None = field(default=None, init=False, repr=False, compare=False)
@@ -484,6 +512,45 @@ class _Deletion:
 
     deleted: bool
     failure: DisposalFailure | None = None
+
+
+#: What the shell road's refusals are raised as, so which road a write took is invisible to
+#: its caller: these are the errors the data plane's own failures arrive as. Read with a
+#: fallback, never subscripted — a refusal the core adds later must degrade to a plain failure
+#: rather than reach a workload as a ``KeyError`` from this dictionary. The offline suite pins
+#: that every member ``FileRefusal`` carries today is named here, so the loss is a red test.
+_REFUSAL_ERRORS: Mapping[FileRefusal, type[OSError] | type[ValueError]] = {
+    FileRefusal.NOT_FOUND: FileNotFoundError,
+    FileRefusal.IS_DIRECTORY: IsADirectoryError,
+    FileRefusal.PERMISSION_DENIED: PermissionError,
+    FileRefusal.INVALID_PATH: ValueError,
+}
+
+
+def _write_road_script(wanted: str) -> str:
+    """The one guest command behind :meth:`_AcasSandbox.probe_write_road`.
+
+    Each line answers with a word or says nothing, so a line the guest refuses reads as no
+    rather than as the probe failing.
+
+    Two orderings are load-bearing. **The utilities are checked before anything is created**,
+    ``rm`` among them, because the write test is a file the guest must take back and an image
+    that cannot would leave it in the workload's base — which this backend also lists. And
+    **the redirection is carried on** ``true`` **with its** ``2>/dev/null`` **first**: a
+    redirection that fails on a POSIX *special* builtin, as ``:`` is, exits the shell rather
+    than the line, and redirections are applied left to right, so silencing stderr after the
+    open would let the guest's diagnostic into the answer.
+    """
+    guest = shlex.quote(wanted)
+    utilities = " ".join(_SHELL_WRITE_UTILITIES)
+    return "\n".join(
+        (
+            f'for utility in {utilities}; do command -v "$utility" >/dev/null 2>&1 || exit 0; done',
+            f"echo {_THE_UTILITIES_ARE_THERE}",
+            f"true 2>/dev/null > {guest} && rm -f -- {guest} 2>/dev/null "
+            f"&& echo {_A_GUEST_WRITE_LANDS}",
+        )
+    )
 
 
 def _control_result(stdout: object, stderr: object, exit_code: object) -> ExecResult:
@@ -541,33 +608,82 @@ class _AcasSandbox:
             await self._sc.mkdir(directory)
 
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
-        """Write ``content`` at ``path`` through the data plane, which lands it as ``0:0``.
+        """Write ``content`` at ``path``, over the shell wherever a guest write can land there.
 
-        **The residual to know before choosing this backend for a non-root image.**  The
-        confinement check and this write are separate calls, and the service resolves a
+        The confinement check and the write are separate calls, and the service resolves a
         symlinked parent, so a guest that replaces a checked component in between has the write
-        followed — and this plane acts as the host, so the bytes land root-owned at a path the
-        guest could not have written itself.  On a root image that is a confinement failure and
-        nothing more, since the guest was already root.  On a non-root one it is more than the
-        guest had, which is the reach rule :class:`~maf_sandbox.Sandbox` states for the whole
-        file surface.
+        followed.  What that costs is decided by authority rather than by atomicity: a write
+        that runs as the guest reaches nothing the guest could reach anyway.  So
+        :meth:`probe_write_road` asks once, at acquire, whether a guest-authority write lands
+        in this base and whether the utilities the road runs are there, and where both hold the
+        write goes through :func:`~maf_sandbox.write_file_over_exec`.  A root image takes that
+        road too: the probe cannot tell one apart without asking the guest, which
+        :meth:`probe_write_road` says why it must not do.
 
-        Stated rather than refused: withholding ``FILES_IN`` would leave this backend no
-        in-door at all on such an image.  Gating that authority per component is not available
-        here, since the data plane's stat payload carries no owner to build a gate from — see
-        ``docs/sandbox/backends/acas.md``.
+        Where either answer is no — a base the guest cannot write into, or an image missing one
+        of those utilities — the plane keeps the write and the residual is stated rather than
+        withheld: ``FILES_IN`` is this backend's only in-door and withholding it would leave
+        none.  ``docs/sandbox/backends/acas.md`` carries what is left.
+
+        **The shell road's cost is per chunk, not per write.**  It runs two control commands
+        plus one command for every :data:`~maf_sandbox.file_transfer.SHELL_CHUNK_BYTES` of
+        content — 48 KiB — so a file under that costs three guest commands (measured 0.44 s
+        against the plane's 0.21 s) and one at this backend's 32 MiB ``files_in`` ceiling costs
+        685, sequentially.  ``read_timeout_seconds`` bounds the whole transfer, so a large file
+        on a slow link is refused where the plane would have taken it.
+
+        **Two failures, and only one of them costs the sandbox.**  A deadline that expires
+        *between* commands takes the staged sibling back and raises
+        ``SandboxShellTransferFailed`` with the sandbox whole, because nothing was running.  A
+        command that fails *in flight* — its own timeout, a capture failure, an output overrun
+        — invalidates and disposes the sandbox the way any :meth:`exec` failure does.  A
+        refused plane write leaves it whole either way.
         """
+        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
+        guest = await confine_resolve_guest_write_path(
+            self._unconfined_stat, path, working_directory
+        )
+        if self._held.write_road:
+            await self._write_as_the_guest(guest, content)
+            return
         # `create_dirs=True` is the SDK's own default, and it is passed explicitly anyway.
         # A workload may hand us a nested path — `infra/main.bicep` is the example in the
         # bicep tool's own description — and without it every such write fails on a missing
         # parent. The file API docs do not mention the behaviour at all, so it is the SDK
         # signature that is load-bearing here; relying silently on a `0.1.0bN` default is how
         # `DiskImage.image` got missed. Stating it costs nothing and pins the intent.
-        working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
-        guest = await confine_resolve_guest_write_path(
-            self._unconfined_stat, path, working_directory
-        )
         await self._sc.write_file(guest, content, create_dirs=True)
+
+    async def _write_as_the_guest(self, guest: str, content: str | bytes) -> None:
+        """Run the write in the guest, answering as the data plane would have answered.
+
+        ``str`` is encoded here rather than left to the shell road, so both roads put the same
+        bytes at the same path whatever the host's locale says.  The shell road's own
+        vocabulary does not leave this method: a caller sees the errors the plane raises, since
+        which road a sandbox took is not something a workload chose or can see.
+
+        **The commands run from** ``/``, **never from the caller's working directory**, which a
+        shell would inherit for real.  ``guest`` is absolute and already confined, so the cwd
+        decides nothing; and a working directory that is a link, or refused, or absent is a
+        refusal on the plane but a failure to *start* for a shell, which on this backend
+        invalidates and disposes the sandbox.  :meth:`remove` runs from ``/`` for the same
+        reason.
+        """
+        payload = content.encode("utf-8") if isinstance(content, str) else content
+        try:
+            await write_file_over_exec(
+                self,
+                guest,
+                payload,
+                working_directory=_GUEST_COMMAND_WORKING_DIRECTORY,
+                timeout=self._read_timeout,
+            )
+        except SandboxFileRefused as refused:
+            raise _REFUSAL_ERRORS.get(refused.refusal, OSError)(
+                f"could not write {guest}: {refused.detail or refused.refusal.value}"
+            ) from refused
+        except (SandboxShellTransferFailed, SandboxShellTransferUnfinished) as failed:
+            raise OSError(f"could not write {guest}: {error_detail(failed)}") from failed
 
     async def exec(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float
@@ -782,6 +898,73 @@ class _AcasSandbox:
             finally:
                 await response.close()
 
+    async def choose_write_road(self, spec: SandboxSpec) -> None:
+        """Settle this sandbox's write road once, on the acquire that first asks to write.
+
+        Must run after :meth:`prepare_work_dir`: the probe has the guest write in the base, and
+        a base that does not exist yet answers nothing. An unreachable probe leaves the road
+        unchosen and the next acquire asks again, the plane serving meanwhile, so a probe that
+        cannot complete withholds no in-door.
+
+        For a ``FILES_IN`` workload's own sandbox the first such acquire is the create, before
+        anything of that workload has run. What that timing is worth is in
+        :meth:`probe_write_road`.
+        """
+        if Capability.FILES_IN not in spec.required_capabilities:
+            return
+        if self._held.write_road is not None:
+            return
+        try:
+            road = await self.probe_write_road()
+        except Exception as unreachable:  # noqa: BLE001 - an acquire must not fail over this
+            logger.debug(
+                "acas: the write-road probe for sandbox %s did not complete (%s); the data "
+                "plane serves and the next acquire asks again",
+                self.sandbox_id,
+                error_detail(unreachable),
+            )
+            return
+        self._held.write_road = road
+        if road:
+            logger.info(
+                "sandbox %s writes as the guest: a guest-authority write lands in %s and the "
+                "shell road's utilities are there, so writes run over exec and arrive owned by "
+                "whoever the image's USER is",
+                self.sandbox_id,
+                self._work_dir,
+            )
+
+    async def probe_write_road(self) -> bool:
+        """Can a write run as the guest, in this base, on this image?
+
+        Two answers from one control command: whether a guest-authority write lands in the
+        base, and whether the utilities the shell road runs are there. Both yes and the write
+        runs as the guest; anything else and the data plane keeps it. A root image answers yes
+        as readily as any other, and takes the road it does not need.
+
+        **Nothing here may ask whether the plane is already within the guest's reach**, however
+        cheaply that would spare a root image the road. Every answer arrives as the guest's own
+        stdout and the service reports no owner to stand behind one, so such a question would
+        make retaining host authority a word the guest chooses to print. As asked, ``no`` to
+        either question keeps the data plane, so **no answer the guest can give raises the
+        authority a write runs at.** ``docs/sandbox/backends/acas.md`` carries the argument and
+        the residual that is left: an answer is only as trustworthy as the absence of a running
+        guest, which holds at a create and not on every warm reuse.
+        """
+        wanted = f"{self._work_dir}/.maf-write-probe-{uuid4().hex}"
+        async with asyncio.timeout(_PROBE_TIMEOUT_S):
+            answered = (
+                await self._exec_text(
+                    ["sh", "-c", _write_road_script(wanted)],
+                    working_directory=_GUEST_COMMAND_WORKING_DIRECTORY,
+                    timeout=_PROBE_TIMEOUT_S,
+                )
+            ).stdout
+        # No cleanup clause: the file is the guest's own and the script removes it, so nothing
+        # the plane placed is left to take back.
+        said = set(answered.split())
+        return {_A_GUEST_WRITE_LANDS, _THE_UTILITIES_ARE_THERE} <= said
+
     async def probe_guest_removal(self) -> bool | None:
         """Check guest removal compatibility; this cannot establish workload authority."""
         from azure.core.exceptions import ResourceNotFoundError
@@ -798,7 +981,7 @@ class _AcasSandbox:
                     raise OSError("the file plane did not create the removal probe file")
                 answered = await self._exec_text(
                     ["rm", "--", guest_file],
-                    working_directory=_GUEST_PROBE_WORKING_DIRECTORY,
+                    working_directory=_GUEST_COMMAND_WORKING_DIRECTORY,
                     timeout=_PROBE_TIMEOUT_S,
                 )
                 parent = await self.stat_file(guest_directory, working_directory="/")
@@ -1165,6 +1348,7 @@ class AcasSandboxBackend:
             async with asyncio.timeout(self._config.read_timeout_seconds):
                 await sandbox.prepare_work_dir(spec)
             sandbox.check_usable()
+            await sandbox.choose_write_road(spec)
             return sandbox
 
     @asynccontextmanager
