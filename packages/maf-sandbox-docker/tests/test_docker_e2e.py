@@ -1331,7 +1331,7 @@ class TestTheFreezeAgainstARealEngine:
             with pytest.raises(asyncio.CancelledError):
                 await writing
             assert _inspected("container", sandbox.container_name, "{{.State.Paused}}") == "false"
-            assert not _Freezes.names
+            assert not _Freezes.claims and not _Freezes.confirmed
 
         asyncio.run(scenario())
 
