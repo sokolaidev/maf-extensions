@@ -20,6 +20,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import tracemalloc
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -2247,6 +2248,43 @@ class TestTheSeam:
         with pytest.raises(TimeoutError):
             asyncio.run(backend._wslc("-c", script, read_limit=64, timeout=1))
 
+    def test_bounded_stderr_retention_is_independent_of_total_output(self):
+        async def scenario():
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                "import os; os.write(2, b'\\xff' * (16 * 1024 * 1024)); "
+                "os.write(1, b'\\x00ok'); os._exit(7)",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            tracemalloc.start()
+            try:
+                stdout, stderr = await WslcSandboxBackend._read_bounded(process, 64, 5)
+                _, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+                if process.returncode is None:
+                    process.kill()
+                await process.communicate()
+
+            assert peak < 4 * 1024 * 1024
+            assert (stdout, stderr, process.returncode) == (b"\x00ok", b"\xff" * 65536, 7)
+
+        asyncio.run(scenario())
+
+    @pytest.mark.parametrize("size", [65535, 65536, 65537])
+    def test_a_bounded_read_retains_the_stderr_prefix(self, size):
+        backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
+        script = f"import os; os.write(2, b'e' * {size}); os.write(1, b'ok')"
+        result = asyncio.run(backend._wslc("-c", script, read_limit=64, timeout=5))
+
+        assert (result.stdout, result.stderr, result.returncode) == (
+            b"ok",
+            b"e" * min(size, 65536),
+            0,
+        )
+
     @pytest.mark.parametrize("full_pipe", ["stdout", "stderr"])
     def test_a_bounded_read_drains_full_pipes(self, full_pipe):
         async def scenario():
@@ -2266,7 +2304,7 @@ class TestTheSeam:
                 if full_pipe == "stdout":
                     assert stdout == b"x" * 64
                 else:
-                    assert (stdout, stderr) == (b"ok", b"x" * 1000000)
+                    assert (stdout, stderr) == (b"ok", b"x" * 65536)
                     assert process.returncode == 0
                 assert process.returncode is not None
             finally:
@@ -2293,7 +2331,7 @@ class TestTheSeam:
             backend._wslc("-c", script, stdin=b"i" * 1000000, read_limit=64, timeout=5)
         )
 
-        assert (result.stdout, result.stderr, result.returncode) == (b"1000000", b"e" * 1000000, 0)
+        assert (result.stdout, result.stderr, result.returncode) == (b"1000000", b"e" * 65536, 0)
 
     def test_a_bounded_read_times_out_while_sending_input(self):
         backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))

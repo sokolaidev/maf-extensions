@@ -464,6 +464,7 @@ def _proxy_name(container: str) -> str:
 
 # The CLI writes copied bytes to disk; this bound covers only unexpected stdout.
 _STAT_STDOUT_LIMIT = 512
+_STDERR_LIMIT = 64 * 1024
 
 
 def _listed_names(payload: str) -> list[str]:
@@ -1767,7 +1768,7 @@ class WslcSandboxBackend:
         """Cap stdout while draining stderr, preserving normal exit below the cap.
 
         Input, output and exit share one deadline; abnormal cleanup gets three seconds to
-        kill and drain the child. Only stdout retention is byte-bounded.
+        kill and drain the child. Retain at most 64 KiB of stderr and discard its excess.
         """
         assert process.stdout is not None and process.stderr is not None
         out_stream = process.stdout
@@ -1801,9 +1802,15 @@ class WslcSandboxBackend:
                 with contextlib.suppress(BrokenPipeError, ConnectionResetError):
                     await process.stdin.wait_closed()
 
+        async def read_diagnostics() -> bytes:
+            head = bytearray()
+            while chunk := await err_stream.read(65536):
+                head.extend(chunk[: max(0, _STDERR_LIMIT - len(head))])
+            return bytes(head)
+
         tasks = (
             asyncio.create_task(_pull_head()),
-            asyncio.create_task(err_stream.read()),
+            asyncio.create_task(read_diagnostics()),
             asyncio.create_task(feed_input()),
         )
         complete = False
