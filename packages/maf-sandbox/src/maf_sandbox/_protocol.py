@@ -904,6 +904,9 @@ class SandboxSpec:
     min_cleanup: Cleanup | None = None
     # Appended after it, for that same reason.
     exclusive_admission: bool = False
+    #: Opaque workload execution configuration. A router refuses to reuse a known instance
+    #: under a different value; dispose it before changing contracts. None is a contract too.
+    execution_contract: str | None = None
 
     @property
     def required_capabilities(self) -> frozenset[Capability]:
@@ -922,6 +925,9 @@ class SandboxSpec:
         return self.host_tools.identities if self.host_tools is not None else frozenset()
 
     def __post_init__(self) -> None:
+        contract = cast("object", self.execution_contract)
+        if contract is not None and (not isinstance(contract, str) or not contract.strip()):
+            raise ValueError("execution_contract must be a non-empty string or None")
         # Coerced before anything reads them, the way `HostToolDeclaration` coerces its own
         # identity: a `StrEnum` member equals its string, so a caller passing ``"call"`` satisfies
         # every ``==`` and fails every ``is`` — and the two checks that make a per-call sandbox a

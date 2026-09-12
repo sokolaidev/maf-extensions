@@ -4,9 +4,8 @@ The agent gets one tool, the model writes a short Python program, and the progra
 a sandbox — computing an answer instead of reasoning about what the computation would produce.
 
 **This module contains no Azure import, no backend import and no sandbox lifecycle code.**  It
-talks to a :class:`~maf_sandbox.SandboxRouter` and gets back ``write_file``, ``exec`` and the
-pull surface, so the same tool runs unchanged against ACA Sandboxes, a Docker container or an
-in-process fake.
+talks to a :class:`~maf_sandbox.SandboxRouter` through ``exec`` or a host-selected Python
+``run_code`` runtime, with protocol file methods for the wired channels.
 
 Channels the host chooses among, and stdout is always there.  A
 **file store** adds a ``files`` parameter, so a program can transform files that already
@@ -52,6 +51,7 @@ from maf_sandbox import (
     SandboxArtifactNameInvalid,
     SandboxOutputError,
     SandboxProgramTimeout,
+    SandboxQueuedTimeout,
     SandboxRouter,
     SandboxSpec,
     SourceIntegrity,
@@ -70,6 +70,8 @@ from maf_sandbox.maf import (
     positions_holding_hidden_content,
     sandboxed_tool,
 )
+
+from ._runtime import CodeactRuntime, runtime_contract, runtime_program
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -187,8 +189,13 @@ def codeact_sandbox_spec(
     files_out: TransferLimits = _DEFAULT_FILES_OUT,
     host_tools: HostToolRegistry | None = None,
     egress_allow: Sequence[str | EgressRule] = (),
+    runtime: CodeactRuntime | None = None,
+    takes_files: bool = False,
 ) -> SandboxSpec:
     """The sandbox a CodeAct program needs, in backend-neutral terms.
+
+    ``runtime`` selects ``run_code`` instead of exec. ``takes_files`` declares the file-store
+    channel that ``make_codeact_tools`` derives from its ``file_store`` argument.
 
     No ``min_isolation`` is deliberate: this kind runs only what the model wrote, so the
     host's floor governs.
@@ -240,6 +247,8 @@ def codeact_sandbox_spec(
         files_out=files_out,
         surface=_host_tools(host_tools),
         egress_allow=egress_allow,
+        runtime=runtime,
+        takes_files=takes_files,
     )
 
 
@@ -260,6 +269,7 @@ def make_codeact_tools(
     files_in: TransferLimits = DEFAULT_TRANSFER_LIMITS,
     files_out: TransferLimits = _DEFAULT_FILES_OUT,
     egress_allow: Sequence[str | EgressRule] = (),
+    runtime: CodeactRuntime | None = None,
 ) -> list[Any]:
     """Return the ``[execute_code]`` tool list, or ``[]`` when no sandbox is available.
 
@@ -268,6 +278,8 @@ def make_codeact_tools(
     never shown a parameter this deployment cannot honour.
 
     Args:
+        runtime: The verified Python runtime contract, selecting ``run_code`` instead of exec.
+            File channels require its ``guest_work_dir``. Native host tools are not supported.
         router: The sandbox router, or ``None`` when sandboxing is not configured.
         agent_dir: The agent's directory name. Baked into the sandbox key at factory time
             rather than taken from the model at call time.
@@ -356,13 +368,13 @@ def make_codeact_tools(
             too, and the cap above applies.
         image: OCI reference of a sandbox image with a Python interpreter on its path.
         image_id: A backend-native disk-image id, skipping resolution.
-        exec_timeout_seconds: Per-program bound. A sandbox that stops answering must not hold
-            the caller's turn open. Also what a call waits for each call ahead of it on the
-            sandbox, since calls of this kind run one at a time; a number that is not a bound
-            leaves that wait at the framework's own.
+        exec_timeout_seconds: Execution bound; for ``run_code`` this includes backend queue
+            time and must be finite and positive. Also budgets exclusive admission for each
+            call ahead, plus cleanup time. An unbounded exec setting uses the framework's wait.
         files_in: What one call may share into the sandbox. Enforced here, because no backend's
             ``write_file`` knows the workload's caps — a spec that declared a bound nothing
-            applied would be worse than one that declared none.
+            applied would be worse than one that declared none. Runtime source and its bootstrap
+            spend the byte caps but no file slot.
         files_out: The collection's caps. ``max_files`` is what bounds how many artifacts one
             call may declare, so it is a property of the workload rather than of the guest.
         egress_allow: The deployment's half of the network allowlist — hosts a published kind
@@ -388,6 +400,14 @@ def make_codeact_tools(
     ``[]``, never an exception.
     """
     configured = router is not None and router.enabled
+    if configured:
+        _validate_runtime(runtime, takes_files=file_store is not None, outputs=outputs)
+        if runtime is not None and host_tools is not None and len(host_tools):
+            raise ValueError("CodeAct runtime host tools require a native channel; not supported")
+        if runtime is not None and (
+            not math.isfinite(exec_timeout_seconds) or exec_timeout_seconds <= 0
+        ):
+            raise ValueError("runtime exec_timeout_seconds must be a finite positive number")
     host_tool_call: _HostToolCall | None = None
     if configured and host_tools is not None and len(host_tools):
         if not math.isfinite(exec_timeout_seconds) or exec_timeout_seconds <= 0:
@@ -405,7 +425,7 @@ def make_codeact_tools(
         host_tool_call = _HostToolCall(
             host_tools, host_tool_shim(host_tools.names(), call_timeout=exec_timeout_seconds)
         )
-    if configured and files_in.max_files < 1:
+    if configured and runtime is None and files_in.max_files < 1:
         # `program.py` is one inbound file on every call, so a cap below one refuses all of
         # them. Every impossible pairing below is caught here rather than per call: a tool the
         # model can see and can never use successfully is worse than one that never attached.
@@ -489,6 +509,8 @@ def make_codeact_tools(
         files_out=files_out,
         surface=surface,
         egress_allow=egress_allow if configured else (),
+        runtime=runtime if configured else None,
+        takes_files=file_store is not None,
     )
     # A single host-tool call may exercise the user's delegated authority, and which one does
     # is not knowable before the program runs, so one such tool raises the whole surface.
@@ -510,6 +532,7 @@ def make_codeact_tools(
             exec_timeout_seconds,
             host_tool_call,
             withhold=withhold_guest_output,
+            runtime=runtime,
         ),
         router=router,
         context=context,
@@ -631,10 +654,17 @@ def _codeact_spec(
     files_out: TransferLimits,
     surface: HostToolAggregate | None,
     egress_allow: Sequence[str | EgressRule] = (),
+    runtime: CodeactRuntime | None = None,
+    takes_files: bool = False,
 ) -> SandboxSpec:
     """:func:`codeact_sandbox_spec`, over a host-tool surface the caller has already derived."""
+    _validate_runtime(runtime, takes_files=takes_files, outputs=outputs)
+    if runtime is not None and surface is not None:
+        raise ValueError("CodeAct runtime host tools require a native channel; not supported")
     collects = outputs is not CodeactOutputs.NONE
-    requires = {Capability.EXEC, Capability.FILES_IN}
+    requires = {Capability.EXEC, Capability.FILES_IN} if runtime is None else {Capability.RUN_CODE}
+    if takes_files:
+        requires.add(Capability.FILES_IN)
     if collects:
         requires.add(Capability.FILES_OUT)
     if surface is not None:
@@ -655,7 +685,8 @@ def _codeact_spec(
         image_id=image_id,
         egress=egress,
         egress_allow=effective_egress,
-        work_dir=None,
+        work_dir=runtime.guest_work_dir if runtime is not None else None,
+        execution_contract=runtime_contract(runtime),
         # Model-written code can write outside the call path and leave processes running.
         confined_to_guest_call_path=False,
         # And read whatever a sibling call put in the sandbox, so calls run one at a time.
@@ -668,6 +699,18 @@ def _codeact_spec(
         # field, so a backend that cannot serve it is refused at attach rather than overrun.
         host_tools=surface,
     )
+
+
+def _validate_runtime(
+    runtime: CodeactRuntime | None, *, takes_files: bool, outputs: CodeactOutputs
+) -> None:
+    """Refuse file channels that the runtime configuration cannot place."""
+    if runtime is None:
+        return
+    if not isinstance(cast(object, runtime), CodeactRuntime):
+        raise TypeError("runtime must be a CodeactRuntime or None")
+    if runtime.guest_work_dir is None and (takes_files or outputs is not CodeactOutputs.NONE):
+        raise ValueError("runtime file channels require an explicit guest_work_dir")
 
 
 # --- The tool's description, assembled from the channels the host wired --------------------
@@ -865,6 +908,7 @@ def _tool_description(
     egress_allow: Sequence[str | EgressRule] = (),
     withhold: bool,
     lands_per_call: bool = False,
+    runtime: CodeactRuntime | None = None,
 ) -> str:
     """The description the model reads, for the channels this host actually wired.
 
@@ -883,13 +927,42 @@ def _tool_description(
             _DESCRIPTION_NO_NETWORK_WITH_HOST_TOOLS if host_tool_names else _DESCRIPTION_NO_NETWORK
         )
     head = _DESCRIPTION_HEAD_WITHHELD if withhold else _DESCRIPTION_HEAD
+    if runtime is not None:
+        head = head.replace("as ``python3 program.py``", "in the configured Python runtime")
+        head = head.replace(
+            "Each call gets a fresh working\n        directory: nothing you did not pass in to "
+            "*this* call is in it.",
+            "Use only the runtime facilities described below.",
+        )
     body = [head.format(network=network)]
+    if runtime is not None:
+        if runtime.guest_work_dir is not None:
+            body.append(
+                "This call's directory is created for you and its absolute path is in "
+                "``guest_call_path``. The current working directory is not changed. "
+                "Use ``open(guest_call_path + '/name', ...)`` for shared inputs, output files "
+                "and ``outputs.json``; create any nested output directories you need. "
+                "File names in ``files``, ``outputs`` and the manifest stay relative to "
+                "that directory."
+            )
+        else:
+            body.append("No file-store or output-file channel is configured for this runtime.")
     if host_tool_names:
         names = ", ".join(f"``{name}``" for name in sorted(host_tool_names))
         body.append(_DESCRIPTION_HOST_TOOLS.format(names=names))
-    arguments = [_DESCRIPTION_ARG_CODE]
+    arguments = [
+        _DESCRIPTION_ARG_CODE
+        if runtime is None
+        else "code: A complete Python program using the configured runtime facilities."
+    ]
     if takes_files:
-        body.append(_DESCRIPTION_FILES)
+        body.append(
+            _DESCRIPTION_FILES
+            if runtime is None
+            else "To work on existing files, list them in ``files``. Read a file listed as "
+            "``data/sales.csv`` with ``open(guest_call_path + '/data/sales.csv')``. "
+            "Only the files you list are shared into this call's directory."
+        )
         arguments.append(_DESCRIPTION_ARG_FILES)
     if outputs is CodeactOutputs.DECLARED:
         if not withhold:
@@ -917,6 +990,17 @@ def _tool_description(
             returns += _DESCRIPTION_RETURNS_SAVED_PER_CALL
         else:
             returns += _DESCRIPTION_RETURNS_SAVED_WITHHELD
+    if runtime is not None:
+        body = [
+            paragraph.replace("working directory", "call directory").replace(
+                "current call directory", "current working directory"
+            )
+            for paragraph in body
+        ]
+        body.insert(1, runtime.instructions)
+        arguments = [
+            argument.replace("working directory", "call directory") for argument in arguments
+        ]
     return (
         "\n\n        ".join(body)
         + "\n\n        Args:\n            "
@@ -947,6 +1031,7 @@ def _execute_code_tool(
     host_tool_call: _HostToolCall | None,
     *,
     withhold: bool,
+    runtime: CodeactRuntime | None = None,
 ) -> Callable[..., Awaitable[str | list[Content]]]:
     """Build the ``execute_code`` body for one attached tool.
 
@@ -968,6 +1053,7 @@ def _execute_code_tool(
             files or [],
             declared or [],
             withhold=withhold,
+            runtime=runtime,
         )
         if not withhold:
             return answer
@@ -1022,6 +1108,7 @@ def _execute_code_tool(
         egress_allow=session.spec.egress_allow,
         withhold=withhold,
         lands_per_call=lands_per_call,
+        runtime=runtime,
     )
     return body
 
@@ -1037,6 +1124,7 @@ async def _execute(
     declared: list[str],
     *,
     withhold: bool,
+    runtime: CodeactRuntime | None = None,
 ) -> str:
     """One ``execute_code`` call: share, run, and collect."""
     # Keep one view of hidden content through the run, even if the host clears the store
@@ -1056,7 +1144,7 @@ async def _execute(
     # reasons — this tool writes the program and only reads the manifest, which the program
     # writes. One sentence for both would be false about one of them.
     reserved: dict[str, str] = {}
-    if host_tool_call is None:
+    if host_tool_call is None and runtime is None:
         reserved[_PROGRAM_FILENAME] = (
             "this tool writes a file of that name into every run's directory"
         )
@@ -1098,17 +1186,26 @@ async def _execute(
     # everything is in memory has already spent what it exists to bound. Every check below
     # therefore happens before the read it would have prevented — the count before the listing,
     # the program's own bytes before the store is touched at all, and each file's as it arrives.
-    # The tally covers what this kind writes before exec: `program.py`, which is why the spec
-    # requires FILES_IN even with no store, the shim beside it wherever a registry is wired,
-    # and each shared file. Not the transport's own — a fixed launcher, and one response per
-    # host-tool call under the registry's `response_limits`.
+    # The tally covers the submitted program, an exec shim where wired, and each shared file.
+    # The transport's launcher and responses have their own limits.
     limits = session.spec.files_in
     tally = _InboundTally(limits)
     shared: list[tuple[str, str, str]] = []
-    inbound = len(files) + (2 if host_tool_call is not None else 1)
+    inbound = len(files) + (0 if runtime is not None else 2 if host_tool_call is not None else 1)
+    program = code
+    if runtime is not None:
+        refusal = _InboundTally(limits).add("", code, named="the program", program=True)
+        if refusal is not None:
+            return refusal
+        program = runtime_program(runtime, code, call_directory)
     over_cap = _over_file_count(
         inbound, limits, calls_host_tool=host_tool_call is not None
-    ) or tally.add(_PROGRAM_FILENAME, code)
+    ) or tally.add(
+        _PROGRAM_FILENAME,
+        program,
+        named="the program" if runtime is not None else None,
+        program=runtime is not None,
+    )
     if over_cap is None and host_tool_call is not None:
         over_cap = tally.add(SHIM_MODULE, host_tool_call.shim)
     if over_cap is not None:
@@ -1151,13 +1248,14 @@ async def _execute(
 
     program_path = layout.program if layout is not None else f"{call_directory}/{_PROGRAM_FILENAME}"
     try:
-        await sandbox.write_file(
-            posixpath.relpath(
-                program_path, layout.directory if layout is not None else call_directory
-            ),
-            code,
-            working_directory=layout.directory if layout is not None else call_directory,
-        )
+        if runtime is None:
+            await sandbox.write_file(
+                posixpath.relpath(
+                    program_path, layout.directory if layout is not None else call_directory
+                ),
+                code,
+                working_directory=layout.directory if layout is not None else call_directory,
+            )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "execute_code: could not write the program into the sandbox: %s", error_detail(exc)
@@ -1167,7 +1265,9 @@ async def _execute(
     try:
         # The two are built together above and are never one without the other; both are named
         # here so neither has to be narrowed from the other.
-        if host_tool_call is not None and layout is not None:
+        if runtime is not None:
+            result = await sandbox.run_code(program, timeout=timeout)
+        elif host_tool_call is not None and layout is not None:
             await sandbox.write_file(
                 posixpath.relpath(layout.shim, layout.directory),
                 host_tool_call.shim,
@@ -1186,6 +1286,11 @@ async def _execute(
             result = await sandbox.exec(
                 [_INTERPRETER, _PROGRAM_FILENAME], working_directory=call_directory, timeout=timeout
             )
+    except SandboxQueuedTimeout:
+        logger.warning("execute_code: the deadline expired before the queued program started")
+        return (
+            "Error: the deadline expired while queued; the program never started. Retry unchanged."
+        )
     except SandboxProgramTimeout as expired:
         # The transport's own bound — but *which* of its bounds is something only its message
         # knows. The run can expire before the program is started at all, and that message
@@ -1231,7 +1336,7 @@ async def _execute(
         return "Error: could not run the program in the sandbox"
     except Exception as exc:  # noqa: BLE001
         # Provider/transport detail can carry account ids — must not reach the transcript.
-        logger.warning("execute_code: exec failed: %s", error_detail(exc))
+        logger.warning("execute_code: execution failed: %s", error_detail(exc))
         return "Error: could not run the program in the sandbox"
 
     logger.info("execute_code: ran exit_code=%d shared=%d", result.exit_code, len(shared))
@@ -1468,7 +1573,9 @@ class _InboundTally:
         self._limits = limits
         self._total = 0
 
-    def add(self, name: str, content: str, *, named: str | None = None) -> str | None:
+    def add(
+        self, name: str, content: str, *, named: str | None = None, program: bool = False
+    ) -> str | None:
         """Count one file, or answer with the refusal that should stop the next read.
 
         ``named`` is how the file may be spelled in a refusal, and defaults to ``repr(name)`` —
@@ -1488,9 +1595,10 @@ class _InboundTally:
                 f"Nothing was shared."
             )
         if size > self._limits.max_bytes_per_file:
+            unit = "program" if program else "file"
             return (
                 f"Error: {shown} is {size} bytes and this tool writes at most "
-                f"{self._limits.max_bytes_per_file} bytes per file. Nothing was shared."
+                f"{self._limits.max_bytes_per_file} bytes per {unit}. Nothing was shared."
             )
         self._total += size
         if self._total > self._limits.max_total_bytes:

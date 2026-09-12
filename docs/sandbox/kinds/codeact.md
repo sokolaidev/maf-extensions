@@ -1,6 +1,6 @@
 # The `codeact` kind
 
-> `execute_code`: the model writes a short Python program, the program runs in a sandbox, and the tool returns what it printed. Its contract, how `requires` is assembled from the channels a host wired, why an empty registry is the security story, and the `RUN_CODE` road it does not take. Install and wiring are [`maf-sandbox-codeact`](../../../packages/maf-sandbox-codeact/README.md)'s README; the pattern it inherits is [`README.md`](README.md).
+> `execute_code`: the model writes a short Python program, the program runs in a sandbox, and the tool returns what it printed. The host selects exec or an explicit Python runtime, and the wired channels determine its capability requirements. Install and wiring are [`maf-sandbox-codeact`](../../../packages/maf-sandbox-codeact/README.md)'s README; the pattern it inherits is [`README.md`](README.md).
 
 This kind has no design document of its own. Its hypothetical predecessor is the worked example in [`../research/two-axis-sandbox-policy.md`](../research/two-axis-sandbox-policy.md) § *A CodeAct kind on ACA Sandboxes*, written to show every policy axis doing work before any of it was built; what shipped differs from it in shape, and the code is what governs.
 
@@ -13,20 +13,22 @@ This kind has no design document of its own. Its hypothetical predecessor is the
 | `requires` | assembled, not declared — see below |
 | `egress` | **derived, never passed**: the union of the kind's hosts and the deployment's, non-empty, runs `ALLOWLIST`; empty runs `CLOSED`. `UNRESTRICTED` is not expressible here |
 | `egress_allow` | `()` from the kind, unioned with whatever the deployment adds — the payload of the `ALLOWLIST` run the union derives |
-| `work_dir` | `/maf-sandbox/work`, a dedicated root rather than the image's own tree |
+| `work_dir` | the backend storage base for exec; the host-verified absolute `CodeactRuntime.guest_work_dir` for runtime file channels |
 | `min_isolation` | not raised. This kind runs only what the model wrote, so the host's floor governs ([`../policy-isolation.md`](../policy-isolation.md)) |
-| `requires_os_family` | not set. The axis exists and this kind does not use it, so nothing refuses a guest here — even though the program is run with `python3` and host-tool calling additionally needs `sh` and `nohup`, which are properties of the image rather than of the guest's shape |
+| `requires_os_family` | not set. Exec requires an image with `python3`; exec host tools additionally need `sh` and `nohup`. Runtime programs use the facilities the host has verified in `CodeactRuntime` |
 | `source_integrity` | **`"untrusted"`**, declared, in both renderings. A `"trusted"` claim asks that the result not derive from input the framework has left unestablished, and what comes back here is whatever a model-written `print(...)` chose to emit. `withhold_guest_output=True` changes what the result holds, not where it came from — an exit bit and a presence bit per output, each chosen by that same program, or an exit bit alone where a per-call sink replaces the names with a host-minted folder — so the declaration is the same either way. Declared rather than left out: a tier-2 declaration replaces the input-label join and the host's `default_integrity` rather than flooring them, and omitting the keyword would have handed the answer to both ([#840](https://github.com/sokolaidev/maf-extensions/issues/840)). It costs no per-item labelling — a tier-1 `trusted` item beside it is still shown, which is what the withheld route's guidance depends on |
 
 Four channels exist and none is on by default: a file store, an output sink, a host-tool registry, and an egress allowlist. Wire none and this is the stdout-only kind it has always been. The tool's *signature* follows what was wired — `files` appears only with a store, `outputs` only under `CodeactOutputs.DECLARED` — so a model is never shown a parameter this deployment cannot honour.
 
 ## `requires` is assembled from the wired channels
 
-`_codeact_spec` builds the set rather than stating one, at [`_tool.py:625`](../../../packages/maf-sandbox-codeact/src/maf_sandbox_codeact/_tool.py):
+`_codeact_spec` builds the set rather than stating one, at [`_tool.py:648`](../../../packages/maf-sandbox-codeact/src/maf_sandbox_codeact/_tool.py):
 
 ```python
 collects = outputs is not CodeactOutputs.NONE
-requires = {Capability.EXEC, Capability.FILES_IN}
+requires = {Capability.EXEC, Capability.FILES_IN} if runtime is None else {Capability.RUN_CODE}
+if takes_files:
+    requires.add(Capability.FILES_IN)
 if collects:
     requires.add(Capability.FILES_OUT)
 if surface is not None:
@@ -35,7 +37,9 @@ if surface is not None:
 
 | Wired | Adds | Why |
 |---|---|---|
-| nothing | `{EXEC, FILES_IN}` | `FILES_IN` even with no file store: the kind writes `program.py` into the guest, so the source reaches the interpreter as file *content* and never as a command line |
+| exec, no channels | `{EXEC, FILES_IN}` | the source is written as `program.py`, never as a command line |
+| runtime, no channels | `{RUN_CODE}` | source is submitted directly; no inbound file is written |
+| runtime with a file store | `FILES_IN` | sharing the selected inputs needs a verified runtime storage base |
 | an output mode (`DECLARED` or `MANIFEST`) | `FILES_OUT` | and `outputs_named_at_call_time`, which is what keeps the attached tool honest about landing artifacts it cannot yet name. Never `FILES_LIST` — both roads collect literal paths and neither enumerates, so the kind runs on every backend serving the pull surface rather than only the one with the richest file API |
 | a non-empty host-tool registry | `HOST_TOOLS` **and** `FILES_OUT` | the second is for the *transport*, not for this kind's outputs: `host_tool_calls_over_exec` stats and reads its own request files and the exit marker back over the pull surface, so even a stdout-only program that can call a host function needs it |
 
@@ -43,7 +47,7 @@ Two consequences worth stating plainly. A registry drops wslc twice over — it 
 
 ## Egress: a derived mode, closed by default
 
-The spec carries **one mode**, and this kind computes it rather than accepting it: `_effective_egress` ([`_tool.py:560`](../../../packages/maf-sandbox-codeact/src/maf_sandbox_codeact/_tool.py)) unions what the kind needs with what the deployment added, and `egress = Egress.ALLOWLIST if effective_egress else Egress.CLOSED`. Named hosts run `ALLOWLIST` with those hosts as the payload; no hosts at all runs `CLOSED`, which is what a caller that says nothing gets — the program computes and cannot fetch. Method-scoped `EgressRule` entries pass through the same factories and derive `EGRESS_METHODS` in `required_capabilities`; the router also matches their tokens against the backend declaration. The [network policy](../network.md#method-scoped-allow-entries) defines normalization, refusal and the remaining backend adoption work.
+The spec carries **one mode**: `_effective_egress` ([`_tool.py:583`](../../../packages/maf-sandbox-codeact/src/maf_sandbox_codeact/_tool.py)) unions the kind and deployment entries. A nonempty union derives `ALLOWLIST`; an empty union derives `CLOSED`. Method-scoped `EgressRule` entries derive `EGRESS_METHODS` and the router matches their tokens. The [network policy](../network.md#method-scoped-allow-entries) defines normalization and refusal.
 
 **`UNRESTRICTED` is not expressible, and that is the design rather than an omission.** This sandbox runs model-written code, and unconfined model-written code reaching anything is the exfiltration case an allowlist exists to prevent. There is no argument to pass and no host list that produces it: the derivation has two outcomes and neither is the open posture. Where [`bicep`](bicep.md) takes a mode as an argument — a fixed compiler is low-risk unconfined, and the in-process dev sample needs it — this kind refuses to offer one.
 
@@ -62,7 +66,7 @@ Whichever mode is derived, the router serves it **only on a backend that enforce
 
 The path comes from `session.guest_call_path()`; the framework owns it and reclaims it in a `finally` when the call returns ([`../tool-call.md`](../tool-call.md)). The call id in it is chosen **before** `acquire`, so a declared output name can be judged against the guest path it will actually become — the prefix is the id core allocates, derived from the path rather than counted.
 
-The layout inside it depends on whether a registry is wired, and the kind derives everything a model can name from one prefix so the three uses cannot disagree about a call's shape:
+For exec, the layout inside it depends on whether a registry is wired. A runtime with file channels uses the flat call directory, supplied to the program as an absolute `guest_call_path`, and writes no program file. The kind derives all input, output and manifest paths from that same directory:
 
 | | no registry | with a registry |
 |---|---|---|
@@ -70,7 +74,7 @@ The layout inside it depends on whether a registry is wired, and the kind derive
 | The model's files (`files=`, `outputs=`, the manifest) | `<call>/` | `<call>/work/` |
 | Reserved names | `program.py`, plus `outputs.json` in `MANIFEST` mode | `outputs.json` only |
 
-The two-directory split is why the transport's names are not reserved against a model-supplied one: there is nothing for the two to collide over. `program.py` stays reserved in the flat case, and each reservation carries its own refusal clause, because the two are reserved for opposite reasons — this tool *writes* the program and only *reads* the manifest.
+The two-directory exec split keeps transport names separate from model-selected file names. `program.py` is reserved only for exec without host tools; a runtime may share or collect a file with that name. `outputs.json` remains reserved in manifest mode, where it is the program-written inventory.
 
 Caps are checked before the read they would have prevented, not after: the file count before the listing, the program's own bytes before the store is touched, each shared file's as it arrives. A bound that answers only once everything is in memory has already spent what it exists to bound.
 
@@ -128,17 +132,21 @@ The shapes below describe what the body returns. Core stamps the committed guida
 
 The kind follows the glue's ladder without softening it ([`../architecture.md`](../architecture.md) § *The MAF glue*). No router, or a router with no backend: `[]` comes back and no tool is attached, so the agent keeps the ungrounded behaviour it already had. A backend that cannot serve the assembled spec: **raise**, at construction. Everything after that is **returned rather than raised**, because a refusal the model never sees ends the turn mute — and each message is chosen for whose failure it is. What carries the message follows the mode rather than the ladder: shown, the answer is one string; withheld, it is the two items above — the message unlabelled, the standing route sentence beside it — on refusals and failures as much as on a program that ran. A `SandboxProgramTimeout` is surfaced whole, because only the transport's own message knows *which* of its bounds expired and what was attempted on the program — except under `withhold_guest_output`, where that message carries the program's own output and the sentence is rebuilt from `signal` and `output_reason` instead (above); a bare `TimeoutError` with no host-tool call is this call's one bound and says so; the same error *with* a host-tool call is a backend control-plane call and is reported as "could not run the program", because blaming the program would be a guess about code the model is about to rewrite. Provider text never reaches the transcript.
 
-## The `RUN_CODE` road it does not take
+## The explicit Python runtime variant
 
-This kind hard-requires `EXEC`, and the source reaches the interpreter as file content: `program.py` is written into the run's directory and executed as a fixed two-element argv, `["python3", "<call>/program.py"]`. `RUN_CODE` — evaluate code in a language runtime without going through a shell — is the CodeAct verb, and it is exactly what an embedded-interpreter backend would offer instead.
+Both factories take `runtime: CodeactRuntime | None`. `None` retains exec and `{EXEC, FILES_IN}`; a profile selects `run_code` and `{RUN_CODE}`. The public spec helper takes `takes_files=True` when the corresponding tool factory wires a file store. Both variants retain `kind="codeact"`, leave `DEFAULT_CAPABILITIES` unchanged and use the existing subset matcher in fixed and per-spec selection. There is no method probing or fallback after selection.
 
-**The method now exists.** `Sandbox.run_code(code, *, timeout)` is a protocol member, with wall-clock timeout semantics from the call rather than from the moment the program starts, and `SandboxQueuedTimeout` to tell *never started* apart from *overran*. What the runtime promises a program — whether the last expression's value comes back or only what it printed, and what is importable — is each backend's to state, because the protocol cannot make it uniform, so a kind that assumed one shape would work on one backend by accident.
+`RUN_CODE` does not identify Python. `CodeactRuntime.instructions` is the host's required description of a verified Python environment: statement execution, stdout/stderr results, no last-expression echo, and the available modules and facilities. The tool includes those instructions rather than promising an exec image or a general standard library. A profile is host configuration, not automatic runtime detection.
 
-**Nobody serves it.** Every shipped backend implements the method and every real one refuses: acas, docker and wslc each raise `NotImplementedError`, because *which* runtime an image carries is a property of the image and none of them parses the reference it is handed. Only `maf_sandbox.testing`'s in-process fake answers with a result, and it scripts rather than evaluates. So the capability is declared by no backend today, and the cost of this kind's `EXEC` requirement is still zero.
+Without `guest_work_dir`, a runtime has no file channels. With one, the host verifies a normalized absolute POSIX storage base honored by the backend and writable using Python's `os.makedirs` and `open`. CodeAct creates a call directory beneath that base and injects its absolute path as `guest_call_path`. It never changes cwd. Programs open `guest_call_path + '/name'`; the store, declared names and manifest use relative names. File input adds `FILES_IN`, and either output mode adds `FILES_OUT`; unsupported pairings refuse at attach. The submitted bootstrap compiles the user's source separately, preserving module docstrings and future imports.
 
-The moment a backend does declare it, this kind cannot run there: the capability match is a subset test, and `{EXEC, FILES_IN}` is not satisfied by a backend offering `{RUN_CODE, FILES_IN}` however well it could actually serve the workload — the same program text would run either way, written to a file and exec'd or handed to `run_code` whole.
+The UTF-8 submitted program, including any file bootstrap, spends the inbound per-item and total byte caps but no file slot. A stdout-only runtime therefore accepts `files_in.max_files=0`. Shared inputs spend the same total budget; existing listing authority, name validation, output collection and withheld rendering apply. Collection completes before the router resets or disposes the instance, even where reset erases the runtime filesystem.
 
-There are two ways out and the choice is still not made. A **matcher disjunction** — an additive `requires_any_of` the router requires each group to intersect — is honest about the workload but puts an or-expression into a vocabulary whose whole value is that it is a flat set matched by subset, and it obliges the kind to learn which member it was served under, which nothing sanctions today. A **second spec** keeps the match trivial and asks the host to attach the variant matching its backend, which is where backend knowledge already lives, at the cost of one workload carrying two spec identities. Either way the attach gate stays the only feature detection, and `DEFAULT_CAPABILITIES` keeps `EXEC`, so a say-nothing spec still refuses a `RUN_CODE` backend. [#425](https://github.com/sokolaidev/maf-extensions/issues/425) is where it gets decided, and until it does, an embedded-interpreter backend and this kind cannot meet.
+`exec_timeout_seconds` must be finite and positive for this variant and is passed to `run_code` as its wall-clock budget, including backend queue time. `SandboxQueuedTimeout` returns a fixed message saying the program never started and can be retried unchanged. Program timeouts remain distinct. Cancellation propagates through the normal cleanup path.
+
+The spec retains exclusive admission. Its `execution_contract` binds the execution choice and runtime profile to each instance known to that router, including across reset. A changed contract refuses reuse until disposal or a new key; changing file-channel wiring alone does not change the identity. The binding is local to one router, and the host must keep the declared runtime consistent with the backend it configured.
+
+A nonempty runtime host-tool registry refuses at construction: the native channel remains [#369](https://github.com/sokolaidev/maf-extensions/issues/369). Exec host tools continue through their existing transport. No shipped production backend declares `RUN_CODE`; [#382](https://github.com/sokolaidev/maf-extensions/issues/382) supplies the Hyperlight backend independently of this variant.
 
 ## Status
 
@@ -161,7 +169,7 @@ There are two ways out and the choice is still not made. A **matcher disjunction
 | Calls of this kind run one at a time in a sandbox | shipped — `exclusive_admission` on the spec, and `exec_timeout_seconds` as the wait for each call ahead | [#1129](https://github.com/sokolaidev/maf-extensions/issues/1129) (closed) by [#1134](https://github.com/sokolaidev/maf-extensions/pull/1134) (merged) |
 | Two-halved `egress_allow`, closed by default, validated entries | shipped | [#403](https://github.com/sokolaidev/maf-extensions/issues/403) (open) — the empty half still cannot say whether it means "needs none" or "nobody asked" |
 | The mode is derived from the union rather than passed: hosts run `ALLOWLIST`, none runs `CLOSED`, `UNRESTRICTED` is not expressible | shipped | [#525](https://github.com/sokolaidev/maf-extensions/issues/525) (closed), CodeAct delivered in [#530](https://github.com/sokolaidev/maf-extensions/pull/530) (merged) and remaining Bicep work in [#1085](https://github.com/sokolaidev/maf-extensions/pull/1085) (merged), under [#265](https://github.com/sokolaidev/maf-extensions/issues/265) (closed) |
-| A `RUN_CODE`-only backend serving this kind: matcher disjunction or a second spec | open — undecided, and costing nothing yet because no backend declares `RUN_CODE` | [#425](https://github.com/sokolaidev/maf-extensions/issues/425) (open); the method itself shipped, [#381](https://github.com/sokolaidev/maf-extensions/issues/381) (closed) |
+| A host-selected Python runtime variant with explicit files, timeout and reuse contracts | implemented; awaiting merge | [#425](https://github.com/sokolaidev/maf-extensions/issues/425) (open); the protocol method shipped in [#381](https://github.com/sokolaidev/maf-extensions/issues/381) (closed) |
 | The kind hand-builds its declarations, so a key `sandbox_tool_declarations` learns later skips it | shipped — the kind hand-builds nothing now. It passes `also_carries_out`, the one fact only the kind can see (a registry carrying something out with no landing artifact to say so, which neither `egress_allow` nor an output sink reveals), and the derivation folds it into its single rule — so a key that rule learns later reaches this tool too | [#366](https://github.com/sokolaidev/maf-extensions/issues/366) (closed) by [#581](https://github.com/sokolaidev/maf-extensions/pull/581) and [#604](https://github.com/sokolaidev/maf-extensions/pull/604) (both merged) |
 | Acting on a kill or a reclaim that did not land | shipped — the reclaim is the framework's, the timeout message says what the stop reached ([#511](https://github.com/sokolaidev/maf-extensions/pull/511) (merged)), and a stop that reached less than the process group makes the framework dispose the sandbox ([`../tool-call.md`](../tool-call.md) § Cleanup) — nothing for this kind to do, and nothing it can lower | [#435](https://github.com/sokolaidev/maf-extensions/issues/435), [#617](https://github.com/sokolaidev/maf-extensions/issues/617) |
 | A guest-OS axis — this kind execs `python3`, and host-tool calling additionally needs `sh` and `nohup` | shipped in core, unused here — `requires_os_family` exists and this spec leaves it `None`; the three commands are questions about the image rather than about the guest's shape, which the axis deliberately cannot answer ([`../guest-platform-and-commands.md`](../guest-platform-and-commands.md)) | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (closed) by [#532](https://github.com/sokolaidev/maf-extensions/pull/532) (merged) |

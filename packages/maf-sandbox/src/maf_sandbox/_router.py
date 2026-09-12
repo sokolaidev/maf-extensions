@@ -776,6 +776,7 @@ class SandboxRouter:
         self._slots = ExclusiveSlots()
         self._adoptions = ExclusiveSlots()
         self._seen: dict[tuple[SandboxKey, str, int], set[str]] = {}
+        self._execution_contracts: dict[tuple[SandboxKey, str, int], dict[str, str | None]] = {}
         self._served: dict[tuple[SandboxKey, str, int], tuple[SandboxBackend, set[str]]] = {}
         self._seen_guard = threading.Lock()
         self._selected_name = selected
@@ -1682,11 +1683,29 @@ class SandboxRouter:
                 instance_id=_instance_id(sandbox),
             )
             raise
+        self._check_execution_contract(key, spec, served, sandbox)
         if scope is not IsolationScope.CALL:
             sandbox = await self._adopt(key, spec, served, sandbox, snapshot=snapshot)
         else:
-            self._remember_instance(key, spec.kind, served, sandbox)
+            self._remember_instance(
+                key, spec.kind, served, sandbox, execution_contract=spec.execution_contract
+            )
         return sandbox
+
+    def _check_execution_contract(
+        self, key: SandboxKey, spec: SandboxSpec, backend: SandboxBackend, sandbox: Sandbox
+    ) -> None:
+        """Keep an execution configuration bound until its instance is disposed or replaced."""
+        with self._seen_guard:
+            contracts = self._execution_contracts.get((key, spec.kind, id(backend)), {})
+            if (
+                sandbox.instance_id in contracts
+                and contracts[sandbox.instance_id] != spec.execution_contract
+            ):
+                raise ValueError(
+                    f"the {spec.kind!r} sandbox has a different execution contract; "
+                    "dispose this kind or use a new sandbox key before changing it"
+                )
 
     async def _adopt(
         self,
@@ -1724,7 +1743,14 @@ class SandboxRouter:
                     await self._refuse_a_key_closed_during_the_create(
                         key, backend, kind=spec.kind, instance_id=_instance_id(sandbox)
                     )
-                self._remember_instance(key, spec.kind, backend, sandbox, previous=previous)
+                self._remember_instance(
+                    key,
+                    spec.kind,
+                    backend,
+                    sandbox,
+                    previous=previous,
+                    execution_contract=spec.execution_contract,
+                )
                 return sandbox
         failure = await self._dispose_the_kind(
             key, spec, backend, None, bound, instance_id=_instance_id(sandbox) or instance_id
@@ -1755,7 +1781,9 @@ class SandboxRouter:
                 key, backend, kind=spec.kind, instance_id=_instance_id(sandbox)
             )
         _refuse_an_invalid_sandbox(sandbox)
-        self._remember_instance(key, spec.kind, backend, sandbox)
+        self._remember_instance(
+            key, spec.kind, backend, sandbox, execution_contract=spec.execution_contract
+        )
         return sandbox
 
     def _remember_instance(
@@ -1766,8 +1794,13 @@ class SandboxRouter:
         sandbox: Sandbox,
         *,
         previous: str | None = None,
+        execution_contract: str | None = None,
     ) -> None:
         with self._seen_guard:
+            contracts = self._execution_contracts.setdefault((key, kind, id(backend)), {})
+            if previous is not None:
+                contracts.pop(previous, None)
+            contracts[sandbox.instance_id] = execution_contract
             known = self._seen.setdefault((key, kind, id(backend)), set())
             if previous is not None:
                 known.discard(previous)
@@ -1798,9 +1831,15 @@ class SandboxRouter:
                     and (thread_id is None or held.thread_id == thread_id)
                 ):
                     if instance_id is None:
+                        self._execution_contracts.pop(at, None)
                         self._seen.pop(at, None)
                         self._served.pop(at, None)
                     else:
+                        contracts = self._execution_contracts.get(at)
+                        if contracts is not None:
+                            contracts.pop(instance_id, None)
+                            if not contracts:
+                                self._execution_contracts.pop(at, None)
                         known = self._seen.get(at)
                         if known is not None:
                             known.discard(instance_id)
@@ -1996,7 +2035,14 @@ class SandboxRouter:
                     error_detail(unreset),
                 )
             else:
-                self._remember_instance(key, spec.kind, backend, sandbox, previous=previous)
+                self._remember_instance(
+                    key,
+                    spec.kind,
+                    backend,
+                    sandbox,
+                    previous=previous,
+                    execution_contract=spec.execution_contract,
+                )
                 return None
             unclean = unclean or "the reset failed"
         return await self._dispose_the_kind(

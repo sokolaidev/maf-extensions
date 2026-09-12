@@ -1,6 +1,7 @@
 # Two-axis sandbox policy: a minimum-isolation floor and a capability match
 
 > The proposal that argued the policy into two axes — an isolation floor and a capability match — tracked by [#85](https://github.com/sokolaidev/maf-extensions/issues/85), with [#84](https://github.com/sokolaidev/maf-extensions/issues/84) and [#133](https://github.com/sokolaidev/maf-extensions/issues/133) as the issues it spun out. It is kept in the tense it was written, as the record of the argument rather than a description of what shipped. The decided content now lives in [`../policy-isolation.md`](../policy-isolation.md), [`../capabilities.md`](../capabilities.md) and [`../hosts.md`](../hosts.md).
+> The CodeAct execution choice is decided in [the explicit Python runtime variant](../kinds/codeact.md#the-explicit-python-runtime-variant).
 
 ## What this replaces
 
