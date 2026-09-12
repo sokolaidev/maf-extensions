@@ -80,7 +80,7 @@ except ImportError:
     assert_reach_conformance = None
 
 from maf_sandbox_docker import DockerReapResult, DockerSandboxBackend, DockerSandboxConfig
-from maf_sandbox_docker._backend import _container_name, _sandbox_labels
+from maf_sandbox_docker._backend import _container_name, _Freezes, _sandbox_labels
 
 _IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_IMAGE")
 _PROXY_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE")
@@ -1333,7 +1333,7 @@ class TestTheFreezeAgainstARealEngine:
             with pytest.raises(asyncio.CancelledError):
                 await writing
             assert _inspected("container", sandbox.container_name, "{{.State.Paused}}") == "false"
-            assert not self.backend._frozen_guests
+            assert not _Freezes.names
 
         asyncio.run(scenario())
 

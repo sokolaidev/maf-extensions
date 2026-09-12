@@ -53,7 +53,7 @@ from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, ClassVar, Protocol, cast
 
 from maf_sandbox import (
     BackendDeclarations,
@@ -81,7 +81,10 @@ from maf_sandbox import (
     error_detail,
     fold_disposal_failures,
 )
-from maf_sandbox.bounded_exec import read_bounded_process_output
+from maf_sandbox.bounded_exec import (
+    SandboxExecOutputLimitExceeded,
+    read_bounded_process_output,
+)
 from maf_sandbox.guest_access import refuse_capabilities_the_guest_cannot_back
 from maf_sandbox.paths import (
     confine_resolve_guest_delete_path,
@@ -200,9 +203,63 @@ _DAEMON_REFUSAL = "error response from daemon:"
 #: What ``unpause`` answers for a container that is not frozen: `Error response from daemon:
 #: Container <id> is not paused`.  A thaw wanted exactly that state, so it is not a failure.
 _NOT_FROZEN = "is not paused"
+#: How much of a refusal must be readable before the caller's guest budget may judge it.  The
+#: daemon's own diagnostic runs to about a hundred bytes, and a budget under that would classify
+#: "the command never ran" as "the guest said too much".
+_CONTROL_DIAGNOSTIC_BYTES = 512
 #: How long to wait before re-issuing one.  A freeze is held across a path check and a copy —
 #: a handful of engine round trips — so this polls rather than backs off.
 _FROZEN_RETRY_DELAY_S = 0.05
+
+#: One freeze per container **per process**, not per backend: a container is a machine-wide
+#: thing, and two backends built from one configuration name the same one. Per running loop,
+#: and weakly keyed on it, so a process running a loop per call accumulates no lock table.
+_FREEZE_LOCKS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Lock]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+class _Freezes:
+    """Which containers this process has frozen, and how often that has changed.
+
+    Process-wide for the reason :data:`_FREEZE_LOCKS` is.  The counter is what the set alone
+    cannot answer: a daemon refusal can reach this backend *after* the thaw that caused it, so
+    "is anything frozen now" says no about an invocation a freeze did overlap.
+    """
+
+    names: ClassVar[set[str]] = set()
+    changes: ClassVar[int] = 0
+
+    @classmethod
+    def take(cls, name: str) -> None:
+        cls.names.add(name)
+        cls.changes += 1
+
+    @classmethod
+    def lift(cls, name: str) -> None:
+        cls.names.discard(name)
+        cls.changes += 1
+
+    @classmethod
+    def mark(cls) -> tuple[int, bool]:
+        """A token to compare an invocation's end against its start."""
+        return cls.changes, bool(cls.names)
+
+    @classmethod
+    def overlapped(cls, mark: tuple[int, bool]) -> bool:
+        """Was anything frozen when ``mark`` was taken, or now, or at any point between?"""
+        changes, held = mark
+        return held or bool(cls.names) or cls.changes != changes
+
+
+def _freeze_lock(name: str) -> asyncio.Lock:
+    """The get-or-create freeze lock for one container on the running loop."""
+    per_loop = _FREEZE_LOCKS.setdefault(asyncio.get_running_loop(), {})
+    lock = per_loop.get(name)
+    if lock is None:
+        lock = per_loop[name] = asyncio.Lock()
+    return lock
+
 
 _PROXY_PORT = 3128
 _ALLOW_ENV = "MAF_SANDBOX_ALLOW"
@@ -770,10 +827,11 @@ class _GuestFreeze(Protocol):
     """Freezes this container's guest for the block, so a check and the copy it guards see one
     filesystem state.
 
-    The whole point is that it is **one** freeze per container at a time: two file calls that
-    each took their own would have the first's thaw reopen the second's window.  The backend
-    supplies it for that reason, keyed on the container rather than on the sandbox object,
-    since two acquires of one key hand out two sandboxes naming the same container.
+    The whole point is that it is **one** freeze per container at a time, for the whole
+    process: two file calls that each took their own would have the first's thaw reopen the
+    second's window.  So it is keyed on the container name in :data:`_FREEZE_LOCKS` rather
+    than on the sandbox object or the backend — two acquires of one key hand out two sandbox
+    objects naming one container, and two backends built from one config name it too.
     """
 
     def __call__(self) -> contextlib.AbstractAsyncContextManager[None]: ...
@@ -955,7 +1013,13 @@ class _DockerSandbox:
         timeout: float,
         max_output_bytes: int,
     ) -> ExecResult:
-        """Execute with a host-enforced combined stdout/stderr byte budget."""
+        """Execute with a host-enforced combined stdout/stderr byte budget.
+
+        A budget under :data:`_CONTROL_DIAGNOSTIC_BYTES` is enforced on the whole read rather
+        than mid-stream: the daemon's refusal of an ``exec`` on a frozen guest is longer than
+        that, and a budget applied to it would report a command that never ran as one that
+        said too much.
+        """
         if type(max_output_bytes) is not int or max_output_bytes <= 0:
             raise ValueError("max_output_bytes must be a positive integer")
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
@@ -1364,16 +1428,6 @@ class DockerSandboxBackend:
         self._acquire_locks: weakref.WeakKeyDictionary[
             asyncio.AbstractEventLoop, dict[tuple[str, str, str, str, str], asyncio.Lock]
         ] = weakref.WeakKeyDictionary()
-        # One freeze per container at a time, so a second file call's window is not reopened by
-        # the first call's thaw. Keyed on the container name rather than the acquire key: two
-        # acquires of one key hand out two sandbox objects naming the same container. Per loop,
-        # and weak-keyed on it, for the reason the acquire locks are.
-        self._freeze_locks: weakref.WeakKeyDictionary[
-            asyncio.AbstractEventLoop, dict[str, asyncio.Lock]
-        ] = weakref.WeakKeyDictionary()
-        # Which containers this backend has frozen right now. Read by `_docker` to decide
-        # whether a daemon refusal naming a freeze is one of its own to re-issue.
-        self._frozen_guests: set[str] = set()
         # (container, image, work_dir) -> what the container itself says. Keyed on the image
         # because a container name is not, so one name can come back carrying a different one.
         self._facts: dict[tuple[str, str, str], _ContainerFacts] = {}
@@ -1705,13 +1759,18 @@ class DockerSandboxBackend:
                 # Before the reuse decision reads it: this can remove the very container the
                 # reads below would otherwise find warm.
                 await self._discard_a_sandbox_on_an_unusable_network(name, key)
-            running, frozen = await self._container_state(name)
-            if frozen:
-                # A host that died inside a file call left this one frozen, and frozen refuses
-                # every exec. Warm reuse is the path that inherits it; a disposal would have
-                # taken the container with it.
-                logger.info("sandbox thawed before reuse: container=%s", name)
-                await self._thaw(name)
+            async with _freeze_lock(name):
+                # Under the lock, and read *after* taking it: this is itself a check and an
+                # act on one container, and a state read outside it cannot tell a file call's
+                # own freeze from an orphan's — thawing that one puts the guest back between
+                # that call's check and its copy. Released before `prepare_work_dir`, which
+                # takes the same lock.
+                running, frozen = await self._container_state(name)
+                if frozen:
+                    # No freeze of this process holds it, so a host died inside a file call.
+                    # Warm reuse inherits that; a disposal would have taken the container.
+                    logger.info("sandbox thawed before reuse: container=%s", name)
+                    await self._thaw(name)
             stopped = not running and await self._exists(name)
             if not running:
                 # Every path that starts a container, not only the create: a `_restart` that
@@ -2642,14 +2701,17 @@ class DockerSandboxBackend:
         The daemon refuses ``exec`` on a frozen container instead of queueing it, so a file
         call holding a freeze would otherwise fail a guest command that merely overlapped it.
         Re-issuing is safe because the refusal means the command never ran, and it happens only
-        while this backend holds a freeze — a refusal from anywhere else is the caller's to
-        read. ``timeout`` is the whole budget across the attempts, and a budget spent on
-        refusals returns the last one rather than raising.
+        where a freeze of this process **overlapped that attempt** — which is not the same as
+        one being held now, since the refusal can arrive after the thaw that caused it. A
+        refusal from anywhere else is the caller's to read. ``timeout`` is the whole budget
+        across the attempts, and a budget spent on refusals returns the last one rather than
+        raising.
         """
         deadline = time.monotonic() + (
             timeout if timeout is not None else self._config.command_timeout_seconds
         )
         while True:
+            mark = _Freezes.mark()
             result = await self._invoke(
                 *args,
                 stdin=stdin,
@@ -2659,7 +2721,7 @@ class DockerSandboxBackend:
             )
             left = deadline - time.monotonic()
             if (
-                not self._frozen_guests
+                not _Freezes.overlapped(mark)
                 or not _reads_as_a_frozen_guest(result)
                 or left <= _FROZEN_RETRY_DELAY_S
             ):
@@ -2711,12 +2773,23 @@ class DockerSandboxBackend:
                 "DockerSandboxConfig.docker_path to the client binary (or 'podman')"
             ) from exc
         if max_output_bytes is not None:
+            # Read to the caller's budget or to the control-message floor, whichever is larger,
+            # so a refusal that ran nothing is legible before the budget for what the guest said
+            # is applied to it. Above the floor this is the caller's number exactly, enforced
+            # mid-stream; below it, that many bytes are read before the budget refuses them.
             stdout, stderr = await read_bounded_process_output(
-                process, max_output_bytes=max_output_bytes, timeout=timeout
+                process,
+                max_output_bytes=max(max_output_bytes, _CONTROL_DIAGNOSTIC_BYTES),
+                timeout=timeout,
             )
-            return _DockerResult(
+            result = _DockerResult(
                 process.returncode or 0, stdout, stderr.decode("utf-8", errors="replace"), stderr
             )
+            if len(stdout) + len(stderr) > max_output_bytes and not _reads_as_a_frozen_guest(
+                result
+            ):
+                raise SandboxExecOutputLimitExceeded("execution output exceeded its byte budget")
+            return result
         if read_limit is not None:
             return await self._read_bounded(process, read_limit, timeout)
         try:
@@ -2862,38 +2935,48 @@ class DockerSandboxBackend:
         give the tar-plane members the one state they are checked against, and serving them
         anyway would be a guarantee stated in the docstring and absent from the behaviour.
 
-        The thaw is unconditional, and a cancelled caller waits for it: the guest is thawed by
-        the time the cancellation reaches whoever asked for it. What that cannot cover is a
-        host that dies mid-block; :meth:`acquire` lifts that one.
+        The thaw is owed by whoever may have taken the freeze, and a cancelled caller waits for
+        it through **every** cancellation, not only the first: the guest is thawed by the time
+        the cancellation reaches whoever asked for it. What that cannot cover is a host that
+        dies mid-block; :meth:`acquire` lifts that one.
         """
-        async with self._freeze_lock(name):
-            # The thaw is owed from before the pause is issued rather than after it returns: a
-            # call cancelled or timed out while that invocation is in flight can have frozen
-            # the guest anyway, and an unpause of a guest that is not frozen costs a round trip.
-            self._frozen_guests.add(name)
+        async with _freeze_lock(name):
+            # Owed from before the pause is issued rather than after it returns: a call
+            # cancelled or timed out while that invocation is in flight can have frozen the
+            # guest anyway, and only a debt taken this early covers that one.
+            _Freezes.take(name)
+            owed = True
             try:
                 frozen = await self._docker(
                     "pause", name, timeout=self._config.command_timeout_seconds
                 )
                 if frozen.returncode != 0:
+                    # The daemon *answered*, so it froze nothing — and something else is why
+                    # it refused, up to another host already holding this container frozen.
+                    # Thawing here would lift that one rather than any freeze of ours.
+                    owed = False
                     raise RuntimeError(
                         f"docker could not freeze {name} for a file call: "
                         f"{frozen.stderr.strip() or f'exit {frozen.returncode}'}"
                     )
                 yield
             finally:
-                thawing = asyncio.ensure_future(self._thaw(name))
                 try:
-                    await asyncio.shield(thawing)
-                except asyncio.CancelledError:
-                    # The shield kept the thaw itself out of the cancellation, so waiting for
-                    # it here is what makes the guest thawed by the time the caller hears
-                    # about the cancellation rather than shortly after.
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await thawing
-                    raise
+                    if owed:
+                        thawing = asyncio.ensure_future(self._thaw(name))
+                        cancelled = False
+                        # Shielded through *every* cancellation, not the first: an unshielded
+                        # await here lets a second one take the thaw with it, and the guest
+                        # stays frozen for every exec after. The lock is held until it lands.
+                        while not thawing.done():
+                            try:
+                                await asyncio.shield(thawing)
+                            except asyncio.CancelledError:
+                                cancelled = True
+                        if cancelled:
+                            raise asyncio.CancelledError
                 finally:
-                    self._frozen_guests.discard(name)
+                    _Freezes.lift(name)
 
     async def _thaw(self, name: str) -> None:
         """Lift a freeze, never raising: the call that took it has its own outcome to report.
@@ -2924,14 +3007,6 @@ class DockerSandboxBackend:
                 name,
                 lifted.stderr.strip() or f"exit {lifted.returncode}",
             )
-
-    def _freeze_lock(self, name: str) -> asyncio.Lock:
-        """The get-or-create freeze lock for one container on the running loop."""
-        per_loop = self._freeze_locks.setdefault(asyncio.get_running_loop(), {})
-        lock = per_loop.get(name)
-        if lock is None:
-            lock = per_loop[name] = asyncio.Lock()
-        return lock
 
     async def _ensure_image(self, image: str) -> None:
         """Pull ``image`` if it is not already present, under the pull timeout.
