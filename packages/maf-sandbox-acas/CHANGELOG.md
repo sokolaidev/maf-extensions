@@ -6,6 +6,7 @@ Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, an
 
 ## [0.23.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.23.0...maf-sandbox-acas-v0.23.1) (2026-09-12)
 
+> **Added after the release.** No wheel for 0.23.0 reached PyPI, so this is the version that first carries everything in the 0.23.0 section below — including its breaking change. Those entries are left where release-please wrote them rather than copied up; this version's release notes on GitHub list them in full.
 
 ### Fixes
 
