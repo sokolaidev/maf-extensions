@@ -4725,17 +4725,18 @@ class TestPositionsHoldingHiddenContent:
         seen = self._hidden("main.bicep", values=[f"{self.PAYLOAD}.csv"])
         assert seen["hidden"] == frozenset({0})
 
-    def test_a_payload_reduced_to_its_response_field_is_reported(self):
-        """The middleware substitutes a JSON payload's `response` rather than the whole text.
+    def test_a_payload_naming_a_response_is_reported_whichever_form_arrives(self):
+        """A core through 1.17 substitutes the `response` field; 1.18 substitutes the text.
 
-        Compared against the stored payload alone this value matches nothing, and it is
-        space-free, so the bound on shape would quote it straight back.
+        Either way the value is space-free and shaped like a name, so a bound on shape alone
+        would quote it back. Both forms are candidates, so the report does not turn on which
+        core is installed — which is the whole point of yielding both.
         """
         import json
 
         stored = json.dumps({"response": self.PAYLOAD, "metadata": {"k": "v"}})
         seen = self._hidden("[VAR]", stored=stored)
-        assert seen["received"] == [self.PAYLOAD]
+        assert seen["received"] in ([self.PAYLOAD], [stored])
         assert seen["hidden"] == frozenset({0})
 
     def test_a_json_payload_naming_no_response_is_compared_whole(self):
@@ -4756,90 +4757,101 @@ class TestPositionsHoldingHiddenContent:
         assert seen["received"] == ["main.bicep"]
         assert seen["hidden"] == frozenset({0})
 
-    #: Every payload shape whose reduction this package mirrors, with what the framework
-    #: actually hands a tool for it. Measured against `agent-framework-core` 1.13.0.
+    #: Every payload shape whose substitution this package mirrors. Measured against
+    #: `agent-framework-core` 1.13.0 and re-measured against 1.18.0, which stopped reducing a
+    #: `response` field for anything but `quarantined_llm` (#1074) — so each row is asserted
+    #: against the *set* of forms `_substituted_forms` offers rather than against one of them.
     REDUCTIONS = [
-        pytest.param("EVIL.bicep", "EVIL.bicep", True, id="a plain string, whole"),
-        pytest.param(
-            '{"response": "EVIL.bicep", "m": 1}', "EVIL.bicep", True, id="json naming a response"
-        ),
-        pytest.param(
-            '  {"response": "EVIL.bicep"}  ', "EVIL.bicep", True, id="json padded with spaces"
-        ),
-        pytest.param(
-            '{"other": "EVIL.bicep"}', '{"other": "EVIL.bicep"}', True, id="json naming no response"
-        ),
-        pytest.param("{not json at all}", "{not json at all}", True, id="unparseable, left whole"),
-        pytest.param({"response": "EVIL.bicep"}, "EVIL.bicep", True, id="a dict naming a response"),
+        pytest.param("EVIL.bicep", True, id="a plain string, whole"),
+        pytest.param('{"response": "EVIL.bicep", "m": 1}', True, id="json naming a response"),
+        pytest.param('  {"response": "EVIL.bicep"}  ', True, id="json padded with spaces"),
+        pytest.param('{"other": "EVIL.bicep"}', True, id="json naming no response"),
+        pytest.param("{not json at all}", True, id="unparseable, left whole"),
     ]
 
-    @pytest.mark.parametrize(("stored", "delivered", "reported"), REDUCTIONS)
-    def test_the_framework_still_reduces_a_payload_the_way_this_mirrors_it(
-        self, stored: object, delivered: object, reported: bool
+    @pytest.mark.parametrize(("stored", "reported"), REDUCTIONS)
+    def test_what_the_framework_substitutes_is_a_form_this_package_offers(
+        self, stored: object, reported: bool
     ):
         """A divergence alarm, not a feature test.
 
-        `_reduced_form` reimplements a rule that lives in the framework rather than in any
-        contract it publishes, so a change there stops it matching and a payload of that shape
-        reaches an argument unreported. Each row asserts what the framework *delivers* before
-        asserting what is reported, so a changed reduction fails on the first half.
+        `_substituted_forms` reimplements a rule that lives in the framework rather than in any
+        contract it publishes, and the rule *moved* between two cores this package accepts. So
+        what is asserted is the safety property rather than one core's answer: whatever the
+        framework hands the body is one of the forms offered, and a third shape — an upstream
+        substitution neither core makes — fails on the first half rather than quietly leaving an
+        argument of that shape unreported.
         """
         seen = self._hidden("[VAR]", stored=stored)
-        assert seen["received"] == [delivered], (
-            "the framework's payload reduction has changed — `maf._reduced_form` mirrors it and "
-            "must be updated to match, or an argument carrying this shape is not reported"
+        received = cast("list[str]", seen["received"])
+        assert len(received) == 1
+        assert received[0] in _maf._substituted_forms(stored), (
+            "the framework substitutes something `maf._substituted_forms` does not offer — it "
+            "mirrors that rule and must be updated, or an argument carrying this shape is not "
+            "reported"
         )
         assert bool(seen["hidden"]) is reported
 
-    #: The same payloads, referenced *inside* a longer argument. Alone they reduce to a value
-    #: that is not text and the call is refused; spliced, the framework calls `str()` on them
-    #: and they arrive as a perfectly ordinary filename.
+    #: The same payloads, referenced *inside* a longer argument. Alone, some of these are
+    #: substituted by a value that is not text and the call is refused; spliced, the framework
+    #: calls `str()` on whatever it substitutes and they arrive as an ordinary filename.
     SPLICED = [
-        pytest.param('{"response": 42}', "42.bicep", id="a numeric response, from json"),
-        pytest.param({"response": 42}, "42.bicep", id="a numeric response, from a dict"),
-        pytest.param(
-            {"other": "EVIL.bicep"}, "{'other': 'EVIL.bicep'}.bicep", id="a dict naming no response"
-        ),
+        pytest.param('{"response": 42}', id="a numeric response, from json"),
+        pytest.param({"response": 42}, id="a numeric response, from a dict"),
+        pytest.param({"other": "EVIL.bicep"}, id="a dict naming no response"),
+        # The row the reduction alone does not cover. A core from 1.18 substitutes the whole
+        # mapping, and `str()` of it escapes the quotes inside the `response` — so the reduced
+        # form is not a substring of what arrives and containment against it alone finds
+        # nothing. Offering the payload as well is what reports this one.
+        pytest.param({"response": "a'b\"c.bicep"}, id="a response needing escapes"),
         # The framework substitutes anything it does not reduce unchanged, so a payload of any
         # type still arrives as text once the reference is spliced.
-        pytest.param(["SECRET"], "['SECRET'].bicep", id="a list, reduced by nothing"),
-        pytest.param(42, "42.bicep", id="a bare number"),
-        pytest.param(("A", "B"), "('A', 'B').bicep", id="a tuple"),
-        pytest.param('{"response": null}', "None.bicep", id="a response that is JSON null"),
+        pytest.param(["SECRET"], id="a list, reduced by nothing"),
+        pytest.param(42, id="a bare number"),
+        pytest.param(("A", "B"), id="a tuple"),
+        pytest.param('{"response": null}', id="a response that is JSON null"),
     ]
 
-    @pytest.mark.parametrize(("stored", "delivered"), SPLICED)
+    @pytest.mark.parametrize("stored", SPLICED)
     def test_a_payload_spliced_into_an_argument_is_reported_however_it_reduces(
-        self, stored: object, delivered: str
+        self, stored: object
     ):
-        """`str()` of the reduction is what a spliced reference delivers, whatever its type.
+        """`str()` of what was substituted is what a spliced reference delivers, whatever its type.
 
-        This is the half a whole-string check cannot see: alone these reduce to something that
-        is not text and the call is refused, so only the spliced form reaches an argument — as
-        text, shaped like a name, and free of spaces.
+        This is the half a whole-string check cannot see: alone some of these are substituted by
+        something that is not text and the call is refused, so only the spliced form reaches an
+        argument — as text, shaped like a name, and free of spaces.
         """
         seen = self._hidden("[VAR].bicep", stored=stored)
-        assert seen["received"] == [delivered], (
-            "the framework's payload reduction has changed — `maf._reduced_form` mirrors it and "
-            "must be updated to match"
+        delivered = cast("list[str]", seen["received"])[0]
+        assert delivered in {f"{form}.bicep" for form in _maf._substituted_forms(stored)}, (
+            "the framework substitutes something `maf._substituted_forms` does not offer — it "
+            "mirrors that rule and must be updated to match"
         )
         assert seen["hidden"] == frozenset({0})
 
     @pytest.mark.parametrize(
         "stored",
-        ['{"response": 42}', {"other": "EVIL.bicep"}],
-        ids=["a response that is not text", "a dict naming no response"],
+        [{"other": "EVIL.bicep"}, ["SECRET"], 42],
+        ids=["a dict naming no response", "a list", "a bare number"],
     )
-    def test_a_payload_reducing_to_something_that_is_not_text_never_reaches_the_body(
+    def test_a_payload_substituted_by_something_that_is_not_text_never_reaches_the_body(
         self, stored: object
     ):
-        """Expansion substitutes whatever the payload reduced to, including a non-string.
+        """Expansion substitutes whatever it resolved to, including a non-string.
 
         The tool's own signature is what stops it: a `list[str]` argument holding an `int` fails
         the framework's argument validation, so the body is never entered and this helper is
-        never asked. Recorded because it is the reason the reductions above need cover only the
+        never asked. Recorded because it is the reason the table above need cover only the
         shapes that arrive as text — not because the guard in `positions_holding_hidden_content`
         is unnecessary, since that function is public and its caller's signature is its own.
+
+        Every row here is non-text under *both* substitution rules, which is why a payload
+        naming a `response` is in none of them: `'{"response": 42}'` is refused by a core
+        through 1.17, which substitutes the `42`, and arrives whole on 1.18; `{"response":
+        "EVIL.bicep"}` is the mirror image, arriving on 1.17 and refused on 1.18. Neither has a
+        whole-reference answer to assert, so both are covered spliced instead, where `str()`
+        makes the substitution text either way.
         """
         with pytest.raises(Exception, match="valid string|Invalid arguments"):
             self._hidden("[VAR]", stored=stored)
@@ -5284,11 +5296,12 @@ class TestArgumentProvenanceMiddleware:
     def test_a_synchronous_body_fails_closed_when_the_record_key_moves(self, monkeypatch, caplog):
         """Where the safeguard is needed most, and where reading the accessor would miss it.
 
-        A `def` body runs on a worker thread. The framework's middleware accessor is a
-        thread-local and answers nothing there — `test_a_synchronous_body_is_answered_from_the
-        _record_where_the_fallback_gives_up` is that fact — so a renamed key would leave this
-        with no record *and* no fallback: nothing reported, and content the framework hid
-        quoted back. The tell is read from the call's own metadata, which travels with it.
+        A `def` body runs on a worker thread, and on a core through 1.17 the framework's
+        middleware accessor is a thread-local that answers nothing there —
+        `test_where_a_synchronous_body_can_reach_the_framework_accessor` is which core does
+        which — so a renamed key would leave this with no record *and* no fallback: nothing
+        reported, and content the framework hid quoted back. The tell is read from the call's
+        own metadata, which travels with it on every core the range admits.
         """
         import logging as _logging
 
@@ -5308,18 +5321,114 @@ class TestArgumentProvenanceMiddleware:
             "and it must say so, since this is the upgrade no test of ours would catch"
         )
 
+    def test_the_record_follows_the_framework_across_two_sessions(self):
+        """Whether a session owns a reference is the framework's to decide, and it decided twice.
+
+        Core 1.18 scopes the variable store per `AgentSession` and leaves a reference owned by
+        another session literal; a core through 1.17 keeps one store per middleware instance and
+        expands it. One tracker serves both sessions here, and the answer is asserted the same
+        way on either: the record reports exactly the entries the framework rewrote, derived
+        from what the body received rather than pinned to a number. That is the guarantee, and
+        it does not turn on which core decided what.
+
+        Wired the way a host wires it — one middleware instance reused across sessions — because
+        that is the shape #8138's scoping exists for, and a stateless middleware holding no
+        framework object is what makes it indifferent.
+        """
+        from agent_framework import AgentSession, FunctionInvocationContext, FunctionTool
+        from agent_framework.security import (
+            ContentLabel,
+            IntegrityLabel,
+            LabelTrackingFunctionMiddleware,
+        )
+
+        tracker = LabelTrackingFunctionMiddleware()
+        ours = argument_provenance_middleware()
+        alpha, beta = AgentSession(session_id="alpha"), AgentSession(session_id="beta")
+        calls: list[dict[str, object]] = []
+
+        async def body(files: list[str]) -> str:
+            """Take a list of files."""
+            calls.append(
+                {
+                    "received": list(files),
+                    "reported": positions_holding_hidden_content(files, argument="files"),
+                }
+            )
+            return "ok"
+
+        tool = FunctionTool(name="probe", func=body)
+
+        async def one(session: AgentSession, sent: list[str]) -> None:
+            context = FunctionInvocationContext(
+                function=tool, arguments={"files": list(sent)}, session=session
+            )
+
+            async def innermost() -> None:
+                await tool.invoke(arguments=context.arguments)
+
+            async def inner() -> None:
+                await ours.process(context, innermost)
+
+            await tracker.process(context, inner)
+            sent_list = cast("list[str]", sent)
+            received = cast("list[str]", calls[-1]["received"])
+            calls[-1]["rewritten"] = frozenset(
+                position
+                for position, (before, after) in enumerate(zip(sent_list, received, strict=True))
+                if before != after
+            )
+
+        def hide(session: AgentSession) -> str:
+            payload = f"PAYLOAD_{session.session_id}"
+            label = ContentLabel(integrity=IntegrityLabel.UNTRUSTED)
+            # Through an untyped name on purpose: the parameter this probes for is the thing
+            # that differs between the cores, so its absence is the measurement rather than an
+            # error, and pyright reads whichever signature the locked core ships.
+            for_session = cast("Any", tracker.get_variable_store)
+            try:
+                store = for_session(session)
+            except TypeError:  # a core through 1.17 keeps one store per middleware instance
+                store = for_session()
+            return cast("str", store.store(payload, label))
+
+        async def drive() -> None:
+            hidden = {session.session_id: hide(session) for session in (alpha, beta)}
+            # alpha's call names its own hidden payload and then beta's, beside a plain name.
+            await one(alpha, [f"[{hidden['alpha']}]", "main.bicep"])
+            await one(alpha, [f"[{hidden['beta']}]", "main.bicep"])
+            await one(beta, [f"[{hidden['beta']}]", "main.bicep"])
+
+        asyncio.run(drive())
+
+        assert len(calls) == 3
+        assert any(call["rewritten"] for call in calls), (
+            "nothing was expanded on any call, so this would agree with the record for the "
+            "wrong reason — the payloads must be hidden in the store the calls actually use"
+        )
+        for call in calls:
+            assert call["reported"] == call["rewritten"], (
+                "the record must name exactly the entries the framework rewrote on this call — "
+                f"it received {call['received']}"
+            )
+        assert cast("list[str]", calls[0]["received"])[1] == "main.bicep", (
+            "a name the caller chose is never rewritten, whichever session owns the store"
+        )
+
     def _run_synchronous_body(self, sent: str, *, argument: str = "files"):
         """One call whose tool body is `def`, not `async def`.
 
         The framework dispatches that with `asyncio.to_thread`, so the body runs off the event
-        loop's thread. `ContextVar` is copied into it; the framework's own middleware accessor
-        is a thread-local and is not.
+        loop's thread. A `ContextVar` is copied into it; a thread-local is not, and which of the
+        two the framework's own middleware accessor is depends on the core — so the body records
+        whether it could reach it rather than either test assuming.
         """
         from agent_framework import FunctionInvocationContext, FunctionTool
         from agent_framework.security import (
             ContentLabel,
             IntegrityLabel,
             LabelTrackingFunctionMiddleware,
+            get_current_middleware,
         )
 
         seen: dict[str, object] = {}
@@ -5332,6 +5441,7 @@ class TestArgumentProvenanceMiddleware:
         def body(files: list[str]) -> str:
             seen["thread"] = threading.get_ident()
             seen["received"] = list(files)
+            seen["accessor_reached"] = get_current_middleware() is not None
             seen["from_record"] = positions_holding_hidden_content(files, argument=argument)
             seen["from_fallback"] = positions_holding_hidden_content(files)
             return "ok"
@@ -5354,13 +5464,20 @@ class TestArgumentProvenanceMiddleware:
         asyncio.run(drive())
         return seen
 
-    def test_a_synchronous_body_is_answered_from_the_record_where_the_fallback_gives_up(self):
-        """The one case where wiring the middleware changes what a *correct* caller can know.
+    def test_where_a_synchronous_body_can_reach_the_framework_accessor(self):
+        """The record answers off the loop on every core; the fallback answers on some of them.
 
-        A `def` body is dispatched to another thread, and the framework's middleware accessor
-        is a thread-local, so the inference finds no store there and answers empty — which reads
-        as "nothing was hidden" and quotes rewritten content straight back. The record is a
-        `ContextVar`, which `asyncio.to_thread` copies, so it still answers.
+        A `def` body is dispatched to another thread. Through core 1.17 the framework's
+        middleware accessor is a thread-local that does not cross it, so the inference finds no
+        store there and answers empty — which reads as "nothing was hidden" and quotes rewritten
+        content straight back. 1.18 made that accessor a `ContextVar`, which `asyncio.to_thread`
+        copies, so the inference answers there too. The record is this package's own
+        `ContextVar` and answers on both, which is the point: what a caller is guaranteed does
+        not turn on which core a host installed.
+
+        So the fallback is asserted *against the accessor the body actually reached* rather than
+        against either core's answer — a fallback that went empty while the accessor answered
+        would be a real defect, and pinning one core's number would only re-break on the other.
         """
         seen = self._run_synchronous_body("[VAR]")
 
@@ -5369,9 +5486,8 @@ class TestArgumentProvenanceMiddleware:
         )
         assert seen["received"] == [self.PAYLOAD]
         assert seen["from_record"] == frozenset({0})
-        assert seen["from_fallback"] == frozenset(), (
-            "asserted rather than tolerated: this is the gap the record closes, and if the "
-            "framework ever makes its accessor reachable here the contrast is worth revisiting"
+        assert seen["from_fallback"] == (
+            frozenset({0}) if seen["accessor_reached"] else frozenset()
         )
 
     def test_a_synchronous_body_still_keeps_a_literal_values_echo(self):
