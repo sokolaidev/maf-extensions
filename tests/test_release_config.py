@@ -198,6 +198,85 @@ def accepted_title_types() -> list[str]:
     return block.group(1).split()
 
 
+README = REPO_ROOT / "README.md"
+
+#: A release, in either heading release-please writes: a bare `## 0.1.0 (date)` for a package's
+#: first, and a linked `## [0.2.0](…compare…)` for every one after it.
+RELEASE_HEADING = re.compile(r"(?m)^## \[?\d+(?:\.\d+)+")
+
+#: What the README table's *Released* cell says about a package nobody can install yet.
+NOT_RELEASED = "not yet released"
+
+#: The `packages/<name>` a table row is about, from the link in its first cell.
+ROW_PACKAGE = re.compile(r"\]\((packages/[\w.-]+)/?\)")
+
+
+def table_cells(row: str) -> list[str]:
+    """One table row's cells, stripped, without the leading and trailing pipe."""
+    return [cell.strip() for cell in row.strip().strip("|").split("|")]
+
+
+def pypi_badge(distribution: str) -> str:
+    """The *Released* cell of a package that is on the index."""
+    return (
+        f"[![PyPI](https://img.shields.io/pypi/v/{distribution})]"
+        f"(https://pypi.org/project/{distribution}/)"
+    )
+
+
+def changelog_of(package_path: str) -> str:
+    """A package's changelog text, or `""` for a package that has yet to grow one."""
+    changelog = REPO_ROOT / package_path / "CHANGELOG.md"
+    return changelog.read_text(encoding="utf-8") if changelog.exists() else ""
+
+
+def records_a_release(changelog: str) -> bool:
+    """Whether a changelog records a release — an offline proxy for "on the index".
+
+    The proxy `tests/test_sample_metadata.py` already reads, and imprecise in the same safe
+    direction: release-please writes the heading when the Release PR merges, and the upload
+    waits at an approval afterwards, so a row carries its badge for the minutes in between.
+    """
+    return RELEASE_HEADING.search(changelog) is not None
+
+
+def released_cell(changelog: str, distribution: str) -> str:
+    """The *Released* cell a package's own changelog entitles it to."""
+    return pypi_badge(distribution) if records_a_release(changelog) else NOT_RELEASED
+
+
+def readme_package_table() -> list[tuple[str, str]]:
+    """Each row of the root README's package table: the package it links to, and its *Released* cell.
+
+    Rows, not a mapping keyed by package: two rows for one package have to reach the caller as
+    two, and a mapping would keep the last of them and call the table complete.
+    """
+    lines = README.read_text(encoding="utf-8").splitlines()
+    header = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if line.startswith("|") and table_cells(line)[:2] == ["Package", "Released"]
+        ),
+        None,
+    )
+    assert header is not None, "README.md carries no `| Package | Released | … |` table"
+    rows = []
+    for line in lines[header + 1 :]:
+        if not line.startswith("|"):
+            break
+        cells = table_cells(line)
+        if all(re.fullmatch(r":?-+:?", cell) for cell in cells):
+            continue
+        link = ROW_PACKAGE.search(cells[0])
+        assert link is not None, f"README.md table row {cells[0]!r} links to no package directory"
+        rows.append((link.group(1), cells[1]))
+    return rows
+
+
+README_TABLE = readme_package_table()
+
+
 class TestEveryPackageIsRegistered:
     """A package missing from either file is one that never gets released, quietly."""
 
@@ -206,6 +285,57 @@ class TestEveryPackageIsRegistered:
 
     def test_packages_dir_and_manifest_agree(self):
         assert sorted(MANIFEST) == PACKAGE_PATHS
+
+
+class TestTheReadmeTableRecordsWhatIsReleased:
+    """The *Released* column says whether a package can be installed, and nothing derives it."""
+
+    def test_the_table_and_packages_dir_agree(self):
+        assert sorted(path for path, _ in README_TABLE) == PACKAGE_PATHS
+
+    @pytest.mark.parametrize("package_path", PACKAGE_PATHS)
+    def test_the_released_cell_matches_the_changelog(self, package_path: str):
+        cells = [cell for path, cell in README_TABLE if path == package_path]
+        assert len(cells) == 1, f"{package_path} has {len(cells)} rows in README.md's table"
+        expected = released_cell(changelog_of(package_path), declared_name(package_path))
+        assert cells[0] == expected, (
+            f"README.md's Released cell for {package_path} reads {cells[0]!r}; its own "
+            f"CHANGELOG.md makes it {expected!r}"
+        )
+
+
+class TestTheReleasedCellFollowsTheChangelog:
+    """The unreleased side of that rule, which no package in the tree is on.
+
+    Every package has published, so the case above compares released rows against released
+    rows: it holds with `records_a_release` stuck at `True`, and never reads `NOT_RELEASED`.
+    """
+
+    def test_a_package_with_no_changelog_has_not_released(self):
+        assert not records_a_release(changelog_of("packages/not-a-package"))
+
+    def test_a_changelog_with_no_version_heading_records_no_release(self):
+        assert not records_a_release("# Changelog\n\n## Changelog\n")
+
+    def test_a_bare_first_release_counts(self):
+        assert records_a_release("# Changelog\n\n## 0.1.0 (2026-09-11)\n")
+
+    def test_a_linked_later_release_counts(self):
+        assert records_a_release(
+            "# Changelog\n\n## [0.2.0](https://example.invalid/compare) (2026-09-12)\n"
+        )
+
+    def test_a_hand_written_keep_a_changelog_heading_counts(self):
+        assert records_a_release("# Changelog\n\n## [0.1.0] - 2026-08-07\n")
+
+    def test_an_unreleased_package_gets_the_words_the_table_uses(self):
+        assert released_cell("# Changelog\n", "maf-sandbox-new") == "not yet released"
+
+    def test_a_released_package_gets_its_own_badge(self):
+        assert released_cell("## 0.1.0 (2026-09-11)\n", "maf-sandbox-new") == (
+            "[![PyPI](https://img.shields.io/pypi/v/maf-sandbox-new)]"
+            "(https://pypi.org/project/maf-sandbox-new/)"
+        )
 
 
 class TestManifestMatchesDeclaredVersions:
