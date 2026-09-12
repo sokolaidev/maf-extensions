@@ -50,3 +50,4 @@ This is a breaking release because the result's dataclass representation changes
 | Item | Status | Tracking |
 | --- | --- | --- |
 | Returned-byte fidelity and safe display views | shipped — core, host-tool transport, Docker, WSLC, bounded ACAS capture and text consumers | [#465](https://github.com/sokolaidev/maf-extensions/issues/465) (closed) by [#1100](https://github.com/sokolaidev/maf-extensions/pull/1100) (merged) |
+| ACAS complete results survive reported scratch-removal failures | shipped — warning and possible scratch retention until disposal; exceptions still invalidate | [#1153](https://github.com/sokolaidev/maf-extensions/issues/1153) (closed) by [#1155](https://github.com/sokolaidev/maf-extensions/pull/1155) (merged) |
