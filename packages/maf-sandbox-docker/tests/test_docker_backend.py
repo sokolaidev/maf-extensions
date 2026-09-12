@@ -291,7 +291,7 @@ class _FakeDocker:
         self._marked = 0
 
     async def __call__(
-        self, *args: str, stdin=None, timeout=None, read_limit=None
+        self, *args: str, stdin=None, timeout=None, read_limit=None, container=None
     ) -> _DockerResult:
         self.calls.append(_Recorded(args, stdin, timeout, read_limit))
         result = self._responder(args)
@@ -518,8 +518,10 @@ def _created_with(monkeypatch, responder=None, config=None):
     """
     fake = _FakeDocker(responder)
 
-    async def seam(_self, *args, stdin=None, timeout=None, read_limit=None):
-        return await fake(*args, stdin=stdin, timeout=timeout, read_limit=read_limit)
+    async def seam(_self, *args, stdin=None, timeout=None, read_limit=None, container=None):
+        return await fake(
+            *args, stdin=stdin, timeout=timeout, read_limit=read_limit, container=container
+        )
 
     monkeypatch.setattr(DockerSandboxBackend, "_docker", seam)
     backend = asyncio.run(DockerSandboxBackend.create(config or DockerSandboxConfig()))
@@ -3392,6 +3394,35 @@ class TestFreezingTheGuest:
         # so one that ran unfrozen is one whose freeze someone else lifted.
         assert under_freeze and all(under_freeze)
 
+    def test_an_acquire_does_not_thaw_a_freeze_another_loop_is_holding(self):
+        """The lock binds to one event loop, and a process may run several.
+
+        A host that runs a loop per call gets a fresh lock each time, so the lock cannot be
+        what makes this safe — the entry in the process-wide set is, and the name being in it
+        is exactly what a freeze held elsewhere looks like from here.
+        """
+        # The daemon's own answers for a container that is already frozen, which is what the
+        # other loop's file call left behind.
+        state = {
+            ("inspect", "-f", "{{.State.Running}} {{.State.Paused}}"): _DockerResult(
+                0, b"true true", ""
+            ),
+            ("pause",): _DockerResult(
+                1, b"", f"Error response from daemon: Container {_NAME} is already paused"
+            ),
+        }
+        machine = _machine(running=[_NAME], overrides={**_WORK_IS_A_DIRECTORY, **state})
+        backend, fake = _backend_with(machine)
+        _Freezes.take(_NAME)
+        try:
+            with pytest.raises(RuntimeError, match="could not freeze"):
+                asyncio.run(backend.acquire(_KEY, _SPEC))
+        finally:
+            _Freezes.lift(_NAME)
+        # Its own `prepare_work_dir` is refused by the daemon, which is the fail-closed half;
+        # what matters here is that nothing lifted the freeze that container already had.
+        assert "unpause" not in [call.args[0] for call in fake.calls]
+
     def test_acquire_thaws_a_container_a_dead_host_left_frozen(self):
         state = {
             ("inspect", "-f", "{{.State.Running}} {{.State.Paused}}"): _DockerResult(
@@ -3406,7 +3437,13 @@ class TestFreezingTheGuest:
 
 
 class TestAnExecRefusedForTheFreeze:
-    """The daemon refuses an exec on a frozen container rather than queueing it."""
+    """The daemon refuses an exec on a frozen container rather than queueing it.
+
+    Every re-issue turns on one question — was this container frozen by this process for the
+    whole attempt — because a frozen guest cannot run, so nothing inside it could have written
+    the daemon's sentence. Anything weaker is a channel the guest writes, and acting on it runs
+    whatever the guest chose a second time.
+    """
 
     @pytest.fixture(autouse=True)
     def _give_the_process_wide_set_back(self):
@@ -3414,28 +3451,51 @@ class TestAnExecRefusedForTheFreeze:
         yield
         _Freezes.names.clear()
 
-    def _backend(self, answers: list[_DockerResult]):
+    def _backend(self, answers: list[_DockerResult], *, on_first=None):
         backend = DockerSandboxBackend(DockerSandboxConfig())
         seen: list[tuple[str, ...]] = []
 
         async def invoke(*args, **kwargs):
             seen.append(args)
+            if on_first is not None and len(seen) == 1:
+                on_first()
             return answers[min(len(seen), len(answers)) - 1]
 
         backend._invoke = invoke
         return backend, seen
 
-    def test_it_is_reissued_while_this_backend_holds_a_freeze(self):
+    def test_it_is_reissued_while_this_process_holds_the_target_frozen(self):
         """Safe because the refusal means the command never ran: this is a first execution."""
         backend, seen = self._backend([_frozen_refusal(), _DockerResult(0, b"ok", "")])
         _Freezes.take(_NAME)
-        result = asyncio.run(backend._docker("exec", _NAME, "true", timeout=5))
+        result = asyncio.run(backend._docker("exec", _NAME, "true", timeout=5, container=_NAME))
         assert result.returncode == 0 and len(seen) == 2
 
     def test_it_is_returned_as_it_stands_when_the_freeze_is_someone_elses(self):
         backend, seen = self._backend([_frozen_refusal()])
-        result = asyncio.run(backend._docker("exec", _NAME, "true", timeout=5))
+        result = asyncio.run(backend._docker("exec", _NAME, "true", timeout=5, container=_NAME))
         assert result.returncode == 1 and len(seen) == 1
+
+    def test_a_freeze_on_another_container_licenses_nothing(self):
+        """Its guest was never stopped, so it could have written the sentence itself."""
+        backend, seen = self._backend([_frozen_refusal()])
+        _Freezes.take("some-other-container")
+        result = asyncio.run(backend._docker("exec", _NAME, "true", timeout=5, container=_NAME))
+        assert result.returncode == 1 and len(seen) == 1
+
+    def test_a_refusal_that_outlives_its_freeze_is_not_reissued(self):
+        """A thaw mid-attempt puts the guest back in a position to have written it.
+
+        So this fails closed instead: the caller is handed the daemon's own message for a call
+        that really was refused, which is the direction to be wrong in — the other one runs a
+        guest-chosen command twice.
+        """
+        backend, seen = self._backend(
+            [_frozen_refusal(), _DockerResult(0, b"ok", "")],
+            on_first=lambda: (_Freezes.take(_NAME), _Freezes.lift(_NAME)),
+        )
+        result = asyncio.run(backend._docker("exec", _NAME, "true", timeout=5, container=_NAME))
+        assert result == _frozen_refusal() and len(seen) == 1
 
     @pytest.mark.parametrize(
         "answer",
@@ -3449,56 +3509,60 @@ class TestAnExecRefusedForTheFreeze:
         """Re-issuing one of those would run the guest's own command a second time."""
         backend, seen = self._backend([answer])
         _Freezes.take(_NAME)
-        assert asyncio.run(backend._docker("exec", _NAME, "say", timeout=5)) == answer
+        assert (
+            asyncio.run(backend._docker("exec", _NAME, "say", timeout=5, container=_NAME)) == answer
+        )
         assert len(seen) == 1
 
-    def test_a_refusal_that_arrives_after_the_thaw_is_still_reissued(self):
-        """The freeze that caused one can be gone by the time its result is read."""
-        backend = DockerSandboxBackend(DockerSandboxConfig())
-        answers = [_frozen_refusal(), _DockerResult(0, b"ok", "")]
-        seen: list[tuple[str, ...]] = []
+    def test_a_forged_refusal_does_not_escape_the_callers_budget(self):
+        """The exemption is for a command that never ran, and nothing else may claim it.
 
-        async def invoke(*args, **kwargs):
-            seen.append(args)
-            if len(seen) == 1:
-                # Exactly the interleaving: frozen while the daemon answered, thawed again by
-                # the time this backend looks at what it answered.
-                _Freezes.take(_NAME)
-                _Freezes.lift(_NAME)
-            return answers[min(len(seen), len(answers)) - 1]
+        A guest that prints the daemon's sentence with empty stdout would otherwise have an
+        oversized result returned instead of the refusal `BoundedExec` promises. The freeze
+        here is on another container, which is the everyday case: a file call on one sandbox
+        while a guest runs in another.
+        """
+        forged = _DockerResult(1, b"", _frozen_refusal().stderr, _frozen_refusal().stderr.encode())
+        backend, seen = self._backend([forged])
+        _Freezes.take("some-other-container")
+        with pytest.raises(SandboxExecOutputLimitExceeded):
+            asyncio.run(
+                backend._docker(
+                    "exec", _NAME, "say", timeout=5, max_output_bytes=64, container=_NAME
+                )
+            )
+        assert len(seen) == 1
 
-        backend._invoke = invoke
-        result = asyncio.run(backend._docker("exec", _NAME, "true", timeout=5))
-        assert result.returncode == 0 and len(seen) == 2
+    def test_a_real_refusal_is_exempt_from_that_budget(self):
+        """It is not guest output: the guest was frozen for the whole attempt."""
+        real = _DockerResult(1, b"", _frozen_refusal().stderr, _frozen_refusal().stderr.encode())
+        backend, _seen = self._backend([real])
+        _Freezes.take(_NAME)
+        result = asyncio.run(
+            backend._docker(
+                "exec", _NAME, "true", timeout=0.2, max_output_bytes=64, container=_NAME
+            )
+        )
+        assert result == real
 
-    @pytest.mark.parametrize(
-        "written, refused",
-        [(_frozen_refusal().stderr, True), ("x" * 200, False)],
-        ids=["the daemon's refusal", "the guest's own output"],
-    )
-    def test_a_budget_under_the_control_floor_still_classifies_a_refusal(self, written, refused):
-        """A budget below the daemon's diagnostic must not read "it never ran" as guest output.
+    def test_the_control_floor_is_what_makes_a_refusal_legible(self, monkeypatch):
+        """Through the real seam with a real child: what this pins is which bytes are read.
 
-        Through the real seam with a real child, because what this pins is which bytes reach
-        the classification at all — a fake that answers a `_DockerResult` has already decided.
+        A fake answering a `_DockerResult` has already decided the question.
         """
         backend = DockerSandboxBackend(DockerSandboxConfig(docker_path=sys.executable))
+        written = _frozen_refusal().stderr
         script = f"import os; os.write(2, {written!r}.encode()); raise SystemExit(1)"
-
-        async def scenario():
-            return await backend._invoke("-c", script, max_output_bytes=64, timeout=10)
-
-        if refused:
-            assert _reads_as_a_frozen_guest(asyncio.run(scenario()))
-        else:
-            with pytest.raises(SandboxExecOutputLimitExceeded):
-                asyncio.run(scenario())
+        result = asyncio.run(
+            backend._invoke("-c", script, max_output_bytes=64, timeout=10, container=_NAME)
+        )
+        assert _reads_as_a_frozen_guest(result)
 
     def test_a_budget_spent_on_refusals_returns_the_last_one(self):
         """Rather than raising a timeout, which would take the container with it."""
         backend, seen = self._backend([_frozen_refusal()])
         _Freezes.take(_NAME)
-        result = asyncio.run(backend._docker("exec", _NAME, "true", timeout=0.2))
+        result = asyncio.run(backend._docker("exec", _NAME, "true", timeout=0.2, container=_NAME))
         assert result == _frozen_refusal() and len(seen) > 1
 
 

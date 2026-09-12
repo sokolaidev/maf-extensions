@@ -1224,15 +1224,13 @@ class TestFilesInAgainstARealEngine:
 
 
 class TestTheFreezeAgainstARealEngine:
-    """The window #1130 closes, against a guest that is actually trying to win it.
+    """A guest flipping a component of the write path cannot redirect a frozen call.
 
-    The guest flips a component of the write path between a directory and a link to `/victim`
-    as fast as it can, counting its own passes. Under the freeze that state cannot change
-    between the filesystem path check and the extraction, so both outcomes are legitimate —
-    the write lands under the working directory, or the check refuses the link — and neither
-    is a redirect, which is what `/victim` answers for. The **unpaused** shape of the same
-    loop is a race rather than a gate: it is measured in the issue (4 of 40 landed outside)
-    and never asserted here, since a race probe fails intermittently and passes for free.
+    Two outcomes are legitimate under the freeze — the write lands under the working
+    directory, or the check refuses the link — and neither is a redirect, which is what
+    `/victim` answers for. The same loop **unpaused** is not asserted: a race probe can show
+    a window exists and never that it is closed, so it would fail intermittently and pass for
+    free.
     """
 
     _VICTIM = "/victim"
