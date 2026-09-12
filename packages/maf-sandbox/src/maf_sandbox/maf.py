@@ -576,12 +576,6 @@ def _reachable_middleware() -> Any | None:
 #: Retiring both needs a provenance API the framework publishes, which is #826.
 _ORIGINAL_ARGUMENTS_KEY = "original_arguments_for_messages"
 
-#: Another key the same middleware writes on every call, for a different reader.
-#: Present-without-the-other is the tell this package needs: it says an information-flow
-#: middleware ran and its argument record is gone, which no legitimate wiring produces.
-#: Read from the call's metadata because it travels with the context object.
-_MIDDLEWARE_RAN_KEY = "context_label"
-
 #: One warning per process, not one per refusal.
 _warned_about_a_missing_record = False
 
@@ -589,8 +583,8 @@ _warned_about_a_missing_record = False
 def _warn_once_about_a_missing_record(logger: logging.Logger) -> None:
     """Say that the framework stopped keeping the record, where that is what it must mean.
 
-    Called where a call carries `_MIDDLEWARE_RAN_KEY` and not `_ORIGINAL_ARGUMENTS_KEY` — see
-    those two, and :func:`_the_framework_kept_no_record`, for why that pairing is the tell.
+    Called where a middleware is reachable and the call carries no `_ORIGINAL_ARGUMENTS_KEY` —
+    see :func:`_the_framework_kept_no_record` for why that pairing is the tell.
     """
     global _warned_about_a_missing_record
     with _warning_lock:
@@ -620,11 +614,19 @@ def _the_framework_kept_a_record(context: Any) -> bool:
 def _the_framework_kept_no_record(context: Any) -> bool:
     """Whether a middleware ran on this call and left no record of the arguments it received.
 
-    The two keys are written together, so one without the other is the framework's contract
-    having moved rather than a host that wired no information-flow middleware at all.
+    A middleware that ran and kept no record is the framework's contract having moved, rather
+    than a host that wired no information-flow middleware at all — and the two have to be told
+    apart, because the second is ordinary and the first must fail closed.
+
+    **Whether one ran is asked of the accessor, which the framework publishes.**  It answers
+    from the worker thread a synchronous body is dispatched to, because the middleware holds
+    it in a ``ContextVar`` and ``asyncio.to_thread`` copies one; before ``agent-framework-core``
+    1.18 it was a thread-local and did not, which is why this used to read a second metadata
+    key — one more unpublished name to keep alive, for a question a published one answers.
     """
-    metadata = _framework_metadata(context)
-    return _ORIGINAL_ARGUMENTS_KEY not in metadata and _MIDDLEWARE_RAN_KEY in metadata
+    return _ORIGINAL_ARGUMENTS_KEY not in _framework_metadata(context) and (
+        _reachable_middleware() is not None
+    )
 
 
 def _spellings_before_rewriting(context: Any, argument: str) -> list[str] | None:
