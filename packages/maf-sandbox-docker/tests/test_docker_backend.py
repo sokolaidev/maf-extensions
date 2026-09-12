@@ -3178,14 +3178,33 @@ class TestFreezingTheGuest:
         assert verbs.index("pause") < creation < verbs.index("unpause")
 
     @pytest.mark.parametrize(
-        "path, failure", [("../escape", ValueError), ("out.png", RuntimeError)]
+        "path, failure",
+        [(".", ValueError), ("out.png", RuntimeError)],
+        ids=["the check refuses it", "the copy fails"],
     )
     def test_a_member_that_raises_still_thaws(self, path, failure):
         refused = {("cp", "-"): _DockerResult(1, b"", "read-only filesystem")}
         _backend, sandbox, fake = self._sandbox(refused)
         with pytest.raises(failure):
             asyncio.run(sandbox.write_file(path, b"x", working_directory=_WORK))
-        assert self._verbs(fake).count("unpause") == self._verbs(fake).count("pause")
+        verbs = self._verbs(fake)
+        assert verbs[0] == "pause" and verbs[-1] == "unpause"
+        assert verbs.count("pause") == 1
+
+    @pytest.mark.parametrize("member", ["write_file", "read_file", "stat_file"])
+    def test_a_path_no_spelling_could_confine_costs_no_freeze(self, member):
+        """A freeze stops the guest, so a caller cannot buy one with a path like this."""
+        _backend, sandbox, fake = self._sandbox()
+        call = {
+            "write_file": lambda: sandbox.write_file("../escape", b"x", working_directory=_WORK),
+            "read_file": lambda: sandbox.read_file(
+                "../escape", working_directory=_WORK, max_bytes=8
+            ),
+            "stat_file": lambda: sandbox.stat_file("../escape", working_directory=_WORK),
+        }[member]
+        with pytest.raises(ValueError):
+            asyncio.run(call())
+        assert self._verbs(fake) == []
 
     def test_a_cancelled_member_still_thaws(self):
         backend, sandbox, fake = self._sandbox()
