@@ -252,7 +252,7 @@ The matcher question is unchanged and now reachable, since a `RUN_CODE`-only bac
 
 **`RECLAIM`** — take a directory this stack created. This is backend cleanup evidence; `SandboxSpec` rejects it in `requires`, so its absence selects a stronger cleanup rung instead of refusing the workload. `Sandbox.reclaim` remains a required method on every backend: the member implements either reclamation or an explicit refusal. The declaration establishes whether the framework may *resolve to* that cleanup rung, and the conformance suite refuses an undeclared capability before planting. Absent from `DEFAULT_CAPABILITIES` for the same reason silence resolves to `Cleanup.DISPOSE`: a backend that has not said it can take the directory is cleaned by the rung it certainly has. Docker declares it over its acquire-time reach check and guest-authority fallback. ACAS and WSLC do not declare it, so their workloads resolve above reclaim. A Docker workload still needs its own confinement claim to use the rung; the [Docker subject](backends/docker.md#measuring-a-confinement-claim) measures that claim.
 
-**`ATTACHED_IDENTITY`** — the vocabulary shipped with the enum; the plumbing did not. See [`hosts.md`](hosts.md) for the identity axis and what a spec carrying it would owe.
+**`ATTACHED_IDENTITY`** — core implements explicit opt-in, scope/retention/channel admission, authority-rule preservation and effective-state serialization. Real-backend verification and enforcement remain open; no real backend declares support. See [`hosts.md`](hosts.md) for the contract and the remaining backend obligations.
 
 ## Error taxonomy
 
