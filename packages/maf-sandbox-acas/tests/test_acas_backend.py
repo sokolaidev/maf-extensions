@@ -2664,6 +2664,19 @@ class TestTheWriteRoad:
                     guest.sandbox.write_file("f", "x", working_directory="/maf-sandbox/work")
                 )
 
+    def test_every_refusal_the_core_can_raise_has_an_error_of_its_own(self):
+        """The mapping is read with a fallback, so a refusal it lost would degrade silently.
+
+        A member added to the core's `FileRefusal` would arrive here as a plain `OSError`
+        rather than as the `PermissionError` or `IsADirectoryError` a caller reads. That is the
+        right runtime behaviour and the wrong thing to discover at runtime, so it is red here.
+        """
+        from maf_sandbox import FileRefusal
+
+        from maf_sandbox_acas._backend import _REFUSAL_ERRORS
+
+        assert set(_REFUSAL_ERRORS) == set(FileRefusal)
+
     def test_a_transfer_that_failed_with_no_refusal_is_an_oserror(self):
         from maf_sandbox import ExecResult
 

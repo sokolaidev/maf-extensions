@@ -237,10 +237,10 @@ _PROBE_TIMEOUT_S = 30.0
 _REMOVAL_HINT_TTL_S = 60.0
 
 #: What :func:`~maf_sandbox.write_file_over_exec` runs in the guest, minus what the probe's own
-#: script already proves. ``sh`` and ``rm`` answer for themselves — an image missing either
-#: cannot run the probe at all — and ``wc`` belongs to the read road, which this backend serves
-#: through the data plane. An image missing any of these keeps the plane rather than failing a
-#: write it could have made.
+#: script already answers for. An image without ``sh`` cannot run the probe at all and one
+#: without ``rm`` cannot finish either of its first two lines, so both come back as no road
+#: without being named here; ``wc`` belongs to the read road, which this backend serves through
+#: the data plane. A missing utility keeps the plane rather than failing every write.
 _SHELL_WRITE_UTILITIES = ("mkdir", "mv", "base64")
 
 #: The three words the write-road probe's script answers with, one per line it reaches.
@@ -512,7 +512,10 @@ class _Deletion:
 
 
 #: What the shell road's refusals are raised as, so which road a write took is invisible to
-#: its caller: these are the errors the data plane's own failures arrive as.
+#: its caller: these are the errors the data plane's own failures arrive as. Read with a
+#: fallback, never subscripted — a refusal the core adds later must degrade to a plain failure
+#: rather than reach a workload as a ``KeyError`` from this dictionary. The offline suite pins
+#: that every member ``FileRefusal`` carries today is named here, so the loss is a red test.
 _REFUSAL_ERRORS: Mapping[FileRefusal, type[OSError] | type[ValueError]] = {
     FileRefusal.NOT_FOUND: FileNotFoundError,
     FileRefusal.IS_DIRECTORY: IsADirectoryError,
@@ -661,7 +664,7 @@ class _AcasSandbox:
                 timeout=self._read_timeout,
             )
         except SandboxFileRefused as refused:
-            raise _REFUSAL_ERRORS[refused.refusal](
+            raise _REFUSAL_ERRORS.get(refused.refusal, OSError)(
                 f"could not write {guest}: {refused.detail or refused.refusal.value}"
             ) from refused
         except (SandboxShellTransferFailed, SandboxShellTransferUnfinished) as failed:
