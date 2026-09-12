@@ -241,6 +241,12 @@ class _Freezes:
     _guard: ClassVar[threading.Lock] = threading.Lock()
 
     claims: ClassVar[dict[str, int]] = {}
+    #: Who holds the claim on each container — the event loop, since that is what the freeze
+    #: lock can serialise and what it cannot reach past.  A claim is refused to anyone else
+    #: while one is outstanding, and **that** is what makes deciding to thaw and issuing the
+    #: unpause one operation: nothing can take a freeze in between, because taking one starts
+    #: with a claim.  The record alone could only be read, and a read is not a hold.
+    owners: ClassVar[dict[str, object]] = {}
     confirmed: ClassVar[set[str]] = set()
     #: Per container, the tick its confirmation was taken at: a freeze that lifted and came
     #: back must not read as one that never lifted, and a freeze on another container must not
@@ -250,9 +256,21 @@ class _Freezes:
     _tick: ClassVar[int] = 0
 
     @classmethod
-    def claim(cls, name: str) -> None:
+    def claim(cls, name: str, owner: object) -> bool:
+        """Take a claim for ``owner``, or refuse one somebody else is holding.
+
+        Counted as well as owned, so that a nested release cannot drop the record while an
+        outer caller still owes a thaw.  Nothing nests today — the freeze lock serialises one
+        loop's callers, and a second loop is refused here — and the count is what keeps that
+        from being load-bearing.
+        """
         with cls._guard:
+            held = cls.owners.get(name)
+            if held is not None and held is not owner:
+                return False
+            cls.owners[name] = owner
             cls.claims[name] = cls.claims.get(name, 0) + 1
+            return True
 
     @classmethod
     def release(cls, name: str) -> None:
@@ -262,23 +280,7 @@ class _Freezes:
                 cls.claims[name] = owed
             else:
                 cls.claims.pop(name, None)
-
-    @classmethod
-    def solely_claimed(cls, name: str) -> bool:
-        """Is this caller the only one in the process that owes a thaw on ``name``?
-
-        A claim is taken before any pause is issued, so a second claim means somebody else's
-        pause may be the one that froze the guest — and lifting a freeze that is not yours
-        puts its holder back between its check and its copy.
-        """
-        with cls._guard:
-            return cls.claims.get(name, 0) == 1
-
-    @classmethod
-    def claimed(cls, name: str) -> bool:
-        """Does anything in this process owe a thaw on ``name``?"""
-        with cls._guard:
-            return name in cls.claims
+                cls.owners.pop(name, None)
 
     @classmethod
     def confirm(cls, name: str) -> None:
@@ -1865,20 +1867,30 @@ class DockerSandboxBackend:
                 # that call's check and its copy. Released before `prepare_work_dir`, which
                 # takes the same lock.
                 running, frozen = await self._container_state(name)
-                if frozen and not _Freezes.claimed(name):
-                    # The record rather than the lock decides this, because the lock binds to
-                    # one event loop and a process may run several: a freeze another loop holds
-                    # reads as paused here, and lifting it would reopen that call's window.
-                    # Nothing holds it and it is paused, so a host died inside a file call;
-                    # warm reuse inherits that, where a disposal would have taken the container.
-                    # A thaw that does not land refuses the acquire, because this is the one
-                    # path that hands out a container nothing is about to freeze: a workload
-                    # that asks for no file surface would get one whose every exec is refused.
-                    if not await self._thaw(name):
+                if frozen:
+                    # Claimed rather than merely read, and held across the thaw. The lock binds
+                    # to one event loop and a process may run several, so reading the record
+                    # would leave the decision and the unpause two operations with room for
+                    # another loop to take a freeze in between — the same shape as the window
+                    # the tar-plane members freeze to close, on this side of the boundary. A
+                    # claim it cannot take belongs to someone whose freeze this is not.
+                    if not _Freezes.claim(name, asyncio.get_running_loop()):
                         raise RuntimeError(
-                            f"docker could not thaw {name}, which a host left frozen; refusing "
-                            "to serve a container whose guest cannot run"
+                            f"docker will not reuse {name}: another event loop in this process "
+                            "is holding it frozen"
                         )
+                    try:
+                        # A thaw that does not land refuses the acquire, because this is the
+                        # one path that hands out a container nothing is about to freeze: a
+                        # workload asking for no file surface would get one whose every exec
+                        # the daemon refuses.
+                        if not await self._thaw(name):
+                            raise RuntimeError(
+                                f"docker could not thaw {name}, which a host left frozen; "
+                                "refusing to serve a container whose guest cannot run"
+                            )
+                    finally:
+                        _Freezes.release(name)
                     logger.info("sandbox thawed before reuse: container=%s", name)
             stopped = not running and await self._exists(name)
             if not running:
@@ -3064,8 +3076,14 @@ class DockerSandboxBackend:
         async with _freeze_lock(name):
             # Claimed from before the pause is issued rather than after it returns: a call
             # cancelled or timed out while that invocation is in flight can have frozen the
-            # guest anyway, and only a claim taken this early covers that one.
-            _Freezes.claim(name)
+            # guest anyway, and only a claim taken this early covers that one. Exclusive, so
+            # for as long as this block runs no other loop can pause this container — which is
+            # what lets the thaw below be decided and issued as one operation.
+            if not _Freezes.claim(name, asyncio.get_running_loop()):
+                raise RuntimeError(
+                    f"docker will not freeze {name} for a file call: another event loop in "
+                    "this process is holding it, and one container is frozen by one caller"
+                )
             owed = True
             confirmed = False
             try:
@@ -3090,16 +3108,12 @@ class DockerSandboxBackend:
             finally:
                 if confirmed:
                     _Freezes.unconfirm(name)
-                # A thaw only for a freeze that is this caller's. Confirmed means the daemon
-                # froze it for us, and no other claimant's pause can have: it would have been
-                # refused. Unconfirmed but uncertain — cancelled or timed out inside the pause
-                # — is the case that needs the second half, because such a claimant does not
-                # know what it did: it may thaw only where nothing else has a claim, and
-                # otherwise leaves the container to `acquire`'s orphan recovery rather than
-                # lifting a freeze that may be someone else's.
-                mine = confirmed or (owed and _Freezes.solely_claimed(name))
+                # Any freeze on this container is this caller's: the claim above is
+                # exclusive and still held, so nothing else can have paused it. That covers
+                # the uncertain case too — cancelled or timed out inside the pause, not
+                # knowing what it did — which is why the debt is what decides here.
                 try:
-                    if mine:
+                    if owed:
                         thawing = asyncio.ensure_future(self._thaw(name))
                         cancelled = False
                         # Shielded through *every* cancellation, not the first: an unshielded
