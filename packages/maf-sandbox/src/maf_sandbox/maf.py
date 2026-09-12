@@ -740,25 +740,34 @@ def _reduced_form(payload: object) -> object:
     return payload
 
 
-def _rendered(value: object) -> str | None:
-    """``value`` as the text a spliced reference delivers, or ``None`` where it has none.
+def _deliverable_texts(value: object) -> Iterator[str]:
+    """Each text a reference to ``value`` alone, or spliced into other text, could deliver.
+
+    Two, and only a ``str`` subclass makes them differ: substituted alone a payload arrives as
+    itself, and spliced it arrives as ``str()`` of itself — which a subclass may define to
+    answer neither its own characters.  Rendering only one of those leaves the other form
+    uncompared, which is a value quoted back.
 
     **``str()`` runs a stored payload's own code, and this walks the whole store**, so a payload
     nothing referenced must not end the call that asked about another — the rule
     :func:`_reduced_form`'s parse already holds to.  A form that will not render is dropped
     rather than reported, which costs nothing: the framework splices a reference by calling
-    ``str()`` too, so a payload raising here could not have reached an argument as text either.
+    ``str()`` too, so a payload raising there could not have reached an argument as text either.
     ``BaseException`` is left to propagate, since a host's interrupt is not a payload's failure.
 
     An empty rendering is dropped with them.  It is a candidate contained in every value, so
     reporting it would name every position rather than the rewritten one.
     """
     if isinstance(value, str):
-        return value or None
+        own = str.__str__(value)  # its own characters, whatever `__str__` was overridden to say
+        if own:
+            yield own
     try:
-        return str(value) or None
-    except Exception:  # noqa: BLE001 - a payload's `__repr__` is arbitrary code
-        return None
+        text = str(value)
+    except Exception:  # noqa: BLE001 - a payload's `__str__` is arbitrary code
+        return
+    if text:
+        yield text
 
 
 def _substituted_forms(payload: object) -> set[str]:
@@ -775,9 +784,13 @@ def _substituted_forms(payload: object) -> set[str]:
     is the direction that quotes hidden content back — so both are offered, at the cost of one
     more candidate in a comparison :func:`positions_holding_hidden_content` already documents as
     conservative.
+
+    A reduction that answers the payload itself is rendered once, not twice: rendering runs the
+    payload's own code, and this is reached for every stored value on every call.
     """
-    forms = (_rendered(payload), _rendered(_reduced_form(payload)))
-    return {text for text in forms if text is not None}
+    reduced = _reduced_form(payload)
+    substituted = (payload,) if reduced is payload else (payload, reduced)
+    return {text for value in substituted for text in _deliverable_texts(value)}
 
 
 def _hidden_payloads(middleware: Any) -> Iterator[str]:
@@ -1113,8 +1126,9 @@ def sandbox_tool_declarations(
     else has tainted the conversation; it never applies to confidentiality, which a hidden item
     still contributes; and *passing* the reference on is a separate question from the
     conversation label, gated from ``agent-framework-core`` 1.18 wherever a host also wires the
-    policy middleware and the destination has not opted in — refused under that middleware's
-    default configuration, and served under either of its other two.
+    policy middleware and the destination has not opted in.  What the gate costs the call is
+    that middleware's configuration: refused under its default, served once a user approves
+    where it asks for approval, served with a warning where it blocks on nothing.
     ``docs/sandbox/information-flow.md`` carries the measurement and the full conditions.
 
     ``outbound_max_confidentiality`` is **opt-in, and off by default**, and the asymmetry is

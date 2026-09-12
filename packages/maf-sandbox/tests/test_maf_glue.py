@@ -4883,6 +4883,43 @@ class TestPositionsHoldingHiddenContent:
             "price of surviving one that will not render"
         )
 
+    def test_a_string_subclass_is_compared_in_both_the_forms_it_arrives_as(self):
+        """A `str` subclass can define `__str__` to answer neither its own characters.
+
+        Substituted alone it is delivered as itself; spliced, the framework calls `str()` on it.
+        Both forms reach an argument on both cores, so comparing one leaves the other's value
+        unreported — which is a value quoted back into a refusal.
+        """
+
+        class _Renamed(str):
+            def __str__(self) -> str:
+                return "DIFFERENT.bicep"
+
+        stored = _Renamed(self.PAYLOAD)
+        assert _maf._substituted_forms(stored) == {self.PAYLOAD, "DIFFERENT.bicep"}
+
+        alone = self._hidden("[VAR]", stored=stored)
+        assert alone["received"] == [self.PAYLOAD]
+        assert alone["hidden"] == frozenset({0})
+
+        spliced = self._hidden("[VAR].bicep", stored=stored)
+        assert spliced["received"] == ["DIFFERENT.bicep.bicep"]
+        assert spliced["hidden"] == frozenset({0}), (
+            "the spliced form is what `str()` answered, and nothing else compares it"
+        )
+
+    def test_a_payload_its_own_reduction_answers_is_rendered_once(self):
+        """Rendering runs the payload's own code, for every stored value on every call."""
+        rendered: list[object] = []
+
+        class _Counting:
+            def __repr__(self) -> str:
+                rendered.append(None)
+                return "RENDERED"
+
+        assert _maf._substituted_forms(_Counting()) == {"RENDERED"}
+        assert len(rendered) == 1, "the reduction answered the payload itself, so once"
+
     def test_a_payload_too_deep_to_parse_does_not_end_an_unrelated_call(self):
         """`json.loads` raises `RecursionError`, which is not a `ValueError`.
 
