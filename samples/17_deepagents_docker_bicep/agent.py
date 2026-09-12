@@ -35,7 +35,7 @@ OpenAI-compatible endpoint otherwise.
 #     "langchain-openai",
 #     "maf-sandbox-deepagents",
 #     "maf-sandbox-docker",
-#     "maf-sandbox>=0.38",
+#     "maf-sandbox>=0.39",
 # ]
 # ///
 
