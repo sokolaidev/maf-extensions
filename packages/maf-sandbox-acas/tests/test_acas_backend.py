@@ -2478,11 +2478,13 @@ class _GuestRoadSandbox:
         self.held = _Held("sbx-1", egress=(Egress.CLOSED, frozenset()), write_road=True)
         self.sandbox = _road_sandbox(client, self.held, read_timeout=read_timeout)
         self.commands: list[str] = []
+        self.working_directories: list[str] = []
         self._answers = list(answers or [])
         self._default = ExecResult(stdout="", stderr="", exit_code=0)
 
         async def exec_bounded(command, *, working_directory, timeout, max_output_bytes):
             self.commands.append(command)
+            self.working_directories.append(working_directory)
             if each:
                 await asyncio.sleep(each)
             return self._answers.pop(0) if self._answers else self._default
@@ -2691,6 +2693,25 @@ class TestTheWriteRoad:
         from maf_sandbox_acas._backend import _REFUSAL_ERRORS
 
         assert set(_REFUSAL_ERRORS) == set(FileRefusal)
+
+    def test_the_road_runs_from_the_root_and_not_the_callers_directory(self):
+        """A shell inherits a working directory for real; the data plane only did arithmetic.
+
+        A caller may name one that is a link, one the confinement check refused, or one that is
+        not there — all answered by the check on the plane, and all a failure to *start* for a
+        shell, which on this backend invalidates and disposes the sandbox. The live FILES_IN
+        suite is made of exactly those directories, and it condemned the shared sandbox on the
+        first probe until the road stopped inheriting them. `guest` is absolute and already
+        confined, so nothing about where the bytes land depends on the cwd.
+        """
+        guest = _GuestRoadSandbox(_WriteRoadClient())
+
+        asyncio.run(
+            guest.sandbox.write_file("note.txt", "x", working_directory="/maf-sandbox/work/linked")
+        )
+
+        assert set(guest.working_directories) == {"/"}, guest.working_directories
+        assert guest.commands[-1].endswith("/maf-sandbox/work/linked/note.txt")
 
     def test_the_road_costs_a_command_per_chunk_and_not_three_a_write(self):
         """What the docstring prices. Two control commands plus one per 48 KiB of content.

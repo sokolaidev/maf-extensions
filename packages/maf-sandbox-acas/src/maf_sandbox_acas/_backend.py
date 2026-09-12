@@ -227,8 +227,11 @@ _NEEDS_OBSERVED_REMOVAL = frozenset({Capability.FILES_DELETE})
 #: EXEC earns a warning rather than a refusal: stdout-only commands need no writing guest.
 _PROBE_WHEN_REQUIRED = _NEEDS_A_WRITING_GUEST | _NEEDS_OBSERVED_REMOVAL | {Capability.EXEC}
 
-#: The probe must not depend on a workload directory that does not exist at acquire.
-_GUEST_PROBE_WORKING_DIRECTORY = "/"
+#: Where this backend's own guest commands run. Never a workload's working directory: that may
+#: be a link, may be one the confinement check refused, or may not exist at acquire, and a shell
+#: handed it fails to start where the data plane only did path arithmetic with it. Every path
+#: these commands touch is absolute and already confined, so the cwd decides nothing.
+_GUEST_COMMAND_WORKING_DIRECTORY = "/"
 
 #: One bound for preparation, exec and observation; cleanup has its own equal bound.
 _PROBE_TIMEOUT_S = 30.0
@@ -642,7 +645,7 @@ class _AcasSandbox:
             self._unconfined_stat, path, working_directory
         )
         if self._held.write_road:
-            await self._write_as_the_guest(guest, content, working_directory=working_directory)
+            await self._write_as_the_guest(guest, content)
             return
         # `create_dirs=True` is the SDK's own default, and it is passed explicitly anyway.
         # A workload may hand us a nested path — `infra/main.bicep` is the example in the
@@ -652,15 +655,22 @@ class _AcasSandbox:
         # `DiskImage.image` got missed. Stating it costs nothing and pins the intent.
         await self._sc.write_file(guest, content, create_dirs=True)
 
-    async def _write_as_the_guest(
-        self, guest: str, content: str | bytes, *, working_directory: str
-    ) -> None:
+    async def _write_as_the_guest(self, guest: str, content: str | bytes) -> None:
         """Run the write in the guest, answering as the data plane would have answered.
 
         ``str`` is encoded here rather than left to the shell road, so both roads put the same
         bytes at the same path whatever the host's locale says.  The shell road's own
         vocabulary does not leave this method: a caller sees the errors the plane raises, since
         which road a sandbox took is not something a workload chose or can see.
+
+        **The commands run from** ``/``, **never from the caller's working directory.**
+        ``guest`` is absolute and already confined, so the cwd decides nothing about where the
+        bytes land — and a shell inherits it for real where the data plane only ever did path
+        arithmetic with it.  A caller may name a working directory that is a link, or one the
+        confinement check refused, or one that is not there at all; on the plane those are
+        answered by the check, while a shell handed the same value fails to start, which on
+        this backend invalidates and disposes the sandbox.  :meth:`remove` runs from ``/`` for
+        the same reason.
         """
         payload = content.encode("utf-8") if isinstance(content, str) else content
         try:
@@ -668,7 +678,7 @@ class _AcasSandbox:
                 self,
                 guest,
                 payload,
-                working_directory=working_directory,
+                working_directory=_GUEST_COMMAND_WORKING_DIRECTORY,
                 timeout=self._read_timeout,
             )
         except SandboxFileRefused as refused:
@@ -959,7 +969,7 @@ class _AcasSandbox:
             answered = (
                 await self._exec_text(
                     ["sh", "-c", _write_road_script(wanted)],
-                    working_directory=_GUEST_PROBE_WORKING_DIRECTORY,
+                    working_directory=_GUEST_COMMAND_WORKING_DIRECTORY,
                     timeout=_PROBE_TIMEOUT_S,
                 )
             ).stdout
@@ -984,7 +994,7 @@ class _AcasSandbox:
                     raise OSError("the file plane did not create the removal probe file")
                 answered = await self._exec_text(
                     ["rm", "--", guest_file],
-                    working_directory=_GUEST_PROBE_WORKING_DIRECTORY,
+                    working_directory=_GUEST_COMMAND_WORKING_DIRECTORY,
                     timeout=_PROBE_TIMEOUT_S,
                 )
                 parent = await self.stat_file(guest_directory, working_directory="/")
