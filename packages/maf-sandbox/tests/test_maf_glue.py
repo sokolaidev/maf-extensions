@@ -4856,6 +4856,33 @@ class TestPositionsHoldingHiddenContent:
         with pytest.raises(Exception, match="valid string|Invalid arguments"):
             self._hidden("[VAR]", stored=stored)
 
+    def test_a_payload_that_will_not_render_does_not_end_an_unrelated_call(self):
+        """`str()` runs a stored payload's own code, and this walks the whole store.
+
+        Only the form that will not render is dropped: a mapping whose `response` is safe still
+        offers that, and only a payload with no renderable form at all offers nothing. Dropping
+        it costs no coverage, because the framework splices a reference by calling `str()` too —
+        a payload raising here never reaches an argument as text on any core.
+        """
+
+        class _Unrenderable:
+            def __repr__(self) -> str:
+                raise RuntimeError("nothing can render this")
+
+        partly = {"response": "SAFE.bicep", "m": _Unrenderable()}
+        assert _maf._substituted_forms(partly) == {"SAFE.bicep"}
+        assert _maf._substituted_forms(_Unrenderable()) == set()
+
+        seen = self._hidden("main.bicep", stored=partly)  # nothing references it
+        assert seen["received"] == ["main.bicep"]
+        assert seen["hidden"] == frozenset(), "an untouched name, and no error out of the walk"
+
+        offered = self._hidden("SAFE.bicep", stored=partly)
+        assert offered["hidden"] == frozenset({0}), (
+            "the renderable form is still compared, so containing the whole payload is not the "
+            "price of surviving one that will not render"
+        )
+
     def test_a_payload_too_deep_to_parse_does_not_end_an_unrelated_call(self):
         """`json.loads` raises `RecursionError`, which is not a `ValueError`.
 

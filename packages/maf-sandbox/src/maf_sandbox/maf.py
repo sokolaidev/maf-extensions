@@ -740,6 +740,27 @@ def _reduced_form(payload: object) -> object:
     return payload
 
 
+def _rendered(value: object) -> str | None:
+    """``value`` as the text a spliced reference delivers, or ``None`` where it has none.
+
+    **``str()`` runs a stored payload's own code, and this walks the whole store**, so a payload
+    nothing referenced must not end the call that asked about another — the rule
+    :func:`_reduced_form`'s parse already holds to.  A form that will not render is dropped
+    rather than reported, which costs nothing: the framework splices a reference by calling
+    ``str()`` too, so a payload raising here could not have reached an argument as text either.
+    ``BaseException`` is left to propagate, since a host's interrupt is not a payload's failure.
+
+    An empty rendering is dropped with them.  It is a candidate contained in every value, so
+    reporting it would name every position rather than the rewritten one.
+    """
+    if isinstance(value, str):
+        return value or None
+    try:
+        return str(value) or None
+    except Exception:  # noqa: BLE001 - a payload's `__repr__` is arbitrary code
+        return None
+
+
 def _substituted_forms(payload: object) -> set[str]:
     """Every text a reference to ``payload`` could be replaced by, over the cores admitted.
 
@@ -755,11 +776,8 @@ def _substituted_forms(payload: object) -> set[str]:
     more candidate in a comparison :func:`positions_holding_hidden_content` already documents as
     conservative.
     """
-    reduced = _reduced_form(payload)
-    return {
-        payload if isinstance(payload, str) else str(payload),
-        reduced if isinstance(reduced, str) else str(reduced),
-    }
+    forms = (_rendered(payload), _rendered(_reduced_form(payload)))
+    return {text for text in forms if text is not None}
 
 
 def _hidden_payloads(middleware: Any) -> Iterator[str]:
@@ -770,9 +788,7 @@ def _hidden_payloads(middleware: Any) -> Iterator[str]:
             content, _ = store.retrieve(variable_id)
         except KeyError:  # pragma: no cover - a store cleared between the two calls
             continue
-        for text in _substituted_forms(content):
-            if text:
-                yield text
+        yield from _substituted_forms(content)
 
 
 def hidden_content_candidates() -> frozenset[str]:
@@ -1218,8 +1234,11 @@ def sandbox_tool_declarations(
 
 #: Where :meth:`SandboxToolSession.read_file` records what the host knows about a file's bytes.
 #:
-#: This records source integrity alone. The framework's ``security_label`` replaces both
-#: axes, defaulting confidentiality to public, so only the result wrapper may mint one.
+#: This records source integrity alone.  The framework's ``security_label`` names both axes and
+#: an integrity-only one is never the claim it looks like — accepted with confidentiality
+#: defaulted to public through ``agent-framework-core`` 1.17, and discarded whole from 1.18, so
+#: the item falls back to the invocation label and loses the integrity claim too. Only the
+#: result wrapper may mint one, and only where a kind declared both.
 SOURCE_INTEGRITY_PROPERTY = "maf_sandbox_source_integrity"
 
 

@@ -82,14 +82,14 @@ Core checks guidance's text, count, order, and trailing placement. It does not p
 
 ### Why confidentiality changes the design
 
-A per-item `security_label` replaces the **whole** framework `ContentLabel`: integrity and confidentiality. Constructing an integrity-only label silently supplies the framework's default `public` confidentiality. A private tool result can therefore become public if every item is stamped this way.
+A per-item `security_label` names the **whole** framework `ContentLabel`: integrity and confidentiality. **An integrity-only label is a mistake on every core admitted, and the two fail differently.** Through 1.17 it is accepted with the framework's default `public` confidentiality silently supplied, so a private tool result becomes public if every item is stamped that way. From 1.18 it does not parse at all: the framework warns, discards the label whole, and falls the item back to the invocation label — so the *integrity* claim is lost with it, and an item meant to stay readable is hidden instead. Neither is a classification a kind can predict, which is why core writes a label only where a kind declared both axes.
 
 Guidance qualifies as public because its committed text and presence carry no input information. Derived items still need the host's classification. Core has two supported ways to preserve it: leave those items unlabelled so the framework resolves their classification, or stamp a complete label using an explicit host declaration. It never invents result confidentiality.
 
 | Result shape for an untrusted tool classified private | Combined result label | Why |
 |---|---|---|
 | Plain string, no item label | untrusted/private | Framework resolves the tool's classification |
-| Guidance trusted/public; diagnostics labelled only for integrity | untrusted/public | The diagnostics' per-item default overrides private; this body shape is refused |
+| Guidance trusted/public; diagnostics labelled only for integrity | untrusted/public through 1.17, untrusted/private from 1.18 | The partial label is accepted with a `public` default that overrides private, or discarded whole so the item takes the invocation label; either way the result is not what the stamp asked for, and this body shape is refused |
 | Guidance trusted/public; diagnostics unlabelled | untrusted/private | The derived item retains framework confidentiality resolution |
 | Guidance trusted/public; diagnostics stamped untrusted/private by core | untrusted/private | The host's explicit classification is present in the complete label |
 
