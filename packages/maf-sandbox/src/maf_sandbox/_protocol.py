@@ -294,9 +294,10 @@ class EgressRule:
     Method scope narrows a channel; it does not close it. GET can still send data through
     URLs, headers and request content.
 
-    **Case is not part of the rule.** A lowercase token is refused rather than accepted,
-    because no enforcing mechanism distinguishes a method's case: a rule naming ``GET`` is
-    also reached by a guest sending ``get``. A rule never admits a *verb* it does not name.
+    **Case is not part of the rule.** A lowercase token is refused, because the mechanisms
+    that enforce this match a method case-insensitively and the distinction would not
+    survive. What a rule guarantees is the *verb*: it never admits one it does not name.
+    Which spelling of a named verb reaches is not guaranteed in either direction.
     ``docs/sandbox/network.md`` carries the evidence.
     """
 
