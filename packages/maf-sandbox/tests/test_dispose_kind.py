@@ -19,7 +19,7 @@ from maf_sandbox import (
 )
 from maf_sandbox.testing import InProcessSandboxBackend
 
-_KEY = SandboxKey(scope="scope", thread_id="thread", agent_dir="agent")
+_KEY = SandboxKey(scope="scope", thread_id="thread", agent_id="agent")
 _SPEC = SandboxSpec(kind="target")
 
 

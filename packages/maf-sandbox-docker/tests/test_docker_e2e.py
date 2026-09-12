@@ -222,7 +222,7 @@ def _spec(**kw) -> SandboxSpec:
 
 
 def _key(scope: str) -> SandboxKey:
-    return SandboxKey(scope=scope, thread_id="thread-1", agent_dir="devops-engineer")
+    return SandboxKey(scope=scope, thread_id="thread-1", agent_id="devops-engineer")
 
 
 def _names_on_the_machine(name: str) -> list[str]:
@@ -1653,7 +1653,7 @@ class TestAllowlistEgress:
         return DockerSandboxConfig(egress_proxy_image=_PROXY_IMAGE)
 
     def test_oversized_keys_acquire_and_drain_with_the_callers_key(self):
-        key = SandboxKey(scope=f"e2e-{uuid.uuid4()}", thread_id="thread", agent_dir="x" * 150_000)
+        key = SandboxKey(scope=f"e2e-{uuid.uuid4()}", thread_id="thread", agent_id="x" * 150_000)
         creator = DockerSandboxBackend(self._config())
         reader = DockerSandboxBackend(self._config())
         events = []
@@ -1685,8 +1685,8 @@ class TestAllowlistEgress:
         """A disposal selects on scope, thread and agent, so it reaches a sandbox a call inside
         the conversation acquired — and the window is that call's, not the caller's."""
         scope = f"e2e-{uuid.uuid4()}"
-        call = SandboxKey(scope=scope, thread_id="thread", agent_dir="agent", call_id="call-1")
-        conversation = SandboxKey(scope=scope, thread_id="thread", agent_dir="agent")
+        call = SandboxKey(scope=scope, thread_id="thread", agent_id="agent", call_id="call-1")
+        conversation = SandboxKey(scope=scope, thread_id="thread", agent_id="agent")
         creator = DockerSandboxBackend(self._config())
         reader = DockerSandboxBackend(self._config())
         events = []
@@ -1716,7 +1716,7 @@ class TestAllowlistEgress:
         key = SandboxKey(
             scope=f"e2e-{uuid.uuid4()} / \u2603",
             thread_id="thread / 1",
-            agent_dir="agent" * 30,
+            agent_id="agent" * 30,
         )
         creator = DockerSandboxBackend(self._config())
         reader = DockerSandboxBackend(self._config())
@@ -2168,10 +2168,10 @@ class TestTheCallScopeAgainstARealEngine:
         backend = DockerSandboxBackend(DockerSandboxConfig())
         spec = _spec()
         first = SandboxKey(
-            scope=scope, thread_id="thread-1", agent_dir="devops-engineer", call_id="call-a"
+            scope=scope, thread_id="thread-1", agent_id="devops-engineer", call_id="call-a"
         )
         second = SandboxKey(
-            scope=scope, thread_id="thread-1", agent_dir="devops-engineer", call_id="call-b"
+            scope=scope, thread_id="thread-1", agent_id="devops-engineer", call_id="call-b"
         )
 
         def subject_over(sandbox: Any) -> PosixGuestSubject:

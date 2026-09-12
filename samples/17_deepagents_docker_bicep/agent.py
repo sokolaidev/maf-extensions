@@ -60,13 +60,13 @@ if TYPE_CHECKING:
     # The runtime import stays inside `build_model`, so a local run loads no Azure SDK at all.
     from azure.identity.aio import DefaultAzureCredential
 
-# A sandbox is keyed by the caller's scope, thread and agent directory. A host reads the first
+# A sandbox is keyed by the caller's scope, thread and agent identity. A host reads the first
 # two from its own request context — a user/tenant and a conversation. This program serves
 # exactly one request, so they are constants here, but they are still named rather than
 # inlined: they belong to the request, not to the agent.
 SCOPE = "samples"
 THREAD_ID = "17-deepagents-docker-bicep"
-AGENT_DIR = "devops-engineer"
+AGENT_ID = "devops-engineer"
 
 BICEP_FILE = "main.bicep"
 
@@ -200,7 +200,7 @@ async def run() -> int:
     # Closed egress: the spec names no host, so the container runs with no network. The
     # template uses no modules, so nothing needs restoring and the compile completes offline.
     spec = deepagents_spec(env["BICEP_SANDBOX_IMAGE"])
-    key = SandboxKey(scope=SCOPE, thread_id=THREAD_ID, agent_dir=AGENT_DIR)
+    key = SandboxKey(scope=SCOPE, thread_id=THREAD_ID, agent_id=AGENT_ID)
     # Refuses here, before any agent exists, if the backend cannot serve the spec.
     sandbox = MafSandbox(router, key, spec)
 

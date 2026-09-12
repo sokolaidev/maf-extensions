@@ -901,7 +901,7 @@ def make_caller_context(
             no conversation is bound.
 
     All three are **callables, not values**, and that is the load-bearing part rather than a
-    convenience.  A sandbox is keyed by ``(scope, thread_id, agent_dir)``; if the first two
+    convenience.  A sandbox is keyed by ``(scope, thread_id, agent_id)``; if the first two
     were captured when the tool was built, one conversation could reach another's sandbox on
     a host that builds an agent once and serves many conversations with it.  Reading them per
     call keeps the key a property of the host's request context, which is also why nothing
@@ -1287,7 +1287,7 @@ class SandboxToolSession:
         self,
         router: SandboxRouter,
         context: CallerContext,
-        agent_dir: str,
+        agent_id: str,
         spec: SandboxSpec,
         *,
         name: str,
@@ -1300,7 +1300,7 @@ class SandboxToolSession:
     ) -> None:
         self._router = router
         self._context = context
-        self._agent_dir = agent_dir
+        self._agent_id = agent_id
         self._spec = spec
         self._name = name
         self._logger = logger
@@ -1378,7 +1378,7 @@ class SandboxToolSession:
         return SandboxKey(
             scope=self._context.current_scope(),
             thread_id=thread_id,
-            agent_dir=self._agent_dir,
+            agent_id=self._agent_id,
             call_id=self._call_id(),
         )
 
@@ -2337,7 +2337,7 @@ def sandboxed_tool(
     *,
     router: SandboxRouter | None,
     context: CallerContext,
-    agent_dir: str,
+    agent_id: str,
     spec: SandboxSpec,
     name: str,
     approval_mode: Literal["always_require", "never_require"] = "never_require",
@@ -2423,7 +2423,7 @@ def sandboxed_tool(
         router: The sandbox router, or ``None`` when sandboxing is not configured.
         context: How to read the caller's scope and thread, and how to enumerate the
             file store (see :func:`make_caller_context`).
-        agent_dir: The agent's directory name. Baked into the sandbox key here, at factory
+        agent_id: The agent's stable identifier. Baked into the sandbox key here, at factory
             time, rather than taken from the model at call time.
         spec: The sandbox this workload asks for.
         name: The tool's name, as declared to the model.
@@ -2584,7 +2584,7 @@ def sandboxed_tool(
     session = SandboxToolSession(
         router,
         context,
-        agent_dir,
+        agent_id,
         spec,
         name=name,
         logger=records,

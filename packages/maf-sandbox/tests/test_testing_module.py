@@ -43,7 +43,7 @@ from maf_sandbox.testing import (
     InProcessSandboxBackend,
 )
 
-_KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+_KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
 
 
 @pytest.mark.parametrize(
@@ -1031,7 +1031,7 @@ class TestTheFakeCanHandOutOneSandboxPerKey:
     `IsolationScope.CALL`, which is a claim about keys reaching different filesystems.
     """
 
-    _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-1")
+    _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="agent-1")
     _SPEC = SandboxSpec(kind="test")
 
     def test_by_default_every_key_gets_the_same_sandbox(self):

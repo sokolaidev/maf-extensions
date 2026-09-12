@@ -49,7 +49,7 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
 
 def _key(name: str) -> SandboxKey:
     return SandboxKey(
-        scope="deepagents-e2e", thread_id=f"{name}-{uuid.uuid4().hex[:10]}", agent_dir="agent"
+        scope="deepagents-e2e", thread_id=f"{name}-{uuid.uuid4().hex[:10]}", agent_id="agent"
     )
 
 

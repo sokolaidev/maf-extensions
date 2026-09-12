@@ -53,14 +53,14 @@ from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 from maf_sandbox_bicep import make_bicep_tools
 
-# A sandbox is keyed by the caller's scope, thread and agent directory.  A host reads the first two
+# A sandbox is keyed by the caller's scope, thread and agent identity.  A host reads the first two
 # from its own request context — a user/tenant and a conversation.  This program
 # serves exactly one request, so they are constants here, but they are still named
 # rather than inlined: the whole point of `make_caller_context` below is that
 # they belong to the request, not to the agent.
 SCOPE = "samples"
 THREAD_ID = conversation_id("01-acas-bicep")
-AGENT_DIR = "devops-engineer"
+AGENT_ID = "devops-engineer"
 
 BICEP_FILE = "main.bicep"
 
@@ -126,7 +126,7 @@ async def run() -> int:
 
     # All three arguments are **callables, read per call** — not values.  That is
     # load-bearing rather than a convenience.  A sandbox is keyed by
-    # the caller's scope, thread and agent directory; a host that builds one agent and serves many
+    # the caller's scope, thread and agent identity; a host that builds one agent and serves many
     # conversations with it would, if scope and thread were captured here, let
     # one conversation address another conversation's sandbox.  Reading them per
     # call keeps the key a property of the request.  It is also why nothing in
@@ -140,7 +140,7 @@ async def run() -> int:
     tools = make_bicep_tools(
         router,
         store,
-        AGENT_DIR,
+        AGENT_ID,
         context,
         image=env["BICEP_SANDBOX_IMAGE"],
         egress=Egress.CLOSED,
@@ -160,7 +160,7 @@ async def run() -> int:
                 azure_endpoint=env["AZURE_OPENAI_ENDPOINT"],
                 credential=credential,
             ),
-            name=AGENT_DIR,
+            name=AGENT_ID,
             instructions=(
                 "You validate Azure Bicep. Always call the bicep_validate tool "
                 "and report exactly the diagnostics it returns — rule id, "

@@ -78,7 +78,7 @@ from maf_sandbox.testing import (
     InProcessSandboxBackend,
 )
 
-_KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-1")
+_KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="agent-1")
 _SPEC = SandboxSpec(
     kind="test",
     egress=Egress.ALLOWLIST,
@@ -1700,7 +1700,7 @@ def _tool(router: SandboxRouter, body):
         lambda session: body(session),
         router=router,
         context=_context(),
-        agent_dir="agent-1",
+        agent_id="agent-1",
         spec=_SPEC,
         name="widget_run",
         logger=_LOG,
@@ -1763,7 +1763,7 @@ class TestTheCallIsRecorded:
         leave the second's acquire and disposal records with nothing to join to."""
         recorder = _Recorder()
         router = _router(observer=recorder)
-        other = SandboxKey(scope=_KEY.scope, thread_id=_KEY.thread_id, agent_dir="agent-2")
+        other = SandboxKey(scope=_KEY.scope, thread_id=_KEY.thread_id, agent_id="agent-2")
 
         def build(session: SandboxToolSession):
             async def widget_run() -> str:
@@ -1994,7 +1994,7 @@ class TestTheCallRecordsWhatFedIt:
             build,
             router=_router(observer=recorder),
             context=_context(),
-            agent_dir="agent-1",
+            agent_id="agent-1",
             spec=_SPEC,
             name="widget_run",
             requires_file_integrity=SourceIntegrity.TRUSTED,
@@ -2093,7 +2093,7 @@ class TestTheCallRecordsWhatFedIt:
             lambda session: _reads(session, InMemoryStore({"a.txt": "1"})),
             router=_router(observer=recorder),
             context=_context(),
-            agent_dir="agent-1",
+            agent_id="agent-1",
             spec=_SPEC,
             name="widget_run",
             logger=_LOG,

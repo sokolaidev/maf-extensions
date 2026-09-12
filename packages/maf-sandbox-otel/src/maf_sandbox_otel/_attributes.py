@@ -55,7 +55,7 @@ KEY = f"{NAMESPACE}.sandbox.key"
 CONVERSATION = f"{NAMESPACE}.sandbox.conversation"
 SCOPE = f"{NAMESPACE}.sandbox.scope"
 THREAD_ID = f"{NAMESPACE}.sandbox.thread_id"
-AGENT_DIR = f"{NAMESPACE}.sandbox.agent_dir"
+AGENT_ID = f"{NAMESPACE}.sandbox.agent_id"
 CALL_ID = f"{NAMESPACE}.sandbox.call_id"
 
 KIND = f"{NAMESPACE}.sandbox.kind"
@@ -169,7 +169,7 @@ def _digest(*parts: str) -> str:
 
 def hashed_key(key: SandboxKey) -> str:
     """A stable name for one sandbox key — every part of it, the call included."""
-    return _digest(key.scope, key.thread_id, key.agent_dir, key.call_id)
+    return _digest(key.scope, key.thread_id, key.agent_id, key.call_id)
 
 
 def hashed_conversation(key: SandboxKey) -> str:
@@ -225,7 +225,7 @@ class Redaction:
         if self.sensitive:
             recorded[SCOPE] = key.scope
             recorded[THREAD_ID] = key.thread_id
-            recorded[AGENT_DIR] = key.agent_dir
+            recorded[AGENT_ID] = key.agent_id
         return recorded
 
     def conversation(self, scope: str, thread_id: str) -> dict[str, AttributeValue]:
@@ -258,7 +258,7 @@ class Redaction:
         if self.sensitive:
             recorded[SCOPE] = [key.scope for key in keys]
             recorded[THREAD_ID] = [key.thread_id for key in keys]
-            recorded[AGENT_DIR] = [key.agent_dir for key in keys]
+            recorded[AGENT_ID] = [key.agent_id for key in keys]
         return recorded
 
     def text(self, name: str, value: str | None) -> dict[str, AttributeValue]:

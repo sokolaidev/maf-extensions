@@ -21,7 +21,7 @@ from maf_sandbox._cleanup import _Waiter
 from maf_sandbox._router import CallAdmission
 from maf_sandbox.testing import InProcessSandbox, InProcessSandboxBackend
 
-KEY = SandboxKey(scope="s", thread_id="t", agent_dir="a")
+KEY = SandboxKey(scope="s", thread_id="t", agent_id="a")
 SPEC = SandboxSpec(kind="test", confined_to_guest_call_path=True)
 
 

@@ -32,7 +32,7 @@ from telemetry import (  # noqa: E402
     exported,
 )
 
-_KEY = SandboxKey(scope="samples", thread_id="t-locked", agent_dir="assistant")
+_KEY = SandboxKey(scope="samples", thread_id="t-locked", agent_id="assistant")
 _CALL = "0" * 32
 
 

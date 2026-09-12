@@ -245,7 +245,7 @@ def codeact_sandbox_spec(
 
 def make_codeact_tools(
     router: SandboxRouter | None,
-    agent_dir: str,
+    agent_id: str,
     context: CallerContext,
     *,
     file_store: AgentFileStore | None = None,
@@ -269,7 +269,7 @@ def make_codeact_tools(
 
     Args:
         router: The sandbox router, or ``None`` when sandboxing is not configured.
-        agent_dir: The agent's directory name. Baked into the sandbox key at factory time
+        agent_id: The agent's stable identifier. Baked into the sandbox key at factory time
             rather than taken from the model at call time.
         context: How to read the caller's scope and thread, and how to enumerate the file store.
         file_store: The agent's file store. Given one, the tool takes a ``files``
@@ -513,7 +513,7 @@ def make_codeact_tools(
         ),
         router=router,
         context=context,
-        agent_dir=agent_dir,
+        agent_id=agent_id,
         spec=spec,
         name=EXECUTE_CODE_TOOL_NAME,
         # What a call ahead may hold the sandbox for: its program's bound, where that is one.

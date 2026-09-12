@@ -41,11 +41,11 @@ from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox_bicep import make_bicep_tools
 from no_isolation_backend import NoIsolationBackend
 
-# Keyed by the caller's scope, thread and agent directory; constants here since this
+# Keyed by the caller's scope, thread and agent identity; constants here since this
 # program serves one request.
 SCOPE = "samples"
 THREAD_ID = "09-inprocess-bicep"
-AGENT_DIR = "devops-engineer"
+AGENT_ID = "devops-engineer"
 
 BICEP_FILE = "main.bicep"
 
@@ -95,7 +95,7 @@ async def run() -> int:
     # `egress=UNRESTRICTED` because that is the one mode this no-boundary backend enforces;
     # asking for anything tighter would be refused, since it cannot deliver a boundary it does
     # not have. The module restore then runs against the live registry, unconfined.
-    tools = make_bicep_tools(router, store, AGENT_DIR, context, egress=Egress.UNRESTRICTED)
+    tools = make_bicep_tools(router, store, AGENT_ID, context, egress=Egress.UNRESTRICTED)
     if not tools:
         print("No sandbox backend: bicep_validate was not attached.", file=sys.stderr)
         return 2
@@ -128,7 +128,7 @@ async def run() -> int:
     try:
         agent = Agent(
             client=client,
-            name=AGENT_DIR,
+            name=AGENT_ID,
             instructions=(
                 "You validate Azure Bicep. Always call the bicep_validate tool "
                 "and report exactly the diagnostics it returns — rule id, "

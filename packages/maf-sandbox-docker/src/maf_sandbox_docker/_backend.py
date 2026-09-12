@@ -531,7 +531,7 @@ def _sandbox_labels(key: SandboxKey, spec: SandboxSpec) -> dict[str, str]:
     return {
         _LABEL_SCOPE: _label_value(key.scope),
         _LABEL_THREAD: _label_value(key.thread_id),
-        _LABEL_AGENT: _label_value(key.agent_dir),
+        _LABEL_AGENT: _label_value(key.agent_id),
         _LABEL_KIND: _label_value(spec.kind),
         **({_LABEL_CALL: _label_value(key.call_id)} if key.call_id else {}),
         **{f"{_LABEL_PREFIX}{k}": _label_value(v) for k, v in spec.labels.items()},
@@ -559,12 +559,12 @@ def _key_prefix(key: SandboxKey) -> tuple[str, str, str, str]:
     naming none are two entries here, which is what stops one call's cleanup retiring another's
     record.
     """
-    return (key.scope, key.thread_id, key.agent_dir, key.call_id)
+    return (key.scope, key.thread_id, key.agent_id, key.call_id)
 
 
 def _key_label(key: SandboxKey) -> str:
     """Encode the key within the attribution budget; empty explicitly disables recovery."""
-    fields = [key.scope, key.thread_id, key.agent_dir, key.call_id]
+    fields = [key.scope, key.thread_id, key.agent_id, key.call_id]
     if sum(map(len, fields)) > _KEY_LABEL_MAX:
         return ""
     encoded = base64.urlsafe_b64encode(json.dumps(fields, ensure_ascii=True).encode()).decode(
@@ -611,7 +611,7 @@ def _key_from_labels(labels: object) -> SandboxKey | None:
     elif call is not None:
         return None
     return SandboxKey(
-        scope=strings[0], thread_id=strings[1], agent_dir=strings[2], call_id=strings[3]
+        scope=strings[0], thread_id=strings[1], agent_id=strings[2], call_id=strings[3]
     )
 
 
@@ -632,7 +632,7 @@ def _selectors_name(labels: dict[str, object], key: SandboxKey) -> bool:
         for label, expected in (
             (_LABEL_SCOPE, _label_value(key.scope)),
             (_LABEL_THREAD, _label_value(key.thread_id)),
-            (_LABEL_AGENT, _label_value(key.agent_dir)),
+            (_LABEL_AGENT, _label_value(key.agent_id)),
             (_LABEL_CALL, _label_value(key.call_id) if key.call_id else None),
         )
     )
@@ -658,7 +658,7 @@ def _container_name(key: SandboxKey, kind: str, egress_id: str = "") -> str:
     host's request context, not model input, so this is defence in depth rather than a reachable
     exploit — but a length prefix makes the encoding unambiguous for free.
     """
-    parts = [key.scope, key.thread_id, key.agent_dir, kind]
+    parts = [key.scope, key.thread_id, key.agent_id, kind]
     if egress_id:
         parts.append(egress_id)
     if key.call_id:
@@ -1529,7 +1529,7 @@ class DockerSandboxBackend:
         # until then, and that is what keeps an uninstrumented host from paying for the read:
         # every drain is a `docker logs` on a path an acquire waits on.
         self._egress_report: EgressReporter | None = None
-        # (scope, thread_id, agent_dir, call_id, kind) -> name: a purge fallback for when the
+        # (scope, thread_id, agent_id, call_id, kind) -> name: a purge fallback for when the
         # listing fails, never the truth. Holds the last name acquired per key and kind, and
         # `call_id` is part of that key — empty for a conversation, naming one tool call at
         # `IsolationScope.CALL`, so two calls never collapse onto one entry here.
@@ -1921,7 +1921,7 @@ class DockerSandboxBackend:
                     spec.kind,
                     image,
                     key.thread_id,
-                    key.agent_dir,
+                    key.agent_id,
                 )
                 verb = ""
             if verb:
@@ -1931,7 +1931,7 @@ class DockerSandboxBackend:
                     name,
                     spec.kind,
                     key.thread_id,
-                    key.agent_dir,
+                    key.agent_id,
                 )
             # Before the facts read, which is several awaited calls and can raise: the container
             # is running by now, and a name the registry never saw is one the disposal fallback
@@ -2365,7 +2365,7 @@ class DockerSandboxBackend:
             wanted = {
                 _LABEL_SCOPE: _label_value(key.scope),
                 _LABEL_THREAD: _label_value(key.thread_id),
-                _LABEL_AGENT: _label_value(key.agent_dir),
+                _LABEL_AGENT: _label_value(key.agent_id),
                 **{label: _label_value(value) for label, value in _call_filters(key)},
             }
             if kind is not None:
@@ -2485,7 +2485,7 @@ class DockerSandboxBackend:
         wanted = [
             (_LABEL_SCOPE, key.scope),
             (_LABEL_THREAD, key.thread_id),
-            (_LABEL_AGENT, key.agent_dir),
+            (_LABEL_AGENT, key.agent_id),
             *_call_filters(key),
         ]
         if kind is not None:

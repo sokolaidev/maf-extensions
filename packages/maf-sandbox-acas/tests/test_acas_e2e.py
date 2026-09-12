@@ -161,7 +161,7 @@ def _logged_sandbox_id(message: str) -> str:
 
 
 def _key(scope: str) -> SandboxKey:
-    return SandboxKey(scope=scope, thread_id="thread-1", agent_dir="devops-engineer")
+    return SandboxKey(scope=scope, thread_id="thread-1", agent_id="devops-engineer")
 
 
 class _Live:

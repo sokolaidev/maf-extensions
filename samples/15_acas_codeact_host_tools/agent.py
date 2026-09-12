@@ -108,10 +108,10 @@ CALL_RECLAIMS = tuple(int(part) for part in version("maf-sandbox-codeact").split
 CALL_RECLAIMED = "reclaimed by the framework"
 CALL_KEPT = "left for the sandbox (an older CodeAct or core)"
 
-# Keyed by the caller's scope, thread and agent directory; constants here since this
+# Keyed by the caller's scope, thread and agent identity; constants here since this
 # program serves one request.
 SCOPE = "samples"
-AGENT_DIR = "analyst"
+AGENT_ID = "analyst"
 
 #: Which backend the sample runs against — `acas` (default, a remote Azure microVM) or `docker`
 #: (a local container). The walk is identical on both; #519 is about reading the two round trips
@@ -394,7 +394,7 @@ def agent_for(
             azure_endpoint=env["AZURE_OPENAI_ENDPOINT"],
             credential=credential,
         ),
-        name=AGENT_DIR,
+        name=AGENT_ID,
         instructions=INSTRUCTIONS + how,
         tools=tools,
     )
@@ -587,7 +587,7 @@ def codeact_for(router: SandboxRouter, registry: HostToolRegistry | None, thread
     context = make_caller_context(list_all_files, lambda: SCOPE, lambda: thread)
     tools = make_codeact_tools(
         router,
-        AGENT_DIR,
+        AGENT_ID,
         context,
         # A non-empty registry widens the spec by HOST_TOOLS *and* FILES_OUT — the transport
         # stats and reads its own request files — and both are refused at construction by a
@@ -681,7 +681,7 @@ async def _what_one_sandbox_holds(
     A missing work directory counts as empty: per-call disposal can make this acquire a fresh guest.
     """
     spec = codeact_sandbox_spec(image=CODEACT_IMAGE, host_tools=registry)
-    sandbox = await router.acquire(SandboxKey(SCOPE, thread, AGENT_DIR), spec)
+    sandbox = await router.acquire(SandboxKey(SCOPE, thread, AGENT_ID), spec)
     try:
         runs = await sandbox.list_dir(".", working_directory=spec.work_dir or ".")
     except FileNotFoundError:
