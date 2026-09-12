@@ -211,9 +211,13 @@ _CONTROL_DIAGNOSTIC_BYTES = 512
 #: a handful of engine round trips — so this polls rather than backs off.
 _FROZEN_RETRY_DELAY_S = 0.05
 
-#: One freeze per container **per process**, not per backend: a container is a machine-wide
-#: thing, and two backends built from one configuration name the same one. Per running loop,
-#: and weakly keyed on it, so a process running a loop per call accumulates no lock table.
+#: One freeze per container, across every backend in the process rather than per backend
+#: object: a container is a machine-wide thing, and two backends built from one configuration
+#: name the same one. Keyed per running loop, and weakly, so a process running a loop per call
+#: accumulates no lock table — which means this **serialises within a loop and not across
+#: them**. What holds across loops is :class:`_Freezes`, whose set every dangerous act reads:
+#: a second freeze on the same container is refused by the daemon, and a thaw of one this
+#: process already holds is never issued.
 _FREEZE_LOCKS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Lock]] = (
     weakref.WeakKeyDictionary()
 )
@@ -241,15 +245,23 @@ class _Freezes:
         cls.changes += 1
 
     @classmethod
-    def mark(cls) -> tuple[int, bool]:
-        """A token to compare an invocation's end against its start."""
-        return cls.changes, bool(cls.names)
+    def mark(cls, name: str | None) -> tuple[int, bool]:
+        """A token for one container, to compare an invocation's end against its start."""
+        return cls.changes, name is not None and name in cls.names
 
     @classmethod
-    def overlapped(cls, mark: tuple[int, bool]) -> bool:
-        """Was anything frozen when ``mark`` was taken, or now, or at any point between?"""
+    def held_throughout(cls, name: str | None, mark: tuple[int, bool]) -> bool:
+        """Was ``name`` frozen when ``mark`` was taken and every instant since?
+
+        The only question worth asking of a daemon refusal, and the reason is that a frozen
+        guest **cannot run**: while the freeze held, nothing in the container could have
+        written that sentence, so the daemon did.  Let it lift mid-invocation and the guest
+        could have written it itself — and then a re-issue is a second execution of whatever
+        the guest chose to run.  Any take or lift anywhere voids the answer rather than only
+        one on this container, because that is the direction it is safe to be wrong in.
+        """
         changes, held = mark
-        return held or bool(cls.names) or cls.changes != changes
+        return held and name is not None and name in cls.names and cls.changes == changes
 
 
 def _freeze_lock(name: str) -> asyncio.Lock:
@@ -820,6 +832,7 @@ class _DockerRunner(Protocol):
         timeout: float | None = None,
         read_limit: int | None = None,
         max_output_bytes: int | None = None,
+        container: str | None = None,
     ) -> _DockerResult: ...
 
 
@@ -1033,6 +1046,7 @@ class _DockerSandbox:
                 *argv,
                 timeout=timeout,
                 max_output_bytes=max_output_bytes,
+                container=self._name,
             )
         except TimeoutError:
             with contextlib.suppress(Exception):
@@ -1062,7 +1076,14 @@ class _DockerSandbox:
         privilege = ("--user", "0") if as_root else ()
         try:
             result = await self._run(
-                "exec", *privilege, "-w", working_directory, self._name, *argv, timeout=timeout
+                "exec",
+                *privilege,
+                "-w",
+                working_directory,
+                self._name,
+                *argv,
+                timeout=timeout,
+                container=self._name,
             )
         except TimeoutError:
             with contextlib.suppress(Exception):
@@ -1766,9 +1787,12 @@ class DockerSandboxBackend:
                 # that call's check and its copy. Released before `prepare_work_dir`, which
                 # takes the same lock.
                 running, frozen = await self._container_state(name)
-                if frozen:
-                    # No freeze of this process holds it, so a host died inside a file call.
-                    # Warm reuse inherits that; a disposal would have taken the container.
+                if frozen and name not in _Freezes.names:
+                    # The set rather than the lock decides this, because the lock binds to one
+                    # event loop and a process may run several: a freeze another loop holds
+                    # reads as paused here, and lifting it would reopen that call's window.
+                    # Nothing holds it and it is paused, so a host died inside a file call;
+                    # warm reuse inherits that, where a disposal would have taken the container.
                     logger.info("sandbox thawed before reuse: container=%s", name)
                     await self._thaw(name)
             stopped = not running and await self._exists(name)
@@ -1900,6 +1924,7 @@ class DockerSandboxBackend:
                     *argv,
                     timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
                     read_limit=1024,
+                    container=name,
                 )
             return result.returncode
 
@@ -2695,23 +2720,29 @@ class DockerSandboxBackend:
         timeout: float | None = None,
         read_limit: int | None = None,
         max_output_bytes: int | None = None,
+        container: str | None = None,
     ) -> _DockerResult:
-        """Run one ``docker`` command, re-issuing it where a freeze of this backend's refused it.
+        """Run one ``docker`` command, re-issuing it where a freeze of this process refused it.
 
         The daemon refuses ``exec`` on a frozen container instead of queueing it, so a file
         call holding a freeze would otherwise fail a guest command that merely overlapped it.
-        Re-issuing is safe because the refusal means the command never ran, and it happens only
-        where a freeze of this process **overlapped that attempt** — which is not the same as
-        one being held now, since the refusal can arrive after the thaw that caused it. A
-        refusal from anywhere else is the caller's to read. ``timeout`` is the whole budget
-        across the attempts, and a budget spent on refusals returns the last one rather than
-        raising.
+        Re-issuing is safe only where ``container`` was frozen by this process for the whole
+        attempt, which is what proves the command never ran: a frozen guest cannot execute, so
+        nothing inside it could have written the daemon's sentence. That stderr is otherwise a
+        channel a guest command writes, and a re-issue on its word runs whatever it chose a
+        second time. A refusal from anywhere else is the caller's to read. ``timeout`` is the
+        whole budget across the attempts, and a budget spent on refusals returns the last one
+        rather than raising.
+
+        The same verdict decides the one exemption from ``max_output_bytes``: a refusal that
+        ran nothing is not guest output. Everything else is held to the caller's budget here,
+        because only here is it known whether the guest could have written it.
         """
         deadline = time.monotonic() + (
             timeout if timeout is not None else self._config.command_timeout_seconds
         )
         while True:
-            mark = _Freezes.mark()
+            mark = _Freezes.mark(container)
             result = await self._invoke(
                 *args,
                 stdin=stdin,
@@ -2719,12 +2750,16 @@ class DockerSandboxBackend:
                 read_limit=read_limit,
                 max_output_bytes=max_output_bytes,
             )
+            never_ran = _reads_as_a_frozen_guest(result) and _Freezes.held_throughout(
+                container, mark
+            )
+            if max_output_bytes is not None and not never_ran:
+                if len(result.stdout) + len(result.stderr_bytes or b"") > max_output_bytes:
+                    raise SandboxExecOutputLimitExceeded(
+                        "execution output exceeded its byte budget"
+                    )
             left = deadline - time.monotonic()
-            if (
-                not _Freezes.overlapped(mark)
-                or not _reads_as_a_frozen_guest(result)
-                or left <= _FROZEN_RETRY_DELAY_S
-            ):
+            if not never_ran or left <= _FROZEN_RETRY_DELAY_S:
                 return result
             await asyncio.sleep(_FROZEN_RETRY_DELAY_S)
             timeout = deadline - time.monotonic() if timeout is not None else None
@@ -2736,6 +2771,7 @@ class DockerSandboxBackend:
         timeout: float | None = None,
         read_limit: int | None = None,
         max_output_bytes: int | None = None,
+        container: str | None = None,
     ) -> _DockerResult:
         """Run one ``docker`` command — the single seam every invocation goes through.
 
@@ -2775,8 +2811,8 @@ class DockerSandboxBackend:
         if max_output_bytes is not None:
             # Read to the caller's budget or to the control-message floor, whichever is larger,
             # so a refusal that ran nothing is legible before the budget for what the guest said
-            # is applied to it. Above the floor this is the caller's number exactly, enforced
-            # mid-stream; below it, that many bytes are read before the budget refuses them.
+            # is applied to it by `_docker`. Above the floor this is the caller's number
+            # exactly, enforced mid-stream; below it, that many bytes are read first.
             stdout, stderr = await read_bounded_process_output(
                 process,
                 max_output_bytes=max(max_output_bytes, _CONTROL_DIAGNOSTIC_BYTES),
@@ -2785,10 +2821,6 @@ class DockerSandboxBackend:
             result = _DockerResult(
                 process.returncode or 0, stdout, stderr.decode("utf-8", errors="replace"), stderr
             )
-            if len(stdout) + len(stderr) > max_output_bytes and not _reads_as_a_frozen_guest(
-                result
-            ):
-                raise SandboxExecOutputLimitExceeded("execution output exceeded its byte budget")
             return result
         if read_limit is not None:
             return await self._read_bounded(process, read_limit, timeout)
