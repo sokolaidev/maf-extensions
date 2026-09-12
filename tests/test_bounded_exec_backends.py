@@ -1,6 +1,7 @@
 """Both CLI backends use the bounded reader through their actual execution seam."""
 
 import asyncio
+import contextlib
 import sys
 from typing import Any, cast
 
@@ -19,10 +20,14 @@ def test_backend_exec_caps_live_output_before_a_result_exists(engine, channel, d
     async def scenario():
         if engine == "docker":
             backend = DockerSandboxBackend(DockerSandboxConfig(docker_path=sys.executable))
+            # Never taken here: nothing below is a tar-plane member, and the engine is a
+            # Python interpreter rather than a daemon with a container to freeze.
             invoke, sandbox_class = backend._docker, _DockerSandbox
+            extra: dict[str, Any] = {"freeze": contextlib.nullcontext}
         else:
             backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
             invoke, sandbox_class = backend._wslc, _WslcSandbox
+            extra = {}
 
         async def run(*args, **kwargs):
             assert "exec" in args
@@ -33,7 +38,7 @@ def test_backend_exec_caps_live_output_before_a_result_exists(engine, channel, d
             script = f"import os,time; os.write({channel}, b'x'*65536); time.sleep(30)"
             return await invoke("-c", script, **kwargs)
 
-        sandbox = sandbox_class(cast(Any, run), "one", 5, instance_id="one")
+        sandbox = sandbox_class(cast(Any, run), "one", 5, instance_id="one", **extra)
         with pytest.raises(SandboxExecOutputLimitExceeded):
             await sandbox.exec_bounded(
                 "probe", working_directory=directory, timeout=5, max_output_bytes=1024
@@ -47,16 +52,20 @@ def test_bounded_backend_preserves_both_binary_streams(engine):
     async def scenario():
         if engine == "docker":
             backend = DockerSandboxBackend(DockerSandboxConfig(docker_path=sys.executable))
+            # Never taken here: nothing below is a tar-plane member, and the engine is a
+            # Python interpreter rather than a daemon with a container to freeze.
             invoke, sandbox_class = backend._docker, _DockerSandbox
+            extra: dict[str, Any] = {"freeze": contextlib.nullcontext}
         else:
             backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
             invoke, sandbox_class = backend._wslc, _WslcSandbox
+            extra = {}
 
         async def run(*args, **kwargs):
             script = "import os; os.write(1, bytes(range(256))); os.write(2, bytes(range(255,-1,-1))); raise SystemExit(7)"
             return await invoke("-c", script, **kwargs)
 
-        sandbox = sandbox_class(cast(Any, run), "one", 5, instance_id="one")
+        sandbox = sandbox_class(cast(Any, run), "one", 5, instance_id="one", **extra)
         result = await sandbox.exec_bounded(
             "probe", working_directory="/", timeout=5, max_output_bytes=1024
         )

@@ -1061,7 +1061,9 @@ class TestFilesOutAgainstARealEngine:
         down; what only a live engine can say is that they are still the messages. A
         container removed from under the sandbox is the failure the phrase gets borrowed by:
         `docker cp` answers about the container, naming no path, and reading that as absence
-        would end the filesystem path check on every ancestor at once.
+        would end the filesystem path check on every ancestor at once. Which call reports it
+        is not the point and is not pinned — the freeze is the first thing a member asks the
+        engine for, so a container that has gone is named there rather than by the stat.
         """
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
@@ -1080,8 +1082,9 @@ class TestFilesOutAgainstARealEngine:
                 timeout=60,
                 check=True,
             )
-            with pytest.raises(RuntimeError, match="could not stat") as raised:
+            with pytest.raises(RuntimeError) as raised:
                 await sandbox.stat_file("gone.txt", working_directory=_WORK)
+            assert "No such container" in str(raised.value)
             assert sandbox.container_name in str(raised.value)
 
         try:
@@ -1218,6 +1221,135 @@ class TestFilesInAgainstARealEngine:
             asyncio.run(scenario())
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+
+class TestTheFreezeAgainstARealEngine:
+    """The window #1130 closes, against a guest that is actually trying to win it.
+
+    The guest flips a component of the write path between a directory and a link to `/victim`
+    as fast as it can, counting its own passes. Under the freeze that state cannot change
+    between the filesystem path check and the extraction, so both outcomes are legitimate —
+    the write lands under the working directory, or the check refuses the link — and neither
+    is a redirect, which is what `/victim` answers for. The **unpaused** shape of the same
+    loop is a race rather than a gate: it is measured in the issue (4 of 40 landed outside)
+    and never asserted here, since a race probe fails intermittently and passes for free.
+    """
+
+    _VICTIM = "/victim"
+    #: Flips, then publishes the count by rename so a read can never catch it half-written.
+    _FLIPPING = (
+        "sh -c 'i=0; while :; do rm -rf parent; mkdir parent; rm -rf parent; "
+        'ln -s /victim parent; i=$((i+1)); printf %s "$i" > /flips.tmp; mv /flips.tmp /flips; '
+        "done' >/dev/null 2>&1 & echo flipping"
+    )
+
+    async def _flipping_guest(self, backend):
+        """A sandbox whose guest is already attacking the write path, and its victim."""
+        sandbox = await backend.acquire(_key(self.scope), _spec())
+        await sandbox.exec(["mkdir", "-p", self._VICTIM], working_directory="/", timeout=30)
+        started = await sandbox.exec(self._FLIPPING, working_directory=_WORK, timeout=30)
+        assert started.stdout.strip() == "flipping", started
+        return sandbox
+
+    @staticmethod
+    async def _flips(sandbox) -> int:
+        """The guest's own pass count, read without taking a freeze of its own.
+
+        Through `_copy_entry` rather than `read_file` deliberately: the reads that matter here
+        happen *inside* a freeze this test is holding, and `read_file` would want its own.
+        """
+        result, info, offset = await sandbox._copy_entry("/flips", max_bytes=64)
+        assert info is not None, result.stderr
+        return int(result.stdout[offset : offset + info.size])
+
+    def setup_method(self):
+        self.scope = f"e2e-{uuid.uuid4()}"
+        self.backend = DockerSandboxBackend(DockerSandboxConfig())
+
+    def teardown_method(self):
+        asyncio.run(self.backend.dispose_scope(self.scope, "thread-1"))
+
+    def test_a_flipping_parent_never_redirects_a_write(self):
+        async def scenario() -> None:
+            sandbox = await self._flipping_guest(self.backend)
+            before = await self._flips(sandbox)
+            landed, refused = 0, 0
+            for attempt in range(12):
+                try:
+                    await sandbox.write_file(
+                        f"parent/landed-{attempt}", b"x", working_directory=_WORK
+                    )
+                    landed += 1
+                except ValueError:
+                    refused += 1
+                assert _inspected("container", sandbox.container_name, "{{.State.Paused}}") == (
+                    "false"
+                )
+            # What keeps the assertion below from passing for free: a guest that had stopped
+            # flipping would leave nothing to redirect, and this says it ran thousands of
+            # times while those writes were being made.
+            assert await self._flips(sandbox) - before > 100
+            assert landed + refused == 12
+            listed = await sandbox.exec(
+                ["ls", "-A", self._VICTIM], working_directory="/", timeout=30
+            )
+            assert listed.stdout.strip() == ""
+
+        asyncio.run(scenario())
+
+    def test_a_frozen_guest_does_not_run_between_the_check_and_the_copy(self):
+        """The mechanism itself: the freezer is the engine's, and nothing inside can lift it."""
+
+        async def scenario() -> None:
+            sandbox = await self._flipping_guest(self.backend)
+            async with self.backend._frozen(sandbox.container_name):
+                first = await self._flips(sandbox)
+                await asyncio.sleep(1.0)
+                assert await self._flips(sandbox) == first
+            await asyncio.sleep(1.0)
+            assert await self._flips(sandbox) > first
+
+        asyncio.run(scenario())
+
+    def test_a_cancelled_call_still_thaws(self):
+        """The thaw is shielded, so the guest is not left frozen by a caller that went away."""
+
+        async def scenario() -> None:
+            sandbox = await self.backend.acquire(_key(self.scope), _spec())
+            engine = sandbox._run
+
+            async def slow(*args, **kwargs):
+                if args[:2] == ("cp", "-"):
+                    await asyncio.sleep(30)
+                return await engine(*args, **kwargs)
+
+            sandbox._run = slow
+            writing = asyncio.create_task(
+                sandbox.write_file("out.txt", b"x", working_directory=_WORK)
+            )
+            while _inspected("container", sandbox.container_name, "{{.State.Paused}}") != "true":
+                await asyncio.sleep(0.1)
+            writing.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await writing
+            assert _inspected("container", sandbox.container_name, "{{.State.Paused}}") == "false"
+            assert not self.backend._frozen_guests
+
+        asyncio.run(scenario())
+
+    def test_acquire_thaws_a_container_a_dead_host_left_frozen(self):
+        """Warm reuse is the path that inherits one; a disposal would have taken the container."""
+
+        async def scenario() -> None:
+            sandbox = await self.backend.acquire(_key(self.scope), _spec())
+            subprocess.run(["docker", "pause", sandbox.container_name], check=True, timeout=60)
+            assert _inspected("container", sandbox.container_name, "{{.State.Paused}}") == "true"
+            served = await self.backend.acquire(_key(self.scope), _spec())
+            assert _inspected("container", served.container_name, "{{.State.Paused}}") == "false"
+            ran = await served.exec(["echo", "thawed"], working_directory=_WORK, timeout=30)
+            assert ran.stdout.strip() == "thawed"
+
+        asyncio.run(scenario())
 
 
 class TestExecAgainstARealEngine:
