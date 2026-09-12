@@ -4,6 +4,29 @@ All notable changes to `maf-sandbox-acas` are documented here. The format follow
 
 Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, and the entries below name it as it was — their tags and compare links point at real history and are left as they were written. `maf-sandbox-aca` is not maintained past `0.2.3`; PyPI names cannot be reused, so the rename is a new distribution rather than a continuation of that one.
 
+## [0.23.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.22.0...maf-sandbox-acas-v0.23.0) (2026-09-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** an egress method is an uppercase token, because no backend keeps its case ([#1151](https://github.com/sokolaidev/maf-extensions/issues/1151))
+
+### Features
+
+* **docker+wslc+acas:** a workload can ask for a sandbox per tool call, and all three backends serve one ([#1139](https://github.com/sokolaidev/maf-extensions/issues/1139)) ([e6cf30d](https://github.com/sokolaidev/maf-extensions/commit/e6cf30d8f85da4b01fdfcd455228b3cf0e2b8fee))
+
+
+### Fixes
+
+* **acas:** preserve captured exec output when scratch removal fails ([#1155](https://github.com/sokolaidev/maf-extensions/issues/1155)) ([31165d6](https://github.com/sokolaidev/maf-extensions/commit/31165d65bc22b84c8c31dfa6b857696c78943a31))
+* **acas:** write_file runs as the guest wherever the data plane would act above it ([#1159](https://github.com/sokolaidev/maf-extensions/issues/1159)) ([e6ee100](https://github.com/sokolaidev/maf-extensions/commit/e6ee100dd6e4abc34d007de32d4717028869a167))
+* **sandbox:** an egress method is an uppercase token, because no backend keeps its case ([#1151](https://github.com/sokolaidev/maf-extensions/issues/1151)) ([be86cbe](https://github.com/sokolaidev/maf-extensions/commit/be86cbec31e1e2a93a77ff65fa5760a13a8168fc))
+
+
+### Documentation
+
+* **acas:** write_file's residual has one reason left, and remove is not refused ([#1136](https://github.com/sokolaidev/maf-extensions/issues/1136)) ([058e6e4](https://github.com/sokolaidev/maf-extensions/commit/058e6e47d987d3a128042ebff5c02ba71b0d51d5))
+
 ## [0.22.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.21.0...maf-sandbox-acas-v0.22.0) (2026-09-11)
 
 
