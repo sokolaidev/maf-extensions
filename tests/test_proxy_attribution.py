@@ -254,6 +254,38 @@ def test_the_callers_key_still_answers_for_a_proxy_carrying_no_attribution(engin
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(
+    "selector", ["maf-sandbox.scope", "maf-sandbox.thread", "maf-sandbox.agent"]
+)
+@pytest.mark.parametrize("damage", ["mismatched", "missing"], ids=["mismatched", "missing"])
+def test_the_callers_key_does_not_answer_for_a_proxy_it_is_not_shown_to_own(
+    engine, selector, damage
+):
+    """A sweep reaches names from its own registry as well as from the label query, and only
+    the query proves ownership — so an unreadable key label leaves the selectors to do it.
+
+    Without that, a disposal publishes a window from a container that never said it was this
+    conversation's, under this conversation's key.
+    """
+
+    async def scenario():
+        await engine.backend()._ensure_proxy("workload", _KEY, _SPEC)
+        labels = next(iter(engine.rows.values()))["Config"]["Labels"]
+        labels["maf-sandbox.key.v1"] = ""
+        if damage == "missing":
+            del labels[selector]
+        else:
+            labels[selector] = "somebody-else"
+        reader = engine.backend()
+        events = []
+        reader.observe_egress(events.append)
+        await reader.dispose(_KEY)
+        assert events == []
+        assert not engine.rows
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("payload", ["!", "WyJvdGhlciIsImIiLCJjIiwiZCJd"], ids=["junk", "claims"])
 def test_the_callers_key_does_not_answer_for_a_label_that_was_refused(engine, payload):
     """A present label that will not decode, or whose values contradict the selectors, is

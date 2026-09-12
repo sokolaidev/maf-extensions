@@ -329,6 +329,24 @@ def _key_from_labels(labels: object) -> SandboxKey | None:
     )
 
 
+def _selectors_name(labels: dict[str, object], key: SandboxKey) -> bool:
+    """Whether these ownership labels are the ones a container of ``key`` is created with.
+
+    The agreement :func:`_key_from_labels` demands of a payload, asked of a caller's key
+    instead: a sweep reaches names from its own registry as well as from the label query, and
+    only the query has already proved ownership.  Hashed selectors compare equal here, since
+    ``_label_value`` is what wrote them.
+    """
+    return all(
+        labels.get(label) == _label_value(part)
+        for label, part in (
+            (_LABEL_SCOPE, key.scope),
+            (_LABEL_THREAD, key.thread_id),
+            (_LABEL_AGENT, key.agent_dir),
+        )
+    )
+
+
 def _container_name(key: SandboxKey, kind: str, egress_id: str = "") -> str:
     """The container name a key and kind map to — derived, so acquire and dispose agree
     without a registry.
@@ -1011,12 +1029,13 @@ class WslcSandboxBackend:
     ) -> EgressObserved | None:
         """Read attribution and decisions from the same engine instance, across host processes.
 
-        ``caller_key`` stands in for a proxy that carries no attribution to read — one written
-        before the label existed, or one whose key overran the budget and was written empty. It
-        never displaces a recovered key, because a disposal addressed to a conversation also
-        sweeps leftovers from the calls inside it, and each window belongs to the key that ran
-        behind that proxy. It never answers for a label that is present and was refused either:
-        that proxy's own metadata is what this could not trust.
+        ``caller_key`` stands in for a proxy that carries no attribution to read *and* whose
+        ownership labels name that key — one written before the key label existed, or one whose
+        key overran the budget and was written empty. It never displaces a recovered key,
+        because a disposal addressed to a conversation also sweeps leftovers from the calls
+        inside it, and each window belongs to the key that ran behind that proxy. It never
+        answers for a label that is present and was refused either: that proxy's own metadata
+        is what this could not trust.
         """
         if self._egress_report is None:
             return None
@@ -1040,7 +1059,12 @@ class WslcSandboxBackend:
                 return None
             if proxy_id is not None and instance != proxy_id:
                 return None
-            if key is None and owned.get(_LABEL_KEY, "") == "":
+            if (
+                key is None
+                and caller_key is not None
+                and owned.get(_LABEL_KEY, "") == ""
+                and _selectors_name(owned, caller_key)
+            ):
                 key = caller_key
             if key is None:
                 return None
@@ -1618,7 +1642,7 @@ class WslcSandboxBackend:
         A proxy carries its sandbox's labels, so it is listed and removed alongside it, but it is
         not a sandbox and is not counted. Its network is removed after it, when it is free to go.
         The ``fallback`` names cover the case the listing failed, and ``caller_key`` answers only
-        for a proxy whose own attribution label cannot be read.
+        for a proxy whose own attribution label cannot be read and whose ownership labels name it.
 
         When this backend enforces allowlists, every workload's proxy and network are swept —
         not only those whose proxy the listing returned — so a proxy a reuse failed to rebuild,
