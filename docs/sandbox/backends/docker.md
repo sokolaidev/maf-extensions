@@ -4,7 +4,7 @@
 
 ## What "Docker" means here
 
-A `docker`-compatible command-line client talking to a Docker-API-compatible socket — not Docker Inc.'s daemon specifically, and not any particular installation shape; the full argument for targeting the contract rather than the binary is [`../research/docker-backend-exploration.md`](../research/docker-backend-exploration.md).
+The Docker CLI talking to a Docker-API-compatible socket. Daemon binding requires Docker's context-inspection schema, so the previously advertised `docker_path="podman"` escape hatch no longer works. A compatible engine socket reached through the Docker CLI remains best effort; Docker Desktop and Docker Engine are the supported engines. The original engine-contract exploration is [`../research/docker-backend-exploration.md`](../research/docker-backend-exploration.md).
 
 ## What it declares
 

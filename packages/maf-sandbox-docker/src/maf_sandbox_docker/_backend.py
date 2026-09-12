@@ -2931,7 +2931,7 @@ class DockerSandboxBackend:
             # The client binary itself is not on PATH — a configuration error, named as one.
             raise RuntimeError(
                 f"the docker client {self._config.docker_path!r} was not found on PATH; set "
-                "DockerSandboxConfig.docker_path to the client binary (or 'podman')"
+                "DockerSandboxConfig.docker_path to the Docker CLI binary"
             ) from exc
         if max_output_bytes is not None:
             stdout, stderr = await read_bounded_process_output(

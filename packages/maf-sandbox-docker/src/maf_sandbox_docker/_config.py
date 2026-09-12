@@ -31,7 +31,8 @@ _DEFAULT_PIDS_LIMIT = 512
 class DockerSandboxConfig:
     """Where the client is, how long its commands may take, and how tight the box is.
 
-    ``docker_path`` is the client binary, not a socket. The backend snapshots the client
+    ``docker_path`` is the Docker CLI binary, not a socket or the Podman CLI. Binding requires
+    Docker's context-inspection schema. The backend snapshots the client
     environment and resolves its context once, retaining its endpoint and TLS settings for
     every command. Use ``create`` to resolve immediately; the constructor binds on first use.
 
@@ -59,8 +60,8 @@ class DockerSandboxConfig:
 
     ``outbound_network`` is the network that gives the proxy its egress leg.  It exists because
     the default one is not called the same thing everywhere: ``"bridge"`` on Docker, ``"podman"``
-    on Podman — an engine this package does not officially support, but deliberately does not
-    lock out either.
+    on Podman. A Podman socket reached through the Docker CLI is best effort and is not
+    officially supported.
 
     ``pids_limit``, ``memory``, ``cpus`` and ``cap_drop_all`` are hardening applied on the
     create command line, where their effect is verifiable.  ``memory`` and ``cpus`` are unset
