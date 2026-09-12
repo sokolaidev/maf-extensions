@@ -41,7 +41,7 @@ classifiers = [
 # import `agent_framework`; the boundary test's zero-dependency claim narrows to name the
 # protocol modules explicitly rather than the whole distribution once that module lands.
 dependencies = [
-    "agent-framework-core>=1.13.0,<2",
+    "agent-framework-core>=1.18.0,<2",
 ]
 
 [project.urls]
