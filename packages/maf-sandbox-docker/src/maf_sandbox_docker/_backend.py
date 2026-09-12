@@ -43,6 +43,7 @@ import functools
 import io
 import json
 import logging
+import os
 import posixpath
 import re
 import tarfile
@@ -208,7 +209,7 @@ _FROZEN_RETRY_DELAY_S = 0.05
 
 #: One freeze per container, across every backend in the process rather than per backend
 #: object: a container is a machine-wide thing, and two backends built from one configuration
-#: name the same one. Keyed per running loop as well, because an :class:`asyncio.Lock` belongs
+#: name the same one. Keyed by endpoint and container, per running loop: an asyncio lock belongs
 #: to the loop that first waits on it — so this **serialises within a loop and not across
 #: them**. What holds across loops is :class:`_Freezes`, whose claim every dangerous act takes:
 #: a claim is exclusive, so a second loop gets neither a freeze nor a thaw.
@@ -1496,6 +1497,10 @@ class DockerSandboxBackend:
 
     def __init__(self, config: DockerSandboxConfig) -> None:
         self._config = config
+        self._client_env = dict(os.environ)
+        self._context_args: tuple[str, ...] = ()
+        self._endpoint: str | None = None
+        self._binding_lock = threading.Lock()
         # Built once: every input is fixed here, and the router reads the object on each
         # `ensure_can_serve` and each `acquire`. Only `egress_modes` reads the config at all —
         # with a proxy image this backend can allowlist named hosts or deny all, and without
@@ -1549,27 +1554,13 @@ class DockerSandboxBackend:
 
     @classmethod
     async def create(cls, config: DockerSandboxConfig) -> DockerSandboxBackend:
-        """Build a backend that has asked its daemon which guest it hands out.
+        """Bind to the client's context and read the daemon's guest-family declaration.
 
-        Use this to get an ``os_families`` declaration.  The plain constructor stays exactly as
-        it was and declares nothing, so nothing that builds one today changes.
-
-        It is a coroutine because ``__init__`` makes no engine calls: every fact this backend
-        holds is read through an awaited seam, and a blocking read in a constructor would do
-        subprocess I/O on the caller's event loop — against a daemon that, measured, can hang
-        rather than refuse.
-
-        A daemon answering ``linux`` declares :data:`~maf_sandbox.OsFamily.POSIX`.  **Anything
-        else declares nothing**, which refuses only a spec that names a family and is what the
-        plain constructor does.  That covers a daemon that will not answer and one that answers
-        ``windows`` alike; :data:`_DAEMON_OS_FORMAT` says why the second is not a translation
-        waiting to be written.
-
-        The answer is never taken from configuration.  A host would be restating what the
-        daemon already knows, and a value it typed could only go stale against the engine that
-        has to back it.
+        Context resolution must succeed. An unreadable daemon OS declares no family.
+        The plain constructor defers binding to first use and declares no family.
         """
         backend = cls(config)
+        await backend._bind_daemon()
         backend._declarations = replace(
             backend._declarations, os_families=await backend._families_the_daemon_serves()
         )
@@ -1807,10 +1798,9 @@ class DockerSandboxBackend:
     async def _refuse_a_daemon_that_moved_under_the_declaration(self, spec: SandboxSpec) -> None:
         """Re-ask the daemon before starting a container, for a backend that declared a family.
 
-        ``os_families`` is a snapshot, not a binding: this backend resolves ``DOCKER_HOST`` and
-        the active context on every invocation, so switching Docker Desktop to Windows
-        containers moves the engine under a running host.  The router matched the old answer at
-        attach and cannot ask again, so the re-check belongs here.
+        ``os_families`` is a snapshot: the daemon behind the bound endpoint can be replaced.
+        The router matched the old answer at attach and cannot ask again, so the re-check
+        belongs here.
 
         **Before anything is created or started**, which is why the caller runs it ahead of both
         rather than after the acquire: a refusal that had to dispose what it just made would be
@@ -1822,8 +1812,8 @@ class DockerSandboxBackend:
         **A warm container is not re-checked**, deliberately: that would put a round trip in
         front of every tool call, which is the path this backend exists to keep cheap.  The
         residual is narrow — a container is only warm here because this daemon is running it,
-        so reaching it takes a switch to an engine that already holds a container under the
-        same derived name.
+        so reaching it takes replacing the daemon behind the bound endpoint with one holding
+        a container under the same derived name.
 
         Raises:
             SandboxOsFamilyNotSupported: when the daemon no longer runs the guest this backend
@@ -1868,12 +1858,14 @@ class DockerSandboxBackend:
         egress_id = self._egress_id(spec)
         name = _container_name(key, spec.kind, egress_id)
         async with self._acquire_lock(key, spec.kind):
+            await self._bind_daemon()
+            freeze_key = self._freeze_key(name)
             await self._verify_storage_base(name, spec, missing_ok=True)
             if egress_id:
                 # Before the reuse decision reads it: this can remove the very container the
                 # reads below would otherwise find warm.
                 await self._discard_a_sandbox_on_an_unusable_network(name, key)
-            async with _freeze_lock(name):
+            async with _freeze_lock(freeze_key):
                 # Under the lock, and read *after* taking it: this is itself a check and an
                 # act on one container, and a state read outside it cannot tell a file call's
                 # own freeze from an orphan's — thawing that one puts the guest back between
@@ -1887,7 +1879,7 @@ class DockerSandboxBackend:
                     # another loop to take a freeze in between — the same shape as the window
                     # the tar-plane members freeze to close, on this side of the boundary. A
                     # claim it cannot take belongs to someone whose freeze this is not.
-                    if not _Freezes.claim(name, asyncio.get_running_loop()):
+                    if not _Freezes.claim(freeze_key, asyncio.get_running_loop()):
                         raise RuntimeError(
                             f"docker will not reuse {name}: another event loop in this process "
                             "is holding it frozen"
@@ -1901,7 +1893,7 @@ class DockerSandboxBackend:
                                 "refusing to serve a container whose guest cannot run"
                             )
                     finally:
-                        _Freezes.release(name)
+                        _Freezes.release(freeze_key)
                     logger.info("sandbox thawed before reuse: container=%s", name)
             stopped = not running and await self._exists(name)
             if not running:
@@ -2821,6 +2813,48 @@ class DockerSandboxBackend:
 
     # -- internals ----------------------------------------------------------------
 
+    async def _bind_daemon(self) -> None:
+        """Resolve the client's context once, retaining its endpoint and TLS environment."""
+        if self._endpoint is not None:
+            return
+        # Backends can be shared across event loops; an asyncio lock cannot guard this read.
+        while not self._binding_lock.acquire(blocking=False):
+            await asyncio.sleep(0.01)
+        try:
+            if self._endpoint is not None:
+                return
+            result = await self._invoke(
+                "context",
+                "inspect",
+                "--format",
+                "{{json .}}",
+                timeout=self._config.command_timeout_seconds,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"docker could not resolve its context: {result.stderr.strip()}")
+            try:
+                context = json.loads(result.stdout)
+                name = context["Name"]
+                endpoint = context["Endpoints"]["docker"]["Host"]
+                if not isinstance(name, str) or not name.strip():
+                    raise ValueError("missing context name")
+                if not isinstance(endpoint, str) or not endpoint.strip():
+                    raise ValueError("missing Docker endpoint")
+            except (ValueError, KeyError, TypeError) as exc:
+                raise RuntimeError("docker could not resolve a context and endpoint") from exc
+            # The virtual default context still consults DOCKER_HOST with --context set.
+            # Keep the resolved platform default explicit, alongside the original TLS settings.
+            if name == "default":
+                self._client_env["DOCKER_HOST"] = endpoint
+            self._context_args = ("--context", name)
+            self._endpoint = endpoint
+        finally:
+            self._binding_lock.release()
+
+    def _freeze_key(self, name: str) -> str:
+        """Identify a container on the bound endpoint, including aliases of one context."""
+        return json.dumps((self._endpoint, name))
+
     async def _docker(
         self,
         *args: str,
@@ -2846,11 +2880,13 @@ class DockerSandboxBackend:
         ran nothing is not guest output. Everything else is held to the caller's budget here,
         because only here is it known whether the guest could have written it.
         """
+        await self._bind_daemon()
+        freeze_key = self._freeze_key(container) if container is not None else None
         deadline = time.monotonic() + (
             timeout if timeout is not None else self._config.command_timeout_seconds
         )
         while True:
-            mark = _Freezes.mark(container)
+            mark = _Freezes.mark(freeze_key)
             try:
                 result = await self._invoke(
                     *args,
@@ -2866,7 +2902,7 @@ class DockerSandboxBackend:
                 # daemon wrote them and the command is still owed an attempt.
                 remaining = deadline - time.monotonic()
                 if (
-                    not _Freezes.held_throughout(container, mark)
+                    not _Freezes.held_throughout(freeze_key, mark)
                     or remaining <= _FROZEN_RETRY_DELAY_S
                 ):
                     raise
@@ -2877,7 +2913,7 @@ class DockerSandboxBackend:
                 timeout = remaining if timeout is not None else None
                 continue
             never_ran = _reads_as_a_frozen_guest(result) and _Freezes.held_throughout(
-                container, mark
+                freeze_key, mark
             )
             left = deadline - time.monotonic()
             if not never_ran or left <= _FROZEN_RETRY_DELAY_S:
@@ -2914,7 +2950,9 @@ class DockerSandboxBackend:
         try:
             process = await asyncio.create_subprocess_exec(
                 self._config.docker_path,
+                *self._context_args,
                 *args,
+                env=self._client_env,
                 stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -2930,7 +2968,7 @@ class DockerSandboxBackend:
             # The client binary itself is not on PATH — a configuration error, named as one.
             raise RuntimeError(
                 f"the docker client {self._config.docker_path!r} was not found on PATH; set "
-                "DockerSandboxConfig.docker_path to the client binary (or 'podman')"
+                "DockerSandboxConfig.docker_path to the Docker CLI binary"
             ) from exc
         if max_output_bytes is not None:
             stdout, stderr = await read_bounded_process_output(
@@ -3102,13 +3140,15 @@ class DockerSandboxBackend:
         host that died mid-block is :meth:`acquire`'s to lift, and to refuse serving until it
         has.
         """
-        async with _freeze_lock(name):
+        await self._bind_daemon()
+        freeze_key = self._freeze_key(name)
+        async with _freeze_lock(freeze_key):
             # Claimed from before the pause is issued rather than after it returns: a call
             # cancelled or timed out while that invocation is in flight can have frozen the
             # guest anyway, and only a claim taken this early covers that one. Exclusive, so
             # for as long as this block runs no other loop can pause this container — which is
             # what lets the thaw below be decided and issued as one operation.
-            if not _Freezes.claim(name, asyncio.get_running_loop()):
+            if not _Freezes.claim(freeze_key, asyncio.get_running_loop()):
                 raise RuntimeError(
                     f"docker will not freeze {name} for a file call: another event loop in "
                     "this process is holding it, and one container is frozen by one caller"
@@ -3131,12 +3171,12 @@ class DockerSandboxBackend:
                 # Only now, and dropped below before the unpause goes out: between the claim
                 # and this line, and between that drop and the guest resuming, the guest is
                 # running, and a record saying otherwise would certify one that is.
-                _Freezes.confirm(name)
+                _Freezes.confirm(freeze_key)
                 confirmed = True
                 yield
             finally:
                 if confirmed:
-                    _Freezes.unconfirm(name)
+                    _Freezes.unconfirm(freeze_key)
                 # Any freeze on this container is this caller's: the claim above is
                 # exclusive and still held, so nothing else can have paused it. That covers
                 # the uncertain case too — cancelled or timed out inside the pause, not
@@ -3156,7 +3196,7 @@ class DockerSandboxBackend:
                         if cancelled:
                             raise asyncio.CancelledError
                 finally:
-                    _Freezes.release(name)
+                    _Freezes.release(freeze_key)
 
     async def _thaw(self, name: str) -> bool:
         """Lift a freeze and say whether it is lifted; never raises, because the call that took

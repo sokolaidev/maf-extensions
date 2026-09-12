@@ -20,6 +20,7 @@ def test_backend_exec_caps_live_output_before_a_result_exists(engine, channel, d
     async def scenario():
         if engine == "docker":
             backend = DockerSandboxBackend(DockerSandboxConfig(docker_path=sys.executable))
+            backend._endpoint = "unix:///fake.sock"
             # Never taken here: nothing below is a tar-plane member, and the engine is a
             # Python interpreter rather than a daemon with a container to freeze.
             invoke, sandbox_class = backend._docker, _DockerSandbox
@@ -52,6 +53,7 @@ def test_bounded_backend_preserves_both_binary_streams(engine):
     async def scenario():
         if engine == "docker":
             backend = DockerSandboxBackend(DockerSandboxConfig(docker_path=sys.executable))
+            backend._endpoint = "unix:///fake.sock"
             # Never taken here: nothing below is a tar-plane member, and the engine is a
             # Python interpreter rather than a daemon with a container to freeze.
             invoke, sandbox_class = backend._docker, _DockerSandbox

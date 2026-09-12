@@ -150,6 +150,7 @@ jobs:
           # Docker's rootless-in-Docker recipe requires this on the outer container only.
           docker run -d --privileged --name "$engine" \
             --security-opt "apparmor=$engine" \
+            -v /var/run/docker.sock:/var/run/maf-outer.sock \
             -e DOCKER_HOST=unix:///run/user/1000/docker.sock \
             docker:29-dind-rootless@sha256:e17fa54c2ffd511d8407c746eec77f7814e6f74fe20caf822dad1870599984c0
           for attempt in {1..30}; do
@@ -163,6 +164,7 @@ jobs:
           docker cp packages/maf-sandbox/src/. "$engine:/tmp/core"
           docker cp packages/maf-sandbox-docker/src/. "$engine:/tmp/backend"
           docker cp packages/maf-sandbox-docker/tests/test_docker_fingerprint_e2e.py "$engine:/tmp/tests/"
+          docker cp packages/maf-sandbox-docker/tests/test_docker_daemon_binding_e2e.py "$engine:/tmp/tests/"
           workload='alpine@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b'
           observer='python:3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285'
           docker exec "$engine" docker pull "$workload"
@@ -171,6 +173,11 @@ jobs:
             -e MAF_SANDBOX_DOCKER_E2E_IMAGE="$workload" \
             -e MAF_SANDBOX_DOCKER_OBSERVER_IMAGE="$observer" \
             "$engine" python3 -m pytest -q -ra /tmp/tests/test_docker_fingerprint_e2e.py
+          docker exec --user root -e PYTHONPATH=/tmp/core:/tmp/backend \
+            -e MAF_SANDBOX_DOCKER_FIRST_HOST=unix:///var/run/maf-outer.sock \
+            -e MAF_SANDBOX_DOCKER_SECOND_HOST=unix:///run/user/1000/docker.sock \
+            -e MAF_SANDBOX_DOCKER_E2E_IMAGE="$workload" \
+            "$engine" python3 -m pytest -q -ra /tmp/tests/test_docker_daemon_binding_e2e.py
 
   report-failure:
     name: Report Docker live failure
