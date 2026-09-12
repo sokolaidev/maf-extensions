@@ -2,6 +2,17 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.17.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.16.1...maf-sandbox-bicep-v0.17.0) (2026-09-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* require agent-framework-core 1.18 across sandbox tools ([#1181](https://github.com/sokolaidev/maf-extensions/issues/1181))
+
+### Fixes
+
+* require agent-framework-core 1.18 across sandbox tools ([#1181](https://github.com/sokolaidev/maf-extensions/issues/1181)) ([a9feab2](https://github.com/sokolaidev/maf-extensions/commit/a9feab2d0cab0790c25ace3e2c856fca5ce8c93c))
+
 ## [0.16.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.16.0...maf-sandbox-bicep-v0.16.1) (2026-09-12)
 
 
