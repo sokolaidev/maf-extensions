@@ -15,7 +15,7 @@ binding    one per tool               process           SandboxToolBinding
   └ call   one per tool call          the call          ← owns its own guest path
       └ run   0..1, transport only    inside a call     GuestRunLayout, reclaim_run
 
-sandbox    one per (scope, thread_id, agent_dir, kind)   conversation
+sandbox    one per (scope, thread_id, agent_id, kind)   conversation
              ...and per call_id too at IsolationScope.CALL   the call
 ```
 
@@ -23,7 +23,7 @@ The nesting is real; **the sandbox is not its root.** It sits beside the chain. 
 
 Four lines is the terse form; the bars below put the same four lifetimes on one time axis, where the coincidence that confuses them comes apart. The bars draw the default conversation scope: at `IsolationScope.CALL` each amber call bar would carry a teal sandbox bar of its own rather than sharing one.
 
-![Four lifetimes drawn as bars on one left-to-right time axis. The binding is the topmost bar and spans the whole axis — one per tool, built once before any key exists, holding host configuration only and reading scope and thread per call — while two teal sandbox bars with different spans sit beside it rather than under it, one per conversation, keyed by scope, thread, agent dir and kind. Inside the first conversation's span three amber call bars run in sequence over the one warm sandbox, each ending in a tick, the finally that removes the guest path that call owns; exactly one of them carries a thinner, sharp-cornered run bar — 0..1 per call, host-tools transport only — and the other two carry none. The second conversation carries a call of its own, because one binding reaches as many sandboxes as it serves conversations. Both sandbox bars outlive every call in them and end only with the conversation, where disposal is best-effort and purge asks every registered backend.](assets/four-lifetimes.svg)
+![Four lifetimes drawn as bars on one left-to-right time axis. The binding is the topmost bar and spans the whole axis — one per tool, built once before any key exists, holding host configuration only and reading scope and thread per call — while two teal sandbox bars with different spans sit beside it rather than under it, one per conversation, keyed by scope, thread, agent identity and kind. Inside the first conversation's span three amber call bars run in sequence over the one warm sandbox, each ending in a tick, the finally that removes the guest path that call owns; exactly one of them carries a thinner, sharp-cornered run bar — 0..1 per call, host-tools transport only — and the other two carry none. The second conversation carries a call of its own, because one binding reaches as many sandboxes as it serves conversations. Both sandbox bars outlive every call in them and end only with the conversation, where disposal is best-effort and purge asks every registered backend.](assets/four-lifetimes.svg)
 
 ## The words
 
@@ -47,7 +47,7 @@ Not `guest_call_prefix`: a prefix invites `f"{prefix}name"` with no separator.
 
 ## What the binding holds, and what the call owns
 
-Every field the binding carries is host configuration: the router, the caller context, the agent directory, the spec, the name, the logger, the sink. Not one is derived from a caller. The context is the tell — it takes *callables* rather than a scope and a thread, so nothing caller-shaped is ever stored. Generalised past the case it was built for:
+Every field the binding carries is host configuration: the router, the caller context, the agent identity, the spec, the name, the logger, the sink. Not one is derived from a caller. The context is the tell — it takes *callables* rather than a scope and a thread, so nothing caller-shaped is ever stored. Generalised past the case it was built for:
 
 > **The binding holds host configuration only. Anything derived from a caller — a scope, a thread, a path generated for one call — lives on the call, or nowhere.**
 
@@ -131,7 +131,7 @@ A per-call path is tidiness, not isolation. Two calls in one conversation share 
 **The zero transition is a gate, not only a number.** Each `(key, kind)` entry is `serving(n)` while ordinary callers may enter, `draining(n)` from the moment an exiting call records whole-instance cleanup, and `cleaning` when the last active call leaves. The move to cleaning precedes the first cleanup await. Entrants wait during draining and cleaning; admission reopens only after every instance record succeeds or reaches the failure ledger. State is guarded by a `threading.Lock`; each waiter is notified on its own event loop. Admission and completion waits are bounded. A cancelled or expired waiter does not discard queued cleanup, and cancelled cleanup retains unfinished instance targets under the existing refusal policy. A call whose cleanup is pending waits for its result before reporting to `on_reclaim_failure`; if the completion wait expires, it reports that cleanup is still pending.
 
 **The count is per router.** This is neither an engine lease nor coordination between routers or processes. A host serving one conversation concurrently through several routers or replicas raises `min_isolation_scope` to `CALL`, so one router's cleanup cannot delete a sandbox another router is still using.
-**The fold is what a backend implements, and it is not nothing.** A per-call component in the key reaches a backend only if that backend keys sandboxes by the whole key — and all three here derive a name from `scope`, `thread_id` and `agent_dir` field by field, so a fourth field reaches none of them: both acquires resolve to one sandbox and both calls succeed. That is why the scope is declared (`BackendDeclarations.isolation_scopes`, silent meaning `CONVERSATION`) and probed (`assert_call_scope_conformance`, two subjects over keys differing only in `call_id`) rather than assumed from the key's shape.
+**The fold is what a backend implements, and it is not nothing.** A per-call component in the key reaches a backend only if that backend keys sandboxes by the whole key — and all three here derive a name from `scope`, `thread_id` and `agent_id` field by field, so a fourth field reaches none of them: both acquires resolve to one sandbox and both calls succeed. That is why the scope is declared (`BackendDeclarations.isolation_scopes`, silent meaning `CONVERSATION`) and probed (`assert_call_scope_conformance`, two subjects over keys differing only in `call_id`) rather than assumed from the key's shape.
 
 ## Where the base comes from
 

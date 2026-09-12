@@ -29,7 +29,7 @@ def test_diagram_agent_wires_a_sink_that_replaces_previous_output(tmp_path, monk
     monkeypatch.setattr(agent, "require_env_vars", lambda names: dict.fromkeys(names, "unused"))
     sinks: list[OutputSink] = []
 
-    def capture_sink(router, agent_dir, context, sink, **kwargs):
+    def capture_sink(router, agent_id, context, sink, **kwargs):
         sinks.append(sink)
         return []
 

@@ -86,7 +86,7 @@ class _Engine:
 
 
 _KEY = SandboxKey(
-    scope="scope / unicode \u2603", thread_id="thread\nwith\tcontrols", agent_dir="agent" * 40
+    scope="scope / unicode \u2603", thread_id="thread\nwith\tcontrols", agent_id="agent" * 40
 )
 _SPEC = SandboxSpec(
     kind="test", image="workload:test", egress=Egress.ALLOWLIST, egress_allow=("example.com",)
@@ -97,9 +97,9 @@ _SPEC = SandboxSpec(
     "key",
     [
         _KEY,
-        SandboxKey(scope="", thread_id="", agent_dir=""),
-        SandboxKey(scope="scope", thread_id="thread", agent_dir="agent", call_id="call / 1"),
-        SandboxKey(scope="sha256-" + "a" * 48, thread_id="quotes\"'\\\x00", agent_dir="a=b"),
+        SandboxKey(scope="", thread_id="", agent_id=""),
+        SandboxKey(scope="scope", thread_id="thread", agent_id="agent", call_id="call / 1"),
+        SandboxKey(scope="sha256-" + "a" * 48, thread_id="quotes\"'\\\x00", agent_id="a=b"),
     ],
 )
 def test_lossless_proxy_labels_round_trip_without_changing_selectors(engine, key):
@@ -115,16 +115,14 @@ def test_lossless_proxy_labels_round_trip_without_changing_selectors(engine, key
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("field", ["scope", "thread_id", "agent_dir", "call_id"])
+@pytest.mark.parametrize("field", ["scope", "thread_id", "agent_id", "call_id"])
 @pytest.mark.parametrize(
     "value", ["x" * 150_000, "\u2603" * 1000], ids=["long-ascii", "escaped-unicode"]
 )
 def test_oversized_attribution_keeps_proxy_creation_within_argument_limits(
     engine, field, value, caplog
 ):
-    key = replace(
-        SandboxKey(scope="scope", thread_id="thread", agent_dir="agent"), **{field: value}
-    )
+    key = replace(SandboxKey(scope="scope", thread_id="thread", agent_id="agent"), **{field: value})
 
     async def scenario():
         backend = engine.backend()
@@ -157,7 +155,7 @@ def test_oversized_attribution_keeps_proxy_creation_within_argument_limits(
 
 @pytest.mark.parametrize("length,attributable", [(3056, True), (3057, False)])
 def test_the_encoded_attribution_budget_is_inclusive(engine, length, attributable):
-    key = SandboxKey(scope="x" * length, thread_id="", agent_dir="")
+    key = SandboxKey(scope="x" * length, thread_id="", agent_id="")
     encoded = engine.module._key_label(key)
     labels = {**engine.module._sandbox_labels(key, _SPEC), "maf-sandbox.key.v1": encoded}
     if attributable:
@@ -178,7 +176,7 @@ def test_malformed_or_mismatched_metadata_is_not_attributed(engine, payload):
 
 
 def test_legacy_labels_only_round_trip_when_they_were_not_hashed(engine):
-    plain = SandboxKey(scope="scope", thread_id="thread", agent_dir="agent")
+    plain = SandboxKey(scope="scope", thread_id="thread", agent_id="agent")
     assert engine.module._key_from_labels(engine.module._sandbox_labels(plain, _SPEC)) == plain
     assert engine.module._key_from_labels(engine.module._sandbox_labels(_KEY, _SPEC)) is None
     assert engine.module._key_from_labels({}) is None
@@ -208,7 +206,7 @@ def test_a_fresh_process_drains_an_orphan_including_failed_setup(engine, failed_
 def test_a_disposal_files_a_leftover_window_under_the_key_that_ran_it(engine):
     """A key addressed to a conversation sweeps leftovers from the calls inside it, and each
     window is the call's."""
-    conversation = SandboxKey(scope="scope", thread_id="thread", agent_dir="agent")
+    conversation = SandboxKey(scope="scope", thread_id="thread", agent_id="agent")
     call = replace(conversation, call_id="call-1")
 
     async def scenario():
@@ -280,7 +278,7 @@ def test_the_callers_key_does_not_answer_for_a_proxy_it_is_not_shown_to_own(
 def test_a_conversations_key_does_not_stand_in_for_a_calls_unreadable_proxy(engine):
     """The call label is ownership too, so a conversation's key does not name a call's
     proxy."""
-    conversation = SandboxKey(scope="scope", thread_id="thread", agent_dir="agent")
+    conversation = SandboxKey(scope="scope", thread_id="thread", agent_id="agent")
     call = replace(conversation, call_id="call-1")
 
     async def scenario():
@@ -383,7 +381,7 @@ def test_attribution_and_log_read_use_the_same_generation(engine):
             result = await engine.command(*args, **kwargs)
             if args == ("container", "inspect", "workload-proxy"):
                 engine.rows.clear()
-                other = SandboxKey(scope="other", thread_id="other", agent_dir="other")
+                other = SandboxKey(scope="other", thread_id="other", agent_id="other")
                 await engine.backend()._ensure_proxy("workload", other, _SPEC)
             return result
 
@@ -477,7 +475,7 @@ def test_attribution_inspection_propagates_cancellation(engine):
 def test_decode_does_not_accept_a_different_key_with_the_same_safe_prefix(engine):
     labels = engine.module._sandbox_labels(_KEY, _SPEC)
     labels["maf-sandbox.key.v1"] = base64.urlsafe_b64encode(
-        json.dumps(["other", _KEY.thread_id, _KEY.agent_dir, _KEY.call_id]).encode()
+        json.dumps(["other", _KEY.thread_id, _KEY.agent_id, _KEY.call_id]).encode()
     ).decode()
     assert engine.module._key_from_labels(labels) is None
 
@@ -505,7 +503,7 @@ def test_a_call_that_disagrees_with_its_ownership_label_is_not_attributed(
     Left unchecked, a reap reads the payload, believes the container belongs to a call that
     never owned it, and drains and reports that call's egress window from another one's proxy.
     """
-    key = SandboxKey(scope="scope", thread_id="thread", agent_dir="agent")
+    key = SandboxKey(scope="scope", thread_id="thread", agent_id="agent")
     labels = engine.module._sandbox_labels(key, _SPEC)
     if label_call is not None:
         labels["maf-sandbox.call"] = engine.module._label_value(label_call)
@@ -521,11 +519,9 @@ def test_a_call_that_agrees_with_its_ownership_label_still_recovers(engine):
     carries no call label at all, which is every container created before this backend served
     the scope.
     """
-    called = SandboxKey(scope="scope", thread_id="thread", agent_dir="agent", call_id="call-a")
-    conversation = SandboxKey(scope="scope", thread_id="thread", agent_dir="agent")
+    called = SandboxKey(scope="scope", thread_id="thread", agent_id="agent", call_id="call-a")
+    conversation = SandboxKey(scope="scope", thread_id="thread", agent_id="agent")
     for key in (called, conversation):
         labels = engine.module._sandbox_labels(key, _SPEC)
-        labels["maf-sandbox.key.v1"] = _payload(
-            key.scope, key.thread_id, key.agent_dir, key.call_id
-        )
+        labels["maf-sandbox.key.v1"] = _payload(key.scope, key.thread_id, key.agent_id, key.call_id)
         assert engine.module._key_from_labels(labels) == key

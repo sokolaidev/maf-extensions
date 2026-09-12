@@ -37,8 +37,8 @@ _GUEST_WORK_DIR = (
 )
 
 
-def _key(agent_dir: str = "devops-engineer") -> SandboxKey:
-    return SandboxKey(scope="test-scope", thread_id="test-thread", agent_dir=agent_dir)
+def _key(agent_id: str = "devops-engineer") -> SandboxKey:
+    return SandboxKey(scope="test-scope", thread_id="test-thread", agent_id=agent_id)
 
 
 def _spec(kind: str = "bicep") -> SandboxSpec:
@@ -375,7 +375,7 @@ def test_acquire_is_get_or_create_keyed_by_scope_thread_kind():
             same_again = await backend.acquire(_key(), _spec(kind="bicep"))
             assert same is same_again
 
-            other_agent = await backend.acquire(_key(agent_dir="other"), _spec(kind="bicep"))
+            other_agent = await backend.acquire(_key(agent_id="other"), _spec(kind="bicep"))
             assert other_agent is not same
 
             other_kind = await backend.acquire(_key(), _spec(kind="diagram"))
@@ -499,7 +499,7 @@ def test_dispose_scope_removes_sandboxes_and_returns_count():
             other_key = SandboxKey(
                 scope="other-scope",
                 thread_id="other-thread",
-                agent_dir="devops-engineer",
+                agent_id="devops-engineer",
             )
             await backend.acquire(other_key, _spec(kind="bicep"))
 

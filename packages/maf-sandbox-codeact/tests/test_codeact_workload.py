@@ -1047,7 +1047,7 @@ class TestTheProgramIsWrittenThenRun:
 
         assert backend.keys[0].scope == "scope-a"
         assert backend.keys[0].thread_id == "thread-1"
-        assert backend.keys[0].agent_dir == "data-analyst"
+        assert backend.keys[0].agent_id == "data-analyst"
 
 
 # ---------------------------------------------------------------------------
@@ -3912,7 +3912,7 @@ class TestWithoutARegistry:
 # ---------------------------------------------------------------------------
 
 #: The key `_context` and `_tool` resolve to between them: the host's scope, the conversation,
-#: and the agent directory baked in at factory time.
+#: and the agent identity baked in at factory time.
 _KEY = SandboxKey("scope-a", "thread-1", "data-analyst")
 
 

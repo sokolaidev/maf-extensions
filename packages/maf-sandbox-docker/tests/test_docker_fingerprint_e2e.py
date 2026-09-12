@@ -46,9 +46,7 @@ pytestmark = pytest.mark.skipif(
 def test_engine_observes_residue(script, expected):
     async def scenario():
         backend = DockerSandboxBackend(DockerSandboxConfig())
-        key = SandboxKey(
-            scope="fingerprint-" + uuid.uuid4().hex, thread_id="test", agent_dir="test"
-        )
+        key = SandboxKey(scope="fingerprint-" + uuid.uuid4().hex, thread_id="test", agent_id="test")
         try:
             sandbox = await backend.acquire(
                 key, SandboxSpec(kind="fingerprint", image=_IMAGE, work_dir="/")
@@ -75,7 +73,7 @@ def test_file_plane_leaves_no_mounted_file_residue(operation):
     async def scenario():
         backend = DockerSandboxBackend(DockerSandboxConfig())
         key = SandboxKey(
-            scope="fingerprint-files-" + uuid.uuid4().hex, thread_id="test", agent_dir="test"
+            scope="fingerprint-files-" + uuid.uuid4().hex, thread_id="test", agent_id="test"
         )
         try:
             sandbox = await backend.acquire(
@@ -108,9 +106,7 @@ def test_file_plane_leaves_no_mounted_file_residue(operation):
 def test_observer_limit_refuses_instead_of_truncating():
     async def scenario():
         backend = DockerSandboxBackend(DockerSandboxConfig())
-        key = SandboxKey(
-            scope="fingerprint-" + uuid.uuid4().hex, thread_id="test", agent_dir="test"
-        )
+        key = SandboxKey(scope="fingerprint-" + uuid.uuid4().hex, thread_id="test", agent_id="test")
         try:
             sandbox = await backend.acquire(
                 key, SandboxSpec(kind="fingerprint", image=_IMAGE, work_dir="/")

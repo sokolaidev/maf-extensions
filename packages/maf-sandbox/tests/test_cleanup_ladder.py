@@ -29,7 +29,7 @@ from maf_sandbox.testing import (
     InProcessSandboxBackend,
 )
 
-_KEY = SandboxKey(scope="scope", thread_id="thread", agent_dir="agent")
+_KEY = SandboxKey(scope="scope", thread_id="thread", agent_id="agent")
 _SPEC = SandboxSpec(kind="test", confined_to_guest_call_path=True)
 _DECLARATIONS = dataclasses.replace(
     FAKE_BACKEND_DECLARATIONS,
@@ -65,7 +65,7 @@ def _tool(router, spec, use, **kw):
             current_thread_id=lambda: _KEY.thread_id,
             list_files=InMemoryStore.list,
         ),
-        agent_dir=_KEY.agent_dir,
+        agent_id=_KEY.agent_id,
         spec=spec,
         name="run",
         logger=logging.getLogger(__name__),
@@ -598,7 +598,7 @@ def test_a_waiter_is_renewed_as_each_held_instance_is_reclaimed():
             current_thread_id=lambda: _KEY.thread_id,
             list_files=InMemoryStore.list,
         ),
-        agent_dir=_KEY.agent_dir,
+        agent_id=_KEY.agent_id,
         spec=_EXCLUSIVE,
         name="run",
         logger=logging.getLogger(__name__),

@@ -51,11 +51,11 @@ from maf_sandbox.maf import list_no_files, make_caller_context
 from maf_sandbox_codeact import make_codeact_tools
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
-# Keyed by the caller's scope, thread and agent directory; constants here since this
+# Keyed by the caller's scope, thread and agent identity; constants here since this
 # program serves one request.
 SCOPE = "samples"
 THREAD_ID = "06-docker-codeact"
-AGENT_DIR = "data-analyst"
+AGENT_ID = "data-analyst"
 
 #: A standard MCR devcontainer image at Python 3.13; see this directory's README for why.
 CODEACT_IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
@@ -102,7 +102,7 @@ async def run() -> int:
 
     tools = make_codeact_tools(
         router,
-        AGENT_DIR,
+        AGENT_ID,
         context,
         image=CODEACT_IMAGE,
     )
@@ -119,7 +119,7 @@ async def run() -> int:
                 azure_endpoint=env["AZURE_OPENAI_ENDPOINT"],
                 credential=credential,
             ),
-            name=AGENT_DIR,
+            name=AGENT_ID,
             instructions=(
                 "You answer computational questions by writing and running Python "
                 "with the execute_code tool, never by computing them yourself. "

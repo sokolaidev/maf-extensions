@@ -115,11 +115,11 @@ record = FileStoreProvenance()  # what the host knows about the bytes in `store`
 context = make_caller_context(
     lambda s: list_all_files(s, provenance=record), lambda: scope, lambda: thread_id
 )
-tools = make_bicep_tools(router, store, agent_dir, context, image=image)
+tools = make_bicep_tools(router, store, agent_id, context, image=image)
 
 agent = Agent(
     client=client,
-    name=agent_dir,
+    name=agent_id,
     instructions=...,
     tools=tools,
     # Without this the record observes nothing, every entry lists as unestablished, and a
@@ -142,7 +142,7 @@ await SandboxPurger(router).purge_scoped_thread(scope, thread_id)
 
 **The tools.** A kind's factory returns a plain list of MAF tools, which go onto the agent like any others.
 
-**The request context.** `make_caller_context` takes three *callables*, read per call rather than captured as values. Two of them say who is calling — the scope and the conversation — and those, with `agent_dir`, are what a sandbox is keyed by (a workload that runs one sandbox per call adds the call's own id). There is no default and no fallback here: a call with no conversation bound is refused rather than served from a shared key, and nothing in this stack takes a scope, a thread id or a file path from the model. Captured at construction time instead, a host that builds one agent and serves many conversations with it would let one conversation address another's sandbox ([`architecture.md`](architecture.md) § Keying).
+**The request context.** `make_caller_context` takes three *callables*, read per call rather than captured as values. Two of them say who is calling — the scope and the conversation — and those, with `agent_id`, are what a sandbox is keyed by (a workload that runs one sandbox per call adds the call's own id). There is no default and no fallback here: a call with no conversation bound is refused rather than served from a shared key, and nothing in this stack takes a scope, a thread id or a file path from the model. Captured at construction time instead, a host that builds one agent and serves many conversations with it would let one conversation address another's sandbox ([`architecture.md`](architecture.md) § Keying).
 
 The third enumerates the caller's files, and that listing decides which names a workload may pass into a sandbox. `list_all_files(store, provenance=record)` is the usual answer; a workload with no file channel passes `list_no_files`, by name rather than as an empty lambda. `provenance=` is optional and leaving it off is not neutral — every entry then lists as *unestablished*, and a kind reading that store can never label anything from it. The record observes nothing unless `file_store_provenance_middleware(record)` is on the agent, which is what the comment in the snippet is about. [`hosts.md`](hosts.md) carries both wirings and the window each leaves open.
 

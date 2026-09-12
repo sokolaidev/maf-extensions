@@ -26,7 +26,7 @@ The factory passes `source_integrity=SourceIntegrity.UNTRUSTED`, so the tool say
 
 ## Every call gets a directory, and the framework takes it away
 
-`acquire` is get-or-create, keyed by the caller's scope, thread and agent directory. Ordinary render bodies can overlap on one sandbox. This sample leaves confinement undeclared, so cleanup selects disposal, waits for active sibling calls to finish, and removes that sandbox before later calls can acquire it. Docker declares `RECLAIM`, but that alone cannot establish that Graphviz confines its filesystem and process effects to the call's directory.
+`acquire` is get-or-create, keyed by the caller's scope, thread and agent identity. Ordinary render bodies can overlap on one sandbox. This sample leaves confinement undeclared, so cleanup selects disposal, waits for active sibling calls to finish, and removes that sandbox before later calls can acquire it. Docker declares `RECLAIM`, but that alone cannot establish that Graphviz confines its filesystem and process effects to the call's directory.
 
 Each render needs its own path under `work_dir`: that is where the framework tracks the call's inputs and outputs, and it avoids fixed-name collisions between overlapping renders. A real Graphviz filesystem and process probe is still owed before declaring confinement and enabling warm reuse after cleanup.
 

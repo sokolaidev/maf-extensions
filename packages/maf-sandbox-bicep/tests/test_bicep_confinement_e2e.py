@@ -53,7 +53,7 @@ def test_validation_leaves_nothing_behind_and_reuses_the_sandbox(case: str, monk
         )
         spec = bicep_sandbox_spec(image=_IMAGE, egress=egress)
         key = SandboxKey(
-            scope="bicep-confinement-" + uuid.uuid4().hex, thread_id="test", agent_dir="test"
+            scope="bicep-confinement-" + uuid.uuid4().hex, thread_id="test", agent_id="test"
         )
         source = (
             _MODULE if case in {"modules", "closed-modules"} else "output value string = 'hello'\n"
@@ -68,7 +68,7 @@ def test_validation_leaves_nothing_behind_and_reuses_the_sandbox(case: str, monk
             current_thread_id=lambda: key.thread_id,
             list_files=InMemoryStore.list,
         )
-        tool = make_bicep_tools(router, store, key.agent_dir, context, image=_IMAGE, egress=egress)[
+        tool = make_bicep_tools(router, store, key.agent_id, context, image=_IMAGE, egress=egress)[
             0
         ]
         try:
@@ -175,7 +175,7 @@ def test_the_disposal_default_deletes_the_sandbox_each_call(case: str, monkeypat
         router = SandboxRouter([backend], min_isolation=backend.isolation)
         spec = bicep_sandbox_spec(image=_IMAGE, egress=egress)
         key = SandboxKey(
-            scope="bicep-disposal-" + uuid.uuid4().hex, thread_id="test", agent_dir="test"
+            scope="bicep-disposal-" + uuid.uuid4().hex, thread_id="test", agent_id="test"
         )
         source = _MODULE if case == "modules" else "output value string = 'hello'\n"
         if case == "diagnostics":
@@ -188,7 +188,7 @@ def test_the_disposal_default_deletes_the_sandbox_each_call(case: str, monkeypat
             current_thread_id=lambda: key.thread_id,
             list_files=InMemoryStore.list,
         )
-        tool = make_bicep_tools(router, store, key.agent_dir, context, image=_IMAGE, egress=egress)[
+        tool = make_bicep_tools(router, store, key.agent_id, context, image=_IMAGE, egress=egress)[
             0
         ]
         files = ["main.bicepparam", "nested/main.bicep"]

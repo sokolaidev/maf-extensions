@@ -45,7 +45,7 @@ from maf_sandbox_deepagents import (
 )
 from maf_sandbox_deepagents._sandbox import _response
 
-KEY = SandboxKey(scope="tenant-a", thread_id="thread-1", agent_dir="coder")
+KEY = SandboxKey(scope="tenant-a", thread_id="thread-1", agent_id="coder")
 WORK = "/maf-sandbox/work"
 
 #: The fake plus the pull surface the adapter needs for `download_files`.
@@ -203,7 +203,7 @@ class TestTheId:
     def test_is_opaque(self):
         first, _ = _adapter()
         assert first.id.startswith("maf-sandbox-")
-        for part in (KEY.scope, KEY.thread_id, KEY.agent_dir):
+        for part in (KEY.scope, KEY.thread_id, KEY.agent_id):
             assert part not in first.id
 
     def test_names_the_sandbox_the_router_reaches(self):
@@ -229,7 +229,7 @@ class TestTheId:
 
     def test_the_encoding_keeps_field_boundaries(self):
         """A scope ending where a thread begins must not collide with the split moved."""
-        shifted = SandboxKey(scope="tenant-", thread_id="athread-1", agent_dir="coder")
+        shifted = SandboxKey(scope="tenant-", thread_id="athread-1", agent_id="coder")
         base, _ = _adapter()
         other = MafSandbox(base.router, shifted, deepagents_spec("img:1"))
         assert base.id != other.id

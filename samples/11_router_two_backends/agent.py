@@ -63,7 +63,7 @@ IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 
 #: One request's key. A host reads scope and thread from its own request context; this program
 #: serves one request, so they are constants, and `dispose_scope` uses them at the end.
-KEY = SandboxKey(scope="samples", thread_id="11-two-backends", agent_dir="operator")
+KEY = SandboxKey(scope="samples", thread_id="11-two-backends", agent_id="operator")
 
 #: The workload kind acts 1, 2, 5 and 6 ask for. Named once because it is quoted back inside
 #: both refusal messages and both of act 6's routes: a typo in one spec would still route,
@@ -78,7 +78,7 @@ FLOOR = Isolation.NONE
 
 #: Act 4's agent, and the file it validates. The file lives beside this one and contains a
 #: `br/public:` AVM module, which is what makes its egress needs real rather than illustrative.
-BICEP_AGENT_DIR = "devops-engineer"
+BICEP_AGENT_ID = "devops-engineer"
 BICEP_FILE = "main.bicep"
 
 #: The tool act 4 counts results from. What it returned is what the live check reads: the model
@@ -289,7 +289,7 @@ async def _validate_under(
     # match what the backend enforces. A deployment cannot widen the hosts, only pick CLOSED,
     # ALLOWLIST or UNRESTRICTED — and here it picks the one the wiring can deliver.
     tools = make_bicep_tools(
-        router, store, BICEP_AGENT_DIR, context, image=env["BICEP_SANDBOX_IMAGE"], egress=posture
+        router, store, BICEP_AGENT_ID, context, image=env["BICEP_SANDBOX_IMAGE"], egress=posture
     )
     agent = Agent(
         client=OpenAIChatClient(
@@ -297,7 +297,7 @@ async def _validate_under(
             azure_endpoint=env["AZURE_OPENAI_ENDPOINT"],
             credential=credential,
         ),
-        name=BICEP_AGENT_DIR,
+        name=BICEP_AGENT_ID,
         instructions=(
             "You validate Azure Bicep. Always call the bicep_validate tool and report "
             "exactly the diagnostics it returns — rule id, severity, file, line and "

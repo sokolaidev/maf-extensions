@@ -11,7 +11,7 @@ from maf_sandbox.conformance import assert_instance_disposal_conformance
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
 from maf_sandbox_wslc._backend import _network_name, _sandbox_labels, _WslcResult
 
-KEY = SandboxKey(scope="scope", thread_id="thread", agent_dir="agent")
+KEY = SandboxKey(scope="scope", thread_id="thread", agent_id="agent")
 SPEC = SandboxSpec(kind="work")
 
 
@@ -100,7 +100,7 @@ def test_engine_discovery_preserves_same_kind_sibling_and_replacement(network):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("boundary", ["scope", "thread_id", "agent_dir", "kind", "call_id"])
+@pytest.mark.parametrize("boundary", ["scope", "thread_id", "agent_id", "kind", "call_id"])
 def test_foreign_ownership_never_deletes_an_id(boundary):
     engine = _Engine()
     engine.add("a" * 64, "first")

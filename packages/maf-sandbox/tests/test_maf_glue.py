@@ -137,7 +137,7 @@ def _serving_host_tools(fold: HostToolAggregate | None) -> SandboxSpec:
     )
 
 
-_KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-1")
+_KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="agent-1")
 
 #: A spec that declares outputs must require the capability that reads them back — the pull
 #: surface is what `FILES_OUT` names, and `sandboxed_tool` refuses the pair without it.
@@ -618,7 +618,7 @@ class TestTheEscapeFromTheTrustedRefusal:
 class TestSessionKey:
     def test_the_key_comes_from_the_host_context_and_the_factory(self):
         key = _session().key()
-        assert key == SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-1")
+        assert key == SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="agent-1")
 
     def test_a_call_with_no_bound_thread_is_refused_by_name(self):
         message = _session(context=_context(thread_id=None), name="widget_run").key()
@@ -917,7 +917,7 @@ def _attach(router, *, context=None, spec=_SPEC, **kw):
         _body,
         router=router,
         context=context if context is not None else _context(),
-        agent_dir="agent-1",
+        agent_id="agent-1",
         spec=spec,
         name="widget_run",
         **kw,
@@ -953,7 +953,7 @@ class TestAttachGate:
                 _counting,
                 router=None,
                 context=_context(),
-                agent_dir="agent-1",
+                agent_id="agent-1",
                 spec=_SPEC,
                 name="widget_run",
             )
@@ -1200,7 +1200,7 @@ def _attach_with(build, router, *, spec=_SPEC, name="widget_run", **kw):
         build,
         router=router,
         context=_context(),
-        agent_dir="agent-1",
+        agent_id="agent-1",
         spec=spec,
         name=name,
         **kw,
@@ -1330,10 +1330,10 @@ class TestACallScopedWorkloadGetsItsOwnSandbox:
         _call(tool, target="b")
         first, second = backend.keys
         assert first.call_id != second.call_id
-        assert (first.scope, first.thread_id, first.agent_dir) == (
+        assert (first.scope, first.thread_id, first.agent_id) == (
             second.scope,
             second.thread_id,
-            second.agent_dir,
+            second.agent_id,
         )
 
     def test_a_host_floor_reaches_a_workload_that_asked_for_nothing(self):
@@ -2694,7 +2694,7 @@ class TestAHeldSandboxIsGivenBackHoweverTheCleanupEnds:
     """A hold left outstanding makes every later call on that sandbox wait out the queue bound
     for an owner that has already gone, and marking the key unclean does not release it."""
 
-    _OTHER = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-9")
+    _OTHER = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="agent-9")
     _SPEC = dataclasses.replace(
         _SPEC, confined_to_guest_call_path=False, min_cleanup=Cleanup.DISPOSE
     )
@@ -3065,7 +3065,7 @@ class TestCleanupAdmission:
                 else FailedReclaimPolicy.DISPOSE
             ),
         )
-        keys = [_KEY, dataclasses.replace(_KEY, agent_dir="second")]
+        keys = [_KEY, dataclasses.replace(_KEY, agent_id="second")]
         spec = dataclasses.replace(_SPEC, min_cleanup=rung)
 
         def build(session):
@@ -3475,7 +3475,7 @@ class TestCleanupAdmission:
 class TestACallThatReachesTwoSandboxes:
     """`acquire` takes a key, so one call can hold two — and wrote its name into both."""
 
-    _OTHER = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-2")
+    _OTHER = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="agent-2")
 
     @pytest.mark.parametrize("rung", [Cleanup.RECLAIM, Cleanup.DISPOSE])
     def test_same_key_instances_receive_only_their_own_cleanup(self, rung):
@@ -3678,7 +3678,7 @@ class TestACallThatReachesTwoSandboxes:
 class TestAStragglerDuringTheRemoval:
     """A closed call cannot acquire while its cleanup walks the recorded sandboxes."""
 
-    _LATER = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-3")
+    _LATER = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="agent-3")
 
     def test_it_cannot_change_what_is_being_removed(self):
         release = asyncio.Event()
@@ -3900,7 +3900,7 @@ class TestTheSessionCarriesTheSinkThatWasChecked:
             _capture,
             router=_router(_pulling_backend()),
             context=_context(),
-            agent_dir="agent-1",
+            agent_id="agent-1",
             spec=_LANDING_SPEC,
             name="widget_run",
             output_sink=_SINK,

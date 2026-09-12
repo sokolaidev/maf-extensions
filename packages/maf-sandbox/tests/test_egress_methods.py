@@ -32,7 +32,7 @@ from maf_sandbox import (
 from maf_sandbox.maf import _channel_clause
 from maf_sandbox.testing import FAKE_BACKEND_DECLARATIONS, InProcessSandboxBackend
 
-KEY = SandboxKey(scope="test", thread_id="thread", agent_dir="agent")
+KEY = SandboxKey(scope="test", thread_id="thread", agent_id="agent")
 
 
 def spec(*entries: str | EgressRule) -> SandboxSpec:

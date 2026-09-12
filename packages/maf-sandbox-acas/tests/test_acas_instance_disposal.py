@@ -11,7 +11,7 @@ from maf_sandbox.conformance import assert_instance_disposal_conformance
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 from maf_sandbox_acas._backend import _Held, _sandbox_labels
 
-KEY = SandboxKey(scope="scope", thread_id="thread", agent_dir="agent")
+KEY = SandboxKey(scope="scope", thread_id="thread", agent_id="agent")
 SPEC = SandboxSpec(kind="work")
 
 
@@ -83,12 +83,12 @@ def test_service_sweep_reaches_every_variant_without_a_local_registry(kind):
     service.add("one")
     service.add("two")
     service.add("sibling", spec=replace(SPEC, kind="other"))
-    service.add("foreign", key=replace(KEY, agent_dir="other"))
+    service.add("foreign", key=replace(KEY, agent_id="other"))
     assert asyncio.run(_backend(service).dispose(KEY, kind=kind)) is None
     assert set(service.rows) == ({"foreign"} if kind is None else {"foreign", "sibling"})
 
 
-@pytest.mark.parametrize("field", ["scope", "thread_id", "agent_dir", "kind", "call_id"])
+@pytest.mark.parametrize("field", ["scope", "thread_id", "agent_id", "kind", "call_id"])
 def test_instance_selector_cannot_cross_ownership(field):
     service = _Service()
     service.add("target")
@@ -104,7 +104,7 @@ def test_failures_retain_exact_ids_and_retry_without_deleting_replacements(failu
     service.add("target")
     service.add("sibling", spec=replace(SPEC, kind="other"))
     backend = _backend(service)
-    backend._registry[(KEY.scope, KEY.thread_id, KEY.agent_dir, KEY.call_id, SPEC.kind)] = _Held(
+    backend._registry[(KEY.scope, KEY.thread_id, KEY.agent_id, KEY.call_id, SPEC.kind)] = _Held(
         "target", egress=(Egress.CLOSED, frozenset())
     )
     service.failure = failure

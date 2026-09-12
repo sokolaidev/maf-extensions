@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 #: The sandbox kind these two acts ask for. Its own kind rather than acts 1 to 4's `assistant`,
 #: so the hardened container is a different container and the earlier acts keep the posture they
-#: were counted under — a container is reused by a name derived from scope, thread, agent dir,
+#: were counted under — a container is reused by a name derived from scope, thread, agent identity,
 #: kind and egress, and never from the hardening.
 CLEANUP_PROBE_KIND = "cleanup-probe"
 
@@ -96,7 +96,7 @@ def cleanup_probe_spec(image: str) -> SandboxSpec:
 
 def make_cleanup_probe_tools(
     router: SandboxRouter | None,
-    agent_dir: str,
+    agent_id: str,
     context: CallerContext,
     *,
     image: str,
@@ -120,7 +120,7 @@ def make_cleanup_probe_tools(
         lambda session: _leave_a_locked_directory_tool(session, exec_timeout_seconds),
         router=router,
         context=context,
-        agent_dir=agent_dir,
+        agent_id=agent_id,
         spec=spec,
         name=LEAVE_A_LOCKED_DIRECTORY_TOOL_NAME,
         approval_mode="never_require",
