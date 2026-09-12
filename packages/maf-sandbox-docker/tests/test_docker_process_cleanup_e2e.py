@@ -83,6 +83,7 @@ def test_forged_files_do_not_redirect_cleanup_and_observed_escapees_are_stopped(
             guest_uid=65534,
             guest_gid=65534,
             instance_id=created.stdout.decode().strip(),
+            freeze=backend._freeze(name),
         )
         sandbox._work_dir = "/tmp"
         try:

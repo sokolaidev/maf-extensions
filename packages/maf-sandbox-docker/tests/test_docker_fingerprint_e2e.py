@@ -150,7 +150,11 @@ def test_host_tmpfs_and_nonroot_workloads(flags, path):
             )
             assert created.returncode == 0, created.stderr
             sandbox = _DockerSandbox(
-                backend._docker, name, 60, instance_id=created.stdout.decode().strip()
+                backend._docker,
+                name,
+                60,
+                instance_id=created.stdout.decode().strip(),
+                freeze=backend._freeze(name),
             )
             subject = DockerFingerprintSubject(sandbox, observer_image=_OBSERVER)
 
