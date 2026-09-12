@@ -1,6 +1,7 @@
 """Confinement measurements refuse incomplete engine views and preserve engine identity."""
 
 import asyncio
+import contextlib
 import json
 
 import pytest
@@ -58,7 +59,9 @@ class Engine:
 
     def subject(self):
         return DockerFingerprintSubject(
-            _DockerSandbox(self, "workload", 30, instance_id="fixture-id"),
+            _DockerSandbox(
+                self, "workload", 30, instance_id="fixture-id", freeze=contextlib.nullcontext
+            ),
             observer_image="trusted-python",
         )
 
