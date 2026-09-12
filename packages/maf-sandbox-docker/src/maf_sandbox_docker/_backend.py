@@ -224,44 +224,70 @@ _FREEZE_LOCKS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, as
 
 
 class _Freezes:
-    """Which containers this process has frozen, and how often that has changed.
+    """Which containers this process has claimed, and which the daemon has confirmed frozen.
 
-    Process-wide for the reason :data:`_FREEZE_LOCKS` is.  The counter is what the set alone
-    cannot answer: a daemon refusal can reach this backend *after* the thaw that caused it, so
-    "is anything frozen now" says no about an invocation a freeze did overlap.
+    Two records, because they answer two questions and one set answered them both wrongly at
+    the edges.  A **claim** is a thaw this process owes: taken before the pause is issued,
+    since a call cancelled inside that invocation may have frozen the guest anyway, and
+    counted rather than flagged so a second claimant's failure cannot release the first's.  A
+    **confirmation** is the daemon having said the container is paused, which is the only thing
+    that proves nothing inside it could have run — so it is held from the pause returning until
+    just before the unpause is issued, and neither edge certifies a guest that is running.
+
+    Process-wide for the reason :data:`_FREEZE_LOCKS` is, and loop-independent where that is
+    not, which is what makes it the record every cross-loop decision reads.
     """
 
-    names: ClassVar[set[str]] = set()
+    claims: ClassVar[dict[str, int]] = {}
+    confirmed: ClassVar[set[str]] = set()
     changes: ClassVar[int] = 0
 
     @classmethod
-    def take(cls, name: str) -> None:
-        cls.names.add(name)
+    def claim(cls, name: str) -> None:
+        cls.claims[name] = cls.claims.get(name, 0) + 1
+
+    @classmethod
+    def release(cls, name: str) -> None:
+        owed = cls.claims.get(name, 0) - 1
+        if owed > 0:
+            cls.claims[name] = owed
+        else:
+            cls.claims.pop(name, None)
+
+    @classmethod
+    def claimed(cls, name: str) -> bool:
+        """Does anything in this process owe a thaw on ``name``?"""
+        return name in cls.claims
+
+    @classmethod
+    def confirm(cls, name: str) -> None:
+        cls.confirmed.add(name)
         cls.changes += 1
 
     @classmethod
-    def lift(cls, name: str) -> None:
-        cls.names.discard(name)
+    def unconfirm(cls, name: str) -> None:
+        cls.confirmed.discard(name)
         cls.changes += 1
 
     @classmethod
     def mark(cls, name: str | None) -> tuple[int, bool]:
         """A token for one container, to compare an invocation's end against its start."""
-        return cls.changes, name is not None and name in cls.names
+        return cls.changes, name is not None and name in cls.confirmed
 
     @classmethod
     def held_throughout(cls, name: str | None, mark: tuple[int, bool]) -> bool:
-        """Was ``name`` frozen when ``mark`` was taken and every instant since?
+        """Was ``name`` confirmed frozen when ``mark`` was taken and every instant since?
 
         The only question worth asking of a daemon refusal, and the reason is that a frozen
         guest **cannot run**: while the freeze held, nothing in the container could have
         written that sentence, so the daemon did.  Let it lift mid-invocation and the guest
         could have written it itself — and then a re-issue is a second execution of whatever
-        the guest chose to run.  Any take or lift anywhere voids the answer rather than only
-        one on this container, because that is the direction it is safe to be wrong in.
+        the guest chose to run.  Any confirmation taken or dropped anywhere voids the answer
+        rather than only one on this container, because that is the direction it is safe to be
+        wrong in.
         """
         changes, held = mark
-        return held and name is not None and name in cls.names and cls.changes == changes
+        return held and name is not None and name in cls.confirmed and cls.changes == changes
 
 
 def _freeze_lock(name: str) -> asyncio.Lock:
@@ -888,13 +914,35 @@ class _DockerSandbox:
         Frozen like every other tar-plane member: on a warm container the guest of the last
         conversation is still running, and a base established through a swapped ancestor is a
         guest-owned directory wherever the link pointed.
+
+        Taken at the **first engine call** rather than around the whole thing, and held from
+        there, so the check and the creation still share one freeze.  Which specs need no base
+        at all is :func:`~maf_sandbox.paths.ensure_guest_work_dir`'s to decide and is not
+        restated here; for those it makes no call, so this takes no freeze and an engine
+        without a freezer can still serve them.
         """
         self._work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
-        async with self._freeze():
+        async with contextlib.AsyncExitStack() as touching_the_guest:
+            frozen = False
+
+            async def freeze_once() -> None:
+                nonlocal frozen
+                if not frozen:
+                    frozen = True
+                    await touching_the_guest.enter_async_context(self._freeze())
+
+            async def stat(path: str) -> SandboxEntry | None:
+                await freeze_once()
+                return await self._stat_guest(path, path)
+
+            async def create(directories: tuple[str, ...]) -> None:
+                await freeze_once()
+                await self._create_directories(directories)
+
             await ensure_guest_work_dir(
                 spec,
-                lambda path: self._stat_guest(path, path),
-                self._create_directories,
+                stat,
+                create,
                 resolve=posix_work_dir_ancestors,
                 base=self._work_dir,
             )
@@ -1787,7 +1835,7 @@ class DockerSandboxBackend:
                 # that call's check and its copy. Released before `prepare_work_dir`, which
                 # takes the same lock.
                 running, frozen = await self._container_state(name)
-                if frozen and name not in _Freezes.names:
+                if frozen and not _Freezes.claimed(name):
                     # The set rather than the lock decides this, because the lock binds to one
                     # event loop and a process may run several: a freeze another loop holds
                     # reads as paused here, and lifting it would reopen that call's window.
@@ -2973,11 +3021,12 @@ class DockerSandboxBackend:
         dies mid-block; :meth:`acquire` lifts that one.
         """
         async with _freeze_lock(name):
-            # Owed from before the pause is issued rather than after it returns: a call
+            # Claimed from before the pause is issued rather than after it returns: a call
             # cancelled or timed out while that invocation is in flight can have frozen the
-            # guest anyway, and only a debt taken this early covers that one.
-            _Freezes.take(name)
+            # guest anyway, and only a claim taken this early covers that one.
+            _Freezes.claim(name)
             owed = True
+            confirmed = False
             try:
                 frozen = await self._docker(
                     "pause", name, timeout=self._config.command_timeout_seconds
@@ -2991,8 +3040,15 @@ class DockerSandboxBackend:
                         f"docker could not freeze {name} for a file call: "
                         f"{frozen.stderr.strip() or f'exit {frozen.returncode}'}"
                     )
+                # Only now, and dropped below before the unpause goes out: between the claim
+                # and this line, and between that drop and the guest resuming, the guest is
+                # running, and a record saying otherwise would certify one that is.
+                _Freezes.confirm(name)
+                confirmed = True
                 yield
             finally:
+                if confirmed:
+                    _Freezes.unconfirm(name)
                 try:
                     if owed:
                         thawing = asyncio.ensure_future(self._thaw(name))
@@ -3008,7 +3064,7 @@ class DockerSandboxBackend:
                         if cancelled:
                             raise asyncio.CancelledError
                 finally:
-                    _Freezes.lift(name)
+                    _Freezes.release(name)
 
     async def _thaw(self, name: str) -> None:
         """Lift a freeze, never raising: the call that took it has its own outcome to report.

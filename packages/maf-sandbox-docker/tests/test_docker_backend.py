@@ -3174,6 +3174,55 @@ class TestFreezingTheGuest:
         assert verbs[0] == "pause" and verbs[-1] == "unpause"
         assert set(verbs[1:-1]) == {"cp"}
 
+    def test_a_second_claimants_failure_does_not_release_the_first(self):
+        """Two loops claim one container, and only the second's pause is refused.
+
+        A flag would have been dropped by that second claimant on its way out, leaving the
+        first holding a real freeze that the next `acquire` reads as an orphan and lifts.
+        """
+        _Freezes.claim(_NAME)
+        _Freezes.claim(_NAME)
+        _Freezes.release(_NAME)
+        try:
+            assert _Freezes.claimed(_NAME)
+        finally:
+            _Freezes.release(_NAME)
+        assert not _Freezes.claimed(_NAME)
+
+    @pytest.mark.parametrize("verb", ["pause", "unpause"])
+    def test_neither_edge_of_the_freeze_certifies_a_running_guest(self, verb):
+        """The guest runs until the pause lands, and again once the unpause does.
+
+        An exec whose answer arrives in either window must not be treated as one the daemon
+        refused, or a guest printing that sentence has its command run twice.
+        """
+        backend, sandbox, _fake = self._sandbox()
+        inner = backend._docker
+        certified: list[bool] = []
+
+        async def seam(*args, **kwargs):
+            if args[0] == verb:
+                # Mid-invocation: for `pause` the guest has not stopped yet, and for
+                # `unpause` the block is over and it is about to run again.
+                mark = _Freezes.mark(_NAME)
+                certified.append(_Freezes.held_throughout(_NAME, mark))
+            return await inner(*args, **kwargs)
+
+        backend._docker = seam
+        sandbox._run = seam
+        asyncio.run(sandbox.write_file("out.png", b"x", working_directory=_WORK))
+        assert certified == [False]
+
+    def test_a_spec_that_needs_no_base_takes_no_freeze(self):
+        """`ensure_guest_work_dir` makes no call for those, so neither does this.
+
+        Which specs they are is core's to decide and is not restated here — what this holds is
+        that a workload needing no tar-plane operation is not made to need a freezer.
+        """
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=_WORK_IS_A_DIRECTORY))
+        asyncio.run(backend.acquire(_KEY, replace(_SPEC, requires=frozenset())))
+        assert "pause" not in [call.args[0] for call in fake.calls]
+
     def test_acquire_establishes_the_base_inside_one_too(self):
         """A warm container's guest is the last conversation's, and it is still running."""
         machine = _machine(running=[_NAME], overrides={_cp(_WORK): _not_in_the_container(_WORK)})
@@ -3230,7 +3279,7 @@ class TestFreezingTheGuest:
 
         asyncio.run(scenario())
         assert self._verbs(fake)[-1] == "unpause"
-        assert not _Freezes.names
+        assert not _Freezes.claims and not _Freezes.confirmed
 
     def test_a_second_cancellation_does_not_take_the_thaw_with_it(self):
         """An unshielded wait lets one take the thaw, and the guest stays frozen for good."""
@@ -3261,7 +3310,7 @@ class TestFreezingTheGuest:
 
         asyncio.run(scenario())
         assert self._verbs(fake)[-1] == "unpause"
-        assert not _Freezes.names
+        assert not _Freezes.claims and not _Freezes.confirmed
 
     def test_a_freeze_the_engine_refuses_copies_nothing(self):
         """No freeze, no guarantee — and a member that served anyway would be stating one."""
@@ -3413,12 +3462,12 @@ class TestFreezingTheGuest:
         }
         machine = _machine(running=[_NAME], overrides={**_WORK_IS_A_DIRECTORY, **state})
         backend, fake = _backend_with(machine)
-        _Freezes.take(_NAME)
+        _Freezes.claim(_NAME)
         try:
             with pytest.raises(RuntimeError, match="could not freeze"):
                 asyncio.run(backend.acquire(_KEY, _SPEC))
         finally:
-            _Freezes.lift(_NAME)
+            _Freezes.release(_NAME)
         # Its own `prepare_work_dir` is refused by the daemon, which is the fail-closed half;
         # what matters here is that nothing lifted the freeze that container already had.
         assert "unpause" not in [call.args[0] for call in fake.calls]
@@ -3449,7 +3498,8 @@ class TestAnExecRefusedForTheFreeze:
     def _give_the_process_wide_set_back(self):
         """These seed the freeze bookkeeping by hand, and it outlives every backend."""
         yield
-        _Freezes.names.clear()
+        _Freezes.claims.clear()
+        _Freezes.confirmed.clear()
 
     def _backend(self, answers: list[_DockerResult], *, on_first=None):
         backend = DockerSandboxBackend(DockerSandboxConfig())
@@ -3467,7 +3517,7 @@ class TestAnExecRefusedForTheFreeze:
     def test_it_is_reissued_while_this_process_holds_the_target_frozen(self):
         """Safe because the refusal means the command never ran: this is a first execution."""
         backend, seen = self._backend([_frozen_refusal(), _DockerResult(0, b"ok", "")])
-        _Freezes.take(_NAME)
+        _Freezes.confirm(_NAME)
         result = asyncio.run(backend._docker("exec", _NAME, "true", timeout=5, container=_NAME))
         assert result.returncode == 0 and len(seen) == 2
 
@@ -3479,7 +3529,7 @@ class TestAnExecRefusedForTheFreeze:
     def test_a_freeze_on_another_container_licenses_nothing(self):
         """Its guest was never stopped, so it could have written the sentence itself."""
         backend, seen = self._backend([_frozen_refusal()])
-        _Freezes.take("some-other-container")
+        _Freezes.confirm("some-other-container")
         result = asyncio.run(backend._docker("exec", _NAME, "true", timeout=5, container=_NAME))
         assert result.returncode == 1 and len(seen) == 1
 
@@ -3492,7 +3542,7 @@ class TestAnExecRefusedForTheFreeze:
         """
         backend, seen = self._backend(
             [_frozen_refusal(), _DockerResult(0, b"ok", "")],
-            on_first=lambda: (_Freezes.take(_NAME), _Freezes.lift(_NAME)),
+            on_first=lambda: (_Freezes.confirm(_NAME), _Freezes.unconfirm(_NAME)),
         )
         result = asyncio.run(backend._docker("exec", _NAME, "true", timeout=5, container=_NAME))
         assert result == _frozen_refusal() and len(seen) == 1
@@ -3508,7 +3558,7 @@ class TestAnExecRefusedForTheFreeze:
     def test_a_guest_command_that_says_the_same_words_is_not_reissued(self, answer):
         """Re-issuing one of those would run the guest's own command a second time."""
         backend, seen = self._backend([answer])
-        _Freezes.take(_NAME)
+        _Freezes.confirm(_NAME)
         assert (
             asyncio.run(backend._docker("exec", _NAME, "say", timeout=5, container=_NAME)) == answer
         )
@@ -3524,7 +3574,7 @@ class TestAnExecRefusedForTheFreeze:
         """
         forged = _DockerResult(1, b"", _frozen_refusal().stderr, _frozen_refusal().stderr.encode())
         backend, seen = self._backend([forged])
-        _Freezes.take("some-other-container")
+        _Freezes.confirm("some-other-container")
         with pytest.raises(SandboxExecOutputLimitExceeded):
             asyncio.run(
                 backend._docker(
@@ -3537,7 +3587,7 @@ class TestAnExecRefusedForTheFreeze:
         """It is not guest output: the guest was frozen for the whole attempt."""
         real = _DockerResult(1, b"", _frozen_refusal().stderr, _frozen_refusal().stderr.encode())
         backend, _seen = self._backend([real])
-        _Freezes.take(_NAME)
+        _Freezes.confirm(_NAME)
         result = asyncio.run(
             backend._docker(
                 "exec", _NAME, "true", timeout=0.2, max_output_bytes=64, container=_NAME
@@ -3561,7 +3611,7 @@ class TestAnExecRefusedForTheFreeze:
     def test_a_budget_spent_on_refusals_returns_the_last_one(self):
         """Rather than raising a timeout, which would take the container with it."""
         backend, seen = self._backend([_frozen_refusal()])
-        _Freezes.take(_NAME)
+        _Freezes.confirm(_NAME)
         result = asyncio.run(backend._docker("exec", _NAME, "true", timeout=0.2, container=_NAME))
         assert result == _frozen_refusal() and len(seen) > 1
 
