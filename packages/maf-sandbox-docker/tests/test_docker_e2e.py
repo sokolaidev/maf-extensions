@@ -1542,6 +1542,36 @@ class TestAllowlistEgress:
 
         asyncio.run(scenario())
 
+    def test_a_conversations_disposal_files_a_calls_window_under_that_call(self):
+        """A disposal selects on scope, thread and agent, so it reaches a sandbox a call inside
+        the conversation acquired — and the window is that call's, not the caller's."""
+        scope = f"e2e-{uuid.uuid4()}"
+        call = SandboxKey(scope=scope, thread_id="thread", agent_dir="agent", call_id="call-1")
+        conversation = SandboxKey(scope=scope, thread_id="thread", agent_dir="agent")
+        creator = DockerSandboxBackend(self._config())
+        reader = DockerSandboxBackend(self._config())
+        events = []
+        reader.observe_egress(events.append)
+
+        async def scenario():
+            try:
+                sandbox = await creator.acquire(
+                    call, _spec(egress=Egress.ALLOWLIST, egress_allow=("example.com",))
+                )
+                result = await sandbox.exec(
+                    ["curl", "-I", "--max-time", "10", "https://blocked.invalid"],
+                    working_directory="/",
+                    timeout=20,
+                )
+                assert result.exit_code != 0
+                assert (await reader.dispose(conversation)) is None
+                assert [event.key for event in events] == [call]
+                assert [d.host for event in events for d in event.decisions] == ["blocked.invalid"]
+            finally:
+                await creator.dispose_scope(scope, conversation.thread_id)
+
+        asyncio.run(scenario())
+
     @pytest.mark.parametrize("orphan", [False, True])
     def test_a_fresh_backend_reports_proxy_decisions_with_lossless_attribution(self, orphan):
         key = SandboxKey(

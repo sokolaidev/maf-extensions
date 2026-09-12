@@ -451,6 +451,29 @@ def _key_from_labels(labels: object) -> SandboxKey | None:
     )
 
 
+def _selectors_name(labels: dict[str, object], key: SandboxKey) -> bool:
+    """Whether these ownership labels are the ones a container of ``key`` is created with.
+
+    The agreement :func:`_key_from_labels` demands of a payload, asked of a caller's key
+    instead: a sweep reaches names from its own registry as well as from the label query, and
+    only the query has already proved ownership.  Hashed selectors compare equal here, since
+    ``_label_value`` is what wrote them.
+
+    ``_LABEL_CALL`` is part of it, so a conversation's key does not name a call's container.
+    A conversation-scoped key expects the label absent, which is what :func:`_sandbox_labels`
+    writes, so both sides read ``None``.
+    """
+    return all(
+        labels.get(label) == expected
+        for label, expected in (
+            (_LABEL_SCOPE, _label_value(key.scope)),
+            (_LABEL_THREAD, _label_value(key.thread_id)),
+            (_LABEL_AGENT, _label_value(key.agent_dir)),
+            (_LABEL_CALL, _label_value(key.call_id) if key.call_id else None),
+        )
+    )
+
+
 def _container_name(key: SandboxKey, kind: str, egress_id: str = "") -> str:
     """The container name a key and kind map to — derived, so acquire and dispose agree
     without a registry.
@@ -1342,9 +1365,18 @@ class DockerSandboxBackend:
         return f"the proxy could not be stopped: {result.stderr.strip() or result.returncode}"
 
     async def _drain_attributed_proxy(
-        self, name: str, proxy_id: str | None = None
+        self, name: str, proxy_id: str | None = None, *, caller_key: SandboxKey | None = None
     ) -> EgressObserved | None:
-        """Read attribution and decisions from the same engine instance, across host processes."""
+        """Read attribution and decisions from the same engine instance, across host processes.
+
+        ``caller_key`` stands in for a proxy that carries no attribution to read *and* whose
+        ownership labels name that key — one written before the key label existed, or one whose
+        key overran the budget and was written empty. It never displaces a recovered key,
+        because a disposal addressed to a conversation also sweeps leftovers from the calls
+        inside it, and each window belongs to the key that ran behind that proxy. It never
+        answers for a label that is present and was refused either: that proxy's own metadata
+        is what this could not trust.
+        """
         if self._egress_report is None:
             return None
         try:
@@ -1360,11 +1392,21 @@ class DockerSandboxBackend:
                 or cast(dict[str, object], labels).get(_LABEL_ROLE) != "proxy"
             ):
                 return None
-            key = _key_from_labels(cast(object, labels))
+            owned = cast(dict[str, object], labels)
+            key = _key_from_labels(owned)
             instance = data.get("Id")
-            if key is None or not isinstance(instance, str) or not instance:
+            if not isinstance(instance, str) or not instance:
                 return None
             if proxy_id is not None and instance != proxy_id:
+                return None
+            if (
+                key is None
+                and caller_key is not None
+                and owned.get(_LABEL_KEY, "") == ""
+                and _selectors_name(owned, caller_key)
+            ):
+                key = caller_key
+            if key is None:
                 return None
         except Exception as exc:  # noqa: BLE001 - attribution must not block cleanup
             logger.warning("could not attribute proxy %s: %s", name, error_detail(exc))
@@ -2138,9 +2180,9 @@ class DockerSandboxBackend:
             attempted_kinds = {name: attributed[name] for name in candidates if name in attributed}
             attempted = self._retain_disposals(prefix, candidates, attempted_kinds)
         # The last window, and only the last: every acquire before this one already drained its
-        # own proxy on the way to rebuilding it. Every container the labels reach belongs to
-        # this key by construction, so all of them are attributable — including one served
-        # under an egress configuration this backend no longer runs.
+        # own proxy on the way to rebuilding it. The sweep reaches every container these labels
+        # select, including one served under an egress configuration this backend no longer
+        # runs, so the key below answers only for a proxy that cannot say whose it is.
         wanted = [
             (_LABEL_SCOPE, key.scope),
             (_LABEL_THREAD, key.thread_id),
@@ -2153,7 +2195,7 @@ class DockerSandboxBackend:
             wanted,
             fallback=candidates,
             thread_id=key.thread_id,
-            drain_key=lambda _name: key,
+            caller_key=lambda _name: key,
         )
         failed_kinds = dict(attempted_kinds)
         if kind is not None:
@@ -2405,13 +2447,14 @@ class DockerSandboxBackend:
         label_filters: list[tuple[str, str]],
         fallback: list[str],
         thread_id: str,
-        drain_key: Callable[[str], SandboxKey | None] | None = None,
+        caller_key: Callable[[str], SandboxKey | None] | None = None,
     ) -> _Sweep:
         """Remove the containers a label query returns, plus their proxies and networks.
 
         A proxy carries its sandbox's labels, so it is listed and removed alongside it, but it
         is not a sandbox and is not counted. Its network is removed after it. The ``fallback``
-        names cover the case the listing failed.
+        names cover the case the listing failed, and ``caller_key`` answers only for a proxy whose
+        attribution label is absent or empty and whose ownership labels name that key.
 
         Every workload's derived proxy and network are swept regardless of this backend's
         current egress config — not gated on it — because a sandbox created while an allowlist
@@ -2427,11 +2470,8 @@ class DockerSandboxBackend:
 
         drained: dict[str, EgressObserved | None] = {}
         for workload in dict.fromkeys(n.removesuffix(_PROXY_SUFFIX) for n in names):
-            attributed = drain_key(workload) if drain_key is not None else None
-            if attributed is not None:
-                drained[workload] = await self._drain_the_proxy(workload, attributed)
-            else:
-                drained[workload] = await self._drain_attributed_proxy(workload)
+            standin = caller_key(workload) if caller_key is not None else None
+            drained[workload] = await self._drain_attributed_proxy(workload, caller_key=standin)
 
         count = 0
         undeleted: dict[str, DisposalFailure] = {}
