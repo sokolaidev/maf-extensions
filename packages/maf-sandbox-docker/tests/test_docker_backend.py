@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gc
 import io
 import itertools
 import json
@@ -21,6 +22,7 @@ import sys
 import tarfile
 import threading
 import time
+import weakref
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -49,6 +51,7 @@ from maf_sandbox import (
 
 from maf_sandbox_docker import BACKEND_NAME, DockerSandboxBackend, DockerSandboxConfig
 from maf_sandbox_docker._backend import (
+    _FREEZE_LOCKS,
     _GATEWAY_MODE_ISOLATED,
     _GATEWAY_MODE_OPTS,
     _PROXY_LOG_BYTES,
@@ -56,6 +59,7 @@ from maf_sandbox_docker._backend import (
     _container_name,
     _DockerResult,
     _egress_decisions,
+    _freeze_lock,
     _Freezes,
     _network_name,
     _proxy_name,
@@ -266,6 +270,30 @@ _WORK_IS_A_DIRECTORY = {
 
 #: What `docker inspect` prints for a container created with `--cap-drop ALL`.
 _CAPS_DROPPED = {("inspect", "-f", "{{.HostConfig.CapDrop}}"): _DockerResult(0, b"[ALL]\n", "")}
+
+
+@pytest.fixture(autouse=True)
+def _freeze_bookkeeping_is_given_back():
+    """`_Freezes` is process-wide, so a test that touches it must hand it back.
+
+    Every test, not only the ones that seed it by hand: a call that fails part-way through a
+    freeze leaves a claim behind just as readily, and the next test then reads another owner's
+    record. Relying on a neighbouring parametrised case to undo it holds only while the two run
+    in order and on one worker.
+    """
+    claims = dict(_Freezes.claims)
+    owners = dict(_Freezes.owners)
+    confirmed = set(_Freezes.confirmed)
+    generations = dict(_Freezes.generations)
+    yield
+    _Freezes.claims.clear()
+    _Freezes.claims.update(claims)
+    _Freezes.owners.clear()
+    _Freezes.owners.update(owners)
+    _Freezes.confirmed.clear()
+    _Freezes.confirmed.update(confirmed)
+    _Freezes.generations.clear()
+    _Freezes.generations.update(generations)
 
 
 class _Recorded:
@@ -3186,15 +3214,14 @@ class TestFreezingTheGuest:
     @pytest.mark.parametrize(
         "touch",
         [
-            lambda: _Freezes.claim(_FREEZE_NAME),
+            lambda: _Freezes.claim(_FREEZE_NAME, "owner"),
             lambda: _Freezes.release(_FREEZE_NAME),
-            lambda: _Freezes.claimed(_FREEZE_NAME),
             lambda: _Freezes.confirm(_FREEZE_NAME),
             lambda: _Freezes.unconfirm(_FREEZE_NAME),
             lambda: _Freezes.mark(_FREEZE_NAME),
             lambda: _Freezes.held_throughout(_FREEZE_NAME, (0, True)),
         ],
-        ids=["claim", "release", "claimed", "confirm", "unconfirm", "mark", "held_throughout"],
+        ids=["claim", "release", "confirm", "unconfirm", "mark", "held_throughout"],
     )
     def test_every_touch_of_the_record_takes_the_guard(self, touch, monkeypatch):
         """A loop may be on its own thread, and the count is a read-modify-write.
@@ -3216,20 +3243,68 @@ class TestFreezingTheGuest:
         touch()
         assert entered == [1]
 
-    def test_a_second_claimants_failure_does_not_release_the_first(self):
-        """Two loops claim one container, and only the second's pause is refused.
+    @pytest.mark.parametrize("table", ["freeze", "acquire"])
+    def test_a_contended_lock_does_not_outlive_its_loop(self, table):
+        """An `asyncio.Lock` holds a strong reference to the loop it was contended on.
 
-        The claim has to outlive that refusal: while any caller still owes a thaw, the record
-        must say so, or the next `acquire` reads a live freeze as an orphan and lifts it.
+        So an entry that outlives its callers keeps a closed loop alive, and a host running one
+        loop per call accumulates every loop it ever ran. A weak key cannot help: the value
+        reaches back to it. Contended on purpose — an uncontended lock never takes the
+        reference, so a probe that does not make one wait proves nothing.
         """
-        _Freezes.claim(_FREEZE_NAME)
-        _Freezes.claim(_FREEZE_NAME)
+        backend, _fake = _backend_with(_machine(running=[_NAME]))
+        registry = _FREEZE_LOCKS if table == "freeze" else backend._acquire_locks
+        loops: list[weakref.ReferenceType[object]] = []
+
+        async def contend():
+            async def hold():
+                if table == "freeze":
+                    async with _freeze_lock(_FREEZE_NAME):
+                        await asyncio.sleep(0)
+                else:
+                    async with backend._acquire_lock(_KEY, _SPEC.kind):
+                        await asyncio.sleep(0)
+
+            await asyncio.gather(hold(), hold())
+            loops.append(weakref.ref(asyncio.get_running_loop()))
+
+        for _ in range(5):
+            asyncio.run(contend())
+        gc.collect()
+        assert not registry
+        assert [reference() for reference in loops] == [None] * len(loops)
+
+    def test_a_claim_outlives_a_nested_release(self):
+        """While any caller still owes a thaw, the record has to say so.
+
+        Or the next `acquire` reads a live freeze as an orphan and lifts it. Nothing nests
+        today — the freeze lock serialises one loop and a second is refused — and this is what
+        keeps that from being the thing safety rests on.
+        """
+        owner = object()
+        assert _Freezes.claim(_FREEZE_NAME, owner)
+        assert _Freezes.claim(_FREEZE_NAME, owner)
         _Freezes.release(_FREEZE_NAME)
         try:
-            assert _Freezes.claimed(_FREEZE_NAME)
+            assert _FREEZE_NAME in _Freezes.claims
         finally:
             _Freezes.release(_FREEZE_NAME)
-        assert not _Freezes.claimed(_FREEZE_NAME)
+        assert _FREEZE_NAME not in _Freezes.claims and _FREEZE_NAME not in _Freezes.owners
+
+    def test_a_claim_is_refused_to_a_second_owner(self):
+        """What makes deciding to thaw and issuing the unpause one operation.
+
+        A reader could only learn that nobody held it a moment ago; a holder cannot have one
+        taken from under it, so nothing can pause the container inside that window.
+        """
+        first, second = object(), object()
+        assert _Freezes.claim(_FREEZE_NAME, first)
+        try:
+            assert not _Freezes.claim(_FREEZE_NAME, second)
+        finally:
+            _Freezes.release(_FREEZE_NAME)
+        assert _Freezes.claim(_FREEZE_NAME, second)
+        _Freezes.release(_FREEZE_NAME)
 
     @pytest.mark.parametrize("verb", ["pause", "unpause"])
     def test_neither_edge_of_the_freeze_certifies_a_running_guest(self, verb):
@@ -3370,6 +3445,27 @@ class TestFreezingTheGuest:
         # only lift a freeze somebody else is holding.
         assert self._verbs(fake) == ["pause"]
 
+    def test_a_file_call_from_another_loop_is_refused_before_it_touches_the_engine(self):
+        """The claim another caller holds is what refuses this one, and it refuses it early.
+
+        A call admitted here could be cancelled inside its own `pause`, not know whether it
+        froze anything, and thaw — lifting the holder's freeze and putting it back between its
+        check and its copy. Refusing costs that caller an error on a container someone else is
+        using, and is the fail-closed half of a configuration this backend does not serve.
+        """
+        backend, sandbox, fake = self._sandbox()
+        # Another loop's file call, mid-flight: claimed and frozen for real.
+        held = object()
+        assert _Freezes.claim(_FREEZE_NAME, held)
+        _Freezes.confirm(_FREEZE_NAME)
+        try:
+            with pytest.raises(RuntimeError, match="another event loop"):
+                asyncio.run(sandbox.write_file("out.png", b"x", working_directory=_WORK))
+        finally:
+            _Freezes.unconfirm(_FREEZE_NAME)
+            _Freezes.release(_FREEZE_NAME)
+        assert self._verbs(fake) == []
+
     def test_a_cancellation_inside_the_pause_itself_still_thaws(self):
         """The guest can be frozen by an invocation that never returned to say so."""
         backend, sandbox, fake = self._sandbox()
@@ -3504,9 +3600,9 @@ class TestFreezingTheGuest:
         }
         machine = _machine(running=[_NAME], overrides={**_WORK_IS_A_DIRECTORY, **state})
         backend, fake = _backend_with(machine)
-        _Freezes.claim(_FREEZE_NAME)
+        assert _Freezes.claim(_FREEZE_NAME, object())
         try:
-            with pytest.raises(RuntimeError, match="could not freeze"):
+            with pytest.raises(RuntimeError, match="another event loop"):
                 asyncio.run(backend.acquire(_KEY, _SPEC))
         finally:
             _Freezes.release(_FREEZE_NAME)
@@ -3553,11 +3649,11 @@ class TestFreezingTheGuest:
             _machine(running=[_NAME], overrides={**_WORK_IS_A_DIRECTORY, **state})
         )
         other_key = json.dumps(("unix:///other.sock", _NAME))
-        _Freezes.claim(other_key)
+        _Freezes.claim(other_key, object())
         try:
             asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
             assert fake.matching("unpause")
-            assert _Freezes.claimed(other_key)
+            assert other_key in _Freezes.claims
         finally:
             _Freezes.release(other_key)
 
@@ -3570,13 +3666,6 @@ class TestAnExecRefusedForTheFreeze:
     the daemon's sentence. Anything weaker is a channel the guest writes, and acting on it runs
     whatever the guest chose a second time.
     """
-
-    @pytest.fixture(autouse=True)
-    def _give_the_process_wide_set_back(self):
-        """These seed the freeze bookkeeping by hand, and it outlives every backend."""
-        yield
-        _Freezes.claims.clear()
-        _Freezes.confirmed.clear()
 
     def _backend(self, answers: list[_DockerResult], *, on_first=None):
         backend = DockerSandboxBackend(DockerSandboxConfig())
@@ -3643,12 +3732,12 @@ class TestAnExecRefusedForTheFreeze:
         ids=["another container freezes", "this one lifted and came back"],
     )
     def test_only_this_containers_own_freeze_decides_the_reissue(self, interfering, reissued):
-        """A second sandbox freezing says nothing about whether this guest could run.
+        """Two requirements at once, and a fix for either alone would break the other.
 
-        One counter for every container made the everyday case — two conversations, each
-        polling its own files — hand a genuine refusal back as a command that failed. The
-        other half still has to hold: a freeze that lifted and came back leaves the guest a
-        window to have run, so that one is not re-issued.
+        A freeze on another container says nothing about whether this guest could run, so it
+        must not withdraw the re-issue — two conversations each polling their own files is the
+        ordinary case. This container's own freeze lifting and coming back does leave the guest
+        a window to have run, so that one must withdraw it.
         """
         backend = DockerSandboxBackend(DockerSandboxConfig())
         backend._endpoint = "unix:///fake.sock"

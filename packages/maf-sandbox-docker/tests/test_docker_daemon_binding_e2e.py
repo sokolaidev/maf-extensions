@@ -63,7 +63,7 @@ def test_context_switch_keeps_acquire_freeze_and_disposal_on_their_engine(
                 "--context", "second", "inspect", "--format", "{{.Id}}", name
             )
             async with first._frozen(name):
-                assert not _Freezes.claimed(second._freeze_key(name))
+                assert second._freeze_key(name) not in _Freezes.claims
                 await second.acquire(key, spec)
                 assert (await first._container_state(name)) == (True, True)
                 assert (await second._container_state(name)) == (True, False)

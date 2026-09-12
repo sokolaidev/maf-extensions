@@ -147,8 +147,8 @@ def test_freeze_records_share_an_endpoint_but_never_cross_daemons(monkeypatch):
         client.context = _Client("other", "tcp://engine-b:2376").context
         other = await DockerSandboxBackend.create(DockerSandboxConfig())
         async with first._frozen("same-name"):
-            assert _Freezes.claimed(alias._freeze_key("same-name"))
-            assert not _Freezes.claimed(other._freeze_key("same-name"))
+            assert alias._freeze_key("same-name") in _Freezes.claims
+            assert other._freeze_key("same-name") not in _Freezes.claims
             diagnostic = _DockerResult(
                 1,
                 b"",

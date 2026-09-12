@@ -49,7 +49,6 @@ import re
 import tarfile
 import threading
 import time
-import weakref
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -210,14 +209,17 @@ _FROZEN_RETRY_DELAY_S = 0.05
 
 #: One freeze per container, across every backend in the process rather than per backend
 #: object: a container is a machine-wide thing, and two backends built from one configuration
-#: name the same one. Keyed by endpoint and container, per running loop, and weakly, so a
-#: process running a loop per call accumulates no lock table. This **serialises within a loop
-#: and not across them**. Across loops, every dangerous act reads :class:`_Freezes`:
-#: a second freeze on the same container is refused by the daemon, and a thaw of one this
-#: process already holds is never issued.
-_FREEZE_LOCKS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Lock]] = (
-    weakref.WeakKeyDictionary()
-)
+#: name the same one. Keyed by endpoint and container, per running loop: an asyncio lock belongs
+#: to the loop that first waits on it — so this **serialises within a loop and not across
+#: them**. What holds across loops is :class:`_Freezes`, whose claim every dangerous act takes:
+#: a claim is exclusive, so a second loop gets neither a freeze nor a thaw.
+#:
+#: Each entry counts its callers and is dropped by the last one out.  A weak key cannot do that
+#: job here: a contended lock keeps a strong reference to its loop, so the value would hold the
+#: key alive and a host running a loop per call could never collect a closed one.
+_FREEZE_LOCKS: dict[tuple[int, str], tuple[asyncio.Lock, int]] = {}
+#: Guards the table above, which is reached from every loop and therefore from every thread.
+_FREEZE_LOCKS_GUARD = threading.Lock()
 
 
 class _Freezes:
@@ -242,20 +244,36 @@ class _Freezes:
     _guard: ClassVar[threading.Lock] = threading.Lock()
 
     claims: ClassVar[dict[str, int]] = {}
+    #: Who holds the claim on each container — the event loop, since that is what the freeze
+    #: lock can serialise and what it cannot reach past.  A claim is refused to anyone else
+    #: while one is outstanding, and **that** is what makes deciding to thaw and issuing the
+    #: unpause one operation: nothing can take a freeze in between, because taking one starts
+    #: with a claim.  The record alone could only be read, and a read is not a hold.
+    owners: ClassVar[dict[str, object]] = {}
     confirmed: ClassVar[set[str]] = set()
-    #: Per container, the tick its confirmation was taken at, so a freeze that lifted and came
-    #: back is not mistaken for one that never lifted.  Not one counter for everything: that
-    #: made a second sandbox freezing anywhere void the proof for this one, and the retry it
-    #: licenses is what keeps a genuine refusal from reaching a caller as a failed command.
-    #: Dropped when a confirmation is, and a later one takes a fresh tick, so nothing that
-    #: comes back can collide with a token taken before it went.
+    #: Per container, the tick its confirmation was taken at: a freeze that lifted and came
+    #: back must not read as one that never lifted, and a freeze on another container must not
+    #: bear on this one at all.  Dropped when a confirmation is, and a later one takes a fresh
+    #: tick, so nothing that comes back can collide with a token taken before it went.
     generations: ClassVar[dict[str, int]] = {}
     _tick: ClassVar[int] = 0
 
     @classmethod
-    def claim(cls, name: str) -> None:
+    def claim(cls, name: str, owner: object) -> bool:
+        """Take a claim for ``owner``, or refuse one somebody else is holding.
+
+        Counted as well as owned, so that a nested release cannot drop the record while an
+        outer caller still owes a thaw.  Nothing nests today — the freeze lock serialises one
+        loop's callers, and a second loop is refused here — and the count is what keeps that
+        from being load-bearing.
+        """
         with cls._guard:
+            held = cls.owners.get(name)
+            if held is not None and held is not owner:
+                return False
+            cls.owners[name] = owner
             cls.claims[name] = cls.claims.get(name, 0) + 1
+            return True
 
     @classmethod
     def release(cls, name: str) -> None:
@@ -265,12 +283,7 @@ class _Freezes:
                 cls.claims[name] = owed
             else:
                 cls.claims.pop(name, None)
-
-    @classmethod
-    def claimed(cls, name: str) -> bool:
-        """Does anything in this process owe a thaw on ``name``?"""
-        with cls._guard:
-            return name in cls.claims
+                cls.owners.pop(name, None)
 
     @classmethod
     def confirm(cls, name: str) -> None:
@@ -302,9 +315,8 @@ class _Freezes:
         guest **cannot run**: while the freeze held, nothing in the container could have
         written that sentence, so the daemon did.  Let it lift mid-invocation and the guest
         could have written it itself — and then a re-issue is a second execution of whatever
-        the guest chose to run.  Any confirmation taken or dropped anywhere voids the answer
-        on this container — a freeze taken and lifted elsewhere says nothing about whether this
-        guest could run.
+        the guest chose to run.  Only this container's own confirmations bear on the answer: a
+        freeze taken and lifted elsewhere says nothing about whether this guest could run.
         """
         generation, held = mark
         if not held or name is None:
@@ -313,13 +325,24 @@ class _Freezes:
             return name in cls.confirmed and cls.generations.get(name, 0) == generation
 
 
-def _freeze_lock(name: str) -> asyncio.Lock:
-    """The get-or-create freeze lock for one container on the running loop."""
-    per_loop = _FREEZE_LOCKS.setdefault(asyncio.get_running_loop(), {})
-    lock = per_loop.get(name)
-    if lock is None:
-        lock = per_loop[name] = asyncio.Lock()
-    return lock
+@contextlib.asynccontextmanager
+async def _freeze_lock(name: str) -> AsyncGenerator[None]:
+    """Hold this loop's freeze lock on ``name``, and leave no entry once nobody holds it."""
+    key = (id(asyncio.get_running_loop()), name)
+    with _FREEZE_LOCKS_GUARD:
+        held = _FREEZE_LOCKS.get(key)
+        lock = held[0] if held is not None else asyncio.Lock()
+        _FREEZE_LOCKS[key] = (lock, (held[1] if held is not None else 0) + 1)
+    try:
+        async with lock:
+            yield
+    finally:
+        with _FREEZE_LOCKS_GUARD:
+            _, callers = _FREEZE_LOCKS[key]
+            if callers > 1:
+                _FREEZE_LOCKS[key] = (lock, callers - 1)
+            else:
+                del _FREEZE_LOCKS[key]
 
 
 _PROXY_PORT = 3128
@@ -1519,11 +1542,11 @@ class DockerSandboxBackend:
         # Get-or-create serialised per (running loop, key, kind), for the same reason wslc does
         # it: a create names no container until it returns, so two acquires racing one key would
         # each build a network, a proxy and a sandbox. Per loop because an asyncio.Lock binds to
-        # the loop that first waits on it; weak-keyed on the loop so a process that runs a loop
-        # per call does not accumulate a lock table for loops long dead.
-        self._acquire_locks: weakref.WeakKeyDictionary[
-            asyncio.AbstractEventLoop, dict[tuple[str, str, str, str, str], asyncio.Lock]
-        ] = weakref.WeakKeyDictionary()
+        # the loop that first waits on it, and counted per entry so the last acquire out drops
+        # it — a weak key would not, since a contended lock holds its loop and the value would
+        # then keep the key alive (the same defect this table shares with `_FREEZE_LOCKS`).
+        self._acquire_locks: dict[tuple[object, ...], tuple[asyncio.Lock, int]] = {}
+        self._acquire_locks_guard = threading.Lock()
         # (container, image, work_dir) -> what the container itself says. Keyed on the image
         # because a container name is not, so one name can come back carrying a different one.
         self._facts: dict[tuple[str, str, str], _ContainerFacts] = {}
@@ -1849,20 +1872,30 @@ class DockerSandboxBackend:
                 # that call's check and its copy. Released before `prepare_work_dir`, which
                 # takes the same lock.
                 running, frozen = await self._container_state(name)
-                if frozen and not _Freezes.claimed(freeze_key):
-                    # The record rather than the lock decides this, because the lock binds to
-                    # one event loop and a process may run several: a freeze another loop holds
-                    # reads as paused here, and lifting it would reopen that call's window.
-                    # Nothing holds it and it is paused, so a host died inside a file call;
-                    # warm reuse inherits that, where a disposal would have taken the container.
-                    # A thaw that does not land refuses the acquire, because this is the one
-                    # path that hands out a container nothing is about to freeze: a workload
-                    # that asks for no file surface would get one whose every exec is refused.
-                    if not await self._thaw(name):
+                if frozen:
+                    # Claimed rather than merely read, and held across the thaw. The lock binds
+                    # to one event loop and a process may run several, so reading the record
+                    # would leave the decision and the unpause two operations with room for
+                    # another loop to take a freeze in between — the same shape as the window
+                    # the tar-plane members freeze to close, on this side of the boundary. A
+                    # claim it cannot take belongs to someone whose freeze this is not.
+                    if not _Freezes.claim(freeze_key, asyncio.get_running_loop()):
                         raise RuntimeError(
-                            f"docker could not thaw {name}, which a host left frozen; refusing "
-                            "to serve a container whose guest cannot run"
+                            f"docker will not reuse {name}: another event loop in this process "
+                            "is holding it frozen"
                         )
+                    try:
+                        # A thaw that does not land refuses the acquire, because this is the
+                        # one path that hands out a container nothing is about to freeze: a
+                        # workload asking for no file surface would get one whose every exec
+                        # the daemon refuses.
+                        if not await self._thaw(name):
+                            raise RuntimeError(
+                                f"docker could not thaw {name}, which a host left frozen; "
+                                "refusing to serve a container whose guest cannot run"
+                            )
+                    finally:
+                        _Freezes.release(freeze_key)
                     logger.info("sandbox thawed before reuse: container=%s", name)
             stopped = not running and await self._exists(name)
             if not running:
@@ -3061,14 +3094,24 @@ class DockerSandboxBackend:
             return ""
         return "allow:" + ",".join(sorted(map(str, spec.egress_allow)))
 
-    def _acquire_lock(self, key: SandboxKey, kind: str) -> asyncio.Lock:
-        """The get-or-create lock for one key and kind on the running loop (see ``__init__``)."""
-        per_loop = self._acquire_locks.setdefault(asyncio.get_running_loop(), {})
-        registry_key = (*_key_prefix(key), kind)
-        lock = per_loop.get(registry_key)
-        if lock is None:
-            lock = per_loop[registry_key] = asyncio.Lock()
-        return lock
+    @contextlib.asynccontextmanager
+    async def _acquire_lock(self, key: SandboxKey, kind: str) -> AsyncGenerator[None]:
+        """Hold the lock for one key and kind on the running loop (see ``__init__``)."""
+        table_key = (id(asyncio.get_running_loop()), *_key_prefix(key), kind)
+        with self._acquire_locks_guard:
+            held = self._acquire_locks.get(table_key)
+            lock = held[0] if held is not None else asyncio.Lock()
+            self._acquire_locks[table_key] = (lock, (held[1] if held is not None else 0) + 1)
+        try:
+            async with lock:
+                yield
+        finally:
+            with self._acquire_locks_guard:
+                _, callers = self._acquire_locks[table_key]
+                if callers > 1:
+                    self._acquire_locks[table_key] = (lock, callers - 1)
+                else:
+                    del self._acquire_locks[table_key]
 
     def _freeze(self, name: str) -> _GuestFreeze:
         """The freeze a sandbox on ``name`` holds around a check and the copy it guards."""
@@ -3087,17 +3130,25 @@ class DockerSandboxBackend:
         anyway would be a guarantee stated in the docstring and absent from the behaviour.
 
         The thaw is owed by whoever may have taken the freeze, and a cancelled caller waits for
-        it through **every** cancellation, not only the first: the guest is thawed by the time
-        the cancellation reaches whoever asked for it. What that cannot cover is a host that
-        dies mid-block; :meth:`acquire` lifts that one.
+        the whole attempt through **every** cancellation rather than only the first — an
+        attempt, not an outcome: an ``unpause`` the engine refuses leaves the guest frozen, and
+        the caller still gets its cancellation.  What is left frozen either that way or by a
+        host that died mid-block is :meth:`acquire`'s to lift, and to refuse serving until it
+        has.
         """
         await self._bind_daemon()
         freeze_key = self._freeze_key(name)
         async with _freeze_lock(freeze_key):
             # Claimed from before the pause is issued rather than after it returns: a call
             # cancelled or timed out while that invocation is in flight can have frozen the
-            # guest anyway, and only a claim taken this early covers that one.
-            _Freezes.claim(freeze_key)
+            # guest anyway, and only a claim taken this early covers that one. Exclusive, so
+            # for as long as this block runs no other loop can pause this container — which is
+            # what lets the thaw below be decided and issued as one operation.
+            if not _Freezes.claim(freeze_key, asyncio.get_running_loop()):
+                raise RuntimeError(
+                    f"docker will not freeze {name} for a file call: another event loop in "
+                    "this process is holding it, and one container is frozen by one caller"
+                )
             owed = True
             confirmed = False
             try:
@@ -3122,6 +3173,10 @@ class DockerSandboxBackend:
             finally:
                 if confirmed:
                     _Freezes.unconfirm(freeze_key)
+                # Any freeze on this container is this caller's: the claim above is
+                # exclusive and still held, so nothing else can have paused it. That covers
+                # the uncertain case too — cancelled or timed out inside the pause, not
+                # knowing what it did — which is why the debt is what decides here.
                 try:
                     if owed:
                         thawing = asyncio.ensure_future(self._thaw(name))
