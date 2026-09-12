@@ -31,9 +31,9 @@ _DEFAULT_PIDS_LIMIT = 512
 class DockerSandboxConfig:
     """Where the client is, how long its commands may take, and how tight the box is.
 
-    ``docker_path`` is the client binary, not a socket: the subprocess inherits this process's
-    environment, so ``DOCKER_HOST``, the active Docker context and every other lookup the real
-    client implements work without this package knowing they exist.
+    ``docker_path`` is the client binary, not a socket. The backend snapshots the client
+    environment and resolves its context once, retaining its endpoint and TLS settings for
+    every command. Use ``create`` to resolve immediately; the constructor binds on first use.
 
     ``command_timeout_seconds`` bounds the container-lifecycle commands — run, start, inspect,
     remove and the file copies.  It does **not** bound ``exec``: a workload states its own
