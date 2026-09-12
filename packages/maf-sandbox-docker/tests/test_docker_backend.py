@@ -756,9 +756,8 @@ class TestTheRouterMatchesTheDeclaredFamily:
 
 
 class TestTheDaemonMovingUnderTheDeclaration:
-    """`os_families` is a snapshot: the client resolves DOCKER_HOST and the active context per
-    invocation, so switching Docker Desktop to Windows containers moves the engine under a
-    running host. A create re-asks; everything else does not."""
+    """The daemon behind the bound endpoint can change OS. Cold acquire rechecks the
+    declaration before creating or restarting a container; warm acquire does not."""
 
     @staticmethod
     def _switchable(daemon: dict[str, bytes]):
