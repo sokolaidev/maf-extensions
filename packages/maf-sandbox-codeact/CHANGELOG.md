@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.18.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.17.0...maf-sandbox-codeact-v0.18.0) (2026-09-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* require agent-framework-core 1.18 across sandbox tools ([#1181](https://github.com/sokolaidev/maf-extensions/issues/1181))
+
+### Fixes
+
+* require agent-framework-core 1.18 across sandbox tools ([#1181](https://github.com/sokolaidev/maf-extensions/issues/1181)) ([a9feab2](https://github.com/sokolaidev/maf-extensions/commit/a9feab2d0cab0790c25ace3e2c856fca5ce8c93c))
+
 ## [0.17.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.16.0...maf-sandbox-codeact-v0.17.0) (2026-09-12)
 
 
