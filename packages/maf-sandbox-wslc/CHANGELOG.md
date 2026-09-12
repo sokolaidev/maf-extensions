@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.21.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.20.0...maf-sandbox-wslc-v0.21.0) (2026-09-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** an egress allow entry is one hostname, and a bare "*" no longer allows every host ([#1138](https://github.com/sokolaidev/maf-extensions/issues/1138))
+
+### Features
+
+* **docker+wslc+acas:** a workload can ask for a sandbox per tool call, and all three backends serve one ([#1139](https://github.com/sokolaidev/maf-extensions/issues/1139)) ([e6cf30d](https://github.com/sokolaidev/maf-extensions/commit/e6cf30d8f85da4b01fdfcd455228b3cf0e2b8fee))
+
+
+### Fixes
+
+* **docker+wslc:** a disposal files a swept proxy's egress window under the key that ran behind it ([#1149](https://github.com/sokolaidev/maf-extensions/issues/1149)) ([3b16358](https://github.com/sokolaidev/maf-extensions/commit/3b16358c84d202c3bce36dbb18c304556583d4e2))
+* **sandbox:** an egress allow entry is one hostname, and a bare "*" no longer allows every host ([#1138](https://github.com/sokolaidev/maf-extensions/issues/1138)) ([aa3edba](https://github.com/sokolaidev/maf-extensions/commit/aa3edba601ce025bc8a5971b9aa942eeaa9ef557))
+* **wslc:** remove temporary host copies after path checks ([#1157](https://github.com/sokolaidev/maf-extensions/issues/1157)) ([216652a](https://github.com/sokolaidev/maf-extensions/commit/216652a249a87a6a778f5d6833d5507278405965))
+* **wslc:** the engine answers the write-path check, and a guest cannot claim a directory ([#1135](https://github.com/sokolaidev/maf-extensions/issues/1135)) ([8ee28bc](https://github.com/sokolaidev/maf-extensions/commit/8ee28bc0785b3e33cb351974d8c7ca6a3b9e1e8f))
+
 ## [0.20.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.19.1...maf-sandbox-wslc-v0.20.0) (2026-09-11)
 
 
