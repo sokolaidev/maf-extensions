@@ -9,8 +9,8 @@ name: Publish
 # authoritative on its `package`, and the automated path dispatches *at the tag*, so a
 # ref-derived title could name a different package than the one that publishes. Only a tag
 # push falls through to the ref, and then the whole tag is the best label there is. The
-# version is deliberately absent — it is not known until the build resolves it, and the job
-# below carries it.
+# version is deliberately absent — outside a rehearsal that names one it is not known until
+# the build resolves it, and the job below carries it either way.
 run-name: Publish ${{ inputs.package || github.ref_name }} to ${{ inputs.target || 'pypi' }}
 
 # One package per tag (`maf-sandbox-v0.1.0` -> packages/maf-sandbox), published with
