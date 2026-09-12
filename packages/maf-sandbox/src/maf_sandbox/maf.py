@@ -715,11 +715,8 @@ def _reduced_form(payload: object) -> object:
     into surrounding text.  So this always answers with something, and "no reduction" is the
     payload rather than an absence — there is no shape a caller should skip.
 
-    **Whether the reduction applies at all depends on the core installed, which is why
-    :func:`_hidden_payloads` offers this beside the payload rather than instead of it.**  Every
-    ``agent-framework-core`` through 1.17 reduced any payload of these shapes; from 1.18 the
-    reduction is confined to what ``quarantined_llm`` stored, and every other payload is
-    substituted whole.  This package accepts the whole 1.x range, so both are live.
+    **Whether a core applies this reduction at all is :func:`_substituted_forms`' to say**, and
+    it is why that function offers this beside the payload rather than instead of it.
 
     **It mirrors behaviour rather than a published contract, so it has to track upstream.** The
     rule lives inside ``agent_framework.security`` (MIT, Microsoft Corporation), which promises
@@ -1099,8 +1096,9 @@ def sandbox_tool_declarations(
     conversation does go untrusted.  Three limits on that trade: hiding stops once anything
     else has tainted the conversation; it never applies to confidentiality, which a hidden item
     still contributes; and *passing* the reference on is a separate question from the
-    conversation label, refused from ``agent-framework-core`` 1.18 wherever a host also wires
-    the policy middleware and the destination declares no ``accepts_untrusted``.
+    conversation label, gated from ``agent-framework-core`` 1.18 wherever a host also wires the
+    policy middleware and the destination has not opted in — refused under that middleware's
+    default configuration, and served under either of its other two.
     ``docs/sandbox/information-flow.md`` carries the measurement and the full conditions.
 
     ``outbound_max_confidentiality`` is **opt-in, and off by default**, and the asymmetry is

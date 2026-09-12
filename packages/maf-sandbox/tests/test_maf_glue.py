@@ -4842,7 +4842,7 @@ class TestPositionsHoldingHiddenContent:
 
         The tool's own signature is what stops it: a `list[str]` argument holding an `int` fails
         the framework's argument validation, so the body is never entered and this helper is
-        never asked. Recorded because it is the reason the table above need cover only the
+        never asked. Recorded because it is why the table above can cover only the
         shapes that arrive as text — not because the guard in `positions_holding_hidden_content`
         is unnecessary, since that function is public and its caller's signature is its own.
 
