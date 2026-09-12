@@ -3361,6 +3361,35 @@ class TestFreezingTheGuest:
         # only lift a freeze somebody else is holding.
         assert self._verbs(fake) == ["pause"]
 
+    def test_an_uncertain_pause_does_not_thaw_a_freeze_it_may_not_own(self):
+        """A claimant cancelled inside its own `pause` does not know what that pause did.
+
+        It owes a thaw where it might be the only one that froze anything, and owes nothing
+        where somebody else has a claim: lifting that freeze would put its holder back between
+        its check and its copy, which is the whole window this closes. What is left frozen with
+        no owner is `acquire`'s recovery to lift.
+        """
+        backend, sandbox, fake = self._sandbox()
+        inner = backend._docker
+
+        async def seam(*args, **kwargs):
+            if args[0] == "pause":
+                raise asyncio.CancelledError
+            return await inner(*args, **kwargs)
+
+        backend._docker = seam
+        sandbox._run = seam
+        # Another loop's file call, mid-flight: claimed and frozen for real.
+        _Freezes.claim(_NAME)
+        _Freezes.confirm(_NAME)
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(sandbox.write_file("out.png", b"x", working_directory=_WORK))
+        finally:
+            _Freezes.unconfirm(_NAME)
+            _Freezes.release(_NAME)
+        assert "unpause" not in self._verbs(fake)
+
     def test_a_cancellation_inside_the_pause_itself_still_thaws(self):
         """The guest can be frozen by an invocation that never returned to say so."""
         backend, sandbox, fake = self._sandbox()
@@ -3612,12 +3641,12 @@ class TestAnExecRefusedForTheFreeze:
         ids=["another container freezes", "this one lifted and came back"],
     )
     def test_only_this_containers_own_freeze_decides_the_reissue(self, interfering, reissued):
-        """A second sandbox freezing says nothing about whether this guest could run.
+        """Two requirements at once, and a fix for either alone would break the other.
 
-        One counter for every container made the everyday case — two conversations, each
-        polling its own files — hand a genuine refusal back as a command that failed. The
-        other half still has to hold: a freeze that lifted and came back leaves the guest a
-        window to have run, so that one is not re-issued.
+        A freeze on another container says nothing about whether this guest could run, so it
+        must not withdraw the re-issue — two conversations each polling their own files is the
+        ordinary case. This container's own freeze lifting and coming back does leave the guest
+        a window to have run, so that one must withdraw it.
         """
         backend = DockerSandboxBackend(DockerSandboxConfig())
         answers = [_frozen_refusal(), _DockerResult(0, b"ok", "")]

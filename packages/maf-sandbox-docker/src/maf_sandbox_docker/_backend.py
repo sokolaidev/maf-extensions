@@ -242,12 +242,10 @@ class _Freezes:
 
     claims: ClassVar[dict[str, int]] = {}
     confirmed: ClassVar[set[str]] = set()
-    #: Per container, the tick its confirmation was taken at, so a freeze that lifted and came
-    #: back is not mistaken for one that never lifted.  Not one counter for everything: that
-    #: made a second sandbox freezing anywhere void the proof for this one, and the retry it
-    #: licenses is what keeps a genuine refusal from reaching a caller as a failed command.
-    #: Dropped when a confirmation is, and a later one takes a fresh tick, so nothing that
-    #: comes back can collide with a token taken before it went.
+    #: Per container, the tick its confirmation was taken at: a freeze that lifted and came
+    #: back must not read as one that never lifted, and a freeze on another container must not
+    #: bear on this one at all.  Dropped when a confirmation is, and a later one takes a fresh
+    #: tick, so nothing that comes back can collide with a token taken before it went.
     generations: ClassVar[dict[str, int]] = {}
     _tick: ClassVar[int] = 0
 
@@ -264,6 +262,17 @@ class _Freezes:
                 cls.claims[name] = owed
             else:
                 cls.claims.pop(name, None)
+
+    @classmethod
+    def solely_claimed(cls, name: str) -> bool:
+        """Is this caller the only one in the process that owes a thaw on ``name``?
+
+        A claim is taken before any pause is issued, so a second claim means somebody else's
+        pause may be the one that froze the guest — and lifting a freeze that is not yours
+        puts its holder back between its check and its copy.
+        """
+        with cls._guard:
+            return cls.claims.get(name, 0) == 1
 
     @classmethod
     def claimed(cls, name: str) -> bool:
@@ -301,9 +310,8 @@ class _Freezes:
         guest **cannot run**: while the freeze held, nothing in the container could have
         written that sentence, so the daemon did.  Let it lift mid-invocation and the guest
         could have written it itself — and then a re-issue is a second execution of whatever
-        the guest chose to run.  Any confirmation taken or dropped anywhere voids the answer
-        on this container — a freeze taken and lifted elsewhere says nothing about whether this
-        guest could run.
+        the guest chose to run.  Only this container's own confirmations bear on the answer: a
+        freeze taken and lifted elsewhere says nothing about whether this guest could run.
         """
         generation, held = mark
         if not held or name is None:
@@ -3082,8 +3090,16 @@ class DockerSandboxBackend:
             finally:
                 if confirmed:
                     _Freezes.unconfirm(name)
+                # A thaw only for a freeze that is this caller's. Confirmed means the daemon
+                # froze it for us, and no other claimant's pause can have: it would have been
+                # refused. Unconfirmed but uncertain — cancelled or timed out inside the pause
+                # — is the case that needs the second half, because such a claimant does not
+                # know what it did: it may thaw only where nothing else has a claim, and
+                # otherwise leaves the container to `acquire`'s orphan recovery rather than
+                # lifting a freeze that may be someone else's.
+                mine = confirmed or (owed and _Freezes.solely_claimed(name))
                 try:
-                    if owed:
+                    if mine:
                         thawing = asyncio.ensure_future(self._thaw(name))
                         cancelled = False
                         # Shielded through *every* cancellation, not the first: an unshielded

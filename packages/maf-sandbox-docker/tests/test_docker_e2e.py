@@ -1284,8 +1284,8 @@ class TestTheFreezeAgainstARealEngine:
                     "false"
                 )
             # What keeps the assertion below from passing for free: a guest that had stopped
-            # flipping would leave nothing to redirect, and this says it ran thousands of
-            # times while those writes were being made.
+            # flipping would leave nothing to redirect, and this requires it to have gone
+            # round more than a hundred times while those writes were being made.
             assert await self._flips(sandbox) - before > 100
             assert landed + refused == 12
             listed = await sandbox.exec(
