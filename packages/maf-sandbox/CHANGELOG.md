@@ -2,6 +2,31 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.39.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.38.0...maf-sandbox-v0.39.0) (2026-09-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** an egress method is an uppercase token, because no backend keeps its case ([#1151](https://github.com/sokolaidev/maf-extensions/issues/1151))
+* **sandbox:** an egress allow entry is one hostname, and a bare "*" no longer allows every host ([#1138](https://github.com/sokolaidev/maf-extensions/issues/1138))
+
+### Features
+
+* **sandbox:** a kind can ask for exclusive admission, and codeact asks for it ([#1134](https://github.com/sokolaidev/maf-extensions/issues/1134)) ([851008d](https://github.com/sokolaidev/maf-extensions/commit/851008d722133a59c8c5869716b2f59cb3e2ffad))
+
+
+### Fixes
+
+* **sandbox:** an egress allow entry is one hostname, and a bare "*" no longer allows every host ([#1138](https://github.com/sokolaidev/maf-extensions/issues/1138)) ([aa3edba](https://github.com/sokolaidev/maf-extensions/commit/aa3edba601ce025bc8a5971b9aa942eeaa9ef557))
+* **sandbox:** an egress method is an uppercase token, because no backend keeps its case ([#1151](https://github.com/sokolaidev/maf-extensions/issues/1151)) ([be86cbe](https://github.com/sokolaidev/maf-extensions/commit/be86cbec31e1e2a93a77ff65fa5760a13a8168fc))
+* **sandbox:** report a hidden payload whichever form agent-framework-core substitutes ([#1160](https://github.com/sokolaidev/maf-extensions/issues/1160)) ([8ba3c7a](https://github.com/sokolaidev/maf-extensions/commit/8ba3c7adbf85dc550305d621a10a70f11ac5e269))
+
+
+### Documentation
+
+* **sandbox:** say that the payload mirror buys precision, not the check ([#1172](https://github.com/sokolaidev/maf-extensions/issues/1172)) ([6690536](https://github.com/sokolaidev/maf-extensions/commit/6690536c3429492eaeb40548dc0cea095b671bb3))
+* the check-then-act window is closable, and stopping the guest is one of the ways ([#1171](https://github.com/sokolaidev/maf-extensions/issues/1171)) ([0a654d2](https://github.com/sokolaidev/maf-extensions/commit/0a654d2e31e3df2f7d53645e4b56e43f690a5ce2))
+
 ## [0.38.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.37.0...maf-sandbox-v0.38.0) (2026-09-11)
 
 
