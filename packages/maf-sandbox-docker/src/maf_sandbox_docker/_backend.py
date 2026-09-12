@@ -242,7 +242,14 @@ class _Freezes:
 
     claims: ClassVar[dict[str, int]] = {}
     confirmed: ClassVar[set[str]] = set()
-    changes: ClassVar[int] = 0
+    #: Per container, the tick its confirmation was taken at, so a freeze that lifted and came
+    #: back is not mistaken for one that never lifted.  Not one counter for everything: that
+    #: made a second sandbox freezing anywhere void the proof for this one, and the retry it
+    #: licenses is what keeps a genuine refusal from reaching a caller as a failed command.
+    #: Dropped when a confirmation is, and a later one takes a fresh tick, so nothing that
+    #: comes back can collide with a token taken before it went.
+    generations: ClassVar[dict[str, int]] = {}
+    _tick: ClassVar[int] = 0
 
     @classmethod
     def claim(cls, name: str) -> None:
@@ -267,20 +274,24 @@ class _Freezes:
     @classmethod
     def confirm(cls, name: str) -> None:
         with cls._guard:
+            cls._tick += 1
             cls.confirmed.add(name)
-            cls.changes += 1
+            cls.generations[name] = cls._tick
 
     @classmethod
     def unconfirm(cls, name: str) -> None:
         with cls._guard:
+            cls._tick += 1
             cls.confirmed.discard(name)
-            cls.changes += 1
+            cls.generations.pop(name, None)
 
     @classmethod
     def mark(cls, name: str | None) -> tuple[int, bool]:
         """A token for one container, to compare an invocation's end against its start."""
+        if name is None:
+            return 0, False
         with cls._guard:
-            return cls.changes, name is not None and name in cls.confirmed
+            return cls.generations.get(name, 0), name in cls.confirmed
 
     @classmethod
     def held_throughout(cls, name: str | None, mark: tuple[int, bool]) -> bool:
@@ -291,12 +302,14 @@ class _Freezes:
         written that sentence, so the daemon did.  Let it lift mid-invocation and the guest
         could have written it itself — and then a re-issue is a second execution of whatever
         the guest chose to run.  Any confirmation taken or dropped anywhere voids the answer
-        rather than only one on this container, because that is the direction it is safe to be
-        wrong in.
+        on this container — a freeze taken and lifted elsewhere says nothing about whether this
+        guest could run.
         """
-        changes, held = mark
+        generation, held = mark
+        if not held or name is None:
+            return False
         with cls._guard:
-            return held and name is not None and name in cls.confirmed and cls.changes == changes
+            return name in cls.confirmed and cls.generations.get(name, 0) == generation
 
 
 def _freeze_lock(name: str) -> asyncio.Lock:
@@ -717,10 +730,11 @@ def _reads_as_an_absent_path(stderr: str, guest: str) -> bool:
 def _reads_as_a_frozen_guest(result: _DockerResult) -> bool:
     """Whether the daemon refused this invocation because the container is frozen.
 
-    Three conditions, and the caller adds a fourth: the refusal carries the daemon's own
-    prefix, nothing reached stdout, and it names the freeze.  A guest command's stderr reaches
-    the same field, so a guest that prints the daemon's sentence while this backend holds a
-    freeze can have its *own* command re-issued — at its own authority, and no other call's.
+    Three conditions — the refusal carries the daemon's own prefix, nothing reached stdout, and
+    it names the freeze — and none of them is proof, because a guest command's stderr reaches
+    the same field and a guest may print whatever it likes there.  The proof is the caller's
+    fourth: that this process held the target frozen for the whole attempt, which is when
+    nothing in the container could have written anything at all.
     """
     lowered = result.stderr.lower().lstrip()
     return (
@@ -1844,13 +1858,20 @@ class DockerSandboxBackend:
                 # takes the same lock.
                 running, frozen = await self._container_state(name)
                 if frozen and not _Freezes.claimed(name):
-                    # The set rather than the lock decides this, because the lock binds to one
-                    # event loop and a process may run several: a freeze another loop holds
+                    # The record rather than the lock decides this, because the lock binds to
+                    # one event loop and a process may run several: a freeze another loop holds
                     # reads as paused here, and lifting it would reopen that call's window.
                     # Nothing holds it and it is paused, so a host died inside a file call;
                     # warm reuse inherits that, where a disposal would have taken the container.
+                    # A thaw that does not land refuses the acquire, because this is the one
+                    # path that hands out a container nothing is about to freeze: a workload
+                    # that asks for no file surface would get one whose every exec is refused.
+                    if not await self._thaw(name):
+                        raise RuntimeError(
+                            f"docker could not thaw {name}, which a host left frozen; refusing "
+                            "to serve a container whose guest cannot run"
+                        )
                     logger.info("sandbox thawed before reuse: container=%s", name)
-                    await self._thaw(name)
             stopped = not running and await self._exists(name)
             if not running:
                 # Every path that starts a container, not only the create: a `_restart` that
@@ -3078,13 +3099,14 @@ class DockerSandboxBackend:
                 finally:
                     _Freezes.release(name)
 
-    async def _thaw(self, name: str) -> None:
-        """Lift a freeze, never raising: the call that took it has its own outcome to report.
+    async def _thaw(self, name: str) -> bool:
+        """Lift a freeze and say whether it is lifted; never raises, because the call that took
+        it has its own outcome to report.
 
-        A container that has gone, and one the engine says was never frozen, are both the
-        state this wanted. Anything else leaves it frozen, and frozen refuses every ``exec``
-        from here on — so it is logged as the warning it is, and the next :meth:`acquire`
-        lifts it.
+        A container that has gone, and one the engine says was never frozen, are both the state
+        this wanted, so both answer ``True``. Anything else leaves it frozen, which refuses
+        every ``exec`` from there on — logged as the warning it is, and the answer is what lets
+        :meth:`acquire` decline to hand one over rather than serve it.
         """
         try:
             lifted = await self._docker(
@@ -3096,7 +3118,7 @@ class DockerSandboxBackend:
                 name,
                 error_detail(unreachable),
             )
-            return
+            return False
         if (
             lifted.returncode != 0
             and not _reads_as_absent(lifted.stderr, name)
@@ -3107,6 +3129,8 @@ class DockerSandboxBackend:
                 name,
                 lifted.stderr.strip() or f"exit {lifted.returncode}",
             )
+            return False
+        return True
 
     async def _ensure_image(self, image: str) -> None:
         """Pull ``image`` if it is not already present, under the pull timeout.

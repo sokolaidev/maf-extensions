@@ -3210,8 +3210,8 @@ class TestFreezingTheGuest:
     def test_a_second_claimants_failure_does_not_release_the_first(self):
         """Two loops claim one container, and only the second's pause is refused.
 
-        A flag would have been dropped by that second claimant on its way out, leaving the
-        first holding a real freeze that the next `acquire` reads as an orphan and lifts.
+        The claim has to outlive that refusal: while any caller still owes a thaw, the record
+        must say so, or the next `acquire` reads a live freeze as an orphan and lifts it.
         """
         _Freezes.claim(_NAME)
         _Freezes.claim(_NAME)
@@ -3505,6 +3505,23 @@ class TestFreezingTheGuest:
         # what matters here is that nothing lifted the freeze that container already had.
         assert "unpause" not in [call.args[0] for call in fake.calls]
 
+    def test_a_recovery_thaw_that_does_not_land_refuses_the_acquire(self):
+        """Warm reuse is the one path that serves a container nothing is about to freeze.
+
+        A workload asking for no file surface never takes one, so a container handed over
+        still paused would refuse its every exec with nothing left to notice.
+        """
+        state = {
+            ("inspect", "-f", "{{.State.Running}} {{.State.Paused}}"): _DockerResult(
+                0, b"true true", ""
+            ),
+            ("unpause",): _DockerResult(1, b"", "daemon is not responding"),
+        }
+        machine = _machine(running=[_NAME], overrides={**_WORK_IS_A_DIRECTORY, **state})
+        backend, _fake = _backend_with(machine)
+        with pytest.raises(RuntimeError, match="whose guest cannot run"):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+
     def test_acquire_thaws_a_container_a_dead_host_left_frozen(self):
         state = {
             ("inspect", "-f", "{{.State.Running}} {{.State.Paused}}"): _DockerResult(
@@ -3579,6 +3596,46 @@ class TestAnExecRefusedForTheFreeze:
         )
         result = asyncio.run(backend._docker("exec", _NAME, "true", timeout=5, container=_NAME))
         assert result == _frozen_refusal() and len(seen) == 1
+
+    @pytest.mark.parametrize(
+        "interfering, reissued",
+        [
+            (
+                lambda: (
+                    _Freezes.confirm("another-container"),
+                    _Freezes.unconfirm("another-container"),
+                ),
+                True,
+            ),
+            (lambda: (_Freezes.unconfirm(_NAME), _Freezes.confirm(_NAME)), False),
+        ],
+        ids=["another container freezes", "this one lifted and came back"],
+    )
+    def test_only_this_containers_own_freeze_decides_the_reissue(self, interfering, reissued):
+        """A second sandbox freezing says nothing about whether this guest could run.
+
+        One counter for every container made the everyday case — two conversations, each
+        polling its own files — hand a genuine refusal back as a command that failed. The
+        other half still has to hold: a freeze that lifted and came back leaves the guest a
+        window to have run, so that one is not re-issued.
+        """
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+        answers = [_frozen_refusal(), _DockerResult(0, b"ok", "")]
+        seen: list[tuple[str, ...]] = []
+
+        async def invoke(*args, **kwargs):
+            seen.append(args)
+            if len(seen) == 1:
+                interfering()
+            return answers[min(len(seen), len(answers)) - 1]
+
+        backend._invoke = invoke
+        _Freezes.confirm(_NAME)
+        result = asyncio.run(backend._docker("exec", _NAME, "true", timeout=5, container=_NAME))
+        if reissued:
+            assert result.returncode == 0 and len(seen) == 2
+        else:
+            assert result == _frozen_refusal() and len(seen) == 1
 
     @pytest.mark.parametrize(
         "answer",
