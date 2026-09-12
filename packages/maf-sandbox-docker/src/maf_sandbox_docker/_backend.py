@@ -48,7 +48,6 @@ import re
 import tarfile
 import threading
 import time
-import weakref
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -209,14 +208,17 @@ _FROZEN_RETRY_DELAY_S = 0.05
 
 #: One freeze per container, across every backend in the process rather than per backend
 #: object: a container is a machine-wide thing, and two backends built from one configuration
-#: name the same one. Keyed per running loop, and weakly, so a process running a loop per call
-#: accumulates no lock table — which means this **serialises within a loop and not across
-#: them**. What holds across loops is :class:`_Freezes`, whose set every dangerous act reads:
-#: a second freeze on the same container is refused by the daemon, and a thaw of one this
-#: process already holds is never issued.
-_FREEZE_LOCKS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Lock]] = (
-    weakref.WeakKeyDictionary()
-)
+#: name the same one. Keyed per running loop as well, because an :class:`asyncio.Lock` belongs
+#: to the loop that first waits on it — so this **serialises within a loop and not across
+#: them**. What holds across loops is :class:`_Freezes`, whose claim every dangerous act takes:
+#: a claim is exclusive, so a second loop gets neither a freeze nor a thaw.
+#:
+#: Each entry counts its callers and is dropped by the last one out.  A weak key cannot do that
+#: job here: a contended lock keeps a strong reference to its loop, so the value would hold the
+#: key alive and a host running a loop per call could never collect a closed one.
+_FREEZE_LOCKS: dict[tuple[int, str], tuple[asyncio.Lock, int]] = {}
+#: Guards the table above, which is reached from every loop and therefore from every thread.
+_FREEZE_LOCKS_GUARD = threading.Lock()
 
 
 class _Freezes:
@@ -322,13 +324,24 @@ class _Freezes:
             return name in cls.confirmed and cls.generations.get(name, 0) == generation
 
 
-def _freeze_lock(name: str) -> asyncio.Lock:
-    """The get-or-create freeze lock for one container on the running loop."""
-    per_loop = _FREEZE_LOCKS.setdefault(asyncio.get_running_loop(), {})
-    lock = per_loop.get(name)
-    if lock is None:
-        lock = per_loop[name] = asyncio.Lock()
-    return lock
+@contextlib.asynccontextmanager
+async def _freeze_lock(name: str) -> AsyncGenerator[None]:
+    """Hold this loop's freeze lock on ``name``, and leave no entry once nobody holds it."""
+    key = (id(asyncio.get_running_loop()), name)
+    with _FREEZE_LOCKS_GUARD:
+        held = _FREEZE_LOCKS.get(key)
+        lock = held[0] if held is not None else asyncio.Lock()
+        _FREEZE_LOCKS[key] = (lock, (held[1] if held is not None else 0) + 1)
+    try:
+        async with lock:
+            yield
+    finally:
+        with _FREEZE_LOCKS_GUARD:
+            _, callers = _FREEZE_LOCKS[key]
+            if callers > 1:
+                _FREEZE_LOCKS[key] = (lock, callers - 1)
+            else:
+                del _FREEZE_LOCKS[key]
 
 
 _PROXY_PORT = 3128
@@ -1524,11 +1537,11 @@ class DockerSandboxBackend:
         # Get-or-create serialised per (running loop, key, kind), for the same reason wslc does
         # it: a create names no container until it returns, so two acquires racing one key would
         # each build a network, a proxy and a sandbox. Per loop because an asyncio.Lock binds to
-        # the loop that first waits on it; weak-keyed on the loop so a process that runs a loop
-        # per call does not accumulate a lock table for loops long dead.
-        self._acquire_locks: weakref.WeakKeyDictionary[
-            asyncio.AbstractEventLoop, dict[tuple[str, str, str, str, str], asyncio.Lock]
-        ] = weakref.WeakKeyDictionary()
+        # the loop that first waits on it, and counted per entry so the last acquire out drops
+        # it — a weak key would not, since a contended lock holds its loop and the value would
+        # then keep the key alive (the same defect this table shares with `_FREEZE_LOCKS`).
+        self._acquire_locks: dict[tuple[object, ...], tuple[asyncio.Lock, int]] = {}
+        self._acquire_locks_guard = threading.Lock()
         # (container, image, work_dir) -> what the container itself says. Keyed on the image
         # because a container name is not, so one name can come back carrying a different one.
         self._facts: dict[tuple[str, str, str], _ContainerFacts] = {}
@@ -3043,14 +3056,24 @@ class DockerSandboxBackend:
             return ""
         return "allow:" + ",".join(sorted(map(str, spec.egress_allow)))
 
-    def _acquire_lock(self, key: SandboxKey, kind: str) -> asyncio.Lock:
-        """The get-or-create lock for one key and kind on the running loop (see ``__init__``)."""
-        per_loop = self._acquire_locks.setdefault(asyncio.get_running_loop(), {})
-        registry_key = (*_key_prefix(key), kind)
-        lock = per_loop.get(registry_key)
-        if lock is None:
-            lock = per_loop[registry_key] = asyncio.Lock()
-        return lock
+    @contextlib.asynccontextmanager
+    async def _acquire_lock(self, key: SandboxKey, kind: str) -> AsyncGenerator[None]:
+        """Hold the lock for one key and kind on the running loop (see ``__init__``)."""
+        table_key = (id(asyncio.get_running_loop()), *_key_prefix(key), kind)
+        with self._acquire_locks_guard:
+            held = self._acquire_locks.get(table_key)
+            lock = held[0] if held is not None else asyncio.Lock()
+            self._acquire_locks[table_key] = (lock, (held[1] if held is not None else 0) + 1)
+        try:
+            async with lock:
+                yield
+        finally:
+            with self._acquire_locks_guard:
+                _, callers = self._acquire_locks[table_key]
+                if callers > 1:
+                    self._acquire_locks[table_key] = (lock, callers - 1)
+                else:
+                    del self._acquire_locks[table_key]
 
     def _freeze(self, name: str) -> _GuestFreeze:
         """The freeze a sandbox on ``name`` holds around a check and the copy it guards."""
@@ -3069,9 +3092,11 @@ class DockerSandboxBackend:
         anyway would be a guarantee stated in the docstring and absent from the behaviour.
 
         The thaw is owed by whoever may have taken the freeze, and a cancelled caller waits for
-        it through **every** cancellation, not only the first: the guest is thawed by the time
-        the cancellation reaches whoever asked for it. What that cannot cover is a host that
-        dies mid-block; :meth:`acquire` lifts that one.
+        the whole attempt through **every** cancellation rather than only the first — an
+        attempt, not an outcome: an ``unpause`` the engine refuses leaves the guest frozen, and
+        the caller still gets its cancellation.  What is left frozen either that way or by a
+        host that died mid-block is :meth:`acquire`'s to lift, and to refuse serving until it
+        has.
         """
         async with _freeze_lock(name):
             # Claimed from before the pause is issued rather than after it returns: a call

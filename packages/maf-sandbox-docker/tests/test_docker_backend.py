@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gc
 import io
 import itertools
 import json
@@ -21,6 +22,7 @@ import sys
 import tarfile
 import threading
 import time
+import weakref
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -49,6 +51,7 @@ from maf_sandbox import (
 
 from maf_sandbox_docker import BACKEND_NAME, DockerSandboxBackend, DockerSandboxConfig
 from maf_sandbox_docker._backend import (
+    _FREEZE_LOCKS,
     _GATEWAY_MODE_ISOLATED,
     _GATEWAY_MODE_OPTS,
     _PROXY_LOG_BYTES,
@@ -56,6 +59,7 @@ from maf_sandbox_docker._backend import (
     _container_name,
     _DockerResult,
     _egress_decisions,
+    _freeze_lock,
     _Freezes,
     _network_name,
     _proxy_name,
@@ -261,6 +265,30 @@ _WORK_IS_A_DIRECTORY = {
 
 #: What `docker inspect` prints for a container created with `--cap-drop ALL`.
 _CAPS_DROPPED = {("inspect", "-f", "{{.HostConfig.CapDrop}}"): _DockerResult(0, b"[ALL]\n", "")}
+
+
+@pytest.fixture(autouse=True)
+def _freeze_bookkeeping_is_given_back():
+    """`_Freezes` is process-wide, so a test that touches it must hand it back.
+
+    Every test, not only the ones that seed it by hand: a call that fails part-way through a
+    freeze leaves a claim behind just as readily, and the next test then reads another owner's
+    record. Relying on a neighbouring parametrised case to undo it holds only while the two run
+    in order and on one worker.
+    """
+    claims = dict(_Freezes.claims)
+    owners = dict(_Freezes.owners)
+    confirmed = set(_Freezes.confirmed)
+    generations = dict(_Freezes.generations)
+    yield
+    _Freezes.claims.clear()
+    _Freezes.claims.update(claims)
+    _Freezes.owners.clear()
+    _Freezes.owners.update(owners)
+    _Freezes.confirmed.clear()
+    _Freezes.confirmed.update(confirmed)
+    _Freezes.generations.clear()
+    _Freezes.generations.update(generations)
 
 
 class _Recorded:
@@ -3206,6 +3234,37 @@ class TestFreezingTheGuest:
         touch()
         assert entered == [1]
 
+    @pytest.mark.parametrize("table", ["freeze", "acquire"])
+    def test_a_contended_lock_does_not_outlive_its_loop(self, table):
+        """An `asyncio.Lock` holds a strong reference to the loop it was contended on.
+
+        So an entry that outlives its callers keeps a closed loop alive, and a host running one
+        loop per call accumulates every loop it ever ran. A weak key cannot help: the value
+        reaches back to it. Contended on purpose — an uncontended lock never takes the
+        reference, so a probe that does not make one wait proves nothing.
+        """
+        backend, _fake = _backend_with(_machine(running=[_NAME]))
+        registry = _FREEZE_LOCKS if table == "freeze" else backend._acquire_locks
+        loops: list[weakref.ReferenceType[object]] = []
+
+        async def contend():
+            async def hold():
+                if table == "freeze":
+                    async with _freeze_lock(_NAME):
+                        await asyncio.sleep(0)
+                else:
+                    async with backend._acquire_lock(_KEY, _SPEC.kind):
+                        await asyncio.sleep(0)
+
+            await asyncio.gather(hold(), hold())
+            loops.append(weakref.ref(asyncio.get_running_loop()))
+
+        for _ in range(5):
+            asyncio.run(contend())
+        gc.collect()
+        assert not registry
+        assert [reference() for reference in loops] == [None] * len(loops)
+
     def test_a_claim_outlives_a_nested_release(self):
         """While any caller still owes a thaw, the record has to say so.
 
@@ -3580,13 +3639,6 @@ class TestAnExecRefusedForTheFreeze:
     the daemon's sentence. Anything weaker is a channel the guest writes, and acting on it runs
     whatever the guest chose a second time.
     """
-
-    @pytest.fixture(autouse=True)
-    def _give_the_process_wide_set_back(self):
-        """These seed the freeze bookkeeping by hand, and it outlives every backend."""
-        yield
-        _Freezes.claims.clear()
-        _Freezes.confirmed.clear()
 
     def _backend(self, answers: list[_DockerResult], *, on_first=None):
         backend = DockerSandboxBackend(DockerSandboxConfig())
