@@ -718,10 +718,12 @@ def _reduced_form(payload: object) -> object:
     **Whether a core applies this reduction at all is :func:`_substituted_forms`' to say**, and
     it is why that function offers this beside the payload rather than instead of it.
 
-    **It mirrors behaviour rather than a published contract, so it has to track upstream.** The
-    rule lives inside ``agent_framework.security`` (MIT, Microsoft Corporation), which promises
-    nothing about it, and a shape this stops matching is a shape an argument carries past the
-    check. ``THIRD-PARTY-NOTICES.md`` records the reuse.
+    **It mirrors behaviour rather than a published contract.** The rule lives inside
+    ``agent_framework.security`` (MIT, Microsoft Corporation), which promises nothing about it,
+    and it has already moved once.  A shape this stops matching costs precision rather than the
+    check, because :func:`_substituted_forms` offers the payload whole beside this reduction, so
+    the comparison holds whichever one a core substitutes.  ``THIRD-PARTY-NOTICES.md`` records
+    the reuse.
     """
     if isinstance(payload, Mapping):
         mapping = cast("Mapping[str, Any]", payload)
