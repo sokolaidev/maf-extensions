@@ -2421,6 +2421,261 @@ class TestFileWrites:
         assert client.calls == []
 
 
+class _WriteRoadClient:
+    """The data plane the write-road probe reaches, answering whatever the guest was told to.
+
+    ``said`` is what the one guest command prints — the probe reads its words and nothing else,
+    so a test states the guest's answer rather than simulating a shell to produce it.
+    """
+
+    def __init__(self, said: str = "", *, exec_failure: Exception | None = None) -> None:
+        self.sandbox_id = "sbx-1"
+        self._sbx_path = ""
+        self._api_version = ""
+        self.written: list[tuple[str, object, dict]] = []
+        self.deleted: list[tuple[str, bool]] = []
+        self.commands: list[str] = []
+        self._said = said
+        self._exec_failure = exec_failure
+
+    async def write_file(self, path, content, **kwargs) -> None:
+        self.written.append((path, content, kwargs))
+
+    async def delete_file(self, path, *, recursive: bool = False) -> None:
+        self.deleted.append((path, recursive))
+
+    async def exec(self, command: str, *, working_directory: str):
+        self.commands.append(command)
+        if self._exec_failure is not None:
+            raise self._exec_failure
+        return SimpleNamespace(exit_code=0, stdout=self._said, stderr="")
+
+    async def _dp_get(self, path, *, params=None):
+        return {"isSymlink": False, "isDir": True}
+
+
+def _road_sandbox(client, held: _Held | None = None):
+    from maf_sandbox_acas._backend import _AcasSandbox
+
+    return _AcasSandbox(
+        client,
+        30.0,
+        held=held if held is not None else _Held("sbx-1", egress=(Egress.CLOSED, frozenset())),
+    )
+
+
+class _GuestRoadSandbox:
+    """An ``_AcasSandbox`` whose guest commands are recorded rather than run.
+
+    Built by patching ``exec_bounded`` on a real instance: what is under test is which road
+    ``write_file`` takes and how the shell road's vocabulary comes back, not the transport the
+    road runs over — which ``test_acas_e2e.py`` exercises against the service.
+    """
+
+    def __init__(self, client, answers=None) -> None:
+        from maf_sandbox import ExecResult
+
+        self.sandbox = _road_sandbox(
+            client, _Held("sbx-1", egress=(Egress.CLOSED, frozenset()), write_road=True)
+        )
+        self.commands: list[str] = []
+        self._answers = list(answers or [])
+        self._default = ExecResult(stdout="", stderr="", exit_code=0)
+
+        async def exec_bounded(command, *, working_directory, timeout, max_output_bytes):
+            self.commands.append(command)
+            return self._answers.pop(0) if self._answers else self._default
+
+        self.sandbox.exec_bounded = exec_bounded  # type: ignore[method-assign]
+
+
+class TestTheWriteRoad:
+    """Which principal a write runs as, and the acquire-time probe that decides it (#1131).
+
+    The data plane lands ``0:0`` whatever the image's ``USER`` is, so on an image whose guest
+    is not root it acts above the guest and a component swapped after the confinement check
+    sends host-authority bytes wherever the link points. Writing as the guest bounds that by
+    construction; the probe below is what says whether it is needed and whether it would land.
+    """
+
+    def test_the_script_asks_its_three_questions_in_one_command(self):
+        from maf_sandbox_acas._backend import _write_road_script
+
+        script = _write_road_script("/base/.maf-write-probe-1", "/base/.maf-write-probe-1.guest")
+
+        lines = script.splitlines()
+        assert len(lines) == 4, script
+        assert "> /base/.maf-write-probe-1 " in lines[0] and "echo reach" in lines[0]
+        assert "/base/.maf-write-probe-1.guest" in lines[1] and "echo write" in lines[1]
+        assert "mkdir mv base64" in lines[2] and "exit 0" in lines[2]
+        assert lines[3] == "echo utilities"
+
+    def test_a_refused_redirection_answers_rather_than_ending_the_script(self):
+        """`:` is a POSIX special builtin: a redirection it cannot make exits the shell.
+
+        That is the guest this probe exists to describe, so the natural `: > file` spelling
+        would end the script on its first line and every non-root image would read as having
+        no road at all. `true` is a regular builtin, and its `2>/dev/null` comes before the
+        open so the guest's own diagnostic never reaches the answer.
+        """
+        from maf_sandbox_acas._backend import _write_road_script
+
+        lines = _write_road_script("/base/probe", "/base/probe.guest").splitlines()
+
+        for line in lines[:2]:
+            assert line.startswith("true 2>/dev/null > "), line
+            assert not line.startswith(":"), line
+
+    def test_a_base_holding_a_path_the_shell_would_read_is_quoted(self):
+        from maf_sandbox_acas._backend import _write_road_script
+
+        script = _write_road_script("/base; rm -rf /", "/base; rm -rf /.guest")
+
+        assert "'/base; rm -rf /'" in script
+        assert shlex.split(script.splitlines()[0])[:3] == ["true", "2>/dev/null", ">"]
+        assert shlex.split(script.splitlines()[0])[3] == "/base; rm -rf /"
+
+    def test_a_plane_already_within_the_guests_reach_keeps_the_plane(self):
+        """The root image, and the common case: the shell road would bound nothing there."""
+        client = _WriteRoadClient("reach\nwrite\nutilities\n")
+
+        assert asyncio.run(_road_sandbox(client).probe_write_road()) is False
+
+    def test_a_plane_above_the_guest_takes_the_shell_road(self):
+        client = _WriteRoadClient("write\nutilities\n")
+
+        assert asyncio.run(_road_sandbox(client).probe_write_road()) is True
+
+    def test_a_base_the_guest_cannot_write_keeps_the_plane(self):
+        """The default base on a non-root image: the shell road would refuse every write."""
+        client = _WriteRoadClient("")
+
+        assert asyncio.run(_road_sandbox(client).probe_write_road()) is False
+
+    def test_an_image_missing_a_utility_the_road_runs_keeps_the_plane(self):
+        client = _WriteRoadClient("write\n")
+
+        assert asyncio.run(_road_sandbox(client).probe_write_road()) is False
+
+    def test_the_probe_plants_in_the_base_and_takes_its_file_back(self):
+        client = _WriteRoadClient("reach\nwrite\nutilities\n")
+
+        asyncio.run(_road_sandbox(client).probe_write_road())
+
+        planted = client.written[0][0]
+        assert planted.startswith("/maf-sandbox/work/.maf-write-probe-")
+        assert client.deleted == [(planted, False)]
+
+    def test_a_probe_the_guest_refused_still_takes_its_file_back(self):
+        client = _WriteRoadClient(exec_failure=RuntimeError("the service refused"))
+
+        with pytest.raises(RuntimeError):
+            asyncio.run(_road_sandbox(client).probe_write_road())
+
+        assert [path for path, _ in client.deleted] == [client.written[0][0]]
+
+    def test_an_unreachable_probe_leaves_the_road_unchosen(self):
+        """The plane serves meanwhile, so a probe that cannot complete withholds no in-door."""
+        held = _Held("sbx-1", egress=(Egress.CLOSED, frozenset()))
+        client = _WriteRoadClient(exec_failure=RuntimeError("the service refused"))
+        spec = SandboxSpec(kind="k", requires=frozenset({Capability.FILES_IN}))
+
+        asyncio.run(_road_sandbox(client, held).choose_write_road(spec))
+
+        assert held.write_road is None
+
+    def test_the_road_is_settled_once_per_sandbox(self):
+        held = _Held("sbx-1", egress=(Egress.CLOSED, frozenset()))
+        client = _WriteRoadClient("write\nutilities\n")
+        spec = SandboxSpec(kind="k", requires=frozenset({Capability.FILES_IN}))
+        sandbox = _road_sandbox(client, held)
+
+        asyncio.run(sandbox.choose_write_road(spec))
+        asyncio.run(sandbox.choose_write_road(spec))
+
+        assert held.write_road is True
+        assert len(client.commands) == 1
+
+    def test_a_workload_that_writes_nothing_never_probes(self):
+        held = _Held("sbx-1", egress=(Egress.CLOSED, frozenset()))
+        client = _WriteRoadClient("write\nutilities\n")
+        spec = SandboxSpec(kind="k", requires=frozenset({Capability.EXEC}))
+
+        asyncio.run(_road_sandbox(client, held).choose_write_road(spec))
+
+        assert held.write_road is None
+        assert client.written == [] and client.commands == []
+
+    def test_the_shell_road_puts_the_bytes_there_rather_than_the_plane(self):
+        client = _WriteRoadClient()
+        guest = _GuestRoadSandbox(client)
+
+        asyncio.run(
+            guest.sandbox.write_file(
+                "infra/main.bicep", "param x string", working_directory="/maf-sandbox/work"
+            )
+        )
+
+        assert client.written == [], "the data plane wrote where the guest was supposed to"
+        assert any("mkdir -p -- /maf-sandbox/work/infra" in c for c in guest.commands)
+        assert any("base64 -d" in c for c in guest.commands)
+        moved = guest.commands[-1]
+        assert moved.endswith("/maf-sandbox/work/infra/main.bicep")
+
+    def test_both_roads_encode_a_string_as_utf8(self):
+        import base64
+
+        client = _WriteRoadClient()
+        guest = _GuestRoadSandbox(client)
+
+        asyncio.run(
+            guest.sandbox.write_file("note.txt", "héllo", working_directory="/maf-sandbox/work")
+        )
+
+        chunk = next(c for c in guest.commands if "base64 -d" in c)
+        encoded = chunk.split("printf %s ", 1)[1].split()[0]
+        assert base64.b64decode(encoded) == "héllo".encode()
+
+    def test_a_path_outside_the_base_reaches_neither_road(self):
+        client = _WriteRoadClient()
+        guest = _GuestRoadSandbox(client)
+
+        with pytest.raises(ValueError):
+            asyncio.run(
+                guest.sandbox.write_file("../escape", "x", working_directory="/maf-sandbox/work")
+            )
+
+        assert guest.commands == [] and client.written == []
+
+    def test_the_guests_refusal_arrives_as_the_error_the_plane_would_raise(self):
+        from maf_sandbox import ExecResult
+
+        for stderr, expected in (
+            ("sh: 1: cannot create /base/f: Permission denied", PermissionError),
+            ("sh: 1: cannot create /base/f: Is a directory", IsADirectoryError),
+            ("sh: 1: cannot create /base/f: No such file or directory", FileNotFoundError),
+        ):
+            client = _WriteRoadClient()
+            guest = _GuestRoadSandbox(
+                client, answers=[ExecResult(stdout="", stderr=stderr, exit_code=1)]
+            )
+            with pytest.raises(expected):
+                asyncio.run(
+                    guest.sandbox.write_file("f", "x", working_directory="/maf-sandbox/work")
+                )
+
+    def test_a_transfer_that_failed_with_no_refusal_is_an_oserror(self):
+        from maf_sandbox import ExecResult
+
+        client = _WriteRoadClient()
+        guest = _GuestRoadSandbox(
+            client, answers=[ExecResult(stdout="", stderr="the guest blew up", exit_code=9)]
+        )
+
+        with pytest.raises(OSError, match="the guest blew up"):
+            asyncio.run(guest.sandbox.write_file("f", "x", working_directory="/maf-sandbox/work"))
+
+
 class TestExecArgv:
     """`_AcasSandbox.exec` accepts a sequence and quotes it before the SDK's string-only exec.
 
