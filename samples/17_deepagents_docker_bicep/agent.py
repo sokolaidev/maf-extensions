@@ -16,17 +16,26 @@ because the spec names no host.  The sandbox is keyed by scope, thread and agent
 directory, and purged by that key at the end.  What is given up is said in this
 directory's README: the agent writes the shell, and Deep Agents' file tools need a
 `python3` this image does not carry, so the prompt tells it to use `execute`.
+
+The model is samples 09 and 13's two roads in `langchain-openai`'s terms: an Azure OpenAI
+deployment reached with `DefaultAzureCredential` when `AZURE_OPENAI_ENDPOINT` is set, and any
+OpenAI-compatible endpoint otherwise.
 """
 
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
+#     # The async HTTP transport `azure.identity.aio.DefaultAzureCredential` needs, which
+#     # `azure-identity` alone does not pull in. Samples 05, 09 and 13 declare it for the same
+#     # reason: without it the Azure path fails on import, before the model is ever reached.
+#     "azure-core[aio]",
+#     "azure-identity",
 #     "deepagents",
 #     "langchain-core",
 #     "langchain-openai",
 #     "maf-sandbox-deepagents",
 #     "maf-sandbox-docker",
-#     "maf-sandbox>=0.37",
+#     "maf-sandbox>=0.38",
 # ]
 # ///
 
@@ -36,21 +45,27 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from _scaffold import MEASURED, evidence, installed_versions, quoted, require_env_vars
 from deepagents import create_deep_agent
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_openai import ChatOpenAI
+from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from maf_sandbox import Isolation, SandboxKey, SandboxRouter
 from maf_sandbox_deepagents import MafSandbox, deepagents_spec
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
+
+if TYPE_CHECKING:
+    # The runtime import stays inside `build_model`, so a local run loads no Azure SDK at all.
+    from azure.identity.aio import DefaultAzureCredential
 
 # A sandbox is keyed by the caller's scope, thread and agent directory. A host reads the first
 # two from its own request context — a user/tenant and a conversation. This program serves
 # exactly one request, so they are constants here, but they are still named rather than
 # inlined: they belong to the request, not to the agent.
 SCOPE = "samples"
-THREAD_ID = "17-docker-deepagents-bicep"
+THREAD_ID = "17-deepagents-docker-bicep"
 AGENT_DIR = "devops-engineer"
 
 BICEP_FILE = "main.bicep"
@@ -68,9 +83,25 @@ _DIAGNOSTIC = '"ruleId"'
 #: (for example `bicep-sandbox:local`); the backend runs what is already on this machine.
 SANDBOX_VARS = ("BICEP_SANDBOX_IMAGE",)
 
-#: Everything the chat model needs. `OPENAI_BASE_URL` is optional, so it is read separately:
-#: any OpenAI-compatible endpoint serves, a local server included.
-MODEL_VARS = ("OPENAI_API_KEY", "OPENAI_CHAT_MODEL")
+#: What the Azure road needs beyond the endpoint that selects it. No key: auth is
+#: `DefaultAzureCredential`, which an `az login` session or a federated CI credential satisfies.
+AZURE_MODEL_VARS = ("AZURE_OPENAI_CHAT_MODEL",)
+
+#: The Azure OpenAI API version this client speaks. `AzureChatOpenAI` requires one and has no
+#: default; the value is the one `agent-framework`'s chat-completions client picks for itself,
+#: so this sample and samples 09 and 13 reach one deployment over one surface.
+AZURE_API_VERSION = "2024-12-01-preview"
+
+#: What a token for an Azure OpenAI deployment is minted against.
+AZURE_SCOPE = "https://cognitiveservices.azure.com/.default"
+
+#: Local-Ollama defaults, as samples 09 and 13 carry them. The model defaults so a running
+#: `ollama serve` is the whole of configuration; the base URL is Ollama's OpenAI-compatible
+#: endpoint; the key is a non-empty placeholder the server ignores — the client requires
+#: *something* here even for a keyless server, and a local one never reads it.
+DEFAULT_LOCAL_MODEL = "minimax-m3:cloud"
+DEFAULT_LOCAL_BASE_URL = "http://localhost:11434/v1"
+LOCAL_API_KEY_PLACEHOLDER = "ollama"
 
 #: The compiler's SARIF output, as `bicep_validate` reads it: the plain format prints only the
 #: errors once there is one, and this file has one, so the two warnings beside it would go unseen.
@@ -88,6 +119,42 @@ INSTRUCTIONS = (
     "edit_file, glob and grep do not work here; do not call them. Never invent, reword or "
     "omit a diagnostic."
 )
+
+
+def build_model() -> tuple[BaseChatModel, DefaultAzureCredential | None] | None:
+    """One client library, two endpoints. CI sets `AZURE_OPENAI_ENDPOINT`; a laptop does not.
+
+    Samples 09 and 13 make the same split on the framework's own client. Returns the model and
+    the credential to close, or ``None`` when the environment names an endpoint and then does
+    not say which deployment to reach on it.
+    """
+    azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
+    if not azure_endpoint:
+        return (
+            ChatOpenAI(
+                model=os.environ.get("OPENAI_CHAT_MODEL") or DEFAULT_LOCAL_MODEL,
+                base_url=os.environ.get("OPENAI_BASE_URL") or DEFAULT_LOCAL_BASE_URL,
+                api_key=os.environ.get("OPENAI_API_KEY") or LOCAL_API_KEY_PLACEHOLDER,  # pyright: ignore[reportArgumentType]
+            ),
+            None,
+        )
+    env = require_env_vars(AZURE_MODEL_VARS)
+    if env is None:
+        return None
+    from azure.identity.aio import DefaultAzureCredential, get_bearer_token_provider
+
+    credential = DefaultAzureCredential()
+    return (
+        AzureChatOpenAI(
+            azure_endpoint=azure_endpoint,
+            azure_deployment=env["AZURE_OPENAI_CHAT_MODEL"],
+            api_version=AZURE_API_VERSION,
+            # The async half of the pair: the agent is awaited, and a synchronous provider
+            # would mint its token on the event loop's thread.
+            azure_ad_async_token_provider=get_bearer_token_provider(credential, AZURE_SCOPE),
+        ),
+        credential,
+    )
 
 
 def execute_results(reply: dict[str, object]) -> list[str]:
@@ -118,9 +185,13 @@ def final_reply(reply: dict[str, object]) -> str:
 
 async def run() -> int:
     """Wire the stack, run one turn, and take the container down again."""
-    env = require_env_vars(SANDBOX_VARS + MODEL_VARS)
+    env = require_env_vars(SANDBOX_VARS)
     if env is None:
         return 2
+    configured = build_model()
+    if configured is None:
+        return 2
+    model, credential = configured
 
     backend = DockerSandboxBackend(DockerSandboxConfig())
     # Below the router's default `microvm` floor; opted down explicitly.
@@ -144,11 +215,7 @@ async def run() -> int:
             return 2
 
         agent = create_deep_agent(
-            model=ChatOpenAI(
-                model=env["OPENAI_CHAT_MODEL"],
-                api_key=env["OPENAI_API_KEY"],  # pyright: ignore[reportArgumentType]
-                base_url=os.environ.get("OPENAI_BASE_URL"),
-            ),
+            model=model,
             system_prompt=INSTRUCTIONS.format(base=spec.work_dir),
             backend=sandbox,
         )
@@ -179,6 +246,8 @@ async def run() -> int:
         print(f"\n{MEASURED}Disposed {purge.disposed} sandbox(es).")
         if purge.undisposed is not None:
             print(f"{MEASURED}Not fully disposed: {purge.undisposed}")
+        if credential is not None:
+            await credential.close()
 
     return 0
 

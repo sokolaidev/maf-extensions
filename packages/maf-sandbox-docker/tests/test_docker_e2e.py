@@ -58,6 +58,7 @@ from maf_sandbox import (
 )
 from maf_sandbox.conformance import (
     PosixGuestSubject,
+    assert_call_scope_conformance,
     assert_egress_conformance,
     assert_exec_conformance,
     assert_files_delete_conformance,
@@ -1980,3 +1981,60 @@ def test_relative_storage_base_conformance(override):
         asyncio.run(scenario())
     finally:
         asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+
+class TestTheCallScopeAgainstARealEngine:
+    """`maf_sandbox.conformance`'s CALL_SCOPE suite — the half a declaration cannot prove.
+
+    This backend declares `IsolationScope.CALL`, and what entitles it to is that the key's
+    `call_id` reaches the container name, the registry entry and the disposal's label filter.
+    Every one of those is invisible to the offline tests, which answer a listing from what the
+    fake is holding and read no `--filter label=` at all. So the property that two acquires
+    differing only in `call_id` are two containers, and that ending one leaves the other
+    running, is measured here against a real daemon or nowhere.
+    """
+
+    def test_it_answers_the_call_scope_probes(self):
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+        spec = _spec()
+        first = SandboxKey(
+            scope=scope, thread_id="thread-1", agent_dir="devops-engineer", call_id="call-a"
+        )
+        second = SandboxKey(
+            scope=scope, thread_id="thread-1", agent_dir="devops-engineer", call_id="call-b"
+        )
+
+        def subject_over(sandbox: Any) -> PosixGuestSubject:
+            return PosixGuestSubject(
+                sandbox=sandbox,
+                working_directory=_WORK,
+                capabilities=backend.declarations.capabilities,
+            )
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(first, spec)
+
+            async def acquire_another() -> PosixGuestSubject:
+                return subject_over(await backend.acquire(second, spec))
+
+            async def dispose_this_call() -> None:
+                failure = await backend.dispose(first, kind=spec.kind)
+                if failure is not None:
+                    raise AssertionError(f"the call's own container was not deleted: {failure}")
+
+            async def dispose_the_other() -> None:
+                await backend.dispose(second, kind=spec.kind)
+
+            results = await assert_call_scope_conformance(
+                subject_over(sandbox), acquire_another, dispose_this_call, dispose_the_other
+            )
+            # FILES_LIST is the one this backend does not declare, so its probe skips; every
+            # other probe here has to have run, or the suite passed having attacked nothing.
+            skipped = {r.probe.name for r in results if r.skipped}
+            assert skipped == {"the-listing-holds-only-this-calls-files"}
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))

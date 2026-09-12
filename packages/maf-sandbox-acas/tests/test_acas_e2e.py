@@ -55,6 +55,7 @@ import os
 import sys
 import uuid
 from collections.abc import Coroutine
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -78,6 +79,7 @@ from maf_sandbox.conformance import (
     FILES_OUT_PROBES,
     ConformancePaths,
     PosixGuestSubject,
+    assert_call_scope_conformance,
     assert_egress_conformance,
     assert_exec_conformance,
     assert_files_delete_conformance,
@@ -1488,4 +1490,54 @@ def test_relative_storage_base_conformance(loop, override):
         try:
             loop.run_until_complete(_drains_to_empty(backend, scope))
         finally:
+            loop.run_until_complete(backend.aclose())
+
+
+class TestTheCallScopeAgainstTheService:
+    """`maf_sandbox.conformance`'s CALL_SCOPE suite — the half a declaration cannot prove.
+
+    This backend mints no name of its own, so the whole of its call-scope identity is the
+    registry entry a sandbox is filed under and the service label it is created with. Two
+    billable microVMs, because the property is that a second call is served a *different* one.
+    """
+
+    def test_it_answers_the_call_scope_probes(self, loop):
+        backend = AcasSandboxBackend(_config())
+        scope = f"e2e-{uuid.uuid4()}"
+        spec = _spec()
+        first = replace(_key(scope), call_id="call-a")
+        second = replace(_key(scope), call_id="call-b")
+
+        def subject_over(sandbox) -> PosixGuestSubject:
+            return PosixGuestSubject(
+                sandbox=sandbox,
+                working_directory=_WORK,
+                capabilities=backend.declarations.capabilities,
+                exec_timeout=_EXEC_TIMEOUT,
+            )
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(first, spec)
+
+            async def acquire_another() -> PosixGuestSubject:
+                return subject_over(await backend.acquire(second, spec))
+
+            async def dispose_this_call() -> None:
+                failure = await backend.dispose(first, kind=spec.kind)
+                if failure is not None:
+                    raise AssertionError(f"the call's own sandbox was not deleted: {failure}")
+
+            async def dispose_the_other() -> None:
+                await backend.dispose(second, kind=spec.kind)
+
+            results = await assert_call_scope_conformance(
+                subject_over(sandbox), acquire_another, dispose_this_call, dispose_the_other
+            )
+            # This backend declares every capability the suite reads with, so nothing may skip.
+            assert not [r for r in results if r.skipped]
+
+        try:
+            loop.run_until_complete(scenario())
+        finally:
+            loop.run_until_complete(backend.dispose_scope(scope, "thread-1"))
             loop.run_until_complete(backend.aclose())

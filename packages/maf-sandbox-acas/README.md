@@ -50,7 +50,7 @@ Acquire checks byte capture for both `EXEC` and `HOST_TOOLS`: working `sh`, `mkd
 
 | | |
 |---|---|
-| `acquire(key, spec)` | get-or-create, keyed `(scope, thread, agent, kind)`. Equivalent egress policies reuse a warm sandbox; changed hosts or mode on a usable instance raise `AcasEgressPolicyConflict`. Dispose the kind before changing policy, or use another key. |
+| `acquire(key, spec)` | get-or-create, keyed `(scope, thread, agent, call, kind)`. Equivalent egress policies reuse a warm sandbox; changed hosts or mode on a usable instance raise `AcasEgressPolicyConflict`. Dispose the kind before changing policy, or use another key. At `IsolationScope.CONVERSATION` the key's `call_id` is empty and one sandbox serves the conversation's calls; at `IsolationScope.CALL` it names the tool call, so no acquire repeats it and get-or-create finds nothing warm. |
 | `dispose(key, *, kind=None)` | Deletes the selected kind, or every kind when omitted; retained failures keep their kind for retries; reaches sandboxes known to this process |
 | `dispose_scope(scope, thread)` | delete every sandbox for a conversation — **from the service, by label**, not from process memory; report an incomplete purge if a local acquire is active, and refuse new local acquires during the purge |
 | `stat_file` / `read_file` / `list_dir` | the pull surface — reads confined to the call's `working_directory`, symlinks and directories refused, a size over the caller's cap refused rather than truncated. Regularity itself cannot be proven here — see below |
@@ -58,6 +58,7 @@ Acquire checks byte capture for both `EXEC` and `HOST_TOOLS`: working `sh`, `mkd
 | `declarations.capabilities` | `EXEC, FILES_IN, FILES_OUT, FILES_LIST, FILES_DELETE, HOST_TOOLS` are a ceiling. `acquire` withdraws `FILES_OUT` and `HOST_TOOLS` on a failed guest removal probe and withdraws `FILES_DELETE` unless the file plane confirms the guest removed the probe file |
 | `declarations.limits` | the transfer ceilings a spec may not exceed, per direction |
 | `declarations.os_families` | `{posix}` — a constant, because every sandbox the service boots is a Linux microVM |
+| `declarations.isolation_scopes` | `{conversation, call}` — the service mints the id, so the key's `call_id` folds into the registry entry and the `call` label a disposal selects on; a spec asking for one sandbox per tool call is served rather than refused |
 
 **Two image namespaces, and `spec.image` says which by whether it carries a tag.** The service prebuilds images and keeps them Ready for every sandbox group — `python-3.13`, `node-22`, `ubuntu` and a dozen more — and a spec reaches them by naming one, with **no registry and no tag**, because the version is part of the name. Anything else is the `repository:tag` the rest of this package is written around: qualified by the configured `registry` and resolved against the disk images this deployment imported with `scripts/import_disk_image.py`.
 

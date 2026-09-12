@@ -1767,6 +1767,106 @@ jobs:
         run: |
           set -euo pipefail
           python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample16-out.txt "$PACKAGE" "$VERSION"
+  sample-17:
+    name: samples/17_deepagents_docker_bicep against a live container
+    # Sample 05's workload, image and `main.bicep` under a Deep Agents agent instead of a MAF
+    # one, so a red here while sample-05 is green is a statement about the adapter rather than
+    # about the compiler or the container. Runs for the router (maf-sandbox), the adapter
+    # (maf-sandbox-deepagents) and the backend (maf-sandbox-docker); an acas, bicep, codeact or
+    # wslc release cannot change what this sample does.
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-deepagents", "maf-sandbox-docker"]'), inputs.package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # For the model only, as in sample-05: `live-verify` holds the non-secret Azure OpenAI
+    # configuration and is half the federated-credential subject. The image this sample runs is
+    # built below rather than configured, so there is no sandbox variable to read.
+    environment: live-verify
+    permissions:
+      # Mints the OIDC token azure/login exchanges. No secret is involved.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Only when `HARNESS` points at it — see the `env` block above for why the checks come
+      # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live-verify environment is missing: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # The same image sample-05 builds, from the same context: the two jobs compile one file
+      # with one Bicep CLI and one rule set, which is what makes their diagnostics comparable.
+      - name: Build the sandbox image
+        run: docker build -t bicep-sandbox:local images/bicep-sandbox
+
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # uv is the probe rather than a request of our own: a different client reads a
+          # different CDN cache object, and polling the index passed while the sample resolved
+          # the release before this one 0.7s later on the same runner (#595).
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      - name: Run sample 17 and assert the diagnostics came back
+        env:
+          BICEP_SANDBOX_IMAGE: bicep-sandbox:local
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          uv run --no-project samples/17_deepagents_docker_bicep/agent.py | tee /tmp/sample17-out.txt
+          # Sample 05's rules, read out of the compiler's SARIF rather than out of a kind's
+          # rendering — and without sample 05's phase assertion, because the model wrote the
+          # command. stdlib-only, so the runner's own python3 runs it.
+          python3 "$HARNESS"/scripts/check_live_deepagents_sample.py /tmp/sample17-out.txt
+
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample17-out.txt "$PACKAGE" "$VERSION"
   acas-e2e:
     needs: acas-images
     name: maf-sandbox-acas conformance against a live sandbox group
