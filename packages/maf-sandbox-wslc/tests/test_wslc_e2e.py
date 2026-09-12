@@ -15,10 +15,12 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from _fixture_probe import _the_image_ships
@@ -123,6 +125,56 @@ def _spec() -> SandboxSpec:
 
 def _key(scope: str) -> SandboxKey:
     return SandboxKey(scope=scope, thread_id="thread-1", agent_dir="devops-engineer")
+
+
+def test_write_checks_remove_private_host_copies(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    sentinel = tmp_path / "-"
+    sentinel.write_bytes(b"host content")
+    copies = tmp_path / "copies"
+    copies.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(copies))
+    backend = WslcSandboxBackend(WslcSandboxConfig())
+    key = _key("e2e-stat-copy-" + uuid.uuid4().hex)
+    copied = []
+    run = backend._wslc
+
+    async def observe(*args, **kwargs):
+        result = await run(*args, **kwargs)
+        if args[:2] == ("container", "cp") and args[2] != "-":
+            destination = Path(args[-1])
+            assert destination.is_absolute() and destination.parent.parent == copies
+            if destination.exists():
+                copied.append(destination.stat().st_size)
+        return result
+
+    monkeypatch.setattr(backend, "_wslc", observe)
+
+    async def scenario():
+        try:
+            sandbox = await backend.acquire(key, _spec())
+            prepared = await sandbox.exec(
+                "printf hello > small; dd if=/dev/zero of=large bs=1048576 count=64; "
+                "ln -s /tmp linked-parent; ln -s /tmp/out linked-leaf",
+                working_directory=_WORK,
+                timeout=30,
+            )
+            assert prepared.exit_code == 0, prepared.stderr
+            for guest in ("small", "large", "missing"):
+                await sandbox.write_file(guest, b"replacement", working_directory=_WORK)
+                assert not list(copies.iterdir())
+            for guest in ("linked-parent/out", "linked-leaf", "small/out"):
+                with pytest.raises((ValueError, NotADirectoryError)):
+                    await sandbox.write_file(guest, b"refused", working_directory=_WORK)
+                assert not list(copies.iterdir())
+            assert 5 in copied and 64 * 1024 * 1024 in copied and 0 in copied
+            assert sentinel.read_bytes() == b"host content"
+        finally:
+            assert await backend.dispose(key) is None
+
+    asyncio.run(scenario())
+    assert not list(copies.iterdir())
+    assert not _names_on_the_machine(_container_name(key, _spec().kind))
 
 
 def _names_on_the_machine(name: str) -> list[str]:
