@@ -5190,7 +5190,12 @@ class TestArgumentProvenanceMiddleware:
         )
         reference = f"[{variable_id}]"
 
+        reachable: dict[str, bool] = {}
+
         async def body(files: list[str]) -> str:
+            # Asked from inside the call, because the accessor is cleared once `process`
+            # returns — which is the whole reason the tell is taken while the body runs.
+            reachable["during the call"] = _maf._reachable_middleware() is not None
             return "ok"
 
         tool = FunctionTool(name="probe", func=body)
@@ -5201,9 +5206,9 @@ class TestArgumentProvenanceMiddleware:
 
         asyncio.run(tracker.process(context, call_next))
 
-        assert _maf._MIDDLEWARE_RAN_KEY in context.metadata, (
-            f"this agent-framework-core no longer records {_maf._MIDDLEWARE_RAN_KEY!r} on a "
-            "call. `_the_framework_kept_no_record` reads it to tell a moved contract from a "
+        assert reachable["during the call"], (
+            "this agent-framework-core no longer answers `get_current_middleware()` during a "
+            "call. `_the_framework_kept_no_record` asks it to tell a moved contract from a "
             "host that wired no information-flow middleware, so that distinction is now wrong "
             "in the unsafe direction"
         )
@@ -5223,17 +5228,17 @@ class TestArgumentProvenanceMiddleware:
     def test_a_record_that_went_missing_is_said_out_loud(self, monkeypatch, caplog):
         """The alarm above fires in this suite; a host upgrades without running it.
 
-        The two framework keys are written together, so one without the other says a middleware
-        ran and its argument record is gone — the contract having moved, not a host that wired
-        no information-flow middleware. Falling back silently would drop a security property
-        with no trace anywhere.
+        A middleware is reachable and the call carries no argument record, which says the
+        contract moved rather than that a host wired no information-flow middleware. Falling
+        back silently would drop a security property with no trace anywhere.
         """
         import logging as _logging
 
         monkeypatch.setattr(_maf, "_warned_about_a_missing_record", False)
+        monkeypatch.setattr(_maf, "_reachable_middleware", lambda: object())
 
         class _Context:
-            metadata = {_maf._MIDDLEWARE_RAN_KEY: object()}
+            metadata: dict[str, object] = {}
 
         token = _maf._CALL_CONTEXT.set(_maf._CallProvenance(context=_Context()))
         try:
@@ -5488,6 +5493,31 @@ class TestArgumentProvenanceMiddleware:
         assert seen["accessor_reached"] is True
         assert seen["from_record"] == frozenset({0})
         assert seen["from_fallback"] == frozenset({0})
+
+    def test_the_tell_separates_a_moved_contract_from_a_host_that_wired_nothing(self, monkeypatch):
+        """The premise of asking the accessor rather than reading a second metadata key.
+
+        Both answers matter and they fail in opposite directions. A middleware reachable with
+        no argument record is the framework's contract having moved, and has to fail closed. No
+        middleware at all is an ordinary host that wired none, and must not — failing closed
+        there would name every position on every call, for the common case.
+        """
+
+        class _Context:
+            metadata: dict[str, object] = {}
+
+        assert _maf._reachable_middleware() is None, (
+            "nothing is processing a call here, so the accessor must not answer"
+        )
+        assert _maf._the_framework_kept_no_record(_Context()) is False, (
+            "a host that wired no information-flow middleware has no record for an innocent "
+            "reason, and reading that as a moved contract fails the common case closed"
+        )
+
+        monkeypatch.setattr(_maf, "_reachable_middleware", lambda: object())
+        assert _maf._the_framework_kept_no_record(_Context()) is True, (
+            "one ran and kept no record, which no legitimate wiring produces"
+        )
 
     def test_a_synchronous_body_still_keeps_a_literal_values_echo(self):
         """The record answers off-thread without the fallback's over-reporting coming with it."""
