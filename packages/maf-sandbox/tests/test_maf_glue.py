@@ -5144,8 +5144,7 @@ class TestArgumentProvenanceMiddleware:
             return positions_holding_hidden_content(ask, argument="files", candidates=candidates)
 
         async def body(files: list[str]) -> str:
-            # The snapshot a body takes before its first await, which is what lets a late
-            # caller reach the store at all — `execute_code` threads exactly this.
+            # Keep the body's candidate set when the child answers after the call closes.
             nonlocal outliving
             outliving = asyncio.create_task(outlives(hidden_content_candidates()))
             return "ok"
@@ -6271,10 +6270,8 @@ class TestSandboxOutputsReadTools:
         assert "name" in said
 
     def test_the_rendering_is_taken_before_the_store_suspends(self):
-        """Wired without `argument_provenance_middleware`, the verdict comes from the store of
-        hidden content, and that accessor is not scoped to the call — so a lookup made after the
-        read has suspended can find nothing and quote what the framework hid. The store here
-        loses its variables mid-call, which is what that looks like from inside the body."""
+        """The store callback may clear hidden content before returning, so the refusal must
+        retain the verdict taken before the read."""
         from agent_framework import FunctionInvocationContext, FunctionTool
         from agent_framework.security import (
             ContentLabel,

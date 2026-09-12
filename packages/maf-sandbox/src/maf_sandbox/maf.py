@@ -801,13 +801,11 @@ def _hidden_payloads(middleware: Any) -> Iterator[str]:
 def hidden_content_candidates() -> frozenset[str]:
     """Every string form a rewritten argument could have arrived carrying, as the store holds it.
 
-    Take this **before a body's first await** wherever the answer is needed later.  The
-    framework's accessor is not scoped to the call, so an answer fetched after the body has
-    suspended may not be available; a snapshot taken first thing survives the wait, and
-    :func:`positions_holding_hidden_content` accepts it as ``candidates``.
-
-    A body that asks and answers in the same breath does not need this — it can let
-    :func:`positions_holding_hidden_content` take its own.
+    The framework's accessor survives awaits within the calling context.  Take a snapshot
+    before external work when later checks must retain the same candidates even if the store
+    changes, or when passing them to a caller outside that context.
+    :func:`positions_holding_hidden_content` accepts the snapshot as ``candidates``; without
+    one, it reads the current store.
     """
     middleware = _reachable_middleware()
     if middleware is None:
@@ -845,10 +843,9 @@ def positions_holding_hidden_content(
       comparison is against a list the caller never sent.
     - **Containment, not equality.**  A reference is spliced into the text around it, so
       ``"[var_a1b2].bicep"`` arrives as the content with a suffix and equals no stored payload.
-    - **A task outliving the call falls back, and reaches the store only through
-      ``candidates``.**  The record is closed with the call, and the framework's own accessor
-      goes with it.  Take that snapshot from :func:`hidden_content_candidates` before the first
-      await; a caller answering immediately needs none.
+    - **A task outliving the call falls back.**  The record is closed with the call.  An
+      inherited framework context can still reach the store, but only an explicit
+      ``candidates`` snapshot preserves its earlier contents if that store changes.
     - **An empty answer from the fallback is not "nothing was hidden".**  It is also what an
       unreachable middleware gives, including a host that wired none.  Both the record and
       the framework's accessor reach a synchronous body through ``asyncio.to_thread``.
@@ -2964,9 +2961,7 @@ def sandbox_outputs_read_tools(
     """
     from agent_framework import tool
 
-    # Both bodies render their argument before touching the store, not in the branch that
-    # needs it: the framework's accessor is not scoped to the call, so a verdict asked for
-    # after the store has suspended can come back empty and quote content the middleware hid.
+    # Preserve the hidden-content verdict before a host store callback can clear its evidence.
     async def outputs_ls(folder: str = "") -> list[dict[str, str]] | str:
         named = _echoed(folder, "folder")
         try:
