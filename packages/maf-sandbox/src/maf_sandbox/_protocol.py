@@ -1127,8 +1127,9 @@ class Sandbox(Protocol):
 
     **Confinement is checked and not held, and the reach rule is what bounds the check being
     wrong.**  The filesystem path check and the operation it guards are separate engine calls on
-    every shipped backend, so a guest that turns a checked component into a link in between wins.
-    What a won swap costs is decided by *authority* rather than by how narrow the window is: it
+    every shipped backend, so a guest **free to run between them** can turn a checked component
+    into a link and win.  What a won swap costs is decided by *authority* rather than by how
+    narrow the window is: it
     redirects an operation running at the guest program's own authority to something that program
     could have reached anyway, and one running at the host's to more.  So the rule every method
     here owes is about reach — **a swap must not let a method reach anything the guest program
@@ -1144,8 +1145,11 @@ class Sandbox(Protocol):
     the first and the only one that removes the problem rather than bounding it: resolve and act
     as one operation — a held descriptor, a no-follow traversal, a provider primitive that takes
     the path once — and no swap can redirect what is never re-resolved, so host authority is safe
-    without any ownership being read.  Where the engine offers no such primitive, the remaining
-    three bound it instead: act at the guest's authority, withhold the capability, or state the
+    without any ownership being read.  **Stopping the guest for the pair is the same answer from
+    the other side**: a component nothing inside the sandbox can run to replace is one no swap
+    can move, re-resolved or not, and an engine that will not hand out a no-follow primitive may
+    still offer a freezer.  Where it offers neither, the remaining three bound it instead:
+    act at the guest's authority, withhold the capability, or state the
     residual in the backend's own documentation and beside its declaration, so a host choosing it
     chooses it knowingly.  An engine reporting no ownership cannot feed the predicate above,
     which is a reason to pick one of these rather than a reason the rule does not apply.
