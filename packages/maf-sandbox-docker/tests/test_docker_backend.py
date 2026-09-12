@@ -339,7 +339,8 @@ def _machine(
 ):
     """A responder describing which containers and images exist, and how a command answers.
 
-    ``docker inspect -f {{.State.Running}}`` decides existence and running state — a name in
+    ``docker inspect -f {{.State.Running}} {{.State.Paused}}`` decides existence and running
+    state — a name in
     ``running`` prints ``true``, one only in ``stopped`` prints ``false``, one in neither errors
     like a missing container. ``image inspect`` succeeds for a known image and errors otherwise.
 
@@ -3118,6 +3119,243 @@ class TestUnresolvedGuestCapabilities:
 
 
 # ---------------------------------------------------------------------------
+# Freezing the guest — the tar-plane members' check and copy see one state (#1130)
+# ---------------------------------------------------------------------------
+
+
+def _frozen_refusal(name: str = _NAME) -> _DockerResult:
+    """What the daemon answers an ``exec`` on a frozen container, verbatim from Engine 29.7.2."""
+    return _DockerResult(
+        1,
+        b"",
+        f"Error response from daemon: Container {name} is paused, "
+        "unpause the container before exec",
+    )
+
+
+class TestFreezingTheGuest:
+    """A check and the copy it guards are two engine calls, so they run under one freeze.
+
+    What these pin is the bracket — that no copy happens outside a freeze, that the thaw
+    survives every way out of the block, and that one container is never frozen twice at once.
+    Whether a freeze actually stops a guest is the engine's, and `test_docker_e2e` measures it.
+    """
+
+    def _sandbox(self, overrides=None):
+        machine = _machine(running=[_NAME], overrides={**_WORK_IS_A_DIRECTORY, **(overrides or {})})
+        backend, fake = _backend_with(machine)
+        sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
+        fake.mark()
+        return backend, sandbox, fake
+
+    @staticmethod
+    def _verbs(fake) -> list[str]:
+        return [call.args[0] for call in fake.calls[fake._marked :]]
+
+    @pytest.mark.parametrize("member", ["write_file", "read_file", "stat_file"])
+    def test_every_copy_of_a_member_sits_inside_one_freeze(self, member):
+        stream = {("cp",): _DockerResult(0, _tar_bytes("out.png", b"x" * 8), "")}
+        _backend, sandbox, fake = self._sandbox(stream if member != "write_file" else None)
+        call = {
+            "write_file": lambda: sandbox.write_file("out.png", b"x", working_directory=_WORK),
+            "read_file": lambda: sandbox.read_file(
+                "out.png", working_directory=_WORK, max_bytes=1024
+            ),
+            "stat_file": lambda: sandbox.stat_file("out.png", working_directory=_WORK),
+        }[member]
+        asyncio.run(call())
+        verbs = self._verbs(fake)
+        assert verbs[0] == "pause" and verbs[-1] == "unpause"
+        assert set(verbs[1:-1]) == {"cp"}
+
+    def test_acquire_establishes_the_base_inside_one_too(self):
+        """A warm container's guest is the last conversation's, and it is still running."""
+        machine = _machine(running=[_NAME], overrides={_cp(_WORK): _not_in_the_container(_WORK)})
+        backend, fake = _backend_with(machine)
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        verbs = [call.args[0] for call in fake.calls]
+        creation = next(i for i, call in enumerate(fake.calls) if call.args[:2] == ("cp", "-"))
+        assert verbs.index("pause") < creation < verbs.index("unpause")
+
+    @pytest.mark.parametrize(
+        "path, failure", [("../escape", ValueError), ("out.png", RuntimeError)]
+    )
+    def test_a_member_that_raises_still_thaws(self, path, failure):
+        refused = {("cp", "-"): _DockerResult(1, b"", "read-only filesystem")}
+        _backend, sandbox, fake = self._sandbox(refused)
+        with pytest.raises(failure):
+            asyncio.run(sandbox.write_file(path, b"x", working_directory=_WORK))
+        assert self._verbs(fake).count("unpause") == self._verbs(fake).count("pause")
+
+    def test_a_cancelled_member_still_thaws(self):
+        backend, sandbox, fake = self._sandbox()
+        inner = backend._docker
+
+        async def seam(*args, **kwargs):
+            if args[:2] == ("cp", "-"):
+                raise asyncio.CancelledError
+            return await inner(*args, **kwargs)
+
+        backend._docker = seam
+
+        async def scenario():
+            sandbox._run = seam
+            with pytest.raises(asyncio.CancelledError):
+                await sandbox.write_file("out.png", b"x", working_directory=_WORK)
+
+        asyncio.run(scenario())
+        assert self._verbs(fake)[-1] == "unpause"
+        assert not backend._frozen_guests
+
+    def test_a_freeze_the_engine_refuses_copies_nothing(self):
+        """No freeze, no guarantee — and a member that served anyway would be stating one."""
+        _backend, sandbox, fake = self._sandbox()
+        fake._responder = _machine(
+            running=[_NAME],
+            overrides={
+                **_WORK_IS_A_DIRECTORY,
+                ("pause",): _DockerResult(1, b"", "Error response from daemon: cgroup freezer"),
+            },
+        )
+        with pytest.raises(RuntimeError, match="could not freeze"):
+            asyncio.run(sandbox.write_file("out.png", b"x", working_directory=_WORK))
+        # Thawed anyway: a refusal this backend read is not proof the daemon did nothing.
+        assert self._verbs(fake) == ["pause", "unpause"]
+
+    def test_a_cancellation_inside_the_pause_itself_still_thaws(self):
+        """The guest can be frozen by an invocation that never returned to say so."""
+        backend, sandbox, fake = self._sandbox()
+        inner = backend._docker
+
+        async def seam(*args, **kwargs):
+            if args[0] == "pause":
+                raise asyncio.CancelledError
+            return await inner(*args, **kwargs)
+
+        backend._docker = seam
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(sandbox.write_file("out.png", b"x", working_directory=_WORK))
+        assert self._verbs(fake) == ["unpause"]
+
+    def test_a_guest_the_engine_says_was_never_frozen_is_not_warned_about(self, caplog):
+        _backend, sandbox, fake = self._sandbox()
+        fake._responder = _machine(
+            running=[_NAME],
+            overrides={
+                **_WORK_IS_A_DIRECTORY,
+                ("unpause",): _DockerResult(
+                    1, b"", f"Error response from daemon: Container {_NAME} is not paused"
+                ),
+            },
+        )
+        with caplog.at_level(logging.WARNING):
+            asyncio.run(sandbox.write_file("out.png", b"x", working_directory=_WORK))
+        assert "still frozen" not in caplog.text
+
+    def test_a_thaw_the_engine_refuses_is_warned_about_rather_than_raised(self, caplog):
+        _backend, sandbox, fake = self._sandbox()
+        fake._responder = _machine(
+            running=[_NAME],
+            overrides={
+                **_WORK_IS_A_DIRECTORY,
+                ("unpause",): _DockerResult(1, b"", "daemon is not responding"),
+            },
+        )
+        with caplog.at_level(logging.WARNING):
+            asyncio.run(sandbox.write_file("out.png", b"x", working_directory=_WORK))
+        assert "still frozen" in caplog.text
+
+    def test_two_file_calls_on_one_container_never_overlap_their_freezes(self):
+        """Otherwise the first call's thaw reopens the window the second is still inside."""
+        machine = _machine(running=[_NAME], overrides=_WORK_IS_A_DIRECTORY)
+        backend, fake = _backend_with(machine)
+        inner = backend._docker
+
+        async def seam(*args, **kwargs):
+            await asyncio.sleep(0)
+            return await inner(*args, **kwargs)
+
+        backend._docker = seam
+
+        async def scenario():
+            sandbox = await backend.acquire(_KEY, _METHOD_SPEC)
+            fake.mark()
+            await asyncio.gather(
+                sandbox.write_file("a.txt", b"a", working_directory=_WORK),
+                sandbox.write_file("b.txt", b"b", working_directory=_WORK),
+            )
+
+        asyncio.run(scenario())
+        held = 0
+        for verb in self._verbs(fake):
+            held += verb == "pause"
+            held -= verb == "unpause"
+            assert held in (0, 1)
+        assert self._verbs(fake).count("pause") == 2
+
+    def test_acquire_thaws_a_container_a_dead_host_left_frozen(self):
+        state = {
+            ("inspect", "-f", "{{.State.Running}} {{.State.Paused}}"): _DockerResult(
+                0, b"true true", ""
+            )
+        }
+        machine = _machine(running=[_NAME], overrides={**_WORK_IS_A_DIRECTORY, **state})
+        backend, fake = _backend_with(machine)
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        verbs = [call.args[0] for call in fake.calls]
+        assert verbs.index("unpause") < verbs.index("cp")
+
+
+class TestAnExecRefusedForTheFreeze:
+    """The daemon refuses an exec on a frozen container rather than queueing it."""
+
+    def _backend(self, answers: list[_DockerResult]):
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+        seen: list[tuple[str, ...]] = []
+
+        async def invoke(*args, **kwargs):
+            seen.append(args)
+            return answers[min(len(seen), len(answers)) - 1]
+
+        backend._invoke = invoke
+        return backend, seen
+
+    def test_it_is_reissued_while_this_backend_holds_a_freeze(self):
+        """Safe because the refusal means the command never ran: this is a first execution."""
+        backend, seen = self._backend([_frozen_refusal(), _DockerResult(0, b"ok", "")])
+        backend._frozen_guests.add(_NAME)
+        result = asyncio.run(backend._docker("exec", _NAME, "true", timeout=5))
+        assert result.returncode == 0 and len(seen) == 2
+
+    def test_it_is_returned_as_it_stands_when_the_freeze_is_someone_elses(self):
+        backend, seen = self._backend([_frozen_refusal()])
+        result = asyncio.run(backend._docker("exec", _NAME, "true", timeout=5))
+        assert result.returncode == 1 and len(seen) == 1
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            _DockerResult(1, b"", "sh: unpause the container before exec"),
+            _DockerResult(1, b"output", _frozen_refusal().stderr),
+        ],
+        ids=["no daemon prefix", "the command wrote to stdout"],
+    )
+    def test_a_guest_command_that_says_the_same_words_is_not_reissued(self, answer):
+        """Re-issuing one of those would run the guest's own command a second time."""
+        backend, seen = self._backend([answer])
+        backend._frozen_guests.add(_NAME)
+        assert asyncio.run(backend._docker("exec", _NAME, "say", timeout=5)) == answer
+        assert len(seen) == 1
+
+    def test_a_budget_spent_on_refusals_returns_the_last_one(self):
+        """Rather than raising a timeout, which would take the container with it."""
+        backend, seen = self._backend([_frozen_refusal()])
+        backend._frozen_guests.add(_NAME)
+        result = asyncio.run(backend._docker("exec", _NAME, "true", timeout=0.2))
+        assert result == _frozen_refusal() and len(seen) > 1
+
+
+# ---------------------------------------------------------------------------
 # Dispose and purge
 # ---------------------------------------------------------------------------
 
@@ -4189,7 +4427,9 @@ class TestASandboxLeftOnAnUnusableNetwork:
         backend, fake = _backend_with(self._machine_with_an_addressed_bridge(), _ALLOW_CONFIG)
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
         removed = fake.calls.index(fake.only("network", "rm", _AL_NET))
-        read = fake.calls.index(fake.matching("inspect", "-f", "{{.State.Running}}", _AL)[0])
+        read = fake.calls.index(
+            fake.matching("inspect", "-f", "{{.State.Running}} {{.State.Paused}}", _AL)[0]
+        )
         assert removed < read
 
     def test_an_unreadable_network_is_replaced_rather_than_trusted(self):

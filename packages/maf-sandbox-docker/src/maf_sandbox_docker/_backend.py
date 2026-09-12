@@ -19,6 +19,15 @@ CONNECT proxy that is then the workload's only route out.  That bridge needs Doc
 28.0.0, and only a sandbox that builds one does — ``CLOSED``, and an ``ALLOWLIST`` spec naming no
 hosts, both get ``--network none`` and no such engine.
 
+The tar-plane members — ``prepare_work_dir``, ``write_file``, ``read_file`` and ``stat_file``
+— hold the guest **frozen** across their filesystem path check and the ``docker cp`` that acts
+on it.  ``docker cp`` has no no-follow form and the daemon extracts through a symlinked parent
+as root, so a guest that could still run between those two calls could redirect one.  The
+freezer is the engine's, unbypassable from inside the container, and the file plane keeps
+working while it is held.  ``exec`` is the one thing a frozen container refuses, which is why
+the removals are not frozen and why an ``exec`` refused inside someone else's freeze is
+re-issued.
+
 The ``os_families`` field of its :class:`~maf_sandbox.BackendDeclarations` is read from the
 daemon, by :meth:`DockerSandboxBackend.create` and only there: a daemon running ``linux``
 guests declares :data:`~maf_sandbox.OsFamily.POSIX`, and every other answer declares nothing.
@@ -30,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import functools
 import io
 import json
 import logging
@@ -39,7 +49,7 @@ import tarfile
 import threading
 import time
 import weakref
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -179,6 +189,20 @@ _ABSENT_TARGET = ("not found", _NO_SUCH)
 #: as a substring — every path is a substring of its own descendants, and this message about a
 #: child would otherwise read as absence for each of its parents in turn.
 _ABSENT_PATH = "could not find"
+
+#: What the daemon answers an ``exec`` asked of a frozen container: `Error response from daemon:
+#: Container <id> is paused, unpause the container before exec` (Engine 29.7.2).  The command
+#: never ran, which is what makes re-issuing it a first execution rather than a second.
+_FROZEN_REFUSAL = "unpause the container before exec"
+#: The daemon's own prefix, required alongside it: a guest command's stderr reaches the same
+#: field, and only the daemon's refusal means nothing ran.
+_DAEMON_REFUSAL = "error response from daemon:"
+#: What ``unpause`` answers for a container that is not frozen: `Error response from daemon:
+#: Container <id> is not paused`.  A thaw wanted exactly that state, so it is not a failure.
+_NOT_FROZEN = "is not paused"
+#: How long to wait before re-issuing one.  A freeze is held across a path check and a copy —
+#: a handful of engine round trips — so this polls rather than backs off.
+_FROZEN_RETRY_DELAY_S = 0.05
 
 _PROXY_PORT = 3128
 _ALLOW_ENV = "MAF_SANDBOX_ALLOW"
@@ -586,6 +610,23 @@ def _reads_as_an_absent_path(stderr: str, guest: str) -> bool:
     return named is not None and _ABSENT_PATH in stderr.lower()
 
 
+def _reads_as_a_frozen_guest(result: _DockerResult) -> bool:
+    """Whether the daemon refused this invocation because the container is frozen.
+
+    Three conditions, and the caller adds a fourth: the refusal carries the daemon's own
+    prefix, nothing reached stdout, and it names the freeze.  A guest command's stderr reaches
+    the same field, so a guest that prints the daemon's sentence while this backend holds a
+    freeze can have its *own* command re-issued — at its own authority, and no other call's.
+    """
+    lowered = result.stderr.lower().lstrip()
+    return (
+        result.returncode != 0
+        and not result.stdout
+        and lowered.startswith(_DAEMON_REFUSAL)
+        and _FROZEN_REFUSAL in lowered
+    )
+
+
 def _single_rooted(guest_path: str) -> str:
     """``guest_path_and_ancestors``'s normal form: the segments, under exactly one leading slash.
 
@@ -725,6 +766,19 @@ class _DockerRunner(Protocol):
     ) -> _DockerResult: ...
 
 
+class _GuestFreeze(Protocol):
+    """Freezes this container's guest for the block, so a check and the copy it guards see one
+    filesystem state.
+
+    The whole point is that it is **one** freeze per container at a time: two file calls that
+    each took their own would have the first's thaw reopen the second's window.  The backend
+    supplies it for that reason, keyed on the container rather than on the sandbox object,
+    since two acquires of one key hand out two sandboxes naming the same container.
+    """
+
+    def __call__(self) -> contextlib.AbstractAsyncContextManager[None]: ...
+
+
 class _DockerSandbox:
     """A running container, narrowed to the :class:`~maf_sandbox.Sandbox` protocol."""
 
@@ -739,8 +793,10 @@ class _DockerSandbox:
         guest_gid: int = 0,
         *,
         instance_id: str,
+        freeze: _GuestFreeze,
     ) -> None:
         self._run = run
+        self._freeze = freeze
         self._name = name
         self._command_timeout = command_timeout
         # Both read from the container at acquire, not taken from this backend's config.
@@ -756,15 +812,21 @@ class _DockerSandbox:
         return self._name
 
     async def prepare_work_dir(self, spec: SandboxSpec) -> None:
-        """Establish the spec's base through the container file plane."""
+        """Establish the spec's base through the container file plane.
+
+        Frozen like every other tar-plane member: on a warm container the guest of the last
+        conversation is still running, and a base established through a swapped ancestor is a
+        guest-owned directory wherever the link pointed.
+        """
         self._work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
-        await ensure_guest_work_dir(
-            spec,
-            lambda path: self._stat_guest(path, path),
-            self._create_directories,
-            resolve=posix_work_dir_ancestors,
-            base=self._work_dir,
-        )
+        async with self._freeze():
+            await ensure_guest_work_dir(
+                spec,
+                lambda path: self._stat_guest(path, path),
+                self._create_directories,
+                resolve=posix_work_dir_ancestors,
+                base=self._work_dir,
+            )
 
     async def _create_directories(self, directories: tuple[str, ...]) -> None:
         """Create missing parents as root and the work directory as the image user."""
@@ -783,6 +845,15 @@ class _DockerSandbox:
         if result.returncode:
             raise RuntimeError(f"docker could not create the working directory: {result.stderr}")
 
+    def _refuse_before_freezing(self, path: str, working_directory: str) -> None:
+        """Spend the string-level confinement refusals before any engine call.
+
+        A freeze costs two engine round trips and stops the guest for both, so a path no
+        spelling of the working directory could contain must not buy one.  The bundle inside
+        the freeze checks it again, which is string work.
+        """
+        confine_resolve_guest_path(path, working_directory)
+
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
         """Write ``content`` to ``path`` inside the container, parents included.
 
@@ -800,51 +871,56 @@ class _DockerSandbox:
         to create as root, since a guest-owned entry there would be a redirect the reach
         rule never cleared, and ``/`` is the destination and needs none.
 
-        Residual: the path check and extraction are separate calls. The daemon follows a
-        parent swapped for a symlink with root's authority, so a write can land where the
-        guest program could not write. A symlinked final component is replaced instead.
-        Stamping guest ownership does not bound placement authority; the REACH write probe
-        checks what lands, not the authority that resolved its path.
+        The path check and the extraction are two engine calls, and extraction resolves
+        parents with the daemon's root authority — so they run under **one freeze**, which is
+        what keeps them looking at one filesystem state. A symlinked final component is
+        replaced rather than followed either way.
         """
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
-        walked: dict[str, tuple[int, int]] = {}
-        guest = await confine_resolve_guest_write_path(
-            lambda p: self._stat_guest(p, p, walked), path, working_directory
-        )
-        data = content.encode("utf-8") if isinstance(content, str) else content
-        guest_work_dir = _single_rooted(working_directory)
-        guest_leaf_dir = _single_rooted(posixpath.dirname(guest))
-        buffer = io.BytesIO()
-        with tarfile.open(fileobj=buffer, mode="w") as archive:
-            missing = [
-                guest_dir
-                for guest_dir in guest_path_and_ancestors(guest_leaf_dir, guest_work_dir)
-                if guest_dir not in walked
-                and guest_dir != "/"
-                and (
-                    guest_dir == guest_work_dir
-                    or guest_dir.startswith(
-                        guest_work_dir if guest_work_dir == "/" else guest_work_dir + "/"
+        self._refuse_before_freezing(path, working_directory)
+        async with self._freeze():
+            walked: dict[str, tuple[int, int]] = {}
+            guest = await confine_resolve_guest_write_path(
+                lambda p: self._stat_guest(p, p, walked), path, working_directory
+            )
+            data = content.encode("utf-8") if isinstance(content, str) else content
+            guest_work_dir = _single_rooted(working_directory)
+            guest_leaf_dir = _single_rooted(posixpath.dirname(guest))
+            buffer = io.BytesIO()
+            with tarfile.open(fileobj=buffer, mode="w") as archive:
+                missing = [
+                    guest_dir
+                    for guest_dir in guest_path_and_ancestors(guest_leaf_dir, guest_work_dir)
+                    if guest_dir not in walked
+                    and guest_dir != "/"
+                    and (
+                        guest_dir == guest_work_dir
+                        or guest_dir.startswith(
+                            guest_work_dir if guest_work_dir == "/" else guest_work_dir + "/"
+                        )
                     )
-                )
-            ]
-            for guest_directory in missing:
-                entry = tarfile.TarInfo(guest_directory.lstrip("/") + "/")
-                entry.type = tarfile.DIRTYPE
-                entry.mode = 0o755
+                ]
+                for guest_directory in missing:
+                    entry = tarfile.TarInfo(guest_directory.lstrip("/") + "/")
+                    entry.type = tarfile.DIRTYPE
+                    entry.mode = 0o755
+                    entry.uid = self._guest_uid
+                    entry.gid = self._guest_gid
+                    archive.addfile(entry)
+                entry = tarfile.TarInfo(guest.lstrip("/"))
+                entry.size = len(data)
+                entry.mode = 0o644
                 entry.uid = self._guest_uid
                 entry.gid = self._guest_gid
-                archive.addfile(entry)
-            entry = tarfile.TarInfo(guest.lstrip("/"))
-            entry.size = len(data)
-            entry.mode = 0o644
-            entry.uid = self._guest_uid
-            entry.gid = self._guest_gid
-            archive.addfile(entry, io.BytesIO(data))
+                archive.addfile(entry, io.BytesIO(data))
 
-        result = await self._run(
-            "cp", "-", f"{self._name}:/", stdin=buffer.getvalue(), timeout=self._command_timeout
-        )
+            result = await self._run(
+                "cp",
+                "-",
+                f"{self._name}:/",
+                stdin=buffer.getvalue(),
+                timeout=self._command_timeout,
+            )
         if result.returncode != 0:
             raise RuntimeError(f"docker could not write {path}: {result.stderr.strip()}")
 
@@ -862,6 +938,10 @@ class _DockerSandbox:
         ``TimeoutError`` propagates — a workload reports the hang as a diagnostic, and the next
         acquire pays a fresh create.  A **cancelled** call still reaps the host-side process but
         keeps the sandbox: the in-container command runs on until the sandbox is disposed.
+
+        A file call on the same container freezes the guest for its duration, so a command
+        already running stops and resumes, and one issued inside that window is re-issued when
+        the freeze lifts rather than failing.
         """
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
@@ -1002,12 +1082,17 @@ class _DockerSandbox:
 
         The **final** component is described rather than refused: a link reported as
         :data:`~maf_sandbox.EntryKind.SYMLINK` is how a caller learns it is one.
+
+        The check and the described entry come from one freeze, so the components classified
+        are the components described.
         """
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
-        guest = await confine_resolve_guest_read_path(
-            lambda p: self._stat_guest(p, p), path, working_directory
-        )
-        return await self._stat_guest(guest, posixpath.normpath(path))
+        self._refuse_before_freezing(path, working_directory)
+        async with self._freeze():
+            guest = await confine_resolve_guest_read_path(
+                lambda p: self._stat_guest(p, p), path, working_directory
+            )
+            return await self._stat_guest(guest, posixpath.normpath(path))
 
     async def run_code(self, code: str, *, timeout: float) -> ExecResult:
         """Not supported: this backend declares no :data:`~maf_sandbox.Capability.RUN_CODE`.
@@ -1037,6 +1122,10 @@ class _DockerSandbox:
         topmost checked component takes.  Nothing verified, nothing licensed: a removal whose
         walk could not read even the root stays at the guest's authority.
         See ``docs/sandbox/backends/docker.md``.
+
+        Not frozen, unlike the tar-plane members: the daemon refuses ``exec`` on a frozen
+        guest, so this could not run under one, and the reach rule bounds what a won swap
+        reaches instead.
         """
         # Ahead of the root probe below, so a path resolving outside is refused without
         # spending a subprocess on it. The bundle checks it again, which is string work.
@@ -1079,6 +1168,9 @@ class _DockerSandbox:
         target, including a legacy absolute one, must be at least two components from root.
         Runs from ``/`` because the target's parent may be absent; permission to raise authority
         is established at acquire, as described in ``docs/sandbox/backends/docker.md``.
+
+        Not frozen, for the reason :meth:`remove` is not: this is an ``exec``, and the daemon
+        refuses one on a frozen guest.
         """
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         if not posixpath.isabs(directory):
@@ -1156,14 +1248,16 @@ class _DockerSandbox:
         (a symlink tars as a link *entry*, not its target's bytes) is refused on the header
         type, and every parent, from the filesystem root down, is classified first.
 
-        The residual that the check cannot close: a guest that turns a stat-ed component into a link
-        between the check and the read wins, since ``docker cp`` has no no-follow form.
+        ``docker cp`` has no no-follow form, so what keeps a classified component from being a
+        link by the time it is read is the **freeze** this runs under rather than the read.
         """
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
-        guest = await confine_resolve_guest_read_path(
-            lambda p: self._stat_guest(p, p), path, working_directory
-        )
-        result, info, offset = await self._copy_entry(guest, max_bytes=max_bytes)
+        self._refuse_before_freezing(path, working_directory)
+        async with self._freeze():
+            guest = await confine_resolve_guest_read_path(
+                lambda p: self._stat_guest(p, p), path, working_directory
+            )
+            result, info, offset = await self._copy_entry(guest, max_bytes=max_bytes)
         if result.returncode != 0 and not result.stdout:
             if _reads_as_an_absent_path(result.stderr, guest):
                 raise FileNotFoundError(f"no such file: {path!r}")
@@ -1270,6 +1364,16 @@ class DockerSandboxBackend:
         self._acquire_locks: weakref.WeakKeyDictionary[
             asyncio.AbstractEventLoop, dict[tuple[str, str, str, str, str], asyncio.Lock]
         ] = weakref.WeakKeyDictionary()
+        # One freeze per container at a time, so a second file call's window is not reopened by
+        # the first call's thaw. Keyed on the container name rather than the acquire key: two
+        # acquires of one key hand out two sandbox objects naming the same container. Per loop,
+        # and weak-keyed on it, for the reason the acquire locks are.
+        self._freeze_locks: weakref.WeakKeyDictionary[
+            asyncio.AbstractEventLoop, dict[str, asyncio.Lock]
+        ] = weakref.WeakKeyDictionary()
+        # Which containers this backend has frozen right now. Read by `_docker` to decide
+        # whether a daemon refusal naming a freeze is one of its own to re-issue.
+        self._frozen_guests: set[str] = set()
         # (container, image, work_dir) -> what the container itself says. Keyed on the image
         # because a container name is not, so one name can come back carrying a different one.
         self._facts: dict[tuple[str, str, str], _ContainerFacts] = {}
@@ -1601,7 +1705,13 @@ class DockerSandboxBackend:
                 # Before the reuse decision reads it: this can remove the very container the
                 # reads below would otherwise find warm.
                 await self._discard_a_sandbox_on_an_unusable_network(name, key)
-            running = await self._is_running(name)
+            running, frozen = await self._container_state(name)
+            if frozen:
+                # A host that died inside a file call left this one frozen, and frozen refuses
+                # every exec. Warm reuse is the path that inherits it; a disposal would have
+                # taken the container with it.
+                logger.info("sandbox thawed before reuse: container=%s", name)
+                await self._thaw(name)
             stopped = not running and await self._exists(name)
             if not running:
                 # Every path that starts a container, not only the create: a `_restart` that
@@ -1680,6 +1790,7 @@ class DockerSandboxBackend:
                 facts.guest_uid,
                 facts.guest_gid,
                 instance_id=instance_id,
+                freeze=self._freeze(name),
             )
             await sandbox.prepare_work_dir(spec)
             return sandbox
@@ -1946,7 +2057,11 @@ class DockerSandboxBackend:
         if cached is not None:
             return cached
         probe = _DockerSandbox(
-            self._docker, name, self._config.command_timeout_seconds, instance_id=instance_id
+            self._docker,
+            name,
+            self._config.command_timeout_seconds,
+            instance_id=instance_id,
+            freeze=self._freeze(name),
         )
         try:
             answer = await probe.ancestors_are_the_hosts(work_dir)
@@ -2522,6 +2637,44 @@ class DockerSandboxBackend:
         read_limit: int | None = None,
         max_output_bytes: int | None = None,
     ) -> _DockerResult:
+        """Run one ``docker`` command, re-issuing it where a freeze of this backend's refused it.
+
+        The daemon refuses ``exec`` on a frozen container instead of queueing it, so a file
+        call holding a freeze would otherwise fail a guest command that merely overlapped it.
+        Re-issuing is safe because the refusal means the command never ran, and it happens only
+        while this backend holds a freeze — a refusal from anywhere else is the caller's to
+        read. ``timeout`` is the whole budget across the attempts, and a budget spent on
+        refusals returns the last one rather than raising.
+        """
+        deadline = time.monotonic() + (
+            timeout if timeout is not None else self._config.command_timeout_seconds
+        )
+        while True:
+            result = await self._invoke(
+                *args,
+                stdin=stdin,
+                timeout=timeout,
+                read_limit=read_limit,
+                max_output_bytes=max_output_bytes,
+            )
+            left = deadline - time.monotonic()
+            if (
+                not self._frozen_guests
+                or not _reads_as_a_frozen_guest(result)
+                or left <= _FROZEN_RETRY_DELAY_S
+            ):
+                return result
+            await asyncio.sleep(_FROZEN_RETRY_DELAY_S)
+            timeout = deadline - time.monotonic() if timeout is not None else None
+
+    async def _invoke(
+        self,
+        *args: str,
+        stdin: bytes | None = None,
+        timeout: float | None = None,
+        read_limit: int | None = None,
+        max_output_bytes: int | None = None,
+    ) -> _DockerResult:
         """Run one ``docker`` command — the single seam every invocation goes through.
 
         Bytes out, so the read path's tar stream survives intact.  Any abnormal end to the wait
@@ -2623,20 +2776,29 @@ class DockerSandboxBackend:
         )
 
     async def _is_running(self, name: str) -> bool:
-        """Whether ``name`` is a container that exists and is running.
+        """Whether ``name`` is a container that exists and is running."""
+        return (await self._container_state(name))[0]
 
-        ``docker inspect`` answers both existence and state in one call — it errors for a
-        container that is not there, and prints the running boolean for one that is — which is
-        the cleaner primitive wslc's substring-matching listing did not have.
+    async def _container_state(self, name: str) -> tuple[bool, bool]:
+        """Whether ``name`` is running, and whether it is frozen — one ``inspect`` for both.
+
+        ``docker inspect`` answers existence and state together — it errors for a container
+        that is not there, and prints the booleans for one that is — which is the cleaner
+        primitive wslc's substring-matching listing did not have. A frozen container is
+        *running*: the freeze is a second field, not a state of its own, so a caller that
+        reads only the first serves one that refuses every ``exec``.
         """
         result = await self._docker(
             "inspect",
             "-f",
-            "{{.State.Running}}",
+            "{{.State.Running}} {{.State.Paused}}",
             name,
             timeout=self._config.command_timeout_seconds,
         )
-        return result.returncode == 0 and result.stdout.decode("utf-8", "replace").strip() == "true"
+        if result.returncode != 0:
+            return False, False
+        running, _, frozen = result.stdout.decode("utf-8", "replace").strip().partition(" ")
+        return running == "true", frozen.strip() == "true"
 
     async def _exists(self, name: str) -> bool:
         """Whether a container named ``name`` exists in any state."""
@@ -2682,6 +2844,93 @@ class DockerSandboxBackend:
         lock = per_loop.get(registry_key)
         if lock is None:
             lock = per_loop[registry_key] = asyncio.Lock()
+        return lock
+
+    def _freeze(self, name: str) -> _GuestFreeze:
+        """The freeze a sandbox on ``name`` holds around a check and the copy it guards."""
+        return functools.partial(self._frozen, name)
+
+    @contextlib.asynccontextmanager
+    async def _frozen(self, name: str) -> AsyncGenerator[None]:
+        """Hold ``name``'s guest frozen for the block.
+
+        ``docker pause`` is the cgroup freezer, so nothing inside the container can run — and
+        therefore nothing can replace a component between a check and the copy that acts on it.
+        The file plane keeps working meanwhile: ``docker cp`` is the daemon's, not the guest's.
+
+        A freeze this cannot take **refuses the call**. An engine that will not pause cannot
+        give the tar-plane members the one state they are checked against, and serving them
+        anyway would be a guarantee stated in the docstring and absent from the behaviour.
+
+        The thaw is unconditional, and a cancelled caller waits for it: the guest is thawed by
+        the time the cancellation reaches whoever asked for it. What that cannot cover is a
+        host that dies mid-block; :meth:`acquire` lifts that one.
+        """
+        async with self._freeze_lock(name):
+            # The thaw is owed from before the pause is issued rather than after it returns: a
+            # call cancelled or timed out while that invocation is in flight can have frozen
+            # the guest anyway, and an unpause of a guest that is not frozen costs a round trip.
+            self._frozen_guests.add(name)
+            try:
+                frozen = await self._docker(
+                    "pause", name, timeout=self._config.command_timeout_seconds
+                )
+                if frozen.returncode != 0:
+                    raise RuntimeError(
+                        f"docker could not freeze {name} for a file call: "
+                        f"{frozen.stderr.strip() or f'exit {frozen.returncode}'}"
+                    )
+                yield
+            finally:
+                thawing = asyncio.ensure_future(self._thaw(name))
+                try:
+                    await asyncio.shield(thawing)
+                except asyncio.CancelledError:
+                    # The shield kept the thaw itself out of the cancellation, so waiting for
+                    # it here is what makes the guest thawed by the time the caller hears
+                    # about the cancellation rather than shortly after.
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await thawing
+                    raise
+                finally:
+                    self._frozen_guests.discard(name)
+
+    async def _thaw(self, name: str) -> None:
+        """Lift a freeze, never raising: the call that took it has its own outcome to report.
+
+        A container that has gone, and one the engine says was never frozen, are both the
+        state this wanted. Anything else leaves it frozen, and frozen refuses every ``exec``
+        from here on — so it is logged as the warning it is, and the next :meth:`acquire`
+        lifts it.
+        """
+        try:
+            lifted = await self._docker(
+                "unpause", name, timeout=self._config.command_timeout_seconds
+            )
+        except Exception as unreachable:  # noqa: BLE001 — a thaw must never mask its block
+            logger.warning(
+                "docker: could not thaw %s (%s); the next acquire lifts it",
+                name,
+                error_detail(unreachable),
+            )
+            return
+        if (
+            lifted.returncode != 0
+            and not _reads_as_absent(lifted.stderr, name)
+            and _NOT_FROZEN not in lifted.stderr.lower()
+        ):
+            logger.warning(
+                "docker: %s is still frozen (%s); the next acquire lifts it",
+                name,
+                lifted.stderr.strip() or f"exit {lifted.returncode}",
+            )
+
+    def _freeze_lock(self, name: str) -> asyncio.Lock:
+        """The get-or-create freeze lock for one container on the running loop."""
+        per_loop = self._freeze_locks.setdefault(asyncio.get_running_loop(), {})
+        lock = per_loop.get(name)
+        if lock is None:
+            lock = per_loop[name] = asyncio.Lock()
         return lock
 
     async def _ensure_image(self, image: str) -> None:
