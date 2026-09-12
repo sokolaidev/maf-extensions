@@ -203,10 +203,6 @@ _DAEMON_REFUSAL = "error response from daemon:"
 #: What ``unpause`` answers for a container that is not frozen: `Error response from daemon:
 #: Container <id> is not paused`.  A thaw wanted exactly that state, so it is not a failure.
 _NOT_FROZEN = "is not paused"
-#: How much of a refusal must be readable before the caller's guest budget may judge it.  The
-#: daemon's own diagnostic runs to about a hundred bytes, and a budget under that would classify
-#: "the command never ran" as "the guest said too much".
-_CONTROL_DIAGNOSTIC_BYTES = 512
 #: How long to wait before re-issuing one.  A freeze is held across a path check and a copy —
 #: a handful of engine round trips — so this polls rather than backs off.
 _FROZEN_RETRY_DELAY_S = 0.05
@@ -226,17 +222,23 @@ _FREEZE_LOCKS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, as
 class _Freezes:
     """Which containers this process has claimed, and which the daemon has confirmed frozen.
 
-    Two records, because they answer two questions and one set answered them both wrongly at
-    the edges.  A **claim** is a thaw this process owes: taken before the pause is issued,
-    since a call cancelled inside that invocation may have frozen the guest anyway, and
-    counted rather than flagged so a second claimant's failure cannot release the first's.  A
-    **confirmation** is the daemon having said the container is paused, which is the only thing
-    that proves nothing inside it could have run — so it is held from the pause returning until
-    just before the unpause is issued, and neither edge certifies a guest that is running.
+    Two records, because they have different bounds.  A **claim** is a thaw this process owes:
+    it starts before the pause is issued, since a call cancelled inside that invocation may
+    have frozen the guest anyway, and it is counted, because a second claimant whose pause the
+    daemon refuses must not release the first's.  A **confirmation** is the daemon having said
+    the container is paused, which is the only thing that proves nothing inside it could have
+    run: it starts when the pause returns and ends before the unpause is issued, because the
+    guest is running on both sides of those two lines.
 
     Process-wide for the reason :data:`_FREEZE_LOCKS` is, and loop-independent where that is
-    not, which is what makes it the record every cross-loop decision reads.
+    not, which is what makes it the record every cross-loop decision reads.  A loop may be on
+    its own thread, so the mutations below take a lock: the counter is a read-modify-write, and
+    two claimants that both stored 1 would leave the first's freeze released by the second.
     """
+
+    #: Guards every read and write below.  Held only across dictionary and set operations, so a
+    #: loop never waits on the engine behind it.
+    _guard: ClassVar[threading.Lock] = threading.Lock()
 
     claims: ClassVar[dict[str, int]] = {}
     confirmed: ClassVar[set[str]] = set()
@@ -244,35 +246,41 @@ class _Freezes:
 
     @classmethod
     def claim(cls, name: str) -> None:
-        cls.claims[name] = cls.claims.get(name, 0) + 1
+        with cls._guard:
+            cls.claims[name] = cls.claims.get(name, 0) + 1
 
     @classmethod
     def release(cls, name: str) -> None:
-        owed = cls.claims.get(name, 0) - 1
-        if owed > 0:
-            cls.claims[name] = owed
-        else:
-            cls.claims.pop(name, None)
+        with cls._guard:
+            owed = cls.claims.get(name, 0) - 1
+            if owed > 0:
+                cls.claims[name] = owed
+            else:
+                cls.claims.pop(name, None)
 
     @classmethod
     def claimed(cls, name: str) -> bool:
         """Does anything in this process owe a thaw on ``name``?"""
-        return name in cls.claims
+        with cls._guard:
+            return name in cls.claims
 
     @classmethod
     def confirm(cls, name: str) -> None:
-        cls.confirmed.add(name)
-        cls.changes += 1
+        with cls._guard:
+            cls.confirmed.add(name)
+            cls.changes += 1
 
     @classmethod
     def unconfirm(cls, name: str) -> None:
-        cls.confirmed.discard(name)
-        cls.changes += 1
+        with cls._guard:
+            cls.confirmed.discard(name)
+            cls.changes += 1
 
     @classmethod
     def mark(cls, name: str | None) -> tuple[int, bool]:
         """A token for one container, to compare an invocation's end against its start."""
-        return cls.changes, name is not None and name in cls.confirmed
+        with cls._guard:
+            return cls.changes, name is not None and name in cls.confirmed
 
     @classmethod
     def held_throughout(cls, name: str | None, mark: tuple[int, bool]) -> bool:
@@ -287,7 +295,8 @@ class _Freezes:
         wrong in.
         """
         changes, held = mark
-        return held and name is not None and name in cls.confirmed and cls.changes == changes
+        with cls._guard:
+            return held and name is not None and name in cls.confirmed and cls.changes == changes
 
 
 def _freeze_lock(name: str) -> asyncio.Lock:
@@ -1076,10 +1085,9 @@ class _DockerSandbox:
     ) -> ExecResult:
         """Execute with a host-enforced combined stdout/stderr byte budget.
 
-        A budget under :data:`_CONTROL_DIAGNOSTIC_BYTES` is enforced on the whole read rather
-        than mid-stream: the daemon's refusal of an ``exec`` on a frozen guest is longer than
-        that, and a budget applied to it would report a command that never ran as one that
-        said too much.
+        The budget is the live cap the contract calls for, enforced as output arrives.  A
+        refusal of an ``exec`` on a frozen guest can be longer than a small one, and that is
+        told apart by the freeze rather than by reading further: see :meth:`_docker`.
         """
         if type(max_output_bytes) is not int or max_output_bytes <= 0:
             raise ValueError("max_output_bytes must be a positive integer")
@@ -2791,21 +2799,31 @@ class DockerSandboxBackend:
         )
         while True:
             mark = _Freezes.mark(container)
-            result = await self._invoke(
-                *args,
-                stdin=stdin,
-                timeout=timeout,
-                read_limit=read_limit,
-                max_output_bytes=max_output_bytes,
-            )
+            try:
+                result = await self._invoke(
+                    *args,
+                    stdin=stdin,
+                    timeout=timeout,
+                    read_limit=read_limit,
+                    max_output_bytes=max_output_bytes,
+                )
+            except SandboxExecOutputLimitExceeded:
+                # The caller's budget is the live cap and stays that way. What decides whether
+                # the bytes that tripped it were the guest's is the freeze, never their
+                # content: confirmed frozen throughout, nothing in the container ran, so the
+                # daemon wrote them and the command is still owed an attempt.
+                remaining = deadline - time.monotonic()
+                if (
+                    not _Freezes.held_throughout(container, mark)
+                    or remaining <= _FROZEN_RETRY_DELAY_S
+                ):
+                    raise
+                await asyncio.sleep(_FROZEN_RETRY_DELAY_S)
+                timeout = deadline - time.monotonic() if timeout is not None else None
+                continue
             never_ran = _reads_as_a_frozen_guest(result) and _Freezes.held_throughout(
                 container, mark
             )
-            if max_output_bytes is not None and not never_ran:
-                if len(result.stdout) + len(result.stderr_bytes or b"") > max_output_bytes:
-                    raise SandboxExecOutputLimitExceeded(
-                        "execution output exceeded its byte budget"
-                    )
             left = deadline - time.monotonic()
             if not never_ran or left <= _FROZEN_RETRY_DELAY_S:
                 return result
@@ -2857,14 +2875,8 @@ class DockerSandboxBackend:
                 "DockerSandboxConfig.docker_path to the client binary (or 'podman')"
             ) from exc
         if max_output_bytes is not None:
-            # Read to the caller's budget or to the control-message floor, whichever is larger,
-            # so a refusal that ran nothing is legible before the budget for what the guest said
-            # is applied to it by `_docker`. Above the floor this is the caller's number
-            # exactly, enforced mid-stream; below it, that many bytes are read first.
             stdout, stderr = await read_bounded_process_output(
-                process,
-                max_output_bytes=max(max_output_bytes, _CONTROL_DIAGNOSTIC_BYTES),
-                timeout=timeout,
+                process, max_output_bytes=max_output_bytes, timeout=timeout
             )
             result = _DockerResult(
                 process.returncode or 0, stdout, stderr.decode("utf-8", errors="replace"), stderr

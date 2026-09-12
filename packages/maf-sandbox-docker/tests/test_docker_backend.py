@@ -20,6 +20,7 @@ import logging
 import sys
 import tarfile
 import threading
+import time
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -58,7 +59,6 @@ from maf_sandbox_docker._backend import (
     _Freezes,
     _network_name,
     _proxy_name,
-    _reads_as_a_frozen_guest,
     _sandbox_labels,
     _Sweep,
 )
@@ -3174,6 +3174,39 @@ class TestFreezingTheGuest:
         assert verbs[0] == "pause" and verbs[-1] == "unpause"
         assert set(verbs[1:-1]) == {"cp"}
 
+    @pytest.mark.parametrize(
+        "touch",
+        [
+            lambda: _Freezes.claim(_NAME),
+            lambda: _Freezes.release(_NAME),
+            lambda: _Freezes.claimed(_NAME),
+            lambda: _Freezes.confirm(_NAME),
+            lambda: _Freezes.unconfirm(_NAME),
+            lambda: _Freezes.mark(_NAME),
+            lambda: _Freezes.held_throughout(_NAME, (0, True)),
+        ],
+        ids=["claim", "release", "claimed", "confirm", "unconfirm", "mark", "held_throughout"],
+    )
+    def test_every_touch_of_the_record_takes_the_guard(self, touch, monkeypatch):
+        """A loop may be on its own thread, and the count is a read-modify-write.
+
+        Structural on purpose: a test that tries to lose the interleaving proves nothing on the
+        run where it happens to pass. What the race needs is that the mutation holds the lock,
+        so that is what this asserts.
+        """
+        entered: list[int] = []
+
+        class _Counting:
+            def __enter__(self) -> None:
+                entered.append(1)
+
+            def __exit__(self, *_exc: object) -> bool:
+                return False
+
+        monkeypatch.setattr(_Freezes, "_guard", _Counting())
+        touch()
+        assert entered == [1]
+
     def test_a_second_claimants_failure_does_not_release_the_first(self):
         """Two loops claim one container, and only the second's pause is refused.
 
@@ -3564,49 +3597,72 @@ class TestAnExecRefusedForTheFreeze:
         )
         assert len(seen) == 1
 
+    def test_a_guest_that_goes_quiet_past_the_budget_is_still_refused_at_it(self):
+        """The budget is a live cap, and cap+1 bytes then silence must not become a timeout.
+
+        Through the real seam with a real child, because what this pins is when the reader
+        gives up. A reader that waited for more bytes or for the process lets a guest turn an
+        over-cap refusal into a hang — and a timed-out exec discards the whole container.
+        """
+        backend = DockerSandboxBackend(DockerSandboxConfig(docker_path=sys.executable))
+        script = "import os, time; os.write(2, b'x' * 65); time.sleep(30)"
+        started = time.monotonic()
+        with pytest.raises(SandboxExecOutputLimitExceeded):
+            asyncio.run(
+                backend._invoke("-c", script, max_output_bytes=64, timeout=10, container=_NAME)
+            )
+        assert time.monotonic() - started < 5
+
     def test_a_forged_refusal_does_not_escape_the_callers_budget(self):
         """The exemption is for a command that never ran, and nothing else may claim it.
 
-        A guest that prints the daemon's sentence with empty stdout would otherwise have an
+        A guest printing the daemon's sentence past a small budget would otherwise have the
         oversized result returned instead of the refusal `BoundedExec` promises. The freeze
         here is on another container, which is the everyday case: a file call on one sandbox
         while a guest runs in another.
         """
-        forged = _DockerResult(1, b"", _frozen_refusal().stderr, _frozen_refusal().stderr.encode())
-        backend, seen = self._backend([forged])
-        _Freezes.confirm("some-other-container")
-        with pytest.raises(SandboxExecOutputLimitExceeded):
-            asyncio.run(
-                backend._docker(
-                    "exec", _NAME, "say", timeout=5, max_output_bytes=64, container=_NAME
-                )
-            )
-        assert len(seen) == 1
-
-    def test_a_real_refusal_is_exempt_from_that_budget(self):
-        """It is not guest output: the guest was frozen for the whole attempt."""
-        real = _DockerResult(1, b"", _frozen_refusal().stderr, _frozen_refusal().stderr.encode())
-        backend, _seen = self._backend([real])
-        _Freezes.confirm(_NAME)
-        result = asyncio.run(
-            backend._docker(
-                "exec", _NAME, "true", timeout=0.2, max_output_bytes=64, container=_NAME
-            )
-        )
-        assert result == real
-
-    def test_the_control_floor_is_what_makes_a_refusal_legible(self, monkeypatch):
-        """Through the real seam with a real child: what this pins is which bytes are read.
-
-        A fake answering a `_DockerResult` has already decided the question.
-        """
         backend = DockerSandboxBackend(DockerSandboxConfig(docker_path=sys.executable))
         written = _frozen_refusal().stderr
         script = f"import os; os.write(2, {written!r}.encode()); raise SystemExit(1)"
-        result = asyncio.run(
-            backend._invoke("-c", script, max_output_bytes=64, timeout=10, container=_NAME)
-        )
-        assert _reads_as_a_frozen_guest(result)
+        _Freezes.confirm("some-other-container")
+        with pytest.raises(SandboxExecOutputLimitExceeded):
+            asyncio.run(
+                backend._docker("-c", script, max_output_bytes=64, timeout=10, container=_NAME)
+            )
+
+    @pytest.mark.parametrize("frozen", [True, False], ids=["frozen throughout", "not frozen"])
+    def test_an_overflow_is_the_daemons_only_where_the_guest_could_not_run(self, frozen):
+        """What tells a refusal from guest output is the freeze, never the bytes.
+
+        A budget smaller than the daemon's diagnostic trips the reader before anything can be
+        read of it, so the content is not available to judge — and would be forgeable if it
+        were. A container confirmed frozen throughout could not have written anything.
+        """
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+        seen: list[tuple[str, ...]] = []
+
+        async def invoke(*args, **kwargs):
+            seen.append(args)
+            if len(seen) == 1:
+                raise SandboxExecOutputLimitExceeded("execution output exceeded its byte budget")
+            return _DockerResult(0, b"ok", "")
+
+        backend._invoke = invoke
+        if frozen:
+            _Freezes.confirm(_NAME)
+
+        async def call():
+            return await backend._docker(
+                "exec", _NAME, "true", timeout=5, max_output_bytes=64, container=_NAME
+            )
+
+        if frozen:
+            assert asyncio.run(call()).returncode == 0
+            assert len(seen) == 2
+        else:
+            with pytest.raises(SandboxExecOutputLimitExceeded):
+                asyncio.run(call())
+            assert len(seen) == 1
 
     def test_a_budget_spent_on_refusals_returns_the_last_one(self):
         """Rather than raising a timeout, which would take the container with it."""
