@@ -88,7 +88,7 @@ def test_service_sweep_reaches_every_variant_without_a_local_registry(kind):
     assert set(service.rows) == ({"foreign"} if kind is None else {"foreign", "sibling"})
 
 
-@pytest.mark.parametrize("field", ["scope", "thread_id", "agent_dir", "kind"])
+@pytest.mark.parametrize("field", ["scope", "thread_id", "agent_dir", "kind", "call_id"])
 def test_instance_selector_cannot_cross_ownership(field):
     service = _Service()
     service.add("target")
@@ -104,7 +104,7 @@ def test_failures_retain_exact_ids_and_retry_without_deleting_replacements(failu
     service.add("target")
     service.add("sibling", spec=replace(SPEC, kind="other"))
     backend = _backend(service)
-    backend._registry[(KEY.scope, KEY.thread_id, KEY.agent_dir, SPEC.kind)] = _Held(
+    backend._registry[(KEY.scope, KEY.thread_id, KEY.agent_dir, KEY.call_id, SPEC.kind)] = _Held(
         "target", egress=(Egress.CLOSED, frozenset())
     )
     service.failure = failure
@@ -122,7 +122,7 @@ def test_failures_retain_exact_ids_and_retry_without_deleting_replacements(failu
     assert not backend._undeleted
 
 
-@pytest.mark.parametrize("label", ["scope", "thread", "agent", "kind"])
+@pytest.mark.parametrize("label", ["scope", "thread", "agent", "kind", "call"])
 def test_reserved_labels_are_refused_before_acquire_reaches_the_service(label):
     service = _Service()
     backend = _backend(service)

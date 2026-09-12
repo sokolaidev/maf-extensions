@@ -100,7 +100,7 @@ def test_engine_discovery_preserves_same_kind_sibling_and_replacement(network):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("boundary", ["scope", "thread_id", "agent_dir", "kind"])
+@pytest.mark.parametrize("boundary", ["scope", "thread_id", "agent_dir", "kind", "call_id"])
 def test_foreign_ownership_never_deletes_an_id(boundary):
     engine = _Engine()
     engine.add("a" * 64, "first")
@@ -191,3 +191,37 @@ def test_proxy_failure_preserves_instance_for_retry(failure, observed):
     assert asyncio.run(backend.dispose(KEY, kind=SPEC.kind, instance_id=workload_id)) is None
     assert engine.removed == [proxy_id, workload_id]
     assert len(events) == int(observed)
+
+
+CALL_A = replace(KEY, call_id="call-a")
+CALL_B = replace(KEY, call_id="call-b")
+
+
+@pytest.mark.parametrize(
+    "workload_key, proxy_key, paired",
+    [
+        (CALL_A, CALL_A, True),
+        (CALL_A, CALL_B, False),
+        (KEY, KEY, True),
+    ],
+    ids=["same-call", "other-call", "conversation"],
+)
+def test_a_paired_proxy_must_carry_this_calls_label(workload_key, proxy_key, paired):
+    """The proxy is removed only when its call label agrees with the workload's.
+
+    The name a proxy is addressed by already folds the call, so a disagreement here means a
+    stale container under a name that no longer describes it — which is exactly the case this
+    comparison exists for, and it read only four of the five identity labels. The conversation
+    case is the compatibility half: neither side carries the label, and `None == None` pairs
+    them as it always did.
+    """
+    engine = _Engine()
+    workload_id, proxy_id = ("a" * 64, "b" * 64)
+    engine.add(workload_id, "first", key=workload_key)
+    engine.add(proxy_id, "first-proxy", key=proxy_key)
+    engine.rows[proxy_id]["Config"]["Labels"]["maf-sandbox.role"] = "proxy"
+
+    asyncio.run(_backend(engine).dispose(workload_key, instance_id=workload_id))
+
+    assert workload_id in engine.removed
+    assert (proxy_id in engine.removed) is paired

@@ -49,6 +49,7 @@ from maf_sandbox import (
     EntryKind,
     ExecResult,
     Isolation,
+    IsolationScope,
     OsFamily,
     Sandbox,
     SandboxBackend,
@@ -104,6 +105,10 @@ _LABEL_SCOPE = "maf-sandbox.scope"
 _LABEL_THREAD = "maf-sandbox.thread"
 _LABEL_AGENT = "maf-sandbox.agent"
 _LABEL_KIND = "maf-sandbox.kind"
+#: The tool call a sandbox serves, written only when the key names one. Absent on a
+#: conversation-scoped container, so a key written before this label existed selects exactly
+#: as it always did, and a call-scoped disposal adds it to reach one call's container alone.
+_LABEL_CALL = "maf-sandbox.call"
 _LABEL_PREFIX = "maf-sandbox.label."
 
 _LABEL_VALUE_MAX = 63
@@ -113,6 +118,14 @@ _LABEL_VALUE_DIGEST = re.compile(r"sha256-[0-9a-f]{48}")
 # No branch of this engine's stat carries an owner, so nothing raised here can be licensed;
 # cleanup requires disposal.
 _CAPABILITIES = frozenset({Capability.EXEC, Capability.FILES_IN})
+
+#: Both scopes, because a container's identity folds the key's ``call_id`` — into the name it is
+#: created under, the registry entry it is filed at and the label a disposal selects on — so two
+#: acquires differing only there are two containers and a disposal reaches one of them. Declaring
+#: :data:`~maf_sandbox.IsolationScope.CALL` without that would be answered by sharing: both calls
+#: would resolve to one container and both would succeed, which is the half
+#: ``assert_call_scope_conformance`` exists to measure.
+_ISOLATION_SCOPES = frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL})
 
 #: `wslc` exits non-zero for a container that is not there, so removal is judged by this.
 _NOT_FOUND = "WSLC_E_CONTAINER_NOT_FOUND"
@@ -206,14 +219,45 @@ def _label_value(raw: str) -> str:
 
 
 def _sandbox_labels(key: SandboxKey, spec: SandboxSpec) -> dict[str, str]:
-    """The labels a container is created with — the same ones `dispose_scope` selects on."""
+    """The labels a container is created with — the same ones `dispose_scope` selects on.
+
+    :data:`_LABEL_CALL` is written only when the key names a call. A conversation-scoped
+    container therefore carries exactly the labels it carried before this backend served the
+    call scope, so the disposal that selects on them keeps reaching one created by an earlier
+    release.
+    """
     return {
         _LABEL_SCOPE: _label_value(key.scope),
         _LABEL_THREAD: _label_value(key.thread_id),
         _LABEL_AGENT: _label_value(key.agent_dir),
         _LABEL_KIND: _label_value(spec.kind),
+        **({_LABEL_CALL: _label_value(key.call_id)} if key.call_id else {}),
         **{f"{_LABEL_PREFIX}{k}": _label_value(v) for k, v in spec.labels.items()},
     }
+
+
+def _call_filters(key: SandboxKey) -> list[tuple[str, str]]:
+    """The extra label filter a call-scoped key selects with, and nothing for a conversation.
+
+    A call-scoped disposal must reach the container of *that* call and leave the sibling call
+    of the same assistant message running, which is what the label pins. A conversation's key
+    adds no filter: its container carries no call label, and sweeping a call-scoped leftover of
+    the same kind is the backstop :meth:`SandboxBackend.dispose_scope` would otherwise be alone
+    in providing.
+    """
+    return [(_LABEL_CALL, key.call_id)] if key.call_id else []
+
+
+def _key_prefix(key: SandboxKey) -> tuple[str, str, str, str]:
+    """The identity every registry entry and disposal record is filed under.
+
+    ``call_id`` is the fourth field rather than something folded into the other three, so
+    :meth:`SandboxBackend.dispose_scope` keeps selecting on the first two and still reaches a
+    per-call container whose own disposal did not land. A key naming a call and the same key
+    naming none are two entries here, which is what stops one call's cleanup retiring the
+    other's record.
+    """
+    return (key.scope, key.thread_id, key.agent_dir, key.call_id)
 
 
 def _check_storage_base(row: dict[str, object], spec: SandboxSpec) -> None:
@@ -268,6 +312,18 @@ def _key_from_labels(labels: object) -> SandboxKey | None:
     strings = cast(list[str], parts)
     if any(_label_value(part) != owned.get(label) for label, part in zip(selectors, strings)):
         return None
+    # The call is an ownership selector too — a call-scoped disposal filters on it — so it owes
+    # the same agreement check as the three above, with the asymmetry the write side has:
+    # `_sandbox_labels` omits the label entirely for a conversation-scoped key, so an empty
+    # decoded call must find no label and a non-empty one must match. Unchecked, a record whose
+    # payload and label disagree still recovers a key, and a reap then reports and drains under
+    # a call that never owned the container.
+    call = owned.get(_LABEL_CALL)
+    if strings[3]:
+        if _label_value(strings[3]) != call:
+            return None
+    elif call is not None:
+        return None
     return SandboxKey(
         scope=strings[0], thread_id=strings[1], agent_dir=strings[2], call_id=strings[3]
     )
@@ -289,6 +345,17 @@ def _container_name(key: SandboxKey, kind: str, egress_id: str = "") -> str:
     if egress_id:
         parts.append(egress_id)
     digest = sha256("|".join(parts).encode("utf-8"))
+    if key.call_id:
+        # Folded into the *digest* rather than into the joined string, because the parts above
+        # are joined by `|` with nothing length-prefixing them: appended as text, a call part
+        # would be spellable by a crafted `kind`, and `kind="k|call:x"` with no call would hash
+        # to the same name as `kind="k"` with `call_id="x"` — two sandboxes the backend could
+        # then neither create nor dispose independently while declaring it serves both.
+        # Hashing the finished digest with the call makes the call's *presence* structural: a
+        # conversation name is `H(joined)` and a call name is `H(hex(H(joined)) | call | id)`,
+        # so no spelling of the joined parts can produce one of the other shape. A conversation
+        # key never reaches this branch, so its name is byte-for-byte what it always was.
+        digest = sha256(digest.hexdigest().encode("ascii") + b"|call|" + key.call_id.encode())
     return f"maf-sandbox-wslc-{digest.hexdigest()[:12]}"
 
 
@@ -854,21 +921,24 @@ class WslcSandboxBackend:
             if config.egress_proxy_image
             else frozenset({Egress.CLOSED}),
             os_families=frozenset({OsFamily.POSIX}),
+            isolation_scopes=_ISOLATION_SCOPES,
             observes_egress=bool(config.egress_proxy_image),
         )
         # Where egress decisions go once a router with an observer hands over a reporter. `None`
         # until then, which is what keeps an uninstrumented host from paying for the read: every
         # drain is a `container logs` on a path an acquire waits on.
         self._egress_report: EgressReporter | None = None
-        # (scope, thread_id, agent_dir, kind) -> name: a purge fallback for when the listing
-        # fails, never the truth. Holds the last name acquired per key and kind, which is
-        # enough to reclaim them.
-        self._registry: dict[tuple[str, str, str, str], str] = {}
+        # (scope, thread_id, agent_dir, call_id, kind) -> name: a purge fallback for when the
+        # listing fails, never the truth. Holds the last name acquired per key and kind, which
+        # is enough to reclaim them, and `call_id` is part of that key — empty for a
+        # conversation, naming one tool call at `IsolationScope.CALL`, so two calls never
+        # collapse onto one entry here.
+        self._registry: dict[tuple[str, str, str, str, str], str] = {}
         self._command_probes: dict[str, tuple[str, set[str]]] = {}
         # Retry records do not refuse serving; the router owns that decision.
-        self._undeleted: dict[tuple[str, str, str], set[str]] = {}
-        self._undeleted_kinds: dict[tuple[str, str, str], dict[str, str]] = {}
-        self._disposal_tokens: dict[tuple[str, str, str], dict[str, object]] = {}
+        self._undeleted: dict[tuple[str, str, str, str], set[str]] = {}
+        self._undeleted_kinds: dict[tuple[str, str, str, str], dict[str, str]] = {}
+        self._disposal_tokens: dict[tuple[str, str, str, str], dict[str, object]] = {}
         self._disposal_guard = threading.Lock()
         # Get-or-create serialised per (running loop, key): a create names no container until it
         # returns, so two acquires racing one key would each build a network, a proxy and a
@@ -876,7 +946,7 @@ class WslcSandboxBackend:
         # weak-keyed on the loop so a process that runs a loop per call (asyncio.run) does not
         # accumulate a lock table for loops long dead.
         self._acquire_locks: weakref.WeakKeyDictionary[
-            asyncio.AbstractEventLoop, dict[tuple[str, str, str, str], asyncio.Lock]
+            asyncio.AbstractEventLoop, dict[tuple[str, str, str, str, str], asyncio.Lock]
         ] = weakref.WeakKeyDictionary()
 
     @property
@@ -1087,7 +1157,7 @@ class WslcSandboxBackend:
                     key.agent_dir,
                 )
 
-            self._registry[(key.scope, key.thread_id, key.agent_dir, spec.kind)] = name
+            self._registry[(*_key_prefix(key), spec.kind)] = name
             try:
                 inspected = await self._wslc(
                     "container", "inspect", name, timeout=self._config.command_timeout_seconds
@@ -1240,7 +1310,7 @@ class WslcSandboxBackend:
         return int(uid)
 
     def _retain_disposals(
-        self, prefix: tuple[str, str, str], names: Sequence[str], kinds: Mapping[str, str]
+        self, prefix: tuple[str, str, str, str], names: Sequence[str], kinds: Mapping[str, str]
     ) -> dict[str, object]:
         """Reserve retry records while holding the disposal guard."""
         if not names:
@@ -1253,7 +1323,7 @@ class WslcSandboxBackend:
 
     def _finish_disposals(
         self,
-        prefix: tuple[str, str, str],
+        prefix: tuple[str, str, str, str],
         attempted: Mapping[str, object],
         failed: Sequence[str],
         kinds: Mapping[str, str],
@@ -1309,6 +1379,7 @@ class WslcSandboxBackend:
                 _LABEL_SCOPE: _label_value(key.scope),
                 _LABEL_THREAD: _label_value(key.thread_id),
                 _LABEL_AGENT: _label_value(key.agent_dir),
+                **{label: _label_value(value) for label, value in _call_filters(key)},
             }
             if kind is not None:
                 wanted[_LABEL_KIND] = _label_value(kind)
@@ -1335,7 +1406,17 @@ class WslcSandboxBackend:
                     isinstance(proxy_labels, dict)
                     and all(
                         cast(dict[str, object], proxy_labels).get(label) == labels.get(label)
-                        for label in (_LABEL_SCOPE, _LABEL_THREAD, _LABEL_AGENT, _LABEL_KIND)
+                        # `_LABEL_CALL` included, so this check verifies the whole identity the
+                        # name derives from rather than the four fields it used to. Both sides
+                        # are read with `.get`, so a conversation-scoped pair — neither carrying
+                        # the label — still matches on `None == None`.
+                        for label in (
+                            _LABEL_SCOPE,
+                            _LABEL_THREAD,
+                            _LABEL_AGENT,
+                            _LABEL_KIND,
+                            _LABEL_CALL,
+                        )
                     )
                     and cast(dict[str, object], proxy_labels).get(_LABEL_ROLE) == "proxy"
                 ):
@@ -1370,12 +1451,12 @@ class WslcSandboxBackend:
                 if cached_id == instance_id:
                     self._command_probes.pop(name, None)
             return await self._dispose_instance(key, kind, instance_id)
-        prefix = (key.scope, key.thread_id, key.agent_dir)
+        prefix = _key_prefix(key)
         with self._disposal_guard:
             mine = [
                 k
                 for k in list(self._registry)
-                if k[:3] == prefix and (kind is None or k[3] == kind)
+                if k[:4] == prefix and (kind is None or k[4] == kind)
             ]
             attributed = self._undeleted_kinds.setdefault(prefix, {})
             remembered: list[str] = []
@@ -1383,7 +1464,7 @@ class WslcSandboxBackend:
                 name = self._registry.pop(entry)
                 self._command_probes.pop(name, None)
                 remembered.append(name)
-                attributed[name] = entry[3]
+                attributed[name] = entry[4]
             retained = sorted(
                 name
                 for name in self._undeleted.get(prefix, ())
@@ -1400,6 +1481,7 @@ class WslcSandboxBackend:
             (_LABEL_SCOPE, key.scope),
             (_LABEL_THREAD, key.thread_id),
             (_LABEL_AGENT, key.agent_dir),
+            *_call_filters(key),
         ]
         if kind is not None:
             wanted.append((_LABEL_KIND, kind))
@@ -1442,10 +1524,10 @@ class WslcSandboxBackend:
             for entry in mine:
                 name = self._registry.pop(entry)
                 self._command_probes.pop(name, None)
-                prefix = entry[:3]
+                prefix = entry[:4]
                 remembered.append(name)
                 self._undeleted.setdefault(prefix, set()).add(name)
-                self._undeleted_kinds.setdefault(prefix, {})[name] = entry[3]
+                self._undeleted_kinds.setdefault(prefix, {})[name] = entry[4]
             retained = {
                 p: set(names)
                 for p, names in self._undeleted.items()
@@ -1726,7 +1808,7 @@ class WslcSandboxBackend:
     def _acquire_lock(self, key: SandboxKey, kind: str) -> asyncio.Lock:
         """The get-or-create lock for one key and kind on the running loop (see ``__init__``)."""
         per_loop = self._acquire_locks.setdefault(asyncio.get_running_loop(), {})
-        registry_key = (key.scope, key.thread_id, key.agent_dir, kind)
+        registry_key = (*_key_prefix(key), kind)
         lock = per_loop.get(registry_key)
         if lock is None:
             lock = per_loop[registry_key] = asyncio.Lock()

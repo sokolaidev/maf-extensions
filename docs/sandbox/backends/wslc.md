@@ -6,7 +6,7 @@
 
 The declared capabilities are a ceiling for a conforming image. Acquire checks `sh` for `EXEC` and the external `test` command for `FILES_IN`, including its true and false exit statuses as the root principal the write-path check uses. A shell builtin cannot satisfy that external-command check. Unresolved write ownership also refuses `FILES_IN` at acquire. Successful command checks are cached per engine instance ID; failed checks are retried, and a refused container stays tracked for host disposal. The checks do not strengthen guest-answered path checks or enable reclamation. See [the ceiling and probe contract](../guest-platform-and-commands.md#decision-3--a-static-ceiling-matched-at-attach-and-a-probe-at-acquire).
 
-The four below `isolation` are fields of this backend's `declarations`.
+The five below `isolation` are fields of this backend's `declarations`.
 
 | Declaration | Value |
 |---|---|
@@ -15,6 +15,7 @@ The four below `isolation` are fields of this backend's `declarations`.
 | `egress_modes` | `{Egress.CLOSED}`; `{Egress.CLOSED, Egress.ALLOWLIST}` when an egress proxy image is configured. Never `UNRESTRICTED` |
 | `limits` | **not declared** |
 | `os_families` | `{OsFamily.POSIX}` — a constant rather than a read: `wslc` runs Linux containers in WSL 2's utility VM and has no other guest to hand out, so there is no engine to ask |
+| `isolation_scopes` | `{IsolationScope.CONVERSATION, IsolationScope.CALL}` — see [one sandbox per call](#one-sandbox-per-call) |
 
 `container` is below the router's default floor, so a host opts down explicitly with `min_isolation=Isolation.CONTAINER`; with nothing passed, construction raises. That refusal is the point of the declaration, not a limitation to work around — there is no flag left to forget.
 
@@ -24,7 +25,7 @@ The four below `isolation` are fields of this backend's `declarations`.
 
 ## Lifecycle
 
-Creates land in **about half a second**, which is what makes this the backend to iterate against. Names are derived from a digest of scope, thread, agent dir, kind and egress identity, so acquire and dispose agree without a registry; get-or-create is serialised per `(loop, key, kind)`, because a create names no container until it returns and two racing acquires would each build a network, a proxy and a sandbox. Labels are written at create and both `dispose(key, kind=...)` and `dispose_scope` select on them from the CLI's own listing, with values hashed rather than truncated for the reason every backend here hashes them — a shared prefix would let one conversation's purge delete another's containers.
+Creates land in **about half a second**, which is what makes this the backend to iterate against. Names are derived from a digest of scope, thread, agent dir, kind, egress identity and the key's `call_id` — empty and so absent from the digest at `IsolationScope.CONVERSATION`, which is what leaves a conversation's name exactly what it was — so acquire and dispose agree without a registry; get-or-create is serialised per `(loop, key, kind)`, because a create names no container until it returns and two racing acquires would each build a network, a proxy and a sandbox. Labels are written at create and both `dispose(key, kind=...)` and `dispose_scope` select on them from the CLI's own listing, with values hashed rather than truncated for the reason every backend here hashes them — a shared prefix would let one conversation's purge delete another's containers.
 
 **A spec's mode is enforced or refused, never approximated.** With no proxy image the set is `{CLOSED}` alone, so a workload running `ALLOWLIST` is refused at attach rather than handed the closed run it did not ask for; with one, both modes are enforceable and a spec naming no hosts still resolves to the closed shape. What the modes mean is [`../network.md`](../network.md).
 
@@ -64,10 +65,21 @@ At acquire, a bounded `id -u` command runs as the image's user from `/`. Its dia
 
 The operator pauses and drains acquisitions and restarts in the selected scopes and schedules independent, non-overlapping executions. Workloads are removed by immutable ID without force. Networks are revalidated and removed without disconnecting endpoints, but WSLC 2.9.3 only addresses them by name, so maintenance coordination is required to prevent replacement or restart races between inspection and removal. No scheduler, inventory store or new protocol member is added to the extension. The [package README](../../../packages/maf-sandbox-wslc/README.md#operator-retention) carries the executable example, failure behavior and supported metadata; [operations](../operations.md) owns the deployment boundary.
 
+## One sandbox per call
+
+A spec asking for `IsolationScope.CALL` is served here rather than refused. What entitles this backend to declare it is that `SandboxKey.call_id` reaches all three things that decide which container an acquire resolves to and which one a disposal removes: the **container name**, which folds the call id as a `call:`-tagged part; the **registry entry**, filed under `(scope, thread, agent, call, kind)`; and the **label** a disposal selects on, `maf-sandbox.call`. Two acquires differing only in `call_id` are therefore two containers, and ending one call leaves the sibling call of the same assistant message running — which is the property `maf_sandbox.conformance.assert_call_scope_conformance` measures, and which the live suite here answers against a real engine.
+
+**A conversation-scoped key is byte-for-byte what it was.** The call id is appended to the name only when it is non-empty, and the label is written only then, so a container created by a release before this one is still found by name and still reached by the label selector. The tag is what keeps the two optional name parts apart: untagged, a sandbox with an allowlist and no call would share a name with a call whose id spelled that allowlist.
+
+**The conversation's purge is still the backstop.** `dispose_scope` selects on scope and thread alone, never on the call, so a per-call container whose own delete did not land is reached when the conversation ends. That delete is reported and the key is not marked unclean: a call-scoped key has no next acquire to refuse.
+
+**What it costs is a cold start per call**, which is the trade the scope exists to offer rather than a regression — the default is still `conversation`, and a host raises the floor with `SandboxRouter(min_isolation_scope=...)` or a spec raises it for itself.
+
 ## Status
 
 | Decision | State | Tracking |
 |---|---|---|
+| A workload can ask for a sandbox per tool call, and this backend serves one | shipped — `call_id` reaches the container name, the registry entry and the disposal's label filter, and a conversation-scoped key keeps the name and labels it already had. `assert_call_scope_conformance` is wired into the live suite, which no pull request runs | [#436](https://github.com/sokolaidev/maf-extensions/issues/436) (closed) by [#1139](https://github.com/sokolaidev/maf-extensions/pull/1139) (merged) |
 | The backend, `EXEC` and `FILES_IN`, both egress modes, label purge | shipped | — |
 | Operator retention for stopped workloads and orphan infrastructure | implemented — separate-process workload and partial-infrastructure cleanup verified on WSLC 2.9.4.0 | [#1010](https://github.com/sokolaidev/maf-extensions/issues/1010) (closed) by [#1015](https://github.com/sokolaidev/maf-extensions/pull/1015) (merged) |
 | `egress_modes = {CLOSED}`, or `{CLOSED, ALLOWLIST}` with a proxy image; a mode outside the set is refused rather than degraded | shipped | [#530](https://github.com/sokolaidev/maf-extensions/pull/530) (merged) under [#265](https://github.com/sokolaidev/maf-extensions/issues/265) (closed) |

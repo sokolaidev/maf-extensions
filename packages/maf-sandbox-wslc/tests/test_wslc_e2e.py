@@ -35,6 +35,7 @@ from maf_sandbox import (
 )
 from maf_sandbox.conformance import (
     PosixGuestSubject,
+    assert_call_scope_conformance,
     assert_egress_conformance,
     assert_exec_conformance,
     assert_files_delete_conformance,
@@ -1093,3 +1094,58 @@ def test_relative_storage_base_conformance(override):
             assert await backend.dispose(key, kind=spec.kind) is None
 
     asyncio.run(scenario())
+
+
+class TestTheCallScopeAgainstARealEngine:
+    """`maf_sandbox.conformance`'s CALL_SCOPE suite — the half a declaration cannot prove.
+
+    This backend declares `IsolationScope.CALL`, and what entitles it to is that the key's
+    `call_id` reaches the container name, the registry entry and the disposal's label filter.
+    The offline tests answer a listing from what the fake is holding and read no
+    `--filter label=` at all, so that two acquires differing only in `call_id` are two
+    containers, and that ending one leaves the other running, is measured here or nowhere.
+    """
+
+    def test_it_answers_the_call_scope_probes(self):
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = WslcSandboxBackend(WslcSandboxConfig())
+        spec = _spec()
+        first = replace(_key(scope), call_id="call-a")
+        second = replace(_key(scope), call_id="call-b")
+
+        def subject_over(sandbox) -> PosixGuestSubject:
+            return PosixGuestSubject(
+                sandbox=sandbox,
+                working_directory=_WORK,
+                capabilities=backend.declarations.capabilities,
+            )
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(first, spec)
+
+            async def acquire_another() -> PosixGuestSubject:
+                return subject_over(await backend.acquire(second, spec))
+
+            async def dispose_this_call() -> None:
+                failure = await backend.dispose(first, kind=spec.kind)
+                if failure is not None:
+                    raise AssertionError(f"the call's own container was not deleted: {failure}")
+
+            async def dispose_the_other() -> None:
+                await backend.dispose(second, kind=spec.kind)
+
+            results = await assert_call_scope_conformance(
+                subject_over(sandbox), acquire_another, dispose_this_call, dispose_the_other
+            )
+            # This backend declares neither FILES_OUT nor FILES_LIST, so the two probes that
+            # read a sandbox back skip; the three that decide the boundary must have run.
+            skipped = {r.probe.name for r in results if r.skipped}
+            assert skipped == {
+                "the-same-name-holds-this-calls-bytes",
+                "the-listing-holds-only-this-calls-files",
+            }
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))

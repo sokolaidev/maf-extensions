@@ -6,7 +6,7 @@
 
 Acquire also checks shell invocation for `EXEC` and batches the shell, `mkdir`, `mv` and `nohup` prerequisites for `HOST_TOOLS`. Successful checks are kept with the sandbox's registry entry; failed checks are retryable. A new sandbox refused for missing commands is disposed, while a warm one keeps its identity and existing results. These command checks supplement the observed-removal gate below and do not change its inconclusive-result policy. Neither gate grants deletion authority. See [the ceiling and probe contract](../guest-platform-and-commands.md#decision-3--a-static-ceiling-matched-at-attach-and-a-probe-at-acquire).
 
-The four below `isolation` are fields of this backend's `declarations`.
+The five below `isolation` are fields of this backend's `declarations`.
 
 | Declaration | Value |
 |---|---|
@@ -15,6 +15,7 @@ The four below `isolation` are fields of this backend's `declarations`.
 | `egress_modes` | `{Egress.ALLOWLIST, Egress.CLOSED}` |
 | `limits` | 32 MiB per file, 128 MiB total, 128 files — the same `TransferLimits` in each direction |
 | `os_families` | `{OsFamily.POSIX}` — a constant rather than a read: every sandbox the service boots is a Linux microVM, from the prebuilt catalogue and from an imported disk image alike. It is what `exec`'s `shlex.join` quoting and this backend's `posixpath` arithmetic rest on |
+| `isolation_scopes` | `{IsolationScope.CONVERSATION, IsolationScope.CALL}` — see [one sandbox per call](#one-sandbox-per-call) |
 
 The byte ceilings sit well under what a streaming backend could offer, because this one cannot stream: the SDK's `read_file` buffers the whole response, so a per-file ceiling bounds **host memory** rather than transfer cost. `max_files` is comparatively high because a `FILES_LIST` kind fetches each file in a round trip of its own.
 
@@ -100,7 +101,7 @@ The [M6 measurement on 2026-09-09](https://github.com/sokolaidev/maf-extensions/
 
 M6 established that named snapshots survive source deletion, can be recovered by a fresh host process, and preserve process memory and disk. They require explicit deletion. SDK 0.1.0b4 rejects ownership labels on restore even though a direct service request accepts them, and restored lifecycle policy must be reapplied and verified. The snapshot quota and exact storage price remain unverified under [#978](https://github.com/sokolaidev/maf-extensions/issues/978); neither is assumed to be zero or unlimited, and neither blocks the decision to withhold the capability. The full measurement remains on that issue.
 
-**Per-key disposal discovers sandboxes through service labels.** `dispose(key, kind=...)` selects sandboxes by the reserved scope, thread, agent and optional kind labels, so it reaches sandboxes another process created. Reserved labels are protected from caller overrides; the registry is a fallback for failed listing, not proof that the service holds no matching sandbox. `instance_id=...` narrows the service result to one ID; a failed ownership query refuses deletion. Disposal waits for the SDK deletion poller to confirm absence, and preserves failed IDs for retry.
+**Per-key disposal discovers sandboxes through service labels.** `dispose(key, kind=...)` selects sandboxes by the reserved scope, thread, agent and optional kind labels — plus the reserved `call` label when the key names a tool call, which is what keeps a call-scoped disposal off a sibling call's sandbox — so it reaches sandboxes another process created. Reserved labels are protected from caller overrides; the registry is a fallback for failed listing, not proof that the service holds no matching sandbox. `instance_id=...` narrows the service result to one ID; a failed ownership query refuses deletion. Disposal waits for the SDK deletion poller to confirm absence, and preserves failed IDs for retry.
 
 **Auto-delete depends on successful policy configuration.** Creation and the later lifecycle update are separate operations. A sandbox left between them can have auto-suspend without auto-delete; suspension preserves resumable state and does not establish a deletion deadline. Recovery for that configuration gap is tracked separately from the deployment's scheduler. [`../operations.md`](../operations.md) describes an independent group sweep using the service's `Stopped` state and stop timestamp, with a one-day stopped retention policy for live verification.
 
@@ -108,10 +109,21 @@ M6 established that named snapshots survive source deletion, can be recovered by
 
 **The control-plane credential never enters the guest.** `DefaultAzureCredential` lives with the group client in the host process; nothing in the sandbox can reach it, the host's identity, or another conversation's sandbox. That is the standard's second leg, and it is why this backend can claim the rung.
 
+## One sandbox per call
+
+A spec asking for `IsolationScope.CALL` is served here rather than refused. This backend mints no name of its own — the service issues the sandbox id — so the whole of its call-scope identity is the **registry entry**, filed under `(scope, thread, agent, call, kind)`, and the **service label** a disposal selects on, `call`. Two acquires differing only in `call_id` miss each other in the registry and are two microVMs; a disposal that names a call selects that label and leaves the sibling call of the same assistant message running. That is the property `maf_sandbox.conformance.assert_call_scope_conformance` measures, and the live suite here answers it against the service.
+
+**A conversation-scoped key carries exactly the labels it carried before.** The `call` label is written only when the key names a call, so a sandbox created by an earlier release is still reached by a selector that does not mention it.
+
+**The conversation's purge is still the backstop.** `dispose_scope` selects on scope and thread alone, never on the call, so a per-call sandbox whose own delete did not land is reached when the conversation ends — which matters more here than elsewhere, because what is left running is billable.
+
+**What it costs is a cold create per call**, and on this backend that is the most expensive cold start of the three: a warm resume is seconds where a create is minutes. The default is still `conversation`; a host raises the floor with `SandboxRouter(min_isolation_scope=...)` or a spec raises it for itself.
+
 ## Status
 
 | Decision | State | Tracking |
 |---|---|---|
+| A workload can ask for a sandbox per tool call, and this backend serves one | shipped — the service mints the id, so `call_id` reaches the registry entry and the `call` service label a disposal selects on; a conversation-scoped key keeps the labels it already had. `assert_call_scope_conformance` is wired into the live suite, which no pull request runs | [#436](https://github.com/sokolaidev/maf-extensions/issues/436) (closed) by [#1139](https://github.com/sokolaidev/maf-extensions/pull/1139) (merged) |
 | The backend, its declarations, and `FILES_OUT` served natively | shipped | [#109](https://github.com/sokolaidev/maf-extensions/issues/109) open as the `FILES_OUT` tracking issue; the ACAS item landed |
 | Withhold `SNAPSHOT` and retain disposal because M6 establishes no consistent benefit sufficient to justify snapshot reset | decided — the backend declares neither `SNAPSHOT` nor `RECLAIM` and refuses reset, so the router disposes after a call | [#981](https://github.com/sokolaidev/maf-extensions/issues/981) (closed) by [#1035](https://github.com/sokolaidev/maf-extensions/pull/1035) (merged) |
 | Snapshot quota and exact storage price | investigation closed — M6 measured latency, state restoration and recovery; quota and storage pricing remain unverified and require provider confirmation. Closing the investigation establishes neither value | [#978](https://github.com/sokolaidev/maf-extensions/issues/978) (closed) |

@@ -36,12 +36,20 @@ SAMPLES = REPO_ROOT / "samples"
 #: the suite's own marker write lands as the host. It needs an image of that shape first.
 #: Appended rather than inserted — `SUITES[0]` and `SUITES[3]` are indexed positionally below,
 #: and a new member must not shift what those point at.
+#: CALL_SCOPE is last, and is the one suite here that is **conditional**: it reads nothing off
+#: `declarations`, so a backend that cannot serve :data:`~maf_sandbox.IsolationScope.CALL` has
+#: no refusal to check the way a withheld RECLAIM does, and requiring a positive two-sandbox run
+#: of it would fail a conversation-only backend for doing exactly what the protocol permits.
+#: `_declares_the_call_scope` is the gate: a package that names the member owes the suite, and
+#: one that never mentions it owes nothing. `SUITES[5]` is indexed positionally for that, the
+#: way `SUITES[0]` and `SUITES[3]` already are.
 SUITES = (
     "assert_files_out_conformance",
     "assert_files_in_conformance",
     "assert_exec_conformance",
     "assert_files_delete_conformance",
     "assert_reclaim_conformance",
+    "assert_call_scope_conformance",
 )
 #: The measurement entry point that stands in for the FILES_DELETE assert when a backend
 #: withholds the capability: same probes, no gate, no verdict — findings rather than promises.
@@ -158,6 +166,26 @@ def _calls_the_suite(tests: Path, suite: str) -> bool:
     return False
 
 
+def _declares_the_call_scope(src: Path) -> bool:
+    """Whether this package names :data:`~maf_sandbox.IsolationScope.CALL` anywhere in its source.
+
+    Structural, like everything else here, because this file may not import the packages it
+    audits. Naming the member is the fact: a backend cannot declare the scope without spelling
+    it, and one that never mentions it is conversation-only and owes the CALL_SCOPE suite
+    nothing. Over-counting is the safe direction — a package that names the member for some
+    other reason is asked for a suite run it may not need, which is a conversation rather than
+    a hole.
+    """
+    return any(
+        isinstance(node, ast.Attribute)
+        and node.attr == "CALL"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "IsolationScope"
+        for module in src.rglob("*.py")
+        for node in ast.walk(ast.parse(module.read_text(encoding="utf-8")))
+    )
+
+
 def _claims_confinement(src: Path) -> bool:
     """Treat any non-literal-false confinement keyword as a claim requiring measurement."""
     return any(
@@ -186,6 +214,27 @@ def test_confinement_claim_detection(tmp_path: Path, value: str, expected: bool)
         f"spec = SandboxSpec(confined_to_guest_call_path={value})", encoding="utf-8"
     )
     assert _claims_confinement(tmp_path) is expected
+
+
+@pytest.mark.parametrize(
+    "source, expected",
+    [
+        ("scopes = frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL})", True),
+        ("scopes = frozenset({IsolationScope.CONVERSATION})", False),
+        ("scopes = frozenset()", False),
+        # The member named through something else is not this package declaring it.
+        ('CALL = "call"\nscopes = frozenset({CALL})', False),
+    ],
+    ids=["declares", "conversation-only", "silent", "same-name-elsewhere"],
+)
+def test_call_scope_declaration_detection(tmp_path: Path, source: str, expected: bool):
+    """What exempts a conversation-only backend from the CALL_SCOPE suite, and what does not.
+
+    Without the negative cases this reads as a rule that matches everything, which would put
+    every backend back under a suite two of the four shapes here have no way to answer.
+    """
+    (tmp_path / "backend.py").write_text(source, encoding="utf-8")
+    assert _declares_the_call_scope(tmp_path) is expected
 
 
 def _binding_text(annotation: ast.expr) -> str:
@@ -397,6 +446,8 @@ def test_every_backend_answers_the_suites_it_cannot_opt_out_of(package: Path):
     call found is each suite's own business.
     """
     for suite in SUITES[1:]:
+        if suite == SUITES[5] and not _declares_the_call_scope(package / "src"):
+            continue
         assert _calls_the_suite(package / "tests", suite) or (
             suite == SUITES[3] and _calls_the_suite(package / "tests", MEASURE)
         ), (
