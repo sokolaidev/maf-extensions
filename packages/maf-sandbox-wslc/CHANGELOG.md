@@ -2,6 +2,7 @@
 
 ## [0.21.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.21.0...maf-sandbox-wslc-v0.21.1) (2026-09-12)
 
+> **Added after the release.** No wheel for 0.21.0 reached PyPI, so this is the version that first carries everything in the 0.21.0 section below — including its breaking change. Those entries are left where release-please wrote them rather than copied up; this version's release notes on GitHub list them in full.
 
 ### Fixes
 
