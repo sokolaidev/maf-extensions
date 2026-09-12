@@ -3601,11 +3601,7 @@ class TestFreezingTheGuest:
         assert "unpause" not in [call.args[0] for call in fake.calls]
 
     def test_a_recovery_thaw_that_does_not_land_refuses_the_acquire(self):
-        """Warm reuse is the one path that serves a container nothing is about to freeze.
-
-        A workload asking for no file surface never takes one, so a container handed over
-        still paused would refuse its every exec with nothing left to notice.
-        """
+        """Reuse must refuse a still-paused guest even if preparation needs no freeze."""
         state = {
             ("inspect", "-f", "{{.State.Running}} {{.State.Paused}}"): _DockerResult(
                 0, b"true true", ""

@@ -1893,10 +1893,8 @@ class DockerSandboxBackend:
                             "is holding it frozen"
                         )
                     try:
-                        # A thaw that does not land refuses the acquire, because this is the
-                        # one path that hands out a container nothing is about to freeze: a
-                        # workload asking for no file surface would get one whose every exec
-                        # the daemon refuses.
+                        # Preparation may need no freeze, so a paused guest must be recovered
+                        # here before any workload can reuse it.
                         if not await self._thaw(name):
                             raise RuntimeError(
                                 f"docker could not thaw {name}, which a host left frozen; "
@@ -3175,7 +3173,7 @@ class DockerSandboxBackend:
             )
         except Exception as unreachable:  # noqa: BLE001 — a thaw must never mask its block
             logger.warning(
-                "docker: could not thaw %s (%s); the next acquire lifts it",
+                "docker: could not thaw %s (%s); the next acquire attempts recovery",
                 name,
                 error_detail(unreachable),
             )
@@ -3186,7 +3184,7 @@ class DockerSandboxBackend:
             and _NOT_FROZEN not in lifted.stderr.lower()
         ):
             logger.warning(
-                "docker: %s is still frozen (%s); the next acquire lifts it",
+                "docker: %s is still frozen (%s); the next acquire attempts recovery",
                 name,
                 lifted.stderr.strip() or f"exit {lifted.returncode}",
             )
