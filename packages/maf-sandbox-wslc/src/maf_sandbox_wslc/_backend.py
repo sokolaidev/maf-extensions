@@ -1647,7 +1647,8 @@ class WslcSandboxBackend:
         A proxy carries its sandbox's labels, so it is listed and removed alongside it, but it is
         not a sandbox and is not counted. Its network is removed after it, when it is free to go.
         The ``fallback`` names cover the case the listing failed, and ``caller_key`` answers only
-        for a proxy whose own attribution label cannot be read and whose ownership labels name it.
+        for a proxy whose attribution label is absent or empty and whose ownership labels name
+        it.
 
         When this backend enforces allowlists, every workload's proxy and network are swept —
         not only those whose proxy the listing returned — so a proxy a reuse failed to rebuild,

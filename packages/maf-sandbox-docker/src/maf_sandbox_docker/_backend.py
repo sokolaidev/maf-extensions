@@ -2453,8 +2453,8 @@ class DockerSandboxBackend:
 
         A proxy carries its sandbox's labels, so it is listed and removed alongside it, but it
         is not a sandbox and is not counted. Its network is removed after it. The ``fallback``
-        names cover the case the listing failed, and ``caller_key`` answers only for a proxy
-        whose own attribution label cannot be read and whose ownership labels name that key.
+        names cover the case the listing failed, and ``caller_key`` answers only for a proxy whose
+        attribution label is absent or empty and whose ownership labels name that key.
 
         Every workload's derived proxy and network are swept regardless of this backend's
         current egress config — not gated on it — because a sandbox created while an allowlist
