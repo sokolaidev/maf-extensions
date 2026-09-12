@@ -5235,7 +5235,8 @@ class TestArgumentProvenanceMiddleware:
         import logging as _logging
 
         monkeypatch.setattr(_maf, "_warned_about_a_missing_record", False)
-        monkeypatch.setattr(_maf, "_reachable_middleware", lambda: object())
+        a_reachable_middleware = object()
+        monkeypatch.setattr(_maf, "_reachable_middleware", lambda: a_reachable_middleware)
 
         class _Context:
             metadata: dict[str, object] = {}
@@ -5514,7 +5515,8 @@ class TestArgumentProvenanceMiddleware:
             "reason, and reading that as a moved contract fails the common case closed"
         )
 
-        monkeypatch.setattr(_maf, "_reachable_middleware", lambda: object())
+        a_reachable_middleware = object()
+        monkeypatch.setattr(_maf, "_reachable_middleware", lambda: a_reachable_middleware)
         assert _maf._the_framework_kept_no_record(_Context()) is True, (
             "one ran and kept no record, which no legitimate wiring produces"
         )
