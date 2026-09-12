@@ -345,7 +345,9 @@ class TestImageCommandProbes:
     @pytest.mark.parametrize(
         "command,capability", [("sh", Capability.EXEC), ("nohup", Capability.HOST_TOOLS)]
     )
-    def test_missing_commands_refuse_a_stronger_warm_request(self, loop, command, capability):
+    def test_missing_commands_refuse_a_stronger_warm_request(
+        self, loop, command, capability, caplog
+    ):
         backend = AcasSandboxBackend(_config())
         key = _key(f"e2e-command-{uuid.uuid4()}")
         # Establish the independent removal observation before taking away any shell.
@@ -362,6 +364,9 @@ class TestImageCommandProbes:
                     timeout=30,
                 )
                 assert changed.exit_code == 0, changed.stderr
+                assert changed.stdout_bytes == changed.stderr_bytes == b""
+                if command == "sh":
+                    assert "ACAS exec capture scratch cleanup failed" in caplog.text
                 for _ in range(2):
                     with pytest.raises(SandboxCapabilityNotSupported, match=str(capability)):
                         await backend.acquire(key, required)

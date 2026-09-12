@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import logging
 import shlex
 from collections.abc import Awaitable, Callable, Sequence
 from uuid import uuid4
@@ -17,6 +18,7 @@ from maf_sandbox import ExecResult, SandboxExecOutputLimitExceeded, SandboxOutpu
 Run = Callable[[str], Awaitable[ExecResult]]
 CHUNK_BYTES = 48 * 1024
 TOOLS = "sh mkdir mkfifo head cat wc dd base64 rm rmdir"
+logger = logging.getLogger(__name__)
 
 
 def capture_command(command: str | Sequence[str], directory: str, token: str, limit: int) -> str:
@@ -92,8 +94,8 @@ async def capture(
 ) -> ExecResult:
     """Capture, retrieve and remove scratch state under the caller's shared deadline.
 
-    The caller must dispose the sandbox on any abnormal end: remote execution survives
-    cancellation of the request, and a failed pump may still have inherited writers.
+    A reported scratch-removal failure logs a warning after complete output is retrieved.
+    The caller must dispose on exceptions: remote work can survive cancellation or pump failure.
     """
     token = "maf-exec-" + uuid4().hex
     directory = "/tmp/" + token
@@ -121,5 +123,10 @@ printf '\\n%s\\n' {shlex.quote(token)}
         f"rmdir -- {shlex.quote(directory)}"
     )
     if cleaned.exit_code or cleaned.stdout_bytes or cleaned.stderr_bytes:
-        raise SandboxOutputError("ACAS exec capture scratch cleanup failed")
+        logger.warning(
+            "ACAS exec capture scratch cleanup failed for %s (exit %d); "
+            "scratch may remain until sandbox disposal",
+            directory,
+            cleaned.exit_code,
+        )
     return ExecResult(stdout_bytes=streams[0], stderr_bytes=streams[1], exit_code=status)
