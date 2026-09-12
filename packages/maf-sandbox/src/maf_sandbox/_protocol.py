@@ -251,8 +251,9 @@ class HttpMethod(StrEnum):
     """A method an :class:`EgressRule` can name — the common ones, spelled uppercase.
 
     Not a closed set: a token outside it is still accepted as an uppercase string, because
-    WebDAV and vendor verbs are real and at least one backend enforces them.  The members
-    exist so the ordinary verbs are discoverable and a typo in one of them is caught here.
+    WebDAV and vendor verbs are real and a rule may need to name one.  The members exist so
+    the ordinary verbs are discoverable, and a caller reaching for one has a misspelling
+    caught at the attribute — a misspelled *string* is a valid custom token and is accepted.
     """
 
     GET = "GET"
@@ -267,12 +268,7 @@ class HttpMethod(StrEnum):
 
 
 def _validated_egress_method(method: object) -> HttpMethod | str:
-    """Return the method as a member where one exists, otherwise as an uppercase token.
-
-    Case is refused rather than normalized.  Silently uppercasing would enforce a rule the
-    author did not write, and accepting the lowercase spelling would promise a distinction
-    nothing keeps — see the class docstring.
-    """
+    """Return the method as a member where one exists, otherwise as an uppercase token."""
     if not isinstance(method, str) or _HTTP_TOKEN.fullmatch(method) is None:
         raise ValueError(f"egress method must be an HTTP token, got {method!r}")
     if method != method.upper():
