@@ -1,10 +1,11 @@
-"""Allow-entry grammar, literal method policy, normalization and refusal before a backend."""
+"""Allow-entry grammar, method policy, normalization and refusal before a backend."""
 
 from __future__ import annotations
 
 import asyncio
 import dataclasses
 import json
+import re
 from typing import Any
 
 import pytest
@@ -15,6 +16,7 @@ from maf_sandbox import (
     EffectiveState,
     Egress,
     EgressRule,
+    HttpMethod,
     Isolation,
     IsolationScope,
     SandboxAcquired,
@@ -58,9 +60,22 @@ class TestMethodVocabulary:
         with pytest.raises(ValueError, match="HTTP token"):
             EgressRule("example.com", (method,))
 
-    def test_custom_tokens_and_case_are_preserved(self):
-        tokens = ("GET", "get", "PROPFIND", "!#$%&'*+-.^_`|~0123AZaz")
-        assert EgressRule("example.com", tokens).methods == tokens
+    def test_custom_tokens_survive_and_known_verbs_become_members(self):
+        tokens = ("GET", "PROPFIND", "!#$%&'*+-.^_`|~0123AZ")
+        methods = EgressRule("example.com", tokens).methods
+        assert methods == tokens
+        assert methods is not None
+        assert methods[0] is HttpMethod.GET
+        assert [type(method) for method in methods[1:]] == [str, str]
+
+    @pytest.mark.parametrize("method", ["get", "Get", "propfind", "PropFind"])
+    def test_a_lowercase_method_is_refused_and_named_uppercase(self, method: str):
+        with pytest.raises(ValueError, match=re.escape(f"write {method.upper()!r}")):
+            EgressRule("example.com", (method,))
+
+    def test_a_verb_cannot_be_named_twice_through_its_member(self):
+        with pytest.raises(ValueError, match="duplicate"):
+            EgressRule("example.com", ("GET", HttpMethod.GET))
 
     @pytest.mark.parametrize("methods", [(), ("GET", "GET")])
     def test_empty_or_repeated_methods_are_refused(self, methods: tuple[str, ...]):
@@ -92,7 +107,7 @@ class TestMethodVocabulary:
 
     @pytest.mark.parametrize(
         "other",
-        ["EXAMPLE.com", EgressRule("EXAMPLE.com", ("POST",)), EgressRule("EXAMPLE.com", ("get",))],
+        ["EXAMPLE.com", EgressRule("EXAMPLE.com", ("POST",)), EgressRule("EXAMPLE.com", ("HEAD",))],
     )
     def test_conflicting_policies_for_one_host_refuse(self, other: str | EgressRule):
         with pytest.raises(ValueError, match="conflicting"):
@@ -243,7 +258,7 @@ class TestMethodRouting:
             asyncio.run(router.acquire(KEY, scoped))
         assert provider.keys == []
 
-    @pytest.mark.parametrize("method", ["get", "PROPFIND", "POST"])
+    @pytest.mark.parametrize("method", ["POST", "PROPFIND", "X-CUSTOM"])
     def test_the_finite_token_set_refuses_at_preflight_and_acquire(self, method: str):
         provider = backend()
         router = SandboxRouter([provider], min_isolation=Isolation.NONE)
@@ -254,11 +269,11 @@ class TestMethodRouting:
             asyncio.run(router.acquire(KEY, scoped))
         assert provider.keys == []
 
-    @pytest.mark.parametrize("tokens", [None, frozenset({"get", "PROPFIND"})])
+    @pytest.mark.parametrize("tokens", [None, frozenset({"PUT", "PROPFIND"})])
     def test_declared_tokens_are_accepted_verbatim(self, tokens: frozenset[str] | None):
         provider = backend(tokens)
         router = SandboxRouter([provider], min_isolation=Isolation.NONE)
-        scoped = spec(EgressRule("example.com", ("get", "PROPFIND")))
+        scoped = spec(EgressRule("example.com", ("PUT", "PROPFIND")))
         router.ensure_can_serve(scoped)
         asyncio.run(router.acquire(KEY, scoped))
         assert provider.keys
@@ -300,7 +315,7 @@ class TestMethodRouting:
 
 class TestMethodRecording:
     def test_effective_state_is_json_native_and_preserves_methods(self):
-        scoped = spec("other.example", EgressRule("example.com", ("GET", "get")))
+        scoped = spec("other.example", EgressRule("example.com", ("GET", "POST")))
         event = SandboxAcquired(
             key=KEY,
             spec=scoped,
@@ -319,7 +334,7 @@ class TestMethodRecording:
         assert Capability.EGRESS_METHODS not in unscoped_state.requires
         assert json.loads(json.dumps(state.as_dict()))["egress_allow"] == [
             "other.example",
-            {"host": "example.com", "methods": ["GET", "get"]},
+            {"host": "example.com", "methods": ["GET", "POST"]},
         ]
 
     def test_a_channel_refusal_names_the_methods(self):

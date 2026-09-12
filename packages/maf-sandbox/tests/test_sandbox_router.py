@@ -2874,6 +2874,7 @@ class TestPolicyVocabularyExports:
             "EgressRule",
             "DEFAULT_CAPABILITIES",
             "HostToolRegistry",
+            "HttpMethod",
             "INTEGRITY_RANK",
             "ISOLATION_RANK",
             "Identity",

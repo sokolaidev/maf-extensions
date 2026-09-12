@@ -18,7 +18,7 @@
 | `SNAPSHOT` | Snapshot and restore a sandbox for reuse, which also establishes the `RESET` cleanup rung — `Sandbox.reset` | nobody |
 | `RECLAIM` | Take a directory this stack created, which is what the `RECLAIM` cleanup rung runs — `Sandbox.reclaim`, which stays mandatory whether or not this is declared | docker |
 | `ATTACHED_IDENTITY` | A platform-attached identity scoped to the sandbox itself | nobody |
-| `EGRESS_METHODS` | Enforce literal HTTP methods on allowlist entries, within `egress_method_tokens` — [network policy](network.md#method-scoped-allow-entries) | nobody |
+| `EGRESS_METHODS` | Enforce the HTTP methods an allowlist entry names, within `egress_method_tokens` — [network policy](network.md#method-scoped-allow-entries) | nobody |
 
 `InProcessSandboxBackend` defaults to `DEFAULT_CAPABILITIES | {Capability.RECLAIM}`; tests can override its declarations. The router’s default for an unstated capability set remains:
 

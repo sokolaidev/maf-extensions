@@ -1,6 +1,8 @@
 # Method-scoped egress: a refinement of the allowlist payload, not a fourth mode
 
 > The proposal that argued method scope (`GET`-only against a host) into the egress vocabulary — an `EgressRule` beside the plain hostname, a backend `Capability` that says whether it can enforce one, and a refusal that falls out of the capability match already in the router. Tracked by [#377](https://github.com/sokolaidev/maf-extensions/issues/377). It is kept in the tense it was written, as the record of the argument; the decided shape lives in [`../network.md`](../network.md). It builds on the resolved-mode model argued in [`egress-resolution.md`](egress-resolution.md) and is adopted, a release later, by the first API-boundary backend, explored in [`hyperlight-backend-exploration.md`](hyperlight-backend-exploration.md).
+>
+> **One decision here was reversed by measurement: "Casing", below.** It argued that a caller's spelling is preserved verbatim and that `get` and `GET` are two methods. Both mechanisms later measured — ACAS and Hyperlight — match case-insensitively, so neither could have kept that distinction, and the vocabulary stopped offering one it could not place. Methods are now uppercase tokens and a lowercase one is refused; the reasoning against a *verb whitelist* survives unchanged, and both live in [`../network.md`](../network.md).
 
 ---
 
