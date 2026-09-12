@@ -28,6 +28,7 @@ import logging
 import posixpath
 import re
 import tarfile
+import tempfile
 import threading
 import time
 import weakref
@@ -35,6 +36,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
 from maf_sandbox import (
@@ -68,9 +70,7 @@ from maf_sandbox.paths import (
     guest_path_and_ancestors,
     posix_work_dir_ancestors,
     resolve_guest_working_directory,
-    sandbox_entry_from_tar_header,
     stat_by_asking_the_guest_as_root,
-    tar_header_from_block,
 )
 
 from ._config import WslcSandboxConfig
@@ -462,9 +462,8 @@ def _proxy_name(container: str) -> str:
     return f"{container}{_PROXY_SUFFIX}"
 
 
-# The 512-byte header block a container `cp` stream leads with — a stat reads only it, and
-# bounded reads stop there before any content byte.
-_TAR_BLOCK = 512
+# The CLI writes copied bytes to disk; this bound covers only unexpected stdout.
+_STAT_STDOUT_LIMIT = 512
 
 
 def _listed_names(payload: str) -> list[str]:
@@ -692,33 +691,32 @@ class _WslcSandbox:
         **outside** the container; :meth:`_non_directory_kind` is asked only which non-directory
         kind an exit-0 path is, so no answer the guest gives carries the check through a link.
 
-        No tar header was produced for any kind on that version, and the branch stays because a
-        CLI that grows one answers the kind outright and leaves the guest out of it (#125).
+        Accepted sources are copied into private temporary storage, removed after the child
+        exits. The copy's disk use is not bounded by the stdout limit.
         """
         if any(character in guest for character in _FORGEABLE):
             raise ValueError(
                 f"refusing to stat {rel!r}: a guest path carrying a newline or a NUL could "
                 f"forge a line of the engine's own diagnostic, which is what decides this"
             )
-        result = await self._run(
-            "container",
-            "cp",
-            f"{self._name}:{guest}",
-            "-",
-            timeout=self._command_timeout,
-            read_limit=_TAR_BLOCK,
-        )
-        if result.returncode != 0 and not result.stdout:
+        with tempfile.TemporaryDirectory(prefix="maf-wslc-stat-") as temporary:
+            result = await self._run(
+                "container",
+                "cp",
+                f"{self._name}:{guest}",
+                str(Path(temporary) / "entry"),
+                timeout=self._command_timeout,
+                read_limit=_STAT_STDOUT_LIMIT,
+            )
+        if result.returncode != 0:
             verdict = _copy_verdict(result.stderr_text)
             if verdict == "absent":
                 return None
             if verdict == "directory":
                 return SandboxEntry(path=rel, kind=EntryKind.DIRECTORY, size_bytes=None)
             raise RuntimeError(f"wslc could not stat {rel}: {result.stderr_text.strip()}")
-        if len(result.stdout) < _TAR_BLOCK:
-            kind = await self._non_directory_kind(guest, rel)
-            return SandboxEntry(path=rel, kind=kind, size_bytes=None)
-        return sandbox_entry_from_tar_header(tar_header_from_block(result.stdout[:_TAR_BLOCK]), rel)
+        kind = await self._non_directory_kind(guest, rel)
+        return SandboxEntry(path=rel, kind=kind, size_bytes=None)
 
     async def _non_directory_kind(self, guest: str, rel: str) -> EntryKind:
         """Which non-directory kind sits at ``guest``, asked of the guest and capped here.

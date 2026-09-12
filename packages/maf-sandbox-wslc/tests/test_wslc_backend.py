@@ -17,11 +17,13 @@ import json
 import logging
 import sys
 import tarfile
+import tempfile
 import threading
 import time
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from maf_sandbox import (
@@ -50,7 +52,6 @@ from maf_sandbox_wslc._backend import (
     _NOT_FOUND,
     _PROXY_LOG_BYTES,
     _PROXY_LOG_TAIL,
-    _TAR_BLOCK,
     _container_name,
     _egress_decisions,
     _network_name,
@@ -58,6 +59,7 @@ from maf_sandbox_wslc._backend import (
     _sandbox_labels,
     _Sweep,
     _WslcResult,
+    _WslcSandbox,
 )
 
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
@@ -1263,49 +1265,103 @@ class TestPullSurfaceRefusal:
             asyncio.run(sandbox.run_code("print(1)", timeout=5.0))
 
 
-class TestStatGuestTarHeader:
-    """`_WslcSandbox._stat_guest` at the `_wslc` fake: who answers, and what a lie can buy.
+class TestStatHostStorage:
+    @pytest.mark.parametrize(
+        "outcome", ["success", "engine-error", "probe-error", "timeout", "cancel"]
+    )
+    def test_copied_bytes_are_removed_on_every_exit(self, tmp_path, monkeypatch, outcome):
+        monkeypatch.chdir(tmp_path)
+        sentinel = tmp_path / "-"
+        sentinel.write_bytes(b"host content")
+        copies = tmp_path / "copies"
+        copies.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(copies))
+        destinations = []
 
-    The header cases first. No header reached stdout on wslc 2.9.4.0 — measured, `container
-    cp` exits 0 and writes nothing there for every kind it accepts — so they pin the
-    branch a CLI that grows one would take, not a branch a live write reaches today (#125).
-    The probe cases after them are the live shape, and each says which side answered.
-    """
+        async def scenario():
+            copied = asyncio.Event()
 
-    def _sandbox(self, payload: bytes | None = None, overrides: dict | None = None):
-        return self._sandbox_and_fake(payload, overrides)[0]
+            async def run(*args, **kwargs):
+                if args[:2] == ("container", "cp"):
+                    destination = Path(args[-1])
+                    destinations.append(destination)
+                    destination.write_bytes(b"guest bytes" * 65536)
+                    copied.set()
+                    if outcome == "timeout":
+                        await asyncio.wait_for(asyncio.Event().wait(), timeout=0.01)
+                    if outcome == "cancel":
+                        await asyncio.Event().wait()
+                    if outcome == "engine-error":
+                        return _WslcResult(1, b"", b"copy failed")
+                    return _WslcResult(0, b"", b"")
+                assert not list(copies.iterdir())
+                if outcome == "probe-error":
+                    raise OSError("probe failed")
+                return _WslcResult(0 if args[-2] == "-f" else 1, b"", b"")
 
-    def _sandbox_and_fake(self, payload: bytes | None = None, overrides: dict | None = None):
+            sandbox = _WslcSandbox(run, _NAME, 30, instance_id="instance")
+            task = asyncio.create_task(sandbox._stat_guest("/w/file", "file"))
+            await copied.wait()
+            if outcome == "cancel":
+                task.cancel()
+            if outcome == "success":
+                entry = await task
+                assert entry is not None and entry.kind is EntryKind.FILE
+            else:
+                error = {
+                    "engine-error": RuntimeError,
+                    "probe-error": OSError,
+                    "timeout": TimeoutError,
+                    "cancel": asyncio.CancelledError,
+                }[outcome]
+                with pytest.raises(error):
+                    await task
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=3))
+        assert sentinel.read_bytes() == b"host content"
+        assert len(destinations) == 1 and destinations[0].is_absolute()
+        assert destinations[0].parent.parent == copies
+        assert not list(copies.iterdir())
+
+    def test_concurrent_stats_have_independent_copy_targets(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+        destinations = []
+
+        async def scenario():
+            ready = asyncio.Event()
+
+            async def run(*args, **kwargs):
+                if args[:2] == ("container", "cp"):
+                    destination = Path(args[-1])
+                    destinations.append(destination)
+                    destination.write_bytes(args[2].encode())
+                    if len(destinations) == 2:
+                        ready.set()
+                    await ready.wait()
+                    assert destination.read_bytes() == args[2].encode()
+                    return _WslcResult(0, b"", b"")
+                return _WslcResult(0 if args[-2] == "-f" else 1, b"", b"")
+
+            sandbox = _WslcSandbox(run, _NAME, 30, instance_id="instance")
+            await asyncio.gather(sandbox._stat_guest("/w/a", "a"), sandbox._stat_guest("/w/b", "b"))
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=3))
+        assert len(set(destinations)) == 2
+        assert not list(tmp_path.iterdir())
+
+
+class TestStatGuest:
+    """The engine settles absence and directories; the guest splits accepted sources."""
+
+    def _sandbox(self, overrides: dict | None = None):
+        return self._sandbox_and_fake(overrides)[0]
+
+    def _sandbox_and_fake(self, overrides: dict | None = None):
         """The sandbox and the fake behind it, for a case asserting the argv it was handed."""
         if overrides is None:
-            overrides = {("container", "cp"): _WslcResult(0, payload or b"", b"")}
+            overrides = {("container", "cp"): _WslcResult(0, b"", b"")}
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         return asyncio.run(backend.acquire(_KEY, _METHOD_SPEC)), fake
-
-    def _tar_block(self, entry: tarfile.TarInfo, data: bytes = b"") -> bytes:
-        buffer = io.BytesIO()
-        with tarfile.open(fileobj=buffer, mode="w") as archive:
-            archive.addfile(entry, io.BytesIO(data) if data else None)
-        return buffer.getvalue()[:_TAR_BLOCK]
-
-    def test_a_regular_file_comes_back_as_a_file_with_its_size(self):
-        entry = tarfile.TarInfo("maf-sandbox/work/main.bicep")
-        entry.size = 5
-        sandbox = self._sandbox(self._tar_block(entry, b"hello"))
-        result = asyncio.run(sandbox._stat_guest("/w/main.bicep", "main.bicep"))
-        assert result is not None
-        assert result.kind is EntryKind.FILE
-        assert result.size_bytes == 5
-
-    def test_a_symlink_header_comes_back_as_a_symlink(self):
-        entry = tarfile.TarInfo("maf-sandbox/work/out")
-        entry.type = tarfile.SYMTYPE
-        entry.linkname = "/etc"
-        sandbox = self._sandbox(self._tar_block(entry))
-        result = asyncio.run(sandbox._stat_guest("/w/out", "out"))
-        assert result is not None
-        assert result.kind is EntryKind.SYMLINK
-        assert result.size_bytes is None
 
     def test_an_unrecognised_failure_raises_with_the_engines_message(self):
         """A `cp` that failed with nothing to classify reports what the CLI said. The error
@@ -1315,40 +1371,29 @@ class TestStatGuestTarHeader:
         with pytest.raises(RuntimeError, match="container is stopped"):
             asyncio.run(sandbox._stat_guest("/w/main.bicep", "main.bicep"))
 
-    def test_a_failed_copy_with_a_short_stream_still_probes(self):
-        """A failed copy that streamed a few bytes reaches the probe rather than raising: the
-        first branch is guarded by `not result.stdout`, so rc 1 with 1..511 bytes in hand falls
-        through to `test`, which can still settle the entry's shape. (`test -L` answers 0 for
-        this fixture's container.)"""
-        overrides = {
-            ("container", "cp"): _WslcResult(1, b"x", b""),
-            (*_PROBE, "-L"): _WslcResult(0, b"", b""),
-        }
-        sandbox = self._sandbox(overrides=overrides)
-        result = asyncio.run(sandbox._stat_guest("/w/main.bicep", "main.bicep"))
-        assert result is not None
-        assert result.kind is EntryKind.SYMLINK
+    @pytest.mark.parametrize("stdout", [b"diagnostic", tarfile.TarInfo("sub/").tobuf()])
+    def test_stdout_cannot_make_a_failed_copy_a_success(self, stdout):
+        sandbox, fake = self._sandbox_and_fake(
+            overrides={("container", "cp"): _WslcResult(1, stdout, b"copy failed")}
+        )
+        with pytest.raises(RuntimeError, match="copy failed"):
+            asyncio.run(sandbox._stat_guest("/w/file", "file"))
+        assert fake.matching(*_PROBE) == []
 
-    def test_a_failed_copy_that_streamed_bytes_still_classifies_the_header(self):
-        """A bounded read kills the child once the cap is reached, so a nonzero code with bytes
-        in hand means the stream ran past it — the same rule docker's stat reads by. The header
-        is classified, not discarded as a failure."""
-        header = tarfile.TarInfo("maf-sandbox/work/main.bicep")
-        header.size = 999
-        payload = header.tobuf(
-            format=tarfile.GNU_FORMAT, encoding="utf-8", errors="surrogateescape"
-        )[:_TAR_BLOCK]
-        overrides = {("container", "cp"): _WslcResult(1, payload, b"")}
-        sandbox = self._sandbox(overrides=overrides)
-        result = asyncio.run(sandbox._stat_guest("/w/main.bicep", "main.bicep"))
-        assert result is not None
-        assert result.kind is EntryKind.FILE
-        assert result.size_bytes == 999
+    def test_stdout_header_does_not_override_the_guest_link_probe(self):
+        header = tarfile.TarInfo("sub/")
+        header.type = tarfile.DIRTYPE
+        sandbox = self._sandbox(
+            overrides={
+                ("container", "cp"): _WslcResult(0, header.tobuf(), b""),
+                (*_PROBE, "-L"): _WslcResult(0, b"", b""),
+            }
+        )
+        result = asyncio.run(sandbox._stat_guest("/w/link", "link"))
+        assert result is not None and result.kind is EntryKind.SYMLINK
 
-    def test_a_short_successful_stream_probes_the_entry_type(self):
-        """A successful copy too short to hold a header leaves one question, and `test`
-        settles it. The fixture puts one byte on stdout rather than none, which lands in the
-        same branch and keeps the case distinct from the empty answer the live CLI gives."""
+    def test_successful_copy_stdout_does_not_change_the_entry_probe(self):
+        """The local-file copy's stdout does not describe its source."""
         overrides = {
             ("container", "cp"): _WslcResult(0, b"x", b""),
             (*_PROBE, "-L"): _WslcResult(0, b"", b""),
@@ -1495,23 +1540,6 @@ class TestStatGuestTarHeader:
         sandbox = self._sandbox(overrides=overrides)
         with pytest.raises(RuntimeError, match="exit 126"):
             asyncio.run(sandbox._stat_guest("/w/missing", "missing"))
-
-    def test_a_directory_header_comes_back_as_a_directory(self):
-        entry = tarfile.TarInfo("maf-sandbox/work/sub/")
-        entry.type = tarfile.DIRTYPE
-        sandbox = self._sandbox(self._tar_block(entry))
-        result = asyncio.run(sandbox._stat_guest("/w/sub", "sub"))
-        assert result is not None
-        assert result.kind is EntryKind.DIRECTORY
-
-    def test_a_hard_link_header_is_other(self):
-        entry = tarfile.TarInfo("maf-sandbox/work/dup")
-        entry.type = tarfile.LNKTYPE
-        entry.linkname = "main.bicep"
-        sandbox = self._sandbox(self._tar_block(entry))
-        result = asyncio.run(sandbox._stat_guest("/w/dup", "dup"))
-        assert result is not None
-        assert result.kind is EntryKind.OTHER
 
 
 # ---------------------------------------------------------------------------
