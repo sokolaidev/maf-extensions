@@ -25,7 +25,7 @@ on:
     - cron: "20 3 * * *"
   workflow_dispatch:
 
-# Read-only contents: this workflow writes nothing to the repository.
+# Only the failure reporter may write issues.
 permissions:
   contents: read
 
@@ -126,3 +126,28 @@ jobs:
         run: |
           set -euo pipefail
           uv run pytest packages/maf-sandbox-acas/tests/test_acas_e2e.py -q -ra
+
+  report-failure:
+    name: Report conformance live failure
+    needs: acas-conformance
+    if: always() && needs.acas-conformance.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Open or notify the conformance live tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/report_workflow_failure.py
+          --marker '<!-- conformance-live-failure-tracker -->'
+          --title 'ACAS live conformance checks failed'
+          --reproduce 'Re-run the linked attempt, or dispatch conformance-live.yml against the failing commit. Investigate the first failed step and the linked test logs.'
+          --expected 'All ACAS live conformance checks pass.'
+          --packages maf-sandbox maf-sandbox-acas

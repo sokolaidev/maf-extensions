@@ -22,7 +22,7 @@ on:
     - cron: "40 4 1 * *"
   workflow_dispatch:
 
-# Nothing here writes to the repository: the verdict is the run's colour and its summary.
+# Only the failure reporter may write issues.
 permissions:
   contents: read
 
@@ -60,3 +60,28 @@ jobs:
           set -euo pipefail
           python3 scripts/check_locked_framework.py "$RUNNER_TEMP/uv.lock.committed" uv.lock \
             | tee -a "$GITHUB_STEP_SUMMARY"
+
+  report-failure:
+    name: Report lockfile drift failure
+    needs: framework
+    if: always() && needs.framework.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Open or notify the lockfile drift tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 scripts/report_workflow_failure.py
+          --marker '<!-- lock-drift-failure-tracker -->'
+          --title 'Lockfile drift checks failed'
+          --reproduce 'Re-run the linked attempt, or dispatch lock-drift.yml against the failing commit. Inspect the first failed step and the version comparison in the run summary.'
+          --expected 'The lockfile holds the newest agent-framework releases admitted by the declared ranges.'
+          --packages maf-sandbox-bicep maf-sandbox-codeact
