@@ -224,15 +224,25 @@ def pypi_badge(distribution: str) -> str:
     )
 
 
-def has_released(package_path: str) -> bool:
-    """Whether this package's changelog records a release — an offline proxy for "on the index".
+def changelog_of(package_path: str) -> str:
+    """A package's changelog text, or `""` for a package that has yet to grow one."""
+    changelog = REPO_ROOT / package_path / "CHANGELOG.md"
+    return changelog.read_text(encoding="utf-8") if changelog.exists() else ""
+
+
+def records_a_release(changelog: str) -> bool:
+    """Whether a changelog records a release — an offline proxy for "on the index".
 
     The proxy `tests/test_sample_metadata.py` already reads, and imprecise in the same safe
     direction: release-please writes the heading when the Release PR merges, and the upload
     waits at an approval afterwards, so a row carries its badge for the minutes in between.
     """
-    changelog = REPO_ROOT / package_path / "CHANGELOG.md"
-    return changelog.exists() and RELEASE_HEADING.search(changelog.read_text("utf-8")) is not None
+    return RELEASE_HEADING.search(changelog) is not None
+
+
+def released_cell(changelog: str, distribution: str) -> str:
+    """The *Released* cell a package's own changelog entitles it to."""
+    return pypi_badge(distribution) if records_a_release(changelog) else NOT_RELEASED
 
 
 def readme_package_table() -> list[tuple[str, str]]:
@@ -278,12 +288,7 @@ class TestEveryPackageIsRegistered:
 
 
 class TestTheReadmeTableRecordsWhatIsReleased:
-    """The root README's *Released* column is the only place this repository says a package can be installed.
-
-    Nothing derives it. The links beside it resolve whatever the cell claims, and no other check
-    opens the file for the claim, so the column is right for as long as whoever published
-    remembers it — which is the same silence as a package release-please never proposes.
-    """
+    """The *Released* column says whether a package can be installed, and nothing derives it."""
 
     def test_the_table_and_packages_dir_agree(self):
         assert sorted(path for path, _ in README_TABLE) == PACKAGE_PATHS
@@ -292,12 +297,44 @@ class TestTheReadmeTableRecordsWhatIsReleased:
     def test_the_released_cell_matches_the_changelog(self, package_path: str):
         cells = [cell for path, cell in README_TABLE if path == package_path]
         assert len(cells) == 1, f"{package_path} has {len(cells)} rows in README.md's table"
-        released = has_released(package_path)
-        expected = pypi_badge(declared_name(package_path)) if released else NOT_RELEASED
+        expected = released_cell(changelog_of(package_path), declared_name(package_path))
         assert cells[0] == expected, (
-            f"{package_path}/CHANGELOG.md records "
-            f"{'a release' if released else 'no release'}, so README.md's Released cell should "
-            f"read {expected!r} and reads {cells[0]!r}"
+            f"README.md's Released cell for {package_path} reads {cells[0]!r}; its own "
+            f"CHANGELOG.md makes it {expected!r}"
+        )
+
+
+class TestTheReleasedCellFollowsTheChangelog:
+    """The unreleased side of that rule, which no package in the tree is on.
+
+    Every package has published, so the case above compares released rows against released
+    rows: it holds with `records_a_release` stuck at `True`, and never reads `NOT_RELEASED`.
+    """
+
+    def test_a_package_with_no_changelog_has_not_released(self):
+        assert not records_a_release(changelog_of("packages/not-a-package"))
+
+    def test_a_changelog_with_no_version_heading_records_no_release(self):
+        assert not records_a_release("# Changelog\n\n## Changelog\n")
+
+    def test_a_bare_first_release_counts(self):
+        assert records_a_release("# Changelog\n\n## 0.1.0 (2026-09-11)\n")
+
+    def test_a_linked_later_release_counts(self):
+        assert records_a_release(
+            "# Changelog\n\n## [0.2.0](https://example.invalid/compare) (2026-09-12)\n"
+        )
+
+    def test_a_hand_written_keep_a_changelog_heading_counts(self):
+        assert records_a_release("# Changelog\n\n## [0.1.0] - 2026-08-07\n")
+
+    def test_an_unreleased_package_gets_the_words_the_table_uses(self):
+        assert released_cell("# Changelog\n", "maf-sandbox-new") == "not yet released"
+
+    def test_a_released_package_gets_its_own_badge(self):
+        assert released_cell("## 0.1.0 (2026-09-11)\n", "maf-sandbox-new") == (
+            "[![PyPI](https://img.shields.io/pypi/v/maf-sandbox-new)]"
+            "(https://pypi.org/project/maf-sandbox-new/)"
         )
 
 
