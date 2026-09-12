@@ -50,6 +50,16 @@ on:
         options:
           - testpypi
           - pypi
+      # What the rehearsal is a rehearsal of. Left empty the run builds this ref's source under
+      # the version the tree declares, which while a release pull request is pending is the last
+      # released one — so the artifacts carry a number that no longer describes them and the
+      # dependent gates select every published dependent whose ceiling admits it (#1120). A
+      # `Release-As:` version is reachable no other way: nothing in the tree carries it until
+      # release-please has opened the pull request.
+      version:
+        description: "Version to rehearse (TestPyPI only; default: the version in the tree)"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -98,12 +108,24 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           INPUT_PACKAGE: ${{ inputs.package }}
           INPUT_TARGET: ${{ inputs.target }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             package="$INPUT_PACKAGE"
             target="$INPUT_TARGET"
-            version="$(grep -m1 '^version = ' "packages/${package}/pyproject.toml" | cut -d'"' -f2)"
+            version="$INPUT_VERSION"
+            # A real publish takes its version from the tag and from nowhere else, so an
+            # arbitrary one must not be able to reach PyPI. The automated release path is also a
+            # dispatch — at the tag, with `target: pypi` — and it passes no version, so this
+            # refuses only a hand-typed one.
+            if [ -n "$version" ] && [ "$target" != "testpypi" ]; then
+              echo "::error::the version input rehearses on testpypi; a publish to ${target} takes its version from the tag. Leave it empty, or target testpypi."
+              exit 1
+            fi
+            if [ -z "$version" ]; then
+              version="$(grep -m1 '^version = ' "packages/${package}/pyproject.toml" | cut -d'"' -f2)"
+            fi
           else
             # Strip the trailing -v<version>; what remains is the package directory name.
             package="${REF_NAME%-v*}"
@@ -132,6 +154,25 @@ jobs:
           echo "default_index_url=https://pypi.org/simple/" >> "$GITHUB_OUTPUT"
           echo "index_strategy=${index_strategy}" >> "$GITHUB_OUTPUT"
           echo "publishing ${package} ${version} to ${target} against ${index_url}"
+
+      # A version an index already carries is not something to rehearse. On PyPI that number is
+      # a release, so the run would build this ref's source under it; on TestPyPI the upload
+      # itself is refused, and `Publish` passes no `skip-existing`, so that refusal would arrive
+      # after the whole gate has run. Asked of the same indexes this run resolves from.
+      #
+      # The rehearsal path only: a tag takes its own version, and the `pypi` dispatch is how a
+      # failed upload is re-run, where the index may legitimately already show the version.
+      - name: Check the rehearsed version is not published yet
+        if: >-
+          github.event_name == 'workflow_dispatch'
+          && steps.resolve.outputs.target == 'testpypi'
+        env:
+          PACKAGE: ${{ steps.resolve.outputs.package }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+          UV_INDEX: ${{ steps.resolve.outputs.index_url }}
+          UV_DEFAULT_INDEX: ${{ steps.resolve.outputs.default_index_url }}
+          UV_INDEX_STRATEGY: ${{ steps.resolve.outputs.index_strategy }}
+        run: python3 scripts/check_rehearsal_version.py "$PACKAGE" "$VERSION"
 
       # The changelog's breaking flag is informational: it does not identify whether published
       # dependents are stranded. The work check below makes the live-check dispatch decision;
@@ -195,6 +236,21 @@ jobs:
 
       - name: Types
         run: uv run pyright -p packages/${{ steps.resolve.outputs.package }}
+
+      # `uv build` is what puts a version into the artifacts, and the filename assertions, the
+      # install checks, the dependent gates and the summary all read it from there — so the
+      # rehearsed version is written into the manifest here rather than threaded through each of
+      # them. Placed after `uv sync --locked`, which reads every workspace member's version out
+      # of `uv.lock` and refuses a tree that disagrees with it. `--frozen` keeps it that way: the
+      # edit is this one line in the runner's checkout, which is thrown away.
+      - name: Stamp the rehearsed version into the package
+        if: >-
+          github.event_name == 'workflow_dispatch'
+          && inputs.version != ''
+        env:
+          PACKAGE: ${{ steps.resolve.outputs.package }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: uv version --package "$PACKAGE" --frozen "$VERSION"
 
       - name: Build
         run: uv build --package ${{ steps.resolve.outputs.package }} --out-dir dist

@@ -661,6 +661,72 @@ class TestTheIndexIsDerivedOnceAndReachesEveryStepThatReadsOne:
         )
 
 
+class TestARehearsalCanNameTheVersionItRehearses:
+    """The dispatch's optional `version`, and the three places its consequences land.
+
+    Without it the run builds this ref's source under the version the tree declares, which while
+    a release pull request is pending is the last released one — and a `Release-As:` version
+    cannot be rehearsed at all, because nothing carries it until release-please has opened the
+    pull request (#1120).
+
+    The order is the part that is not obvious. `uv sync --locked` reads each workspace member's
+    version out of `uv.lock` and refuses a tree that disagrees with it, so the manifest is
+    stamped after that step; `uv build` is what puts the version into the artifacts every later
+    step reads, so it is stamped before that one.
+    """
+
+    WORKFLOW = yaml.safe_load(PUBLISH_WORKFLOW.read_text("utf-8"))
+    RESOLVE = run_block(PUBLISH_WORKFLOW, "Resolve the release")
+    #: PyYAML's YAML 1.1 loader reads `on` as True.
+    STEPS = [str(step.get("name", "")) for step in WORKFLOW["jobs"]["build"]["steps"]]
+    CHECK = "Check the rehearsed version is not published yet"
+    STAMP = "Stamp the rehearsed version into the package"
+
+    def _step(self, name: str) -> dict:
+        return next(
+            step for step in self.WORKFLOW["jobs"]["build"]["steps"] if step.get("name") == name
+        )
+
+    def test_the_dispatch_takes_a_version_and_does_not_require_one(self):
+        declared = self.WORKFLOW[True]["workflow_dispatch"]["inputs"]["version"]
+        assert declared["required"] is False
+        assert declared["type"] == "string"
+
+    def test_the_resolve_step_reads_the_input_and_falls_back_to_the_manifest(self):
+        assert self._step("Resolve the release")["env"]["INPUT_VERSION"]
+        assert 'version="$INPUT_VERSION"' in self.RESOLVE
+        assert 'if [ -z "$version" ]; then' in self.RESOLVE
+        assert "grep -m1 '^version = '" in self.RESOLVE
+
+    def test_a_named_version_cannot_reach_the_real_index(self):
+        """A real publish takes its version from the tag; the automated path passes none."""
+        assert '[ -n "$version" ] && [ "$target" != "testpypi" ]' in self.RESOLVE
+
+    def test_the_indexes_are_asked_before_the_gate_spends_anything(self):
+        assert self.STEPS.index(self.CHECK) < self.STEPS.index("Sync workspace")
+
+    def test_the_manifest_is_stamped_between_the_locked_sync_and_the_build(self):
+        assert (
+            self.STEPS.index("Sync workspace")
+            < self.STEPS.index(self.STAMP)
+            < self.STEPS.index("Build")
+        )
+
+    def test_the_stamp_does_not_relock(self):
+        """Without `--frozen` the write re-resolves the workspace and reaches an index."""
+        assert "--frozen" in self._step(self.STAMP)["run"]
+
+    @pytest.mark.parametrize("step", [CHECK, STAMP])
+    def test_neither_step_runs_on_a_tag_publish(self, step: str):
+        assert "github.event_name == 'workflow_dispatch'" in self._step(step)["if"]
+
+    def test_the_stamp_is_confined_to_a_run_that_named_a_version(self):
+        assert "inputs.version != ''" in self._step(self.STAMP)["if"]
+
+    def test_the_check_is_confined_to_the_rehearsal_index(self):
+        assert "steps.resolve.outputs.target == 'testpypi'" in self._step(self.CHECK)["if"]
+
+
 class TestRoutineAutomationDoesNotClaimToCloseAnIssue:
     """A pull request the release workflow opens every cycle cannot close a specific issue.
 
