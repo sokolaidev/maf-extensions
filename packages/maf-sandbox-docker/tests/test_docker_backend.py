@@ -3177,15 +3177,14 @@ class TestFreezingTheGuest:
     @pytest.mark.parametrize(
         "touch",
         [
-            lambda: _Freezes.claim(_NAME),
+            lambda: _Freezes.claim(_NAME, "owner"),
             lambda: _Freezes.release(_NAME),
-            lambda: _Freezes.claimed(_NAME),
             lambda: _Freezes.confirm(_NAME),
             lambda: _Freezes.unconfirm(_NAME),
             lambda: _Freezes.mark(_NAME),
             lambda: _Freezes.held_throughout(_NAME, (0, True)),
         ],
-        ids=["claim", "release", "claimed", "confirm", "unconfirm", "mark", "held_throughout"],
+        ids=["claim", "release", "confirm", "unconfirm", "mark", "held_throughout"],
     )
     def test_every_touch_of_the_record_takes_the_guard(self, touch, monkeypatch):
         """A loop may be on its own thread, and the count is a read-modify-write.
@@ -3207,20 +3206,37 @@ class TestFreezingTheGuest:
         touch()
         assert entered == [1]
 
-    def test_a_second_claimants_failure_does_not_release_the_first(self):
-        """Two loops claim one container, and only the second's pause is refused.
+    def test_a_claim_outlives_a_nested_release(self):
+        """While any caller still owes a thaw, the record has to say so.
 
-        The claim has to outlive that refusal: while any caller still owes a thaw, the record
-        must say so, or the next `acquire` reads a live freeze as an orphan and lifts it.
+        Or the next `acquire` reads a live freeze as an orphan and lifts it. Nothing nests
+        today — the freeze lock serialises one loop and a second is refused — and this is what
+        keeps that from being the thing safety rests on.
         """
-        _Freezes.claim(_NAME)
-        _Freezes.claim(_NAME)
+        owner = object()
+        assert _Freezes.claim(_NAME, owner)
+        assert _Freezes.claim(_NAME, owner)
         _Freezes.release(_NAME)
         try:
-            assert _Freezes.claimed(_NAME)
+            assert _NAME in _Freezes.claims
         finally:
             _Freezes.release(_NAME)
-        assert not _Freezes.claimed(_NAME)
+        assert _NAME not in _Freezes.claims and _NAME not in _Freezes.owners
+
+    def test_a_claim_is_refused_to_a_second_owner(self):
+        """What makes deciding to thaw and issuing the unpause one operation.
+
+        A reader could only learn that nobody held it a moment ago; a holder cannot have one
+        taken from under it, so nothing can pause the container inside that window.
+        """
+        first, second = object(), object()
+        assert _Freezes.claim(_NAME, first)
+        try:
+            assert not _Freezes.claim(_NAME, second)
+        finally:
+            _Freezes.release(_NAME)
+        assert _Freezes.claim(_NAME, second)
+        _Freezes.release(_NAME)
 
     @pytest.mark.parametrize("verb", ["pause", "unpause"])
     def test_neither_edge_of_the_freeze_certifies_a_running_guest(self, verb):
@@ -3361,34 +3377,26 @@ class TestFreezingTheGuest:
         # only lift a freeze somebody else is holding.
         assert self._verbs(fake) == ["pause"]
 
-    def test_an_uncertain_pause_does_not_thaw_a_freeze_it_may_not_own(self):
-        """A claimant cancelled inside its own `pause` does not know what that pause did.
+    def test_a_file_call_from_another_loop_is_refused_before_it_touches_the_engine(self):
+        """The claim another caller holds is what refuses this one, and it refuses it early.
 
-        It owes a thaw where it might be the only one that froze anything, and owes nothing
-        where somebody else has a claim: lifting that freeze would put its holder back between
-        its check and its copy, which is the whole window this closes. What is left frozen with
-        no owner is `acquire`'s recovery to lift.
+        A call admitted here could be cancelled inside its own `pause`, not know whether it
+        froze anything, and thaw — lifting the holder's freeze and putting it back between its
+        check and its copy. Refusing costs that caller an error on a container someone else is
+        using, and is the fail-closed half of a configuration this backend does not serve.
         """
         backend, sandbox, fake = self._sandbox()
-        inner = backend._docker
-
-        async def seam(*args, **kwargs):
-            if args[0] == "pause":
-                raise asyncio.CancelledError
-            return await inner(*args, **kwargs)
-
-        backend._docker = seam
-        sandbox._run = seam
         # Another loop's file call, mid-flight: claimed and frozen for real.
-        _Freezes.claim(_NAME)
+        held = object()
+        assert _Freezes.claim(_NAME, held)
         _Freezes.confirm(_NAME)
         try:
-            with pytest.raises(asyncio.CancelledError):
+            with pytest.raises(RuntimeError, match="another event loop"):
                 asyncio.run(sandbox.write_file("out.png", b"x", working_directory=_WORK))
         finally:
             _Freezes.unconfirm(_NAME)
             _Freezes.release(_NAME)
-        assert "unpause" not in self._verbs(fake)
+        assert self._verbs(fake) == []
 
     def test_a_cancellation_inside_the_pause_itself_still_thaws(self):
         """The guest can be frozen by an invocation that never returned to say so."""
@@ -3524,9 +3532,9 @@ class TestFreezingTheGuest:
         }
         machine = _machine(running=[_NAME], overrides={**_WORK_IS_A_DIRECTORY, **state})
         backend, fake = _backend_with(machine)
-        _Freezes.claim(_NAME)
+        assert _Freezes.claim(_NAME, object())
         try:
-            with pytest.raises(RuntimeError, match="could not freeze"):
+            with pytest.raises(RuntimeError, match="another event loop"):
                 asyncio.run(backend.acquire(_KEY, _SPEC))
         finally:
             _Freezes.release(_NAME)
