@@ -1210,7 +1210,12 @@ def sandbox_tool_declarations(
     if claimed is not None:
         declarations["source_integrity"] = str(claimed)
     lands_artifacts = output_sink is not None and spec_lands_artifacts(spec)
-    carries_something_out = _reaches_the_network(spec) or lands_artifacts or also_carries_out
+    carries_something_out = (
+        _reaches_the_network(spec)
+        or lands_artifacts
+        or also_carries_out
+        or Capability.ATTACHED_IDENTITY in spec.requires
+    )
     if outbound_max_confidentiality is not None and carries_something_out:
         declarations["max_allowed_confidentiality"] = outbound_max_confidentiality
     # Coerced for the reason `SandboxSpec.__post_init__` coerces its own, and this argument is

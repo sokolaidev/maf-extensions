@@ -159,9 +159,13 @@ from ._protocol import (
     DEFAULT_CAPABILITIES,
     DEFAULT_SANDBOX_LIMITS,
     DEFAULT_TRANSFER_LIMITS,
+    IDENTITY_SCOPE_RANK,
     INTEGRITY_RANK,
     ISOLATION_RANK,
     ISOLATION_SCOPE_RANK,
+    NO_ATTACHED_IDENTITY,
+    AttachedIdentity,
+    AuthorityChannel,
     BackendDeclarations,
     CallerContext,
     Capability,
@@ -175,6 +179,7 @@ from ._protocol import (
     ExecResult,
     HttpMethod,
     Identity,
+    IdentityScope,
     Isolation,
     IsolationScope,
     ListedFile,
@@ -206,6 +211,7 @@ from ._reclaim import (
 from ._refusals import MAX_ECHOED_NAME_CHARACTERS, echoed_name
 from ._router import (
     NoSandboxBackend,
+    SandboxAttachedIdentityNotPermitted,
     SandboxBackendNotPermitted,
     SandboxCapabilityDenied,
     SandboxCapabilityNotSupported,
@@ -235,6 +241,12 @@ from .file_transfer import (
 from .sync_runner import SyncRunner
 
 __all__ = [
+    "IDENTITY_SCOPE_RANK",
+    "NO_ATTACHED_IDENTITY",
+    "AttachedIdentity",
+    "AuthorityChannel",
+    "IdentityScope",
+    "SandboxAttachedIdentityNotPermitted",
     "BoundedExec",
     "SandboxExecOutputLimitExceeded",
     "FileRefusal",

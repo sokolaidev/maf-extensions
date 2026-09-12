@@ -24,9 +24,13 @@ __all__ = [
     "DEFAULT_CAPABILITIES",
     "DEFAULT_SANDBOX_LIMITS",
     "DEFAULT_TRANSFER_LIMITS",
+    "IDENTITY_SCOPE_RANK",
     "INTEGRITY_RANK",
     "ISOLATION_RANK",
     "ISOLATION_SCOPE_RANK",
+    "NO_ATTACHED_IDENTITY",
+    "AttachedIdentity",
+    "AuthorityChannel",
     "BackendDeclarations",
     "Capability",
     "Cleanup",
@@ -40,6 +44,7 @@ __all__ = [
     "HostToolAggregate",
     "HttpMethod",
     "Identity",
+    "IdentityScope",
     "Isolation",
     "IsolationScope",
     "ListedFile",
@@ -282,6 +287,65 @@ def _validated_egress_method(method: object) -> HttpMethod | str:
         return method
 
 
+class IdentityScope(StrEnum):
+    """Sharing of platform-attached authority, ordered from absent to widest."""
+
+    NONE = "none"
+    PER_SANDBOX = "per_sandbox"
+    PER_SCOPE = "per_scope"
+    SHARED = "shared"
+
+
+IDENTITY_SCOPE_RANK: Mapping[IdentityScope, int] = {
+    IdentityScope.NONE: 0,
+    IdentityScope.PER_SANDBOX: 1,
+    IdentityScope.PER_SCOPE: 2,
+    IdentityScope.SHARED: 3,
+}
+
+
+class AuthorityChannel(StrEnum):
+    """An attached-identity channel whose destinations a workload can bound."""
+
+    EGRESS_HEADER = "egress_header"
+
+
+def _positive_identity_seconds(value: object, field_name: str) -> None:
+    if type(value) is not int or value <= 0:
+        raise ValueError(f"{field_name} must be a positive integer number of seconds")
+
+
+@dataclass(frozen=True)
+class AttachedIdentity:
+    """Complete platform authority exposure, including an enforced orphan-lifetime bound.
+
+    The bound runs from creation and ends authority use even without host cleanup;
+    an idle setting or token expiry alone does not establish it.
+    """
+
+    scope: IdentityScope = IdentityScope.NONE
+    auto_delete_seconds: int | None = None
+    channels: frozenset[AuthorityChannel] = frozenset()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "scope", IdentityScope(str(self.scope)))
+        if not isinstance(cast("object", self.channels), (set, frozenset)):
+            raise TypeError("attached identity channels must be a set of AuthorityChannel values")
+        object.__setattr__(
+            self, "channels", frozenset(AuthorityChannel(str(channel)) for channel in self.channels)
+        )
+        if self.scope is IdentityScope.NONE:
+            if self.auto_delete_seconds is not None or self.channels:
+                raise ValueError("no attached identity permits neither retention nor channels")
+        else:
+            _positive_identity_seconds(self.auto_delete_seconds, "auto_delete_seconds")
+            if not self.channels:
+                raise ValueError("attached identity must declare every authority channel")
+
+
+NO_ATTACHED_IDENTITY = AttachedIdentity()
+
+
 @dataclass(frozen=True)
 class EgressRule:
     """Allow a host for the uppercase HTTP methods named, or for all of them with ``None``.
@@ -294,13 +358,28 @@ class EgressRule:
     the *verb* — it never admits one it does not name — and which spelling of a named verb
     reaches is not guaranteed in either direction. ``docs/sandbox/network.md`` carries the
     evidence behind that.
+
+    ``authority`` names the token audience for an attached identity's fixed Bearer header.
+    It requires a concrete host and workload opt-in; it does not restrict HTTP methods.
     """
 
     host: str
     methods: tuple[HttpMethod | str, ...] | None = None
+    authority: str | None = None
 
     def __post_init__(self) -> None:
         _validated_egress_host(self.host)
+        if self.authority is not None:
+            if (
+                not isinstance(cast("object", self.authority), str)
+                or not self.authority
+                or any(
+                    char.isspace() or ord(char) < 32 or ord(char) == 127 for char in self.authority
+                )
+            ):
+                raise ValueError("egress authority must be a nonempty audience without whitespace")
+            if self.host.startswith("*."):
+                raise ValueError("an authority destination must be a concrete host, not a wildcard")
         if self.methods is None:
             return
         if not isinstance(cast("object", self.methods), tuple):
@@ -350,7 +429,7 @@ class Capability(StrEnum):
     #: Snapshot and restore a sandbox for reuse. Also what establishes :data:`Cleanup.RESET`,
     #: through :meth:`Sandbox.reset`.
     SNAPSHOT = "snapshot"
-    #: A platform-attached identity scoped to the sandbox itself.
+    #: Platform-attached authority, with explicit sharing, channel and retention bounds.
     ATTACHED_IDENTITY = "attached_identity"
     #: Backend evidence for :data:`Cleanup.RECLAIM`; forbidden in :attr:`SandboxSpec.requires`.
     #: Reuse requires explicit host opt-in; workload confinement is advisory. Without this
@@ -904,13 +983,29 @@ class SandboxSpec:
     min_cleanup: Cleanup | None = None
     # Appended after it, for that same reason.
     exclusive_admission: bool = False
+    #: Explicit attachment sharing and retention ceilings; requiring authority obliges both.
+    max_identity_scope: IdentityScope | None = None
+    max_identity_retention_seconds: int | None = None
 
     @property
     def required_capabilities(self) -> frozenset[Capability]:
         """Explicit requirements plus capabilities needed to enforce the current policy."""
-        if any(isinstance(entry, EgressRule) for entry in self.egress_allow):
+        if any(
+            isinstance(entry, EgressRule) and entry.methods is not None
+            for entry in self.egress_allow
+        ):
             return self.requires | {Capability.EGRESS_METHODS}
         return self.requires
+
+    @property
+    def authority_channels(self) -> frozenset[AuthorityChannel]:
+        """Attached authority explicitly bounded by this workload's rules."""
+        if any(
+            isinstance(entry, EgressRule) and entry.authority is not None
+            for entry in self.egress_allow
+        ):
+            return frozenset({AuthorityChannel.EGRESS_HEADER})
+        return frozenset()
 
     @property
     def identities(self) -> frozenset[Identity]:
@@ -955,9 +1050,9 @@ class SandboxSpec:
                 "without it. Set egress=Egress.ALLOWLIST, or drop the hosts."
             )
         entries: dict[str, str | EgressRule] = {}
-        methods_by_host: dict[str, frozenset[str] | None] = {}
+        policy_by_host: dict[str, tuple[frozenset[str] | None, str | None]] = {}
         for entry in self.egress_allow:
-            if isinstance(entry, EgressRule) and entry.methods is None:
+            if isinstance(entry, EgressRule) and entry.methods is None and entry.authority is None:
                 entry = entry.host
             host = entry.host if isinstance(entry, EgressRule) else _validated_egress_host(entry)
             methods = (
@@ -966,13 +1061,32 @@ class SandboxSpec:
                 else None
             )
             folded = host.lower()
+            policy = (methods, entry.authority if isinstance(entry, EgressRule) else None)
             if folded in entries:
-                if methods_by_host[folded] != methods:
+                if policy_by_host[folded] != policy:
                     raise ValueError(f"conflicting egress rules for host {host!r}")
             else:
                 entries[folded] = entry
-                methods_by_host[folded] = methods
+                policy_by_host[folded] = policy
         object.__setattr__(self, "egress_allow", tuple(entries.values()))
+        if self.max_identity_scope is not None:
+            object.__setattr__(
+                self, "max_identity_scope", IdentityScope(str(self.max_identity_scope))
+            )
+        if Capability.ATTACHED_IDENTITY in self.requires:
+            if self.max_identity_scope in (None, IdentityScope.NONE):
+                raise ValueError(
+                    "ATTACHED_IDENTITY requires an explicit non-NONE max_identity_scope"
+                )
+            _positive_identity_seconds(
+                self.max_identity_retention_seconds, "max_identity_retention_seconds"
+            )
+        elif (
+            self.authority_channels
+            or self.max_identity_retention_seconds is not None
+            or self.max_identity_scope not in (None, IdentityScope.NONE)
+        ):
+            raise ValueError("identity authority and bounds require ATTACHED_IDENTITY in requires")
         if Capability.RECLAIM in self.requires:
             raise ValueError(
                 "Capability.RECLAIM belongs in backend declarations; "
@@ -1502,6 +1616,8 @@ class BackendDeclarations:
     #: for a mechanism whose verb list is fixed. An omitted declaration permits none, and the
     #: whole field is ignored unless the capability is declared.
     egress_method_tokens: frozenset[str] | None = frozenset()
+    #: Silence claims no ambient attachment. Backends must verify actual platform exposure.
+    attached_identity: AttachedIdentity = NO_ATTACHED_IDENTITY
 
 
 #: What a backend declaring no ``declarations`` is read as: every field at its own silence rule.

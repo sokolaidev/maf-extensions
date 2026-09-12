@@ -157,7 +157,7 @@ For filesystem implementations, `acquire` prepares the bound storage base for a 
 ## Where to read next
 
 - [`../capabilities.md`](../capabilities.md) — what each capability obligates, the caps, and the confinement rules in their own terms.
-- [`../policy-isolation.md`](../policy-isolation.md) — the isolation ladder, the host's floor, and who owns each of the six checks.
+- [`../policy-isolation.md`](../policy-isolation.md) — the isolation ladder, the host's floor, and who owns each of the seven checks.
 - [`../network.md`](../network.md) — the egress axis, the allowlist, and what enforcing one takes.
 - [`../guest-platform-and-commands.md`](../guest-platform-and-commands.md) — what a kind may assume about the far side of the boundary, and how a backend finds out.
 - [`../kinds/README.md`](../kinds/README.md) — the workloads that run on all of this, and what they assume about you.

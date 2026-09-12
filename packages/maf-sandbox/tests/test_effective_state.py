@@ -246,6 +246,9 @@ class TestPostureNeverPayload:
             "files_out",
             "backend_capabilities",
             "backend_egress_modes",
+            "attached_identity",
+            "max_identity_scope",
+            "max_identity_retention_seconds",
         }
 
 
