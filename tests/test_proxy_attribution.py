@@ -206,11 +206,8 @@ def test_a_fresh_process_drains_an_orphan_including_failed_setup(engine, failed_
 
 
 def test_a_disposal_files_a_leftover_window_under_the_key_that_ran_it(engine):
-    """A key addressed to a conversation also sweeps leftovers from the calls inside it.
-
-    That key names no call, so filing the window under it would put the conversation's name on
-    decisions a call made.
-    """
+    """A key addressed to a conversation sweeps leftovers from the calls inside it, and each
+    window is the call's."""
     conversation = SandboxKey(scope="scope", thread_id="thread", agent_dir="agent")
     call = replace(conversation, call_id="call-1")
 
@@ -229,11 +226,9 @@ def test_a_disposal_files_a_leftover_window_under_the_key_that_ran_it(engine):
 
 @pytest.mark.parametrize("shape", ["oversized", "legacy"])
 def test_the_callers_key_still_answers_for_a_proxy_carrying_no_attribution(engine, shape):
-    """The two shapes with nothing to read: an oversized key is written as an empty label, and
-    a proxy predating the label carries none, with selectors `_KEY` had hashed.
-
-    A key-addressed disposal is the one caller that can name such a window anyway.
-    """
+    """The two shapes with nothing to read — an oversized key written as an empty label, and a
+    proxy predating the label whose selectors were hashed — which only a key-addressed disposal
+    can name."""
 
     async def scenario():
         await engine.backend()._ensure_proxy("workload", _KEY, _SPEC)
@@ -261,12 +256,8 @@ def test_the_callers_key_still_answers_for_a_proxy_carrying_no_attribution(engin
 def test_the_callers_key_does_not_answer_for_a_proxy_it_is_not_shown_to_own(
     engine, selector, damage
 ):
-    """A sweep reaches names from its own registry as well as from the label query, and only
-    the query proves ownership — so an unreadable key label leaves the selectors to do it.
-
-    Without that, a disposal publishes a window from a container that never said it was this
-    conversation's, under this conversation's key.
-    """
+    """Only the label query proves ownership, and a sweep reaches names from its own registry
+    too, so an unreadable key label leaves the selectors to prove it."""
 
     async def scenario():
         await engine.backend()._ensure_proxy("workload", _KEY, _SPEC)
@@ -287,12 +278,8 @@ def test_the_callers_key_does_not_answer_for_a_proxy_it_is_not_shown_to_own(
 
 
 def test_a_conversations_key_does_not_stand_in_for_a_calls_unreadable_proxy(engine):
-    """The call label is ownership too, so a conversation's key does not name a call's proxy.
-
-    Without the call in the comparison, the one leftover whose attribution cannot be recovered
-    is filed under the conversation — the defect this whole path exists to prevent, surviving
-    in its fallback.
-    """
+    """The call label is ownership too, so a conversation's key does not name a call's
+    proxy."""
     conversation = SandboxKey(scope="scope", thread_id="thread", agent_dir="agent")
     call = replace(conversation, call_id="call-1")
 
@@ -313,12 +300,8 @@ def test_a_conversations_key_does_not_stand_in_for_a_calls_unreadable_proxy(engi
 
 @pytest.mark.parametrize("payload", ["!", "WyJvdGhlciIsImIiLCJjIiwiZCJd"], ids=["junk", "claims"])
 def test_the_callers_key_does_not_answer_for_a_label_that_was_refused(engine, payload):
-    """A present label that will not decode, or whose values contradict the selectors, is
-    refused deliberately — so the caller's key must not be read as a second opinion on it.
-
-    The sweep would otherwise publish a window under the caller for a container whose own
-    account of itself this just declined to believe.
-    """
+    """A label that will not decode, or whose values contradict the selectors, is refused
+    deliberately — so the caller's key is not a second opinion on it."""
 
     async def scenario():
         await engine.backend()._ensure_proxy("workload", _KEY, _SPEC)
