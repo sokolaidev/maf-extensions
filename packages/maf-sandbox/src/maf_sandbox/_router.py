@@ -1208,7 +1208,7 @@ class SandboxRouter:
         self, backend: SandboxBackend, spec: SandboxSpec
     ) -> None:
         """Raise unless ``backend`` may serve ``spec``: floor, capabilities, guest shape,
-        limits, egress, scope.
+        limits, egress, scope, attached authority.
 
         One backend's half of the policy, with the host's own denials left to
         :meth:`_refuse_host_denials` — everything here is a question about *this* backend, so
@@ -1371,7 +1371,7 @@ class SandboxRouter:
 
     def ensure_can_serve(self, spec: SandboxSpec) -> None:
         """Raise unless ``spec`` may be served: denials, floor, capabilities, guest shape,
-        limits, egress, scope.
+        limits, egress, scope, attached authority.
 
         Called for you by :func:`maf_sandbox.maf.sandboxed_tool`, and it is also the whole of
         a host's own wiring test::
@@ -1395,6 +1395,8 @@ class SandboxRouter:
                 or when the backend declares its ceilings as something other than a
                 ``SandboxLimits``.
             SandboxEgressNotEnforced: when the backend cannot enforce the spec's egress mode.
+            SandboxAttachedIdentityNotPermitted: when attached authority is ambient or exceeds
+                the host or workload's sharing, retention or channel bounds.
             SandboxScopeNotEnforced: when the backend cannot serve the workload at the isolation
                 scope this host and the spec resolve to.
         """
@@ -1580,7 +1582,7 @@ class SandboxRouter:
     ) -> Sandbox:
         """Return a running sandbox for ``key``, creating one if needed.
 
-        Runs the same floor, capability, limit and egress checks as :meth:`ensure_can_serve`
+        Runs the same admission checks as :meth:`ensure_can_serve`
         before ever reaching the backend, so a caller that skips :meth:`ensure_can_serve` is
         still refused rather than served behind a boundary or capability set the spec did not
         agree to.  Under :data:`Selection.PER_SPEC` those checks are also what *chooses* the
@@ -1611,6 +1613,8 @@ class SandboxRouter:
                 or when the backend declares its ceilings as something other than a
                 ``SandboxLimits``.
             SandboxEgressNotEnforced: when the backend cannot confine egress to this spec.
+            SandboxAttachedIdentityNotPermitted: when attached authority is ambient or exceeds
+                the host or workload's sharing, retention or channel bounds.
             SandboxScopeNotEnforced: when the backend cannot serve the workload at the isolation
                 scope this host and the spec resolve to.
             ValueError: when ``key`` and the workload's effective scope disagree — a

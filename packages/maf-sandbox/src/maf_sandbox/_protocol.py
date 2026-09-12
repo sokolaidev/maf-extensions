@@ -374,7 +374,8 @@ class EgressRule:
                 not isinstance(cast("object", self.authority), str)
                 or not self.authority
                 or any(
-                    char.isspace() or ord(char) < 32 or ord(char) == 127 for char in self.authority
+                    char.isspace() or ord(char) < 32 or 0x7F <= ord(char) <= 0x9F
+                    for char in self.authority
                 )
             ):
                 raise ValueError("egress authority must be a nonempty audience without whitespace")

@@ -271,6 +271,18 @@ def test_authority_audience_validation(audience: Any):
         EgressRule("api.example", authority=audience)
 
 
+@pytest.mark.parametrize("codepoint", [*range(0x20), *range(0x7F, 0xA0)])
+def test_authority_rejects_every_control_character(codepoint: int):
+    with pytest.raises(ValueError, match="audience"):
+        EgressRule("api.example", authority=f"urn:resource:{chr(codepoint)}")
+
+
+@pytest.mark.parametrize("codepoint", [0x7E, 0xA1, 0xFF])
+def test_authority_preserves_noncontrol_characters(codepoint: int):
+    audience = f"urn:resource:{chr(codepoint)}"
+    assert EgressRule("api.example", authority=audience).authority == audience
+
+
 def test_authority_rejects_wildcard_destinations():
     with pytest.raises(ValueError, match="concrete host"):
         EgressRule("*.example", authority="urn:resource")
