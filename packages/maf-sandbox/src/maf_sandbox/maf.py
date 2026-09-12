@@ -568,8 +568,8 @@ def _reachable_middleware() -> Any | None:
 
 #: Where the framework keeps a call's arguments as they arrived, before it expands any
 #: reference into them.  **Not a published contract** — a string literal inside
-#: `LabelTrackingFunctionMiddleware`, and this package accepts every ``agent-framework-core``
-#: 1.x — so a compatible minor may rename it and this would stop answering.  Two things keep
+#: `LabelTrackingFunctionMiddleware`, and this package accepts ``agent-framework-core>=1.18,<2``
+#: — so a compatible minor may rename it and this would stop answering.  Two things keep
 #: that from being silent: a divergence alarm in the suite, and, for a host whose upgrade this
 #: suite never saw, `_warn_once_about_a_missing_record` beside an answer that names every
 #: position rather than quoting one.
@@ -578,12 +578,8 @@ _ORIGINAL_ARGUMENTS_KEY = "original_arguments_for_messages"
 
 #: Another key the same middleware writes on every call, for a different reader.
 #: Present-without-the-other is the tell this package needs: it says an information-flow
-#: middleware ran and its argument record is gone, which no legitimate wiring produces.  Read
-#: from the call rather than from the framework's accessor deliberately — metadata travels with
-#: the context object, so this answers wherever the body runs, on every core the range admits.
-#: The accessor does not: through 1.17 it is a thread-local and answers nothing on the worker
-#: thread a synchronous body runs on, so a package accepting that core cannot rest on the
-#: ``ContextVar`` 1.18 replaced it with.
+#: middleware ran and its argument record is gone, which no legitimate wiring produces.
+#: Read from the call's metadata because it travels with the context object.
 _MIDDLEWARE_RAN_KEY = "context_label"
 
 #: One warning per process, not one per refusal.
@@ -773,19 +769,15 @@ def _deliverable_texts(value: object) -> Iterator[str]:
 
 
 def _substituted_forms(payload: object) -> set[str]:
-    """Every text a reference to ``payload`` could be replaced by, over the cores admitted.
+    """Every text a reference to ``payload`` could be replaced by.
 
     A reference is expanded two ways.  Alone, it is replaced by the payload; spliced into
     surrounding text, by ``str()`` of it — so a payload of any type reaches an argument as text,
     and a stored ``["SECRET"]`` arrives inside ``['SECRET'].bicep``.
 
-    **The payload and its reduction are both here, because which one a core substitutes moved
-    inside the range this package accepts.**  Through 1.17 a payload naming a ``response`` was
-    always reduced to that field; from 1.18 only ``quarantined_llm``'s is, and every other one
-    arrives whole.  Offering one form would under-report on the other core, and under-reporting
-    is the direction that quotes hidden content back — so both are offered, at the cost of one
-    more candidate in a comparison :func:`positions_holding_hidden_content` already documents as
-    conservative.
+    The framework reduces only payloads produced by ``quarantined_llm``; all others arrive
+    whole.  The store walk does not read producer metadata, so both forms remain candidates
+    in this conservative comparison.
 
     A reduction that answers the payload itself is rendered once, not twice: rendering runs the
     payload's own code, and this is reached for every stored value on every call.
@@ -809,13 +801,11 @@ def _hidden_payloads(middleware: Any) -> Iterator[str]:
 def hidden_content_candidates() -> frozenset[str]:
     """Every string form a rewritten argument could have arrived carrying, as the store holds it.
 
-    Take this **before a body's first await** wherever the answer is needed later.  The
-    framework's accessor is not scoped to the call, so an answer fetched after the body has
-    suspended may not be available; a snapshot taken first thing survives the wait, and
-    :func:`positions_holding_hidden_content` accepts it as ``candidates``.
-
-    A body that asks and answers in the same breath does not need this — it can let
-    :func:`positions_holding_hidden_content` take its own.
+    The framework's accessor survives awaits within the calling context.  Take a snapshot
+    before external work when later checks must retain the same candidates even if the store
+    changes, or when passing them to a caller outside that context.
+    :func:`positions_holding_hidden_content` accepts the snapshot as ``candidates``; without
+    one, it reads the current store.
     """
     middleware = _reachable_middleware()
     if middleware is None:
@@ -853,16 +843,12 @@ def positions_holding_hidden_content(
       comparison is against a list the caller never sent.
     - **Containment, not equality.**  A reference is spliced into the text around it, so
       ``"[var_a1b2].bicep"`` arrives as the content with a suffix and equals no stored payload.
-    - **A task outliving the call falls back, and reaches the store only through
-      ``candidates``.**  The record is closed with the call, and the framework's own accessor
-      goes with it.  Take that snapshot from :func:`hidden_content_candidates` before the first
-      await; a caller answering immediately needs none.
+    - **A task outliving the call falls back.**  The record is closed with the call.  An
+      inherited framework context can still reach the store, but only an explicit
+      ``candidates`` snapshot preserves its earlier contents if that store changes.
     - **An empty answer from the fallback is not "nothing was hidden".**  It is also what an
-      unreachable middleware gives — a host that wired none, and, on every core through 1.17, a
-      synchronous body dispatched to another thread, which that core's thread-local accessor
-      does not cross.  1.18 made the accessor a ``ContextVar`` and it does reach the worker
-      thread, but this package accepts both cores, so the limit is still real.  The record has
-      neither limit on either core — its own ``ContextVar`` is copied by ``asyncio.to_thread``.
+      unreachable middleware gives, including a host that wired none.  Both the record and
+      the framework's accessor reach a synchronous body through ``asyncio.to_thread``.
 
     Take the whole argument list in one call: the answer costs one pass over the variable store,
     and the store's own reads are logged by the framework.
@@ -872,11 +858,7 @@ def positions_holding_hidden_content(
     record = _CALL_CONTEXT.get()
     if record is not None and not record.closed and argument is not None:
         if _the_framework_kept_no_record(record.context):
-            # Fail closed. Something hid content on this call and the record of what it
-            # rewrote is gone, so every entry is one this cannot vouch for. The fallback is
-            # no answer here: through core 1.17 a synchronous body runs on a thread the
-            # framework's accessor does not reach, so it would report nothing and every value
-            # would be quoted.
+            # A missing record means the contract moved, so no checked position can be vouched for.
             _warn_once_about_a_missing_record(_DEFAULT_LOGGER)
             return frozenset(range(len(values)))
         before = _spellings_before_rewriting(record.context, argument)
@@ -889,11 +871,7 @@ def positions_holding_hidden_content(
                 if value != spelling
             )
         if _the_framework_kept_a_record(record.context):
-            # The record is here and this argument cannot be read out of it — a name that is no
-            # parameter of this call, a value that is no longer a list, a length that no longer
-            # matches. None of that says nothing was rewritten, so it must not answer as though
-            # it did, and the fallback would: a synchronous body reaches no store from its
-            # thread and would report an empty set, quoting whatever the framework had hidden.
+            # An unreadable argument or mismatched length cannot establish which positions changed.
             return frozenset(range(len(values)))
     payloads = hidden_content_candidates() if candidates is None else candidates
     return frozenset(
@@ -1127,9 +1105,9 @@ def sandbox_tool_declarations(
     conversation does go untrusted.  Three limits on that trade: hiding stops once anything
     else has tainted the conversation; it never applies to confidentiality, which a hidden item
     still contributes; and *passing* the reference on is a separate question from the
-    conversation label, gated from ``agent-framework-core`` 1.18 wherever a host also wires the
-    policy middleware and the destination has not opted in.  What the gate costs the call is
-    that middleware's configuration: refused under its default, served once a user approves
+    conversation label, gated wherever a host also wires the policy middleware and the
+    destination has not opted in.  What the gate costs the call is that middleware's
+    configuration: refused under its default, served once a user approves
     where it asks for approval, served with a warning where it blocks on nothing.
     ``docs/sandbox/information-flow.md`` carries the measurement and the full conditions.
 
@@ -1251,10 +1229,9 @@ def sandbox_tool_declarations(
 #: Where :meth:`SandboxToolSession.read_file` records what the host knows about a file's bytes.
 #:
 #: This records source integrity alone.  The framework's ``security_label`` names both axes and
-#: an integrity-only one is never the claim it looks like — accepted with confidentiality
-#: defaulted to public through ``agent-framework-core`` 1.17, and discarded whole from 1.18, so
-#: the item falls back to the invocation label and loses the integrity claim too. Only the
-#: result wrapper may mint one, and only where a kind declared both.
+#: an integrity-only one is discarded whole, so the item falls back to the invocation label
+#: and loses the integrity claim too. Only the result wrapper may mint one, and only where a
+#: kind declared both.
 SOURCE_INTEGRITY_PROPERTY = "maf_sandbox_source_integrity"
 
 
@@ -2984,9 +2961,7 @@ def sandbox_outputs_read_tools(
     """
     from agent_framework import tool
 
-    # Both bodies render their argument before touching the store, not in the branch that
-    # needs it: the framework's accessor is not scoped to the call, so a verdict asked for
-    # after the store has suspended can come back empty and quote content the middleware hid.
+    # Preserve the hidden-content verdict before a host store callback can clear its evidence.
     async def outputs_ls(folder: str = "") -> list[dict[str, str]] | str:
         named = _echoed(folder, "folder")
         try:

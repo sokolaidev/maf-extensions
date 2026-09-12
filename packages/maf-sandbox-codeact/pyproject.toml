@@ -38,7 +38,7 @@ dependencies = [
     "maf-sandbox>=0.39.0,<0.40",
     # The `@tool` decorator. MAF is a genuine dependency of the tool itself, not of the host
     # application.
-    "agent-framework-core>=1.13.0,<2",
+    "agent-framework-core>=1.18.0,<2",
 ]
 
 [project.urls]

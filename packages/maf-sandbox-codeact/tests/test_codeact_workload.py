@@ -4163,13 +4163,7 @@ class TestARewrittenArgumentIsNeverQuoted:
         assert "at most 20 bytes per file" in out, out
 
     def test_the_manifest_path_answers_from_the_snapshot_taken_before_the_run(self, monkeypatch):
-        """The manifest is read after the run, long after this call's body first awaited.
-
-        Asking then is asking too late — the framework's accessor is not scoped to the call. So
-        the answer is taken once before anything awaits and carried down. This pins that the
-        manifest branch uses that snapshot rather than looking again: the lookup is made to
-        answer nothing if called a second time.
-        """
+        """The manifest check retains the initial candidates even if the store later loses them."""
         taken: list[int] = []
 
         def _once():
