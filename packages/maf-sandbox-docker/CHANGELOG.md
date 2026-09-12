@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.20.0...maf-sandbox-docker-v0.20.1) (2026-09-12)
+
+
+### Fixes
+
+* require maf-sandbox 0.39.0 in the dependents, and admit the 0.39 line ([#1179](https://github.com/sokolaidev/maf-extensions/issues/1179)) ([8475d6b](https://github.com/sokolaidev/maf-extensions/commit/8475d6bb3fbd4166f8e062eecb9fa35bb9fb5910))
+
 ## [0.20.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.19.0...maf-sandbox-docker-v0.20.0) (2026-09-12)
 
 > **Correction, added after the release.** **No wheel for this version reached PyPI.** The publish failed after release-please had already created the tag and the GitHub Release, both immutable here, so the number is spent. Everything listed below ships in the next published release of this package, cut as **0.20.1** in [#1184](https://github.com/sokolaidev/maf-extensions/pull/1184) — including the breaking change, which therefore reaches consumers under a patch version.
