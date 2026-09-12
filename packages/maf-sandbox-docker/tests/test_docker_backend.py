@@ -3606,16 +3606,11 @@ class TestFreezingTheGuest:
                 asyncio.run(backend.acquire(_KEY, _SPEC))
         finally:
             _Freezes.release(_FREEZE_NAME)
-        # Its own `prepare_work_dir` is refused by the daemon, which is the fail-closed half;
-        # what matters here is that nothing lifted the freeze that container already had.
+        # The exclusive claim refuses recovery before any thaw reaches the engine.
         assert "unpause" not in [call.args[0] for call in fake.calls]
 
     def test_a_recovery_thaw_that_does_not_land_refuses_the_acquire(self):
-        """Warm reuse is the one path that serves a container nothing is about to freeze.
-
-        A workload asking for no file surface never takes one, so a container handed over
-        still paused would refuse its every exec with nothing left to notice.
-        """
+        """Reuse must refuse a still-paused guest even if preparation needs no freeze."""
         state = {
             ("inspect", "-f", "{{.State.Running}} {{.State.Paused}}"): _DockerResult(
                 0, b"true true", ""
@@ -3850,6 +3845,47 @@ class TestAnExecRefusedForTheFreeze:
         _Freezes.confirm(_FREEZE_NAME)
         result = asyncio.run(backend._docker("exec", _NAME, "true", timeout=0.2, container=_NAME))
         assert result == _frozen_refusal() and len(seen) > 1
+
+    @pytest.mark.parametrize("bounded", [False, True])
+    def test_expiry_during_retry_sleep_preserves_the_refusal(self, bounded, monkeypatch):
+        backend, _fake = _backend_with(_machine(running=[_NAME], overrides=_WORK_IS_A_DIRECTORY))
+        sandbox = asyncio.run(backend.acquire(_KEY, _METHOD_SPEC))
+        backend._docker = DockerSandboxBackend._docker.__get__(backend)
+        sandbox._run = backend._docker
+        seen = []
+        elapsed = 0.0
+
+        async def invoke(*args, timeout=None, **kwargs):
+            seen.append(args)
+            if args[0] != "exec":
+                return _DockerResult(0, b"", "")
+            if timeout is not None and timeout <= 0:
+                raise TimeoutError("expired before the command could start")
+            if bounded:
+                raise SandboxExecOutputLimitExceeded("daemon refusal exceeds the output budget")
+            return _frozen_refusal()
+
+        async def oversleep(_delay):
+            nonlocal elapsed
+            elapsed += 2.0
+
+        monkeypatch.setattr(backend, "_invoke", invoke)
+        monkeypatch.setattr(time, "monotonic", lambda: elapsed)
+        monkeypatch.setattr(asyncio, "sleep", oversleep)
+        _Freezes.confirm(_FREEZE_NAME)
+
+        async def scenario():
+            if bounded:
+                with pytest.raises(SandboxExecOutputLimitExceeded):
+                    await sandbox.exec_bounded(
+                        ["true"], working_directory=_WORK, timeout=1, max_output_bytes=64
+                    )
+            else:
+                result = await sandbox.exec(["true"], working_directory=_WORK, timeout=1)
+                assert result.exit_code == 1 and result.stderr == _frozen_refusal().stderr
+
+        asyncio.run(scenario())
+        assert len(seen) == 1 and seen[0][0] == "exec"
 
 
 # ---------------------------------------------------------------------------

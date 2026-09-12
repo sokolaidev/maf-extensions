@@ -568,20 +568,18 @@ def _reachable_middleware() -> Any | None:
 
 #: Where the framework keeps a call's arguments as they arrived, before it expands any
 #: reference into them.  **Not a published contract** — a string literal inside
-#: `LabelTrackingFunctionMiddleware`, and this package accepts every ``agent-framework-core``
-#: 1.x — so a compatible minor may rename it and this would stop answering.  Two things keep
+#: `LabelTrackingFunctionMiddleware`, and this package accepts ``agent-framework-core>=1.18,<2``
+#: — so a compatible minor may rename it and this would stop answering.  Two things keep
 #: that from being silent: a divergence alarm in the suite, and, for a host whose upgrade this
 #: suite never saw, `_warn_once_about_a_missing_record` beside an answer that names every
 #: position rather than quoting one.
 #: Retiring both needs a provenance API the framework publishes, which is #826.
 _ORIGINAL_ARGUMENTS_KEY = "original_arguments_for_messages"
 
-#: Another key that middleware writes on every call, before the one above and for a different
-#: reader.  Present-without-the-other is the tell this package needs: it says an information-flow
-#: middleware ran and its argument record is gone, which no legitimate wiring produces.  Read
-#: from the call rather than from the framework's accessor deliberately — metadata travels with
-#: the context object, so this answers on the worker thread a synchronous body runs on, where
-#: the accessor is a thread-local and answers nothing.
+#: Another key the same middleware writes on every call, for a different reader.
+#: Present-without-the-other is the tell this package needs: it says an information-flow
+#: middleware ran and its argument record is gone, which no legitimate wiring produces.
+#: Read from the call's metadata because it travels with the context object.
 _MIDDLEWARE_RAN_KEY = "context_label"
 
 #: One warning per process, not one per refusal.
@@ -705,7 +703,7 @@ def _prefixed(name: str) -> str:
 
 
 def _reduced_form(payload: object) -> object:
-    """What the middleware substitutes for ``payload`` when it expands a reference to it.
+    """One of the two forms the middleware substitutes for ``payload`` when it expands it.
 
     A mapping, or JSON text naming a ``response``, is reduced to that field.  **Everything else
     is substituted unchanged**, which is the branch that matters most here: a payload of any
@@ -713,10 +711,15 @@ def _reduced_form(payload: object) -> object:
     into surrounding text.  So this always answers with something, and "no reduction" is the
     payload rather than an absence — there is no shape a caller should skip.
 
-    **It mirrors behaviour rather than a published contract, so it has to track upstream.** The
-    rule lives inside ``agent_framework.security`` (MIT, Microsoft Corporation), which promises
-    nothing about it, and a shape this stops matching is a shape an argument carries past the
-    check. ``THIRD-PARTY-NOTICES.md`` records the reuse.
+    **Whether a core applies this reduction at all is :func:`_substituted_forms`' to say**, and
+    it is why that function offers this beside the payload rather than instead of it.
+
+    **It mirrors behaviour rather than a published contract.** The rule lives inside
+    ``agent_framework.security`` (MIT, Microsoft Corporation), which promises nothing about it,
+    and it has already moved once.  A shape this stops matching costs precision rather than the
+    check, because :func:`_substituted_forms` offers the payload whole beside this reduction, so
+    the comparison holds whichever one a core substitutes.  ``THIRD-PARTY-NOTICES.md`` records
+    the reuse.
     """
     if isinstance(payload, Mapping):
         mapping = cast("Mapping[str, Any]", payload)
@@ -735,38 +738,74 @@ def _reduced_form(payload: object) -> object:
     return payload
 
 
-def _hidden_payloads(middleware: Any) -> Iterator[str]:
-    """Every string form a rewritten argument could have arrived carrying.
+def _deliverable_texts(value: object) -> Iterator[str]:
+    """Each text a reference to ``value`` alone, or spliced into other text, could deliver.
 
-    Two forms per stored payload, because a reference is expanded two ways.  Alone, it is
-    replaced by the payload itself; spliced into surrounding text, by ``str()`` of what the
-    reduction answers — so a payload of any type reaches an argument as text, and a stored
-    ``["SECRET"]`` arrives inside ``['SECRET'].bicep``.
+    Two, and only a ``str`` subclass makes them differ: substituted alone a payload arrives as
+    itself, and spliced it arrives as ``str()`` of itself — which a subclass may define to
+    answer neither its own characters.  Rendering only one of those leaves the other form
+    uncompared, which is a value quoted back.
+
+    **``str()`` runs a stored payload's own code, and this walks the whole store**, so a payload
+    nothing referenced must not end the call that asked about another — the rule
+    :func:`_reduced_form`'s parse already holds to.  A form that will not render is dropped
+    rather than reported, which costs nothing: the framework splices a reference by calling
+    ``str()`` too, so a payload raising there could not have reached an argument as text either.
+    ``BaseException`` is left to propagate, since a host's interrupt is not a payload's failure.
+
+    An empty rendering is dropped with them.  It is a candidate contained in every value, so
+    reporting it would name every position rather than the rewritten one.
     """
+    if isinstance(value, str):
+        own = str.__str__(value)  # its own characters, whatever `__str__` was overridden to say
+        if own:
+            yield own
+    try:
+        text = str(value)
+    except Exception:  # noqa: BLE001 - a payload's `__str__` is arbitrary code
+        return
+    if text:
+        yield text
+
+
+def _substituted_forms(payload: object) -> set[str]:
+    """Every text a reference to ``payload`` could be replaced by.
+
+    A reference is expanded two ways.  Alone, it is replaced by the payload; spliced into
+    surrounding text, by ``str()`` of it — so a payload of any type reaches an argument as text,
+    and a stored ``["SECRET"]`` arrives inside ``['SECRET'].bicep``.
+
+    The framework reduces only payloads produced by ``quarantined_llm``; all others arrive
+    whole.  The store walk does not read producer metadata, so both forms remain candidates
+    in this conservative comparison.
+
+    A reduction that answers the payload itself is rendered once, not twice: rendering runs the
+    payload's own code, and this is reached for every stored value on every call.
+    """
+    reduced = _reduced_form(payload)
+    substituted = (payload,) if reduced is payload else (payload, reduced)
+    return {text for value in substituted for text in _deliverable_texts(value)}
+
+
+def _hidden_payloads(middleware: Any) -> Iterator[str]:
+    """Every string form a rewritten argument could have arrived carrying."""
     store = middleware.get_variable_store()
     for variable_id in store.list_variables():
         try:
             content, _ = store.retrieve(variable_id)
         except KeyError:  # pragma: no cover - a store cleared between the two calls
             continue
-        reduced = _reduced_form(content)
-        candidates: set[str] = {content} if isinstance(content, str) else set()
-        candidates.add(reduced if isinstance(reduced, str) else str(reduced))
-        for text in candidates:
-            if text:
-                yield text
+        yield from _substituted_forms(content)
 
 
 def hidden_content_candidates() -> frozenset[str]:
     """Every string form a rewritten argument could have arrived carrying, as the store holds it.
 
-    Take this **before a body's first await** wherever the answer is needed later.  The
-    framework's accessor is not scoped to the call, so an answer fetched after the body has
-    suspended may not be available; a snapshot taken first thing survives the wait, and
-    :func:`positions_holding_hidden_content` accepts it as ``candidates``.
-
-    A body that asks and answers in the same breath does not need this — it can let
-    :func:`positions_holding_hidden_content` take its own.
+    The framework's accessor survives awaits within the calling context.  Take a snapshot
+    before external work when later checks must retain the same candidates even if the store
+    changes, or when passing them to a caller outside that context.
+    :func:`positions_holding_hidden_content` accepts the snapshot as ``candidates``; without
+    one, it reads the current store.
     """
     middleware = _reachable_middleware()
     if middleware is None:
@@ -804,14 +843,12 @@ def positions_holding_hidden_content(
       comparison is against a list the caller never sent.
     - **Containment, not equality.**  A reference is spliced into the text around it, so
       ``"[var_a1b2].bicep"`` arrives as the content with a suffix and equals no stored payload.
-    - **A task outliving the call falls back, and reaches the store only through
-      ``candidates``.**  The record is closed with the call, and the framework's own accessor
-      goes with it.  Take that snapshot from :func:`hidden_content_candidates` before the first
-      await; a caller answering immediately needs none.
+    - **A task outliving the call falls back.**  The record is closed with the call.  An
+      inherited framework context can still reach the store, but only an explicit
+      ``candidates`` snapshot preserves its earlier contents if that store changes.
     - **An empty answer from the fallback is not "nothing was hidden".**  It is also what an
-      unreachable middleware gives, including for a synchronous body dispatched to another
-      thread.  The record has neither limit — a ``ContextVar`` is copied by
-      ``asyncio.to_thread``.
+      unreachable middleware gives, including a host that wired none.  Both the record and
+      the framework's accessor reach a synchronous body through ``asyncio.to_thread``.
 
     Take the whole argument list in one call: the answer costs one pass over the variable store,
     and the store's own reads are logged by the framework.
@@ -821,10 +858,7 @@ def positions_holding_hidden_content(
     record = _CALL_CONTEXT.get()
     if record is not None and not record.closed and argument is not None:
         if _the_framework_kept_no_record(record.context):
-            # Fail closed. Something hid content on this call and the record of what it
-            # rewrote is gone, so every entry is one this cannot vouch for. The fallback is
-            # no answer here: a synchronous body runs on a thread the framework's accessor
-            # does not reach, so it would report nothing and every value would be quoted.
+            # A missing record means the contract moved, so no checked position can be vouched for.
             _warn_once_about_a_missing_record(_DEFAULT_LOGGER)
             return frozenset(range(len(values)))
         before = _spellings_before_rewriting(record.context, argument)
@@ -837,11 +871,7 @@ def positions_holding_hidden_content(
                 if value != spelling
             )
         if _the_framework_kept_a_record(record.context):
-            # The record is here and this argument cannot be read out of it — a name that is no
-            # parameter of this call, a value that is no longer a list, a length that no longer
-            # matches. None of that says nothing was rewritten, so it must not answer as though
-            # it did, and the fallback would: a synchronous body reaches no store from its
-            # thread and would report an empty set, quoting whatever the framework had hidden.
+            # An unreadable argument or mismatched length cannot establish which positions changed.
             return frozenset(range(len(values)))
     payloads = hidden_content_candidates() if candidates is None else candidates
     return frozenset(
@@ -1069,12 +1099,16 @@ def sandbox_tool_declarations(
     there is no claim in it to refuse.
 
     **What that default costs is the model's sight of the result, not the host's sinks.**
-    FIDES hides an untrusted result by default — the item is replaced by a variable reference
-    the model can pass to another tool without reading — and hidden content does not taint
-    the conversation's integrity, so later tools stay ungated.  Where a host has turned
-    hiding off the result is visible instead, and the conversation does go untrusted.  Two
-    limits on that trade: hiding stops once anything else has tainted the conversation, and
-    it never applies to confidentiality, which a hidden item still contributes.
+    FIDES hides an untrusted result by default — the item is replaced by a variable reference —
+    and hidden content does not taint the conversation's integrity, so later tools stay
+    ungated.  Where a host has turned hiding off the result is visible instead, and the
+    conversation does go untrusted.  Three limits on that trade: hiding stops once anything
+    else has tainted the conversation; it never applies to confidentiality, which a hidden item
+    still contributes; and *passing* the reference on is a separate question from the
+    conversation label, gated wherever a host also wires the policy middleware and the
+    destination has not opted in.  What the gate costs the call is that middleware's
+    configuration: refused under its default, served once a user approves
+    where it asks for approval, served with a warning where it blocks on nothing.
     ``docs/sandbox/information-flow.md`` carries the measurement and the full conditions.
 
     ``outbound_max_confidentiality`` is **opt-in, and off by default**, and the asymmetry is
@@ -1194,8 +1228,10 @@ def sandbox_tool_declarations(
 
 #: Where :meth:`SandboxToolSession.read_file` records what the host knows about a file's bytes.
 #:
-#: This records source integrity alone. The framework's ``security_label`` replaces both
-#: axes, defaulting confidentiality to public, so only the result wrapper may mint one.
+#: This records source integrity alone.  The framework's ``security_label`` names both axes and
+#: an integrity-only one is discarded whole, so the item falls back to the invocation label
+#: and loses the integrity claim too. Only the result wrapper may mint one, and only where a
+#: kind declared both.
 SOURCE_INTEGRITY_PROPERTY = "maf_sandbox_source_integrity"
 
 
@@ -2925,9 +2961,7 @@ def sandbox_outputs_read_tools(
     """
     from agent_framework import tool
 
-    # Both bodies render their argument before touching the store, not in the branch that
-    # needs it: the framework's accessor is not scoped to the call, so a verdict asked for
-    # after the store has suspended can come back empty and quote content the middleware hid.
+    # Preserve the hidden-content verdict before a host store callback can clear its evidence.
     async def outputs_ls(folder: str = "") -> list[dict[str, str]] | str:
         named = _echoed(folder, "folder")
         try:

@@ -196,4 +196,10 @@ jobs:
       - name: Open or notify the Docker live tracking issue
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/report_docker_live_failure.py
+        run: >-
+          python3 scripts/report_workflow_failure.py
+          --marker '<!-- docker-live-failure-tracker -->'
+          --title 'Docker live checks failed'
+          --reproduce 'Re-run the linked attempt, or dispatch docker-live.yml against the failing commit. Inspect the first failed step for setup, registry, daemon, or test failures.'
+          --expected 'All Docker live checks pass.'
+          --packages maf-sandbox maf-sandbox-docker maf-sandbox-codeact maf-sandbox-bicep maf-sandbox-deepagents

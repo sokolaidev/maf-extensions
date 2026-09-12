@@ -1238,7 +1238,7 @@ class TestTheFreezeAgainstARealEngine:
     _FLIPPING = (
         "sh -c 'i=0; while :; do rm -rf parent; mkdir parent; rm -rf parent; "
         'ln -s /victim parent; i=$((i+1)); printf %s "$i" > /flips.tmp; mv /flips.tmp /flips; '
-        "done' >/dev/null 2>&1 & echo flipping"
+        "done' >/dev/null 2>&1 & while [ ! -f /flips ]; do sleep 0.05; done; echo flipping"
     )
 
     async def _flipping_guest(self, backend):
@@ -1266,6 +1266,15 @@ class TestTheFreezeAgainstARealEngine:
 
     def teardown_method(self):
         asyncio.run(self.backend.dispose_scope(self.scope, "thread-1"))
+
+    def test_startup_waits_for_the_first_published_count(self, monkeypatch):
+        monkeypatch.setattr(self, "_FLIPPING", self._FLIPPING.replace("i=0;", "sleep 2; i=0;", 1))
+
+        async def scenario():
+            sandbox = await self._flipping_guest(self.backend)
+            assert await self._flips(sandbox) > 0
+
+        asyncio.run(scenario())
 
     def test_a_flipping_parent_never_redirects_a_write(self):
         async def scenario() -> None:

@@ -25,8 +25,8 @@ on it.  ``docker cp`` has no no-follow form and the daemon extracts through a sy
 as root, so a guest that could still run between those two calls could redirect one.  The
 freezer is the engine's, unbypassable from inside the container, and the file plane keeps
 working while it is held.  ``exec`` is the one thing a frozen container refuses, which is why
-the removals are not frozen and why an ``exec`` refused inside someone else's freeze is
-re-issued.
+the removals are not frozen. An ``exec`` refusal is re-issued only if this process held its
+container frozen throughout the attempt; a refusal that outlives the freeze is returned.
 
 The ``os_families`` field of its :class:`~maf_sandbox.BackendDeclarations` is read from the
 daemon, by :meth:`DockerSandboxBackend.create` and only there: a daemon running ``linux``
@@ -227,16 +227,15 @@ class _Freezes:
 
     Two records, because they have different bounds.  A **claim** is a thaw this process owes:
     it starts before the pause is issued, since a call cancelled inside that invocation may
-    have frozen the guest anyway, and it is counted, because a second claimant whose pause the
-    daemon refuses must not release the first's.  A **confirmation** is the daemon having said
+    have frozen the guest anyway. It is exclusive to one owner and counted so a nested release
+    by that owner cannot erase an outer thaw debt. A **confirmation** is the daemon having said
     the container is paused, which is the only thing that proves nothing inside it could have
     run: it starts when the pause returns and ends before the unpause is issued, because the
     guest is running on both sides of those two lines.
 
     Process-wide for the reason :data:`_FREEZE_LOCKS` is, and loop-independent where that is
-    not, which is what makes it the record every cross-loop decision reads.  A loop may be on
-    its own thread, so the mutations below take a lock: the counter is a read-modify-write, and
-    two claimants that both stored 1 would leave the first's freeze released by the second.
+    not, which is what makes it the claim every cross-loop operation takes. A loop may be on
+    its own thread, so each claim and record access holds a lock.
     """
 
     #: Guards every read and write below.  Held only across dictionary and set operations, so a
@@ -917,7 +916,8 @@ class _GuestFreeze(Protocol):
     process: two file calls that each took their own would have the first's thaw reopen the
     second's window.  So it is keyed on the container name in :data:`_FREEZE_LOCKS` rather
     than on the sandbox object or the backend — two acquires of one key hand out two sandbox
-    objects naming one container, and two backends built from one config name it too.
+    objects naming one container, and two backends built from one config name it too. The lock
+    serialises callers on one loop; :class:`_Freezes` refuses a claim from another loop.
     """
 
     def __call__(self) -> contextlib.AbstractAsyncContextManager[None]: ...
@@ -1105,9 +1105,9 @@ class _DockerSandbox:
         acquire pays a fresh create.  A **cancelled** call still reaps the host-side process but
         keeps the sandbox: the in-container command runs on until the sandbox is disposed.
 
-        A file call on the same container freezes the guest for its duration, so a command
-        already running stops and resumes, and one issued inside that window is re-issued when
-        the freeze lifts rather than failing.
+        A file call freezes the guest, so a command already running stops and resumes. A
+        refused attempt is retried only if this process held the container frozen throughout
+        it; a refusal that outlives the freeze is returned unchanged.
         """
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
@@ -1885,10 +1885,8 @@ class DockerSandboxBackend:
                             "is holding it frozen"
                         )
                     try:
-                        # A thaw that does not land refuses the acquire, because this is the
-                        # one path that hands out a container nothing is about to freeze: a
-                        # workload asking for no file surface would get one whose every exec
-                        # the daemon refuses.
+                        # Preparation may need no freeze, so a paused guest must be recovered
+                        # here before any workload can reuse it.
                         if not await self._thaw(name):
                             raise RuntimeError(
                                 f"docker could not thaw {name}, which a host left frozen; "
@@ -2909,7 +2907,10 @@ class DockerSandboxBackend:
                 ):
                     raise
                 await asyncio.sleep(_FROZEN_RETRY_DELAY_S)
-                timeout = deadline - time.monotonic() if timeout is not None else None
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise
+                timeout = remaining if timeout is not None else None
                 continue
             never_ran = _reads_as_a_frozen_guest(result) and _Freezes.held_throughout(
                 freeze_key, mark
@@ -2918,7 +2919,10 @@ class DockerSandboxBackend:
             if not never_ran or left <= _FROZEN_RETRY_DELAY_S:
                 return result
             await asyncio.sleep(_FROZEN_RETRY_DELAY_S)
-            timeout = deadline - time.monotonic() if timeout is not None else None
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return result
+            timeout = left if timeout is not None else None
 
     async def _invoke(
         self,
@@ -3209,7 +3213,7 @@ class DockerSandboxBackend:
             )
         except Exception as unreachable:  # noqa: BLE001 — a thaw must never mask its block
             logger.warning(
-                "docker: could not thaw %s (%s); the next acquire lifts it",
+                "docker: could not thaw %s (%s); the next acquire attempts recovery",
                 name,
                 error_detail(unreachable),
             )
@@ -3220,7 +3224,7 @@ class DockerSandboxBackend:
             and _NOT_FROZEN not in lifted.stderr.lower()
         ):
             logger.warning(
-                "docker: %s is still frozen (%s); the next acquire lifts it",
+                "docker: %s is still frozen (%s); the next acquire attempts recovery",
                 name,
                 lifted.stderr.strip() or f"exit {lifted.returncode}",
             )

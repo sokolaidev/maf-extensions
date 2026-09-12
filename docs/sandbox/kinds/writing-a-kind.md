@@ -135,7 +135,7 @@ Resolve the model's file argument against `session.list_files(store)` and pass t
 
 The returned `Content` carries source-integrity metadata for the bytes read. It is not a complete FIDES result label and must not be copied into a `security_label`. Core records successful reads itself, including an empty file; the kind needs no accumulator. A refused or absent read contributes nothing.
 
-The example never echoes a file name, so a name expanded from hidden content cannot leak through its errors. If the tool needs to display names, ask `positions_holding_hidden_content` before the first await, then pass the position and verdict to `echoed_name`. A file's integrity label says nothing about whether its name may be shown; see [rewritten arguments](../information-flow.md#the-call-arguments-have-already-been-rewritten).
+The example never echoes a file name, so a name expanded from hidden content cannot leak through its errors. If the tool needs to display names, ask `positions_holding_hidden_content` before calling host code that can change the hidden-content store, then pass the position and verdict to `echoed_name`. A file's integrity label says nothing about whether its name may be shown; see [rewritten arguments](../information-flow.md#the-call-arguments-have-already-been-rewritten).
 
 Use a fixed guest basename and a sequence of command arguments. The model's file name never becomes a guest path or a shell fragment. The byte check bounds transfer into the guest; `AgentFileStore.read` has already loaded the text, so a host needing a bound on that read must enforce it in its store. Production kinds should also log sanitized failure details through `error_detail`, while returning fixed messages to the model.
 

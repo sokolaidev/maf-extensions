@@ -1039,9 +1039,8 @@ async def _execute(
     withhold: bool,
 ) -> str:
     """One ``execute_code`` call: share, run, and collect."""
-    # Taken before anything here awaits, and carried to every name check in this call: the
-    # framework's accessor is not scoped to the call, so a lookup made after the run — the
-    # manifest's, above all — may find nothing left to answer with.
+    # Keep one view of hidden content through the run, even if the host clears the store
+    # before the manifest is checked.
     rewritten = hidden_content_candidates()
     # Scope and thread come from the host's request context, never from model input.
     key = session.key()
@@ -1288,9 +1287,7 @@ async def _resolve_listed_files(
     """
     if not files:
         return [], frozenset()
-    # Asked before the first await, not beside the loop that uses it: the framework's accessor
-    # is not scoped to the call, so every suspension before asking is a chance for the answer
-    # to come back empty. See `positions_holding_hidden_content`.
+    # Retain the verdict even if the host's listing callback changes the variable store.
     rewritten = positions_holding_hidden_content(
         files, argument=_FILES_ARGUMENT, candidates=candidates
     )
