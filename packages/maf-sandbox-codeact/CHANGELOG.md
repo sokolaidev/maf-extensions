@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.17.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.16.0...maf-sandbox-codeact-v0.17.0) (2026-09-12)
+
+
+### Features
+
+* **sandbox:** a kind can ask for exclusive admission, and codeact asks for it ([#1134](https://github.com/sokolaidev/maf-extensions/issues/1134)) ([851008d](https://github.com/sokolaidev/maf-extensions/commit/851008d722133a59c8c5869716b2f59cb3e2ffad))
+
+
+### Documentation
+
+* **codeact:** forwarding a hidden reference is refused, not a free pass ([#1161](https://github.com/sokolaidev/maf-extensions/issues/1161)) ([bc101c7](https://github.com/sokolaidev/maf-extensions/commit/bc101c77e19771efb8dd7a6efce59de24b83160d))
+* **codeact:** method names are uppercase tokens, and a lowercase one is refused ([#1156](https://github.com/sokolaidev/maf-extensions/issues/1156)) ([521ad54](https://github.com/sokolaidev/maf-extensions/commit/521ad5406c2cc2260a005a49745af9b05e100106))
+
 ## [0.16.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.15.0...maf-sandbox-codeact-v0.16.0) (2026-09-11)
 
 
