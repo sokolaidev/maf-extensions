@@ -1163,6 +1163,7 @@ version = "0.23.1"
 source = { editable = "packages/maf-sandbox-acas" }
 dependencies = [
     { name = "azure-containerapps-sandbox" },
+    { name = "azure-core" },
     { name = "azure-identity" },
     { name = "maf-sandbox" },
 ]
@@ -1170,6 +1171,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "azure-containerapps-sandbox", specifier = ">=0.1.0b4,<0.1.0b5" },
+    { name = "azure-core", specifier = ">=1.41.0,<1.42" },
     { name = "azure-identity", specifier = ">=1.25.1,<2" },
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
 ]

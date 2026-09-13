@@ -81,6 +81,11 @@ from ._images import (
     resolve_prebuilt_image_name,
 )
 from ._probes import probe_commands
+from ._retry import (
+    install_retry_observer,
+    retry_after_interrupted,
+    retry_observation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -635,12 +640,13 @@ class _AcasSandbox:
         685, sequentially.  ``read_timeout_seconds`` bounds the whole transfer, so a large file
         on a slow link is refused where the plane would have taken it.
 
-        **Two failures, and only one of them costs the sandbox.**  A deadline that expires
-        *between* commands takes the staged sibling back and raises
-        ``SandboxShellTransferFailed`` with the sandbox whole, because nothing was running.  A
-        command that fails *in flight* — its own timeout, a capture failure, an output overrun
-        — invalidates and disposes the sandbox the way any :meth:`exec` failure does.  A
-        refused plane write leaves it whole either way.
+        A deadline that expires *between* commands takes the staged sibling back and raises
+        ``SandboxShellTransferFailed`` with the sandbox whole, because nothing was running. A
+        deadline reached while the host sleeps on an HTTP 429 ``Retry-After`` also leaves it
+        whole: the throttled attempt answered and no retry started. A command that fails *in
+        flight* — its own timeout, a capture failure, an output overrun — invalidates and
+        disposes the sandbox the way any :meth:`exec` failure does. A refused plane write leaves
+        it whole either way.
         """
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         guest = await confine_resolve_guest_write_path(
@@ -694,7 +700,9 @@ class _AcasSandbox:
         """Return exact bounded streams, with one deadline for capture, retrieval and cleanup.
 
         Timeout, cancellation or capture failure invalidates and disposes this entire sandbox,
-        including concurrent commands. Deletion has its own bounded cleanup allowance.
+        including concurrent commands. A deadline reached during an HTTP 429 ``Retry-After``
+        sleep is the narrow exception because no retry request is in flight. Deletion has its
+        own bounded cleanup allowance.
         """
         return await self._capture_exec(
             command, working_directory=working_directory, timeout=timeout
@@ -727,20 +735,22 @@ class _AcasSandbox:
                 script, working_directory=working_directory, timeout=timeout
             )
 
-        try:
-            async with asyncio.timeout(timeout):
-                result = await capture(
-                    command, run, self._exec_output_limit, combined_limit=max_output_bytes
-                )
-                with self._held.invalidation_guard:
-                    if self._held.unusable:
-                        raise SandboxOutputError(
-                            "ACAS sandbox was invalidated by a concurrent exec failure"
-                        )
-                    return result
-        except BaseException as failure:
-            await self._invalidate_after_exec(failure)
-            raise
+        with retry_observation():
+            try:
+                async with asyncio.timeout(timeout):
+                    result = await capture(
+                        command, run, self._exec_output_limit, combined_limit=max_output_bytes
+                    )
+                    with self._held.invalidation_guard:
+                        if self._held.unusable:
+                            raise SandboxOutputError(
+                                "ACAS sandbox was invalidated by a concurrent exec failure"
+                            )
+                        return result
+            except BaseException as failure:
+                if not (isinstance(failure, TimeoutError) and retry_after_interrupted()):
+                    await self._invalidate_after_exec(failure)
+                raise
 
     async def _invalidate_after_exec(self, failure: BaseException) -> None:
         with self._held.invalidation_guard:
@@ -1305,6 +1315,7 @@ class AcasSandboxBackend:
             resource_group=cfg.resource_group,
             sandbox_group=cfg.sandbox_group,
         )
+        install_retry_observer(client)
         self._clients[loop] = (client, credential)
         return client
 
