@@ -36,23 +36,26 @@ import sample_blocks
 PUBLISHED = "published"
 BRANCH = "branch"
 
-_ROOT = Path(__file__).resolve().parent.parent
-_PACKAGES = _ROOT / "packages"
 
-
-def repository_packages() -> frozenset[str]:
-    """Every distribution this repository builds, by directory name."""
+def repository_packages(root: Path) -> frozenset[str]:
+    """Every distribution ``root`` builds, by directory name."""
     return frozenset(
-        path.name for path in _PACKAGES.glob("*") if (path / "pyproject.toml").is_file()
+        path.name for path in (root / "packages").glob("*") if (path / "pyproject.toml").is_file()
     )
 
 
 def declared_packages(agent: Path) -> list[str]:
-    """The repository's own distributions the sample's block names, in the block's order."""
+    """The repository's own distributions the sample's block names, in the block's order.
+
+    The packages are looked for beside the *sample*, never beside this file. On a tagged run the
+    workflow reads this script out of `.harness`, a sparse checkout of `scripts/` alone — so a
+    `packages/` next to the script is a directory that does not exist, and every sample would
+    quietly inject nothing.
+    """
     block = sample_blocks.declared(agent)
     if block is None:
         return []
-    ours = repository_packages()
+    ours = repository_packages(agent.parent.parent.parent)
     named = (sample_blocks.distribution(entry) for entry in block.get("dependencies", []))
     return [name for name in named if name in ours]
 

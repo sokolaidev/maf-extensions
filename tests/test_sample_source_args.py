@@ -37,6 +37,14 @@ def run(*arguments: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def write_tree(root: Path, name: str, dependencies: list[str], packages: list[str]) -> Path:
+    """A checkout of one sample and ``packages``, so a refusal can only be about the block."""
+    for package in packages:
+        (root / "packages" / package).mkdir(parents=True, exist_ok=True)
+        (root / "packages" / package / "pyproject.toml").write_text("", encoding="utf-8")
+    return write_sample(root / "samples" / name, dependencies)
+
+
 def write_sample(directory: Path, dependencies: list[str]) -> Path:
     """A sample whose PEP 723 block names ``dependencies`` and nothing else."""
     directory.mkdir(parents=True, exist_ok=True)
@@ -65,7 +73,7 @@ class TestPublished:
 
     def test_a_sample_naming_no_package_is_still_fine(self, tmp_path: Path):
         """Refusing here would be refusing the ordinary case: published injects nothing."""
-        sample = write_sample(tmp_path / "90_nothing", ["httpx"])
+        sample = write_tree(tmp_path, "90_nothing", ["httpx"], ["maf-sandbox"])
         assert sample_source_args.arguments(sample / "agent.py", "published") == []
 
 
@@ -104,10 +112,24 @@ class TestBranch:
 
     def test_a_sample_naming_no_package_is_refused(self, tmp_path: Path):
         """Printing nothing here would run the published wheels under the branch job's name."""
-        sample = write_sample(tmp_path / "91_nothing", ["httpx"])
+        sample = write_tree(tmp_path, "91_nothing", ["httpx"], ["maf-sandbox"])
         result = run(str(sample), "--source", "branch")
         assert result.returncode == 1
         assert "nothing to run from the branch" in result.stderr
+
+    def test_the_packages_are_looked_for_beside_the_sample(self, tmp_path: Path):
+        """On a tagged run this script is read from `.harness`, a sparse checkout of `scripts/`.
+
+        Anchoring the lookup on this file would find no `packages/` there and inject nothing —
+        silently, which is the one outcome `branch` mode must never produce.
+        """
+        sample = write_tree(tmp_path, "92_elsewhere", ["maf-sandbox-acas"], ["maf-sandbox-acas"])
+        assert sample_source_args.declared_packages(sample / "agent.py") == ["maf-sandbox-acas"]
+
+    def test_a_package_the_tree_does_not_build_is_not_injected(self, tmp_path: Path):
+        """`--with ./packages/<name>` would be a path uv cannot build."""
+        sample = write_tree(tmp_path, "93_absent", ["maf-sandbox-acas"], ["maf-sandbox"])
+        assert sample_source_args.declared_packages(sample / "agent.py") == []
 
     def test_the_flags_come_in_pairs(self):
         words = sample_source_args.arguments(
