@@ -323,7 +323,7 @@ _LIMITS = SandboxLimits(files_in=_FILES_LIMITS, files_out=_FILES_LIMITS)
 # which principal its writes run as, per sandbox (#1131). See `_AcasSandbox.write_file`.
 # FILES_OUT and FILES_LIST retain native host-authority reads with a check-then-act residual:
 # read can follow a replaced final file or parent, stat a parent, and list either. The removal
-# probe is not a read-authority bound. Atomic confinement needs the service primitive in #1201.
+# probe is not a read-authority bound. Atomic confinement needs microsoft/azure-container-apps#1831.
 _DECLARATIONS = BackendDeclarations(
     capabilities=frozenset(
         {

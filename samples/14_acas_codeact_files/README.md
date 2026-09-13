@@ -34,7 +34,7 @@ Everything else is the same file. Diff the two and what changes is the three cod
 
 **A cap is a refusal, not a truncation.** This backend declares 32 MiB per file and 128 MiB per transfer, and it checks the size again against what arrived, because the SDK buffers the whole response rather than exposing an incremental hook. A file the service reports no size for is refused rather than read. Those are the backend's ceilings, and they are not what a run of this sample hits first — the workload's own are tighter, and the section at the end says which.
 
-**One residual stays open, and is documented rather than hidden.** A guest that swaps the stat-ed file for a symlink between the two calls wins: the service follows it, and this API has no no-follow read. An atomic no-follow read or a frozen guest filesystem would close it; nothing available here does. On Docker the equivalent question has a different answer, which is the sort of thing only running the same workload on both surfaces makes visible.
+**The checks leave a confinement residual.** A guest can replace a checked parent or the final file with a symlink before the native read, redirecting it outside the working directory, including to bytes the guest cannot read. Parent swaps can also redirect stat, and parent or directory swaps can redirect listing. The [backend's per-method contract](../../packages/maf-sandbox-acas/README.md#native-reads-retain-a-confinement-residual) describes the retained exposure and the upstream request for atomic confinement.
 
 ## What to watch
 
