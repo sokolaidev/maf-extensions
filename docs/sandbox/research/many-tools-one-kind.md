@@ -16,7 +16,7 @@ It is not, and the question is what the second tool costs. A Markdown-export wor
 
 The diagram sample already keeps the two apart as distinct module constants — `DIAGRAM_KIND` for the spec and `RENDER_DIAGRAM_TOOL_NAME` for the tool — so the separation is in the code as well as in the signature. What is missing is a user: every call site of `sandboxed_tool` outside the test suite passes one name and returns its list unconcatenated.
 
-So the mechanism is documented, supported, and unexercised. The interesting part is not whether it works but what sharing a `kind` between two tools actually shares.
+The factory documents how to expose multiple names. Sharing a `kind` also raises compatibility questions that the unused concatenation pattern alone does not answer.
 
 ## `kind` is identity, and a tool name is not
 
@@ -24,46 +24,50 @@ So the mechanism is documented, supported, and unexercised. The interesting part
 
 > `kind` names the workload (`"bicep"` today), and it is **part of the sandbox's identity, not a display label**: a backend must never serve two kinds from one sandbox, because the first spec to arrive would decide the image and the egress policy for both
 
-That sentence is written against two *kinds*, but the mechanism it describes is what two *tools sharing one kind* opt into deliberately. The router remembers instances per key, kind and backend in `_remember_instance`; `ExclusiveSlots` takes an admission slot per key and kind; `dispose` narrows by kind; and the backend's `acquire` is a get-or-create over the same pair. At the default `IsolationScope.CONVERSATION` the instance outlives the call, so two tools sharing a kind share one container for the whole thread — which is the point, and also the hazard.
+That sentence is written against two *kinds*. Two tools of one kind can instead address the same instance when their effective key, selected backend and backend reuse partition agree. The router remembers instances per key, kind and backend in `_remember_instance`; `ExclusiveSlots` takes admission holds per key and kind; and `dispose_kind` can sweep the kind across backends. A kind can therefore have several instances, and its name alone does not promise sharing.
 
-Admission is worth naming separately, because it is the part that could have made the sharing useless and does not. `enter_call` never asks for an exclusive hold; the exclusive flag is spent only on the get-or-create gate inside `_acquire`. Two sibling tools called in the same assistant message are therefore admitted concurrently against the one sandbox, each writing under its own `guest_call_path`, and neither waits on the other.
+At the default effective `IsolationScope.CONVERSATION`, calls use a key without a call id. Lifetime is a separate decision: the router defaults to `Cleanup.DISPOSE`, which removes an acquired instance after its active holders drain, so a later call normally creates another. Warm reuse across successive calls requires an explicit host cleanup floor permitting `RECLAIM` or `RESET`, a compatible spec floor and backend support, and successful cleanup. Effective `IsolationScope.CALL` gives each call a unique key and always disposes its instance.
+
+Admission is separate again. `enter_call` passes `exclusive=exclusive or spec.exclusive_admission` to `ExclusiveSlots.take`; codeact sets `exclusive_admission=True`, so its sibling calls serialize. Ordinary sibling bodies may overlap while the entry is serving, with distinct paths when they use `guest_call_path`, but arrivals wait during draining or cleanup and behind exclusive holders. `_acquire` separately serializes get-or-create and adoption. Sharing permits overlap; it does not guarantee that neither call waits.
 
 ## Where the line falls
 
-The split is decided by one question: does the field describe the *instance* or the *call*?
+The split needs more than an instance-versus-call distinction. Routing constraints, admission and cleanup policy affect whether an instance can be shared without being properties baked into it.
 
-| Baked into the instance — siblings must agree | Resolved per tool or per call — siblings may differ |
-|---|---|
-| `image`, `image_id` | `declared_outputs`, and their media types |
-| `work_dir` | `outputs_named_at_call_time` and the body-built `DeclaredOutput` |
-| `egress`, `egress_allow` | `files_in` / `files_out` limits |
-| `isolation_scope` | `output_sink` |
-| `min_isolation`, `requires`, `requires_os_family` | `source_integrity`, `standing_guidance`, `approval_mode` |
-| | the body, and the docstring the model reads as the description |
+| Role | Fields or arguments | Consequence for siblings |
+|---|---|---|
+| Instance configuration | `image`, `image_id`, `work_dir`, `egress`, `egress_allow` | Deliberate reuse needs agreement on the effective image, storage base and egress policy; enforcement is backend-specific, as below |
+| Routing and refusal constraints | `min_isolation`, `requires`, `requires_os_family`, `files_in`, `files_out` | Each spec must pass the selected backend's checks; differing values can still select the same backend. Transfer limits also cap each call |
+| Key scope | `isolation_scope` | The stricter host/spec scope decides whether the key names the conversation or one call |
+| Cleanup policy | `min_cleanup` | The host/spec floors and backend capabilities decide whether a conversation-scoped instance can survive cleanup |
+| Admission policy | `exclusive_admission` | An exclusive call excludes sibling calls sharing its key and kind |
+| Confinement description | `confined_to_guest_call_path` | Describes the kind's intended write boundary; it neither proves confinement nor authorizes reuse |
+| Output declarations | `declared_outputs`, their media types, `outputs_named_at_call_time`, body-built `DeclaredOutput` | Each tool must satisfy its output capability and sink requirements; each call's collection is bounded by its spec |
+| Tool wiring | `output_sink`, `source_integrity`, `standing_guidance`, `approval_mode`, the body and its docstring | Supplied separately for each tool, with independent attach and result validation |
 
-The right-hand column is resolved by `sandboxed_tool` at attach or by the body at call time, and nothing about the running sandbox depends on it. The left-hand column is either handed to `backend.acquire`, where the first arrival wins, or read by the route.
+`backend.acquire(key, spec)` receives the **full** `SandboxSpec`, including output declarations, transfer limits and the confinement flag. A field being read per call does not establish that differing sibling specs are compatible. The router checks routing constraints before acquire; `sandboxed_tool` also checks each tool's wiring before exposing it.
 
-The route deserves its own line. `BackendSelection.PER_SPEC` is documented as "Per *spec*, not per conversation: two kinds under one key may route apart by design" — so two sibling tools of one kind whose `requires` or `min_isolation` differ can select *different backends*, and the router will then hold two instance sets under one kind. Nothing refuses it. It is simply not what anyone means by "these two tools share a sandbox".
+The route deserves its own line. `Selection.PER_SPEC` chooses a backend per spec. Two sibling specs whose `requires`, `min_isolation` or other routing constraints differ can still share an instance when both select the same backend and meet its reuse conditions. They can also select *different backends*, and the router then holds separate instance sets under the same key and kind. A shared kind does not refuse that split.
 
 ## What the three backends do when siblings disagree
 
-This is where the prose rule and the code diverge, and it is the finding worth keeping. The protocol says the first spec decides image and egress; the backends do not agree on what happens next.
+This is where the prose rule and the code diverge. The following compares acquire paths when the same key and kind reach the same backend and an existing instance remains available for reuse. It is a source inspection of the three backends, not a live multi-tool experiment.
 
 | Divergence between sibling specs | Docker | wslc | ACAS |
 |---|---|---|---|
-| `egress_allow` | partitions — `_container_name` folds an `_egress_id` into the container name, so each allowlist gets its own container | partitions, by the same naming rule | **refuses** — `_get_or_create` raises `AcasEgressPolicyConflict` when the held sandbox's egress differs |
-| `work_dir` | verified against the allocated base | verified | **refuses** — a held sandbox cannot change its storage base |
-| `image` | **silently reuses the first** — the image is not folded into the name and is not compared on reuse | silently reuses the first | silently reuses the first — the registry lookup checks egress and work dir, never the image |
+| Effective `egress` / `egress_allow` policy | partitions — `_container_name` folds an `_egress_id` into the container name | partitions, by the same naming rule | **refuses** — `_get_or_create` raises `AcasEgressPolicyConflict` when the usable held sandbox's egress differs |
+| Effective `work_dir` | **refuses** a different or unrecorded storage base in `_verify_storage_base` | refuses, after the same label check | **refuses** — a held sandbox cannot change its storage base |
+| Effective `image` / `image_id` | **no image comparison on reuse** — the image is not folded into the name | no image comparison on reuse | no image comparison on reuse — the held record tracks egress and work dir |
 
-Three postures for one rule: two backends partition on egress, one refuses, and *none* of them notices an image change. A pandoc kind whose PDF path wanted a TeX layer and whose docx path did not would attach cleanly, pass every capability check, and then run the second tool inside the first tool's container — on every backend, with no diagnostic anywhere.
+Two backends partition on egress, one refuses, and all three refuse a changed storage base on reuse. None compares the requested image with the held instance's image. When sibling pandoc specs differ only in image, both pass routing and the held guest passes their acquire-time checks, the second can be served inside the first image. That applies during overlapping calls or permitted warm reuse; a completed disposal instead makes the next acquire create from the second spec. The missing check is an image-consistency diagnostic, not a promise that every such acquire succeeds.
 
 That asymmetry is defensible for egress, which is a containment claim the backends were built to enforce, and much less defensible for the image, which is where the whole failure mode of "the first spec decides" actually bites. The protocol asserts the rule in a docstring; the enforcement is partial and backend-specific.
 
 ## Two candidate workloads
 
-**markitdown, inbound.** Converting PDF and Word *into* Markdown looks like a two-tool kind and is not one. `markitdown_pdf` and `markitdown_docx` would share the image, the argv, the output shape and the spec, and markitdown sniffs the input type itself — the split buys a longer tool list and nothing else. One `convert_to_markdown(file)` is the honest shape. The one thing that would force a second kind here is not the format at all: markitdown's URL and Document-Intelligence converters reach the network, and that is a different `egress` posture, which is baked into the instance.
+**markitdown, inbound.** Converting PDF and Word *into* Markdown looks like a two-tool kind and is not one. `markitdown_pdf` and `markitdown_docx` would share the image, the argv, the output shape and the spec, and markitdown sniffs the input type itself — the split buys a longer tool list and nothing else. One `convert_to_markdown(file)` is the honest shape. A reason to use a separate kind would be markitdown's URL and Document-Intelligence converters: they reach the network, giving them a different `egress` posture from closed-network file conversion.
 
-**pandoc, outbound.** Exporting Markdown to PDF and to Word is the genuine candidate, because everything in the left-hand column agrees — one image, one work dir, `Egress.CLOSED` because rendering is computation — and everything that differs sits in the right-hand column: the `DeclaredOutput` media type, the byte limits, the guidance and the description.
+**pandoc, outbound.** Exporting Markdown to PDF and to Word is the candidate for two tools of one kind: one image containing both renderers, one work dir and `Egress.CLOSED`. The `DeclaredOutput` media type, guidance and description can be supplied separately. Different byte limits would also need both specs to pass routing and their shared-instance behavior to be tested. Sharing would still depend on effective scope, backend choice and cleanup policy.
 
 ## The split is a description problem, not a protocol one
 
@@ -71,17 +75,17 @@ Even in the pandoc case the second tool is not *required*. The diagram sample se
 
 What two names buy is therefore not capability but *description*. The body's docstring is the model-facing tool description, passed through verbatim; a PDF export has engine and page-size caveats a docx export does not, and folding both into one description makes each one worse. Two names also give each format its own `standing_guidance`, its own `approval_mode`, and its own host-set confidentiality. Weigh that against a tool list that doubles for every format added — which is the argument for the enum, and it wins as soon as the only real difference is a flag.
 
-Stated as a rule: **same image and same egress, as many tool names as the model benefits from; different image or different egress, different kinds.**
+As a proposed sharing rule: **agree on the effective image, work dir and egress policy, then expose as many names as the model benefits from.** Different instance requirements are a reason to use different kinds. Agreement is necessary for deliberate sharing, but the tools must also use the same effective key and selected backend; retaining an instance across calls additionally needs compatible cleanup policy. Different routing requirements alone do not require different kinds.
 
 ## What the second tool costs
 
-- **The attach gate is all-or-nothing by construction.** Each `sandboxed_tool` call answers it identically, so an unconfigured host still gets `[]` from both — but a kind shipping several tools should pin that in a test, because "both attach or neither" is now a property rather than a tautology.
-- **Refusals name the workload, not the tool.** Every refusal the router raises quotes `spec.kind`, and the served kind is the fallback the observer files a call under when the framework named no tool. Two tools sharing a kind are indistinguishable in a refusal message and in that fallback.
-- **Disposal is per kind.** `dispose_kind` and the `kind=` selector take out every sibling at once. That is correct — they share the instance — but it means no tool can be reset independently of the others.
+- **Only the unconfigured-host gate is shared.** With the same absent or disabled router, each `sandboxed_tool` call returns `[]`. After that, each tool is validated independently: one sibling can attach while another raises for a missing `output_sink`, an invalid declaration or an unservable spec. A factory promising "both attach or neither" must enforce and test that property itself.
+- **Diagnostics may identify only the workload.** Router refusals commonly name `spec.kind`, and the served kind is the observer's fallback when the framework names no tool. Those surfaces do not distinguish siblings, although per-tool attach checks can name the tool.
+- **Disposal has no tool-name selector.** A `dispose_kind` sweep without `instance_id` reaches the kind's instances across backends for that key. Routine cleanup and an explicit `instance_id` can target one engine instance, preserving other instances of the same kind. Tools sharing that particular instance still cannot reset it independently.
 - **The kinds index assumes one.** Its `Tool` column has one entry per row, and a multi-tool kind needs that shape changed rather than a comma-separated cell.
 
 ## What is not settled
 
-- **Nothing refuses two sibling specs that disagree on the image.** The rule exists in the `SandboxSpec` docstring and in `_container_name`'s reasoning; no code checks it. `sandboxed_tool` cannot see its siblings, so the check has nowhere obvious to live — the router could remember the spec it last served for a key and kind and refuse a materially different one at acquire, which is where ACAS already refuses on egress, and would make the three backends agree by moving the check above them.
-- **Whether `files_out` limits and `confined_to_guest_call_path` may safely differ across siblings is untested.** Both are read per call and neither is handed to `acquire`, so the reasoning says yes; the reasoning said yes about the image too, until the backends were read.
-- **Whether the guidance should discourage the split at all.** Both worked examples above resolved to "one tool" or "two kinds", and only the pandoc case landed on "two tools, one kind". A pattern whose best example is that narrow may belong in [`../kinds/writing-a-kind.md`](../kinds/writing-a-kind.md) as a caution rather than as a recipe.
+- **Where image consistency should be enforced on reuse.** `sandboxed_tool` cannot see its siblings. A router-side record would need at least the effective key, kind and selected backend, and would also need to distinguish that backend's reuse partitions and retire bindings when instances are disposed or replaced. One last spec per key/kind would reject unrelated instances under `Selection.PER_SPEC` and could retain a stale constraint after disposal. Checking at each backend's reuse point is another candidate; this record does not choose between them.
+- **Whether differing transfer limits and confinement descriptions are compatible in a multi-tool kind is untested.** The full spec reaches acquire, and `files_out` participates in routing limits and per-call collection. `confined_to_guest_call_path` describes intent; `established_cleanup` currently derives available cleanup operations from backend capabilities regardless of that flag, with host/spec floors deciding sufficiency. Neither observation proves safe sharing between different bodies. A multi-tool compatibility test needs to exercise both specs, their chosen route and their cleanup interaction.
+- **Whether the guidance should discourage the split at all.** The inbound candidate favored one tool; the outbound candidate offers a choice between one tool and two names. A pattern whose best example is that narrow may belong in [`../kinds/writing-a-kind.md`](../kinds/writing-a-kind.md) as a caution rather than as a recipe.
