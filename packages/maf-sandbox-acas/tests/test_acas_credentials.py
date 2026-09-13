@@ -6,7 +6,7 @@ import asyncio
 import contextvars
 import inspect
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
@@ -763,3 +763,127 @@ def test_a_loop_with_no_owned_resources_does_not_need_to_survive_shutdown():
 
     asyncio.run(use())
     asyncio.run(clients.aclose())
+
+
+def test_retirement_completion_cannot_mutate_another_loops_shutdown_iteration(monkeypatch):
+    clients = pool(capacity=1, wait=5, close=5)
+    owner = asyncio.new_event_loop()
+    finish, emptied = Future(), Future()
+    removal_attempted = threading.Event()
+    errors = []
+
+    class Guard:
+        def __init__(self):
+            self.lock = threading.Lock()
+
+        def __enter__(self):
+            if self.lock.locked():
+                removal_attempted.set()
+            self.lock.acquire()
+
+        def __exit__(self, *args):
+            self.lock.release()
+
+    class Retirements(set):
+        armed = False
+
+        def __iter__(self):
+            iterator = super().__iter__()
+            if self.armed:
+                self.armed = False
+                first = next(iterator)
+                finish.set_result(None)
+                assert removal_attempted.wait(5)
+                yield first
+            yield from iterator
+
+        def discard(self, task):
+            super().discard(task)
+            removal_attempted.set()
+
+    async def hold_completion(coroutine):
+        await coroutine
+        emptied.set_result(None)
+        await asyncio.wrap_future(finish)
+
+    def task_factory(loop, coroutine, **kwargs):
+        if getattr(coroutine, "cr_code", None).co_name == "_retire":
+            coroutine = hold_completion(coroutine)
+        return asyncio.Task(coroutine, loop=loop, **kwargs)
+
+    monkeypatch.setattr(clients, "_guard", Guard())
+
+    async def prepare():
+        async with clients.lease(binding("first")) as client:
+            pass
+        state = clients._loops[owner]
+        state.retirements = Retirements()
+        owner.set_task_factory(task_factory)
+
+        async def replace():
+            async with clients.lease(binding("second")):
+                pass
+
+        replacing = asyncio.create_task(replace())
+        await asyncio.wrap_future(emptied)
+        replacing.cancel()
+        await asyncio.gather(replacing, return_exceptions=True)
+        state.retirements.armed = True
+        return client
+
+    def run_loop():
+        asyncio.set_event_loop(owner)
+        owner.set_exception_handler(lambda _loop, context: errors.append(context))
+        owner.run_forever()
+        owner.close()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        running = executor.submit(run_loop)
+        try:
+            client = asyncio.run_coroutine_threadsafe(prepare(), owner).result(5)
+            asyncio.run(clients.aclose())
+            assert client.closed == client.credential.closed == 1
+            assert finish.done() and removal_attempted.is_set()
+            assert not clients._loops and not errors
+        finally:
+            if not finish.done():
+                finish.set_result(None)
+            owner.call_soon_threadsafe(owner.stop)
+            running.result(5)
+
+
+def test_live_service_delete_control_borrows_its_sdk_client(monkeypatch):
+    from test_acas_backend import _GuestSandboxClient
+    from test_acas_e2e import service_link_delete
+
+    class ReachedService(Exception):
+        pass
+
+    async def resolve(request):
+        return binding()
+
+    service = Service()
+    subject, _, _ = backend(service, resolve)
+    loop = asyncio.new_event_loop()
+    try:
+        sandbox = loop.run_until_complete(
+            subject.acquire(
+                SandboxKey("scope", "thread", "agent"), _spec_requiring(Capability.EXEC)
+            )
+        )
+
+        async def write(*args, **kwargs):
+            assert sandbox._sc is not None
+            raise ReachedService
+
+        async def exec_control(*args, **kwargs):
+            return SimpleNamespace(exit_code=0)
+
+        monkeypatch.setattr(sandbox, "exec", exec_control)
+        monkeypatch.setattr(_GuestSandboxClient, "write_file", write)
+        live = SimpleNamespace(sandbox=sandbox, run=loop.run_until_complete)
+        with pytest.raises(ReachedService):
+            getattr(service_link_delete, "__wrapped__")(live)
+    finally:
+        loop.run_until_complete(subject.aclose())
+        loop.close()

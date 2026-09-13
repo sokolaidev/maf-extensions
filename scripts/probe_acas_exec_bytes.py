@@ -181,27 +181,28 @@ async def measure(output: Path) -> dict[str, Any]:
                 requires=frozenset({Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT}),
             ),
         )
-        sc = sandbox._sc
         work = "/tmp/exec-bytes-work"
-        # Inspect the actual HTTP payload before the SDK builds its typed ExecResult.
-        request = HttpRequest(
-            "POST",
-            f"{sc._endpoint}{sc._sbx_path}/executeShellCommand",
-            json={
-                "command": shlex.join(_program(b"ok\xff\xfe", b"err\xff\xfe")),
-                "workingDirectory": work,
-            },
-            params={"api-version": sc._api_version},
-        )
-        response = await sc._send_request(request)
-        response.raise_for_status()
-        raw = response.json()
-        report["service_baseline"] = {
-            "stdout_codepoints": [hex(ord(c)) for c in raw["stdout"]],
-            "stderr_codepoints": [hex(ord(c)) for c in raw["stderr"]],
-            "exit_code": raw["exitCode"],
-            "http_payload_has_replacement_utf8": b"\xef\xbf\xbd" in response.content,
-        }
+        async with sandbox.client_lease():
+            sc = sandbox._sc
+            # Inspect the actual HTTP payload before the SDK builds its typed ExecResult.
+            request = HttpRequest(
+                "POST",
+                f"{sc._endpoint}{sc._sbx_path}/executeShellCommand",
+                json={
+                    "command": shlex.join(_program(b"ok\xff\xfe", b"err\xff\xfe")),
+                    "workingDirectory": work,
+                },
+                params={"api-version": sc._api_version},
+            )
+            response = await sc._send_request(request)
+            response.raise_for_status()
+            raw = response.json()
+            report["service_baseline"] = {
+                "stdout_codepoints": [hex(ord(c)) for c in raw["stdout"]],
+                "stderr_codepoints": [hex(ord(c)) for c in raw["stderr"]],
+                "exit_code": raw["exitCode"],
+                "http_payload_has_replacement_utf8": b"\xef\xbf\xbd" in response.content,
+            }
         save()
 
         async def run_case(

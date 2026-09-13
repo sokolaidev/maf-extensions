@@ -82,7 +82,7 @@ class _Entry:
 class _LoopClients:
     entries: dict[tuple[str, str], _Entry] = field(default_factory=lambda: {})
     changed: Future[None] = field(default_factory=lambda: Future[None]())
-    retirements: set[asyncio.Task[None]] = field(default_factory=lambda: set())
+    retirements: set[asyncio.Task[None]] = field(default_factory=set[asyncio.Task[None]])
     closing: asyncio.Task[None] | None = None
 
 
@@ -169,6 +169,10 @@ class ClientPool:
             with self._guard:
                 self._notify(state)
 
+    def _retired(self, state: _LoopClients, task: asyncio.Task[None]) -> None:
+        with self._guard:
+            state.retirements.discard(task)
+
     @asynccontextmanager
     async def lease(self, binding: AcasCredentialBinding) -> AsyncGenerator[Any, None]:
         loop = asyncio.get_running_loop()
@@ -206,8 +210,9 @@ class ClientPool:
                                 old.retiring = True
                                 retirement = loop.create_task(self._retire(state, old_key, old))
                                 state.retirements.add(retirement)
-                                retirement.add_done_callback(state.retirements.discard)
-                            changed = state.changed
+                                retirement.add_done_callback(
+                                    lambda task, s=state: self._retired(s, task)
+                                )
                     if entry is None:
                         await asyncio.shield(asyncio.wrap_future(changed))
                 assert entry.task is not None

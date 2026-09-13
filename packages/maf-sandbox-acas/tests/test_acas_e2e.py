@@ -431,7 +431,6 @@ def files_delete_results(live):
 def service_link_delete(live):
     """Measure service-side deletion independently of backend capabilities."""
     paths = ConformancePaths.under(_WORK)
-    sc = live.sandbox._sc  # noqa: SLF001 — reaching past the backend is the whole measurement
 
     async def sh(*argv: str) -> int:
         result = await live.sandbox.exec(list(argv), working_directory="/", timeout=_EXEC_TIMEOUT)
@@ -455,49 +454,59 @@ def service_link_delete(live):
         )
 
     async def scenario() -> dict[str, bool]:
-        measured: dict[str, bool] = {}
-        # Its own layout: this fixture must not depend on another module fixture having run,
-        # and `ln` needs the directory before `write_file` has had cause to create it.
-        assert await sh("mkdir", "-p", paths.work, paths.outside) == 0
+        async with live.sandbox.client_lease():
+            sc = live.sandbox._sc
+            measured: dict[str, bool] = {}
+            # Its own layout: this fixture must not depend on another module fixture having run,
+            # and `ln` needs the directory before `write_file` has had cause to create it.
+            assert await sh("mkdir", "-p", paths.work, paths.outside) == 0
 
-        # Both flag values: `recursive` may select a different server-side operation entirely,
-        # so a service that unlinks safely on one and resolves on the other would pass a
-        # measurement that only asked once.
-        for name, recursive in (("svc-link-file", False), ("svc-link-file-rec", True)):
-            target = f"{paths.outside}/{name}-target.txt"
-            await sc.write_file(target, b"outside the working directory\n")
-            await plant_link(f"{paths.work}/{name}", target)
-            await sc.delete_file(f"{paths.work}/{name}", recursive=recursive)
-            measured[f"{name}-link-gone"] = not await survives(f"{paths.work}/{name}")
-            measured[f"{name}-target-survives"] = await survives(target)
+            # Both flag values: `recursive` may select a different server-side operation entirely,
+            # so a service that unlinks safely on one and resolves on the other would pass a
+            # measurement that only asked once.
+            for name, recursive in (("svc-link-file", False), ("svc-link-file-rec", True)):
+                target = f"{paths.outside}/{name}-target.txt"
+                await sc.write_file(target, b"outside the working directory\n")
+                await plant_link(f"{paths.work}/{name}", target)
+                await sc.delete_file(f"{paths.work}/{name}", recursive=recursive)
+                measured[f"{name}-link-gone"] = not await survives(f"{paths.work}/{name}")
+                measured[f"{name}-target-survives"] = await survives(target)
 
-        # A link to a directory, where a resolving recursive delete would empty the target.
-        await sc.write_file(f"{paths.outside}/svc-linked-dir/inside.txt", b"in the linked dir\n")
-        await plant_link(f"{paths.work}/svc-link-dir", f"{paths.outside}/svc-linked-dir")
-        await sc.delete_file(f"{paths.work}/svc-link-dir", recursive=True)
-        measured["dir-link-gone"] = not await survives(f"{paths.work}/svc-link-dir")
-        measured["dir-survives"] = await survives(f"{paths.outside}/svc-linked-dir")
-        measured["dir-contents-survive"] = await survives(
-            f"{paths.outside}/svc-linked-dir/inside.txt"
-        )
+            # A link to a directory, where a resolving recursive delete would empty the target.
+            await sc.write_file(
+                f"{paths.outside}/svc-linked-dir/inside.txt", b"in the linked dir\n"
+            )
+            await plant_link(f"{paths.work}/svc-link-dir", f"{paths.outside}/svc-linked-dir")
+            await sc.delete_file(f"{paths.work}/svc-link-dir", recursive=True)
+            measured["dir-link-gone"] = not await survives(f"{paths.work}/svc-link-dir")
+            measured["dir-survives"] = await survives(f"{paths.outside}/svc-linked-dir")
+            measured["dir-contents-survive"] = await survives(
+                f"{paths.outside}/svc-linked-dir/inside.txt"
+            )
 
-        # The link as a *parent* component. POSIX resolves every component but the last, so a
-        # service that did not would be the surprise here.
-        await sc.write_file(f"{paths.outside}/svc-parent/child.txt", b"through a linked parent\n")
-        await plant_link(f"{paths.work}/svc-link-parent", f"{paths.outside}/svc-parent")
-        await sc.delete_file(f"{paths.work}/svc-link-parent/child.txt", recursive=False)
-        measured["linked-parent-resolved"] = not await survives(
-            f"{paths.outside}/svc-parent/child.txt"
-        )
+            # The link as a *parent* component. POSIX resolves every component but the last, so a
+            # service that did not would be the surprise here.
+            await sc.write_file(
+                f"{paths.outside}/svc-parent/child.txt", b"through a linked parent\n"
+            )
+            await plant_link(f"{paths.work}/svc-link-parent", f"{paths.outside}/svc-parent")
+            await sc.delete_file(f"{paths.work}/svc-link-parent/child.txt", recursive=False)
+            measured["linked-parent-resolved"] = not await survives(
+                f"{paths.outside}/svc-parent/child.txt"
+            )
 
-        # Interior links must be measured separately from the path named in the request.
-        await sc.write_file(f"{paths.outside}/svc-interior.txt", b"pointed at from inside\n")
-        await sc.write_file(f"{paths.work}/svc-tree/leaf.txt", b"in the tree\n")
-        await plant_link(f"{paths.work}/svc-tree/inside-link", f"{paths.outside}/svc-interior.txt")
-        await sc.delete_file(f"{paths.work}/svc-tree", recursive=True)
-        measured["tree-gone"] = not await survives(f"{paths.work}/svc-tree")
-        measured["interior-target-survives"] = await survives(f"{paths.outside}/svc-interior.txt")
-        return measured
+            # Interior links must be measured separately from the path named in the request.
+            await sc.write_file(f"{paths.outside}/svc-interior.txt", b"pointed at from inside\n")
+            await sc.write_file(f"{paths.work}/svc-tree/leaf.txt", b"in the tree\n")
+            await plant_link(
+                f"{paths.work}/svc-tree/inside-link", f"{paths.outside}/svc-interior.txt"
+            )
+            await sc.delete_file(f"{paths.work}/svc-tree", recursive=True)
+            measured["tree-gone"] = not await survives(f"{paths.work}/svc-tree")
+            measured["interior-target-survives"] = await survives(
+                f"{paths.outside}/svc-interior.txt"
+            )
+            return measured
 
     return live.run(scenario())
 
@@ -1112,9 +1121,10 @@ class TestReadSurfaceResidual:
 
         async def scenario():
             await command(f"mkdir -p -- {shlex.quote(working + '/sub')}")
-            await sandbox._sc.write_file(f"{working}/sub/child.txt", b"in")
-            await sandbox._sc.write_file(f"{working}/plain.txt", b"in")
-            await sandbox._sc.write_file(f"{outside}/child.txt", foreign, mode="384")
+            async with sandbox.client_lease():
+                await sandbox._sc.write_file(f"{working}/sub/child.txt", b"in")
+                await sandbox._sc.write_file(f"{working}/plain.txt", b"in")
+                await sandbox._sc.write_file(f"{outside}/child.txt", foreign, mode="384")
             guest_read = await sandbox.exec(
                 ["cat", f"{outside}/child.txt"], working_directory="/", timeout=30
             )
@@ -1452,9 +1462,13 @@ class TestTheWriteRoadOnAGuestThatCanWrite:
         very sandbox, so the refusal below is the road's and not the service declining
         everything.
         """
-        client = writing.sandbox._sc  # noqa: SLF001 — the control, past the road under test
         control = f"/etc/maf-1131-control-{uuid.uuid4().hex[:12]}"
-        writing.run(client.write_file(control, b"the plane reaches here\n"))
+
+        async def plant_control():
+            async with writing.sandbox.client_lease():
+                await writing.sandbox._sc.write_file(control, b"the plane reaches here\n")
+
+        writing.run(plant_control())
         reached = writing.run(
             writing.sandbox.exec(
                 ["stat", "-c", "%u", control], working_directory="/tmp", timeout=_EXEC_TIMEOUT
@@ -1499,16 +1513,17 @@ class TestComingBackToTheSharedSandbox:
         async def the_state_the_calls_below_meet() -> str:
             # Past the backend, as `service_link_delete` above does: this backend offers no
             # way to stop a sandbox, and the code under test must not set up its own probe.
-            client = live.sandbox._sc  # noqa: SLF001 — the provocation, not the measurement
-            state = str((await client.get()).state or "")
-            if state.lower() != "running":
-                return state
-            poller = await client.begin_stop()
-            await poller.result()
-            # Read back rather than taken from the poller: what the calls below run into is the
-            # service's own answer about this sandbox, and a poller that resolved to nothing
-            # would let the rest of this test pass having stopped nothing.
-            return str((await client.get()).state or "")
+            async with live.sandbox.client_lease():
+                client = live.sandbox._sc
+                state = str((await client.get()).state or "")
+                if state.lower() != "running":
+                    return state
+                poller = await client.begin_stop()
+                await poller.result()
+                # Read back rather than taken from the poller: what the calls below run into is the
+                # service's own answer about this sandbox, and a poller that resolved to nothing
+                # would let the rest of this test pass having stopped nothing.
+                return str((await client.get()).state or "")
 
         state = loop.run_until_complete(the_state_the_calls_below_meet())
         assert state.lower() in _STOPPED_STATES, f"the sandbox is not stopped: {state!r}"
@@ -1520,16 +1535,20 @@ class TestComingBackToTheSharedSandbox:
         # Read through the SDK client, past the backend, because `_Live.run` resumes first.
         from azure.core.exceptions import HttpResponseError
 
-        client = live.sandbox._sc  # noqa: SLF001 — the provocation, not the measurement
-        for refused in (
-            client.stat_file(f"{_WORK}/back.txt"),
-            client.read_file(f"{_WORK}/back.txt"),
-            client.write_file(f"{_WORK}/while-stopped.txt", b"z"),
-        ):
-            with pytest.raises(HttpResponseError) as answered:
-                loop.run_until_complete(refused)
-            assert answered.value.status_code == 409, answered.value
-            assert "not running" in str(answered.value).lower(), answered.value
+        async def assert_stopped_file_operations_are_refused():
+            async with live.sandbox.client_lease():
+                client = live.sandbox._sc
+                for operation, path, args in (
+                    (client.stat_file, f"{_WORK}/back.txt", ()),
+                    (client.read_file, f"{_WORK}/back.txt", ()),
+                    (client.write_file, f"{_WORK}/while-stopped.txt", (b"z",)),
+                ):
+                    with pytest.raises(HttpResponseError) as answered:
+                        await operation(path, *args)
+                    assert answered.value.status_code == 409, answered.value
+                    assert "not running" in str(answered.value).lower(), answered.value
+
+        loop.run_until_complete(assert_stopped_file_operations_are_refused())
 
         # A data-plane call, because that is the plane which refuses a stopped sandbox.
         planted = f"{_WORK}/resumed-{uuid.uuid4().hex[:12]}"
