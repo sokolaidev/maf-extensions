@@ -95,7 +95,7 @@ The fixed guest heap and stack are 400 MiB and 200 MiB. `run_code(timeout=...)` 
 
 Native output is buffered before its byte limit can be checked. The job's memory ceiling bounds that allocation; the deadline bounds endless output. The parent separately bounds retained worker diagnostics to 64 KiB while draining the pipe. Lowering the memory limit too far can make cold preparation fail.
 
-Disposal is idempotent and returns `DisposalFailure` when cleanup cannot be confirmed. Failed targets stay registered for retry. `dispose_scope` sweeps all agents, kinds and call IDs in the owner's matching scope/conversation. `aclose()` raises on incomplete cleanup and only disposes targets created by that backend object.
+Disposal is idempotent and returns `DisposalFailure` when cleanup cannot be confirmed. Failed targets stay registered for retry. Cancellation propagates after the active worker's bounded cleanup attempt finishes, without starting another target; unreported targets remain registered for retry. `dispose_scope` sweeps all agents, kinds and call IDs in the owner's matching scope/conversation. `aclose()` raises on incomplete cleanup and only disposes targets created by that backend object.
 
 ## Validation and follow-ups
 

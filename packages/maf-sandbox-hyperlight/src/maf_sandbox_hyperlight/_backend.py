@@ -98,13 +98,19 @@ async def _offload[T](operation: Callable[[], T]) -> T:
 
 
 async def _finish[T](task: asyncio.Task[T]) -> T:
-    """Finish bounded cleanup even when the caller receives repeated cancellation."""
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            continue
-    return task.result()
+    """Finish bounded cleanup, then propagate any cancellation received while waiting."""
+    interrupted: asyncio.CancelledError | None = None
+    try:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as error:
+                if interrupted is None:
+                    interrupted = error
+        return task.result()
+    finally:
+        if interrupted is not None:
+            raise interrupted
 
 
 class _HyperlightSandbox:

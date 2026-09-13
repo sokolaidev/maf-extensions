@@ -19,6 +19,7 @@ from maf_sandbox import (
     SandboxCapabilityNotSupported,
     SandboxKey,
     SandboxQueuedTimeout,
+    SandboxRouter,
     SandboxSpec,
 )
 from maf_sandbox.conformance import (
@@ -300,6 +301,81 @@ def test_repeated_cancellation_waits_for_cleanup(backend):
         with pytest.raises(asyncio.CancelledError):
             await running
         assert not worker.alive
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("operation", ["dispose", "dispose_scope", "aclose"])
+@pytest.mark.parametrize("interruption", ["cancel", "timeout"])
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_disposal_preserves_interruption_after_active_cleanup(
+    backend, operation, interruption, cleanup_fails
+):
+    async def check():
+        sandbox = await acquire(backend)
+        worker = cast("FakeWorker", sandbox.worker)
+        worker.block_close = True
+        worker.close_failures = int(cleanup_fails)
+        sibling = await backend.acquire(KEY, replace(SPEC, kind="other"))
+        deadline = asyncio.timeout(None)
+
+        async def dispose():
+            async with deadline:
+                if operation == "dispose":
+                    return await backend.dispose(KEY)
+                if operation == "dispose_scope":
+                    return await backend.dispose_scope(KEY.scope, KEY.thread_id)
+                return await backend.aclose()
+
+        pending = asyncio.create_task(dispose())
+        try:
+            await signalled(worker.closing)
+            if interruption == "cancel":
+                pending.cancel("first cancellation")
+                await asyncio.sleep(0)
+                pending.cancel("repeated cancellation")
+            else:
+                deadline.reschedule(asyncio.get_running_loop().time())
+            async with asyncio.timeout(3):
+                while not pending.cancelling():
+                    await asyncio.sleep(0)
+            assert not pending.done()
+            worker.finish_close.set()
+            expected = asyncio.CancelledError if interruption == "cancel" else TimeoutError
+            with pytest.raises(expected):
+                await pending
+            assert worker.alive is cleanup_fails
+            assert sibling.alive
+            assert (KEY, SPEC.kind) in backend._sandboxes
+        finally:
+            worker.finish_close.set()
+            await asyncio.gather(pending, return_exceptions=True)
+            await backend.aclose()
+
+    asyncio.run(check())
+
+
+def test_router_disposal_deadline_reports_failure_after_cleanup(backend):
+    async def check():
+        sandbox = await acquire(backend)
+        worker = cast("FakeWorker", sandbox.worker)
+        worker.block_close = True
+        router = SandboxRouter([backend])
+        pending = asyncio.create_task(router.dispose_kind(KEY, SPEC.kind, timeout=1))
+        try:
+            await signalled(worker.closing)
+            async with asyncio.timeout(3):
+                while not pending.cancelling():
+                    await asyncio.sleep(0.001)
+            assert not pending.done()
+            worker.finish_close.set()
+            assert await pending is False
+            assert not worker.alive
+            assert await router.dispose_kind(KEY, SPEC.kind, timeout=1)
+        finally:
+            worker.finish_close.set()
+            await asyncio.gather(pending, return_exceptions=True)
+            await backend.aclose()
 
     asyncio.run(check())
 
