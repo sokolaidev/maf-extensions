@@ -464,6 +464,7 @@ def _proxy_name(container: str) -> str:
 
 # The CLI writes copied bytes to disk; this bound covers only unexpected stdout.
 _STAT_STDOUT_LIMIT = 512
+_STDERR_LIMIT = 64 * 1024
 
 
 def _listed_names(payload: str) -> list[str]:
@@ -1743,15 +1744,11 @@ class WslcSandboxBackend:
                 process, max_output_bytes=max_output_bytes, timeout=timeout
             )
             return _WslcResult(process.returncode or 0, stdout, stderr)
+        if read_limit is not None:
+            stdout, stderr = await self._read_bounded(process, read_limit, timeout, stdin=stdin)
+            return _WslcResult(process.returncode or 0, stdout, stderr)
         try:
-            if read_limit is None:
-                stdout, stderr = await asyncio.wait_for(process.communicate(stdin), timeout=timeout)
-            else:
-                if stdin is not None and process.stdin is not None:
-                    process.stdin.write(stdin)
-                    await process.stdin.drain()
-                    process.stdin.close()
-                stdout, stderr = await self._read_bounded(process, read_limit, timeout)
+            stdout, stderr = await asyncio.wait_for(process.communicate(stdin), timeout=timeout)
         except BaseException:
             with contextlib.suppress(Exception):
                 process.kill()
@@ -1762,12 +1759,24 @@ class WslcSandboxBackend:
 
     @staticmethod
     async def _read_bounded(
-        process: asyncio.subprocess.Process, read_limit: int, timeout: float | None
+        process: asyncio.subprocess.Process,
+        read_limit: int,
+        timeout: float | None,
+        *,
+        stdin: bytes | None = None,
     ) -> tuple[bytes, bytes]:
-        """Read a bounded stdout head, then kill and reap before collecting stderr."""
+        """Cap stdout while draining stderr, preserving normal exit below the cap.
+
+        Input, output and exit share one deadline; abnormal cleanup gets three seconds to
+        kill and drain the child. Retain at most 64 KiB of stderr and discard its excess.
+        """
         assert process.stdout is not None and process.stderr is not None
         out_stream = process.stdout
         err_stream = process.stderr
+
+        async def discard(stream: asyncio.StreamReader) -> None:
+            while await stream.read(65536):
+                pass
 
         async def _pull_head() -> bytes:
             chunks: list[bytes] = []
@@ -1778,25 +1787,53 @@ class WslcSandboxBackend:
                     break
                 chunks.append(chunk)
                 got += len(chunk)
+            if got == read_limit:
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+                await discard(out_stream)
             return b"".join(chunks)
 
+        async def feed_input() -> None:
+            if stdin is not None and process.stdin is not None:
+                with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                    process.stdin.write(stdin)
+                    await process.stdin.drain()
+                process.stdin.close()
+                with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                    await process.stdin.wait_closed()
+
+        async def read_diagnostics() -> bytes:
+            head = bytearray()
+            while chunk := await err_stream.read(65536):
+                head.extend(chunk[: max(0, _STDERR_LIMIT - len(head))])
+            return bytes(head)
+
+        tasks = (
+            asyncio.create_task(_pull_head()),
+            asyncio.create_task(read_diagnostics()),
+            asyncio.create_task(feed_input()),
+        )
+        complete = False
         try:
-            stdout = await asyncio.wait_for(_pull_head(), timeout=timeout)
-        except BaseException:
-            with contextlib.suppress(Exception):
-                process.kill()
-            with contextlib.suppress(Exception):
+            async with asyncio.timeout(timeout):
+                stdout, stderr, _ = await asyncio.gather(*tasks)
                 await process.wait()
-            raise
-        with contextlib.suppress(Exception):
-            process.kill()
-        try:
-            stderr = await asyncio.wait_for(err_stream.read(), timeout=timeout)
-        except Exception:
-            stderr = b""
-        with contextlib.suppress(Exception):
-            await process.wait()
-        return stdout, stderr
+            complete = True
+            return stdout, stderr
+        finally:
+            if not complete:
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+                if process.stdin is not None:
+                    process.stdin.close()
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                with contextlib.suppress(Exception):
+                    async with asyncio.timeout(3):
+                        await asyncio.gather(
+                            discard(out_stream), discard(err_stream), process.wait()
+                        )
 
     async def _is_listed(self, name: str, *, all_states: bool) -> bool:
         """Whether ``name`` is listed — running only, or in any state.
