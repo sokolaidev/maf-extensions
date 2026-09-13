@@ -127,6 +127,27 @@ def test_declarations_and_worker_free_construction(monkeypatch: pytest.MonkeyPat
     assert backend.declarations.os_families == frozenset()
 
 
+def test_inventory_reports_the_current_generation_and_lifecycle(backend):
+    async def check():
+        sandbox = await acquire(backend)
+        ready = await backend.list_sandboxes()
+        assert len(ready) == 1
+        assert ready[0].key == KEY
+        assert ready[0].kind == SPEC.kind
+        assert ready[0].instance_id == sandbox.instance_id
+        assert ready[0].state == "ready"
+        assert ready[0].worker_pid is None
+        assert ready[0].created_at <= ready[0].last_activity_at
+
+        previous = sandbox.instance_id
+        await sandbox.reset(timeout=1)
+        restored = await backend.list_sandboxes()
+        assert restored[0].instance_id != previous
+        assert restored[0].state == "ready"
+
+    asyncio.run(check())
+
+
 @pytest.mark.parametrize(
     "capability",
     [

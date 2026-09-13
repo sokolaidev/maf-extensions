@@ -131,6 +131,17 @@
         }
       ]
     },
+    "packages/maf-sandbox-tui": {
+      "package-name": "maf-sandbox-tui",
+      "exclude-paths": ["packages/maf-sandbox-tui/tests"],
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "/uv.lock",
+          "jsonpath": "$.package[?(@.name.value=='maf-sandbox-tui')].version"
+        }
+      ]
+    },
     "packages/maf-sandbox-wslc": {
       "package-name": "maf-sandbox-wslc",
       "exclude-paths": ["packages/maf-sandbox-wslc/tests"],

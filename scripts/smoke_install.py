@@ -36,6 +36,7 @@ _PACKAGES = {
     "maf-sandbox-drawio": "maf_sandbox_drawio",
     "maf-sandbox-otel": "maf_sandbox_otel",
     "maf-sandbox-terraform": "maf_sandbox_terraform",
+    "maf-sandbox-tui": "maf_sandbox_tui",
     "maf-sandbox-wslc": "maf_sandbox_wslc",
 }
 
@@ -700,6 +701,17 @@ def _smoke_maf_sandbox_drawio() -> str:
     )
 
 
+def _smoke_maf_sandbox_tui() -> str:
+    from maf_sandbox_tui import MemoryControl, SandboxConsole
+
+    records = asyncio.run(MemoryControl.demo().list_sandboxes())
+    if len(records) != 3 or not all(record.instance_id for record in records):
+        raise SystemExit("FAIL: MST demo does not expose physical sandbox identities")
+    if not SandboxConsole.TITLE:
+        raise SystemExit("FAIL: MST console has no title")
+    return "constructs its console and exposes a three-instance operator demo"
+
+
 _SMOKES = {
     "maf-sandbox": _smoke_maf_sandbox,
     "maf-sandbox-acas": _smoke_maf_sandbox_acas,
@@ -711,6 +723,7 @@ _SMOKES = {
     "maf-sandbox-hyperlight": _smoke_maf_sandbox_hyperlight,
     "maf-sandbox-otel": _smoke_maf_sandbox_otel,
     "maf-sandbox-terraform": _smoke_maf_sandbox_terraform,
+    "maf-sandbox-tui": _smoke_maf_sandbox_tui,
     "maf-sandbox-wslc": _smoke_maf_sandbox_wslc,
 }
 

@@ -12,6 +12,7 @@ import uuid
 from collections.abc import AsyncGenerator, Callable, Sequence
 from concurrent.futures import Future
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from maf_sandbox import (
@@ -48,6 +49,21 @@ RUNTIME_INSTRUCTIONS = (
     "http_get(url) and http_post(url, body=..., content_type=...) provide HTTP where the host "
     "allowlist permits it; raw sockets are unavailable."
 )
+
+
+@dataclass(frozen=True)
+class HyperlightSandboxInfo:
+    """Read-only operator view of one physical Hyperlight sandbox."""
+
+    key: SandboxKey
+    kind: str
+    instance_id: str
+    state: str
+    created_at: float
+    last_activity_at: float
+    worker_pid: int | None
+    execution_contract: str | None
+    egress_targets: tuple[str, ...]
 
 
 def check_host() -> None:
@@ -138,6 +154,9 @@ class _HyperlightSandbox:
         self._state = threading.Lock()
         self._identity = uuid.uuid4().hex
         self._retired = False
+        self._phase = "starting"
+        self._created_at = time.time()
+        self._last_activity_at = self._created_at
         self.worker = Worker(config)
 
     @property
@@ -155,7 +174,43 @@ class _HyperlightSandbox:
             if expected_id is not None and expected_id != self._identity:
                 return False
             self._retired = True
+            self._phase = "disposing"
+            self._last_activity_at = time.time()
             return True
+
+    def _working(self, phase: str) -> None:
+        with self._state:
+            if not self._retired:
+                self._phase = phase
+                self._last_activity_at = time.time()
+
+    def _ready(self) -> None:
+        with self._state:
+            if not self._retired and self.worker.alive:
+                self._phase = "ready"
+                self._last_activity_at = time.time()
+
+    def info(self, key: SandboxKey, kind: str) -> HyperlightSandboxInfo:
+        """Snapshot state without exposing the worker or mutable registry entry."""
+        with self._state:
+            process = getattr(self.worker, "process", None)
+            worker_pid = getattr(process, "pid", None)
+            if not isinstance(worker_pid, int):
+                worker_pid = None
+            state = self._phase
+            if not self._retired and not self.worker.alive:
+                state = "failed"
+            return HyperlightSandboxInfo(
+                key=key,
+                kind=kind,
+                instance_id=self._identity,
+                state=state,
+                created_at=self._created_at,
+                last_activity_at=self._last_activity_at,
+                worker_pid=worker_pid,
+                execution_contract=self.contract,
+                egress_targets=self.targets,
+            )
 
     async def stop(self) -> None:
         self.retire()
@@ -203,12 +258,14 @@ class _HyperlightSandbox:
             raise
 
     async def prepare(self, deadline: float) -> None:
+        self._working("starting")
         response = await self._exchange(
             {"op": "init", "targets": self.targets, "output_limit": self.config.max_output_bytes},
             deadline,
         )
         if response != {"ok": True}:
             raise HyperlightWorkerError("worker did not confirm preparation")
+        self._ready()
 
     async def run_code(self, code: str, *, timeout: float) -> ExecResult:
         deadline = _deadline(timeout)
@@ -217,38 +274,46 @@ class _HyperlightSandbox:
         if len(code.encode("utf-8")) > self.config.max_code_bytes:
             raise ValueError("code exceeds max_code_bytes")
         async with _claim(self._gate, deadline):
-            response = await self._exchange({"op": "run", "code": code}, deadline)
-            stdout, stderr, status = (
-                response.get("stdout"),
-                response.get("stderr"),
-                response.get("exit_code"),
-            )
-            if (
-                not isinstance(stdout, str)
-                or not isinstance(stderr, str)
-                or type(status) is not int
-            ):
-                await self.stop()
-                raise HyperlightWorkerError("invalid execution result")
-            if len(stdout.encode()) + len(stderr.encode()) > self.config.max_output_bytes:
-                await self.stop()
-                raise HyperlightWorkerError("worker violated the output limit")
-            if status < 0:
-                await self.stop()
-                raise HyperlightWorkerError("native execution failed")
-            return ExecResult(stdout=stdout, stderr=stderr, exit_code=status)
+            self._working("running")
+            try:
+                response = await self._exchange({"op": "run", "code": code}, deadline)
+                stdout, stderr, status = (
+                    response.get("stdout"),
+                    response.get("stderr"),
+                    response.get("exit_code"),
+                )
+                if (
+                    not isinstance(stdout, str)
+                    or not isinstance(stderr, str)
+                    or type(status) is not int
+                ):
+                    await self.stop()
+                    raise HyperlightWorkerError("invalid execution result")
+                if len(stdout.encode()) + len(stderr.encode()) > self.config.max_output_bytes:
+                    await self.stop()
+                    raise HyperlightWorkerError("worker violated the output limit")
+                if status < 0:
+                    await self.stop()
+                    raise HyperlightWorkerError("native execution failed")
+                return ExecResult(stdout=stdout, stderr=stderr, exit_code=status)
+            finally:
+                self._ready()
 
     async def reset(self, *, timeout: float) -> None:
         deadline = _deadline(timeout)
         async with _claim(self._gate, deadline):
-            response = await self._exchange({"op": "reset"}, deadline)
-            if response != {"ok": True}:
-                await self.stop()
-                raise HyperlightWorkerError("worker did not confirm restore")
-            with self._state:
-                if self._retired:
-                    raise HyperlightWorkerError("sandbox was disposed during restore")
-                self._identity = uuid.uuid4().hex
+            self._working("resetting")
+            try:
+                response = await self._exchange({"op": "reset"}, deadline)
+                if response != {"ok": True}:
+                    await self.stop()
+                    raise HyperlightWorkerError("worker did not confirm restore")
+                with self._state:
+                    if self._retired:
+                        raise HyperlightWorkerError("sandbox was disposed during restore")
+                    self._identity = uuid.uuid4().hex
+            finally:
+                self._ready()
 
     async def exec(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float
@@ -402,6 +467,24 @@ class HyperlightSandboxBackend:
         except Exception as error:
             failures.append(DisposalFailure("unknown", str(error)))
         return ScopePurge(count, fold_disposal_failures(failures))
+
+    async def list_sandboxes(self) -> tuple[HyperlightSandboxInfo, ...]:
+        """Return the current process registry for cooperative operator tooling."""
+        check_host()
+        async with _claim(self._gate, _deadline(self.config.startup_timeout)):
+            return tuple(
+                sandbox.info(key, kind)
+                for (key, kind), sandbox in sorted(
+                    self._sandboxes.items(),
+                    key=lambda item: (
+                        item[0][0].scope,
+                        item[0][0].thread_id,
+                        item[0][0].agent_id,
+                        item[0][0].call_id,
+                        item[0][1],
+                    ),
+                )
+            )
 
     async def aclose(self) -> None:
         """Dispose the sandboxes this backend created, retaining any failed targets for retry."""

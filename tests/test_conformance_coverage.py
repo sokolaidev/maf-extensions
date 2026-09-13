@@ -385,8 +385,9 @@ CANDIDATE_BACKEND_PACKAGES = [
 
 #: The non-core packages that are deliberately not backends — kinds, which build a tool on top
 #: of whatever backend the router picked, the observer, which serves no sandbox at all and
-#: only records what one did, and the Deep Agents adapter, which asks the router for a sandbox
-#: rather than being one. Written down rather than inferred, because both predicates above
+#: only records what one did, the TUI, which asks opted-in applications for operator records,
+#: and the Deep Agents adapter, which asks the router for a sandbox rather than being one.
+#: Written down rather than inferred, because both predicates above
 #: are heuristics a package can defeat: one by not naming the type it implements structurally,
 #: the other by an aliased annotation or an inherited ``dispose``. A package matching neither
 #: and absent from this set fails ``test_every_package_is_classified`` rather than quietly
@@ -399,6 +400,7 @@ NOT_BACKENDS = frozenset(
         "maf-sandbox-drawio",
         "maf-sandbox-otel",
         "maf-sandbox-terraform",  # Workload kind using a session; provides no backend.
+        "maf-sandbox-tui",
     }
 )
 

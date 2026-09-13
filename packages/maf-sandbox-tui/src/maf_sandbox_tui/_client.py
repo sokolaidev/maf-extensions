@@ -1,0 +1,146 @@
+"""HTTP client and local discovery for cooperative MAF control endpoints."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from collections.abc import Sequence
+from pathlib import Path
+from typing import cast
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
+
+from ._control import SandboxControl
+from ._models import DisposalResult, DisposalStatus, SandboxRecord
+from ._server import EndpointManifest, runtime_directory
+
+
+class ControlEndpointError(RuntimeError):
+    """A discovered endpoint could not answer a control request."""
+
+
+class HttpControl:
+    """Client for one version one loopback control endpoint."""
+
+    def __init__(self, manifest: EndpointManifest, *, timeout: float = 5.0) -> None:
+        self.manifest = manifest
+        self.timeout = timeout
+
+    def _request(self, method: str, path: str, *, timeout: float | None = None) -> object:
+        request = Request(
+            f"{self.manifest.endpoint}{path}",
+            method=method,
+            headers={
+                "Authorization": f"Bearer {self.manifest.token}",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with urlopen(request, timeout=self.timeout if timeout is None else timeout) as response:
+                return cast("object", json.loads(response.read()))
+        except HTTPError as error:
+            try:
+                body = cast("dict[object, object]", json.loads(error.read()))
+                message = body.get("error") or body.get("message")
+            except (ValueError, AttributeError):
+                message = None
+            raise ControlEndpointError(
+                str(message) if message else f"control endpoint returned HTTP {error.code}"
+            ) from error
+        except (OSError, URLError, ValueError) as error:
+            raise ControlEndpointError(f"control endpoint is unavailable: {error}") from error
+
+    async def health(self) -> None:
+        """Require a compatible authenticated endpoint."""
+        value = await asyncio.to_thread(self._request, "GET", "/v1/health")
+        if not isinstance(value, dict):
+            raise ControlEndpointError("control endpoint returned an incompatible health record")
+        data = cast("dict[object, object]", value)
+        if data.get("protocol_version") != 1:
+            raise ControlEndpointError("control endpoint returned an incompatible health record")
+
+    async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
+        """Read the endpoint's current authoritative snapshot."""
+        value = await asyncio.to_thread(self._request, "GET", "/v1/sandboxes")
+        if not isinstance(value, dict):
+            raise ControlEndpointError("control endpoint returned an invalid inventory")
+        data = cast("dict[object, object]", value)
+        inventory = data.get("sandboxes")
+        if not isinstance(inventory, list):
+            raise ControlEndpointError("control endpoint returned an invalid inventory")
+        return tuple(SandboxRecord.from_json(item) for item in cast("list[object]", inventory))
+
+    async def dispose_sandbox(self, instance_id: str, *, timeout: float = 10.0) -> DisposalResult:
+        """Ask the owning MAF process to dispose one exact instance."""
+        try:
+            value = await asyncio.to_thread(
+                self._request,
+                "DELETE",
+                f"/v1/sandboxes/{quote(instance_id, safe='')}",
+                timeout=timeout + 5.0,
+            )
+        except ControlEndpointError as error:
+            return DisposalResult(DisposalStatus.FAILED, instance_id, str(error))
+        return DisposalResult.from_json(value)
+
+
+class CompositeControl:
+    """Combine several independently owned MAF processes for one console."""
+
+    def __init__(self, controls: Sequence[SandboxControl]) -> None:
+        self._controls = tuple(controls)
+
+    async def list_sandboxes(self) -> tuple[SandboxRecord, ...]:
+        """Return every responsive endpoint's current inventory."""
+        if not self._controls:
+            return ()
+        snapshots = await asyncio.gather(
+            *(control.list_sandboxes() for control in self._controls), return_exceptions=True
+        )
+        records: list[SandboxRecord] = []
+        for snapshot in snapshots:
+            if not isinstance(snapshot, BaseException):
+                records.extend(snapshot)
+        return tuple(
+            sorted(records, key=lambda item: (item.source_id, item.logical_name, item.kind))
+        )
+
+    async def dispose_sandbox(self, instance_id: str, *, timeout: float = 10.0) -> DisposalResult:
+        """Route exact-instance disposal to the endpoint currently reporting it."""
+        for control in self._controls:
+            try:
+                if any(item.instance_id == instance_id for item in await control.list_sandboxes()):
+                    return await control.dispose_sandbox(instance_id, timeout=timeout)
+            except ControlEndpointError:
+                continue
+        return DisposalResult(
+            DisposalStatus.NOT_FOUND,
+            instance_id,
+            "The sandbox is already gone or its owner is unavailable.",
+        )
+
+
+def read_manifests(directory: Path | None = None) -> tuple[EndpointManifest, ...]:
+    """Read valid discovery records without trusting filenames or stale content."""
+    root = directory or runtime_directory()
+    if not root.is_dir():
+        return ()
+    manifests: list[EndpointManifest] = []
+    for path in sorted(root.glob("*.json")):
+        try:
+            manifests.append(EndpointManifest.from_json(json.loads(path.read_text("utf-8"))))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+    return tuple(manifests)
+
+
+async def discover_controls(directory: Path | None = None) -> CompositeControl:
+    """Return authenticated clients for responsive local endpoints."""
+    clients = [HttpControl(manifest) for manifest in read_manifests(directory)]
+    healthy: list[HttpControl] = []
+    results = await asyncio.gather(*(client.health() for client in clients), return_exceptions=True)
+    for client, result in zip(clients, results, strict=True):
+        if not isinstance(result, BaseException):
+            healthy.append(client)
+    return CompositeControl(cast("Sequence[SandboxControl]", healthy))
