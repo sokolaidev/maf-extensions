@@ -1,6 +1,6 @@
 # Hyperlight
 
-> The packaged Python guest on Windows WHP and Linux KVM, with a killable worker for each sandbox and no file channels.
+> The packaged Python guest on Windows WHP and WSL2 KVM, with a killable worker for each sandbox and no file channels.
 
 [`maf-sandbox-hyperlight`](../../../packages/maf-sandbox-hyperlight/) implements `SandboxBackend` directly over the Hyperlight Python SDK. The [package README](../../../packages/maf-sandbox-hyperlight/README.md) owns installation, configuration and usage. Kinds continue to use the core protocol; CodeAct opts into `CodeactRuntime` with the backend's `RUNTIME_INSTRUCTIONS`.
 
@@ -8,7 +8,7 @@
 
 | Axis | Contract |
 | --- | --- |
-| Isolation | `MICROVM`, only the packaged Python guest / Wasm backend on x86-64 Windows WHP or Linux KVM |
+| Isolation | `MICROVM`, only the packaged Python guest / Wasm backend on x86-64 Windows WHP or WSL2 KVM |
 | Capabilities | `RUN_CODE`, `SNAPSHOT` |
 | Egress | `CLOSED`, exact-host `ALLOWLIST`; HTTP 80 and HTTPS 443, no method or identity refinements |
 | Guest OS | No OS family declared; this is a language runtime |
@@ -17,7 +17,7 @@
 | File capabilities | `FILES_IN`, `FILES_OUT`, `FILES_LIST`, `FILES_DELETE`, `RECLAIM` withheld; protocol methods refuse |
 | Other channels | `EXEC`, `HOST_TOOLS`, `EGRESS_METHODS`, `ATTACHED_IDENTITY` withheld |
 
-The exact 0.7.0 SDK, Wasm backend and Python guest are pinned together. The adapter accepts no custom guest, image or guest working directory, and refuses unsupported platforms. Construction starts no worker. Windows workers retain `WinHvPlatform.dll`; Linux workers verify KVM API access and VM creation. Each uses the pinned host's single-VM mode, `HYPERLIGHT_MAX_SURROGATES=0`. Linux hosts exposing MSHV are refused until that family has its own validation.
+The exact 0.7.0 SDK, Wasm backend and Python guest are pinned together. The adapter accepts no custom guest, image or guest working directory, and refuses unsupported platforms. Construction starts no worker. Windows workers retain `WinHvPlatform.dll`; Linux workers verify KVM API access and VM creation. Each uses the pinned host's single-VM mode, `HYPERLIGHT_MAX_SURROGATES=0`. Linux admission requires a kernel release containing `microsoft-standard-WSL2` (case-insensitive), followed by KVM and cgroup enforcement checks. Native Linux outside WSL2, custom kernel releases without that marker and hosts exposing MSHV are refused until separately validated.
 
 The bundled runtime is CPython 3.14 with a reduced standard library. It supplies Python statement execution, separate stdout/stderr, persistent globals and snapshot restore. In the pinned guest, `json`, `math` and `re` are available, while `datetime`, `statistics`, `pickle` and `__future__` are not. The runtime instructions expose this limitation instead of implying desktop Python compatibility.
 
@@ -45,7 +45,7 @@ On 2026-09-13, Windows 11 AMD64 / WHP / host CPython 3.13 and the exact 0.7.0 tr
 
 The [earlier proposal](../research/hyperlight-backend-proposal.md) and [exploration](../research/hyperlight-backend-exploration.md) preserve the historical investigation. Their proposed file capabilities are not declarations of this adapter. Optional file work must establish its own conformance and cleanup before any file capability is enabled.
 
-The Linux validation used Ubuntu 24.04.4 under WSL2, kernel `6.18.40.1-microsoft-standard-WSL2`, CPython 3.12.3 and the same exact 0.7.0 trio. Real KVM VM creation and all ten guest scenarios passed: nine as an unprivileged host, with the HTTP-policy scenario run separately with permission to bind port 80. Kernel tests exercised cgroup OOM, descendants in separate sessions, abrupt owner exit and lock retention through cleanup. These are WSL2 measurements; native Linux outside WSL2, MSHV, ACA and AKS require their own environment records. CI's Linux cgroup checks exercise kernel lifecycle enforcement without claiming KVM execution.
+The Linux validation used Ubuntu 24.04.4 under WSL2, kernel `6.18.40.1-microsoft-standard-WSL2`, CPython 3.12.3 and the same exact 0.7.0 trio. Real KVM VM creation and all ten guest scenarios passed: nine as an unprivileged host, with the HTTP-policy scenario run separately with permission to bind port 80. Kernel tests exercised cgroup OOM, descendants in separate sessions, abrupt owner exit and lock retention through cleanup. These are WSL2 measurements; native Linux outside WSL2, MSHV, ACA and AKS require their own environment records and remain outside capability admission. CI's Linux cgroup checks exercise kernel lifecycle enforcement without claiming KVM execution.
 
 ## Azure Container Apps
 
@@ -60,7 +60,7 @@ An ACA application can instead be designed to call a separate Hyperlight worker 
 | Item | State | Tracking |
 | --- | --- | --- |
 | Initial runtime and reset backend | implemented with Windows WHP validation; umbrella remains open for the independent channels | [#382](https://github.com/sokolaidev/maf-extensions/issues/382) (open); initial runtime delivered by [#1223](https://github.com/sokolaidev/maf-extensions/pull/1223) (merged) |
-| Linux x86-64 KVM and WSL2 | implemented with local WSL2 KVM validation; native Linux environment validation remains open | [#1228](https://github.com/sokolaidev/maf-extensions/issues/1228) (open); Linux implementation delivered by [#1231](https://github.com/sokolaidev/maf-extensions/pull/1231) (merged) |
+| Linux x86-64 KVM and WSL2 | implemented and admitted for WSL2 KVM; native Linux remains refused pending separate environment validation | [#1228](https://github.com/sokolaidev/maf-extensions/issues/1228) (open); Linux implementation delivered by [#1231](https://github.com/sokolaidev/maf-extensions/pull/1231) (merged) |
 | ACA and AKS hosting | investigation | [#1229](https://github.com/sokolaidev/maf-extensions/issues/1229) (open); [#1230](https://github.com/sokolaidev/maf-extensions/issues/1230) (open) |
 | Optional writable inputs | open | [#1218](https://github.com/sokolaidev/maf-extensions/issues/1218) (open) |
 | Optional output collection/listing | open | [#1219](https://github.com/sokolaidev/maf-extensions/issues/1219) (open) |

@@ -56,8 +56,13 @@ def check_host() -> None:
         "amd64",
         "x86_64",
     }:
-        raise HyperlightWorkerError("Hyperlight requires x86-64 Windows WHP or Linux KVM")
+        raise HyperlightWorkerError("Hyperlight requires x86-64 Windows WHP or WSL2 KVM")
     if sys.platform == "linux":
+        if "microsoft-standard-wsl2" not in platform.release().lower():
+            raise HyperlightWorkerError(
+                "Linux Hyperlight requires a standard WSL2 kernel; "
+                "native Linux KVM is not yet validated"
+            )
         from ._linux import claim_host
     else:
         from ._windows import claim_host
