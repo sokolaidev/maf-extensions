@@ -642,8 +642,8 @@ class _AcasSandbox:
 
         A deadline that expires *between* commands takes the staged sibling back and raises
         ``SandboxShellTransferFailed`` with the sandbox whole, because nothing was running. A
-        deadline reached while the host sleeps on the service's ``Retry-After`` also leaves it
-        whole: the refused attempt answered and no retry started. A command that fails *in
+        deadline reached while the host sleeps on an HTTP 429 ``Retry-After`` also leaves it
+        whole: the throttled attempt answered and no retry started. A command that fails *in
         flight* — its own timeout, a capture failure, an output overrun — invalidates and
         disposes the sandbox the way any :meth:`exec` failure does. A refused plane write leaves
         it whole either way.
@@ -700,7 +700,7 @@ class _AcasSandbox:
         """Return exact bounded streams, with one deadline for capture, retrieval and cleanup.
 
         Timeout, cancellation or capture failure invalidates and disposes this entire sandbox,
-        including concurrent commands. A deadline reached during the host's ``Retry-After``
+        including concurrent commands. A deadline reached during an HTTP 429 ``Retry-After``
         sleep is the narrow exception because no retry request is in flight. Deletion has its
         own bounded cleanup allowance.
         """

@@ -5736,8 +5736,8 @@ class TestThroughCollectOutputs:
 
 #: A requirement string's distribution name is not always its import name: `pip install
 #: agent-framework-core` puts `agent_framework` on the path, `maf-sandbox` puts
-#: `maf_sandbox` on it, and `azure-identity` and `azure-containerapps-sandbox` both extend
-#: the single `azure` namespace package rather than each owning a top-level name of their
+#: `maf_sandbox` on it, and the three Azure dependencies extend the single `azure` namespace
+#: package rather than each owning a top-level name of their
 #: own. Anything not listed here is assumed to import under its distribution name with
 #: hyphens turned to underscores — true of every dependency any of the three maf-sandbox*
 #: packages declares today. A dependency where that guess is wrong fails the test below
@@ -5746,6 +5746,7 @@ class TestThroughCollectOutputs:
 _DISTRIBUTION_TO_IMPORT_NAME = {
     "agent-framework-core": "agent_framework",
     "maf-sandbox": "maf_sandbox",
+    "azure-core": "azure",
     "azure-identity": "azure",
     "azure-containerapps-sandbox": "azure",
 }

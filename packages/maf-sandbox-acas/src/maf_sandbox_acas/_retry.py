@@ -1,4 +1,4 @@
-"""Observe host-side ACAS retry sleeps without changing the SDK's retry decisions."""
+"""Observe host-side ACAS throttle sleeps without changing the SDK's retry decisions."""
 
 from __future__ import annotations
 
@@ -18,12 +18,14 @@ _retry_after_interrupted: ContextVar[bool] = ContextVar(
 
 
 class _ObservedRetryPolicy(AsyncRetryPolicy[Any, Any]):
-    """Record a deadline that interrupts a host-side ``Retry-After`` sleep."""
+    """Record a deadline that interrupts an HTTP 429 ``Retry-After`` sleep."""
 
     @override
     async def _sleep_for_retry(
         self, response: PipelineResponse[Any, Any], transport: AsyncHttpTransport[Any, Any]
     ) -> bool:
+        if response.http_response.status_code != 429:
+            return await super()._sleep_for_retry(response, transport)
         retry_after = self.get_retry_after(response)
         if retry_after:
             try:
@@ -67,5 +69,5 @@ def retry_observation() -> Generator[None]:
 
 
 def retry_after_interrupted() -> bool:
-    """Whether this exec deadline interrupted the host's ``Retry-After`` sleep."""
+    """Whether this exec deadline interrupted an HTTP 429 ``Retry-After`` sleep."""
     return _retry_after_interrupted.get()

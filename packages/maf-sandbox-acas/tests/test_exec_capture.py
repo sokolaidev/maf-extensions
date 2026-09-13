@@ -89,13 +89,14 @@ class _StalledClient:
 
 
 class _RetryAfterTransport(AsyncHttpTransport):
-    def __init__(self):
+    def __init__(self, status_code=429):
         self.sent = 0
         self.sleeping = asyncio.Event()
+        self.status_code = status_code
 
     async def send(self, request, **kwargs):
         self.sent += 1
-        return SimpleNamespace(status_code=429, headers={"Retry-After": "30"})
+        return SimpleNamespace(status_code=self.status_code, headers={"Retry-After": "30"})
 
     async def sleep(self, duration):
         assert duration == 30
@@ -205,6 +206,27 @@ def test_cancelling_a_retry_after_sleep_still_disposes_the_sandbox():
         with pytest.raises(asyncio.CancelledError):
             await task
         assert client.deleted and sandbox._held.unusable
+
+    asyncio.run(scenario())
+
+
+def test_a_non_throttle_retry_after_timeout_disposes_the_ambiguous_sandbox():
+    from maf_sandbox_acas._retry import install_retry_observer
+
+    async def scenario():
+        transport = _RetryAfterTransport(status_code=503)
+        client = _RetryAfterClient(AsyncPipeline(transport, policies=[AsyncRetryPolicy()]))
+        install_retry_observer(client)
+        held = _Held(client.sandbox_id, egress=(Egress.CLOSED, frozenset()), write_road=True)
+        sandbox = _AcasSandbox(client, 0.05, held=held)
+
+        with pytest.raises(TimeoutError):
+            await sandbox.exec_bounded(
+                "program", working_directory="/", timeout=0.05, max_output_bytes=1024
+            )
+
+        assert transport.sent == 1
+        assert client.deleted and held.unusable
 
     asyncio.run(scenario())
 
