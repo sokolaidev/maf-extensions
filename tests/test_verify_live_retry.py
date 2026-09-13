@@ -485,3 +485,52 @@ def test_sample_bytes_follow_preceding_retry_messages(tmp_path: Path):
     result = subprocess.run([sys.executable, str(driver)], cwd=tmp_path, capture_output=True)
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines() == [b"retry annotation", b"sample output"]
+
+
+class TestTheRetriedCommandRunsTheSourceTheWorkflowChose:
+    """A retry that resolved a different set than the attempt it repeats measures nothing.
+
+    These three samples reach `uv` through this harness rather than through the workflow's own
+    shell, so the `--with` arguments cannot be added beside the other jobs' — they have to be
+    built here, from the same script, or `source: branch` would silently skip 13, 15 and 15-docker.
+    """
+
+    @staticmethod
+    def _command(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[str]:
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary.md"))
+        seen: list[list[str]] = []
+        monkeypatch.setattr(runner, "run_sample", lambda command, _: seen.append(command) or 0)
+        monkeypatch.setattr(
+            runner.subprocess, "run", lambda command: subprocess.CompletedProcess(command, 0)
+        )
+        assert (
+            runner.main(["sample13", "--allowed", "1", "--output", str(tmp_path / "out.bin")]) == 0
+        )
+        return seen[0]
+
+    def test_published_runs_the_index(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("SOURCE", raising=False)
+        assert self._command(monkeypatch, tmp_path) == [
+            "uv",
+            "run",
+            "--no-project",
+            "samples/13_bicep_fix_loop/agent.py",
+        ]
+
+    def test_branch_injects_every_package_the_sample_names(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("SOURCE", "branch")
+        command = self._command(monkeypatch, tmp_path)
+        assert command[-1] == "samples/13_bicep_fix_loop/agent.py"
+        assert command.count("--with") == 3
+        assert "./packages/maf-sandbox-bicep" in command
+        assert "./packages/maf-sandbox-docker" in command
+        assert "./packages/maf-sandbox" in command
+
+    def test_an_unknown_source_is_treated_as_published(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The workflow constrains the input; a typo reaching here must not half-inject."""
+        monkeypatch.setenv("SOURCE", "Branch")
+        assert "--with" not in self._command(monkeypatch, tmp_path)

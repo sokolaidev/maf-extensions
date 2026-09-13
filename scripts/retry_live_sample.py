@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from io import BufferedReader
 from pathlib import Path
 
+import sample_source_args
 from check_live_fix_loop_sample import MODEL_DID_NOT_CONVERGE as FIX_LOOP_RETRY
 from check_live_host_tools_call_sample import MODEL_DID_NOT_CONVERGE as HOST_TOOLS_RETRY
 
@@ -127,7 +128,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.allowed < 1:
         parser.error("--allowed must be positive")
     config = PROFILES[args.profile]
-    sample_command = ["uv", "run", "--no-project", f"samples/{config.directory}/agent.py"]
+    # Where the sample's libraries come from, decided by the workflow rather than here: the
+    # retried command has to be the command the other sample jobs run, or a retry would test
+    # a different set than the attempt it is repeating.
+    injected = sample_source_args.arguments(
+        Path("samples") / config.directory / "agent.py",
+        os.environ.get("SOURCE", sample_source_args.PUBLISHED),
+    )
+    sample_command = [
+        "uv",
+        "run",
+        "--no-project",
+        *injected,
+        f"samples/{config.directory}/agent.py",
+    ]
     check_command = [
         sys.executable,
         str(Path(__file__).with_name(config.checker)),

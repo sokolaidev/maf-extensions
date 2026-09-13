@@ -237,7 +237,12 @@ def test_linux_executes_the_production_retry_bash_command(
     harness = tmp_path / "harness with spaces"
     scripts = harness / "scripts"
     scripts.mkdir(parents=True)
-    shutil.copyfile(ROOT / "scripts/retry_live_sample.py", scripts / "retry_live_sample.py")
+    # The harness is a sparse checkout of `scripts/`, so everything the retry harness imports
+    # is there beside it — including the reader that decides where the sample's libraries
+    # come from. Copying the real ones rather than stubbing: a stub would not catch an import
+    # this file forgot to carry, which is what this test exists to catch.
+    for name in ("retry_live_sample.py", "sample_source_args.py", "sample_blocks.py"):
+        shutil.copyfile(ROOT / "scripts" / name, scripts / name)
     tally = tmp_path / "attempts"
     tally.write_text("")
     for name in ("check_live_fix_loop_sample.py", "check_live_host_tools_call_sample.py"):

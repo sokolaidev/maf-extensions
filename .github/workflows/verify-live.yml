@@ -56,7 +56,17 @@ name: Verify (live)
 # See docs/maintainers.md.
 #
 # PEP 723 metadata is the single dependency source; `--no-project` ensures uv resolves its
-# published packages rather than this checkout's workspace.
+# published packages rather than this checkout's workspace. That is the default and the
+# point of a release verification: it asks whether the published wheels still work together.
+#
+# `source: branch` asks the other question — whether this checkout still runs the samples,
+# before any of it is published. `scripts/sample_source_args.py` prints one `--with <path>` per
+# package of this repository the sample's own block names, and the run lines word-split that
+# onto the command line; under `published` it prints nothing, so those lines are what they
+# always were. There is no environment variable for it: measured, `uv run` over a PEP 723
+# script does not read `UV_OVERRIDE`, and neither `--with` nor `--with-requirements` has one.
+# A branch run asserts no published version, because a package's in-tree version is the one it
+# last released — the assertion would pass while something else entirely was under test.
 on:
   workflow_dispatch:
     inputs:
@@ -70,6 +80,14 @@ on:
         required: false
         type: string
         default: ""
+      source:
+        description: "Where the samples' libraries come from"
+        required: false
+        type: choice
+        options:
+          - published
+          - branch
+        default: published
   workflow_call:
     inputs:
       package:
@@ -82,6 +100,11 @@ on:
         required: false
         type: string
         default: ""
+      source:
+        description: "Where the samples' libraries come from: published or branch"
+        required: false
+        type: string
+        default: "published"
 
 # Key by package because GitHub retains only one pending run per concurrency group; a global group
 # silently drops checks from parallel package releases. Keep same-package runs serialized and never
@@ -103,6 +126,7 @@ permissions:
 # checks — which is how a change to one gets tried out. (#318.)
 env:
   HARNESS: ${{ startsWith(github.ref, 'refs/tags/') && '.harness' || '.' }}
+  SOURCE: ${{ inputs.source || 'published' }}
 
 jobs:
   acas-images:
@@ -272,12 +296,13 @@ jobs:
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
-          uv run --no-project samples/01_acas_bicep/agent.py | tee /tmp/sample-out.txt
+          source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/01_acas_bicep --source "$SOURCE")"
+          uv run --no-project $source_args samples/01_acas_bicep/agent.py | tee /tmp/sample-out.txt
           # stdlib-only, so the runner's own python3 runs it — uv run's env is not on its path.
           python3 "$HARNESS"/scripts/check_live_sample.py /tmp/sample-out.txt
 
       - name: Assert the published version the sample resolved
-        if: ${{ always() && inputs.version != '' }}
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -411,12 +436,13 @@ jobs:
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
-          uv run --no-project samples/03_acas_codeact/agent.py | tee /tmp/sample03-out.txt
+          source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/03_acas_codeact --source "$SOURCE")"
+          uv run --no-project $source_args samples/03_acas_codeact/agent.py | tee /tmp/sample03-out.txt
           # stdlib-only, so the runner's own python3 runs it — uv run's env is not on its path.
           python3 "$HARNESS"/scripts/check_live_codeact_sample.py /tmp/sample03-out.txt
 
       - name: Assert the published version the sample resolved
-        if: ${{ always() && inputs.version != '' }}
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -511,13 +537,14 @@ jobs:
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
-          uv run --no-project samples/05_docker_bicep/agent.py | tee /tmp/sample05-out.txt
+          source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/05_docker_bicep --source "$SOURCE")"
+          uv run --no-project $source_args samples/05_docker_bicep/agent.py | tee /tmp/sample05-out.txt
           # Sample 01's assertion, unchanged: the same file compiled by the same CLI produces
           # the same two rule ids, whatever ran it — and both samples print them the same way.
           python3 "$HARNESS"/scripts/check_live_sample.py /tmp/sample05-out.txt
 
       - name: Assert the published version the sample resolved
-        if: ${{ always() && inputs.version != '' }}
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -613,12 +640,13 @@ jobs:
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
-          uv run --no-project samples/06_docker_codeact/agent.py | tee /tmp/sample06-out.txt
+          source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/06_docker_codeact --source "$SOURCE")"
+          uv run --no-project $source_args samples/06_docker_codeact/agent.py | tee /tmp/sample06-out.txt
           # The same assertion as sample 03: same task, same one right answer, same printed shape.
           python3 "$HARNESS"/scripts/check_live_codeact_sample.py /tmp/sample06-out.txt
 
       - name: Assert the published version the sample resolved
-        if: ${{ always() && inputs.version != '' }}
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -712,7 +740,8 @@ jobs:
           # As in sample-08: an image left behind by an earlier run would satisfy the on-disk
           # half without this run having rendered anything.
           rm -rf samples/07_docker_diagram/out
-          uv run --no-project samples/07_docker_diagram/agent.py | tee /tmp/sample07-out.txt
+          source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/07_docker_diagram --source "$SOURCE")"
+          uv run --no-project $source_args samples/07_docker_diagram/agent.py | tee /tmp/sample07-out.txt
           # The model's prose is not evidence a renderer ran, so the assertions are the four
           # things the host produced itself: the disposal line, the reclaim-failure count, the
           # purge failure printed when there is one, and the PNG. What the sandbox still holds
@@ -722,7 +751,7 @@ jobs:
             /tmp/sample07-out.txt samples/07_docker_diagram/out/diagram.png
 
       - name: Assert the published version the sample resolved
-        if: ${{ always() && inputs.version != '' }}
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -811,14 +840,15 @@ jobs:
           # the assertion mean anything: a summary left by an earlier run would pass it without
           # this run having landed a thing.
           rm -rf samples/08_docker_codeact_files/out
-          uv run --no-project samples/08_docker_codeact_files/agent.py | tee /tmp/sample08-out.txt
+          source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/08_docker_codeact_files --source "$SOURCE")"
+          uv run --no-project $source_args samples/08_docker_codeact_files/agent.py | tee /tmp/sample08-out.txt
           # Two halves, and the second is the point: the right total in stdout, and the declared
           # summary actually on disk under its declared name.
           python3 "$HARNESS"/scripts/check_live_codeact_files_sample.py \
             /tmp/sample08-out.txt samples/08_docker_codeact_files/out/summary.md
 
       - name: Assert the published version the sample resolved
-        if: ${{ always() && inputs.version != '' }}
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -924,13 +954,14 @@ jobs:
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
-          uv run --no-project samples/09_inprocess_bicep/agent.py | tee /tmp/sample09-out.txt
+          source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/09_inprocess_bicep --source "$SOURCE")"
+          uv run --no-project $source_args samples/09_inprocess_bicep/agent.py | tee /tmp/sample09-out.txt
           # Sample 01's assertion, unchanged: the same file compiled by the same CLI produces the
           # same two rule ids, whatever ran it. stdlib-only, so the runner's own python3 runs it.
           python3 "$HARNESS"/scripts/check_live_sample.py /tmp/sample09-out.txt
 
       - name: Assert the published version the sample resolved
-        if: ${{ always() && inputs.version != '' }}
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -988,14 +1019,15 @@ jobs:
       - name: Run sample 10 and assert the contract held
         run: |
           set -euo pipefail
-          uv run --no-project samples/10_inprocess_host_tools/agent.py | tee /tmp/sample10-out.txt
+          source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/10_inprocess_host_tools --source "$SOURCE")"
+          uv run --no-project $source_args samples/10_inprocess_host_tools/agent.py | tee /tmp/sample10-out.txt
           # Strict where its siblings are loose: no model stands between the library and
           # stdout, so the printed values are the library's own answers rather than a
           # retelling of them. stdlib-only, so the runner's own python3 runs it.
           python3 "$HARNESS"/scripts/check_live_host_tools_sample.py /tmp/sample10-out.txt
 
       - name: Assert the published version the sample resolved
-        if: ${{ always() && inputs.version != '' }}
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -1116,7 +1148,8 @@ jobs:
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
-          uv run --no-project samples/11_router_two_backends/agent.py | tee /tmp/sample11-out.txt
+          source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/11_router_two_backends --source "$SOURCE")"
+          uv run --no-project $source_args samples/11_router_two_backends/agent.py | tee /tmp/sample11-out.txt
           # Strict, like sample 10's, and for the same reason: every line the check reads
           # carries the `[measured]` tag, which the sample takes away from anything the model
           # said before printing it. Four assertions carry the job — the disposal count, 2 when
@@ -1132,7 +1165,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_router_sample.py /tmp/sample11-out.txt
 
       - name: Assert the published version the sample resolved
-        if: ${{ always() && inputs.version != '' }}
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -1187,7 +1220,8 @@ jobs:
       - name: Run sample 12 and assert every sandbox was reclaimed
         run: |
           set -euo pipefail
-          uv run --no-project samples/12_purge_lifecycle/agent.py | tee /tmp/sample12-out.txt
+          source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/12_purge_lifecycle --source "$SOURCE")"
+          uv run --no-project $source_args samples/12_purge_lifecycle/agent.py | tee /tmp/sample12-out.txt
           # Three assertions carry it: no container left behind; the purger finding 1 on the
           # abandoned thread — a purger wired to nothing reports 0 everywhere, so the tidy
           # thread's expected 0 cannot be the only zero checked; and the two reclaim failures
@@ -1198,7 +1232,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_purge_sample.py /tmp/sample12-out.txt
 
       - name: Assert the published version the sample resolved
-        if: ${{ always() && inputs.version != '' }}
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -1307,7 +1341,7 @@ jobs:
             --output /tmp/sample13-out.txt
 
       - name: Assert the published version the sample resolved
-        if: ${{ always() && inputs.version != '' }}
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -1426,14 +1460,15 @@ jobs:
           # the assertion mean anything: a summary left by an earlier run would pass it without
           # this run having landed a thing.
           rm -rf samples/14_acas_codeact_files/out
-          uv run --no-project samples/14_acas_codeact_files/agent.py | tee /tmp/sample14-out.txt
+          source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/14_acas_codeact_files --source "$SOURCE")"
+          uv run --no-project $source_args samples/14_acas_codeact_files/agent.py | tee /tmp/sample14-out.txt
           # Sample 08's check, unchanged, over this backend's run — which is the claim the pair
           # is making. stdlib-only, so the runner's own python3 runs it.
           python3 "$HARNESS"/scripts/check_live_codeact_files_sample.py \
             /tmp/sample14-out.txt samples/14_acas_codeact_files/out/summary.md
 
       - name: Assert the published version the sample resolved
-        if: ${{ always() && inputs.version != '' }}
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -1562,7 +1597,7 @@ jobs:
             --output /tmp/sample15-out.txt
 
       - name: Assert the published version the sample resolved
-        if: ${{ always() && inputs.version != '' }}
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -1662,7 +1697,7 @@ jobs:
             --output /tmp/sample15-docker-out.txt
 
       - name: Assert the published version the sample resolved
-        if: ${{ always() && inputs.version != '' }}
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -1752,7 +1787,8 @@ jobs:
           # No `rm -rf` of a landing directory, unlike sample 08: this sample lands into an
           # in-memory store that lives and dies with the process, so there is nothing an
           # earlier run could have left for this one to pass on.
-          uv run --no-project samples/16_docker_codeact_outputs_store/agent.py | tee /tmp/sample16-out.txt
+          source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/16_docker_codeact_outputs_store --source "$SOURCE")"
+          uv run --no-project $source_args samples/16_docker_codeact_outputs_store/agent.py | tee /tmp/sample16-out.txt
           # Two halves, and neither carries it alone: a read whose result was the bytes landed
           # under this call's folder, and the grand total in the reply. The exit bit a withheld
           # result still carries is a road the total on its own cannot rule out.
@@ -1760,7 +1796,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_codeact_outputs_store_sample.py /tmp/sample16-out.txt
 
       - name: Assert the published version the sample resolved
-        if: ${{ always() && inputs.version != '' }}
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -1853,14 +1889,15 @@ jobs:
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
-          uv run --no-project samples/17_deepagents_docker_bicep/agent.py | tee /tmp/sample17-out.txt
+          source_args="$(python3 "$HARNESS"/scripts/sample_source_args.py samples/17_deepagents_docker_bicep --source "$SOURCE")"
+          uv run --no-project $source_args samples/17_deepagents_docker_bicep/agent.py | tee /tmp/sample17-out.txt
           # Sample 05's rules, read out of the compiler's SARIF rather than out of a kind's
           # rendering — and without sample 05's phase assertion, because the model wrote the
           # command. stdlib-only, so the runner's own python3 runs it.
           python3 "$HARNESS"/scripts/check_live_deepagents_sample.py /tmp/sample17-out.txt
 
       - name: Assert the published version the sample resolved
-        if: ${{ always() && inputs.version != '' }}
+        if: ${{ always() && inputs.version != '' && inputs.source != 'branch' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}

@@ -30,6 +30,25 @@ _CHECK_CALL = re.compile(r"python3\s+(?P<prefix>\S*?)scripts/(?P<script>check_li
 #: name, since a name is prose and this is the thing that decides where they come from.
 _HARNESS_CHECKOUT = re.compile(r"^\s*path:\s*\.harness\s*$", re.MULTILINE)
 
+#: A step that resolves a sample and runs it. `$source_args` sits between the flag and the path
+#: when `scripts/sample_source_args.py` has something to inject, so this matches across it: a
+#: detector that stopped recognising those jobs would make every assertion over them vacuous.
+_RESOLVES_SAMPLE = re.compile(r"uv run --no-project (?:\$source_args )?samples/")
+
+#: The sample directory a step asks `sample_source_args.py` about, and the one it then runs.
+_ASKS_FOR = re.compile(r"sample_source_args\.py (samples/[0-9A-Za-z_]+)")
+_RUNS = re.compile(r"uv run --no-project (?:\$source_args )?(samples/[0-9A-Za-z_]+)/agent\.py")
+
+
+def sample_jobs() -> dict[str, list]:
+    """Every job that runs a sample directly, by name, with its steps."""
+    found = {}
+    for job, definition in _WORKFLOW.get("jobs", {}).items():
+        steps = [step for step in definition.get("steps", []) if isinstance(step, dict)]
+        if any(_RESOLVES_SAMPLE.search(str(s.get("run", ""))) for s in steps):
+            found[job] = steps
+    return found
+
 
 class TestEveryLiveCheckComesFromTheHarness:
     def test_the_workflow_still_runs_live_checks(self):
@@ -96,15 +115,7 @@ class TestASampleWaitsForItsOwnEdgeBeforeItResolves:
     eventually consistent between them — so the wait has to happen where the resolving happens.
     """
 
-    @staticmethod
-    def _sample_jobs() -> dict[str, list]:
-        """Every job that runs a sample, by name, with its steps."""
-        found = {}
-        for job, definition in _WORKFLOW.get("jobs", {}).items():
-            steps = [step for step in definition.get("steps", []) if isinstance(step, dict)]
-            if any("uv run --no-project samples/" in str(s.get("run", "")) for s in steps):
-                found[job] = steps
-        return found
+    _sample_jobs = staticmethod(sample_jobs)
 
     def test_the_workflow_still_runs_samples(self):
         # Without this the tests below pass vacuously on a file that stopped running any.
@@ -123,9 +134,7 @@ class TestASampleWaitsForItsOwnEdgeBeforeItResolves:
                 i for i, s in enumerate(steps) if "await_live_version.py" in str(s.get("run", ""))
             )
             resolves = next(
-                i
-                for i, s in enumerate(steps)
-                if "uv run --no-project samples/" in str(s.get("run", ""))
+                i for i, s in enumerate(steps) if _RESOLVES_SAMPLE.search(str(s.get("run", "")))
             )
             assert waits < resolves, f"{job} waits for the edge after resolving against it"
 
@@ -143,3 +152,71 @@ class TestASampleWaitsForItsOwnEdgeBeforeItResolves:
             for step in steps:
                 if "await_live_version.py" in str(step.get("run", "")):
                     assert "inputs.version != ''" in str(step.get("if", "")), job
+
+
+class TestTheSourceUnderTestIsWhatTheInputSays:
+    """Which libraries a sample runs against is a silent property of the job.
+
+    Both directions fail quietly. A `branch` run that forgot to inject resolves the index and
+    reports the branch green; a `published` run that injected anything stops measuring the thing
+    a release verification exists to measure. Nothing in the run log says which happened, so the
+    wiring is pinned here instead.
+    """
+
+    def test_every_sample_job_asks_which_source_to_run(self):
+        for job, steps in sample_jobs().items():
+            assert any("sample_source_args.py" in str(s.get("run", "")) for s in steps), (
+                f"{job} runs a sample without asking where its libraries come from"
+            )
+
+    def test_the_question_comes_from_the_harness(self):
+        """Same reason every check does: a tag's copy cannot be fixed for a release already cut."""
+        for job, steps in sample_jobs().items():
+            for step in steps:
+                run = str(step.get("run", ""))
+                if "sample_source_args.py" in run:
+                    assert '"$HARNESS"/scripts/sample_source_args.py' in run, job
+
+    def test_each_job_asks_about_the_sample_it_runs(self):
+        """A step copied from another job would otherwise inject that one's packages."""
+        for job, steps in sample_jobs().items():
+            for step in steps:
+                run = str(step.get("run", ""))
+                asked, ran = _ASKS_FOR.findall(run), _RUNS.findall(run)
+                if ran:
+                    assert asked == ran, f"{job} asks about {asked} and runs {ran}"
+
+    def test_the_answer_reaches_the_command(self):
+        """Computing the arguments and not passing them is the quietest way to lose this."""
+        for job, steps in sample_jobs().items():
+            for step in steps:
+                run = str(step.get("run", ""))
+                if _RUNS.search(run):
+                    assert "$source_args" in run, f"{job} computes the source and drops it"
+
+    def test_a_branch_run_asserts_no_published_version(self):
+        """In-tree versions are the last released ones, so the assertion would pass regardless."""
+        gated = [
+            step
+            for steps in sample_jobs().values()
+            for step in steps
+            if "check_live_versions.py" in str(step.get("run", ""))
+        ]
+        assert gated, "no job asserts a resolved version any more"
+        for step in gated:
+            assert "inputs.source != 'branch'" in str(step.get("if", "")), step.get("name")
+
+    def test_both_entry_points_take_the_input(self):
+        for trigger in ("workflow_dispatch", "workflow_call"):
+            inputs = _WORKFLOW[True][trigger]["inputs"]
+            assert "source" in inputs, trigger
+            assert inputs["source"]["default"] == "published", trigger
+
+    def test_the_dispatch_offers_exactly_the_two_modes(self):
+        options = _WORKFLOW[True]["workflow_dispatch"]["inputs"]["source"]["options"]
+        assert options == ["published", "branch"]
+
+    def test_the_retried_samples_are_injected_too(self):
+        """13, 15 and 15-docker run through the retry harness, so the flags cannot be shell-side."""
+        harness = (REPO_ROOT / "scripts" / "retry_live_sample.py").read_text("utf-8")
+        assert "sample_source_args" in harness
