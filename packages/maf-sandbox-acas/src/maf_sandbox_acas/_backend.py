@@ -321,6 +321,9 @@ _LIMITS = SandboxLimits(files_in=_FILES_LIMITS, files_out=_FILES_LIMITS)
 # serving FILES_DELETE and conservatively refuses writing workloads on a completed failure.
 # FILES_IN is never withheld — it is this backend's only in-door — and acquire instead chooses
 # which principal its writes run as, per sandbox (#1131). See `_AcasSandbox.write_file`.
+# FILES_OUT and FILES_LIST retain native host-authority reads with a check-then-act residual:
+# read can follow a replaced final file or parent, stat a parent, and list either. The removal
+# probe is not a read-authority bound. Atomic confinement needs microsoft/azure-container-apps#1831.
 _DECLARATIONS = BackendDeclarations(
     capabilities=frozenset(
         {
@@ -1040,6 +1043,9 @@ class _AcasSandbox:
 
         The **final** component is described rather than refused: a link reported as
         :data:`~maf_sandbox.EntryKind.SYMLINK` is how a caller learns it is one.
+
+        The ancestor check is not held: a subsequent swap can return outside metadata under
+        the requested path. The host-authority plane is not bounded to the guest's reach.
         """
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         guest = await confine_resolve_guest_read_path(
@@ -1143,10 +1149,10 @@ class _AcasSandbox:
         arrived, because the SDK buffers the whole response rather than exposing an incremental
         hook and a stat is only a promise about a file the guest may still rewrite.
 
-        That promise is also the residual this cannot close: a guest that swaps the stat-ed file
-        for a symlink between the two calls wins, since the service follows it and this API has
-        no no-follow read.  An atomic no-follow read, or a frozen guest filesystem, would close
-        it; nothing available here does.
+        A parent or final file swapped after classification can redirect this host-authority
+        read outside the working directory, including to bytes the guest cannot read. This
+        residual is retained with FILES_OUT: the native API has no atomic confined read, and
+        stopped sandboxes refuse file operations. Size limits do not establish confinement.
         """
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         from azure.core.exceptions import ResourceNotFoundError
@@ -1199,12 +1205,15 @@ class _AcasSandbox:
         """Enumerate the entries directly under ``path``.
 
         Native here, which is why this is the only backend that declares
-        :data:`~maf_sandbox.Capability.FILES_LIST`.  Every listed entry is confined the same way
-        a declared path is, and must additionally be a direct child of the directory that was
+        :data:`~maf_sandbox.Capability.FILES_LIST`. Every returned entry path is lexically confined
+        to the working directory and must be a direct child of the directory that was
         listed: one naming something else fails the listing rather than being reported as a path
         a caller may go on to read.  ``path`` itself is confined by component, the directory
         listed included — the service enumerates through a symlinked directory as readily as it
         reads through one.
+
+        The check is not held: a replaced directory or ancestor can expose outside names and
+        metadata under the requested prefix. Validating that prefix cannot detect the swap.
         """
         working_directory = resolve_guest_working_directory(working_directory, self._work_dir)
         from azure.core.exceptions import ResourceNotFoundError
