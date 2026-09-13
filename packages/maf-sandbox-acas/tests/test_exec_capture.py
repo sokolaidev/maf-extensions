@@ -11,6 +11,9 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from azure.core.pipeline import AsyncPipeline
+from azure.core.pipeline.policies import AsyncRetryPolicy
+from azure.core.pipeline.transport import AsyncHttpTransport
 from maf_sandbox import Egress, ExecResult, SandboxOutputError
 
 from maf_sandbox_acas._backend import _AcasSandbox, _Held
@@ -85,6 +88,46 @@ class _StalledClient:
         pass
 
 
+class _RetryAfterTransport(AsyncHttpTransport):
+    def __init__(self):
+        self.sent = 0
+        self.sleeping = asyncio.Event()
+
+    async def send(self, request, **kwargs):
+        self.sent += 1
+        return SimpleNamespace(status_code=429, headers={"Retry-After": "30"})
+
+    async def sleep(self, duration):
+        assert duration == 30
+        self.sleeping.set()
+        await asyncio.Event().wait()
+
+    async def open(self):
+        pass
+
+    async def close(self):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        pass
+
+
+class _RetryAfterClient(_StalledClient):
+    _endpoint = "https://sandbox.example"
+    _sbx_path = "/sandboxes/one"
+    _api_version = "test"
+
+    def __init__(self, pipeline):
+        super().__init__()
+        self._pipeline = pipeline
+
+    async def _dp_get(self, path, *, params=None):
+        return {"isDir": True, "isSymlink": False}
+
+
 @pytest.mark.parametrize("cancel", [False, True])
 @pytest.mark.parametrize("delete_fails", [False, True])
 def test_timeout_and_cancellation_invalidate_shared_instance_and_attempt_disposal(
@@ -107,6 +150,61 @@ def test_timeout_and_cancellation_invalidate_shared_instance_and_attempt_disposa
             assert "disposal must be retried" in raised.value.__notes__[0]
         with pytest.raises(SandboxOutputError, match="invalidated"):
             await other.exec("true", working_directory="/", timeout=1)
+
+    asyncio.run(scenario())
+
+
+def test_a_retry_after_sleep_that_reaches_the_exec_deadline_keeps_the_sandbox(monkeypatch):
+    from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
+
+    async def scenario():
+        transport = _RetryAfterTransport()
+        original = AsyncRetryPolicy(retry_status=7, retry_backoff_factor=2.0)
+        client = _RetryAfterClient(AsyncPipeline(transport, policies=[original]))
+        credential = SimpleNamespace()
+        monkeypatch.setattr("azure.identity.aio.DefaultAzureCredential", lambda: credential)
+        monkeypatch.setattr(
+            "azure.containerapps.sandbox.aio.SandboxGroupClient", lambda **_: client
+        )
+
+        backend = AcasSandboxBackend(
+            AcasSandboxConfig(endpoint="https://management.example.azuredevcompute.io")
+        )
+        assert backend._group_client() is client
+        observed = client._pipeline._impl_policies[0]
+        assert isinstance(observed, AsyncRetryPolicy)
+        assert observed is not original
+        assert observed.status_retries == 7 and observed.backoff_factor == 2.0
+        held = _Held(client.sandbox_id, egress=(Egress.CLOSED, frozenset()), write_road=True)
+        sandbox = _AcasSandbox(client, 0.05, held=held)
+
+        with pytest.raises(OSError, match="did not finish in time"):
+            await sandbox.write_file("child.txt", "child", working_directory="/maf-sandbox/work")
+
+        assert transport.sent == 1
+        assert not client.deleted and not held.unusable
+
+    asyncio.run(scenario())
+
+
+def test_cancelling_a_retry_after_sleep_still_disposes_the_sandbox():
+    from maf_sandbox_acas._retry import install_retry_observer
+
+    async def scenario():
+        transport = _RetryAfterTransport()
+        client = _RetryAfterClient(AsyncPipeline(transport, policies=[AsyncRetryPolicy()]))
+        install_retry_observer(client)
+        sandbox = _AcasSandbox(client, 30)
+        task = asyncio.create_task(
+            sandbox.exec_bounded(
+                "program", working_directory="/", timeout=30, max_output_bytes=1024
+            )
+        )
+        await transport.sleeping.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert client.deleted and sandbox._held.unusable
 
     asyncio.run(scenario())
 
