@@ -1279,7 +1279,7 @@ class TestTheFreezeAgainstARealEngine:
     def test_a_flipping_parent_never_redirects_a_write(self):
         async def scenario() -> None:
             sandbox = await self._flipping_guest(self.backend)
-            before = await self._flips(sandbox)
+            flips = await self._flips(sandbox)
             landed, refused = 0, 0
             for attempt in range(12):
                 try:
@@ -1292,10 +1292,16 @@ class TestTheFreezeAgainstARealEngine:
                 assert _inspected("container", sandbox.container_name, "{{.State.Paused}}") == (
                     "false"
                 )
-            # What keeps the assertion below from passing for free: a guest that had stopped
-            # flipping would leave nothing to redirect, and this requires it to have gone
-            # round more than a hundred times while those writes were being made.
-            assert await self._flips(sandbox) - before > 100
+                # What keeps the assertions below from passing for free: a guest that had
+                # stopped flipping would leave nothing to redirect. Asked once per write
+                # rather than as one total over a floor, because how far the guest gets is
+                # set by how long the host's own `docker` calls take to answer — a floor
+                # states the speed of the machine that happened to run it, and reds a slower
+                # one for no defect (#1204). That the attack moved again is true of a live
+                # guest anywhere, and it is the whole of what this has to establish.
+                later = await self._flips(sandbox)
+                assert later > flips, f"the guest stopped flipping before write {attempt}"
+                flips = later
             assert landed + refused == 12
             listed = await sandbox.exec(
                 ["ls", "-A", self._VICTIM], working_directory="/", timeout=30
