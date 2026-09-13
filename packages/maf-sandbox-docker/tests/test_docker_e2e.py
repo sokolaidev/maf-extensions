@@ -1279,7 +1279,7 @@ class TestTheFreezeAgainstARealEngine:
     def test_a_flipping_parent_never_redirects_a_write(self):
         async def scenario() -> None:
             sandbox = await self._flipping_guest(self.backend)
-            before = await self._flips(sandbox)
+            flips = await self._flips(sandbox)
             landed, refused = 0, 0
             for attempt in range(12):
                 try:
@@ -1292,10 +1292,11 @@ class TestTheFreezeAgainstARealEngine:
                 assert _inspected("container", sandbox.container_name, "{{.State.Paused}}") == (
                     "false"
                 )
-            # What keeps the assertion below from passing for free: a guest that had stopped
-            # flipping would leave nothing to redirect, and this requires it to have gone
-            # round more than a hundred times while those writes were being made.
-            assert await self._flips(sandbox) - before > 100
+                # A stopped flipper could make the redirect check pass vacuously. Check progress
+                # after each write instead of using an aggregate floor tied to host call latency.
+                later = await self._flips(sandbox)
+                assert later > flips, f"the guest stopped flipping before write {attempt}"
+                flips = later
             assert landed + refused == 12
             listed = await sandbox.exec(
                 ["ls", "-A", self._VICTIM], working_directory="/", timeout=30
