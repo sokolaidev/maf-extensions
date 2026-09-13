@@ -1169,7 +1169,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "azure-containerapps-sandbox", specifier = ">=0.1.0b3,<0.2" },
+    { name = "azure-containerapps-sandbox", specifier = ">=0.1.0b4,<0.1.0b5" },
     { name = "azure-identity", specifier = ">=1.25.1,<2" },
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
 ]
