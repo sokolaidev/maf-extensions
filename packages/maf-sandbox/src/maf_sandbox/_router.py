@@ -2092,7 +2092,7 @@ class SandboxRouter:
         if rung is Cleanup.RESET and sandbox is not None:
             try:
                 async with asyncio.timeout(bound):
-                    previous = await _reset_instance(sandbox, timeout=bound)
+                    await _reset_instance(sandbox, timeout=bound)
             except (asyncio.CancelledError, GeneratorExit):
                 raise
             except Exception as unreset:  # noqa: BLE001 — escalates rather than propagates
@@ -2105,15 +2105,18 @@ class SandboxRouter:
                     error_detail(unreset),
                 )
             else:
-                self._remember_instance(
-                    key,
-                    spec.kind,
-                    backend,
-                    sandbox,
-                    previous=previous,
-                    execution_contract=spec.execution_contract,
-                )
                 return None
+            finally:
+                # A reset can replace the physical instance before reporting failure.
+                if _instance_id(sandbox) is not None:
+                    self._remember_instance(
+                        key,
+                        spec.kind,
+                        backend,
+                        sandbox,
+                        previous=instance_id,
+                        execution_contract=spec.execution_contract,
+                    )
             unclean = unclean or "the reset failed"
         return await self._dispose_the_kind(
             key,

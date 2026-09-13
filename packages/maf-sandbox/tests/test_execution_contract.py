@@ -93,6 +93,61 @@ def test_reset_carries_the_contract_to_the_new_instance_identity():
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("contract", [None, "python:exec"])
+@pytest.mark.parametrize("outcome", ["kept", "disposed", "cancelled", "closed"])
+def test_failed_reset_keeps_the_contract_until_disposal(contract, outcome, monkeypatch):
+    router, backend = _router(
+        snapshot=True,
+        min_cleanup=Cleanup.RESET,
+        reclaim=ReclaimConfig(failed_reclaim_policy=FailedReclaimPolicy.KEEP),
+    )
+    spec = replace(_SPEC, execution_contract=contract)
+    changed = replace(spec, execution_contract="python:run_code")
+
+    async def scenario():
+        admission = await router.enter_call(_KEY, spec, owner="call")
+        sandbox = await router.acquire(_KEY, spec, _admission=admission)
+        previous = sandbox.instance_id
+        original_reset = sandbox.reset
+        failure = {
+            "cancelled": asyncio.CancelledError,
+            "closed": GeneratorExit,
+        }.get(outcome, RuntimeError)
+
+        async def reset(*, timeout):
+            await original_reset(timeout=timeout)
+            raise failure("reset interrupted after replacement")
+
+        monkeypatch.setattr(sandbox, "reset", reset)
+        if outcome == "kept":
+            backend.dispose_failure = DisposalFailure("unknown", "not removed")
+
+        async def finish():
+            return await router.finish_call(
+                _KEY, spec, admission=admission, owner="call", sandbox=sandbox
+            )
+
+        if outcome in {"cancelled", "closed"}:
+            with pytest.raises(failure):
+                await finish()
+        else:
+            result = await finish()
+            assert bool(result) == (outcome == "kept")
+            assert backend.disposed_instances[-1] == sandbox.instance_id
+        assert sandbox.instance_id != previous
+        monkeypatch.setattr(sandbox, "reset", original_reset)
+
+        if outcome != "disposed":
+            with pytest.raises(ValueError, match="different execution contract"):
+                await router.acquire(_KEY, changed)
+            assert await router.acquire(_KEY, spec) is sandbox
+            backend.dispose_failure = None
+            await router.dispose_kind(_KEY, spec.kind, timeout=5)
+        assert await router.acquire(_KEY, changed) is sandbox
+
+    asyncio.run(scenario())
+
+
 def test_an_external_replacement_may_have_a_new_contract():
     router, backend = _router(snapshot=True)
 
