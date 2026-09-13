@@ -6,6 +6,8 @@ import asyncio
 import builtins
 import io
 import posixpath
+import subprocess
+import sys
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -42,6 +44,7 @@ from maf_sandbox_codeact import (
     codeact_sandbox_spec,
     make_codeact_tools,
 )
+from maf_sandbox_codeact._runtime import runtime_program
 
 _RUNTIME = CodeactRuntime("Python statements; json is available. No subprocess or network modules.")
 _FILES_RUNTIME = replace(_RUNTIME, guest_work_dir="/runtime")
@@ -309,6 +312,33 @@ def test_file_bootstrap_bytes_are_also_bounded():
     assert not sandbox.programs and not backend.specs
 
 
+@pytest.mark.parametrize("runtime", [_RUNTIME, _FILES_RUNTIME], ids=["plain", "files"])
+@pytest.mark.parametrize(
+    "code",
+    [
+        "x = 1\nfrom __main__ import x\nassert x == 1",
+        "class Result:\n    value = 42\nimport pickle\nassert pickle.loads(pickle.dumps(Result())).value == 42",
+        "def result():\n    return 42\nimport pickle\nassert pickle.loads(pickle.dumps(result))() == 42",
+    ],
+    ids=["self_import", "pickle_instance", "pickle_function"],
+)
+def test_runtime_preserves_the_active_module_namespace(runtime, code):
+    program = runtime_program(runtime, code, "call")
+    # A separate interpreter provides a real __main__ without replacing pytest's module.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import os, sys\nos.makedirs = lambda *args, **kwargs: None\nexec(sys.stdin.read(), globals())",
+        ],
+        input=program,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.mark.parametrize("mode", [CodeactOutputs.DECLARED, CodeactOutputs.MANIFEST])
 @pytest.mark.parametrize("cleanup", [Cleanup.RESET, Cleanup.DISPOSE])
 def test_real_file_operations_collect_before_cleanup_and_do_not_change_cwd(mode, cleanup):
@@ -414,7 +444,15 @@ def test_unconfigured_hosts_still_receive_no_tools():
 
 @pytest.mark.parametrize(
     "path",
-    ["relative", "/runtime/../other", "/runtime/", "//runtime", "C:\\runtime", "/runtime\0bad"],
+    [
+        "relative",
+        "/",
+        "/runtime/../other",
+        "/runtime/",
+        "//runtime",
+        "C:\\runtime",
+        "/runtime\0bad",
+    ],
 )
 def test_bad_runtime_bases_refuse(path):
     with pytest.raises(ValueError, match="absolute POSIX"):

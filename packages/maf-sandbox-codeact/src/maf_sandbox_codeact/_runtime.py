@@ -15,7 +15,7 @@ class CodeactRuntime:
 
     The host verifies Python statement execution, stdout/stderr results and no expression echo;
     ``instructions`` describes the available facilities. File channels require ``guest_work_dir``:
-    an absolute POSIX storage base honored by the backend, writable
+    a normalized absolute POSIX storage base other than ``/``, honored by the backend and writable
     by Python's ``os.makedirs`` and ``open``. Programs receive ``guest_call_path`` beneath it;
     the working directory is never changed. Without a base, file channels are refused.
     """
@@ -29,13 +29,16 @@ class CodeactRuntime:
         guest_base = self.guest_work_dir
         if guest_base is not None and (
             not isinstance(cast(object, guest_base), str)
+            or guest_base == "/"
             or not guest_base.startswith("/")
             or guest_base.startswith("//")
             or "\\" in guest_base
             or "\0" in guest_base
             or posixpath.normpath(guest_base) != guest_base
         ):
-            raise ValueError("runtime guest_work_dir must be a normalized absolute POSIX path")
+            raise ValueError(
+                "runtime guest_work_dir must be a normalized absolute POSIX path other than '/'"
+            )
 
 
 def runtime_contract(runtime: CodeactRuntime | None) -> str:
@@ -54,5 +57,6 @@ def runtime_program(runtime: CodeactRuntime, code: str, guest_call_path: str) ->
     # Compile the user's source separately so future imports and module docstrings still work.
     return (
         f"__import__('os').makedirs({guest_path!r}, exist_ok=True)\n"
-        f"exec({code!r}, dict(globals(), guest_call_path={guest_path!r}))\n"
+        f"globals()['guest_call_path'] = {guest_path!r}\n"
+        f"exec({code!r}, globals())\n"
     )
