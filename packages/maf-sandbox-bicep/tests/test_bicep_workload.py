@@ -1096,6 +1096,40 @@ class TestARewrittenArgumentIsNeverQuoted:
             }
         )
 
+    def test_build_and_lint_messages_withhold_hidden_names_and_call_paths(self, monkeypatch):
+        name = f"{self.SUBSTITUTED}.bicep"
+        self._rewrite(monkeypatch, name)
+        call_directories: set[str] = set()
+
+        class DiagnosticSandbox(_KeepsWhatItWrote):
+            async def exec(self, command, *, working_directory, timeout):
+                call_directories.add(working_directory)
+                self._default_stdout = _sarif(
+                    "BCP091",
+                    f"Could not read '{working_directory}/{name}' or "
+                    f"'{working_directory}/absent.txt'.",
+                )
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        backend = _fake_backend(DiagnosticSandbox())
+        tool = _tool(InMemoryStore({name: "x", "main.bicep": "x"}), backend)
+        first = _run(tool, [name, "main.bicep"])
+        second = _run(tool, [name, "main.bicep"])
+
+        assert len(call_directories) == 2
+        assert first == second
+        assert all(directory not in first for directory in call_directories)
+        assert "EMAIL" not in first
+        assert "build(main.bicep)" in first and "lint(main.bicep)" in first
+        assert (
+            first.count(
+                f"Could not read 'the {len(name)}-character value at files[0]' or 'absent.txt'."
+            )
+            == 4
+        )
+
     def test_a_second_spelling_of_one_file_cannot_downgrade_its_rendering(self, monkeypatch):
         """One file has one rendering, whichever spelling asked for it.
 

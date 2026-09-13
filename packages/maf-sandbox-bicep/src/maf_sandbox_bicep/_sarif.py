@@ -8,6 +8,7 @@ testable and has been since the first commit.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from typing import Any, cast
 
@@ -158,25 +159,15 @@ def format_diagnostics(
 ) -> str:
     """Render a compact human-readable summary of SARIF diagnostics.
 
-    ``strip_prefix`` is the in-sandbox directory the sources were written to.  Real Bicep
-    reports locations as absolute ``file://`` URIs, so without it every diagnostic reads
-    ``file:///maf-sandbox/work/8f2c1d/main.bicep`` — which puts the sandbox's internal layout into
-    the model's context, and gives the *same* file a different path on every round because
-    the directory is per-call.  Stripped, it reads ``main.bicep``: the name the agent used.
+    ``strip_prefix`` removes the per-call sandbox directory from locations and paths in
+    messages, keeping diagnostics stable across retries. ``rename`` supplies safe display
+    names for both surfaces: pass every written file, including visible names mapped to
+    themselves, under its relative and absolute spellings. Exact matches use that display
+    name; ambiguous trailing matches withhold the name without attributing a request position.
 
-    ``rename`` maps a location to what may be shown in its place, and exists because stripping
-    the directory is not the same as making the name safe.  A name the framework expanded out of
-    hidden content reaches here having matched the caller's listing, and the compiler then
-    reports diagnostics *against* it — so a location renders the hidden value on the ordinary
-    path where the file simply has an error in it.
-
-    A caller passes **every file it wrote**, mapping the ones it may echo to themselves, and
-    under every spelling the compiler might use for them — including the absolute path it was
-    given, which is what a real diagnostic reports and what makes the match exact rather than
-    inferred.  Not only the unshowable ones: a map of those alone cannot tell a diagnostic about
-    a visible file from one about a hidden file that shares its basename.  A location matching
-    nothing is shown as the compiler reported it, because a file the caller never wrote is one
-    it cannot vouch for either way.
+    Message paths may be quoted or bare, including ``file://`` URIs. Other URI schemes and
+    paths outside ``strip_prefix`` with no rename match stay as reported: this is a display
+    policy for known paths, not a general redactor of compiler text.
     """
     if not diagnostics:
         return f"{phase}: no diagnostics"
@@ -199,9 +190,8 @@ def format_diagnostics(
             else:
                 loc_parts.append(f)
         loc = ", ".join(loc_parts) if loc_parts else "—"
-        lines.append(
-            f"  [{d.get('level', '?')}] {d.get('rule', '')} @ {loc}: {d.get('message', '')}"
-        )
+        message = _message_text(str(d.get("message", "")), strip_prefix, rename)
+        lines.append(f"  [{d.get('level', '?')}] {d.get('rule', '')} @ {loc}: {message}")
     return "\n".join(lines)
 
 
@@ -219,3 +209,50 @@ def _relative_location(uri: str, strip_prefix: str | None) -> str:
                 return relative
         path = path.removeprefix(prefix)
     return path
+
+
+_MESSAGE_WORD = re.compile(r"""[^\s'"`<>()\[\]{},;]+""")
+_MESSAGE_PART = re.compile(
+    r"""(?P<quote>['"`])(?P<quoted>[^\r\n]*?)(?P=quote)|""" + _MESSAGE_WORD.pattern
+)
+_URI_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+_DRIVE_PATH = re.compile(r"^[A-Za-z]:[/\\]")
+
+
+def _message_path(raw: str, strip_prefix: str | None, rename: Mapping[str, str] | None) -> str:
+    """Apply the location policy while preserving unrelated prose and non-file URIs."""
+    if _URI_SCHEME.match(raw) and not raw.startswith("file://") and not _DRIVE_PATH.match(raw):
+        return raw
+    absolute = raw.removeprefix("file://")
+    path = absolute.replace("\\", "/")
+    shown = _renamed(_relative_location(path, strip_prefix), absolute, rename)
+    return raw if shown == path else shown
+
+
+def _message_text(message: str, strip_prefix: str | None, rename: Mapping[str, str] | None) -> str:
+    """Rewrite complete path tokens once, so replacements cannot become new rename inputs."""
+    if not strip_prefix and not rename:
+        return message
+
+    def word(match: re.Match[str]) -> str:
+        raw = match.group()
+        path = raw.rstrip(".:!?")
+        return _message_path(path, strip_prefix, rename) + raw[len(path) :]
+
+    def part(match: re.Match[str]) -> str:
+        quote = match.group("quote")
+        if quote is None:
+            return word(match)
+        raw = match.group("quoted")
+        if (
+            not any(c.isspace() for c in raw)
+            or raw.startswith(("/", "\\", "file://"))
+            or _DRIVE_PATH.match(raw)
+            or (rename and raw in rename)
+        ):
+            shown = _message_path(raw, strip_prefix, rename)
+        else:
+            shown = _MESSAGE_WORD.sub(word, raw)
+        return quote + shown + quote
+
+    return _MESSAGE_PART.sub(part, message)
