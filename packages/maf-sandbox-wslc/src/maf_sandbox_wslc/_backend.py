@@ -31,8 +31,7 @@ import tarfile
 import tempfile
 import threading
 import time
-import weakref
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -962,14 +961,12 @@ class WslcSandboxBackend:
         self._undeleted_kinds: dict[tuple[str, str, str, str], dict[str, str]] = {}
         self._disposal_tokens: dict[tuple[str, str, str, str], dict[str, object]] = {}
         self._disposal_guard = threading.Lock()
-        # Get-or-create serialised per (running loop, key): a create names no container until it
-        # returns, so two acquires racing one key would each build a network, a proxy and a
-        # sandbox. Per loop because an asyncio.Lock binds to the loop that first waits on it, and
-        # weak-keyed on the loop so a process that runs a loop per call (asyncio.run) does not
-        # accumulate a lock table for loops long dead.
-        self._acquire_locks: weakref.WeakKeyDictionary[
-            asyncio.AbstractEventLoop, dict[tuple[str, str, str, str, str], asyncio.Lock]
-        ] = weakref.WeakKeyDictionary()
+        # Get-or-create serialised per (running loop, key, kind): a create names no container
+        # until it returns, so two acquires racing one key would each build a network, a proxy
+        # and a sandbox. Per loop because an asyncio.Lock binds to the loop that first waits on
+        # it, and counted so the last caller drops it; a contended lock keeps a weak loop key alive.
+        self._acquire_locks: dict[tuple[object, ...], tuple[asyncio.Lock, int]] = {}
+        self._acquire_locks_guard = threading.Lock()
 
     @property
     def name(self) -> str:
@@ -1881,14 +1878,24 @@ class WslcSandboxBackend:
             return ""
         return "allow:" + ",".join(sorted(map(str, spec.egress_allow)))
 
-    def _acquire_lock(self, key: SandboxKey, kind: str) -> asyncio.Lock:
-        """The get-or-create lock for one key and kind on the running loop (see ``__init__``)."""
-        per_loop = self._acquire_locks.setdefault(asyncio.get_running_loop(), {})
-        registry_key = (*_key_prefix(key), kind)
-        lock = per_loop.get(registry_key)
-        if lock is None:
-            lock = per_loop[registry_key] = asyncio.Lock()
-        return lock
+    @contextlib.asynccontextmanager
+    async def _acquire_lock(self, key: SandboxKey, kind: str) -> AsyncGenerator[None]:
+        """Hold the lock for one key and kind on the running loop (see ``__init__``)."""
+        table_key = (id(asyncio.get_running_loop()), *_key_prefix(key), kind)
+        with self._acquire_locks_guard:
+            held = self._acquire_locks.get(table_key)
+            lock = held[0] if held is not None else asyncio.Lock()
+            self._acquire_locks[table_key] = (lock, (held[1] if held is not None else 0) + 1)
+        try:
+            async with lock:
+                yield
+        finally:
+            with self._acquire_locks_guard:
+                _, callers = self._acquire_locks[table_key]
+                if callers > 1:
+                    self._acquire_locks[table_key] = (lock, callers - 1)
+                else:
+                    del self._acquire_locks[table_key]
 
     async def _create_workload(
         self, name: str, key: SandboxKey, spec: SandboxSpec, *, allowlisting: bool
