@@ -12,6 +12,7 @@ this file invented agrees with the code that reads it by construction.
 from __future__ import annotations
 
 import asyncio
+import gc
 import io
 import json
 import logging
@@ -21,6 +22,7 @@ import tempfile
 import threading
 import time
 import tracemalloc
+import weakref
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -396,6 +398,26 @@ class TestImageCommandProbes:
             assert len(probes) == 3
 
         asyncio.run(scenario())
+
+
+def test_a_contended_acquire_lock_does_not_outlive_its_loop():
+    """Contend deliberately because an uncontended asyncio lock never binds its loop."""
+    backend, _ = _backend_with(_machine(running=[_NAME]))
+    loops: list[weakref.ReferenceType[object]] = []
+
+    async def contend():
+        async def hold():
+            async with backend._acquire_lock(_KEY, _SPEC.kind):
+                await asyncio.sleep(0)
+
+        await asyncio.gather(hold(), hold())
+        loops.append(weakref.ref(asyncio.get_running_loop()))
+
+    for _ in range(5):
+        asyncio.run(contend())
+    gc.collect()
+    assert not backend._acquire_locks
+    assert [reference() for reference in loops] == [None] * len(loops)
 
 
 class TestBackendIdentity:
