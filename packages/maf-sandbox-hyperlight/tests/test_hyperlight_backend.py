@@ -106,7 +106,12 @@ def test_declarations_and_worker_free_construction(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.parametrize(
-    "capability", set(Capability) - {Capability.RUN_CODE, Capability.SNAPSHOT, Capability.RECLAIM}
+    "capability",
+    [
+        capability
+        for capability in Capability
+        if capability not in {Capability.RUN_CODE, Capability.SNAPSHOT, Capability.RECLAIM}
+    ],
 )
 def test_unsupported_capabilities_refuse_before_worker(backend, capability):
     spec = (
