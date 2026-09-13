@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from ._control import SandboxControl
 from ._models import DisposalResult, DisposalStatus, SandboxRecord
@@ -18,6 +18,15 @@ from ._server import EndpointManifest, runtime_directory
 
 class ControlEndpointError(RuntimeError):
     """A discovered endpoint could not answer a control request."""
+
+
+class _NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, *args: object, **kwargs: object) -> None:
+        """Keep a loopback request from being redirected to another origin."""
+        return None
+
+
+_LOCAL_OPENER = build_opener(ProxyHandler({}), _NoRedirectHandler())
 
 
 class HttpControl:
@@ -31,13 +40,12 @@ class HttpControl:
         request = Request(
             f"{self.manifest.endpoint}{path}",
             method=method,
-            headers={
-                "Authorization": f"Bearer {self.manifest.token}",
-                "Accept": "application/json",
-            },
+            headers={"Accept": "application/json"},
         )
         try:
-            with urlopen(request, timeout=self.timeout if timeout is None else timeout) as response:
+            with _LOCAL_OPENER.open(
+                request, timeout=self.timeout if timeout is None else timeout
+            ) as response:
                 return cast("object", json.loads(response.read()))
         except HTTPError as error:
             try:
@@ -52,7 +60,7 @@ class HttpControl:
             raise ControlEndpointError(f"control endpoint is unavailable: {error}") from error
 
     async def health(self) -> None:
-        """Require a compatible authenticated endpoint."""
+        """Require a compatible local endpoint."""
         value = await asyncio.to_thread(self._request, "GET", "/v1/health")
         if not isinstance(value, dict):
             raise ControlEndpointError("control endpoint returned an incompatible health record")
@@ -136,7 +144,7 @@ def read_manifests(directory: Path | None = None) -> tuple[EndpointManifest, ...
 
 
 async def discover_controls(directory: Path | None = None) -> CompositeControl:
-    """Return authenticated clients for responsive local endpoints."""
+    """Return clients for responsive local endpoints explicitly enabled by their hosts."""
     clients = [HttpControl(manifest) for manifest in read_manifests(directory)]
     healthy: list[HttpControl] = []
     results = await asyncio.gather(*(client.health() for client in clients), return_exceptions=True)

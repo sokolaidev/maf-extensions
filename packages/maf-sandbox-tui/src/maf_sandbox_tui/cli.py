@@ -23,8 +23,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--demo", action="store_true", help="run against a temporary demo host")
     parser.add_argument("--json", action="store_true", help="print one inventory snapshot and exit")
-    parser.add_argument("--endpoint", help="connect directly instead of discovering local hosts")
-    parser.add_argument("--token", help="bearer token for --endpoint")
+    parser.add_argument(
+        "--endpoint",
+        help="connect directly to a literal loopback URL instead of discovering local hosts",
+    )
     parser.add_argument("--source", default="manual", help="label for --endpoint")
     return parser
 
@@ -39,18 +41,13 @@ async def _show(control: SandboxControl, *, as_json: bool) -> None:
 
 async def _run(arguments: argparse.Namespace) -> None:
     if arguments.endpoint:
-        if not arguments.token:
-            raise SystemExit("--token is required with --endpoint")
         manifest = EndpointManifest(
             arguments.source,
             arguments.endpoint.rstrip("/"),
-            arguments.token,
             0,
         )
         await _show(HttpControl(manifest), as_json=arguments.json)
         return
-    if arguments.token:
-        raise SystemExit("--token requires --endpoint")
     if arguments.demo:
         with tempfile.TemporaryDirectory(prefix="mst-demo-") as temporary:
             control = MemoryControl.demo()

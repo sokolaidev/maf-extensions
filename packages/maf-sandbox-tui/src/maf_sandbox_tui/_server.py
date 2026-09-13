@@ -1,9 +1,9 @@
-"""Authenticated loopback control endpoint hosted by the owning MAF process."""
+"""Opt-in loopback control endpoint hosted by the owning MAF process."""
 
 from __future__ import annotations
 
 import asyncio
-import hmac
+import ipaddress
 import json
 import os
 import secrets
@@ -45,16 +45,35 @@ class EndpointManifest:
 
     source_id: str
     endpoint: str
-    token: str
     process_id: int
     protocol_version: int = PROTOCOL_VERSION
+
+    def __post_init__(self) -> None:
+        if not self.source_id:
+            raise ValueError("endpoint manifest source_id must be a nonempty string")
+        parts = urlsplit(self.endpoint)
+        try:
+            host, port = parts.hostname, parts.port
+            loopback = host is not None and ipaddress.ip_address(host).is_loopback
+        except ValueError as error:
+            raise ValueError("control endpoint must be an HTTP loopback URL with a port") from error
+        if (
+            parts.scheme != "http"
+            or not loopback
+            or port is None
+            or parts.username is not None
+            or parts.password is not None
+            or parts.path not in {"", "/"}
+            or parts.query
+            or parts.fragment
+        ):
+            raise ValueError("control endpoint must be an HTTP loopback URL with a port")
 
     def to_json(self) -> dict[str, object]:
         """Return the discovery file representation."""
         return {
             "source_id": self.source_id,
             "endpoint": self.endpoint,
-            "token": self.token,
             "process_id": self.process_id,
             "protocol_version": self.protocol_version,
         }
@@ -65,13 +84,9 @@ class EndpointManifest:
         if not isinstance(value, dict):
             raise ValueError("endpoint manifest must be an object")
         data = cast("dict[object, object]", value)
-        source_id, endpoint, token = (
-            data.get("source_id"),
-            data.get("endpoint"),
-            data.get("token"),
-        )
+        source_id, endpoint = data.get("source_id"), data.get("endpoint")
         process_id, version = data.get("process_id"), data.get("protocol_version")
-        if not all(isinstance(item, str) and item for item in (source_id, endpoint, token)):
+        if not all(isinstance(item, str) and item for item in (source_id, endpoint)):
             raise ValueError("endpoint manifest identity fields must be nonempty strings")
         if isinstance(process_id, bool) or not isinstance(process_id, int):
             raise ValueError("endpoint manifest process_id must be an integer")
@@ -80,7 +95,6 @@ class EndpointManifest:
         return cls(
             cast("str", source_id),
             cast("str", endpoint),
-            cast("str", token),
             process_id,
         )
 
@@ -98,13 +112,6 @@ class _ControlHandler(BaseHTTPRequestHandler):
     def _control_server(self) -> _ControlHttpServer:
         return cast("_ControlHttpServer", self.server)
 
-    def _authorized(self) -> bool:
-        authorization = self.headers.get("Authorization", "")
-        scheme, _, supplied = authorization.partition(" ")
-        return scheme.lower() == "bearer" and hmac.compare_digest(
-            supplied, self._control_server.owner.token
-        )
-
     def _send(self, status: HTTPStatus, value: object) -> None:
         body = json.dumps(value, separators=(",", ":")).encode("utf-8")
         self.send_response(status)
@@ -119,15 +126,7 @@ class _ControlHandler(BaseHTTPRequestHandler):
         future = asyncio.run_coroutine_threadsafe(operation, self._control_server.owner.loop)
         return future.result(timeout=self._control_server.owner.request_timeout)
 
-    def _require_authorization(self) -> bool:
-        if self._authorized():
-            return True
-        self._send(HTTPStatus.UNAUTHORIZED, {"error": "missing or invalid bearer token"})
-        return False
-
     def do_GET(self) -> None:  # noqa: N802
-        if not self._require_authorization():
-            return
         path = urlsplit(self.path).path
         try:
             if path == "/v1/health":
@@ -165,8 +164,6 @@ class _ControlHandler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "control request failed"})
 
     def do_DELETE(self) -> None:  # noqa: N802
-        if not self._require_authorization():
-            return
         path = urlsplit(self.path).path
         if not path.startswith("/v1/sandboxes/"):
             self._send(HTTPStatus.NOT_FOUND, {"error": "route not found"})
@@ -194,7 +191,11 @@ class _ControlHandler(BaseHTTPRequestHandler):
 
 
 class SandboxControlServer:
-    """Serve one MAF process's cooperative sandbox control surface on loopback."""
+    """Serve one MAF process's explicitly enabled local control surface.
+
+    Construction is inert. A host opens the loopback listener only by awaiting :meth:`start` or
+    entering the async context after its own opt-in configuration enables local control.
+    """
 
     def __init__(
         self,
@@ -212,7 +213,6 @@ class SandboxControlServer:
         self.source_id = source_id
         self.dispose_timeout = dispose_timeout
         self.request_timeout = dispose_timeout + 5.0
-        self.token = secrets.token_urlsafe(32)
         self._manifest_directory = manifest_directory or runtime_directory()
         self._manifest_path: Path | None = None
         self._httpd: _ControlHttpServer | None = None
@@ -237,7 +237,7 @@ class SandboxControlServer:
     @property
     def manifest(self) -> EndpointManifest:
         """Discovery record for the started endpoint."""
-        return EndpointManifest(self.source_id, self.endpoint, self.token, os.getpid())
+        return EndpointManifest(self.source_id, self.endpoint, os.getpid())
 
     async def start(self) -> SandboxControlServer:
         """Start serving and publish an atomic per-user discovery record."""
@@ -258,7 +258,6 @@ class SandboxControlServer:
             manifest_path = self._manifest_directory / f"{os.getpid()}-{identity}.json"
             temporary = manifest_path.with_suffix(".tmp")
             temporary.write_text(json.dumps(self.manifest.to_json()), encoding="utf-8")
-            temporary.chmod(0o600)
             temporary.replace(manifest_path)
             self._manifest_path = manifest_path
         except BaseException:
