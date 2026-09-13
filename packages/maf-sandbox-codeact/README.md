@@ -33,7 +33,7 @@ Pass `router=None` — or a router with no backend — and you get `[]` back: an
 
 ## Python runtime backends
 
-Pass the same `CodeactRuntime` to `make_codeact_tools` and `codeact_sandbox_spec` to select `run_code`. Omitting it keeps the exec variant. Both retain `kind="codeact"`; there is no method probing or fallback between them. `RUN_CODE` alone says nothing about the language, so this profile is the host's assertion that the backend evaluates Python statements and returns stdout/stderr without last-expression echo. Its required `instructions` describe the modules and facilities the host has verified. No shipped production backend currently declares `RUN_CODE`.
+Pass the same `CodeactRuntime` to `make_codeact_tools` and `codeact_sandbox_spec` to select `run_code`. Omitting it keeps the exec variant. Both retain `kind="codeact"`; there is no method probing or fallback between them. `RUN_CODE` alone says nothing about the language, so this profile is the host's assertion that the backend evaluates Python statements and returns stdout/stderr without last-expression echo. Its required `instructions` describe the modules and facilities the host has verified. See the [backend documentation](https://github.com/sokolaidev/maf-extensions/blob/main/docs/sandbox/backends/README.md) for supported runtimes and their constraints.
 
 ```python
 from maf_sandbox_codeact import CodeactRuntime, codeact_sandbox_spec, make_codeact_tools
