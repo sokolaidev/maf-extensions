@@ -4,6 +4,8 @@
 
 Subsequent decision for [#710](https://github.com/sokolaidev/maf-extensions/issues/710): [#1088](https://github.com/sokolaidev/maf-extensions/pull/1088) makes ACAS `reclaim` explicitly refuse and retains disposal. The ancestor-attestation design below remains a proposal for enabling reclamation in the future; it is not the resolution shipped for #710.
 
+Subsequent core decision for [#1168](https://github.com/sokolaidev/maf-extensions/issues/1168): [`../hosts.md`](../hosts.md#identity--whose-authority-sandbox-work-carries) owns the adopted sharing, retention and explicit authority-channel contract. Pillar D below remains design history: the implementation uses `AuthorityChannel.EGRESS_HEADER`, retains no acquired-principal protocol member, and makes no ACAS support claim. M1 and M7 established guest-token and retention limitations; M5 established full reads without a usable conditional-read optimization. The current method contract is uppercase tokens, as [`../network.md`](../network.md#method-scoped-allow-entries) records.
+
 ## The problem is a word
 
 The open issues on this axis do not disagree with each other. They talk past each other, because "identity" names four different things in this repository, and each issue is about a different one.

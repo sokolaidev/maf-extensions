@@ -54,8 +54,10 @@ from ._observer import (
 from ._protocol import (
     CLEANUP_RANK,
     DEFAULT_BACKEND_DECLARATIONS,
+    IDENTITY_SCOPE_RANK,
     ISOLATION_RANK,
     ISOLATION_SCOPE_RANK,
+    AttachedIdentity,
     BackendDeclarations,
     Capability,
     Cleanup,
@@ -63,6 +65,7 @@ from ._protocol import (
     DisposalFailure,
     EgressRule,
     Identity,
+    IdentityScope,
     Isolation,
     IsolationScope,
     OsFamily,
@@ -83,6 +86,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "ATTACH_REFUSALS",
     "NoSandboxBackend",
+    "SandboxAttachedIdentityNotPermitted",
     "SandboxBackendNotPermitted",
     "SandboxCapabilityDenied",
     "SandboxCapabilityNotSupported",
@@ -122,6 +126,10 @@ _LADDER = ", ".join(map(str, ISOLATION_RANK))
 #: The directions a `SandboxLimits` carries, read off the dataclass so a message naming them
 #: cannot drift from the type a backend is being asked for.
 _DIRECTION_FIELDS = tuple(field.name for field in dataclasses.fields(SandboxLimits))
+
+
+class SandboxAttachedIdentityNotPermitted(PermissionError):
+    """Attached authority is ambient or exceeds the host or workload's bounds."""
 
 
 class NoSandboxBackend(LookupError):
@@ -257,6 +265,7 @@ class SandboxTransferLimitsNotPermitted(PermissionError):
 #: and absent from `__init__`, so it stays internal. `test_maf_glue.py` derives the membership
 #: independently and fails if a refusal added above is left out.
 ATTACH_REFUSALS: tuple[type[Exception], ...] = (
+    SandboxAttachedIdentityNotPermitted,
     SandboxBackendNotPermitted,
     SandboxCapabilityDenied,
     SandboxCapabilityNotSupported,
@@ -411,6 +420,19 @@ def _declarations(backend: SandboxBackend) -> BackendDeclarations:
             )
         return DEFAULT_BACKEND_DECLARATIONS
     if isinstance(declared, BackendDeclarations):
+        attachment = declared.attached_identity
+        if not isinstance(cast("object", attachment), AttachedIdentity):
+            raise SandboxBackendNotPermitted(
+                f"sandbox backend {backend.name!r} attached_identity must be AttachedIdentity"
+            )
+        if isinstance(cast("object", declared.capabilities), (set, frozenset)) and (
+            (Capability.ATTACHED_IDENTITY in declared.capabilities)
+            != (attachment.scope is not IdentityScope.NONE)
+        ):
+            raise SandboxBackendNotPermitted(
+                f"sandbox backend {backend.name!r} capabilities and attached_identity disagree: "
+                "ATTACHED_IDENTITY must be declared exactly when an identity is attached"
+            )
         return declared
     kind = type(declared)
     raise SandboxBackendNotPermitted(
@@ -663,6 +685,8 @@ class SandboxRouter:
             Choosing RECLAIM explicitly accepts residual state even for unconfined kinds;
             directory reclamation and supervised process cleanup remain best-effort.
             A spec may raise this floor, never lower it.
+        max_identity_scope: Widest attached-authority sharing this host permits, default NONE.
+            A workload must also opt in and supply its own sharing and retention bounds.
         selected: Name of the backend to use. ``None`` picks the first registered one, which
             with a single backend is the whole selection story and stays correct when more
             arrive. A pin, and refused together with ``selection=Selection.PER_SPEC``:
@@ -708,6 +732,8 @@ class SandboxRouter:
             where *nothing* registered clears it. A single backend below the floor is not an
             error there — it is one no spec is ever routed to, named by a warning at
             construction, and still reached by disposal, which is why it stays registered.
+        SandboxAttachedIdentityNotPermitted: at construction, when fixed selection chooses
+            a backend whose attached-authority sharing exceeds the host's ``max_identity_scope``.
         ValueError: at construction, when ``min_isolation`` is not a rung — or
             ``min_isolation_scope`` not a scope — this package recognises, raised by
             :class:`Isolation` and :class:`IsolationScope` themselves rather than surfacing as a
@@ -731,6 +757,7 @@ class SandboxRouter:
         min_isolation: Isolation = Isolation.MICROVM,
         min_isolation_scope: IsolationScope = IsolationScope.CONVERSATION,
         min_cleanup: Cleanup = Cleanup.DISPOSE,
+        max_identity_scope: IdentityScope = IdentityScope.NONE,
         selected: str | None = None,
         selection: Selection = Selection.FIXED,
         denied_capabilities: Iterable[Capability] = (),
@@ -769,6 +796,7 @@ class SandboxRouter:
             asyncio.AbstractEventLoop, weakref.WeakValueDictionary[SandboxKey, asyncio.Lock]
         ] = weakref.WeakKeyDictionary()
         self._min_isolation = Isolation(str(min_isolation))
+        self._max_identity_scope = IdentityScope(str(max_identity_scope))
         self._min_isolation_scope = IsolationScope(str(min_isolation_scope))
         # Only the host may accept reuse; a spec can require stronger cleanup, never weaker.
         self._min_cleanup = Cleanup(str(min_cleanup))
@@ -888,7 +916,7 @@ class SandboxRouter:
                 )
             backend = matches[0]
 
-        _declarations(backend)
+        self._refuse_identity_scope(backend, _declarations(backend).attached_identity)
         declared = _declared_isolation(backend)
         if not meets_floor(declared, self._min_isolation):
             raise SandboxBackendNotPermitted(
@@ -900,6 +928,13 @@ class SandboxRouter:
                 "that means to run here lowers the floor explicitly with min_isolation."
             )
         return backend
+
+    def _refuse_identity_scope(self, backend: SandboxBackend, attachment: AttachedIdentity) -> None:
+        if IDENTITY_SCOPE_RANK[attachment.scope] > IDENTITY_SCOPE_RANK[self._max_identity_scope]:
+            raise SandboxAttachedIdentityNotPermitted(
+                f"sandbox backend {backend.name!r} attached identity scope {attachment.scope!r} "
+                f"exceeds this host's max_identity_scope={self._max_identity_scope!r}"
+            )
 
     def _eligible(self) -> list[SandboxBackend]:
         """Every registered backend, once each is readable and at least one clears the floor.
@@ -1175,13 +1210,44 @@ class SandboxRouter:
         self, backend: SandboxBackend, spec: SandboxSpec
     ) -> None:
         """Raise unless ``backend`` may serve ``spec``: floor, capabilities, guest shape,
-        limits, egress, scope.
+        limits, egress, scope, attached authority.
 
         One backend's half of the policy, with the host's own denials left to
         :meth:`_refuse_host_denials` — everything here is a question about *this* backend, so
         everything here is a question routing can answer by trying the next one.
         """
         declarations = _declarations(backend)
+        attachment = declarations.attached_identity
+        self._refuse_identity_scope(backend, attachment)
+        if attachment.scope is not IdentityScope.NONE:
+            if Capability.ATTACHED_IDENTITY not in spec.requires:
+                raise SandboxAttachedIdentityNotPermitted(
+                    f"sandbox backend {backend.name!r} would serve ambient attached identity "
+                    f"to {spec.kind!r}; the workload must explicitly require ATTACHED_IDENTITY"
+                )
+            if (
+                spec.max_identity_scope is None
+                or IDENTITY_SCOPE_RANK[attachment.scope]
+                > IDENTITY_SCOPE_RANK[spec.max_identity_scope]
+            ):
+                raise SandboxAttachedIdentityNotPermitted(
+                    f"sandbox backend {backend.name!r} attached identity exceeds the workload's "
+                    "max_identity_scope"
+                )
+            if (
+                attachment.auto_delete_seconds is None
+                or spec.max_identity_retention_seconds is None
+                or attachment.auto_delete_seconds > spec.max_identity_retention_seconds
+            ):
+                raise SandboxAttachedIdentityNotPermitted(
+                    f"sandbox backend {backend.name!r} attached identity exceeds the workload's "
+                    "max_identity_retention_seconds"
+                )
+            if attachment.channels != spec.authority_channels:
+                raise SandboxAttachedIdentityNotPermitted(
+                    f"sandbox backend {backend.name!r} attached identity channels do not match "
+                    "the workload's explicitly bounded authority channels"
+                )
         floor = self._effective_floor(spec)
         declared = _declared_isolation(backend)
         if not meets_floor(declared, floor):
@@ -1307,7 +1373,7 @@ class SandboxRouter:
 
     def ensure_can_serve(self, spec: SandboxSpec) -> None:
         """Raise unless ``spec`` may be served: denials, floor, capabilities, guest shape,
-        limits, egress, scope.
+        limits, egress, scope, attached authority.
 
         Called for you by :func:`maf_sandbox.maf.sandboxed_tool`, and it is also the whole of
         a host's own wiring test::
@@ -1331,6 +1397,8 @@ class SandboxRouter:
                 or when the backend declares its ceilings as something other than a
                 ``SandboxLimits``.
             SandboxEgressNotEnforced: when the backend cannot enforce the spec's egress mode.
+            SandboxAttachedIdentityNotPermitted: when attached authority is ambient or exceeds
+                the host or workload's sharing, retention or channel bounds.
             SandboxScopeNotEnforced: when the backend cannot serve the workload at the isolation
                 scope this host and the spec resolve to.
         """
@@ -1516,7 +1584,7 @@ class SandboxRouter:
     ) -> Sandbox:
         """Return a running sandbox for ``key``, creating one if needed.
 
-        Runs the same floor, capability, limit and egress checks as :meth:`ensure_can_serve`
+        Runs the same admission checks as :meth:`ensure_can_serve`
         before ever reaching the backend, so a caller that skips :meth:`ensure_can_serve` is
         still refused rather than served behind a boundary or capability set the spec did not
         agree to.  Under :data:`Selection.PER_SPEC` those checks are also what *chooses* the
@@ -1547,6 +1615,8 @@ class SandboxRouter:
                 or when the backend declares its ceilings as something other than a
                 ``SandboxLimits``.
             SandboxEgressNotEnforced: when the backend cannot confine egress to this spec.
+            SandboxAttachedIdentityNotPermitted: when attached authority is ambient or exceeds
+                the host or workload's sharing, retention or channel bounds.
             SandboxScopeNotEnforced: when the backend cannot serve the workload at the isolation
                 scope this host and the spec resolve to.
             ValueError: when ``key`` and the workload's effective scope disagree — a

@@ -17,7 +17,7 @@
 | `FILES_DELETE` | Delete a path and everything under it — `remove` | docker, acas |
 | `SNAPSHOT` | Snapshot and restore a sandbox for reuse, which also establishes the `RESET` cleanup rung — `Sandbox.reset` | nobody |
 | `RECLAIM` | Take a directory this stack created, which is what the `RECLAIM` cleanup rung runs — `Sandbox.reclaim`, which stays mandatory whether or not this is declared | docker |
-| `ATTACHED_IDENTITY` | A platform-attached identity scoped to the sandbox itself | nobody |
+| `ATTACHED_IDENTITY` | Explicitly opted-in platform authority, with sharing, retention and channel bounds matched by core; see [`hosts.md`](hosts.md#identity--whose-authority-sandbox-work-carries) | no real backend; fake defaults to none |
 | `EGRESS_METHODS` | Enforce the HTTP methods an allowlist entry names, within `egress_method_tokens` — [network policy](network.md#method-scoped-allow-entries) | nobody |
 
 `InProcessSandboxBackend` defaults to `DEFAULT_CAPABILITIES | {Capability.RECLAIM}`; tests can override its declarations. The router’s default for an unstated capability set remains:
@@ -252,7 +252,7 @@ The matcher question is unchanged and now reachable, since a `RUN_CODE`-only bac
 
 **`RECLAIM`** — take a directory this stack created. This is backend cleanup evidence; `SandboxSpec` rejects it in `requires`, so its absence selects a stronger cleanup rung instead of refusing the workload. `Sandbox.reclaim` remains a required method on every backend: the member implements either reclamation or an explicit refusal. The declaration establishes whether the framework may *resolve to* that cleanup rung, and the conformance suite refuses an undeclared capability before planting. Absent from `DEFAULT_CAPABILITIES` for the same reason silence resolves to `Cleanup.DISPOSE`: a backend that has not said it can take the directory is cleaned by the rung it certainly has. Docker declares it over its acquire-time reach check and guest-authority fallback. ACAS and WSLC do not declare it, so their workloads resolve above reclaim. A Docker workload still needs its own confinement claim to use the rung; the [Docker subject](backends/docker.md#measuring-a-confinement-claim) measures that claim.
 
-**`ATTACHED_IDENTITY`** — the vocabulary shipped with the enum; the plumbing did not. See [`hosts.md`](hosts.md) for the identity axis and what a spec carrying it would owe.
+**`ATTACHED_IDENTITY`** — core implements explicit opt-in, scope/retention/channel admission, authority-rule preservation and effective-state serialization. Real-backend verification and enforcement remain open; no real backend declares support. See [`hosts.md`](hosts.md) for the contract and the remaining backend obligations.
 
 ## Error taxonomy
 
@@ -277,6 +277,6 @@ Named exceptions under **one base**, `SandboxOutputError`, so backends do not di
 | codeact on a `RUN_CODE`-only backend: matcher disjunction or a second spec | open — the kind still requires `EXEC` flatly | [#425](https://github.com/sokolaidev/maf-extensions/issues/425) open |
 | A backend serving `RUN_CODE` and `SNAPSHOT` | open — the method exists now; a backend that answers it with anything but a refusal does not | [#382](https://github.com/sokolaidev/maf-extensions/issues/382) open |
 | `NETWORK` is removed rather than made matchable; egress is one mode a workload runs in, resolved against the set a backend enforces | shipped — the member is gone and no spec or backend lost anything, since neither ever used it; released in 0.20.0 | [#406](https://github.com/sokolaidev/maf-extensions/issues/406) (closed), umbrella [#265](https://github.com/sokolaidev/maf-extensions/issues/265) (closed) by [#534](https://github.com/sokolaidev/maf-extensions/pull/534) (merged); release [#542](https://github.com/sokolaidev/maf-extensions/pull/542) (merged) |
-| `ATTACHED_IDENTITY` plumbing behind the vocabulary | open — the capability name is this page's; everything behind it is the identity axis, recorded once | [`hosts.md`](hosts.md) § Status, row "Identity remainder" |
+| `ATTACHED_IDENTITY` admission and backend enforcement | partial — core bounds sharing, retention and authority channels; real backend verification and adoption remain open | [`hosts.md`](hosts.md) § Status, row "Identity remainder" |
 | A guest-OS axis, declared and matched | shipped — `OsFamily`, `os_families`, `requires_os_family`, `SandboxOsFamilyNotSupported`, checked at attach and again in `acquire`; released in 0.20.0. All three real backends declare one — `docker` off its daemon's `OSType`, `acas` and `wslc` as the constant each of them is — and what a guest has *installed* is still declared by nobody | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (closed) by [#532](https://github.com/sokolaidev/maf-extensions/pull/532) (merged); release [#542](https://github.com/sokolaidev/maf-extensions/pull/542) (merged); the remainder is [`guest-platform-and-commands.md`](guest-platform-and-commands.md)'s table |
 | Error taxonomy members as types under one base | shipped — settled in code, not by role | untracked |

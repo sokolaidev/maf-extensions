@@ -104,7 +104,8 @@ def test_call_scope_always_disposes(at_host):
     backend = InProcessSandboxBackend(
         declarations=dataclasses.replace(
             FAKE_BACKEND_DECLARATIONS,
-            capabilities=FAKE_BACKEND_DECLARATIONS.capabilities | set(Capability),
+            capabilities=FAKE_BACKEND_DECLARATIONS.capabilities
+            | {Capability.RECLAIM, Capability.SNAPSHOT},
             isolation_scopes=frozenset(IsolationScope),
         )
     )
