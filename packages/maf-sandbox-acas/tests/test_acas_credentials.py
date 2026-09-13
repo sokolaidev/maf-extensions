@@ -182,6 +182,56 @@ def test_cancelled_sole_constructor_releases_capacity():
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("suppress_cancellation", [False, True])
+def test_new_lease_waits_for_cancelled_construction_to_finish(suppress_cancellation):
+    async def scenario():
+        started, cleaning, finish = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        attempts = 0
+
+        async def factory():
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    cleaning.set()
+                    await finish.wait()
+                    if not suppress_cancellation:
+                        raise
+            return Credential()
+
+        grant = AcasCredentialBinding("app", "1", factory)
+        clients = pool(capacity=1)
+
+        async def use():
+            async with clients.lease(grant) as client:
+                return client
+
+        first = asyncio.create_task(use())
+        await started.wait()
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        await cleaning.wait()
+        second = asyncio.create_task(use())
+        try:
+            await asyncio.sleep(0)
+            assert not second.done() and attempts == 1
+            finish.set()
+            result = await second
+            assert not result.closed and not result.credential.closed
+            assert attempts == (1 if suppress_cancellation else 2)
+            assert second.cancelling() == 0
+        finally:
+            finish.set()
+            await clients.aclose()
+        assert result.closed == result.credential.closed == 1
+
+    asyncio.run(scenario())
+
+
 def test_failed_client_constructor_closes_the_credential_and_redacts_its_error():
     async def scenario():
         created = []

@@ -155,7 +155,10 @@ class ClientPool:
         assert task is not None
         failed = task.cancelled() or task.exception() is not None
         with self._guard:
-            if failed and not entry.users:
+            if not failed:
+                # A factory may complete successfully after handling cancellation.
+                entry.retiring = False
+            elif not entry.users:
                 if entry.client is None and entry.credential is None:
                     state.entries.pop(key, None)
                 else:
@@ -251,6 +254,7 @@ class ClientPool:
             assert task is not None
             if not entry.users:
                 if not task.done():
+                    entry.retiring = True
                     task.cancel()
                 elif task.cancelled() or task.exception() is not None:
                     if entry.client is None and entry.credential is None:
