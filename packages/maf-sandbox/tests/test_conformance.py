@@ -1778,7 +1778,7 @@ class TestCallScopeConformance:
     """
 
     _SPEC = SandboxSpec(kind="test", isolation_scope=IsolationScope.CALL, work_dir=_WORK)
-    _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-1", call_id="one")
+    _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="agent-1", call_id="one")
 
     def _router(self) -> SandboxRouter:
         backend = InProcessSandboxBackend(

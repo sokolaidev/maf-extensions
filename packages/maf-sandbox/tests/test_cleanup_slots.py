@@ -12,7 +12,7 @@ import pytest
 from maf_sandbox import SandboxKey
 from maf_sandbox._cleanup import ExclusiveSlots, _Slot, _Waiter
 
-_KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-1")
+_KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="agent-1")
 _KIND = "test"
 #: Callers are told apart by an opaque owner — a call id in the framework, a name here.
 OWNER = "call-1"

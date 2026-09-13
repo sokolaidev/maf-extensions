@@ -36,7 +36,7 @@ def test_context_switch_keeps_acquire_freeze_and_disposal_on_their_engine(
 
     client("context", "create", "first", "--docker", f"host={_FIRST}")
     client("context", "create", "second", "--docker", f"host={_SECOND}")
-    key = SandboxKey(scope=f"binding-{uuid4().hex}", thread_id="thread", agent_dir="agent")
+    key = SandboxKey(scope=f"binding-{uuid4().hex}", thread_id="thread", agent_id="agent")
     spec = SandboxSpec(kind="binding", image=_IMAGE, requires=frozenset())
     name = _container_name(key, spec.kind)
 

@@ -13,6 +13,7 @@ The split is what lets the same tool run against any of them unchanged, and it i
 from __future__ import annotations
 
 import re
+import warnings
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -771,13 +772,13 @@ class SandboxLimits:
 DEFAULT_SANDBOX_LIMITS: SandboxLimits = SandboxLimits()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class SandboxKey:
     """Identifies the one sandbox a caller may reach.
 
     ``scope`` is the host's user/tenant scope and ``thread_id`` the conversation; both come
     from the host's request context and never from model input, because a model-supplied
-    value here would let one conversation address another's sandbox.  ``agent_dir`` keys the
+    value here would let one conversation address another's sandbox.  ``agent_id`` keys the
     sandbox to a single agent, so two agents in one conversation do not share a
     filesystem.
 
@@ -791,10 +792,37 @@ class SandboxKey:
 
     scope: str
     thread_id: str
-    agent_dir: str
+    agent_id: str
     #: Defaulted, so a key written before this axis existed constructs unchanged and still means
     #: the conversation-scoped sandbox it always meant.
     call_id: str = ""
+
+    def __init__(
+        self,
+        scope: str,
+        thread_id: str,
+        agent_id: str | None = None,
+        call_id: str = "",
+        *,
+        agent_dir: str | None = None,
+    ) -> None:
+        """Build a key, accepting the former agent name during its deprecation window."""
+        if agent_id is None:
+            if agent_dir is None:
+                raise TypeError("agent_id is required")
+            warnings.warn(
+                "agent_dir is deprecated; use agent_id",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            agent_id = agent_dir
+        elif agent_dir is not None:
+            raise TypeError("pass agent_id or agent_dir, not both")
+
+        object.__setattr__(self, "scope", scope)
+        object.__setattr__(self, "thread_id", thread_id)
+        object.__setattr__(self, "agent_id", agent_id)
+        object.__setattr__(self, "call_id", call_id)
 
 
 @dataclass(frozen=True)

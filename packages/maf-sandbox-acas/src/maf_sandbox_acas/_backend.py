@@ -169,7 +169,7 @@ def _key_prefix(key: SandboxKey) -> tuple[str, str, str, str]:
     naming none are two entries here, which is what stops one call's cleanup retiring the
     other's record.
     """
-    return (key.scope, key.thread_id, key.agent_dir, key.call_id)
+    return (key.scope, key.thread_id, key.agent_id, key.call_id)
 
 
 def _sandbox_labels(key: SandboxKey, spec: SandboxSpec) -> dict[str, str]:
@@ -189,7 +189,7 @@ def _sandbox_labels(key: SandboxKey, spec: SandboxSpec) -> dict[str, str]:
         **{k: _label_value(v) for k, v in spec.labels.items()},
         _LABEL_SCOPE: _label_value(key.scope),
         _LABEL_THREAD: _label_value(key.thread_id),
-        _LABEL_AGENT: _label_value(key.agent_dir),
+        _LABEL_AGENT: _label_value(key.agent_id),
         **_call_filters(key),
         _LABEL_KIND: _label_value(spec.kind),
     }
@@ -1231,7 +1231,7 @@ class AcasSandboxBackend:
 
     def __init__(self, config: AcasSandboxConfig) -> None:
         self._config = config
-        # (scope, thread_id, agent_dir, call_id, kind) -> sandbox_id, for this process only.
+        # (scope, thread_id, agent_id, call_id, kind) -> sandbox_id, for this process only.
         # Keyed on scope so sandboxes from one user's session cannot be reused or deleted by
         # a request in another's, and on kind so two workloads on one agent never share a
         # sandbox — the first spec to arrive would decide the image and egress for both.
@@ -1479,7 +1479,7 @@ class AcasSandboxBackend:
                     sandbox_id,
                     spec.kind,
                     key.thread_id,
-                    key.agent_dir,
+                    key.agent_id,
                 )
                 return reused
             with held.invalidation_guard:
@@ -1520,7 +1520,7 @@ class AcasSandboxBackend:
             spec.kind,
             booted_from,
             key.thread_id,
-            key.agent_dir,
+            key.agent_id,
         )
         # Register immediately, so the sandbox is reachable by purge even if configure fails.
         held = self._registry[registry_key] = _Held(sc.sandbox_id, egress=egress, work_dir=work_dir)
@@ -1640,7 +1640,7 @@ class AcasSandboxBackend:
             "sandbox released: id=%s thread=%s agent=%s",
             sandbox_id,
             key.thread_id,
-            key.agent_dir,
+            key.agent_id,
         )
 
     async def _refuse_or_warn_on_guest_removal(
@@ -1833,7 +1833,7 @@ class AcasSandboxBackend:
         labels = {
             _LABEL_SCOPE: _label_value(key.scope),
             _LABEL_THREAD: _label_value(key.thread_id),
-            _LABEL_AGENT: _label_value(key.agent_dir),
+            _LABEL_AGENT: _label_value(key.agent_id),
             **_call_filters(key),
         }
         if kind is not None:
@@ -1883,7 +1883,7 @@ class AcasSandboxBackend:
                     "sandbox released: id=%s thread=%s agent=%s",
                     sandbox_id,
                     key.thread_id,
-                    key.agent_dir,
+                    key.agent_id,
                 )
             if deletion.failure is not None:
                 undeleted[sandbox_id] = deletion.failure

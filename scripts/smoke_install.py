@@ -102,7 +102,7 @@ def _smoke_maf_sandbox() -> str:
     backend = InProcessSandboxBackend(InProcessSandbox(default_stdout="ok"))
     # Below the default microvm floor: this part proves acquire/exec, not the floor.
     router = SandboxRouter([backend], min_isolation=Isolation.NONE)
-    key = SandboxKey(scope="s", thread_id="t", agent_dir="a")
+    key = SandboxKey(scope="s", thread_id="t", agent_id="a")
     sandbox = asyncio.run(router.acquire(key, SandboxSpec(kind="smoke")))
     result = asyncio.run(sandbox.exec("true", working_directory="/w", timeout=5))
     if result.stdout != "ok":
@@ -427,7 +427,7 @@ def _smoke_maf_sandbox_otel() -> str:
     # No SDK is installed here, which is the case a host without telemetry configured is in: the
     # API's no-op providers answer, and recording must still cost nothing and raise nothing.
     observer = OpenTelemetrySandboxObserver()
-    key = SandboxKey(scope="s", thread_id="t", agent_dir="a")
+    key = SandboxKey(scope="s", thread_id="t", agent_id="a")
     observer.sandbox_acquired(
         SandboxAcquired(
             key=key,
@@ -491,7 +491,7 @@ def _smoke_maf_sandbox_deepagents() -> str:
         raise SystemExit(f"FAIL: the spec requires {sorted(spec.requires)}")
     router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE)
     try:
-        MafSandbox(router, SandboxKey(scope="s", thread_id="t", agent_dir="a"), spec)
+        MafSandbox(router, SandboxKey(scope="s", thread_id="t", agent_id="a"), spec)
     except SandboxCapabilityNotSupported:  # the fake declares no FILES_OUT
         pass
     else:

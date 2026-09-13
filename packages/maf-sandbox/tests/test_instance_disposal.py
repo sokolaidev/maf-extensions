@@ -21,7 +21,7 @@ from maf_sandbox import (
 from maf_sandbox._router import CallAdmission
 from maf_sandbox.testing import FAKE_BACKEND_DECLARATIONS, InProcessSandbox, InProcessSandboxBackend
 
-KEY = SandboxKey(scope="scope", thread_id="thread", agent_dir="agent")
+KEY = SandboxKey(scope="scope", thread_id="thread", agent_id="agent")
 SPEC = SandboxSpec(kind="work")
 
 

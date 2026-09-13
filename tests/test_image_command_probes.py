@@ -243,8 +243,8 @@ def test_disposal_releases_probe_cache_even_when_the_instance_is_already_absent(
     backend = getattr(package, f"{kind.capitalize()}SandboxBackend")(
         getattr(package, f"{kind.capitalize()}SandboxConfig")()
     )
-    key = SandboxKey(scope="scope", thread_id="thread", agent_dir="agent")
-    backend._registry[(key.scope, key.thread_id, key.agent_dir, key.call_id, "probe")] = "name"
+    key = SandboxKey(scope="scope", thread_id="thread", agent_id="agent")
+    backend._registry[(key.scope, key.thread_id, key.agent_id, key.call_id, "probe")] = "name"
     backend._command_probes["name"] = ("instance", {"sh"})
     backend._command_probes["sibling"] = ("other-instance", {"sh"})
 

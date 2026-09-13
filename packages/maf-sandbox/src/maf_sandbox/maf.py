@@ -54,6 +54,7 @@ import posixpath
 import string
 import threading
 import time
+import warnings
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextvars import ContextVar
 from copy import copy
@@ -903,7 +904,7 @@ def make_caller_context(
             no conversation is bound.
 
     All three are **callables, not values**, and that is the load-bearing part rather than a
-    convenience.  A sandbox is keyed by ``(scope, thread_id, agent_dir)``; if the first two
+    convenience.  A sandbox is keyed by ``(scope, thread_id, agent_id)``; if the first two
     were captured when the tool was built, one conversation could reach another's sandbox on
     a host that builds an agent once and serves many conversations with it.  Reading them per
     call keeps the key a property of the host's request context, which is also why nothing
@@ -1295,7 +1296,7 @@ class SandboxToolSession:
         self,
         router: SandboxRouter,
         context: CallerContext,
-        agent_dir: str,
+        agent_id: str,
         spec: SandboxSpec,
         *,
         name: str,
@@ -1308,7 +1309,7 @@ class SandboxToolSession:
     ) -> None:
         self._router = router
         self._context = context
-        self._agent_dir = agent_dir
+        self._agent_id = agent_id
         self._spec = spec
         self._name = name
         self._logger = logger
@@ -1386,7 +1387,7 @@ class SandboxToolSession:
         return SandboxKey(
             scope=self._context.current_scope(),
             thread_id=thread_id,
-            agent_dir=self._agent_dir,
+            agent_id=self._agent_id,
             call_id=self._call_id(),
         )
 
@@ -2345,7 +2346,8 @@ def sandboxed_tool(
     *,
     router: SandboxRouter | None,
     context: CallerContext,
-    agent_dir: str,
+    agent_id: str | None = None,
+    agent_dir: str | None = None,
     spec: SandboxSpec,
     name: str,
     approval_mode: Literal["always_require", "never_require"] = "never_require",
@@ -2431,8 +2433,9 @@ def sandboxed_tool(
         router: The sandbox router, or ``None`` when sandboxing is not configured.
         context: How to read the caller's scope and thread, and how to enumerate the
             file store (see :func:`make_caller_context`).
-        agent_dir: The agent's directory name. Baked into the sandbox key here, at factory
+        agent_id: The agent's stable identifier. Baked into the sandbox key here, at factory
             time, rather than taken from the model at call time.
+        agent_dir: Deprecated spelling of ``agent_id``.
         spec: The sandbox this workload asks for.
         name: The tool's name, as declared to the model.
         approval_mode: MAF's per-tool approval setting.
@@ -2524,6 +2527,17 @@ def sandboxed_tool(
     """
     if router is None or not router.enabled:
         return []
+    if agent_id is None:
+        if agent_dir is None:
+            raise TypeError("agent_id is required")
+        warnings.warn(
+            "agent_dir is deprecated; use agent_id",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        agent_id = agent_dir
+    elif agent_dir is not None:
+        raise TypeError("pass agent_id or agent_dir, not both")
     if output_sink is not None and declarations is not None:
         raise ValueError(
             f"{name}: pass either output_sink or declarations=, never both. An explicit "
@@ -2592,7 +2606,7 @@ def sandboxed_tool(
     session = SandboxToolSession(
         router,
         context,
-        agent_dir,
+        agent_id,
         spec,
         name=name,
         logger=records,

@@ -13,7 +13,7 @@ from maf_sandbox_docker import DockerReapResult, DockerSandboxBackend, DockerSan
 from maf_sandbox_docker._backend import _container_name, _DockerResult, _sandbox_labels
 
 _NOW = datetime(2026, 9, 8, 12, tzinfo=UTC)
-_KEY = SandboxKey(scope="reap-test", thread_id="thread", agent_dir="agent")
+_KEY = SandboxKey(scope="reap-test", thread_id="thread", agent_id="agent")
 _SPEC = SandboxSpec(kind="test", image="test:local")
 _NAME = _container_name(_KEY, _SPEC.kind)
 
@@ -173,7 +173,7 @@ def test_a_lifetime_beyond_the_datetime_range_retains_every_resource(duration):
 
 def test_scope_is_encoded_and_rechecked_on_both_resource_types():
     scope = "an operator scope with spaces"
-    wanted_key = SandboxKey(scope=scope, thread_id="thread", agent_dir="agent")
+    wanted_key = SandboxKey(scope=scope, thread_id="thread", agent_id="agent")
     encoded = _sandbox_labels(wanted_key, _SPEC)
     wanted = _resource(1)
     wanted["Config"]["Labels"] = encoded
@@ -325,7 +325,7 @@ def test_an_unreadable_age_anchor_prevents_all_deletion(failure):
 
 def test_failed_removals_are_reported_for_each_resource_and_do_not_stop_the_reap():
     other_network = _resource(4, suffix="-net")
-    other_key = SandboxKey(scope="other-scope", thread_id="thread", agent_dir="agent")
+    other_key = SandboxKey(scope="other-scope", thread_id="thread", agent_id="agent")
     other_network["Name"] = _container_name(other_key, _SPEC.kind) + "-net"
     other_network["Labels"] = _sandbox_labels(other_key, _SPEC)
     engine = _Engine(

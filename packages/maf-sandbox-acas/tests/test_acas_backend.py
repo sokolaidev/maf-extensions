@@ -670,7 +670,7 @@ class TestWhichNamespaceASpecBootsFrom:
 
     @staticmethod
     def _key():
-        return SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        return SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
 
     def test_a_bare_name_boots_from_the_catalogue(self):
         from maf_sandbox import SandboxSpec
@@ -910,7 +910,7 @@ class TestImageCommandProbes:
         monkeypatch.setattr(_GuestSandboxClient, "exec", exec_command)
         client = _GuestGroupClient(_guest_removing(True))
         backend = _backend_with(client)
-        key = SandboxKey(scope="command-probes", thread_id="thread", agent_dir="agent")
+        key = SandboxKey(scope="command-probes", thread_id="thread", agent_id="agent")
 
         async def scenario():
             if warm:
@@ -935,7 +935,7 @@ class TestImageCommandProbes:
         monkeypatch.setattr(_GuestSandboxClient, "exec", exec_command)
         client = _GuestGroupClient(_guest_removing(True))
         backend = _backend_with(client)
-        key = SandboxKey(scope="command-probes", thread_id="thread", agent_dir="agent")
+        key = SandboxKey(scope="command-probes", thread_id="thread", agent_id="agent")
 
         async def scenario():
             spec = _spec_requiring(Capability.EXEC)
@@ -960,7 +960,7 @@ class TestAnImageWhoseGuestIsNotRoot:
 
     @staticmethod
     def _key(scope: str = "scope-a") -> SandboxKey:
-        return SandboxKey(scope=scope, thread_id="thread-1", agent_dir="devops-engineer")
+        return SandboxKey(scope=scope, thread_id="thread-1", agent_id="devops-engineer")
 
     @pytest.mark.parametrize(
         "capability,answer",
@@ -2106,8 +2106,8 @@ class TestAnImageWhoseGuestIsNotRoot:
         client = _GuestGroupClient(_guest_removing(False))
         backend = _backend_with(client)
         key = self._key()
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, key.call_id, "codeact")] = (
-            _Held("sbx-warm", egress=(Egress.CLOSED, frozenset()))
+        backend._registry[(key.scope, key.thread_id, key.agent_id, key.call_id, "codeact")] = _Held(
+            "sbx-warm", egress=(Egress.CLOSED, frozenset())
         )
 
         with pytest.raises(SandboxCapabilityNotSupported):
@@ -2151,7 +2151,7 @@ class TestAnImageWhoseGuestIsNotRoot:
 
         assert client.deleted == []
         assert backend._undeleted == {
-            (key.scope, key.thread_id, key.agent_dir, key.call_id): {"sbx-1"}
+            (key.scope, key.thread_id, key.agent_id, key.call_id): {"sbx-1"}
         }
 
         client.delete_fails = False
@@ -2209,7 +2209,7 @@ class TestAnImageWhoseGuestIsNotRoot:
         client = _GuestGroupClient(_guest_removing(False))
         backend = _backend_with(client)
         key = self._key()
-        registry_key = (key.scope, key.thread_id, key.agent_dir, key.call_id, "codeact")
+        registry_key = (key.scope, key.thread_id, key.agent_id, key.call_id, "codeact")
         backend._registry[registry_key] = _Held("sbx-warm", egress=(Egress.CLOSED, frozenset()))
 
         with pytest.raises(SandboxCapabilityNotSupported):
@@ -2232,8 +2232,8 @@ class TestAnImageWhoseGuestIsNotRoot:
         client = _GuestGroupClient(_guest_removing(False))
         backend = _backend_with(client)
         key = self._key()
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, key.call_id, "codeact")] = (
-            _Held("sbx-warm", egress=(Egress.CLOSED, frozenset()))
+        backend._registry[(key.scope, key.thread_id, key.agent_id, key.call_id, "codeact")] = _Held(
+            "sbx-warm", egress=(Egress.CLOSED, frozenset())
         )
 
         with caplog.at_level(logging.INFO, logger="maf_sandbox_acas"):
@@ -2355,7 +2355,7 @@ class TestDisposeScope:
         assert "no credential" in purge.undisposed.detail
         assert backend._undeleted == {("scope-a", "thread-1", "devops-engineer", ""): {"sbx-1"}}
 
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
         assert asyncio.run(backend.dispose(key)) is not None, "the retry still reports"
 
     def test_a_service_failure_degrades_to_zero_rather_than_raising(self):
@@ -2863,8 +2863,8 @@ class TestNarrowedDisposal:
 
         client = _FakeGroupClient()
         backend = _backend_with(client)
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent")
-        prefix = (key.scope, key.thread_id, key.agent_dir, key.call_id)
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="agent")
+        prefix = (key.scope, key.thread_id, key.agent_id, key.call_id)
         if first != "refused":
             backend._registry[(*prefix, "a")] = _Held(
                 "selected", egress=(Egress.CLOSED, frozenset())
@@ -2962,8 +2962,8 @@ class TestNarrowedDisposal:
 
         client = _FakeGroupClient()
         backend = _backend_with(client)
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent")
-        prefix = (key.scope, key.thread_id, key.agent_dir, key.call_id)
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="agent")
+        prefix = (key.scope, key.thread_id, key.agent_id, key.call_id)
         if first != "refused":
             backend._registry[(*prefix, "a")] = _Held(
                 "selected", egress=(Egress.CLOSED, frozenset())
@@ -3034,8 +3034,8 @@ class TestNarrowedDisposal:
 
         client = _FakeGroupClient()
         backend = _backend_with(client)
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent")
-        prefix = (key.scope, key.thread_id, key.agent_dir, key.call_id)
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="agent")
+        prefix = (key.scope, key.thread_id, key.agent_id, key.call_id)
         if retained:
             backend._undeleted[prefix] = {"selected"}
             backend._undeleted_kinds[prefix] = {"selected": "a"}
@@ -3092,8 +3092,8 @@ class TestNarrowedDisposal:
     def test_only_the_requested_kinds_are_deleted(self, kind, expected):
         client = _FakeGroupClient()
         backend = _backend_with(client)
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent")
-        prefix = (key.scope, key.thread_id, key.agent_dir, key.call_id)
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="agent")
+        prefix = (key.scope, key.thread_id, key.agent_id, key.call_id)
         backend._registry[(*prefix, "a")] = _Held("selected", egress=(Egress.CLOSED, frozenset()))
         backend._registry[(*prefix, "b")] = _Held("sibling", egress=(Egress.CLOSED, frozenset()))
         assert asyncio.run(backend.dispose(key, kind=kind)) is None
@@ -3102,8 +3102,8 @@ class TestNarrowedDisposal:
 
     def test_narrowed_retries_preserve_kind_attribution(self):
         backend = _backend_with(_ExplodingGroupClient())
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent")
-        prefix = (key.scope, key.thread_id, key.agent_dir, key.call_id)
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="agent")
+        prefix = (key.scope, key.thread_id, key.agent_id, key.call_id)
         backend._registry[(*prefix, "a")] = _Held("selected", egress=(Egress.CLOSED, frozenset()))
         backend._registry[(*prefix, "b")] = _Held("sibling", egress=(Egress.CLOSED, frozenset()))
         for kind in ("a", "b", "a"):
@@ -3120,8 +3120,8 @@ class TestNarrowedDisposal:
 
     def test_a_failed_scope_purge_keeps_the_registry_kinds_for_retry(self):
         backend = _backend_with(_ExplodingGroupClient())
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent")
-        prefix = (key.scope, key.thread_id, key.agent_dir, key.call_id)
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="agent")
+        prefix = (key.scope, key.thread_id, key.agent_id, key.call_id)
         backend._registry[(*prefix, "a")] = _Held("selected", egress=(Egress.CLOSED, frozenset()))
         backend._registry[(*prefix, "b")] = _Held("sibling", egress=(Egress.CLOSED, frozenset()))
         asyncio.run(backend.dispose_scope(key.scope, key.thread_id))
@@ -3136,8 +3136,8 @@ class TestDispose:
     def test_deletes_the_keyed_sandbox_and_forgets_it(self):
         client = _FakeGroupClient()
         backend = _backend_with(client)
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, key.call_id, "bicep")] = _Held(
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_id, key.call_id, "bicep")] = _Held(
             "sbx-1", egress=(Egress.CLOSED, frozenset())
         )
 
@@ -3148,15 +3148,15 @@ class TestDispose:
     def test_is_a_no_op_for_an_unknown_key(self):
         client = _FakeGroupClient()
         backend = _backend_with(client)
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
 
         assert asyncio.run(backend.dispose(key)) is None
         assert client.deleted == []
 
     def test_a_delete_that_lands_reports_nothing(self):
         backend = _backend_with(_FakeGroupClient())
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, key.call_id, "bicep")] = _Held(
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_id, key.call_id, "bicep")] = _Held(
             "sbx-1", egress=(Egress.CLOSED, frozenset())
         )
 
@@ -3165,8 +3165,8 @@ class TestDispose:
     def test_a_failed_delete_comes_back_as_the_reason(self):
         """Never raising is the contract, so the reason is the only way the router hears (#641)."""
         backend = _backend_with(_ExplodingGroupClient())
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, key.call_id, "bicep")] = _Held(
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_id, key.call_id, "bicep")] = _Held(
             "sbx-1", egress=(Egress.CLOSED, frozenset())
         )
 
@@ -3179,8 +3179,8 @@ class TestDispose:
     def test_a_second_attempt_still_reports_what_the_first_could_not_delete(self):
         """An id a delete could not remove outlives the registry entry it came from."""
         backend = _backend_with(_ExplodingGroupClient())
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, key.call_id, "bicep")] = _Held(
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_id, key.call_id, "bicep")] = _Held(
             "sbx-1", egress=(Egress.CLOSED, frozenset())
         )
 
@@ -3191,8 +3191,8 @@ class TestDispose:
 
     def test_a_group_client_that_cannot_be_built_keeps_the_ids_for_a_retry(self):
         backend = AcasSandboxBackend(_config())
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, key.call_id, "bicep")] = _Held(
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_id, key.call_id, "bicep")] = _Held(
             "sbx-1", egress=(Egress.CLOSED, frozenset())
         )
 
@@ -3216,8 +3216,8 @@ class TestDispose:
                 return _Hanging()
 
         backend = _backend_with(_Hangs())
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, key.call_id, "bicep")] = _Held(
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_id, key.call_id, "bicep")] = _Held(
             "sbx-1", egress=(Egress.CLOSED, frozenset())
         )
 
@@ -3230,13 +3230,13 @@ class TestDispose:
 
         assert backend._registry == {}, "the registry entry is gone"
         assert backend._undeleted == {
-            (key.scope, key.thread_id, key.agent_dir, key.call_id): {"sbx-1"}
+            (key.scope, key.thread_id, key.agent_id, key.call_id): {"sbx-1"}
         }
 
     def test_a_delete_that_lands_clears_the_retry_record(self):
         backend = _backend_with(_FakeGroupClient())
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._undeleted[(key.scope, key.thread_id, key.agent_dir, key.call_id)] = {"sbx-1"}
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
+        backend._undeleted[(key.scope, key.thread_id, key.agent_id, key.call_id)] = {"sbx-1"}
 
         assert asyncio.run(backend.dispose(key)) is None
         assert backend._undeleted == {}
@@ -3259,8 +3259,8 @@ class TestDispose:
                 raise ResourceNotFoundError("sandbox not found")
 
         backend = _backend_with(_Gone())
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, key.call_id, "bicep")] = _Held(
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_id, key.call_id, "bicep")] = _Held(
             "sbx-1", egress=(Egress.CLOSED, frozenset())
         )
 
@@ -3270,8 +3270,8 @@ class TestDispose:
         """The registry entries are already gone, so silence would strand a running sandbox
         with no record of it anywhere."""
         backend = AcasSandboxBackend(_config())
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, key.call_id, "bicep")] = _Held(
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_id, key.call_id, "bicep")] = _Held(
             "sbx-1", egress=(Egress.CLOSED, frozenset())
         )
 
@@ -3289,7 +3289,7 @@ class TestDispose:
         `None` here clears the router's refusal on the strength of a delete nobody confirmed."""
         release = asyncio.Event()
         prefix = ("scope-a", "thread-1", "devops-engineer", "")
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
         backend = _backend_with(_FakeGroupClient())
         backend._registry[("scope-a", "thread-1", "devops-engineer", "", "bicep")] = _Held(
             "sbx-1", egress=(Egress.CLOSED, frozenset())
@@ -3362,7 +3362,7 @@ class TestLabelValues:
 
         from maf_sandbox_acas._backend import _LABEL_SCOPE, _LABEL_THREAD, _sandbox_labels
 
-        key = SandboxKey(scope=self._LONG_SCOPE, thread_id="thread-1", agent_dir="devops")
+        key = SandboxKey(scope=self._LONG_SCOPE, thread_id="thread-1", agent_id="devops")
         written = _sandbox_labels(key, SandboxSpec(kind="bicep", image="i:1"))
 
         client = _FakeGroupClient()
@@ -3378,7 +3378,7 @@ class TestLabelValues:
 
         from maf_sandbox_acas._backend import _LABEL_VALUE_MAX, _sandbox_labels
 
-        key = SandboxKey(scope=self._LONG_SCOPE, thread_id="t" * 120, agent_dir="a" * 90)
+        key = SandboxKey(scope=self._LONG_SCOPE, thread_id="t" * 120, agent_id="a" * 90)
         labels = _sandbox_labels(key, SandboxSpec(kind="bicep", labels={"extra": "e" * 200}))
 
         oversized = {k: len(v) for k, v in labels.items() if len(v) > _LABEL_VALUE_MAX}
@@ -3398,8 +3398,8 @@ class TestLifecycleLogging:
     def test_reuse_is_logged(self, caplog):
         client = _FakeGroupClient()
         backend = _backend_with(client)
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, key.call_id, "bicep")] = _Held(
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_id, key.call_id, "bicep")] = _Held(
             "sbx-warm", egress=(Egress.CLOSED, frozenset())
         )
 
@@ -3414,8 +3414,8 @@ class TestLifecycleLogging:
     def test_release_is_logged(self, caplog):
         client = _FakeGroupClient()
         backend = _backend_with(client)
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, key.call_id, "bicep")] = _Held(
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_id, key.call_id, "bicep")] = _Held(
             "sbx-1", egress=(Egress.CLOSED, frozenset())
         )
 
@@ -3450,7 +3450,7 @@ class TestLifecycleLogging:
 
         client = _LifecycleFailsGroupClient()
         backend = _backend_with(client)
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
 
         from maf_sandbox import SandboxSpec
 
@@ -3830,7 +3830,7 @@ def test_reacquire_retries_invalidated_ids_retained_after_disposal(disposal, mon
         assert not backend._registry
         assert (
             first.instance_id
-            in backend._undeleted[(key.scope, key.thread_id, key.agent_dir, key.call_id)]
+            in backend._undeleted[(key.scope, key.thread_id, key.agent_id, key.call_id)]
         )
         with pytest.raises(SandboxOutputError, match="retained"):
             await backend.acquire(key, spec)
@@ -3995,7 +3995,7 @@ def test_invalidated_acquire_reconciles_concurrent_disposal(
     client = _GuestGroupClient(_guest_removing(True), delete_fails=True)
     backend = _backend_with(client)
     key, spec = SandboxKey("s", "t", "a"), _spec()
-    prefix = (key.scope, key.thread_id, key.agent_dir, key.call_id)
+    prefix = (key.scope, key.thread_id, key.agent_id, key.call_id)
     original_delete = backend._delete
     calls = 0
 
@@ -4117,7 +4117,7 @@ def test_scope_purge_refuses_new_acquires_without_blocking_other_scopes(stage, m
                 creates = client.create_calls
                 for scoped_key, scoped_spec in (
                     (key, spec),
-                    (replace(key, agent_dir="other"), spec),
+                    (replace(key, agent_id="other"), spec),
                     (key, replace(spec, kind="other")),
                 ):
                     with pytest.raises(SandboxOutputError, match="scope disposal is in progress"):
@@ -4217,7 +4217,7 @@ class TestConcurrentAcquire:
     def test_two_acquires_for_one_key_create_one_sandbox(self):
         client = _SlowCreateGroupClient()
         backend = _backend_with(client)
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
 
         async def both():
             return await asyncio.gather(
@@ -4249,10 +4249,10 @@ class TestConcurrentAcquire:
         async def both():
             return await asyncio.gather(
                 backend.acquire(
-                    SandboxKey(scope="s", thread_id="thread-1", agent_dir="devops"), _spec()
+                    SandboxKey(scope="s", thread_id="thread-1", agent_id="devops"), _spec()
                 ),
                 backend.acquire(
-                    SandboxKey(scope="s", thread_id="thread-2", agent_dir="devops"), _spec()
+                    SandboxKey(scope="s", thread_id="thread-2", agent_id="devops"), _spec()
                 ),
             )
 
@@ -4265,7 +4265,7 @@ class TestConcurrentAcquire:
         """Successive event loops can each contend for the same key."""
         client = _SlowCreateGroupClient()
         backend = _backend_with(client)
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
 
         async def both():
             return await asyncio.gather(
@@ -4406,7 +4406,7 @@ class TestKindIdentity:
 
         client = _SlowCreateGroupClient()
         backend = _backend_with(client)
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
 
         async def one_after_the_other():
             first = await backend.acquire(key, SandboxSpec(kind="bicep", image_id="pinned-id"))
@@ -4426,7 +4426,7 @@ class TestKindIdentity:
 
         from maf_sandbox_acas._backend import _LABEL_KIND, _sandbox_labels
 
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
         labels = _sandbox_labels(key, SandboxSpec(kind="bicep", image="i:1"))
 
         assert labels[_LABEL_KIND] == "bicep"
@@ -4434,12 +4434,12 @@ class TestKindIdentity:
     def test_dispose_reclaims_every_kind_for_the_key(self):
         client = _FakeGroupClient()
         backend = _backend_with(client)
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, key.call_id, "bicep")] = _Held(
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_id, key.call_id, "bicep")] = _Held(
             "sbx-b", egress=(Egress.CLOSED, frozenset())
         )
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, key.call_id, "codeact")] = (
-            _Held("sbx-c", egress=(Egress.CLOSED, frozenset()))
+        backend._registry[(key.scope, key.thread_id, key.agent_id, key.call_id, "codeact")] = _Held(
+            "sbx-c", egress=(Egress.CLOSED, frozenset())
         )
 
         asyncio.run(backend.dispose(key))
@@ -4503,8 +4503,8 @@ class TestErrorDetailAdoption:
 
         client = _ResumeFailsGroupClient()
         backend = _backend_with(client)
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, key.call_id, "bicep")] = _Held(
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_id, key.call_id, "bicep")] = _Held(
             "sbx-warm", egress=(Egress.CLOSED, frozenset())
         )
 
@@ -4531,8 +4531,8 @@ class TestErrorDetailAdoption:
                 return _FailingSandboxClient()
 
         backend = _backend_with(_DeleteFailsGroupClient())
-        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir, key.call_id, "bicep")] = _Held(
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_id, key.call_id, "bicep")] = _Held(
             "sbx-1", egress=(Egress.CLOSED, frozenset())
         )
 
@@ -6039,7 +6039,7 @@ def test_warm_storage_binding_refuses_retargeting(override):
 
 def _entry(key: SandboxKey, kind: str) -> tuple[str, str, str, str, str]:
     """The registry tuple a key and kind are filed under, call included."""
-    return (key.scope, key.thread_id, key.agent_dir, key.call_id, kind)
+    return (key.scope, key.thread_id, key.agent_id, key.call_id, kind)
 
 
 class TestTheIsolationScope:
@@ -6049,7 +6049,7 @@ class TestTheIsolationScope:
     identity is the registry entry it files a sandbox under and the label it creates it with.
     """
 
-    _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+    _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
     _CALL_A = replace(_KEY, call_id="call-a")
     _CALL_B = replace(_KEY, call_id="call-b")
     _SPEC = SandboxSpec(kind="bicep", image="mcr.example/bicep:1")

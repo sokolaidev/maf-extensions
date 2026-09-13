@@ -78,7 +78,16 @@ from maf_sandbox.testing import (
     InProcessSandboxBackend,
 )
 
-_KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+_KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
+
+
+def test_the_former_agent_keyword_builds_the_same_key_during_its_deprecation():
+    with pytest.warns(DeprecationWarning, match="agent_dir is deprecated"):
+        legacy = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+
+    assert legacy == _KEY
+
+
 _SPEC = SandboxSpec(kind="test")
 
 
@@ -1531,7 +1540,7 @@ class TestDisposingACallScopedKey:
     """
 
     _CALL_KEY = SandboxKey(
-        scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer", call_id="7a1f"
+        scope="scope-a", thread_id="thread-1", agent_id="devops-engineer", call_id="7a1f"
     )
     _SCOPES = frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL})
 
@@ -1609,7 +1618,7 @@ class TestTheLedgerNeverCarriesAKeyNamingACall:
     """
 
     _CALL_KEY = SandboxKey(
-        scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer", call_id="7a1f"
+        scope="scope-a", thread_id="thread-1", agent_id="devops-engineer", call_id="7a1f"
     )
     _CALL_SPEC = SandboxSpec(kind="test", isolation_scope=IsolationScope.CALL)
     _SCOPES = frozenset({IsolationScope.CONVERSATION, IsolationScope.CALL})
@@ -1686,7 +1695,7 @@ class TestDisposeCallAsksTheServingBackendOnly:
     """
 
     _CALL_KEY = SandboxKey(
-        scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer", call_id="7a1f"
+        scope="scope-a", thread_id="thread-1", agent_id="devops-engineer", call_id="7a1f"
     )
 
     def test_another_backends_failure_is_not_this_calls_leak(self):
@@ -1833,7 +1842,7 @@ class TestAKeyTheRouterCouldNotDisposeIsRefused:
         backend = InProcessSandboxBackend(dispose_error=RuntimeError("down"))
         router = self._router(backend)
         asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
-        other = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="another-agent")
+        other = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="another-agent")
         backend.dispose_error = None
         asyncio.run(router.acquire(other, _SPEC))
 
@@ -1902,7 +1911,7 @@ class TestAKeyTheRouterCouldNotDisposeIsRefused:
     def test_a_scope_purge_that_lands_reopens_its_keys_and_no_others(self):
         backend = InProcessSandboxBackend(dispose_error=RuntimeError("down"))
         router = self._router(backend)
-        elsewhere = SandboxKey(scope="scope-a", thread_id="thread-2", agent_dir="devops-engineer")
+        elsewhere = SandboxKey(scope="scope-a", thread_id="thread-2", agent_id="devops-engineer")
         asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
         asyncio.run(router.dispose_unclean(elsewhere, timeout=1.0))
         asyncio.run(router.dispose_scope("scope-a", "thread-1"))

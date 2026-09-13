@@ -124,7 +124,7 @@ def _spec() -> SandboxSpec:
 
 
 def _key(scope: str) -> SandboxKey:
-    return SandboxKey(scope=scope, thread_id="thread-1", agent_dir="devops-engineer")
+    return SandboxKey(scope=scope, thread_id="thread-1", agent_id="devops-engineer")
 
 
 def test_write_checks_remove_private_host_copies(tmp_path, monkeypatch):
@@ -300,7 +300,7 @@ def test_reap_after_creator_process_exits(allowlist, leftover):
             SandboxKey(
                 scope=scope + "-other" if agent == "unrelated" else scope,
                 thread_id="thread-1",
-                agent_dir=agent,
+                agent_id=agent,
             ),
             spec.kind,
             backend._egress_id(spec),
@@ -317,7 +317,7 @@ async def main():
     for agent in ('old', 'running', 'fresh', 'unrelated'):
         sandbox = await backend.acquire(
             SandboxKey(scope=sys.argv[1] + '-other' if agent == 'unrelated' else sys.argv[1],
-                       thread_id='thread-1', agent_dir=agent),
+                       thread_id='thread-1', agent_id=agent),
             SandboxSpec(kind='e2e', image=sys.argv[2],
                         egress=Egress.ALLOWLIST if sys.argv[3] else Egress.CLOSED,
                         egress_allow=('mcr.microsoft.com',) if sys.argv[3] else ()))
@@ -651,7 +651,7 @@ class TestAllowlistEgress:
         return WslcSandboxConfig(egress_proxy_image=_PROXY_IMAGE)
 
     def test_oversized_keys_acquire_and_drain_with_the_callers_key(self):
-        key = SandboxKey(scope=f"e2e-{uuid.uuid4()}", thread_id="thread", agent_dir="x" * 150_000)
+        key = SandboxKey(scope=f"e2e-{uuid.uuid4()}", thread_id="thread", agent_id="x" * 150_000)
         creator = WslcSandboxBackend(self._config())
         reader = WslcSandboxBackend(self._config())
         events = []
@@ -683,8 +683,8 @@ class TestAllowlistEgress:
         """A disposal selects on scope, thread and agent, so it reaches a sandbox a call inside
         the conversation acquired — and the window is that call's, not the caller's."""
         scope = f"e2e-{uuid.uuid4()}"
-        call = SandboxKey(scope=scope, thread_id="thread", agent_dir="agent", call_id="call-1")
-        conversation = SandboxKey(scope=scope, thread_id="thread", agent_dir="agent")
+        call = SandboxKey(scope=scope, thread_id="thread", agent_id="agent", call_id="call-1")
+        conversation = SandboxKey(scope=scope, thread_id="thread", agent_id="agent")
         creator = WslcSandboxBackend(self._config())
         reader = WslcSandboxBackend(self._config())
         events = []
@@ -714,7 +714,7 @@ class TestAllowlistEgress:
         key = SandboxKey(
             scope=f"e2e-{uuid.uuid4()} / \u2603",
             thread_id="thread / 1",
-            agent_dir="agent" * 30,
+            agent_id="agent" * 30,
         )
         creator = WslcSandboxBackend(self._config())
         reader = WslcSandboxBackend(self._config())

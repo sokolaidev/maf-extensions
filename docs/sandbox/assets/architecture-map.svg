@@ -82,7 +82,7 @@
 
   <rect x="336" y="364" width="224" height="66" rx="8" fill="#9aa1ac" fill-opacity="0.14" stroke="#9aa1ac" stroke-width="1.4"/>
   <text x="448" y="386" text-anchor="middle" font-size="13.5" fill="#7d8694">key</text>
-  <text x="448" y="404" text-anchor="middle" font-size="12" fill="#9aa1ac">scope · thread · agent dir</text>
+  <text x="448" y="404" text-anchor="middle" font-size="12" fill="#9aa1ac">scope · thread · agent identity</text>
   <text x="448" y="420" text-anchor="middle" font-size="12" fill="#9aa1ac">+ kind</text>
 
   <line x1="530" y1="458" x2="530" y2="436" stroke="#cf5a52" stroke-width="1.4" marker-end="url(#map-red)"/>
