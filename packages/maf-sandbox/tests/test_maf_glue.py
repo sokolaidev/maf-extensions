@@ -938,6 +938,22 @@ class TestAttachGate:
     def test_no_router_attaches_nothing(self):
         assert _attach(None) == []
 
+    def test_the_former_agent_keyword_still_attaches_during_its_deprecation(self):
+        backend = InProcessSandboxBackend(InProcessSandbox(default_stdout="ok"))
+        router = _router(backend)
+        with pytest.warns(DeprecationWarning, match="agent_dir is deprecated"):
+            (tool,) = sandboxed_tool(
+                _body,
+                router=router,
+                context=_context(),
+                agent_dir="agent-1",
+                spec=_SPEC,
+                name="widget_run",
+            )
+
+        assert _call(tool, target="thing") == "ok"
+        assert backend.keys == [SandboxKey("scope-a", "thread-1", "agent-1")]
+
     def test_a_router_with_no_backend_attaches_nothing(self):
         assert _attach(SandboxRouter([])) == []
 

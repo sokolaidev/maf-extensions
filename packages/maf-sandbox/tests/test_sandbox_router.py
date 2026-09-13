@@ -79,6 +79,15 @@ from maf_sandbox.testing import (
 )
 
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
+
+
+def test_the_former_agent_keyword_builds_the_same_key_during_its_deprecation():
+    with pytest.warns(DeprecationWarning, match="agent_dir is deprecated"):
+        legacy = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+
+    assert legacy == _KEY
+
+
 _SPEC = SandboxSpec(kind="test")
 
 

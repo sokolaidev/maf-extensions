@@ -30,7 +30,7 @@ default. See this directory's README.
 #     "azure-identity",
 #     "maf-sandbox-bicep",
 #     "maf-sandbox-docker",
-#     "maf-sandbox>=0.40",
+#     "maf-sandbox>=0.39",
 # ]
 # ///
 
@@ -64,7 +64,7 @@ if TYPE_CHECKING:
 
 SCOPE = "samples"
 THREAD_ID = "13-fix-loop"
-AGENT_ID = "devops-engineer"
+AGENT_DIR = "devops-engineer"
 BICEP_FILE = "main.bicep"
 
 #: What turn 1 is asked to write. Every clause is a plain requirement rather than a planted
@@ -287,7 +287,7 @@ async def run() -> int:
     context = make_caller_context(list_all_files, lambda: SCOPE, lambda: THREAD_ID)
     # egress=CLOSED: the Docker backend here has no proxy, so it runs --network none and the
     # workload runs closed. The fix loop's template uses no modules, so nothing is restored.
-    tools = make_bicep_tools(router, store, AGENT_ID, context, image=IMAGE, egress=Egress.CLOSED)
+    tools = make_bicep_tools(router, store, AGENT_DIR, context, image=IMAGE, egress=Egress.CLOSED)
     if not tools:
         print("No sandbox backend: bicep_validate was not attached.", file=sys.stderr)
         return 2
@@ -330,7 +330,7 @@ async def run() -> int:
     try:
         agent = Agent(
             client=client,
-            name=AGENT_ID,
+            name=AGENT_DIR,
             instructions=(
                 "You write, validate and repair Azure Bicep. Create a file with "
                 "file_access_write and edit an existing one with file_access_replace — "
