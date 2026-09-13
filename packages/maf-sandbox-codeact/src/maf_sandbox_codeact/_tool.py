@@ -792,12 +792,12 @@ _DESCRIPTION_DECLARED = """**To produce files, name them in ``outputs`` and writ
         you get back a reference to where each one landed — the file contents do **not** come
         back, so do not claim to have read a file you only produced.  A name you declare and
         do not write is reported to you rather than silently dropped, and a file you write
-        without declaring is not saved at all.
+        without declaring is not saved at all.  A program that fails saves nothing at all."""
 
-        Naming a file in both ``files`` and ``outputs`` is how you edit one in place.  It is
-        the one case where "declared and not written" cannot be reported, because the copy you
-        were given is already there: a program that **exits cleanly** without rewriting it saves
-        the original back unchanged.  A program that fails saves nothing at all."""
+_DESCRIPTION_IN_PLACE = """Naming a file in both ``files`` and ``outputs`` is how you edit one
+        in place.  It is the one case where "declared and not written" cannot be reported,
+        because the copy you were given is already there: a program that **exits cleanly**
+        without rewriting it saves the original back unchanged."""
 
 _DESCRIPTION_MANIFEST = f"""**To produce files, write them into the working directory and
         list them in ``{_MANIFEST_FILENAME}``**, in that directory, like this::
@@ -868,10 +868,11 @@ _DESCRIPTION_DECLARED_WITHHELD = """**To produce files, name them in ``outputs``
         it, so do not claim to have read a file you only produced.  A name you declare and do
         not write is reported to you rather than silently dropped, and a file you write without
         declaring is not saved at all.  **A program that fails still saves what it wrote**, so
-        writing what you need into a declared output and then failing still gets it out.
+        writing what you need into a declared output and then failing still gets it out."""
 
-        Naming a file in both ``files`` and ``outputs`` is how you edit one in place.  It is the
-        one case where "declared and not written" cannot be reported, because the copy you were
+_DESCRIPTION_IN_PLACE_WITHHELD = """Naming a file in both ``files`` and ``outputs`` is how you
+        edit one in place.  It is the one case where "declared and not written" cannot be
+        reported, because the copy you were
         given is already there — and since a failed run still saves, a program that dies part
         way through rewriting one saves whatever it had written by then."""
 
@@ -889,11 +890,11 @@ _DESCRIPTION_DECLARED_WITHHELD_PER_CALL = """**To produce files, name them in ``
         file you only produced.  If you have a tool that reads that folder, what is in it is
         what actually landed.  A file you write without declaring is not saved at all.  **A
         program that fails still saves what it wrote**, so writing what you need into a
-        declared output and then failing still gets it out.
+        declared output and then failing still gets it out."""
 
-        Naming a file in both ``files`` and ``outputs`` is how you edit one in place.  Since a
-        program that fails still saves, one that dies part way through rewriting a file saves
-        whatever it had written by then."""
+_DESCRIPTION_IN_PLACE_WITHHELD_PER_CALL = """Naming a file in both ``files`` and ``outputs`` is
+        how you edit one in place.  Since a program that fails still saves, one that dies part
+        way through rewriting a file saves whatever it had written by then."""
 
 #: Replaces the pair above's returns line: naming each file is what this mode stops doing.
 _DESCRIPTION_RETURNS_SAVED_PER_CALL = """  A call that saved files also names the folder they
@@ -938,12 +939,9 @@ def _tool_description(
     if runtime is not None:
         if runtime.guest_work_dir is not None:
             body.append(
-                "This call's directory is created for you and its absolute path is in "
+                "This call's scratch directory is created for you and its absolute path is in "
                 "``guest_call_path``. The current working directory is not changed. "
-                "Use ``open(guest_call_path + '/name', ...)`` for shared inputs, output files "
-                "and ``outputs.json``; create any nested output directories you need. "
-                "File names in ``files``, ``outputs`` and the manifest stay relative to "
-                "that directory."
+                "Use ``open(guest_call_path + '/name', ...)`` for files in that directory."
             )
         else:
             body.append("No file-store or output-file channel is configured for this runtime.")
@@ -967,13 +965,28 @@ def _tool_description(
     if outputs is CodeactOutputs.DECLARED:
         if not withhold:
             body.append(_DESCRIPTION_DECLARED)
+            in_place = _DESCRIPTION_IN_PLACE
         elif lands_per_call:
             body.append(_DESCRIPTION_DECLARED_WITHHELD_PER_CALL)
+            in_place = _DESCRIPTION_IN_PLACE_WITHHELD_PER_CALL
         else:
             body.append(_DESCRIPTION_DECLARED_WITHHELD)
+            in_place = _DESCRIPTION_IN_PLACE_WITHHELD
+        if takes_files:
+            body.append(in_place)
         arguments.append(_DESCRIPTION_ARG_OUTPUTS)
     elif outputs is CodeactOutputs.MANIFEST:
         body.append(_DESCRIPTION_MANIFEST)
+    if runtime is not None and outputs is not CodeactOutputs.NONE:
+        body.append(
+            "Write output files with ``open(guest_call_path + '/name', 'w')``; "
+            "create any nested output directories you need. "
+            + (
+                "Names in ``outputs`` stay relative to that directory."
+                if outputs is CodeactOutputs.DECLARED
+                else "Paths listed in ``outputs.json`` stay relative to that directory."
+            )
+        )
     if withhold:
         returns = (
             _DESCRIPTION_RETURNS_WITHHELD_HOST_TOOL_CALLED
@@ -1199,7 +1212,10 @@ async def _execute(
             return refusal
         program = runtime_program(runtime, code, call_directory)
     over_cap = _over_file_count(
-        inbound, limits, calls_host_tool=host_tool_call is not None
+        inbound,
+        limits,
+        calls_host_tool=host_tool_call is not None,
+        program_is_file=runtime is None,
     ) or tally.add(
         _PROGRAM_FILENAME,
         program,
@@ -1541,22 +1557,25 @@ def _inside_a_reserved_file(
     )
 
 
-def _over_file_count(count: int, limits: TransferLimits, *, calls_host_tool: bool) -> str | None:
-    """Refuse a call that would write more files than the workload allows, program included."""
+def _over_file_count(
+    count: int, limits: TransferLimits, *, calls_host_tool: bool, program_is_file: bool
+) -> str | None:
+    """Refuse a call that exceeds the workload's inbound file-count limit."""
     if count <= limits.max_files:
         return None
     # "of those" only where the list is partial: the host-tool-call leg's launcher crosses too and
     # is not counted here, so the cap is over the enumeration rather than over everything written.
-    written, cap = (
-        (
-            f"your program, the host-tool module beside it, and {count - 2} shared",
-            f"{limits.max_files} of those",
-        )
-        if calls_host_tool
-        else (f"your program and {count - 1} shared", str(limits.max_files))
-    )
+    cap = str(limits.max_files)
+    if calls_host_tool:
+        written = f"your program, the host-tool module beside it, and {count - 2} shared"
+        cap += " of those"
+    elif program_is_file:
+        written = f"your program and {count - 1} shared"
+    else:
+        written = f"{count} shared"
+    noun = "file" if count == 1 else "files"
     return (
-        f"Error: {count} files would be written into the sandbox — {written} — and this tool "
+        f"Error: {count} {noun} would be written into the sandbox — {written} — and this tool "
         f"writes at most {cap} per call. Nothing was shared."
     )
 

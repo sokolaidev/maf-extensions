@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import inspect
 import io
 import posixpath
 import subprocess
@@ -48,6 +49,15 @@ from maf_sandbox_codeact._runtime import runtime_program
 
 _RUNTIME = CodeactRuntime("Python statements; json is available. No subprocess or network modules.")
 _FILES_RUNTIME = replace(_RUNTIME, guest_work_dir="/runtime")
+_EXEC_AND_RUNTIME_CAPABILITIES = frozenset(
+    {
+        Capability.EXEC,
+        Capability.RUN_CODE,
+        Capability.FILES_IN,
+        Capability.FILES_OUT,
+        Capability.SNAPSHOT,
+    }
+)
 
 
 class _WrittenBuffer(io.BytesIO):
@@ -296,6 +306,20 @@ def test_plain_source_keeps_byte_limits_without_spending_a_file_slot():
     assert len(sandbox.programs) == 1 and not sandbox.writes
 
 
+@pytest.mark.parametrize("max_files, files", [(0, ["a.csv"]), (1, ["a.csv", "b.csv"])])
+def test_runtime_file_count_refusal_counts_only_shared_files(max_files, files):
+    tool, sandbox, backend = _make(
+        runtime=_FILES_RUNTIME,
+        file_store=InMemoryStore({"a.csv": "1", "b.csv": "2"}),
+        files_in=replace(DEFAULT_TRANSFER_LIMITS, max_files=max_files),
+    )
+    answer = _run(tool, files=files)
+    assert f"{len(files)} shared" in answer
+    assert "program" not in answer
+    assert f"writes at most {max_files} per call" in answer
+    assert not backend.specs and not sandbox.programs and not sandbox.writes
+
+
 @pytest.mark.parametrize("code", ["\ud800", "x = '\udfff'"])
 def test_unencodable_code_refuses_before_acquire(code):
     tool, sandbox, backend = _make()
@@ -433,6 +457,59 @@ def test_runtime_instructions_do_not_promise_an_exec_image_or_implicit_working_d
     assert "guest_call_path" in description and "not changed" in description
 
 
+@pytest.mark.parametrize("runtime", [None, _FILES_RUNTIME], ids=["exec", "runtime"])
+@pytest.mark.parametrize("takes_files", [False, True], ids=["no_store", "store"])
+@pytest.mark.parametrize(
+    "outputs, withhold, per_call",
+    [
+        (CodeactOutputs.NONE, False, False),
+        (CodeactOutputs.DECLARED, False, False),
+        (CodeactOutputs.MANIFEST, False, False),
+        (CodeactOutputs.DECLARED, True, False),
+        (CodeactOutputs.DECLARED, True, True),
+    ],
+    ids=["stdout", "declared", "manifest", "withheld", "withheld_per_call"],
+)
+def test_description_matches_the_wired_file_channels(
+    runtime, takes_files, outputs, withhold, per_call
+):
+    async def deliver(artifact: Artifact):
+        return LandedArtifact(name=artifact.name, display="saved")
+
+    tool, _, _ = _make(
+        runtime=runtime,
+        capabilities=_EXEC_AND_RUNTIME_CAPABILITIES,
+        file_store=InMemoryStore({}) if takes_files else None,
+        outputs=outputs,
+        output_sink=OutputSink(deliver=deliver, per_call=per_call)
+        if outputs is not CodeactOutputs.NONE
+        else None,
+        withhold_guest_output=withhold,
+    )
+    description = tool.description
+    parameters = inspect.signature(_function(tool)).parameters
+    assert ("``files``" in description) == ("files" in parameters) == takes_files
+    assert (
+        ("``outputs``" in description)
+        == ("outputs" in parameters)
+        == (outputs is CodeactOutputs.DECLARED)
+    )
+    assert ("outputs.json" in description) == (outputs is CodeactOutputs.MANIFEST)
+    assert ("To work on existing files" in description) == takes_files
+    assert ("To produce files" in description) == (outputs is not CodeactOutputs.NONE)
+    if not takes_files:
+        assert "shared inputs" not in description
+    if runtime is not None:
+        assert "guest_call_path" in description
+        assert "open(guest_call_path + '/" in description
+        if outputs is CodeactOutputs.NONE:
+            assert "output files" not in description
+            if not takes_files:
+                assert "scratch directory" in description
+        else:
+            assert "nested output directories" in description
+
+
 def test_unconfigured_hosts_still_receive_no_tools():
     assert (
         make_codeact_tools(
@@ -509,7 +586,7 @@ def test_runtime_calls_use_distinct_directories_after_reset():
 )
 def test_attached_variants_refuse_to_change_a_live_runtime_contract(changed):
     sandbox = _PythonSandbox()
-    backend = _backend(sandbox, capabilities=set(Capability))
+    backend = _backend(sandbox, capabilities=_EXEC_AND_RUNTIME_CAPABILITIES)
     router = SandboxRouter([backend], min_isolation=backend.isolation, min_cleanup=Cleanup.RESET)
     original = make_codeact_tools(router, "analyst", _context(), runtime=_RUNTIME)[0]
     different = make_codeact_tools(router, "analyst", _context(), runtime=changed)[0]
