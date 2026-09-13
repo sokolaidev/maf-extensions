@@ -38,6 +38,8 @@ router = SandboxRouter([backend])  # microVM isolation meets the router's defaul
 
 ## Host-selected credentials
 
+**Breaking shutdown change:** `aclose()` raises `AcasClientCloseError` for incomplete SDK cleanup instead of logging and suppressing close failures. Handle that exception in the host's teardown policy and keep owner loops running until closure completes. Closing permanently refuses new work; create a new backend to resume service.
+
 Set `AcasSandboxConfig.credential_resolver` to an async host callback returning `AcasCredentialBinding(authority, generation, create_credential)`. The callback receives an `AcasCredentialRequest` naming `acquire`, `dispose` or `dispose_scope` and its trusted scope/thread/key. Acquire may select an exchanged request grant; disposal must independently recover an authorized cleanup grant on any host replica. A custom resolver failure never falls back to the default identity. These credentials stay in the host and do not enable guest-attached identity.
 
 Each binding's factory creates a fresh async Azure credential on its owning loop; shared singleton credentials are unsupported. The backend owns closure. Equal authority/generation references assert equivalent grants; new generations isolate authentication state. Acquired wrappers keep their captured grant and borrow clients per operation, including polling and streaming. Idle eviction does not delete sandboxes or invalidate warm wrappers.

@@ -60,6 +60,8 @@ The host obtains a binding from its authentication layer before running the work
 
 ## Capacity, rotation and shutdown
 
+**Shutdown migration:** `aclose()` now raises `AcasClientCloseError` when SDK cleanup is incomplete; earlier versions logged and suppressed close failures. Hosts must handle this exception in their shutdown policy, keep owner loops running until closure completes, and retry retained resources where possible. Closing is terminal: construct a new backend if more work must be admitted afterwards. This contract change is released as a breaking change.
+
 Each backend instance fixes its service target and partitions its SDK pipelines by `(event loop, authority, generation)`. Equal authority/generation values assert that the grants are interchangeable, including across scopes. The factory is not part of cache identity. Select a new generation when the grant or factory configuration changes. New bindings get separate authentication-policy state; existing wrappers keep their captured generation, so rotation does not promise immediate revocation of already admitted work or cached tokens. Old idle entries remain eligible for eviction.
 
 `max_clients_per_loop` defaults to 32 and counts active, constructing and closing entries. The least recently used idle entry is closed on its owning loop before replacement. An operation lease lasts through SDK polling, response consumption and streaming cleanup; nested wrapper helpers share that lease. Wrappers retain resource IDs and authority bindings rather than SDK transports and rebuild after eviction. Cancellation of one construction waiter does not cancel another's lease; when the last waiter leaves unfinished construction, construction is cancelled and its owned partial resources are cleaned up.

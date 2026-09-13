@@ -887,3 +887,51 @@ def test_live_service_delete_control_borrows_its_sdk_client(monkeypatch):
     finally:
         loop.run_until_complete(subject.aclose())
         loop.close()
+
+
+def test_shutdown_submission_failure_closes_unscheduled_coroutine_and_other_loops(monkeypatch):
+    clients = pool(close=5)
+    owner = asyncio.new_event_loop()
+    submitted = []
+    dispatch = asyncio.run_coroutine_threadsafe
+
+    async def use():
+        async with clients.lease(binding()) as client:
+            return client
+
+    def run_loop():
+        asyncio.set_event_loop(owner)
+        owner.run_forever()
+        owner.close()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        running = executor.submit(run_loop)
+        try:
+            stranded = dispatch(use(), owner).result(5)
+
+            def close_before_submission(coroutine, loop):
+                assert loop is owner and owner.is_running()
+                submitted.append(coroutine)
+                owner.call_soon_threadsafe(owner.stop)
+                running.result(5)
+                return dispatch(coroutine, loop)
+
+            monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", close_before_submission)
+
+            async def scenario():
+                local = await use()
+                with pytest.raises(AcasClientCloseError, match="cleanup incomplete"):
+                    await clients.aclose()
+                assert owner.is_closed()
+                assert len(submitted) == 1 and submitted[0].cr_frame is None
+                assert local.closed == local.credential.closed == 1
+                assert stranded.closed == stranded.credential.closed == 0
+                assert list(clients._loops) == [owner]
+
+            asyncio.run(scenario())
+        finally:
+            for coroutine in submitted:
+                coroutine.close()
+            if not owner.is_closed():
+                owner.call_soon_threadsafe(owner.stop)
+            running.result(5)

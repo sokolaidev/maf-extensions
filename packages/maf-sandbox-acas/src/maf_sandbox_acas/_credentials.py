@@ -302,8 +302,14 @@ class ClientPool:
             if loop is current:
                 pending.append(self._shutdown_loop(loop, state))
             elif loop.is_running() and not loop.is_closed():
-                remote = asyncio.run_coroutine_threadsafe(self._shutdown_loop(loop, state), loop)
-                pending.append(asyncio.shield(asyncio.wrap_future(remote)))
+                closing = self._shutdown_loop(loop, state)
+                try:
+                    remote = asyncio.run_coroutine_threadsafe(closing, loop)
+                except RuntimeError:
+                    closing.close()
+                    failed = True
+                else:
+                    pending.append(asyncio.shield(asyncio.wrap_future(remote)))
             else:
                 failed = True
         try:
