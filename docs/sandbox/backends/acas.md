@@ -166,6 +166,32 @@ M6 established that named snapshots survive source deletion, can be recovered by
 
 **The control-plane credential never enters the guest.** The default `DefaultAzureCredential` or a host-selected credential lives with its group client in the host process. [Host credential selection](../acas-credentials.md) covers per-request grants, independent cleanup on another replica, bounded caches and loop-owned shutdown. It does not grant authority to guest code or enable the attached-identity capability.
 
+## Identity admission
+
+ACAS serves groups verified to have no attached managed identity. Before every cold or warm acquire, the selected host credential makes a fresh `SandboxGroupManagementClient.get_group` read. Admission validates the configured ARM resource ID and group name, `properties.provisioningState == Succeeded`, and the full identity value. An omitted identity or a consistent `type: None` is accepted; system/user attachment, unknown fields or identity types, contradictory principal/map fields, malformed/non-ready responses and failed reads are refused. ARM resource identifiers are compared without case sensitivity. Successful reads are not cached or shared across host replicas.
+
+The acquire credential needs the management action `Microsoft.App/sandboxGroups/read` as well as its data actions. SandboxGroup Data Owner alone is insufficient. `identity_check_seconds` defaults to 15 and bounds authentication, the read and SDK retries; exhausted 429/5xx retries and 401/403/404 do not select a previous snapshot or broader identity. `AcasIdentityVerificationError` derives from `SandboxAttachedIdentityNotPermitted`; it carries `status_code` when available and excludes provider response text. Cancellation propagates. Verification precedes sandbox creation, resume and probes, so a failed check creates nothing. A refused warm acquire retains the existing instance for its current users and explicit disposal.
+
+The data and management pipelines share one selected credential and pool lease, with management constructed lazily. Eviction and shutdown close both on their owner loop, retrying only closures that did not succeed. `max_clients_per_loop` counts credential entries, each owning at most two pipelines. Disposal and scope purge use their independently selected cleanup grant and perform no group admission check or identity mutation; another replica can still clean up through service labels after inspection fails.
+
+### Supported and refused scope
+
+The adopted [attached-authority contract](../hosts.md#identity--whose-authority-sandbox-work-carries) is not enabled on ACAS. Direct acquisition and router matching both refuse `ATTACHED_IDENTITY`, so no identity-bearing rule, workload opt-in or positive attached-identity sample is offered.
+
+| Obligation | Disposition |
+|---|---|
+| Every usable authority channel is declared and bounded | M1 found a guest token endpoint outside the proposed header-only channel. Attachment remains refused. |
+| Principal, destination and audience enforcement | M2 established tested header pinning with explicit limits; it does not close the independent guest-token channel. No authority rules are installed. |
+| Actual group assignment checked on cold and warm acquire | M5's full-read design is implemented for the no-identity expectation. Any observed attachment or failed verification refuses admission. |
+| Hard authority lifetime despite loss of every host replica | M7 established automatic suspension/deletion in tested cases, but no strict maximum completion or token-revocation bound. Existing lifecycle policies and operator recovery are not promoted to this guarantee. |
+| Cleanup does not revoke siblings' shared principal | The backend deletes its selected sandboxes and never changes group identity assignments. Failed disposal retains the existing retry/reporting behavior. |
+
+The measurement evidence remains on [M1](https://github.com/sokolaidev/maf-extensions/issues/1164), [M2](https://github.com/sokolaidev/maf-extensions/issues/1165), [M5](https://github.com/sokolaidev/maf-extensions/issues/1166), and [M7](https://github.com/sokolaidev/maf-extensions/issues/1167). These are limitations relative to this project's contract, not demonstrated violations of service promises. Reconsider attachment only after supported enforcement bounds every usable token channel and the authority lifetime, or after an explicit revision of the adopted contract.
+
+A group read observes one snapshot; it does not freeze assignments, provide an established propagation bound, or revoke previously issued tokens. The deployment must prevent identity assignment changes while sandboxes are serving. Removing an assignment and observing its absence does not prove that a previously exposed sandbox has lost cached tokens; dispose exposed instances before serving again. The admission check does not replace that deployment obligation. Existing no-identity lifecycle behavior remains unchanged: non-authentication configuration failures remain labelled for operator recovery, and creation/configuration is not claimed atomic.
+
+Offline tests cover admission, malformed responses, failure/cancellation, replica/loop isolation and SDK resource ownership. The M1/M2/M5/M7 live measurements predate this implementation; this change has not been rerun against a live Azure group.
+
 ## One sandbox per call
 
 A spec asking for `IsolationScope.CALL` is served here rather than refused. This backend mints no name of its own — the service issues the sandbox id — so the whole of its call-scope identity is the **registry entry**, filed under `(scope, thread, agent, call, kind)`, and the **service label** a disposal selects on, `call`. Two acquires differing only in `call_id` miss each other in the registry and are two microVMs; a disposal that names a call selects that label and leaves the sibling call of the same assistant message running. That is the property `maf_sandbox.conformance.assert_call_scope_conformance` measures, and the live suite here answers it against the service.
@@ -180,6 +206,7 @@ A spec asking for `IsolationScope.CALL` is served here rather than refused. This
 
 | Decision | State | Tracking |
 |---|---|---|
+| ACAS identity admission and attached-authority disposition | in progress — fresh no-identity admission is implemented; attached identity remains unsupported | [#1170](https://github.com/sokolaidev/maf-extensions/issues/1170) (open) |
 | A workload can ask for a sandbox per tool call, and this backend serves one | shipped — the service mints the id, so `call_id` reaches the registry entry and the `call` service label a disposal selects on; a conversation-scoped key keeps the labels it already had. `assert_call_scope_conformance` is wired into the live suite, which no pull request runs | [#436](https://github.com/sokolaidev/maf-extensions/issues/436) (closed) by [#1139](https://github.com/sokolaidev/maf-extensions/pull/1139) (merged) |
 | The backend, its declarations, and `FILES_OUT` served natively | shipped | [#109](https://github.com/sokolaidev/maf-extensions/issues/109) open as the `FILES_OUT` tracking issue; the ACAS item landed |
 | Native read, stat and listing confinement | native capabilities retained with an explicit per-method residual, characterized by controlled live swaps; atomic confinement remains an upstream request | [#1201](https://github.com/sokolaidev/maf-extensions/issues/1201) (closed) by [#1214](https://github.com/sokolaidev/maf-extensions/pull/1214) (merged); [microsoft/azure-container-apps#1831](https://github.com/microsoft/azure-container-apps/issues/1831) |

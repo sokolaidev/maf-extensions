@@ -16,6 +16,10 @@ An acquired wrapper captures its binding. Subsequent exec, streaming and file op
 
 Capture the grant when resolving the binding: `create_credential` must reconstruct that captured authority after eviction or on another event loop, rather than read whichever request context is current when it eventually runs. Each returned credential belongs to its cache entry. Returning a shared credential singleton is unsupported; the backend closes each owned client and credential. An async factory owns and cleans any resources it allocates until it successfully returns its credential. Resolver and factory code must not block the event-loop thread.
 
+Acquire also uses its selected credential for a fresh ARM identity check before cold creation or warm resume. It needs `Microsoft.App/sandboxGroups/read`, which the SandboxGroup Data Owner role alone does not grant. A separate management pipeline requests the management audience from that same credential; no app-credential fallback is made. `identity_check_seconds=15` bounds authentication, SDK retries and the read. `AcasIdentityVerificationError` refuses unverified or attached groups and preserves HTTP status without provider error text. Disposal skips this admission check so a cleanup grant can remain limited to sandbox data actions.
+
+The cache owns at most two pipelines per credential entry: the data pipeline and a management pipeline constructed only when acquisition needs inspection. They share the credential's lease and close on the same owner loop; failed closures remain retryable and successful closures are not repeated. Each replica and loop reads independently, and no successful group snapshot is cached. See [ACAS identity admission](backends/acas.md#identity-admission) for the deployment boundary and the unsupported attachment disposition.
+
 ## Replica-independent recovery
 
 Every replica needs the same trusted authority-selection policy and access to the host's durable cleanup mapping or explicitly configured cleanup principal. A cleanup principal may differ from the request principal only by that explicit policy, with permissions restricted to the intended targets. A host requiring the original caller's authority must make its grant recoverable; expired assertions and scope labels alone cannot recreate it. When recovery is unavailable, disposal reports failure and retains local retry ownership. Another replica can rediscover surviving resources through service labels.
@@ -39,6 +43,9 @@ from maf_sandbox_acas import (
 
 def build_backend(
     endpoint: str,
+    subscription_id: str,
+    resource_group: str,
+    sandbox_group: str,
     request_binding: ContextVar[AcasCredentialBinding],
     recover_cleanup: Callable[[str, str], Awaitable[AcasCredentialBinding]],
 ) -> AcasSandboxBackend:
@@ -49,6 +56,9 @@ def build_backend(
 
     return AcasSandboxBackend(AcasSandboxConfig(
         endpoint=endpoint,
+        subscription_id=subscription_id,
+        resource_group=resource_group,
+        sandbox_group=sandbox_group,
         credential_resolver=resolve,
         max_clients_per_loop=32,
         client_wait_seconds=30,

@@ -170,7 +170,7 @@ def test_a_retry_after_sleep_that_reaches_the_exec_deadline_keeps_the_sandbox(mo
         backend = AcasSandboxBackend(
             AcasSandboxConfig(endpoint="https://management.example.azuredevcompute.io")
         )
-        assert backend._group_client(credential) is client
+        assert backend._group_client(credential).data is client
         observed = client._pipeline._impl_policies[0]
         assert isinstance(observed, AsyncRetryPolicy)
         assert observed is not original

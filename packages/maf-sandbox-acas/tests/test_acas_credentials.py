@@ -18,7 +18,12 @@ from azure.core.pipeline import PipelineContext, PipelineRequest
 from azure.core.pipeline.policies import AsyncBearerTokenCredentialPolicy
 from azure.core.rest import HttpRequest
 from maf_sandbox import Capability, SandboxKey
-from test_acas_backend import _guest_removing, _GuestGroupClient, _spec_requiring
+from test_acas_backend import (
+    _guest_removing,
+    _GuestGroupClient,
+    _NoIdentityManagement,
+    _spec_requiring,
+)
 
 from maf_sandbox_acas import (
     AcasClientCloseError,
@@ -394,9 +399,14 @@ class Group(Client):
 
 
 def backend(service, resolver, *, capacity=2):
+    from maf_sandbox_acas._identity import GroupClients
+
     subject = AcasSandboxBackend(
         AcasSandboxConfig(
             endpoint="https://example.invalid",
+            subscription_id="subscription",
+            resource_group="resource-group",
+            sandbox_group="group",
             credential_resolver=resolver,
             max_clients_per_loop=capacity,
         )
@@ -406,7 +416,7 @@ def backend(service, resolver, *, capacity=2):
     def build(credential):
         result = Group(credential, service, calls)
         built.append(result)
-        return result
+        return GroupClients(result, lambda: _NoIdentityManagement(subject._config))
 
     subject._group_client = build
     return subject, calls, built

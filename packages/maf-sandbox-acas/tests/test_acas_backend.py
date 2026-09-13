@@ -51,7 +51,15 @@ _ENDPOINT = "https://management.example.azuredevcompute.io"
 
 
 def _config(**overrides) -> AcasSandboxConfig:
-    return AcasSandboxConfig(endpoint=_ENDPOINT, **overrides)
+    return replace(
+        AcasSandboxConfig(
+            endpoint=_ENDPOINT,
+            subscription_id="subscription",
+            resource_group="resource-group",
+            sandbox_group="group",
+        ),
+        **overrides,
+    )
 
 
 def _disk_image(image_id: str, reference: str):
@@ -173,6 +181,25 @@ class _ExplodingGroupClient:
         raise RuntimeError("service unavailable")
 
 
+class _NoIdentityManagement:
+    def __init__(self, config):
+        self.config = config
+
+    async def get_group(self, name):
+        from azure.containerapps.sandbox import SandboxGroup
+
+        cfg = self.config
+        return SandboxGroup(
+            id=f"/subscriptions/{cfg.subscription_id}/resourceGroups/{cfg.resource_group}"
+            f"/providers/Microsoft.App/sandboxGroups/{name}",
+            name=name,
+            properties={"provisioningState": "Succeeded"},
+        )
+
+    async def close(self):
+        pass
+
+
 def _backend_with(group_client, config: AcasSandboxConfig | None = None) -> AcasSandboxBackend:
     """A backend whose group client is the given fake.
 
@@ -181,7 +208,11 @@ def _backend_with(group_client, config: AcasSandboxConfig | None = None) -> Acas
     Azure, and using it here is what proves it is a real seam.
     """
     backend = AcasSandboxBackend(config or _config())
-    backend._group_client = lambda credential: group_client  # type: ignore[method-assign]
+    from maf_sandbox_acas._identity import GroupClients
+
+    backend._group_client = lambda credential: GroupClients(  # type: ignore[method-assign]
+        group_client, lambda: _NoIdentityManagement(backend._config)
+    )
     return backend
 
 

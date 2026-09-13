@@ -38,6 +38,7 @@ from ._credentials import (
     AcasCredentialRequest,
     AcasCredentialResolver,
 )
+from ._identity import AcasIdentityVerificationError
 from ._images import disk_image_base, resolve_disk_image_id
 
 __all__ = [
@@ -49,6 +50,7 @@ __all__ = [
     "AcasCredentialResolver",
     "AcasEgressPolicyConflict",
     "AcasEntryPayloadIncomplete",
+    "AcasIdentityVerificationError",
     "AcasSandboxBackend",
     "AcasSandboxConfig",
     "MafSandboxAcasExperimentalWarning",
