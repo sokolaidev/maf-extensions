@@ -34,7 +34,7 @@ router = SandboxRouter([backend])  # microVM isolation meets the router's defaul
 
 [`samples/01_acas_bicep`](https://github.com/sokolaidev/maf-extensions/tree/main/samples/01_acas_bicep) runs that pair end to end: the same two lines, plus the caller context and the workload tool they exist to serve, in a program that validates a Bicep file and disposes the sandbox afterwards.
 
-`azure-containerapps-sandbox` — the data-plane SDK this backend calls — is a hard dependency (it is still a preview, `0.1.0bN`, package; pin it in your own lockfile if you need reproducibility beyond the range this package declares). Authentication is `DefaultAzureCredential`; see [Azure Identity's docs](https://learn.microsoft.com/python/api/overview/azure/identity-readme) for how it resolves credentials in your environment.
+`azure-containerapps-sandbox` — the data-plane SDK this backend calls — is a hard dependency pinned to the tested `0.1.0b4` preview. The backend uses private SDK surfaces for bounded exec responses and complete file metadata, so a later preview is admitted only after compatibility and live conformance are verified. Authentication is `DefaultAzureCredential`; see [Azure Identity's docs](https://learn.microsoft.com/python/api/overview/azure/identity-readme) for how it resolves credentials in your environment.
 
 ## Threat model
 

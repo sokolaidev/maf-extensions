@@ -46,10 +46,10 @@ dependencies = [
     "maf-sandbox>=0.40.0,<0.41",
     # DefaultAzureCredential for the sandbox data plane.
     "azure-identity>=1.25.1,<2",
-    # The ACA Sandboxes data-plane SDK — still 0.1.0bN. The version pin lives here and
-    # nowhere else; a host reaches it by installing this package (or its `bicep-sandbox`
-    # extra), not by naming the SDK itself.
-    "azure-containerapps-sandbox>=0.1.0b3,<0.2",
+    # b4 refuses an administratively disabled sandbox before this backend spends its full
+    # resume deadline. The SDK is still preview, and the backend reaches private surfaces for
+    # bounded exec and raw file metadata, so admit no later preview before it is validated.
+    "azure-containerapps-sandbox>=0.1.0b4,<0.1.0b5",
 ]
 
 [project.urls]
