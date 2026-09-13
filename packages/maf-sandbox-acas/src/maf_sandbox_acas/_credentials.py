@@ -8,6 +8,7 @@ import threading
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from concurrent.futures import Future
 from contextlib import asynccontextmanager
+from contextvars import Context
 from dataclasses import dataclass, field
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -82,12 +83,16 @@ class _Entry:
 class _LoopClients:
     entries: dict[tuple[str, str], _Entry] = field(default_factory=lambda: {})
     changed: Future[None] = field(default_factory=lambda: Future[None]())
+    notification: asyncio.Future[None] | None = None
     retirements: set[asyncio.Task[None]] = field(default_factory=set[asyncio.Task[None]])
     closing: asyncio.Task[None] | None = None
 
 
 class ClientPool:
-    """Bound each owning loop's clients, including construction and retirement."""
+    """Bound each owning loop's clients, including construction and retirement.
+
+    Construction and retirement yield until their tasks are published under the guard.
+    """
 
     def __init__(
         self,
@@ -107,7 +112,18 @@ class ClientPool:
 
     def _notify(self, state: _LoopClients) -> None:
         previous, state.changed = state.changed, Future()
+        state.notification = None
         previous.set_result(None)
+
+    async def _wait_for_change(self, state: _LoopClients, changed: Future[None]) -> None:
+        with self._guard:
+            if changed is not state.changed:
+                return
+            if state.notification is None:
+                # The shared bridge must not retain the request that first waits on it.
+                state.notification = Context().run(asyncio.wrap_future, changed)
+            notification = state.notification
+        await asyncio.shield(notification)
 
     def _forget_empty(self, state: _LoopClients) -> None:
         if not state.entries and not state.retirements:
@@ -132,6 +148,7 @@ class ClientPool:
             raise AcasClientCloseError("ACAS client or credential closure failed")
 
     async def _create(self, entry: _Entry) -> None:
+        await asyncio.sleep(0)
         try:
             async with asyncio.timeout(self._wait_seconds):
                 credential = entry.binding.create_credential()
@@ -167,6 +184,7 @@ class ClientPool:
             self._forget_empty(state)
 
     async def _retire(self, state: _LoopClients, key: tuple[str, str], entry: _Entry) -> None:
+        await asyncio.sleep(0)
         try:
             await self._close_entry(entry)
         except AcasClientCloseError:
@@ -226,7 +244,7 @@ class ClientPool:
                                     lambda task, s=state: self._retired(s, task)
                                 )
                     if entry is None:
-                        await asyncio.shield(asyncio.wrap_future(changed))
+                        await self._wait_for_change(state, changed)
                 assert entry.task is not None
                 await asyncio.shield(entry.task)
         except asyncio.CancelledError:
@@ -272,7 +290,7 @@ class ClientPool:
                     changed = state.changed
                 if not busy:
                     break
-                await asyncio.shield(asyncio.wrap_future(changed))
+                await self._wait_for_change(state, changed)
             if state.retirements:
                 await asyncio.gather(*state.retirements)
             failed = False
