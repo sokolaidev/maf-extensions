@@ -101,7 +101,7 @@ def test_live_write_window(operation, missing, swap_missing_parent, boundary):
     async def scenario():
         backend = WslcSandboxBackend(WslcSandboxConfig())
         key = SandboxKey(
-            scope="write-window-" + uuid.uuid4().hex, thread_id="test", agent_dir="test"
+            scope="write-window-" + uuid.uuid4().hex, thread_id="test", agent_id="test"
         )
         spec = replace(_SPEC, image=_IMAGE)
         try:
