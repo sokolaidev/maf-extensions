@@ -1,4 +1,4 @@
-"""Run Linux worker tests as the sudo caller in an isolated delegated cgroup v2 tree."""
+"""Run Linux worker or live KVM tests as the sudo caller in a delegated cgroup v2 tree."""
 
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ def main() -> int:
     """Provision only the test subtree and remove it after the unprivileged test process exits."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--python", type=Path, required=True)
+    parser.add_argument("--live", action="store_true", help="enable real KVM guest execution")
     parser.add_argument("pytest_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if sys.platform != "linux":
@@ -52,8 +53,15 @@ def main() -> int:
             os.chown(path, uid, gid)
         environment = dict(os.environ)
         environment.update(MAF_HYPERLIGHT_LINUX_TESTS="1", MAF_HYPERLIGHT_CGROUP_ROOT=str(root))
-        environment.pop("MAF_HYPERLIGHT_LIVE", None)
-        test_args = args.pytest_args or ["-q", "packages/maf-sandbox-hyperlight/tests"]
+        if args.live:
+            environment["MAF_HYPERLIGHT_LIVE"] = "1"
+        else:
+            environment.pop("MAF_HYPERLIGHT_LIVE", None)
+        suite = "packages/maf-sandbox-hyperlight/tests"
+        test_args = args.pytest_args or [
+            "-q",
+            suite + "/test_hyperlight_live.py" if args.live else suite,
+        ]
         if test_args[0] == "--":
             test_args = test_args[1:]
         return subprocess.run(

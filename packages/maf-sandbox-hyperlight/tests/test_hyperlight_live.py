@@ -37,7 +37,7 @@ from maf_sandbox_hyperlight import (
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("MAF_HYPERLIGHT_LIVE") != "1" or sys.platform not in {"win32", "linux"},
-    reason="requires opt-in and Windows WHP or WSL2 KVM",
+    reason="requires opt-in and Windows WHP or Linux KVM",
 )
 KEY = SandboxKey("hyperlight-live", "runtime", "agent")
 SPEC = SandboxSpec(kind="python", work_dir=None, requires=frozenset({Capability.RUN_CODE}))

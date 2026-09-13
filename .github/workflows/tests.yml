@@ -128,7 +128,7 @@ jobs:
           exit $LASTEXITCODE
 
   hyperlight-linux-worker:
-    name: Hyperlight worker safety (Linux)
+    name: Hyperlight KVM and worker safety (Linux)
     needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -147,6 +147,30 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         # These real kernel checks require delegation, but no hypervisor.
         run: sudo python3 scripts/check_hyperlight_linux.py --python "$PWD/.venv/bin/python"
+
+      - name: Prepare and record native KVM validation
+        if: needs.changes.outputs.code == 'true'
+        run: |
+          set -euo pipefail
+          test -c /dev/kvm
+          sudo chmod g+rw /dev/kvm
+          stat -c '%n %A %U:%G' /dev/kvm
+          # The exact-host HTTP fixture binds port 80 as the unprivileged test owner.
+          sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
+          uv run python - <<'PY'
+          import platform
+          from importlib.metadata import version
+          print("Distribution:", platform.freedesktop_os_release()["PRETTY_NAME"])
+          print("Kernel:", platform.release())
+          print("Architecture:", platform.machine())
+          print("Host Python:", platform.python_version())
+          for package in ("hyperlight-sandbox", "hyperlight-sandbox-backend-wasm", "hyperlight-sandbox-python-guest"):
+              print(package + ":", version(package))
+          PY
+
+      - name: Real KVM guest conformance
+        if: needs.changes.outputs.code == 'true'
+        run: sudo python3 scripts/check_hyperlight_linux.py --live --python "$PWD/.venv/bin/python"
 
   # Lint, format and the commit-msg tier: seconds in total, and a first answer while the
   # heavier shards are still installing.
