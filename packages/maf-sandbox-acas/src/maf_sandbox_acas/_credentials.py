@@ -109,6 +109,12 @@ class ClientPool:
         previous, state.changed = state.changed, Future()
         previous.set_result(None)
 
+    def _forget_empty(self, state: _LoopClients) -> None:
+        if not state.entries and not state.retirements:
+            loop = asyncio.get_running_loop()
+            if self._loops.get(loop) is state:
+                del self._loops[loop]
+
     async def _close_entry(self, entry: _Entry) -> None:
         failed = False
         for attribute in ("client", "credential"):
@@ -155,6 +161,7 @@ class ClientPool:
                 else:
                     entry.retiring = True
             self._notify(state)
+            self._forget_empty(state)
 
     async def _retire(self, state: _LoopClients, key: tuple[str, str], entry: _Entry) -> None:
         try:
@@ -172,6 +179,8 @@ class ClientPool:
     def _retired(self, state: _LoopClients, task: asyncio.Task[None]) -> None:
         with self._guard:
             state.retirements.discard(task)
+            self._notify(state)
+            self._forget_empty(state)
 
     @asynccontextmanager
     async def lease(self, binding: AcasCredentialBinding) -> AsyncGenerator[Any, None]:
@@ -249,6 +258,7 @@ class ClientPool:
                     else:
                         entry.retiring = True
             self._notify(state)
+            self._forget_empty(state)
 
     async def _close_loop(self, loop: asyncio.AbstractEventLoop, state: _LoopClients) -> None:
         async with asyncio.timeout(self._close_seconds):

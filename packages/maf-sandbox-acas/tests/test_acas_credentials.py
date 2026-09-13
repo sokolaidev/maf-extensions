@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import gc
 import inspect
 import threading
+import weakref
 from concurrent.futures import Future, ThreadPoolExecutor
 from types import SimpleNamespace
 
@@ -935,3 +937,85 @@ def test_shutdown_submission_failure_closes_unscheduled_coroutine_and_other_loop
             if not owner.is_closed():
                 owner.call_soon_threadsafe(owner.stop)
             running.result(5)
+
+
+@pytest.mark.parametrize("failure", ["credential", "client", "cancelled"])
+def test_failed_construction_does_not_retain_ephemeral_loops(failure):
+    def build(credential):
+        if failure == "client":
+            raise ValueError("construction failed")
+        return Client(credential)
+
+    clients = pool(build=build)
+    loops = []
+
+    async def scenario():
+        loops.append(weakref.ref(asyncio.get_running_loop()))
+        started = asyncio.Event()
+
+        async def factory():
+            if failure == "credential":
+                raise ValueError("credential unavailable")
+            if failure == "cancelled":
+                started.set()
+                await asyncio.Event().wait()
+            return Credential()
+
+        async def use():
+            async with clients.lease(AcasCredentialBinding("app", "1", factory)):
+                pytest.fail("construction should not complete")
+
+        if failure == "cancelled":
+            pending = asyncio.create_task(use())
+            await started.wait()
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+        else:
+            with pytest.raises(AcasCredentialError):
+                await use()
+
+    for _ in range(5):
+        asyncio.run(scenario())
+        assert not clients._loops
+    gc.collect()
+    assert all(reference() is None for reference in loops)
+    asyncio.run(clients.aclose())
+
+
+def test_cancelled_eviction_waiter_releases_loop_after_retirement_finishes():
+    async def scenario():
+        started, finish = asyncio.Event(), asyncio.Event()
+
+        class Closing(Client):
+            async def close(self):
+                started.set()
+                await finish.wait()
+                await super().close()
+
+        clients = pool(capacity=1, build=Closing)
+        async with clients.lease(binding("first")) as first:
+            pass
+
+        async def replace():
+            async with clients.lease(binding("second")):
+                pytest.fail("replacement should be cancelled")
+
+        pending = asyncio.create_task(replace())
+        await started.wait()
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        assert clients._loops and not first.closed
+        state = clients._loops[asyncio.get_running_loop()]
+        retiring = tuple(state.retirements)
+        assert len(retiring) == 1
+        finish.set()
+        await asyncio.gather(*retiring)
+        assert first.closed == first.credential.closed == 1
+        assert not clients._loops
+        async with clients.lease(binding("next")) as next_client:
+            assert next_client is not first and not next_client.closed
+        await clients.aclose()
+
+    asyncio.run(scenario())
