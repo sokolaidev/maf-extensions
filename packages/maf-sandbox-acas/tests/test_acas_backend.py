@@ -5115,6 +5115,74 @@ class TestFailsClosedOnAMissingTypeFlag:
         assert _stat(_sandbox(client), "real.txt").size_bytes is None
 
 
+class TestReadSurfaceResidual:
+    """Controlled interleavings describe the residual; they do not certify confinement."""
+
+    @pytest.mark.parametrize(
+        "operation,path,checked,link,target",
+        [
+            ("read", "sub/child.txt", "sub", "sub", "/outside"),
+            ("read", "real.txt", "real.txt", "real.txt", "/outside/child.txt"),
+            ("stat", "sub/child.txt", "sub", "sub", "/outside"),
+            ("list", "sub", "sub", "sub", "/outside"),
+        ],
+    )
+    def test_a_swap_after_classification_redirects_the_native_operation(
+        self, operation, path, checked, link, target
+    ):
+        from maf_sandbox import EntryKind
+
+        foreign = b"outside the checked working directory"
+
+        class SwappingClient(_FakeDataPlaneClient):
+            swapped = False
+
+            async def _dp_get(self, path, *, params=None):
+                payload = await super()._dp_get(path, params=params)
+                assert params is not None
+                if (
+                    not self.swapped
+                    and path.endswith("/files/stat")
+                    and params["path"] == f"{_WORK_DIR}/{checked}"
+                ):
+                    self._entries[f"{_WORK_DIR}/{link}"] = {
+                        **_LIVE_SYMLINK,
+                        "path": f"{_WORK_DIR}/{link}",
+                        "symlinkTarget": target,
+                    }
+                    self.swapped = True
+                return payload
+
+        client = SwappingClient()
+        client._entries["/outside"] = {**_LIVE_DIRECTORY, "path": "/outside"}
+        client._entries["/outside/child.txt"] = {
+            **_LIVE_NESTED,
+            "path": "/outside/child.txt",
+            "size": len(foreign),
+        }
+        client._contents["/outside/child.txt"] = foreign
+        sandbox = _sandbox(client)
+
+        async def scenario():
+            if operation == "read":
+                assert (
+                    await sandbox.read_file(path, working_directory=_WORK_DIR, max_bytes=100)
+                    == foreign
+                )
+            elif operation == "stat":
+                entry = await sandbox.stat_file(path, working_directory=_WORK_DIR)
+                assert entry is not None and entry.kind is EntryKind.FILE
+                assert entry.path == path and entry.size_bytes == len(foreign)
+            else:
+                entries = await sandbox.list_dir(path, working_directory=_WORK_DIR)
+                assert [(entry.path, entry.size_bytes) for entry in entries] == [
+                    ("sub/child.txt", len(foreign))
+                ]
+            assert client.swapped
+
+        asyncio.run(scenario())
+
+
 class TestReadFile:
     def test_a_regular_file_comes_back_byte_identical(self):
         sandbox = _sandbox()

@@ -42,6 +42,7 @@ bare catalogue name is only evidence if it boots one; the egress leg needs its o
 an ``ALLOWLIST`` sandbox has a host it may reach and a host it may not. Three more isolate the
 command compatibility checks, including two guests whose executables are deliberately removed.
 Two policy-reuse sandboxes verify disposal between different policies.
+The controlled read-window measurements add one sandbox per configured root/non-root image.
 Everything runs on one
 event loop, deliberately: the backend caches its group client per loop, so a second loop would
 build a second transport against the same sandbox.
@@ -53,6 +54,7 @@ import asyncio
 import importlib.util
 import logging
 import os
+import shlex
 import sys
 import uuid
 from collections.abc import Coroutine
@@ -1028,6 +1030,120 @@ class TestMissingLifecycleRecovery:
 #: deployment, and the leg skips: every sample and every other sandbox in this module runs a
 #: root image, which is why nothing surfaced #722 until a probe went looking for it.
 _NONROOT_IMAGE = os.environ.get("MAF_SANDBOX_ACAS_E2E_NONROOT_IMAGE")
+
+
+class TestReadSurfaceResidual:
+    """Measure a controlled guest swap after the real service answers the path check."""
+
+    @pytest.fixture(scope="class", params=["root", "nonroot"])
+    def read_surface(self, request, loop):
+        image = _IMAGE if request.param == "root" else _NONROOT_IMAGE
+        if not image:
+            pytest.skip(f"needs the configured {request.param} ACAS live image")
+        backend = AcasSandboxBackend(_config())
+        key = _key(f"e2e-read-window-{uuid.uuid4()}")
+        spec = SandboxSpec(
+            kind="read-window",
+            image=image,
+            work_dir="/tmp",
+            requires=frozenset({Capability.EXEC}),
+        )
+        try:
+            sandbox = loop.run_until_complete(backend.acquire(key, spec))
+            live = _Live(loop, backend, key, spec, sandbox)
+            identity = live.run(sandbox.exec("id -u", working_directory="/", timeout=30))
+            assert identity.exit_code == 0
+            assert (identity.stdout.strip() == "0") == (request.param == "root")
+            yield live, request.param
+        finally:
+            try:
+                loop.run_until_complete(_drains_to_empty(backend, key.scope))
+            finally:
+                loop.run_until_complete(backend.aclose())
+
+    def test_the_nonroot_output_gate_is_functional_not_a_read_authority_proof(self, read_surface):
+        live, principal = read_surface
+        collecting = replace(live.spec, requires=frozenset({Capability.EXEC, Capability.FILES_OUT}))
+        if principal == "nonroot":
+            with pytest.raises(SandboxCapabilityNotSupported):
+                live.run(live.backend.acquire(live.key, collecting))
+        else:
+            assert live.run(live.backend.acquire(live.key, collecting)).instance_id == (
+                live.sandbox.instance_id
+            )
+
+    @pytest.mark.parametrize("operation", ["read-parent", "read-final", "stat", "list"])
+    def test_the_native_operation_can_return_a_target_outside_the_checked_directory(
+        self, read_surface, monkeypatch, operation
+    ):
+        live, principal = read_surface
+        sandbox = live.sandbox
+        root = f"/tmp/maf-read-window-{uuid.uuid4().hex}"
+        working = f"{root}/checked"
+        outside = f"{root}/outside"
+        foreign = b"private read-window fixture"
+        path = (
+            "sub/child.txt"
+            if operation in ("read-parent", "stat")
+            else ("plain.txt" if operation == "read-final" else "sub")
+        )
+        checked = f"{working}/plain.txt" if operation == "read-final" else f"{working}/sub"
+        target = f"{outside}/child.txt" if operation == "read-final" else outside
+        original = sandbox._files_payload
+        swapped = False
+
+        async def command(script):
+            result = await sandbox.exec(script, working_directory="/", timeout=30)
+            assert result.exit_code == 0, result.stderr
+            return result
+
+        async def swap_after_stat(route, guest_path):
+            nonlocal swapped
+            payload = await original(route, guest_path)
+            if route == "files/stat" and guest_path == checked and not swapped:
+                await command(
+                    f"mv -- {shlex.quote(checked)} {shlex.quote(checked + '-saved')} && "
+                    f"ln -s -- {shlex.quote(target)} {shlex.quote(checked)}"
+                )
+                swapped = True
+            return payload
+
+        async def scenario():
+            await command(f"mkdir -p -- {shlex.quote(working + '/sub')}")
+            await sandbox._sc.write_file(f"{working}/sub/child.txt", b"in")
+            await sandbox._sc.write_file(f"{working}/plain.txt", b"in")
+            await sandbox._sc.write_file(f"{outside}/child.txt", foreign, mode="384")
+            guest_read = await sandbox.exec(
+                ["cat", f"{outside}/child.txt"], working_directory="/", timeout=30
+            )
+            if principal == "nonroot":
+                assert guest_read.exit_code != 0 and not guest_read.stdout_bytes
+            else:
+                assert guest_read.exit_code == 0 and guest_read.stdout_bytes == foreign
+            monkeypatch.setattr(sandbox, "_files_payload", swap_after_stat)
+            if operation.startswith("read"):
+                assert (
+                    await sandbox.read_file(path, working_directory=working, max_bytes=100)
+                    == foreign
+                )
+            elif operation == "stat":
+                entry = await sandbox.stat_file(path, working_directory=working)
+                assert entry is not None and entry.kind is EntryKind.FILE
+                assert entry.path == path and entry.size_bytes == len(foreign)
+            else:
+                entries = await sandbox.list_dir(path, working_directory=working)
+                assert [(entry.path, entry.size_bytes) for entry in entries] == [
+                    ("sub/child.txt", len(foreign))
+                ]
+            assert swapped
+            if operation.startswith("read"):
+                monkeypatch.setattr(sandbox, "_files_payload", original)
+                with pytest.raises(SandboxTransferCapExceeded):
+                    await sandbox.read_file(
+                        f"{outside}/child.txt", working_directory=outside, max_bytes=2
+                    )
+
+        live.run(scenario())
 
 
 @pytest.mark.parametrize(
