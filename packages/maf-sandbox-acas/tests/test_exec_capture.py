@@ -163,7 +163,6 @@ def test_a_retry_after_sleep_that_reaches_the_exec_deadline_keeps_the_sandbox(mo
         original = AsyncRetryPolicy(retry_status=7, retry_backoff_factor=2.0)
         client = _RetryAfterClient(AsyncPipeline(transport, policies=[original]))
         credential = SimpleNamespace()
-        monkeypatch.setattr("azure.identity.aio.DefaultAzureCredential", lambda: credential)
         monkeypatch.setattr(
             "azure.containerapps.sandbox.aio.SandboxGroupClient", lambda **_: client
         )
@@ -171,7 +170,7 @@ def test_a_retry_after_sleep_that_reaches_the_exec_deadline_keeps_the_sandbox(mo
         backend = AcasSandboxBackend(
             AcasSandboxConfig(endpoint="https://management.example.azuredevcompute.io")
         )
-        assert backend._group_client() is client
+        assert backend._group_client(credential) is client
         observed = client._pipeline._impl_policies[0]
         assert isinstance(observed, AsyncRetryPolicy)
         assert observed is not original

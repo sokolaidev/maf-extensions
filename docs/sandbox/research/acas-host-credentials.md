@@ -1,16 +1,18 @@
 # Host-selected ACAS credentials across requests and replicas
 
-> Research for [#1169](https://github.com/sokolaidev/maf-extensions/issues/1169), under [#567](https://github.com/sokolaidev/maf-extensions/issues/567), recorded on 2026-09-13. This is source analysis and offline evidence for a proposed design, not an adopted API or completed implementation.
+> Research for [#1169](https://github.com/sokolaidev/maf-extensions/issues/1169), under [#567](https://github.com/sokolaidev/maf-extensions/issues/567), recorded on 2026-09-13. This preserves the source analysis and offline evidence, followed by the implementation disposition. The linked contract owns the implemented API; the baseline observations and original recommendations remain dated evidence.
 
 Source baseline: [`c201baa8`](https://github.com/sokolaidev/maf-extensions/tree/c201baa8ac72c70a9d3226aa4000e8f75c213da7). The inspected environment used Python 3.13.12, `azure-containerapps-sandbox` 0.1.0b4, `azure-core` 1.41.0 and `azure-identity` 1.25.3. No Azure requests or real credentials were used.
 
 ## Recommendation
 
+Implementation disposition for #1169: the [ACAS credential contract](../acas-credentials.md) defines the implemented API. `AcasCredentialRequest` selects acquire or cleanup by trusted scope/thread/key; `AcasCredentialBinding` captures a non-secret authority reference, generation and fresh-credential factory. Request exchange is retained. Cleanup on another replica uses an explicit host resolver rather than persisted credential objects or secret-bearing labels. Immediate failure cleanup keeps the acquired grant; later disposal resolves cleanup authority anew. Shutdown reports incomplete cleanup with `AcasClientCloseError`. The source observations below remain evidence for the pinned baseline, not a description of the implementation after this change.
+
 Define authority selection and client ownership together for #1169. Preserve the issue's per-request exchanged-authority requirement unless the maintainer explicitly defers it. A cache keyed by `(loop, scope)` alone cannot meet that requirement when two callers or grants share a scope.
 
 Multiple host replicas are a requirement. SDK clients and their leases remain local to a process and event loop. The host's authority-selection policy and cleanup references must work independently on every replica, including after the creating replica has disappeared. Do not require sticky routing or the original in-memory credential to delete a sandbox.
 
-## Current behavior and implications
+## Observed baseline and implications
 
 Source links below are pinned to the inspected commit; line numbers describe that baseline.
 
@@ -44,7 +46,7 @@ Existing focused lifecycle/error/concurrency tests: **29 passed, 414 deselected,
 
 ## Recommended authority model
 
-The following is a design recommendation, not an adopted API.
+The following records the design recommendation. The linked implementation contract above owns the API names and resolves the choices that remained open here.
 
 1. **Resolve an explicit host-owned authority binding.** At acquire or a direct backend operation, a configured resolver receives the captured ownership key and operation purpose. It may read trusted host request context, but must not take a principal, credential or cache identifier from guest arguments. Return an immutable, non-secret authority reference, a revision/generation, and a way to create an async credential on the owning loop. Prefer a creation recipe to an already shared loop-bound credential.
 2. **Partition authentication state by the actual binding.** Cache entries should include loop, resource/tenant partition, authority reference and generation. A stable scope principal may reuse a binding; two requests may share only when the host explicitly declares them equivalent. A request-specific binding remains distinct even inside the same scope. Never use a raw bearer token as a cache key or log field.

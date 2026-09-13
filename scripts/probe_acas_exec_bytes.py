@@ -21,7 +21,7 @@ from typing import Any
 
 from azure.core.rest import HttpRequest
 from maf_sandbox import Capability, ExecResult, SandboxKey, SandboxSpec
-from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
+from maf_sandbox_acas import AcasCredentialRequest, AcasSandboxBackend, AcasSandboxConfig
 
 _BEGIN = "maf-exec-bytes-v1:begin"
 _STDERR = "maf-exec-bytes-v1:stderr"
@@ -181,27 +181,28 @@ async def measure(output: Path) -> dict[str, Any]:
                 requires=frozenset({Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT}),
             ),
         )
-        sc = sandbox._sc
         work = "/tmp/exec-bytes-work"
-        # Inspect the actual HTTP payload before the SDK builds its typed ExecResult.
-        request = HttpRequest(
-            "POST",
-            f"{sc._endpoint}{sc._sbx_path}/executeShellCommand",
-            json={
-                "command": shlex.join(_program(b"ok\xff\xfe", b"err\xff\xfe")),
-                "workingDirectory": work,
-            },
-            params={"api-version": sc._api_version},
-        )
-        response = await sc._send_request(request)
-        response.raise_for_status()
-        raw = response.json()
-        report["service_baseline"] = {
-            "stdout_codepoints": [hex(ord(c)) for c in raw["stdout"]],
-            "stderr_codepoints": [hex(ord(c)) for c in raw["stderr"]],
-            "exit_code": raw["exitCode"],
-            "http_payload_has_replacement_utf8": b"\xef\xbf\xbd" in response.content,
-        }
+        async with sandbox.client_lease():
+            sc = sandbox._sc
+            # Inspect the actual HTTP payload before the SDK builds its typed ExecResult.
+            request = HttpRequest(
+                "POST",
+                f"{sc._endpoint}{sc._sbx_path}/executeShellCommand",
+                json={
+                    "command": shlex.join(_program(b"ok\xff\xfe", b"err\xff\xfe")),
+                    "workingDirectory": work,
+                },
+                params={"api-version": sc._api_version},
+            )
+            response = await sc._send_request(request)
+            response.raise_for_status()
+            raw = response.json()
+            report["service_baseline"] = {
+                "stdout_codepoints": [hex(ord(c)) for c in raw["stdout"]],
+                "stderr_codepoints": [hex(ord(c)) for c in raw["stderr"]],
+                "exit_code": raw["exitCode"],
+                "http_payload_has_replacement_utf8": b"\xef\xbf\xbd" in response.content,
+            }
         save()
 
         async def run_case(
@@ -394,12 +395,14 @@ async def measure(output: Path) -> dict[str, Any]:
             purged = await backend.dispose_scope(key.scope, key.thread_id)
             report["cleanup_refused"] = purged.undisposed is not None
             for attempt in range(10):
-                remaining = [
-                    item
-                    async for item in backend._group_client().list_sandboxes(
-                        labels={"scope": key.scope, "thread": key.thread_id}
-                    )
-                ]
+                request = AcasCredentialRequest(key.scope, key.thread_id, "dispose_scope")
+                async with backend._client_lease(request) as (client, _binding):
+                    remaining = [
+                        item
+                        async for item in client.list_sandboxes(
+                            labels={"scope": key.scope, "thread": key.thread_id}
+                        )
+                    ]
                 if not remaining:
                     report["scope_confirmed_empty"] = True
                     break
