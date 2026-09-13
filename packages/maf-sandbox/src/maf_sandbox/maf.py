@@ -1121,8 +1121,9 @@ def sandbox_tool_declarations(
     its own classification in hand, never a default a library picks.  When it *is* passed, the
     key is written only if this tool can carry something out at all: the spec permits egress
     (``egress_allow`` names hosts, or the run is ``unrestricted``), or the spec declares an
-    output that **lands** in ``output_sink``.  Capping a workload with neither would gate calls
-    for a flow that does not exist.
+    output that **lands** in ``output_sink``, requires attached authority, or the caller asserts
+    ``also_carries_out``. Capping a workload with none of these would gate calls for a flow that
+    does not exist.
 
     The sink half of that condition is not symmetry for its own sake.  The rule was once
     ``egress_allow`` alone, on the premise that a sandbox with no network cannot carry anything
@@ -1143,7 +1144,7 @@ def sandbox_tool_declarations(
     Args:
         spec: The sandbox this workload asks for; ``egress``, ``egress_allow``, ``requires``,
             ``host_tools``, ``declared_outputs`` and ``outputs_named_at_call_time`` are what is
-            read.
+            read, including ``ATTACHED_IDENTITY`` in ``requires`` for outbound authority.
         source_integrity: Integrity label for this tool's results, as a
             :class:`~maf_sandbox.SourceIntegrity`, or ``None`` (the default) to declare none.
             Typed ``str`` because a host deserializing its own configuration passes one, and
@@ -1212,7 +1213,12 @@ def sandbox_tool_declarations(
     if claimed is not None:
         declarations["source_integrity"] = str(claimed)
     lands_artifacts = output_sink is not None and spec_lands_artifacts(spec)
-    carries_something_out = _reaches_the_network(spec) or lands_artifacts or also_carries_out
+    carries_something_out = (
+        _reaches_the_network(spec)
+        or lands_artifacts
+        or also_carries_out
+        or Capability.ATTACHED_IDENTITY in spec.requires
+    )
     if outbound_max_confidentiality is not None and carries_something_out:
         declarations["max_allowed_confidentiality"] = outbound_max_confidentiality
     # Coerced for the reason `SandboxSpec.__post_init__` coerces its own, and this argument is

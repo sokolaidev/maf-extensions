@@ -40,10 +40,12 @@ from typing import Any
 
 from ._observer import SandboxAcquired
 from ._protocol import (
+    AttachedIdentity,
     Capability,
     Egress,
     EgressRule,
     Identity,
+    IdentityScope,
     Isolation,
     IsolationScope,
     TransferLimits,
@@ -109,6 +111,9 @@ class EffectiveState:
     files_out: TransferLimits
     backend_capabilities: frozenset[Capability] | None
     backend_egress_modes: frozenset[Egress] | None
+    attached_identity: AttachedIdentity | None = None
+    max_identity_scope: IdentityScope | None = None
+    max_identity_retention_seconds: int | None = None
 
     @classmethod
     def of(cls, event: SandboxAcquired) -> EffectiveState | None:
@@ -144,6 +149,9 @@ class EffectiveState:
             backend_egress_modes=(
                 None if declarations is None else frozenset(declarations.egress_modes)
             ),
+            attached_identity=None if declarations is None else declarations.attached_identity,
+            max_identity_scope=spec.max_identity_scope,
+            max_identity_retention_seconds=spec.max_identity_retention_seconds,
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -161,7 +169,11 @@ class EffectiveState:
             "isolation_scope": str(self.isolation_scope),
             "egress": str(self.egress),
             "egress_allow": [
-                {"host": entry.host, "methods": list(entry.methods or ())}
+                {
+                    "host": entry.host,
+                    "methods": None if entry.methods is None else list(entry.methods),
+                    **({"authority": entry.authority} if entry.authority is not None else {}),
+                }
                 if isinstance(entry, EgressRule)
                 else entry
                 for entry in self.egress_allow
@@ -176,6 +188,17 @@ class EffectiveState:
             "files_out": _caps(self.files_out),
             "backend_capabilities": _optional_sorted(self.backend_capabilities),
             "backend_egress_modes": _optional_sorted(self.backend_egress_modes),
+            "attached_identity": (
+                None
+                if self.attached_identity is None
+                else {
+                    "scope": str(self.attached_identity.scope),
+                    "auto_delete_seconds": self.attached_identity.auto_delete_seconds,
+                    "channels": _sorted(self.attached_identity.channels),
+                }
+            ),
+            "max_identity_scope": _named(self.max_identity_scope),
+            "max_identity_retention_seconds": self.max_identity_retention_seconds,
         }
 
 

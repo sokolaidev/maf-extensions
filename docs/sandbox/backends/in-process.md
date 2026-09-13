@@ -16,12 +16,13 @@
 | `isolation_scopes` | `{IsolationScope.CONVERSATION}` | a field of `declarations=` |
 | `observes_egress` | `False` | a field of `declarations=` |
 | `egress_method_tokens` | `frozenset()` | a field of `declarations=` |
+| `attached_identity` | `NO_ATTACHED_IDENTITY` | a field of `declarations=` |
 
 `Isolation.NONE` is the whole point: this backend runs nothing in a boundary. The workload executes in the host process with the host's authority, and the declaration says exactly that, so the router's default `microvm` floor refuses it and a host that wants it opts all the way down. Nothing here pretends otherwise, and that is what makes it safe to ship in the wheel.
 
 `egress_modes` defaults to `{ALLOWLIST, CLOSED}` rather than to silence so a workload under test **attaches** as it would against a proxy-capable live backend: the default `CLOSED` spec and an `ALLOWLIST` spec both resolve, instead of every offline test becoming a test of the attach refusal. A test *of* the refusal states a narrower set in that field — `frozenset()` for a backend that enforces nothing, `{UNRESTRICTED}` for the no-confinement shape — which is what the no-isolation backend in [`samples/09_inprocess_bicep`](../../../samples/09_inprocess_bicep) now declares, honestly, and it is served only by a workload that asked to run open.
 
-`FAKE_BACKEND_DECLARATIONS` differs from `DEFAULT_BACKEND_DECLARATIONS` in two fields: `capabilities` adds `RECLAIM` for the fake’s directory removal, and `egress_modes` permits offline workloads to attach. Pull capabilities such as `FILES_OUT` and `FILES_LIST` remain explicit opt-ins. Other fields retain the router’s defaults.
+`FAKE_BACKEND_DECLARATIONS` differs from `DEFAULT_BACKEND_DECLARATIONS` in two fields: `capabilities` adds `RECLAIM` for the fake’s directory removal, and `egress_modes` permits offline workloads to attach. Pull capabilities such as `FILES_OUT` and `FILES_LIST` remain explicit opt-ins. Other fields retain the router’s defaults, including `attached_identity=NO_ATTACHED_IDENTITY`. Overriding attachment and capability declarations exercises router admission only; the fake supplies no token or platform enforcement.
 
 ## Overridable declarations are what make it a policy fixture
 
