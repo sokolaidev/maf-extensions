@@ -24,6 +24,7 @@ on:
       - "maf-sandbox-codeact-v*"
       - "maf-sandbox-deepagents-v*"
       - "maf-sandbox-docker-v*"
+      - "maf-sandbox-hyperlight-v*"
       - "maf-sandbox-otel-v*"
       - "maf-sandbox-wslc-v*"
   # Rehearsal path: publish any package to TestPyPI without cutting a real tag.
@@ -40,6 +41,7 @@ on:
           - maf-sandbox-codeact
           - maf-sandbox-deepagents
           - maf-sandbox-docker
+          - maf-sandbox-hyperlight
           - maf-sandbox-otel
           - maf-sandbox-wslc
       target:

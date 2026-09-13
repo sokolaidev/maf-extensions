@@ -85,6 +85,17 @@
         }
       ]
     },
+    "packages/maf-sandbox-hyperlight": {
+      "package-name": "maf-sandbox-hyperlight",
+      "exclude-paths": ["packages/maf-sandbox-hyperlight/tests"],
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "/uv.lock",
+          "jsonpath": "$.package[?(@.name.value=='maf-sandbox-hyperlight')].version"
+        }
+      ]
+    },
     "packages/maf-sandbox-otel": {
       "package-name": "maf-sandbox-otel",
       "exclude-paths": ["packages/maf-sandbox-otel/tests"],

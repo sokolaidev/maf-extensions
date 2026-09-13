@@ -32,6 +32,7 @@ _PACKAGES = {
     "maf-sandbox-codeact": "maf_sandbox_codeact",
     "maf-sandbox-deepagents": "maf_sandbox_deepagents",
     "maf-sandbox-docker": "maf_sandbox_docker",
+    "maf-sandbox-hyperlight": "maf_sandbox_hyperlight",
     "maf-sandbox-otel": "maf_sandbox_otel",
     "maf-sandbox-wslc": "maf_sandbox_wslc",
 }
@@ -542,6 +543,38 @@ def _smoke_maf_sandbox_docker() -> str:
     )
 
 
+def _smoke_maf_sandbox_hyperlight() -> str:
+    from maf_sandbox import (
+        Capability,
+        Egress,
+        Isolation,
+        SandboxBackend,
+        SandboxCapabilityNotSupported,
+        SandboxKey,
+        SandboxSpec,
+    )
+    from maf_sandbox_hyperlight import RUNTIME_INSTRUCTIONS, HyperlightSandboxBackend
+
+    backend = HyperlightSandboxBackend()
+    if not isinstance(backend, SandboxBackend) or backend.isolation is not Isolation.MICROVM:
+        raise SystemExit("FAIL: Hyperlight does not implement the microVM backend protocol")
+    if backend.declarations.capabilities != {Capability.RUN_CODE, Capability.SNAPSHOT}:
+        raise SystemExit("FAIL: Hyperlight advertises an unvalidated channel")
+    if backend.declarations.egress_modes != {Egress.CLOSED, Egress.ALLOWLIST}:
+        raise SystemExit("FAIL: Hyperlight does not declare its enforced network policies")
+    if not RUNTIME_INSTRUCTIONS:
+        raise SystemExit("FAIL: Hyperlight supplies no runtime instructions")
+    try:
+        asyncio.run(
+            backend.acquire(SandboxKey("smoke", "thread", "agent"), SandboxSpec(kind="shell"))
+        )
+    except SandboxCapabilityNotSupported:
+        pass
+    else:
+        raise SystemExit("FAIL: Hyperlight admitted EXEC/FILES_IN")
+    return "constructs without WHP, declares runtime/reset and refuses shell/file workloads before starting a worker"
+
+
 _SMOKES = {
     "maf-sandbox": _smoke_maf_sandbox,
     "maf-sandbox-acas": _smoke_maf_sandbox_acas,
@@ -549,6 +582,7 @@ _SMOKES = {
     "maf-sandbox-codeact": _smoke_maf_sandbox_codeact,
     "maf-sandbox-deepagents": _smoke_maf_sandbox_deepagents,
     "maf-sandbox-docker": _smoke_maf_sandbox_docker,
+    "maf-sandbox-hyperlight": _smoke_maf_sandbox_hyperlight,
     "maf-sandbox-otel": _smoke_maf_sandbox_otel,
     "maf-sandbox-wslc": _smoke_maf_sandbox_wslc,
 }
