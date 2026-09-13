@@ -39,6 +39,7 @@ _RELEASES = {
     "maf-sandbox-codeact": "0.7.4",
     "maf-sandbox-deepagents": "0.1.0",
     "maf-sandbox-docker": "0.8.1",
+    "maf-sandbox-hyperlight": "0.1.0",
     "maf-sandbox-otel": "0.1.0",
     "maf-sandbox-wslc": "0.11.2",
 }

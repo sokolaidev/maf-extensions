@@ -1,0 +1,75 @@
+[project]
+name = "maf-sandbox-hyperlight"
+version = "0.0.0"
+description = "Hyperlight Python micro-VMs on Windows WHP with bounded execution, snapshot reset and process disposal."
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+authors = [{ name = "SOKOLAI BV", email = "info@sokolai.com" }]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = [
+    "hyperlight",
+    "microvm",
+    "sandbox",
+    "agent-framework",
+    "microsoft-agent-framework",
+    "isolation",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Typing :: Typed",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: Microsoft :: Windows",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = [
+    "maf-sandbox>=0.40.0,<0.41",
+    "hyperlight-sandbox==0.7.0",
+    "hyperlight-sandbox-backend-wasm==0.7.0; sys_platform == 'win32' and platform_machine == 'AMD64'",
+    "hyperlight-sandbox-python-guest==0.7.0; sys_platform == 'win32' and platform_machine == 'AMD64'",
+]
+
+[project.urls]
+Homepage = "https://www.sokol.ai"
+Source = "https://github.com/sokolaidev/maf-extensions"
+Issues = "https://github.com/sokolaidev/maf-extensions/issues"
+
+[tool.uv.sources]
+maf-sandbox = { workspace = true }
+
+[tool.uv.build-backend]
+module-name = "maf_sandbox_hyperlight"
+module-root = "src"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "D100", "D101", "D103", "D104", "E501", "W505", "TD", "FIX", "ERA001"]
+
+[tool.ruff.lint.per-file-ignores]
+# ruff resolves [tool.ruff] per file by the NEAREST ancestor pyproject.toml that has one, so
+# this package carries its own copy rather than inheriting one from the workspace root.
+"tests/**" = ["D101", "D103", "E501", "W505"]
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 100
+
+# Self-contained type checking, scoped to this package — strict. `tests/` stays out (fakes
+# for the native worker seam, not signal for a strict checker).
+[tool.pyright]
+include = ["src"]
+typeCheckingMode = "strict"
+pythonPlatform = "Windows"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["uv_build>=0.11.24,<0.12.0"]
+build-backend = "uv_build"

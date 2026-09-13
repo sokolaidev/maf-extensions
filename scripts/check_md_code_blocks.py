@@ -52,6 +52,7 @@ _MODULES = [
     "maf_sandbox_bicep",
     "maf_sandbox_codeact",
     "maf_sandbox_docker",
+    "maf_sandbox_hyperlight",
     "maf_sandbox_wslc",
 ]
 

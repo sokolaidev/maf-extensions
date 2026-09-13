@@ -124,7 +124,7 @@ The object replaced four separate `getattr` reads, which this document named as 
 
 ## The map — where known systems sit
 
-Shipped rows are the declarations in the code; the rest is orientation. The egress column is a backend's **enforceable set** and a kind's **accepted set** — not the mode any one run uses, which is a per-deployment choice inside those bounds. All three real backends declare `os_families` now — `docker` off its daemon, `acas` and `wslc` as the constant each of them is — so the guest-shape axis refuses a spec naming a shape they do not hand out. Silence remains an absence of an answer rather than a claim, and inventing one for a backend would be a claim it never made.
+Shipped rows are the declarations in the code; the rest is orientation. The egress column is a backend's **enforceable set** and a kind's **accepted set** — not the mode any one run uses, which is a per-deployment choice inside those bounds. The three filesystem backends declare `os_families` — `docker` off its daemon, `acas` and `wslc` as the constant each of them is — so the guest-shape axis refuses a spec naming a shape they do not hand out. Silence remains an absence of an answer rather than a claim, and inventing one for a backend would be a claim it never made.
 
 | System | Fits as | Isolation | Capabilities | Egress |
 |---|---|---|---|---|
@@ -137,7 +137,7 @@ Shipped rows are the declarations in the code; the rest is orientation. The egre
 | CodeAct (`maf-sandbox-codeact`) | kind, shipped | no raise | assembled from the wired channels: `EXEC, FILES_IN`, plus `FILES_OUT` when outputs are collected, plus `HOST_TOOLS` **and** `FILES_OUT` when host tools are wired — the transport stats and reads its own request files back | accepts `{ALLOWLIST, CLOSED}` and derives which: hosts named runs `ALLOWLIST`, none runs `CLOSED`. Never `UNRESTRICTED` — it runs model-written code |
 | Monty-class restricted interpreters | backend | `runtime` | `RUN_CODE, HOST_TOOLS` — no `EXEC`, no I/O by construction | `{CLOSED}` |
 | Wasmtime-class WASM runtimes | backend | `runtime` | `RUN_CODE` + capability-gated imports | `{CLOSED}` (WASI capabilities are opt-in) |
-| Hyperlight ([`research/hyperlight-backend-proposal.md`](research/hyperlight-backend-proposal.md)) | backend *family* — declarations derive from the configured guest | `microvm`, measured against the standard on wasm × WHP | `RUN_CODE, FILES_IN, FILES_OUT, FILES_LIST, SNAPSHOT` (+`HOST_TOOLS` pending [#369](https://github.com/sokolaidev/maf-extensions/issues/369)) | `ALLOWLIST` — `allowed_domains` is native per-entry enforcement |
+| [Hyperlight](backends/hyperlight.md) (`maf-sandbox-hyperlight`) | backend, packaged Python on Windows x86-64 WHP only | `microvm`, validated with the pinned 0.7.0 family | `RUN_CODE, SNAPSHOT`; no file or host-tool channels | `{CLOSED, ALLOWLIST}` — exact-host HTTP permissions, no method refinements |
 | [mxc](https://github.com/microsoft/mxc) | backend *family* | per containment | per containment | per containment |
 | Docker Sandbox (the micro-VM product) | backend, dev machine | `microvm` | `EXEC, FILES_IN, FILES_OUT` | `ALLOWLIST` (deny-all proxy) |
 | Kata on AKS | backend | `microvm` **only as configured** per the standard | `EXEC, FILES_IN` + image contents | per NetworkPolicy |
