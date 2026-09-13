@@ -378,7 +378,10 @@ class EgressRule:
                     for char in self.authority
                 )
             ):
-                raise ValueError("egress authority must be a nonempty audience without whitespace")
+                raise ValueError(
+                    "egress authority must be a nonempty audience "
+                    "without whitespace or control characters"
+                )
             if self.host.startswith("*."):
                 raise ValueError("an authority destination must be a concrete host, not a wildcard")
         if self.methods is None:
@@ -894,6 +897,11 @@ class SandboxSpec:
     alike the two now read.  ``None`` declines to constrain the floor at all; ``Isolation.NONE``
     constrains it to the bottom rung, which is the weakest opinion there is rather than the
     absence of one.
+
+    Requiring :data:`Capability.ATTACHED_IDENTITY` obliges a non-``NONE``
+    ``max_identity_scope`` and positive integer ``max_identity_retention_seconds``. These
+    bound the attachment's sharing and platform-enforced lifetime; the host separately bounds
+    sharing. Authority destinations and audiences belong in ``egress_allow`` rules.
 
     ``declared_outputs`` names the artifacts the workload produces, literally and in advance;
     it is spelled long because ``outputs=`` already means marker-keyed scripted stdout on the
