@@ -68,6 +68,8 @@ Each backend instance fixes its service target and partitions its SDK pipelines 
 
 `client_wait_seconds` defaults to 30 and independently bounds resolver completion and client acquisition, including capacity waits and construction. It does not replace operation-specific exec/read deadlines. `client_close_seconds` defaults to 30 and bounds shutdown/closure. Capacity is per loop, not global: R replicas with L active owner loops each can hold up to R × L × capacity entries. A host needing a global credential-minting limit must enforce it separately.
 
+Eager task factories are supported: construction and retirement suspend before resource work so ownership is registered before they can finish. Capacity and shutdown waiters share one notification bridge per loop and change signal; timeout or cancellation releases a waiter's request context without cancelling that shared signal or waiting for an unrelated active lease to return.
+
 Call `await backend.aclose()` before stopping its owner event loops. It permanently refuses new leases, drains admitted operations, and dispatches resource closure to every still-running owner loop. It does not dispose sandboxes. `AcasClientCloseError` reports timeout, a stopped owner loop or failed resource closure; retained resources permit a later close attempt. Resume a stopped owner loop before retrying closure there. A cancelled close caller does not revoke already admitted work. Successfully closed resources are not closed again. `AcasCredentialError` reports resolver/construction/capacity failures without including potentially sensitive provider error text; disposal translates these into its existing incomplete-cleanup report.
 
 The [research record](research/acas-host-credentials.md) contains the baseline findings and the implementation disposition. Tests exercise fake service replicas and the installed SDK authentication policy; live delegated-token acceptance and distributed deployment performance remain unverified.
@@ -77,3 +79,4 @@ The [research record](research/acas-host-credentials.md) contains the baseline f
 | Item | Status | Tracked by |
 |---|---|---|
 | Host-selected authority across sandbox operations, bounded client ownership and replica-independent cleanup | implemented; release pending | [#1169](https://github.com/sokolaidev/maf-extensions/issues/1169) (closed) by [#1225](https://github.com/sokolaidev/maf-extensions/pull/1225) (merged) |
+| Eager task progress and completed capacity-waiter reclamation | implemented; release pending | [#1233](https://github.com/sokolaidev/maf-extensions/issues/1233) (closed), [#1234](https://github.com/sokolaidev/maf-extensions/issues/1234) (closed) by [#1235](https://github.com/sokolaidev/maf-extensions/pull/1235) (merged) |
