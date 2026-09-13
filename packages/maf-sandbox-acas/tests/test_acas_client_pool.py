@@ -13,6 +13,15 @@ import pytest
 from test_acas_credentials import Client, Credential, binding, pool
 
 from maf_sandbox_acas import AcasCredentialBinding, AcasCredentialError
+from maf_sandbox_acas._credentials import ClientPool
+
+
+class _Credential(Credential):
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args, **kwargs):
+        await self.close()
 
 
 async def _eager_case(case):
@@ -24,7 +33,7 @@ async def _eager_case(case):
         if case == "construction":
             assert clients._guard.acquire(blocking=False), "factory ran under the pool guard"
             clients._guard.release()
-        result = Credential()
+        result = _Credential()
         created.append(result)
         return result
 
@@ -58,7 +67,9 @@ def test_completed_capacity_waiters_release_context_before_capacity_changes(outc
     references = []
 
     async def scenario():
-        clients = pool(capacity=1, wait=0.01 if outcome == "timeout" else 1)
+        clients = ClientPool(
+            Client, capacity=1, wait_seconds=0.01 if outcome == "timeout" else 1, close_seconds=1
+        )
 
         async def attempt():
             request = Request()
