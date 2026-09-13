@@ -20,6 +20,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import tracemalloc
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -2229,12 +2230,162 @@ class TestTheSeam:
         assert len(result.stdout) == 64
         assert result.returncode != 0
 
+    @pytest.mark.parametrize("exit_code", [0, 7])
+    def test_a_bounded_read_preserves_exit_status_after_stdout_closes(self, exit_code):
+        backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
+        script = (
+            "import os,time; os.write(1, b'ok'); os.close(1); time.sleep(0.1); "
+            f"os.write(2, b'detail'); os._exit({exit_code})"
+        )
+        result = asyncio.run(backend._wslc("-c", script, read_limit=64, timeout=5))
+
+        assert (result.stdout, result.stderr, result.returncode) == (b"ok", b"detail", exit_code)
+
+    def test_a_bounded_read_and_exit_share_one_timeout(self):
+        backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
+        script = "import os,time; time.sleep(0.6); os.close(1); time.sleep(0.6)"
+
+        with pytest.raises(TimeoutError):
+            asyncio.run(backend._wslc("-c", script, read_limit=64, timeout=1))
+
+    def test_bounded_stderr_retention_is_independent_of_total_output(self):
+        async def scenario():
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                "import os; os.write(2, b'\\xff' * (16 * 1024 * 1024)); "
+                "os.write(1, b'\\x00ok'); os._exit(7)",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            tracemalloc.start()
+            try:
+                stdout, stderr = await WslcSandboxBackend._read_bounded(process, 64, 5)
+                _, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+                if process.returncode is None:
+                    process.kill()
+                await process.communicate()
+
+            assert peak < 4 * 1024 * 1024
+            assert (stdout, stderr, process.returncode) == (b"\x00ok", b"\xff" * 65536, 7)
+
+        asyncio.run(scenario())
+
+    @pytest.mark.parametrize("size", [65535, 65536, 65537])
+    def test_a_bounded_read_retains_the_stderr_prefix(self, size):
+        backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
+        script = f"import os; os.write(2, b'e' * {size}); os.write(1, b'ok')"
+        result = asyncio.run(backend._wslc("-c", script, read_limit=64, timeout=5))
+
+        assert (result.stdout, result.stderr, result.returncode) == (
+            b"ok",
+            b"e" * min(size, 65536),
+            0,
+        )
+
+    @pytest.mark.parametrize("full_pipe", ["stdout", "stderr"])
+    def test_a_bounded_read_drains_full_pipes(self, full_pipe):
+        async def scenario():
+            fd = 1 if full_pipe == "stdout" else 2
+            script = f"import os; os.write({fd}, b'x' * 1000000); os.write(1, b'ok')"
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                script,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    WslcSandboxBackend._read_bounded(process, 64, 1), timeout=5
+                )
+                if full_pipe == "stdout":
+                    assert stdout == b"x" * 64
+                else:
+                    assert (stdout, stderr) == (b"ok", b"x" * 65536)
+                    assert process.returncode == 0
+                assert process.returncode is not None
+            finally:
+                if process.returncode is None:
+                    process.kill()
+                await process.communicate()
+
+        asyncio.run(scenario())
+
     def test_a_bounded_read_timeout_kills_and_propagates(self):
         backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
         script = "import time; time.sleep(3600)"
 
         with pytest.raises(TimeoutError):
             asyncio.run(backend._wslc("-c", script, read_limit=64, timeout=0.01))
+
+    def test_a_bounded_read_drains_output_while_sending_input(self):
+        backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
+        script = (
+            "import sys; sys.stderr.buffer.write(b'e' * 1000000); sys.stderr.flush(); "
+            "data = sys.stdin.buffer.read(); sys.stdout.buffer.write(str(len(data)).encode())"
+        )
+        result = asyncio.run(
+            backend._wslc("-c", script, stdin=b"i" * 1000000, read_limit=64, timeout=5)
+        )
+
+        assert (result.stdout, result.stderr, result.returncode) == (b"1000000", b"e" * 65536, 0)
+
+    def test_a_bounded_read_times_out_while_sending_input(self):
+        backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
+
+        with pytest.raises(TimeoutError):
+            asyncio.run(
+                backend._wslc(
+                    "-c",
+                    "import time; time.sleep(3600)",
+                    stdin=b"i" * 1000000,
+                    read_limit=64,
+                    timeout=0.1,
+                )
+            )
+
+    @pytest.mark.parametrize("cancel", [False, True])
+    def test_an_abnormal_bounded_read_drains_and_reaps(self, cancel, tmp_path):
+        async def scenario():
+            ready = tmp_path / "ready"
+            script = (
+                "import os,pathlib,sys,time; os.write(1, b'o' * 1000000); "
+                "os.write(2, b'e' * 1000000); pathlib.Path(sys.argv[1]).touch(); "
+                "time.sleep(3600)"
+            )
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                script,
+                str(ready),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            task = asyncio.create_task(
+                WslcSandboxBackend._read_bounded(process, 2000000, None if cancel else 2)
+            )
+            try:
+                async with asyncio.timeout(5):
+                    while not ready.exists():
+                        await asyncio.sleep(0.01)
+                if cancel:
+                    task.cancel()
+                with pytest.raises(asyncio.CancelledError if cancel else TimeoutError):
+                    await asyncio.wait_for(task, timeout=5)
+                assert process.returncode is not None
+                assert process.stdout is not None and process.stdout.at_eof()
+                assert process.stderr is not None and process.stderr.at_eof()
+            finally:
+                if process.returncode is None:
+                    process.kill()
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                await process.communicate()
+
+        asyncio.run(scenario())
 
     def test_a_cancelled_bounded_read_kills_and_propagates(self):
         backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
