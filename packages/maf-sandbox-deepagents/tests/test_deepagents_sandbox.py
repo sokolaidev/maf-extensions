@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import concurrent.futures
 import dataclasses
 import logging
 import threading
@@ -612,6 +613,8 @@ class TestExecute:
         self, monkeypatch: pytest.MonkeyPatch
     ):
         disposed_when_run: list[int] = []
+        delete_started: concurrent.futures.Future[None] = concurrent.futures.Future()
+        allow_delete: concurrent.futures.Future[None] = concurrent.futures.Future()
 
         class OnceSlow(InProcessSandbox):
             async def exec(self, command, *, working_directory, timeout):
@@ -626,25 +629,44 @@ class TestExecute:
         adapter, backend = _adapter(OnceSlow())
         dispose = backend.dispose
 
-        async def slow_dispose(*args, **kwargs):
-            await asyncio.sleep(0.3)
+        async def gated_dispose(*args, **kwargs):
+            if not delete_started.done():
+                delete_started.set_result(None)
+            # Disposal runs on the adapter's background loop, so the gate crosses loops.
+            await asyncio.shield(asyncio.wrap_future(allow_delete))
             return await dispose(*args, **kwargs)
 
         async def scenario():
             await adapter.aexecute("true")  # warm: the adoption's own delete happens here
             disposed_when_run.clear()
-            monkeypatch.setattr(backend, "dispose", slow_dispose)
-            started = time.monotonic()
-            timed_out = await adapter.aexecute("sleep 999", timeout=5)
-            answered_after = time.monotonic() - started
-            in_flight = len(backend.disposed)
-            again = await adapter.aexecute("true")
-            return timed_out, answered_after, in_flight, again
+            monkeypatch.setattr(backend, "dispose", gated_dispose)
+            entering = asyncio.Event()
+            enter_call = adapter.router.enter_call
 
-        timed_out, answered_after, in_flight, again = asyncio.run(scenario())
+            async def next_admission(*args, **kwargs):
+                entering.set()
+                return await enter_call(*args, **kwargs)
+
+            try:
+                async with asyncio.timeout(5):
+                    timed_out = await adapter.aexecute("sleep 999", timeout=5)
+                    await asyncio.wrap_future(delete_started)
+                    in_flight = len(backend.disposed)
+                    monkeypatch.setattr(adapter.router, "enter_call", next_admission)
+                    retry = asyncio.create_task(adapter.aexecute("true"))
+                    await entering.wait()
+                    assert not retry.done()
+                    assert disposed_when_run == []
+                    allow_delete.set_result(None)
+                    again = await retry
+                    return timed_out, in_flight, again
+            finally:
+                if not allow_delete.done():
+                    allow_delete.set_result(None)
+
+        timed_out, in_flight, again = asyncio.run(scenario())
 
         assert timed_out.exit_code is None
-        assert answered_after < 0.2  # the 0.3-second delete did not extend the answer
         assert in_flight == 1  # the adoption's own; the timeout's delete was still running
         assert again.exit_code == 0
         # By the time the next command ran, the delete had landed (and nothing ran after it).

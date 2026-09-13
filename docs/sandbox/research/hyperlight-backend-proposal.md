@@ -12,6 +12,7 @@
 > [#425](https://github.com/sokolaidev/maf-extensions/issues/425)'s. That vocabulary is decided
 > now, and it is described in [`../policy-isolation.md`](../policy-isolation.md) and
 > [`../capabilities.md`](../capabilities.md).
+> The CodeAct execution choice is decided in [the explicit Python runtime variant](../kinds/codeact.md#the-explicit-python-runtime-variant).
 
 We propose a seventh package, `maf-sandbox-hyperlight`, that implements
 `maf_sandbox.SandboxBackend` over the [`hyperlight-sandbox`](https://github.com/hyperlight-dev/hyperlight-sandbox)

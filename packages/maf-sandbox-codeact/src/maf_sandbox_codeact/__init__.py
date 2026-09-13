@@ -6,11 +6,12 @@ runs a fixed compiler over files an agent authored, this one runs a program the 
 wrote, and returns what it printed.
 
 Nothing in this subpackage imports Azure, a backend, or a host application: it asks a
-:class:`~maf_sandbox.SandboxRouter` for a sandbox and gets back ``write_file`` and ``exec``.
+:class:`~maf_sandbox.SandboxRouter` for exec or an explicit Python ``run_code`` runtime.
 """
 
 from __future__ import annotations
 
+from ._runtime import CodeactRuntime
 from ._tool import (
     CODEACT_KIND,
     EXECUTE_CODE_TOOL_NAME,
@@ -23,6 +24,7 @@ __all__ = [
     "CODEACT_KIND",
     "EXECUTE_CODE_TOOL_NAME",
     "CodeactOutputs",
+    "CodeactRuntime",
     "MafSandboxCodeactExperimentalWarning",
     "codeact_sandbox_spec",
     "make_codeact_tools",
