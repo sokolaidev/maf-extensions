@@ -1,0 +1,3 @@
+hyperlight-sandbox==0.7.0 --hash=sha256:7f4e52c7ef6013f461d19db60ec537c18e9cf41045ac819d4af1bb9cb72bdca3
+hyperlight-sandbox-backend-wasm==0.7.0 --hash=sha256:9f432799c2275bf57c0da32db922ff52855d83e587fda2128b76b65419065f30
+hyperlight-sandbox-python-guest==0.7.0 --hash=sha256:9eff31341b61830b9b699dbd4fba65f5d62e878050db5db331f688ee0e561367

@@ -1,0 +1,50 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hyperlight-kvm-proof
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 120
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      nodeSelector:
+        kubernetes.io/arch: amd64
+        hyperlight.dev/hypervisor: kvm
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: proof
+          image: ${PROOF_IMAGE}
+          args: ["--stage", "sdk"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              hyperlight.dev/hypervisor: "1"
+              cpu: "1"
+              memory: 2Gi
+              ephemeral-storage: 512Mi
+            limits:
+              hyperlight.dev/hypervisor: "1"
+              cpu: "1"
+              memory: 2Gi
+              ephemeral-storage: 512Mi
+          volumeMounts:
+            - name: work
+              mountPath: /work
+      volumes:
+        - name: work
+          emptyDir:
+            sizeLimit: 256Mi
+      terminationGracePeriodSeconds: 10

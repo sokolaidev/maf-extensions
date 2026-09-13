@@ -43,11 +43,14 @@ On 2026-09-13, Windows 11 AMD64 / WHP / host CPython 3.13 and the exact 0.7.0 tr
 
 The [earlier proposal](../research/hyperlight-backend-proposal.md) and [exploration](../research/hyperlight-backend-exploration.md) preserve the historical investigation. Their proposed file capabilities are not declarations of this adapter. Optional file work must establish its own conformance and cleanup before any file capability is enabled.
 
+The [AKS investigation](../research/hyperlight-aks-integration.md) records the device-plugin/CDI audit and a pinned Python SDK proof. Linux non-root wheel loading and guest-cache materialization were measured locally; AKS device injection, KVM/MSHV guest execution and adapter lifecycle conformance remain unmeasured. The next experiment uses Ubuntu/KVM, with MSHV assessed independently. Container worker containment gates AKS adapter support; replicated deployments additionally require owner routing and fencing.
+
 ## Status
 
 | Item | State | Tracking |
 | --- | --- | --- |
 | Initial runtime and reset backend | implemented with Windows WHP validation; umbrella remains open for the independent channels | [#382](https://github.com/sokolaidev/maf-extensions/issues/382) (open); initial runtime delivered by [#1223](https://github.com/sokolaidev/maf-extensions/pull/1223) (merged) |
+| AKS hosting | source investigation and local Linux packaging proof recorded; device, guest and adapter validation remain open | [#1230](https://github.com/sokolaidev/maf-extensions/issues/1230) (open); manifests [#1237](https://github.com/sokolaidev/maf-extensions/issues/1237) (open), container containment [#1238](https://github.com/sokolaidev/maf-extensions/issues/1238) (open), replica ownership [#1239](https://github.com/sokolaidev/maf-extensions/issues/1239) (open) |
 | Optional writable inputs | open | [#1218](https://github.com/sokolaidev/maf-extensions/issues/1218) (open) |
 | Optional output collection/listing | open | [#1219](https://github.com/sokolaidev/maf-extensions/issues/1219) (open) |
 | Optional file cleanup | open | [#1220](https://github.com/sokolaidev/maf-extensions/issues/1220) (open) |
