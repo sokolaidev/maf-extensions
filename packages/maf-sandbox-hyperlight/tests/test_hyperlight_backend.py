@@ -10,17 +10,21 @@ from typing import cast
 
 import pytest
 from maf_sandbox import (
+    CallerContext,
     Capability,
+    Cleanup,
     Egress,
     EgressRule,
     IdentityScope,
     Isolation,
     IsolationScope,
+    ListedFile,
     SandboxCapabilityNotSupported,
     SandboxKey,
     SandboxQueuedTimeout,
     SandboxRouter,
     SandboxSpec,
+    Selection,
 )
 from maf_sandbox.conformance import (
     ConformanceSubject,
@@ -30,7 +34,12 @@ from maf_sandbox.conformance import (
     assert_reclaim_conformance,
 )
 
-from maf_sandbox_hyperlight import HyperlightSandboxBackend, HyperlightSandboxConfig, _backend
+from maf_sandbox_hyperlight import (
+    RUNTIME_INSTRUCTIONS,
+    HyperlightSandboxBackend,
+    HyperlightSandboxConfig,
+    _backend,
+)
 from maf_sandbox_hyperlight._wire import HyperlightWorkerError
 
 KEY = SandboxKey("tenant", "conversation", "agent")
@@ -432,7 +441,7 @@ def test_failed_disposal_retains_target_for_retry_and_scope_purge_preserves_sibl
     [
         {"stdout": 3},
         {"stdout": "", "stderr": "", "exit_code": True},
-        {"stdout": "", "stderr": "", "exit_code": -1},
+        {"stdout": "native stdout", "stderr": "native panic details", "exit_code": -1},
     ],
 )
 def test_bad_native_results_retire_the_worker(backend, reply):
@@ -440,12 +449,64 @@ def test_bad_native_results_retire_the_worker(backend, reply):
         sandbox = await acquire(backend)
         worker = cast("FakeWorker", sandbox.worker)
         worker.reply = reply
+        with pytest.raises(HyperlightWorkerError) as raised:
+            await sandbox.run_code("malformed", timeout=1)
         if reply.get("exit_code") == -1:
-            assert (await sandbox.run_code("crash", timeout=1)).exit_code == -1
-        else:
-            with pytest.raises(HyperlightWorkerError):
-                await sandbox.run_code("malformed", timeout=1)
+            assert str(raised.value) == "native execution failed"
         assert not worker.alive
+        assert not sandbox.alive
+        replacement = await acquire(backend)
+        assert replacement.alive and replacement.instance_id != sandbox.instance_id
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("selection", list(Selection))
+def test_native_panics_are_sanitized_for_codeact(backend, monkeypatch, selection):
+    from maf_sandbox_codeact import CodeactRuntime, make_codeact_tools
+
+    request = FakeWorker.request
+    workers: list[FakeWorker] = []
+
+    def panic(worker: FakeWorker, message: dict[str, object]) -> dict[str, object]:
+        if message["op"] == "run":
+            workers.append(worker)
+            return {"stdout": "native stdout", "stderr": "native panic details", "exit_code": -1}
+        return request(worker, message)
+
+    monkeypatch.setattr(FakeWorker, "request", panic)
+    router = SandboxRouter([backend], selection=selection, min_cleanup=Cleanup.RESET)
+
+    async def no_files(store: object) -> list[ListedFile]:
+        return []
+
+    context = CallerContext(
+        current_scope=lambda: KEY.scope,
+        current_thread_id=lambda: KEY.thread_id,
+        list_files=no_files,
+    )
+    tool = make_codeact_tools(
+        router, KEY.agent_id, context, runtime=CodeactRuntime(RUNTIME_INSTRUCTIONS)
+    )[0]
+    function = getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
+    result = asyncio.run(function(code="print('hello')"))
+    assert result == "Error: could not run the program in the sandbox"
+    assert workers and all(not worker.alive for worker in workers)
+
+
+def test_guest_errors_preserve_output_and_worker_reuse(backend):
+    async def check():
+        sandbox = await acquire(backend)
+        worker = cast("FakeWorker", sandbox.worker)
+        worker.reply = {"stdout": "guest stdout", "stderr": "guest error", "exit_code": 1}
+        result = await sandbox.run_code("raise ValueError('guest error')", timeout=1)
+        assert (result.stdout, result.stderr, result.exit_code) == (
+            "guest stdout",
+            "guest error",
+            1,
+        )
+        assert worker.alive and sandbox.alive
+        assert await acquire(backend) is sandbox
 
     asyncio.run(check())
 

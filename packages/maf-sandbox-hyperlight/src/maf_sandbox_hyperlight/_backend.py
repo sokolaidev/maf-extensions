@@ -228,6 +228,7 @@ class _HyperlightSandbox:
                 raise HyperlightWorkerError("worker violated the output limit")
             if status < 0:
                 await self.stop()
+                raise HyperlightWorkerError("native execution failed")
             return ExecResult(stdout=stdout, stderr=stderr, exit_code=status)
 
     async def reset(self, *, timeout: float) -> None:
