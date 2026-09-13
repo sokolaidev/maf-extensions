@@ -67,7 +67,7 @@ def test_cgroup_memory_limit_kills_native_allocation():
     )
     try:
         job.assign(process.pid)
-        job.ready()
+        job.ready(deadline=time.monotonic() + 3)
         assert _linux._read(job._directory, "memory.max").strip() == str(64 * 1024**2)
         assert _linux._read(job._directory, "memory.swap.max").strip() == "0"
         stdout, stderr = process.communicate(b"start\n", timeout=10)
@@ -102,7 +102,7 @@ def test_tree_cleanup_includes_a_child_in_another_session(worker_dies: bool):
     child_fd = None
     try:
         job.assign(worker.pid)
-        job.ready()
+        job.ready(deadline=time.monotonic() + 3)
         assert worker.stdin is not None
         worker.stdin.write(b"start\n")
         child_fd = os.pidfd_open(int(line(worker)))
@@ -122,14 +122,14 @@ def test_tree_cleanup_includes_a_child_in_another_session(worker_dies: bool):
             os.close(child_fd)
 
 
-OWNER = """import os, subprocess, sys
+OWNER = """import os, subprocess, sys, time
 from maf_sandbox_hyperlight import _linux
 _linux._LOCK_PATH = sys.argv[1]
 _linux.claim_host()
 job = _linux.Job(128*1024**2, os.environ['MAF_HYPERLIGHT_CGROUP_ROOT'], 3)
 worker = subprocess.Popen([sys.executable, '-I', '-u', '-c', sys.argv[2]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
 job.assign(worker.pid)
-job.ready()
+job.ready(deadline=time.monotonic() + 3)
 worker.stdin.write(b'start\\n')
 child = int(worker.stdout.readline())
 print(worker.pid, child, job._watcher.pid, job._name, flush=True)
@@ -323,5 +323,51 @@ def test_slow_watcher_readiness_consumes_startup_deadline(monkeypatch: pytest.Mo
             asyncio.run(backend.acquire(SandboxKey("linux", "readiness", "agent"), spec))
         assert len(processes) == 2 and all(process.poll() is not None for process in processes)
         assert not backend._sandboxes
+    finally:
+        asyncio.run(backend.aclose())
+
+
+def test_watcher_startup_can_outlast_the_cleanup_allowance(monkeypatch: pytest.MonkeyPatch):
+    from maf_sandbox import Capability, SandboxKey, SandboxSpec
+
+    from maf_sandbox_hyperlight import HyperlightSandboxBackend, HyperlightSandboxConfig, _process
+
+    original = subprocess.Popen
+
+    def start(command, **kwargs):
+        if "maf_sandbox_hyperlight._linux_watch" in command:
+            command = [
+                sys.executable,
+                "-I",
+                "-u",
+                "-c",
+                "import runpy,time; time.sleep(0.3); runpy.run_module('maf_sandbox_hyperlight._linux_watch',run_name='__main__')",
+                *command[5:],
+            ]
+        return original(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", start)
+    monkeypatch.setattr(
+        _process.Worker,
+        "command",
+        staticmethod(
+            lambda: [
+                sys.executable,
+                "-I",
+                "-u",
+                str(Path(__file__).with_name("worker_fixture.py")),
+                "normal",
+            ]
+        ),
+    )
+    backend = HyperlightSandboxBackend(
+        HyperlightSandboxConfig(
+            linux_cgroup_root=cgroup_root(), startup_timeout=3, cleanup_timeout=0.1
+        )
+    )
+    spec = SandboxSpec(kind="python", work_dir=None, requires=frozenset({Capability.RUN_CODE}))
+    try:
+        sandbox = asyncio.run(backend.acquire(SandboxKey("linux", "watcher", "agent"), spec))
+        assert (asyncio.run(sandbox.run_code("ready", timeout=1))).stdout == "ready"
     finally:
         asyncio.run(backend.aclose())

@@ -25,7 +25,7 @@ def main() -> None:
         # A new owner must not acquire the lock while cleanup is still unconfirmed.
         while True:
             try:
-                kill_group(directory, parent, name, timeout)
+                kill_group(directory, parent, name, time.monotonic() + timeout)
             except (OSError, HyperlightWorkerError):
                 time.sleep(0.1)
             else:

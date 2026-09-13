@@ -60,10 +60,10 @@ class NoJob:
     def assign(self, pid: int) -> None:
         pass
 
-    def ready(self) -> None:
+    def ready(self, *, deadline: float) -> None:
         pass
 
-    def close(self) -> None:
+    def close(self, *, deadline: float | None = None) -> None:
         pass
 
 

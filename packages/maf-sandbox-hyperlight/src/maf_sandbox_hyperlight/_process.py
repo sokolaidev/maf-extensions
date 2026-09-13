@@ -37,6 +37,7 @@ class Worker:
             key: value for key, value in os.environ.items() if key.upper() in allowed_environment
         }
         environment["HYPERLIGHT_MAX_SURROGATES"] = "0"
+        cleanup_deadline: float | None = None
         try:
             self.process = subprocess.Popen(
                 self.command(),
@@ -51,16 +52,17 @@ class Worker:
                 # The worker waits for init before loading Hyperlight or creating a VM.
                 self._job.assign(self.process.pid)
             except BaseException:
+                cleanup_deadline = time.monotonic() + config.cleanup_timeout
                 try:
                     self.process.kill()
-                    self.process.wait(timeout=config.cleanup_timeout)
+                    self.process.wait(timeout=max(0, cleanup_deadline - time.monotonic()))
                 finally:
                     for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
                         if stream is not None:
                             stream.close()
                 raise
         except BaseException:
-            self._job.close()
+            self._job.close(deadline=cleanup_deadline)
             raise
         assert self.process.stdin is not None
         assert self.process.stdout is not None
@@ -84,11 +86,11 @@ class Worker:
             with self._stderr_guard:
                 self._stderr.extend(chunk[: max(0, _STDERR_LIMIT - len(self._stderr))])
 
-    def request(self, message: dict[str, object]) -> dict[str, object]:
+    def request(self, message: dict[str, object], *, deadline: float) -> dict[str, object]:
         """Make one bounded exchange; close from another thread interrupts a native hang."""
         if os.getpid() != self._owner_pid:
             raise HyperlightWorkerError("a forked process cannot use another owner's worker")
-        self._job.ready()
+        self._job.ready(deadline=deadline)
         try:
             self._input.write(encode(message))
             self._input.flush()
@@ -115,7 +117,7 @@ class Worker:
         try:
             if self._closed:
                 return
-            self._job.close()
+            self._job.close(deadline=deadline)
             if self.process.poll() is None:
                 self.process.kill()
             self.process.wait(timeout=max(0, deadline - time.monotonic()))

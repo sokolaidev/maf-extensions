@@ -176,7 +176,7 @@ class _HyperlightSandbox:
                 if withdrawn or time.monotonic() >= deadline:
                     raise SandboxQueuedTimeout("deadline expired before the operation started")
                 started = True
-            return self.worker.request(message)
+            return self.worker.request(message, deadline=deadline)
 
         task = asyncio.create_task(_offload(exchange))
         try:

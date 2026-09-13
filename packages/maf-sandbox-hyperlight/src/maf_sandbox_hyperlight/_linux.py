@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ctypes
+import errno
+import math
 import os
 import select
 import stat
@@ -22,6 +24,25 @@ _LOCK_PATH = "/run/lock/maf-sandbox-hyperlight.lock"
 DEFAULT_CGROUP_ROOT = "/sys/fs/cgroup/maf-sandbox-hyperlight"
 
 
+def _after_fork() -> None:
+    """Drop inherited ownership while retaining the parent's PID for fork-use refusal."""
+    global _owner_fd
+    try:
+        if _owner_fd is not None:
+            os.close(_owner_fd)
+            _owner_fd = None
+    finally:
+        _owner_guard.release()
+
+
+if sys.platform == "linux":
+    os.register_at_fork(
+        before=_owner_guard.acquire,
+        after_in_parent=_owner_guard.release,
+        after_in_child=_after_fork,
+    )
+
+
 def claim_host() -> None:
     """Hold one owner in the shared lock-file namespace for the process lifetime."""
     import fcntl
@@ -32,18 +53,23 @@ def claim_host() -> None:
     with _owner_guard:
         if _owner_fd is not None:
             return
-        flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+        flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
+        created = False
         try:
             fd = os.open(_LOCK_PATH, flags)
         except FileNotFoundError:
             try:
-                fd = os.open(_LOCK_PATH, flags | os.O_CREAT | os.O_EXCL, 0o644)
+                fd = os.open(_LOCK_PATH, flags | os.O_CREAT | os.O_EXCL, 0o600)
+                created = True
             except FileExistsError:
                 fd = os.open(_LOCK_PATH, flags)
         try:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                 raise HyperlightWorkerError("Hyperlight requires a regular, persistent owner lock")
+            if created:
+                # This empty coordination file must be lockable read-only by every host user.
+                os.fchmod(fd, 0o444)
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:
@@ -96,9 +122,8 @@ def _read(directory: int, name: str) -> str:
         os.close(fd)
 
 
-def kill_group(directory: int, parent: int, name: str, timeout: float) -> None:
+def kill_group(directory: int, parent: int, name: str, deadline: float) -> None:
     """Kill the entire cgroup and remove it only after the kernel reports it empty."""
-    deadline = time.monotonic() + timeout
     try:
         _write(directory, "cgroup.kill", "1")
         while "populated 1" in _read(directory, "cgroup.events"):
@@ -108,8 +133,10 @@ def kill_group(directory: int, parent: int, name: str, timeout: float) -> None:
                 )
             time.sleep(min(0.01, max(0, deadline - time.monotonic())))
         os.rmdir(name, dir_fd=parent)
-    except FileNotFoundError:
+    except OSError as error:
         # Both the host and its independent watcher may finish the same cleanup.
+        if error.errno not in {errno.ENOENT, errno.ENODEV}:
+            raise
         try:
             os.stat(name, dir_fd=parent, follow_symlinks=False)
         except FileNotFoundError:
@@ -210,7 +237,7 @@ class Job:
         finally:
             os.close(worker)
 
-    def ready(self) -> None:
+    def ready(self, *, deadline: float) -> None:
         """Wait inside the supervised exchange so readiness consumes its startup deadline."""
         if self._watcher is None or self._watcher.poll() is not None:
             raise HyperlightWorkerError("Linux worker lifetime watcher is unavailable")
@@ -220,22 +247,23 @@ class Job:
         try:
             poller = select.poll()
             poller.register(self._watcher.stdout, select.POLLIN)
-            if (
-                not poller.poll(max(1, int(self._timeout * 1000)))
-                or self._watcher.stdout.read(1) != b"1"
-            ):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not poller.poll(math.ceil(remaining * 1000)):
+                raise TimeoutError("Linux worker lifetime watcher exceeded its startup deadline")
+            if self._watcher.stdout.read(1) != b"1":
                 raise HyperlightWorkerError("Linux worker lifetime watcher did not start")
             self._ready = True
         finally:
             self._watcher.stdout.close()
 
-    def close(self) -> None:
+    def close(self, *, deadline: float | None = None) -> None:
         if os.getpid() != self._pid:
             raise HyperlightWorkerError("a forked process cannot dispose another owner's workers")
         if self._closed:
             return
-        deadline = time.monotonic() + self._timeout
-        kill_group(self._directory, self._root, self._name, self._timeout)
+        if deadline is None:
+            deadline = time.monotonic() + self._timeout
+        kill_group(self._directory, self._root, self._name, deadline)
         if self._watcher is not None:
             if self._watcher.poll() is None:
                 self._watcher.kill()

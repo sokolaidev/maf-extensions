@@ -59,7 +59,7 @@ class FakeWorker:
         self.close_failures = 0
         self.reply: dict[str, object] | None = None
 
-    def request(self, message: dict[str, object]) -> dict[str, object]:
+    def request(self, message: dict[str, object], *, deadline: float) -> dict[str, object]:
         self.calls.append(message)
         if message["op"] == self.block:
             self.started.set()
@@ -468,11 +468,13 @@ def test_native_panics_are_sanitized_for_codeact(backend, monkeypatch, selection
     request = FakeWorker.request
     workers: list[FakeWorker] = []
 
-    def panic(worker: FakeWorker, message: dict[str, object]) -> dict[str, object]:
+    def panic(
+        worker: FakeWorker, message: dict[str, object], *, deadline: float
+    ) -> dict[str, object]:
         if message["op"] == "run":
             workers.append(worker)
             return {"stdout": "native stdout", "stderr": "native panic details", "exit_code": -1}
-        return request(worker, message)
+        return request(worker, message, deadline=deadline)
 
     monkeypatch.setattr(FakeWorker, "request", panic)
     router = SandboxRouter([backend], selection=selection, min_cleanup=Cleanup.RESET)

@@ -123,10 +123,10 @@ class Job:
         finally:
             self._api.CloseHandle(process)
 
-    def ready(self) -> None:
+    def ready(self, *, deadline: float) -> None:
         """Job assignment establishes Windows containment synchronously."""
 
-    def close(self) -> None:
+    def close(self, *, deadline: float | None = None) -> None:
         if self._handle:
             if not self._api.CloseHandle(self._handle):
                 raise ctypes.WinError(ctypes.get_last_error())
