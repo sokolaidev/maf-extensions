@@ -490,8 +490,8 @@ def _declared_isolation_scopes(
     """The scopes a backend claims it serves, defaulting to the sharing every backend already does.
 
     Saying nothing — an absent field, or an empty set — reads as
-    :data:`~maf_sandbox.IsolationScope.CONVERSATION`, and this is the one declaration whose
-    silence is a claim: get-or-create is what :meth:`~maf_sandbox.SandboxBackend.acquire` has
+    :data:`~maf_sandbox.IsolationScope.CONVERSATION`, a sharing claim:
+    get-or-create is what :meth:`~maf_sandbox.SandboxBackend.acquire` has
     always obliged, so a backend written before this axis serves exactly what it served.
 
     A value that is not a set is **refused**, on :func:`_declared_set`'s policy rather than

@@ -1576,6 +1576,7 @@ class BackendDeclarations:
     :attr:`os_families` are the *absence of an answer* — which refuses every ask on the first,
     where a backend enforcing no mode can serve none, and only an asking spec on the second —
     and :attr:`isolation_scopes` is a claim, defaulting to the sharing every backend does.
+    :attr:`attached_identity` defaults to a claim of no ambient platform attachment.
 
     The router reads this synchronously, before any sandbox exists, so it must be settled by
     the time it asks: a plain attribute or a property over configuration, never an ``async``
@@ -1604,7 +1605,7 @@ class BackendDeclarations:
     #: operating-system sense — a language runtime, a data-plane API — has no answer to give.
     os_families: frozenset[OsFamily] = frozenset()
     #: How much of a conversation the backend can serve from one sandbox, resolved against a
-    #: spec's :attr:`SandboxSpec.isolation_scope`.  The one field whose silence is a *claim*
+    #: spec's :attr:`SandboxSpec.isolation_scope`.  Its silence is a sharing *claim*
     #: rather than the absence of one, and the default says so: get-or-create is what every
     #: backend written before this axis already did.  :data:`IsolationScope.CALL` belongs here
     #: only once the backend folds :attr:`SandboxKey.call_id` into the name it gives a sandbox.
