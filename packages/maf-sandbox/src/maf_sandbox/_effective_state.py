@@ -114,6 +114,8 @@ class EffectiveState:
     attached_identity: AttachedIdentity | None = None
     max_identity_scope: IdentityScope | None = None
     max_identity_retention_seconds: int | None = None
+    #: The host's opaque execution configuration used to bind compatible reuse.
+    execution_contract: str | None = None
 
     @classmethod
     def of(cls, event: SandboxAcquired) -> EffectiveState | None:
@@ -152,6 +154,7 @@ class EffectiveState:
             attached_identity=None if declarations is None else declarations.attached_identity,
             max_identity_scope=spec.max_identity_scope,
             max_identity_retention_seconds=spec.max_identity_retention_seconds,
+            execution_contract=spec.execution_contract,
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -199,6 +202,7 @@ class EffectiveState:
             ),
             "max_identity_scope": _named(self.max_identity_scope),
             "max_identity_retention_seconds": self.max_identity_retention_seconds,
+            "execution_contract": self.execution_contract,
         }
 
 

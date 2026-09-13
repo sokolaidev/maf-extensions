@@ -12,7 +12,7 @@ CodeAct as a Microsoft Agent Framework tool: the agent gets one tool, `execute_c
 app  ->  maf_sandbox  ->  a backend (maf-sandbox-acas, maf-sandbox-wslc, ...)  ->  this workload
 ```
 
-This package is a sandbox **kind** in the sense of [`maf-sandbox`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox)'s protocol. It contains no Azure import, no backend import and no sandbox lifecycle code; it asks a `SandboxRouter` for a sandbox and gets back `write_file` and `exec`, so the same tool runs unchanged against ACA Sandboxes, a WSL container or an in-process fake. Tests enforce both boundaries.
+This package is a sandbox **kind** in the sense of [`maf-sandbox`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox)'s protocol. It contains no Azure import, no backend import and no sandbox lifecycle code. Its default execution path uses `write_file` and `exec`; an explicit Python runtime profile selects `run_code`. The router checks the chosen variant's capabilities before attaching the tool.
 
 ## Quickstart
 
@@ -31,9 +31,29 @@ Pass `router=None` — or a router with no backend — and you get `[]` back: an
 
 `router` and `context` are the host's, and this snippet shows neither being built. [`samples/03_acas_codeact`](https://github.com/sokolaidev/maf-extensions/tree/main/samples/03_acas_codeact) and [`samples/04_wslc_codeact`](https://github.com/sokolaidev/maf-extensions/tree/main/samples/04_wslc_codeact) are the whole wiring as runnable programs — the same agent on a microVM-isolated Azure backend and on a container on your own machine.
 
+## Python runtime backends
+
+Pass the same `CodeactRuntime` to `make_codeact_tools` and `codeact_sandbox_spec` to select `run_code`. Omitting it keeps the exec variant. Both retain `kind="codeact"`; there is no method probing or fallback between them. `RUN_CODE` alone says nothing about the language, so this profile is the host's assertion that the backend evaluates Python statements and returns stdout/stderr without last-expression echo. Its required `instructions` describe the modules and facilities the host has verified. No shipped production backend currently declares `RUN_CODE`.
+
+```python
+from maf_sandbox_codeact import CodeactRuntime, codeact_sandbox_spec, make_codeact_tools
+
+runtime = CodeactRuntime(
+    instructions="Python statements with json and math. No subprocess or network modules."
+)
+spec = codeact_sandbox_spec(runtime=runtime)
+tools = make_codeact_tools(router, "data-analyst", context, runtime=runtime)
+```
+
+The stdout-only profile needs only `RUN_CODE`. It submits source directly without writing `program.py`, and `files_in.max_files=0` is valid. The UTF-8 program still spends the `files_in.max_bytes_per_file` and `max_total_bytes` budgets. A finite positive `exec_timeout_seconds` reaches `run_code` unchanged: the backend's wall-clock budget includes its queue. `SandboxQueuedTimeout` reports that the program never started; an execution timeout reports that it exceeded its budget.
+
+File channels additionally require `CodeactRuntime(..., guest_work_dir="/runtime")`: a normalized absolute POSIX storage base other than `/` that the host has verified the backend honors and Python can access with `os.makedirs` and `open`. The tool creates a fresh call directory beneath that base and supplies its absolute path as `guest_call_path`; it never changes the runtime's working directory. Programs use `open(guest_call_path + '/data.csv')`, including for `outputs.json`. Names supplied through `files`, `outputs` and the manifest stay relative. The bootstrap is included in the program byte cap and occupies no inbound file slot. A file store adds `FILES_IN`; either output mode adds `FILES_OUT`. Without this file contract the factory refuses file channels. Name validation, withholding, integrity labels and collection before cleanup are shared with exec.
+
+Runtime host-tool registries are refused until the native channel in [#369](https://github.com/sokolaidev/maf-extensions/issues/369) exists. Calls retain exclusive admission and the host's cleanup policy. Core's `SandboxSpec.execution_contract` binds an opaque execution identity to each instance known to that router, including across reset. Switching variants or changing the runtime instructions or base requires disposal or a new sandbox key; matching file-channel wiring can share the same contract. This is host configuration compatibility, not runtime detection or a cross-router attestation.
+
 ## What the model gets
 
-One tool, `execute_code`. The program is written to a directory of its own and run as the argv `["python3", ".../program.py"]`, and the result is its stdout, its stderr when it wrote any, and its exit code when that was not zero. Both of those change shape once `host_tools` is wired — a launcher runs the program and its stderr arrives merged into stdout — which the sections below cover. There is no REPL echo, so a program that computes without printing returns a sentence saying so.
+One tool, `execute_code`. By default the program is written to a directory of its own and run as the argv `["python3", ".../program.py"]`; the runtime variant submits Python source to `run_code`. The result is stdout, stderr when present, and the exit code when nonzero. With exec host tools a launcher runs the program and merges its stderr into stdout. There is no REPL echo, so a program that computes without printing returns a sentence saying so.
 
 **CodeAct makes no confinement claim.** `confined_to_guest_call_path=False` describes model-written code that can write outside its call directory and leave processes running. Removing the directory cannot establish a clean sandbox.
 
