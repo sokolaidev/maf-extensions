@@ -31,10 +31,22 @@ from ._backend import (
     AcasSandboxBackend,
 )
 from ._config import AcasSandboxConfig
+from ._credentials import (
+    AcasClientCloseError,
+    AcasCredentialBinding,
+    AcasCredentialError,
+    AcasCredentialRequest,
+    AcasCredentialResolver,
+)
 from ._images import disk_image_base, resolve_disk_image_id
 
 __all__ = [
     "BACKEND_NAME",
+    "AcasClientCloseError",
+    "AcasCredentialBinding",
+    "AcasCredentialError",
+    "AcasCredentialRequest",
+    "AcasCredentialResolver",
     "AcasEgressPolicyConflict",
     "AcasEntryPayloadIncomplete",
     "AcasSandboxBackend",

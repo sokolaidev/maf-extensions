@@ -90,6 +90,8 @@ from maf_sandbox.conformance import (
     assert_files_out_conformance,
 )
 
+from maf_sandbox_acas._credentials import default_binding
+
 # Feature-detected, not floored: the published-cores gate runs this suite against every
 # core the range admits, and cores before 0.23 have no Sandbox.reclaim to conform to.
 try:
@@ -898,15 +900,15 @@ async def _create_labelled_sandbox_without_lifecycle(
     from maf_sandbox_acas._backend import _sandbox_labels
     from maf_sandbox_acas._images import resolve_prebuilt_image_name
 
-    group = backend._group_client()
-    disk = await resolve_prebuilt_image_name(group, spec.image or "")
-    poller = await group.begin_create_sandbox(
-        disk=disk,
-        labels=_sandbox_labels(key, spec),
-        egress_policy=backend._egress_policy(spec),
-    )
-    created = await poller.result()
-    return created.sandbox_id
+    async with backend._client_pool.lease(default_binding()) as gc:
+        disk = await resolve_prebuilt_image_name(gc, spec.image or "")
+        poller = await gc.begin_create_sandbox(
+            disk=disk,
+            labels=_sandbox_labels(key, spec),
+            egress_policy=backend._egress_policy(spec),
+        )
+        created = await poller.result()
+        return created.sandbox_id
 
 
 class TestBootingAnImageTheServiceProvides:
@@ -952,7 +954,8 @@ class TestBootingAnImageTheServiceProvides:
             # Inside the coroutine: the group client is cached per *running* loop, because an
             # azure-core async client binds its transport to the loop that built it. Asking for
             # one from synchronous code raises rather than quietly building a second.
-            return await resolve_prebuilt_image_name(backend._group_client(), _PREBUILT)
+            async with backend._client_pool.lease(default_binding()) as gc:
+                return await resolve_prebuilt_image_name(gc, _PREBUILT)
 
         try:
             resolved = loop.run_until_complete(scenario())
@@ -995,24 +998,23 @@ class TestMissingLifecycleRecovery:
         async def scenario():
             sandbox_id = await _create_labelled_sandbox_without_lifecycle(backend, key, spec)
             try:
-                group = _ScopedRecoveryClient(
-                    backend._group_client(), scope=scope, thread_id="thread-1"
-                )
-                result = await recovery.recover_lifecycle_policies(
-                    group,
-                    policy=recovery.RecoveryPolicy(
-                        fresh_for=timedelta(seconds=1),
-                        stopped_for=timedelta(days=1),
-                        max_age=None,
-                    ),
-                    apply=True,
-                    now=datetime.now(UTC) + timedelta(minutes=10),
-                )
-                assert result.failures == [], result
-                assert result.already_absent == [], result
-                assert result.installed == [sandbox_id], result
-                assert result.verified == [sandbox_id], result
-                assert result.deleted == [], result
+                async with backend._client_pool.lease(default_binding()) as gc:
+                    group = _ScopedRecoveryClient(gc, scope=scope, thread_id="thread-1")
+                    result = await recovery.recover_lifecycle_policies(
+                        group,
+                        policy=recovery.RecoveryPolicy(
+                            fresh_for=timedelta(seconds=1),
+                            stopped_for=timedelta(days=1),
+                            max_age=None,
+                        ),
+                        apply=True,
+                        now=datetime.now(UTC) + timedelta(minutes=10),
+                    )
+                    assert result.failures == [], result
+                    assert result.already_absent == [], result
+                    assert result.installed == [sandbox_id], result
+                    assert result.verified == [sandbox_id], result
+                    assert result.deleted == [], result
             finally:
                 await backend.dispose_scope(scope, "thread-1")
 
@@ -1176,8 +1178,9 @@ def test_acquire_prepares_base_before_exec_and_repairs_warm_reuse(loop, image):
         assert kept.exit_code == 0, kept.stderr
         assert kept.stdout == "kept"
 
-        sc = backend._group_client().get_sandbox_client(sandbox.sandbox_id)
-        await sc.delete_file(spec.work_dir, recursive=True)
+        async with backend._client_pool.lease(default_binding()) as gc:
+            sc = gc.get_sandbox_client(sandbox.sandbox_id)
+            await sc.delete_file(spec.work_dir, recursive=True)
         assert await warm.stat_file(spec.work_dir, working_directory=spec.work_dir) is None
 
         repaired = await backend.acquire(key, spec)
@@ -1326,13 +1329,13 @@ class TestAnImageWhoseGuestIsNotRoot:
             # And it really went away. Polled, not asserted once: `_delete` starts the deletion
             # without awaiting the poller, so a sandbox still terminating is legitimately still
             # listed. Read-only — a purge here would delete the very leak it is looking for.
-            gc = cold._group_client()
-            for _ in range(10):
-                left = await cold._list_thread_sandbox_ids(gc, scope, "thread-1")
-                if left == []:
-                    return
-                await asyncio.sleep(6.0)
-            raise AssertionError(f"{scope} still has sandboxes: a refused acquire leaked one")
+            async with cold._client_pool.lease(default_binding()) as gc:
+                for _ in range(10):
+                    left = await cold._list_thread_sandbox_ids(gc, scope, "thread-1")
+                    if left == []:
+                        return
+                    await asyncio.sleep(6.0)
+                raise AssertionError(f"{scope} still has sandboxes: a refused acquire leaked one")
 
         try:
             # On the loop rather than through `nonroot.run`: every call below is `cold`'s, and
@@ -1701,7 +1704,8 @@ def test_instance_disposal_conforms_against_the_service(loop):
 
     async def exists(identity):
         try:
-            await disposer._group_client().get_sandbox_client(identity).get()
+            async with disposer._client_pool.lease(default_binding()) as gc:
+                await gc.get_sandbox_client(identity).get()
         except ResourceNotFoundError:
             return False
         return True

@@ -11,6 +11,7 @@ from maf_sandbox import Capability, SandboxKey, SandboxOutputError, SandboxSpec
 from maf_sandbox.conformance import PosixGuestSubject, assert_exec_conformance
 
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
+from maf_sandbox_acas._credentials import default_binding
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("ACAS_SANDBOX_ENDPOINT"), reason="requires a live ACAS sandbox group"
@@ -70,12 +71,8 @@ def test_byte_capture_and_failure_disposal(image):
                     working_directory="/tmp",
                     timeout=60,
                 )
-            assert not [
-                item
-                async for item in backend._group_client().list_sandboxes(
-                    labels={"scope": key.scope}
-                )
-            ]
+            async with backend._client_pool.lease(default_binding()) as gc:
+                assert not [item async for item in gc.list_sandboxes(labels={"scope": key.scope})]
             sandbox = await backend.acquire(key, spec)
             assert sandbox.instance_id != first_id
             results = await assert_exec_conformance(
@@ -84,12 +81,8 @@ def test_byte_capture_and_failure_disposal(image):
                 )
             )
             assert not any(result.skipped for result in results)
-            assert not [
-                item
-                async for item in backend._group_client().list_sandboxes(
-                    labels={"scope": key.scope}
-                )
-            ]
+            async with backend._client_pool.lease(default_binding()) as gc:
+                assert not [item async for item in gc.list_sandboxes(labels={"scope": key.scope})]
             sandbox = await backend.acquire(key, spec)
             task = asyncio.create_task(
                 sandbox.exec_bounded(
@@ -100,21 +93,15 @@ def test_byte_capture_and_failure_disposal(image):
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-            assert not [
-                item
-                async for item in backend._group_client().list_sandboxes(
-                    labels={"scope": key.scope}
-                )
-            ]
+            async with backend._client_pool.lease(default_binding()) as gc:
+                assert not [item async for item in gc.list_sandboxes(labels={"scope": key.scope})]
         finally:
             try:
                 await backend.dispose_scope(key.scope, key.thread_id)
-                assert not [
-                    item
-                    async for item in backend._group_client().list_sandboxes(
-                        labels={"scope": key.scope}
-                    )
-                ]
+                async with backend._client_pool.lease(default_binding()) as gc:
+                    assert not [
+                        item async for item in gc.list_sandboxes(labels={"scope": key.scope})
+                    ]
             finally:
                 await backend.aclose()
 

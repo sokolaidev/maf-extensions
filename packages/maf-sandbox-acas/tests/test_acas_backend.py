@@ -181,7 +181,7 @@ def _backend_with(group_client, config: AcasSandboxConfig | None = None) -> Acas
     Azure, and using it here is what proves it is a real seam.
     """
     backend = AcasSandboxBackend(config or _config())
-    backend._group_client = lambda: group_client  # type: ignore[method-assign]
+    backend._group_client = lambda credential: group_client  # type: ignore[method-assign]
     return backend
 
 
@@ -1972,6 +1972,11 @@ class TestAnImageWhoseGuestIsNotRoot:
         backend._guest_removals = _Hints(backend._guest_removals)
         original = _AcasSandbox.probe_guest_removal
 
+        def client_by_id(sandbox_id):
+            return next(c for c in client.clients if c.sandbox_id == sandbox_id)
+
+        monkeypatch.setattr(client, "get_sandbox_client", client_by_id)
+
         async def ordered_probe(sandbox):
             if local.first:
                 first_probing.set()
@@ -2344,7 +2349,7 @@ class TestDisposeScope:
             "sbx-1", egress=(Egress.CLOSED, frozenset())
         )
 
-        def _unreachable():
+        def _unreachable(credential):
             raise RuntimeError("no credential")
 
         backend._group_client = _unreachable  # type: ignore[method-assign]
@@ -2352,7 +2357,7 @@ class TestDisposeScope:
         assert purge.disposed == 0
         assert purge.undisposed is not None
         assert purge.undisposed.code == "unreachable"
-        assert "no credential" in purge.undisposed.detail
+        assert "credential/client acquisition failed" in purge.undisposed.detail
         assert backend._undeleted == {("scope-a", "thread-1", "devops-engineer", ""): {"sbx-1"}}
 
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_id="devops-engineer")
@@ -2909,7 +2914,7 @@ class TestNarrowedDisposal:
                 raise asyncio.CancelledError
             return _Deletion(False, failure)
 
-        def unavailable():
+        def unavailable(credential):
             raise RuntimeError("group unavailable")
 
         monkeypatch.setattr(backend, "_delete", delete)
@@ -2985,7 +2990,7 @@ class TestNarrowedDisposal:
                 raise asyncio.CancelledError
             return _Deletion(False, failure)
 
-        def unavailable():
+        def unavailable(credential):
             raise RuntimeError("group unavailable")
 
         async def cleanup(operation):
@@ -3109,7 +3114,7 @@ class TestNarrowedDisposal:
         for kind in ("a", "b", "a"):
             assert asyncio.run(backend.dispose(key, kind=kind)) is not None
         client = _FakeGroupClient()
-        backend._group_client = lambda: client
+        backend._group_client = lambda credential: client
         assert asyncio.run(backend.dispose(key, kind="a")) is None
         assert client.deleted == ["selected"]
         assert backend._undeleted == {prefix: {"sibling"}}
@@ -3126,7 +3131,7 @@ class TestNarrowedDisposal:
         backend._registry[(*prefix, "b")] = _Held("sibling", egress=(Egress.CLOSED, frozenset()))
         asyncio.run(backend.dispose_scope(key.scope, key.thread_id))
         client = _FakeGroupClient()
-        backend._group_client = lambda: client
+        backend._group_client = lambda credential: client
         assert asyncio.run(backend.dispose(key, kind="a")) is None
         assert client.deleted == ["selected"]
         assert backend._undeleted == {prefix: {"sibling"}}
@@ -3196,7 +3201,7 @@ class TestDispose:
             "sbx-1", egress=(Egress.CLOSED, frozenset())
         )
 
-        def _unreachable():
+        def _unreachable(credential):
             raise RuntimeError("no credential")
 
         backend._group_client = _unreachable  # type: ignore[method-assign]
@@ -3275,14 +3280,14 @@ class TestDispose:
             "sbx-1", egress=(Egress.CLOSED, frozenset())
         )
 
-        def _unreachable():
+        def _unreachable(credential):
             raise RuntimeError("no credential")
 
         backend._group_client = _unreachable  # type: ignore[method-assign]
         reason = asyncio.run(backend.dispose(key))
         assert reason is not None
         assert reason.code == "unreachable", "no client was ever built"
-        assert "no credential" in reason.detail
+        assert "credential/client acquisition failed" in reason.detail
 
     def test_a_record_this_attempt_never_reported_on_is_not_read_as_landed(self):
         """A disposal still in flight writes its ids ahead of its own first await. Answering
@@ -3445,6 +3450,9 @@ class TestLifecycleLogging:
                 return _CreatedSandbox("sbx-1")
 
         class _LifecycleFailsGroupClient:
+            def get_sandbox_client(self, sandbox_id):
+                return _CreatedSandbox(sandbox_id)
+
             async def begin_create_sandbox(self, *, disk_id, labels, egress_policy):
                 return _Poller()
 
@@ -3481,8 +3489,7 @@ class _SlowCreateGroupClient:
         self.resumed: list[str] = []
 
     def get_sandbox_client(self, sandbox_id: str):
-        self.resumed.append(sandbox_id)
-        return _ResumingSandboxClient(sandbox_id)
+        return _ResumingSandboxClient(sandbox_id, self.resumed)
 
     async def begin_create_sandbox(self, *, disk_id, labels, egress_policy):
         self.create_calls += 1
@@ -3503,7 +3510,13 @@ class _SlowCreateGroupClient:
 class _ResumingSandboxClient(_FakeSandboxClient):
     """Suspends while resuming, so a second acquire on a warm key waits on the lock."""
 
+    def __init__(self, sandbox_id, resumed=None):
+        super().__init__(sandbox_id)
+        self._resumptions = resumed
+
     async def ensure_running(self, timeout: float | None = None) -> None:
+        if self._resumptions is not None:
+            self._resumptions.append(self.sandbox_id)
         await asyncio.sleep(0)
         await super().ensure_running(timeout)
 
@@ -4495,6 +4508,8 @@ class TestErrorDetailAdoption:
                 self.create_calls = 0
 
             def get_sandbox_client(self, sandbox_id: str):
+                if sandbox_id == "sbx-new":
+                    return _CreatedSandbox(sandbox_id)
                 return _ResumeFailsSandboxClient(sandbox_id)
 
             async def begin_create_sandbox(self, *, disk_id, labels, egress_policy):
@@ -4591,7 +4606,9 @@ class TestEgressPolicy:
     @pytest.mark.parametrize("methods", [("GET",), ("POST", "PUT"), ("PROPFIND",)])
     def test_method_policy_refuses_before_reaching_the_service(self, methods, monkeypatch):
         backend = AcasSandboxBackend(_config())
-        monkeypatch.setattr(backend, "_group_client", lambda: pytest.fail("contacted service"))
+        monkeypatch.setattr(
+            backend, "_group_client", lambda credential: pytest.fail("contacted service")
+        )
         scoped = SandboxSpec(
             kind="t",
             egress=Egress.ALLOWLIST,

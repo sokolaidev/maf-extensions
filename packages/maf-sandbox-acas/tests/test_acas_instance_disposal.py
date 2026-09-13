@@ -48,7 +48,7 @@ class _Service:
 
 def _backend(service):
     backend = AcasSandboxBackend(AcasSandboxConfig(endpoint="https://sandbox.invalid"))
-    backend._group_client = lambda: service
+    backend._group_client = lambda credential: service
     return backend
 
 

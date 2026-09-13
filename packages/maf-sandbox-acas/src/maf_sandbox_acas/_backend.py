@@ -17,15 +17,20 @@ import logging
 import posixpath
 import shlex
 import threading
-from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Generator, Mapping, Sequence
 from concurrent.futures import Future
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
+from functools import wraps
 from hashlib import sha256
 from time import monotonic
-from typing import TYPE_CHECKING, Any, cast
+from types import CoroutineType
+from typing import TYPE_CHECKING, Any, Concatenate, cast
 from uuid import uuid4
 
+from azure.core.credentials_async import AsyncTokenCredential
+from azure.core.exceptions import ClientAuthenticationError, HttpResponseError
 from maf_sandbox import (
     BackendDeclarations,
     Capability,
@@ -73,6 +78,13 @@ from maf_sandbox.paths import (
 )
 
 from ._config import AcasSandboxConfig
+from ._credentials import (
+    AcasCredentialBinding,
+    AcasCredentialError,
+    AcasCredentialRequest,
+    ClientPool,
+    default_binding,
+)
 from ._exec_capture import capture
 from ._images import (
     names_a_prebuilt_image,
@@ -568,6 +580,30 @@ def _control_result(stdout: object, stderr: object, exit_code: object) -> ExecRe
     return ExecResult(stdout=stdout, stderr=stderr, exit_code=exit_code)
 
 
+@dataclass
+class _BorrowedClient:
+    client: Any
+    active: bool = True
+    loop: asyncio.AbstractEventLoop = field(default_factory=asyncio.get_running_loop)
+
+
+def _with_client[**P, T](
+    method: Callable[Concatenate[_AcasSandbox, P], CoroutineType[Any, Any, T]],
+) -> Callable[Concatenate[_AcasSandbox, P], CoroutineType[Any, Any, T]]:
+    @wraps(method)
+    async def call(self: _AcasSandbox, *args: P.args, **kwargs: P.kwargs) -> T:
+        async with self.client_lease():
+            return await method(self, *args, **kwargs)
+
+    return call
+
+
+def _authority_failure(error: Exception) -> bool:
+    return isinstance(error, (AcasCredentialError, ClientAuthenticationError)) or (
+        isinstance(error, HttpResponseError) and error.status_code in (401, 403)
+    )
+
+
 class _AcasSandbox:
     """A running ACA sandbox, narrowed to what a workload is allowed to do with it."""
 
@@ -578,8 +614,14 @@ class _AcasSandbox:
         *,
         held: _Held | None = None,
         exec_output_limit: int = 1 << 20,
+        pool: ClientPool | None = None,
+        binding: AcasCredentialBinding | None = None,
     ) -> None:
-        self._sc = sandbox_client
+        self._sandbox_id: str = sandbox_client.sandbox_id if pool is not None else ""
+        self._direct_client: Any = sandbox_client if pool is None else None
+        self._pool = pool
+        self._binding = binding
+        self._borrowed: ContextVar[_BorrowedClient | None] = ContextVar("acas_client", default=None)
         self._read_timeout = read_timeout
         self._held = held if held is not None else _Held("", egress=(Egress.CLOSED, frozenset()))
         self._exec_output_limit = exec_output_limit
@@ -587,11 +629,44 @@ class _AcasSandbox:
 
     @property
     def sandbox_id(self) -> str:
-        return self._sc.sandbox_id
+        return self._sandbox_id if self._pool is not None else self._direct_client.sandbox_id
 
     @property
     def instance_id(self) -> str:
         return self.sandbox_id
+
+    @property
+    def _sc(self) -> Any:
+        borrowed = self._borrowed.get()
+        if borrowed is not None and borrowed.active and borrowed.loop is asyncio.get_running_loop():
+            return borrowed.client
+        if self._pool is None:
+            return self._direct_client
+        raise RuntimeError("ACAS SDK operation requires a client lease")
+
+    @asynccontextmanager
+    async def client_lease(self) -> AsyncGenerator[None, None]:
+        existing = self._borrowed.get()
+        if self._pool is None or (
+            existing is not None and existing.active and existing.loop is asyncio.get_running_loop()
+        ):
+            yield
+            return
+        assert self._binding is not None
+        async with self._pool.lease(self._binding) as group:
+            with self.borrow_client(group.get_sandbox_client(self._sandbox_id)):
+                yield
+
+    @contextmanager
+    def borrow_client(self, client: Any) -> Generator[None, None, None]:
+        """Bind an SDK child while the caller holds its group's lease."""
+        borrowed = _BorrowedClient(client)
+        token = self._borrowed.set(borrowed)
+        try:
+            yield
+        finally:
+            borrowed.active = False
+            self._borrowed.reset(token)
 
     def check_usable(self) -> None:
         """Refuse an acquire after capture invalidation."""
@@ -599,6 +674,7 @@ class _AcasSandbox:
             if self._held.unusable:
                 raise SandboxOutputError("ACAS sandbox was invalidated during acquire")
 
+    @_with_client
     async def prepare_work_dir(self, spec: SandboxSpec) -> None:
         """Establish the spec's base through the data plane."""
         self._work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
@@ -615,6 +691,7 @@ class _AcasSandbox:
         for directory in directories:
             await self._sc.mkdir(directory)
 
+    @_with_client
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
         """Write ``content`` at ``path``, over the shell wherever a guest write can land there.
 
@@ -694,6 +771,7 @@ class _AcasSandbox:
         except (SandboxShellTransferFailed, SandboxShellTransferUnfinished) as failed:
             raise OSError(f"could not write {guest}: {error_detail(failed)}") from failed
 
+    @_with_client
     async def exec(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float
     ) -> ExecResult:
@@ -793,6 +871,7 @@ class _AcasSandbox:
                 error_detail(deletion_failed),
             )
 
+    @_with_client
     async def _discard_after_exec(self) -> None:
         from azure.core.exceptions import ResourceNotFoundError
 
@@ -804,6 +883,7 @@ class _AcasSandbox:
             # An already-absent sandbox satisfies disposal.
             pass
 
+    @_with_client
     async def probe_command(
         self, command: tuple[str, ...], *, timeout: float, owns_capture: bool
     ) -> int:
@@ -818,6 +898,7 @@ class _AcasSandbox:
             await self._invalidate_after_exec(SandboxOutputError("exec capture probe failed"))
         return result.exit_code
 
+    @_with_client
     async def _exec_text(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float
     ) -> ExecResult:
@@ -833,6 +914,7 @@ class _AcasSandbox:
             exit_code=getattr(result, "exit_code", 0),
         )
 
+    @_with_client
     async def exec_bounded(
         self,
         command: str | Sequence[str],
@@ -855,6 +937,7 @@ class _AcasSandbox:
             max_output_bytes=max_output_bytes,
         )
 
+    @_with_client
     async def _exec_text_bounded(
         self,
         command: str | Sequence[str],
@@ -911,6 +994,7 @@ class _AcasSandbox:
             finally:
                 await response.close()
 
+    @_with_client
     async def choose_write_road(self, spec: SandboxSpec) -> None:
         """Settle this sandbox's write road once, on the acquire that first asks to write.
 
@@ -930,6 +1014,8 @@ class _AcasSandbox:
         try:
             road = await self.probe_write_road()
         except Exception as unreachable:  # noqa: BLE001 - an acquire must not fail over this
+            if _authority_failure(unreachable):
+                raise
             logger.debug(
                 "acas: the write-road probe for sandbox %s did not complete (%s); the data "
                 "plane serves and the next acquire asks again",
@@ -947,6 +1033,7 @@ class _AcasSandbox:
                 self._work_dir,
             )
 
+    @_with_client
     async def probe_write_road(self) -> bool:
         """Can a write run as the guest, in this base, on this image?
 
@@ -978,6 +1065,7 @@ class _AcasSandbox:
         said = set(answered.split())
         return {_A_GUEST_WRITE_LANDS, _THE_UTILITIES_ARE_THERE} <= said
 
+    @_with_client
     async def probe_guest_removal(self) -> bool | None:
         """Check guest removal compatibility; this cannot establish workload authority."""
         from azure.core.exceptions import ResourceNotFoundError
@@ -1028,6 +1116,7 @@ class _AcasSandbox:
 
     # -- the pull surface ---------------------------------------------------------
 
+    @_with_client
     async def _files_payload(self, route: str, guest_path: str) -> Mapping[str, Any]:
         """One ``files/`` data-plane GET, as the **raw** payload the service sent.
 
@@ -1043,6 +1132,7 @@ class _AcasSandbox:
         )
         return payload
 
+    @_with_client
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
         """Describe ``path``, or return ``None`` when nothing is there.
 
@@ -1079,6 +1169,7 @@ class _AcasSandbox:
             "register a backend that declares RUN_CODE."
         )
 
+    @_with_client
     async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
         """Remove as the guest and verify absence through the file plane.
 
@@ -1148,6 +1239,7 @@ class _AcasSandbox:
         """The unconfined, no-follow stat used by the confinement bundles."""
         return await self._stat_guest(directory, directory)
 
+    @_with_client
     async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
         """Read the regular file at ``path``, refusing anything over ``max_bytes``.
 
@@ -1211,6 +1303,7 @@ class _AcasSandbox:
             )
         return content
 
+    @_with_client
     async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
         """Enumerate the entries directly under ``path``.
 
@@ -1267,11 +1360,12 @@ class AcasSandboxBackend:
         self._scope_disposals: dict[tuple[str, str], dict[str, object]] = {}
         self._disposal_tokens: dict[tuple[str, str, str, str], dict[str, object]] = {}
         self._disposal_guard = threading.Lock()
-        # Group clients cached per event loop. An azure-core async client binds its transport
-        # to the loop that created it, and this host runs some work on a dedicated background
-        # loop, so one shared client would be a cross-loop hazard; one per call would leak a
-        # connection pool per tool invocation.
-        self._clients: dict[asyncio.AbstractEventLoop, tuple[Any, Any]] = {}
+        self._client_pool = ClientPool(
+            lambda credential: self._group_client(credential),
+            capacity=config.max_clients_per_loop,
+            wait_seconds=config.client_wait_seconds,
+            close_seconds=config.client_close_seconds,
+        )
         #: An image-level hint for the pre-create refusal, never proof for another sandbox.
         self._guest_removals: dict[tuple[str, str], _RemovalHint] = {}
         self._guest_removals_guard = threading.Lock()
@@ -1296,17 +1390,10 @@ class AcasSandboxBackend:
 
     # -- client -------------------------------------------------------------------
 
-    def _group_client(self) -> Any:
-        """The group client for the running loop, created on first use."""
+    def _group_client(self, credential: AsyncTokenCredential) -> Any:
+        """Construct a group pipeline for one loop-owned credential."""
         from azure.containerapps.sandbox.aio import SandboxGroupClient
-        from azure.identity.aio import DefaultAzureCredential
 
-        loop = asyncio.get_running_loop()
-        existing = self._clients.get(loop)
-        if existing is not None:
-            return existing[0]
-
-        credential = DefaultAzureCredential()
         cfg = self._config
         client = SandboxGroupClient(
             endpoint=cfg.endpoint,
@@ -1316,23 +1403,27 @@ class AcasSandboxBackend:
             sandbox_group=cfg.sandbox_group,
         )
         install_retry_observer(client)
-        self._clients[loop] = (client, credential)
         return client
 
+    @asynccontextmanager
+    async def _client_lease(
+        self, request: AcasCredentialRequest
+    ) -> AsyncGenerator[tuple[Any, AcasCredentialBinding], None]:
+        resolver = self._config.credential_resolver
+        try:
+            async with asyncio.timeout(self._config.client_wait_seconds):
+                binding = default_binding() if resolver is None else await resolver(request)
+                if not isinstance(cast(object, binding), AcasCredentialBinding):
+                    raise TypeError("credential_resolver must return AcasCredentialBinding")
+        except Exception:
+            # Provider exceptions may contain an assertion or credential; do not expose them.
+            raise AcasCredentialError("ACAS authority resolution failed or timed out") from None
+        async with self._client_pool.lease(binding) as client:
+            yield client, binding
+
     async def aclose(self) -> None:
-        """Close every cached client and credential. Errors are logged, never raised."""
-        for client, credential in list(self._clients.values()):
-            for closeable in (client, credential):
-                close = getattr(closeable, "close", None)
-                if close is None:
-                    continue
-                try:
-                    await close()
-                except Exception as exc:  # noqa: BLE001 - teardown must not raise
-                    logger.debug(
-                        "acas backend: error closing %s: %s", type(closeable).__name__, exc
-                    )
-        self._clients.clear()
+        """Drain SDK operations and close on owning loops; raise if cleanup is incomplete."""
+        await self._client_pool.aclose()
 
     # -- SandboxBackend -----------------------------------------------------------
 
@@ -1364,12 +1455,18 @@ class AcasSandboxBackend:
         """
         _sandbox_labels(key, spec)
         async with self._acquire_lock((*_key_prefix(key), spec.kind)):
-            sandbox = await self._get_or_create(key, spec)
-            async with asyncio.timeout(self._config.read_timeout_seconds):
-                await sandbox.prepare_work_dir(spec)
-            sandbox.check_usable()
-            await sandbox.choose_write_road(spec)
-            return sandbox
+            await self._prepare_acquire(key, spec)
+            request = AcasCredentialRequest(key.scope, key.thread_id, "acquire", key)
+            async with (
+                self._client_lease(request) as (client, binding),
+                AsyncExitStack() as acquisition,
+            ):
+                sandbox = await self._get_or_create(key, spec, client, binding, acquisition)
+                async with asyncio.timeout(self._config.read_timeout_seconds):
+                    await sandbox.prepare_work_dir(spec)
+                sandbox.check_usable()
+                await sandbox.choose_write_road(spec)
+                return sandbox
 
     @asynccontextmanager
     async def _acquire_lock(
@@ -1394,11 +1491,14 @@ class AcasSandboxBackend:
                 del self._acquisitions[registry_key]
             owned.set_result(None)
 
-    async def _get_or_create(self, key: SandboxKey, spec: SandboxSpec) -> _AcasSandbox:
-        """:meth:`acquire`'s body, run under that key's lock."""
+    async def _retry_delete(self, sandbox_id: str, request: AcasCredentialRequest) -> _Deletion:
+        async with self._client_lease(request) as (client, _binding):
+            return await self._delete(client, sandbox_id)
+
+    async def _prepare_acquire(self, key: SandboxKey, spec: SandboxSpec) -> None:
+        """Check reuse and retry retained cleanup before borrowing request authority."""
         egress = _egress_key(spec)
         registry_key = (*_key_prefix(key), spec.kind)
-        work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
         held = self._registry.get(registry_key)
         unusable = False
         if held is not None:
@@ -1411,7 +1511,6 @@ class AcasSandboxBackend:
                         "Successfully dispose the kind with SandboxRouter.dispose_kind or "
                         "AcasSandboxBackend.dispose before changing policy, or use a different key."
                     )
-        gc = self._group_client()
         # Four fields, not three: the disposal ledger is keyed by the call as well, so a
         # three-field slice would look up a prefix nothing files under and read every retained
         # record as absent — which is an acquire served on a key whose cleanup never landed.
@@ -1424,7 +1523,9 @@ class AcasSandboxBackend:
                 scope_key, list(self._scope_disposals.get(scope_key, {}))
             )
         for name in scope_attempted:
-            deletion = await self._delete(gc, name)
+            deletion = await self._retry_delete(
+                name, AcasCredentialRequest(key.scope, key.thread_id, "dispose_scope")
+            )
             with self._disposal_guard:
                 self._finish_scope_disposals(
                     scope_key, {name: scope_attempted[name]}, [name] if deletion.failure else []
@@ -1441,7 +1542,9 @@ class AcasSandboxBackend:
             kinds = {name: attributed[name] for name in retained if name in attributed}
             attempted = self._retain_disposals(prefix, retained, kinds)
         for name in retained:
-            deletion = await self._delete(gc, name)
+            deletion = await self._retry_delete(
+                name, AcasCredentialRequest(key.scope, key.thread_id, "dispose", key)
+            )
             with self._disposal_guard:
                 self._finish_disposals(
                     prefix, {name: attempted[name]}, [name] if deletion.failure else []
@@ -1465,6 +1568,20 @@ class AcasSandboxBackend:
                 if self._registry.get(registry_key) is held:
                     self._registry.pop(registry_key)
                 held = None
+
+    async def _get_or_create(
+        self,
+        key: SandboxKey,
+        spec: SandboxSpec,
+        gc: Any,
+        binding: AcasCredentialBinding,
+        acquisition: AsyncExitStack,
+    ) -> _AcasSandbox:
+        """:meth:`acquire`'s body, run under that key's lock."""
+        egress = _egress_key(spec)
+        registry_key = (*_key_prefix(key), spec.kind)
+        work_dir = spec.work_dir if spec.work_dir is not None else "/maf-sandbox/work"
+        held = self._registry.get(registry_key)
         if held is not None:
             sandbox_id = held.sandbox_id
             try:
@@ -1475,8 +1592,13 @@ class AcasSandboxBackend:
                     self._config.read_timeout_seconds,
                     held=held,
                     exec_output_limit=self._config.exec_output_limit_bytes,
+                    pool=self._client_pool,
+                    binding=binding,
                 )
+                acquisition.enter_context(reused.borrow_client(sc))
             except Exception as exc:  # noqa: BLE001 - a dead sandbox is replaced, not reported
+                if _authority_failure(exc):
+                    raise
                 # Not a warning: a sandbox reclaimed by its auto-delete timer between rounds
                 # is the expected path, not a fault. But it does mean the next call pays for
                 # a cold create, so the reason is worth a line rather than a silent `pass`.
@@ -1547,6 +1669,11 @@ class AcasSandboxBackend:
         try:
             await self._configure(sc)
         except Exception as exc:  # noqa: BLE001
+            if _authority_failure(exc):
+                with self._disposal_guard:
+                    self._registry.pop(registry_key, None)
+                await self._release_the_refused(gc, key, sc.sandbox_id, kind=spec.kind)
+                raise
             # Non-fatal: the sandbox runs with SDK default policies. The service default is not
             # known to include auto-delete, so recovery is operator-owned from here.
             logger.warning(
@@ -1560,7 +1687,10 @@ class AcasSandboxBackend:
             self._config.read_timeout_seconds,
             held=held,
             exec_output_limit=self._config.exec_output_limit_bytes,
+            pool=self._client_pool,
+            binding=binding,
         )
+        acquisition.enter_context(created.borrow_client(sc))
         try:
             await self._refuse_or_warn_on_guest_removal(
                 spec, created, held=held, freshly_created=True
@@ -1785,6 +1915,8 @@ class AcasSandboxBackend:
         try:
             removal = await sandbox.probe_guest_removal()
         except Exception as unreachable:  # noqa: BLE001 - an acquire must not fail over this
+            if _authority_failure(unreachable):
+                raise
             logger.debug(
                 "acas: removal probe for %s did not complete (%s); the next acquire retries",
                 _image_label(spec),
@@ -1812,130 +1944,137 @@ class AcasSandboxBackend:
 
         Service labels discover ownership; retained IDs cover a failed sweep listing.
         Failed deletions are retained per kind for retries and reported without raising."""
-        prefix = _key_prefix(key)
-        with self._disposal_guard:
-            mine = [
-                k
-                for k in list(self._registry)
-                if k[:4] == prefix
-                and (kind is None or k[4] == kind)
-                and (instance_id is None or self._registry[k].sandbox_id == instance_id)
-            ]
-            attributed = self._undeleted_kinds.setdefault(prefix, {})
-            remembered: list[str] = []
-            for entry in mine:
-                held = self._registry.pop(entry)
-                remembered.append(held.sandbox_id)
-                attributed[held.sandbox_id] = entry[4]
-            retained = sorted(
-                name
-                for name in self._undeleted.get(prefix, ())
-                if (kind is None or attributed.get(name) == kind)
-                and (instance_id is None or name == instance_id)
-            )
-            wanted = list(
-                dict.fromkeys(
-                    [
-                        *remembered,
-                        *retained,
-                    ]
+        async with AsyncExitStack() as clients:
+            prefix = _key_prefix(key)
+            with self._disposal_guard:
+                mine = [
+                    k
+                    for k in list(self._registry)
+                    if k[:4] == prefix
+                    and (kind is None or k[4] == kind)
+                    and (instance_id is None or self._registry[k].sandbox_id == instance_id)
+                ]
+                attributed = self._undeleted_kinds.setdefault(prefix, {})
+                remembered: list[str] = []
+                for entry in mine:
+                    held = self._registry.pop(entry)
+                    remembered.append(held.sandbox_id)
+                    attributed[held.sandbox_id] = entry[4]
+                retained = sorted(
+                    name
+                    for name in self._undeleted.get(prefix, ())
+                    if (kind is None or attributed.get(name) == kind)
+                    and (instance_id is None or name == instance_id)
                 )
-            )
-            attempted_kinds = {name: attributed[name] for name in wanted if name in attributed}
-            attempted = self._retain_disposals(prefix, wanted, attempted_kinds)
-        try:
-            gc = self._group_client()
-        except Exception as exc:  # noqa: BLE001 - disposal must never raise
-            logger.warning("acas backend: could not reach the sandbox group: %s", error_detail(exc))
-            return DisposalFailure(
-                "unreachable", f"could not reach the sandbox group: {error_detail(exc)}"
-            )
-        labels = {
-            _LABEL_SCOPE: _label_value(key.scope),
-            _LABEL_THREAD: _label_value(key.thread_id),
-            _LABEL_AGENT: _label_value(key.agent_id),
-            **_call_filters(key),
-        }
-        if kind is not None:
-            labels[_LABEL_KIND] = _label_value(kind)
-        listed: list[str] | None = []
-        try:
-            async for sandbox in gc.list_sandboxes(labels=labels):
-                sandbox_id = getattr(sandbox, "id", None)
-                if not isinstance(sandbox_id, str) or not sandbox_id:
-                    raise ValueError("the service returned no sandbox ID")
-                if instance_id is None or sandbox_id == instance_id:
-                    listed.append(sandbox_id)
-                    if sandbox_id not in wanted:
-                        wanted.append(sandbox_id)
-                    with self._disposal_guard:
-                        if kind is not None:
-                            attempted_kinds[sandbox_id] = kind
-                        if sandbox_id not in attempted:
-                            attempted.update(
-                                self._retain_disposals(prefix, [sandbox_id], attempted_kinds)
-                            )
-        except Exception as exc:  # noqa: BLE001 - a failed listing is never an empty inventory
-            logger.warning(
-                "acas backend: could not discover disposal targets: %s", error_detail(exc)
-            )
-            listed = None
-        if instance_id is not None:
-            # A local record cannot prove current engine ownership of a supplied ID.
-            if listed is None:
-                return DisposalFailure("unlisted", "could not verify sandbox ownership")
-            wanted = listed
-        elif listed is not None:
-            wanted = list(dict.fromkeys([*wanted, *listed]))
-        with self._disposal_guard:
-            if kind is not None:
-                attempted_kinds.update(dict.fromkeys(wanted, kind))
-            attempted.update(
-                self._retain_disposals(
-                    prefix, [name for name in wanted if name not in attempted], attempted_kinds
+                wanted = list(
+                    dict.fromkeys(
+                        [
+                            *remembered,
+                            *retained,
+                        ]
+                    )
                 )
-            )
-        undeleted: dict[str, DisposalFailure] = {}
-        for sandbox_id in wanted:
-            deletion = await self._delete(gc, sandbox_id)
-            if deletion.deleted:
-                logger.info(
-                    "sandbox released: id=%s thread=%s agent=%s",
-                    sandbox_id,
-                    key.thread_id,
-                    key.agent_id,
+                attempted_kinds = {name: attributed[name] for name in wanted if name in attributed}
+                attempted = self._retain_disposals(prefix, wanted, attempted_kinds)
+            try:
+                gc, _binding = await clients.enter_async_context(
+                    self._client_lease(
+                        AcasCredentialRequest(key.scope, key.thread_id, "dispose", key)
+                    )
                 )
-            if deletion.failure is not None:
-                undeleted[sandbox_id] = deletion.failure
-        with self._disposal_guard:
-            self._finish_disposals(prefix, attempted, list(undeleted))
-            left = self._undeleted.get(prefix, set())
-            attributed = self._undeleted_kinds.get(prefix, {})
-            outstanding = {
-                name
-                for name in left
-                if (kind is None or attributed.get(name) == kind)
-                and (instance_id is None or name == instance_id)
+            except Exception as exc:  # noqa: BLE001 - disposal must never raise
+                logger.warning(
+                    "acas backend: could not reach the sandbox group: %s", error_detail(exc)
+                )
+                return DisposalFailure(
+                    "unreachable", f"could not reach the sandbox group: {error_detail(exc)}"
+                )
+            labels = {
+                _LABEL_SCOPE: _label_value(key.scope),
+                _LABEL_THREAD: _label_value(key.thread_id),
+                _LABEL_AGENT: _label_value(key.agent_id),
+                **_call_filters(key),
             }
-        reported = fold_disposal_failures(
-            [
-                *undeleted.values(),
-                *(
-                    []
-                    if listed is not None
-                    else [DisposalFailure("unlisted", "sandbox sweep may be partial")]
-                ),
-            ]
-        )
-        if reported is not None:
-            return reported
-        if outstanding:
-            # Pending attempts cannot yet certify cleanup.
-            return DisposalFailure(
-                "unknown",
-                f"another disposal has not yet reported on {len(outstanding)} sandbox(es)",
+            if kind is not None:
+                labels[_LABEL_KIND] = _label_value(kind)
+            listed: list[str] | None = []
+            try:
+                async for sandbox in gc.list_sandboxes(labels=labels):
+                    sandbox_id = getattr(sandbox, "id", None)
+                    if not isinstance(sandbox_id, str) or not sandbox_id:
+                        raise ValueError("the service returned no sandbox ID")
+                    if instance_id is None or sandbox_id == instance_id:
+                        listed.append(sandbox_id)
+                        if sandbox_id not in wanted:
+                            wanted.append(sandbox_id)
+                        with self._disposal_guard:
+                            if kind is not None:
+                                attempted_kinds[sandbox_id] = kind
+                            if sandbox_id not in attempted:
+                                attempted.update(
+                                    self._retain_disposals(prefix, [sandbox_id], attempted_kinds)
+                                )
+            except Exception as exc:  # noqa: BLE001 - a failed listing is never an empty inventory
+                logger.warning(
+                    "acas backend: could not discover disposal targets: %s", error_detail(exc)
+                )
+                listed = None
+            if instance_id is not None:
+                # A local record cannot prove current engine ownership of a supplied ID.
+                if listed is None:
+                    return DisposalFailure("unlisted", "could not verify sandbox ownership")
+                wanted = listed
+            elif listed is not None:
+                wanted = list(dict.fromkeys([*wanted, *listed]))
+            with self._disposal_guard:
+                if kind is not None:
+                    attempted_kinds.update(dict.fromkeys(wanted, kind))
+                attempted.update(
+                    self._retain_disposals(
+                        prefix, [name for name in wanted if name not in attempted], attempted_kinds
+                    )
+                )
+            undeleted: dict[str, DisposalFailure] = {}
+            for sandbox_id in wanted:
+                deletion = await self._delete(gc, sandbox_id)
+                if deletion.deleted:
+                    logger.info(
+                        "sandbox released: id=%s thread=%s agent=%s",
+                        sandbox_id,
+                        key.thread_id,
+                        key.agent_id,
+                    )
+                if deletion.failure is not None:
+                    undeleted[sandbox_id] = deletion.failure
+            with self._disposal_guard:
+                self._finish_disposals(prefix, attempted, list(undeleted))
+                left = self._undeleted.get(prefix, set())
+                attributed = self._undeleted_kinds.get(prefix, {})
+                outstanding = {
+                    name
+                    for name in left
+                    if (kind is None or attributed.get(name) == kind)
+                    and (instance_id is None or name == instance_id)
+                }
+            reported = fold_disposal_failures(
+                [
+                    *undeleted.values(),
+                    *(
+                        []
+                        if listed is not None
+                        else [DisposalFailure("unlisted", "sandbox sweep may be partial")]
+                    ),
+                ]
             )
-        return None
+            if reported is not None:
+                return reported
+            if outstanding:
+                # Pending attempts cannot yet certify cleanup.
+                return DisposalFailure(
+                    "unknown",
+                    f"another disposal has not yet reported on {len(outstanding)} sandbox(es)",
+                )
+            return None
 
     async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
         """Purge a scope while refusing new local acquires; report active acquires as incomplete."""
@@ -1965,95 +2104,102 @@ class AcasSandboxBackend:
         Labels reach sandboxes created elsewhere; registry and retry records cover failed
         listings, which are still reported. Registry entries are dropped before deletion.
         """
-        scope_key = (scope, thread_id)
-        with self._disposal_guard:
-            known = [
-                (k, entry.sandbox_id)
-                for k, entry in list(self._registry.items())
-                if k[0] == scope and k[1] == thread_id
-            ]
-            for k, _ in known:
-                self._registry.pop(k, None)
-            for entry, sandbox_id in known:
-                self._undeleted_kinds.setdefault(entry[:4], {})[sandbox_id] = entry[4]
-                self._undeleted.setdefault(entry[:4], set()).add(sandbox_id)
+        async with AsyncExitStack() as clients:
+            scope_key = (scope, thread_id)
+            with self._disposal_guard:
+                known = [
+                    (k, entry.sandbox_id)
+                    for k, entry in list(self._registry.items())
+                    if k[0] == scope and k[1] == thread_id
+                ]
+                for k, _ in known:
+                    self._registry.pop(k, None)
+                for entry, sandbox_id in known:
+                    self._undeleted_kinds.setdefault(entry[:4], {})[sandbox_id] = entry[4]
+                    self._undeleted.setdefault(entry[:4], set()).add(sandbox_id)
 
-            retained = {
-                p: set(names)
-                for p, names in self._undeleted.items()
-                if p[0] == scope and p[1] == thread_id
-            }
-            attempted_kinds = {
-                p: {
-                    name: kind
-                    for name, kind in self._undeleted_kinds.get(p, {}).items()
-                    if name in names
+                retained = {
+                    p: set(names)
+                    for p, names in self._undeleted.items()
+                    if p[0] == scope and p[1] == thread_id
                 }
-                for p, names in retained.items()
-            }
-            attempted = {
-                prefix: self._retain_disposals(prefix, list(names), attempted_kinds[prefix])
-                for prefix, names in retained.items()
-            }
-            scope_attempted = self._retain_scope_disposals(
-                scope_key, list(self._scope_disposals.get(scope_key, {}))
-            )
-        try:
-            gc = self._group_client()
-        except Exception as exc:  # noqa: BLE001 - purge must never fail
-            logger.warning("acas backend: could not reach the sandbox group: %s", exc)
-            return ScopePurge(
-                0,
-                DisposalFailure(
-                    "unreachable", f"could not reach the sandbox group: {error_detail(exc)}"
-                ),
-            )
-
-        undisposed: list[DisposalFailure] = []
-        ids = {sandbox_id for _, sandbox_id in known}
-        ids.update(sandbox_id for names in retained.values() for sandbox_id in names)
-        ids.update(scope_attempted)
-
-        def remember(sandbox_id: str) -> None:
-            if sandbox_id not in ids:
-                with self._disposal_guard:
-                    scope_attempted.update(self._retain_scope_disposals(scope_key, [sandbox_id]))
-                ids.add(sandbox_id)
-
-        listed = await self._list_thread_sandbox_ids(gc, scope, thread_id, on_discovered=remember)
-        if listed is None:
-            undisposed.append(
-                DisposalFailure(
-                    "unlisted",
-                    "could not list the thread's sandboxes, so the sweep may be partial",
+                attempted_kinds = {
+                    p: {
+                        name: kind
+                        for name, kind in self._undeleted_kinds.get(p, {}).items()
+                        if name in names
+                    }
+                    for p, names in retained.items()
+                }
+                attempted = {
+                    prefix: self._retain_disposals(prefix, list(names), attempted_kinds[prefix])
+                    for prefix, names in retained.items()
+                }
+                scope_attempted = self._retain_scope_disposals(
+                    scope_key, list(self._scope_disposals.get(scope_key, {}))
                 )
-            )
-        else:
-            ids.update(listed)
-
-        count = 0
-        undeleted: set[str] = set()
-        for sandbox_id in sorted(ids):
-            deletion = await self._delete(gc, sandbox_id)
-            if deletion.deleted:
-                logger.info(
-                    "sandbox released: id=%s thread=%s (scope purge)", sandbox_id, thread_id
+            try:
+                gc, _binding = await clients.enter_async_context(
+                    self._client_lease(AcasCredentialRequest(scope, thread_id, "dispose_scope"))
                 )
-                count += 1
-            if deletion.failure is not None:
-                undeleted.add(sandbox_id)
-                undisposed.append(deletion.failure)
-        with self._disposal_guard:
-            for prefix, tokens in attempted.items():
-                self._finish_disposals(prefix, tokens, list(tokens.keys() & undeleted))
-            self._finish_scope_disposals(
-                scope_key, scope_attempted, list(scope_attempted.keys() & undeleted)
-            )
-            if self._scope_disposals.get(scope_key) and not undisposed:
-                undisposed.append(DisposalFailure("unknown", "scope disposal is still pending"))
-        return ScopePurge(count, fold_disposal_failures(undisposed))
+            except Exception as exc:  # noqa: BLE001 - purge must never fail
+                logger.warning("acas backend: could not reach the sandbox group: %s", exc)
+                return ScopePurge(
+                    0,
+                    DisposalFailure(
+                        "unreachable", f"could not reach the sandbox group: {error_detail(exc)}"
+                    ),
+                )
 
-    # -- internals ----------------------------------------------------------------
+            undisposed: list[DisposalFailure] = []
+            ids = {sandbox_id for _, sandbox_id in known}
+            ids.update(sandbox_id for names in retained.values() for sandbox_id in names)
+            ids.update(scope_attempted)
+
+            def remember(sandbox_id: str) -> None:
+                if sandbox_id not in ids:
+                    with self._disposal_guard:
+                        scope_attempted.update(
+                            self._retain_scope_disposals(scope_key, [sandbox_id])
+                        )
+                    ids.add(sandbox_id)
+
+            listed = await self._list_thread_sandbox_ids(
+                gc, scope, thread_id, on_discovered=remember
+            )
+            if listed is None:
+                undisposed.append(
+                    DisposalFailure(
+                        "unlisted",
+                        "could not list the thread's sandboxes, so the sweep may be partial",
+                    )
+                )
+            else:
+                ids.update(listed)
+
+            count = 0
+            undeleted: set[str] = set()
+            for sandbox_id in sorted(ids):
+                deletion = await self._delete(gc, sandbox_id)
+                if deletion.deleted:
+                    logger.info(
+                        "sandbox released: id=%s thread=%s (scope purge)", sandbox_id, thread_id
+                    )
+                    count += 1
+                if deletion.failure is not None:
+                    undeleted.add(sandbox_id)
+                    undisposed.append(deletion.failure)
+            with self._disposal_guard:
+                for prefix, tokens in attempted.items():
+                    self._finish_disposals(prefix, tokens, list(tokens.keys() & undeleted))
+                self._finish_scope_disposals(
+                    scope_key, scope_attempted, list(scope_attempted.keys() & undeleted)
+                )
+                if self._scope_disposals.get(scope_key) and not undisposed:
+                    undisposed.append(DisposalFailure("unknown", "scope disposal is still pending"))
+            return ScopePurge(count, fold_disposal_failures(undisposed))
+
+        # -- internals ----------------------------------------------------------------
 
     def _egress_policy(self, spec: SandboxSpec) -> Any:
         """Deny by default, allow only the hosts the spec names."""

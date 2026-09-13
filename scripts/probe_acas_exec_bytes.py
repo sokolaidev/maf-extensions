@@ -21,7 +21,7 @@ from typing import Any
 
 from azure.core.rest import HttpRequest
 from maf_sandbox import Capability, ExecResult, SandboxKey, SandboxSpec
-from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
+from maf_sandbox_acas import AcasCredentialRequest, AcasSandboxBackend, AcasSandboxConfig
 
 _BEGIN = "maf-exec-bytes-v1:begin"
 _STDERR = "maf-exec-bytes-v1:stderr"
@@ -394,12 +394,14 @@ async def measure(output: Path) -> dict[str, Any]:
             purged = await backend.dispose_scope(key.scope, key.thread_id)
             report["cleanup_refused"] = purged.undisposed is not None
             for attempt in range(10):
-                remaining = [
-                    item
-                    async for item in backend._group_client().list_sandboxes(
-                        labels={"scope": key.scope, "thread": key.thread_id}
-                    )
-                ]
+                request = AcasCredentialRequest(key.scope, key.thread_id, "dispose_scope")
+                async with backend._client_lease(request) as (client, _binding):
+                    remaining = [
+                        item
+                        async for item in client.list_sandboxes(
+                            labels={"scope": key.scope, "thread": key.thread_id}
+                        )
+                    ]
                 if not remaining:
                     report["scope_confirmed_empty"] = True
                     break

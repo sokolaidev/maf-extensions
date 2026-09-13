@@ -119,7 +119,7 @@ def test_cap_is_enforced_before_decoding_and_response_is_closed(stream):
             _pipeline=SimpleNamespace(run=send),
         )
         sandbox = _AcasSandbox(None, 1)
-        sandbox._sc = client
+        sandbox._direct_client = client
         with pytest.raises(SandboxExecOutputLimitExceeded):
             await sandbox._exec_text_bounded(
                 "probe", working_directory="child", timeout=1, max_output_bytes=250
@@ -149,7 +149,7 @@ def test_small_complete_response_preserves_result_or_http_failure(status):
             return SimpleNamespace(http_response=response)
 
         sandbox = _AcasSandbox(None, 1)
-        sandbox._sc = SimpleNamespace(
+        sandbox._direct_client = SimpleNamespace(
             _endpoint="https://sandbox.example",
             _sbx_path="/sandboxes/one",
             _api_version="test",
