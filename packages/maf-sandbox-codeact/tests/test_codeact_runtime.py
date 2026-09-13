@@ -27,6 +27,7 @@ from maf_sandbox import (
     OutputSink,
     SandboxCapabilityDenied,
     SandboxCapabilityNotSupported,
+    SandboxKey,
     SandboxQueuedTimeout,
     SandboxRouter,
     Selection,
@@ -599,6 +600,37 @@ def test_attached_variants_refuse_to_change_a_live_runtime_contract(changed):
     assert refusal in _run(different)
     assert len(sandbox.programs) == 1 and not sandbox.writes
     assert "4" in _run(original)
+
+
+def test_runtime_profiles_remain_distinct_in_persisted_effective_state():
+    from agent_framework import AgentSession, FunctionInvocationContext, FunctionTool
+    from maf_sandbox.maf import EFFECTIVE_STATE_KEY, effective_state_middleware
+
+    profiles = [_RUNTIME, replace(_RUNTIME, instructions="Python with different modules")]
+    specs = [codeact_sandbox_spec(runtime=profile) for profile in profiles]
+    backend = _backend(_PythonSandbox())
+    router = SandboxRouter([backend], min_isolation=backend.isolation)
+
+    async def _body() -> None:
+        for index, spec in enumerate(specs):
+            key = SandboxKey(scope="scope", thread_id="thread", agent_id=f"agent-{index}")
+            await router.acquire(key, spec)
+
+    tool = FunctionTool(name="compare_runtimes", func=_body)
+    session = AgentSession()
+    context = FunctionInvocationContext(function=tool, arguments={}, session=session)
+
+    async def call_next() -> None:
+        await tool.invoke(arguments={})
+
+    asyncio.run(effective_state_middleware().process(context, call_next))
+    served = session.state[EFFECTIVE_STATE_KEY]["compare_runtimes"]
+    assert len(served) == 2
+    contracts = [state["execution_contract"] for state in served]
+    assert contracts == [spec.execution_contract for spec in specs]
+    assert contracts[0] != contracts[1]
+    assert {state["work_dir"] for state in served} == {None}
+    assert all(state["requires"] == ["run_code"] for state in served)
 
 
 def test_cancellation_propagates_and_cleans_the_runtime():

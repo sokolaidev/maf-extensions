@@ -161,6 +161,12 @@ class TestWhatASnapshotHolds:
         assert state.egress is Egress.ALLOWLIST
         assert state.egress_allow == ("pypi.org",)
 
+    @pytest.mark.parametrize("contract", [None, "codeact:exec:python3", "runtime-profile"])
+    def test_it_preserves_the_execution_contract(self, contract):
+        (state,) = _served(_spec(execution_contract=contract))
+        assert state.execution_contract == contract
+        assert json.loads(json.dumps(state.as_dict()))["execution_contract"] == contract
+
     def test_it_names_every_tool_the_sealed_registry_was_carrying(self):
         """Which tools a sandbox was served with — the half no event answered before."""
         (state,) = _served()
@@ -249,6 +255,7 @@ class TestPostureNeverPayload:
             "attached_identity",
             "max_identity_scope",
             "max_identity_retention_seconds",
+            "execution_contract",
         }
 
 
