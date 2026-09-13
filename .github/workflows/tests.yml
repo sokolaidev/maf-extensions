@@ -127,6 +127,27 @@ jobs:
           uv run pytest -q packages/maf-sandbox-hyperlight/tests
           exit $LASTEXITCODE
 
+  hyperlight-linux-worker:
+    name: Hyperlight worker safety (Linux)
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install uv
+        if: needs.changes.outputs.code == 'true'
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Sync workspace
+        if: needs.changes.outputs.code == 'true'
+        run: uv sync --locked --python 3.13
+
+      - name: Worker pipes, cgroups and lifetime
+        if: needs.changes.outputs.code == 'true'
+        # These real kernel checks require delegation, but no hypervisor.
+        run: sudo python3 scripts/check_hyperlight_linux.py --python "$PWD/.venv/bin/python"
+
   # Lint, format and the commit-msg tier: seconds in total, and a first answer while the
   # heavier shards are still installing.
   fast:
@@ -365,7 +386,7 @@ jobs:
   # and never themselves, so a skipped shard means something went wrong with the graph.
   tests:
     name: Python (pytest + ruff + pyright)
-    needs: [changes, suite, hyperlight-worker, fast, pre-commit, types, packaging]
+    needs: [changes, suite, hyperlight-worker, hyperlight-linux-worker, fast, pre-commit, types, packaging]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

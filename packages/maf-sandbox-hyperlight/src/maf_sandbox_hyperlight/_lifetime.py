@@ -1,0 +1,33 @@
+"""Select the host's worker containment without importing a native SDK."""
+
+from __future__ import annotations
+
+import sys
+from typing import Protocol
+
+from ._config import HyperlightSandboxConfig
+
+
+class Lifetime(Protocol):
+    """A worker must be contained before initialization and terminated as a tree."""
+
+    def assign(self, pid: int) -> None: ...
+
+    def ready(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
+def create_job(config: HyperlightSandboxConfig) -> Lifetime:
+    """Require kernel memory enforcement and owner-death cleanup on each host."""
+    if sys.platform == "linux":
+        from ._linux import DEFAULT_CGROUP_ROOT, Job
+
+        return Job(
+            config.max_worker_memory_bytes,
+            config.linux_cgroup_root or DEFAULT_CGROUP_ROOT,
+            config.cleanup_timeout,
+        )
+    from ._windows import Job as WindowsJob
+
+    return WindowsJob(config.max_worker_memory_bytes)

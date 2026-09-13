@@ -1,4 +1,4 @@
-"""Opt-in WHP checks against the pinned guest: set MAF_HYPERLIGHT_LIVE=1 on Windows x86-64."""
+"""Opt-in WHP/KVM checks against the pinned guest: set MAF_HYPERLIGHT_LIVE=1."""
 
 from __future__ import annotations
 
@@ -36,8 +36,8 @@ from maf_sandbox_hyperlight import (
 )
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("MAF_HYPERLIGHT_LIVE") != "1" or sys.platform != "win32",
-    reason="requires opt-in and Windows WHP",
+    os.environ.get("MAF_HYPERLIGHT_LIVE") != "1" or sys.platform not in {"win32", "linux"},
+    reason="requires opt-in and Windows WHP or Linux KVM",
 )
 KEY = SandboxKey("hyperlight-live", "runtime", "agent")
 SPEC = SandboxSpec(kind="python", work_dir=None, requires=frozenset({Capability.RUN_CODE}))
@@ -45,7 +45,9 @@ SPEC = SandboxSpec(kind="python", work_dir=None, requires=frozenset({Capability.
 
 @pytest.fixture
 def live_backend():
-    backend = HyperlightSandboxBackend()
+    backend = HyperlightSandboxBackend(
+        HyperlightSandboxConfig(linux_cgroup_root=os.environ.get("MAF_HYPERLIGHT_CGROUP_ROOT"))
+    )
     yield backend
     asyncio.run(backend.aclose())
     assert not backend._sandboxes
@@ -117,7 +119,7 @@ def test_infinite_guest_program_is_reaped_and_queue_does_not_enter(live_backend,
 
 
 def test_native_output_limit_retires_worker(live_backend):
-    live_backend.config = HyperlightSandboxConfig(max_output_bytes=1024)
+    live_backend.config = replace(live_backend.config, max_output_bytes=1024)
 
     async def check():
         sandbox = cast("_backend._HyperlightSandbox", await live_backend.acquire(KEY, SPEC))

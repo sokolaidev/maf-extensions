@@ -1,6 +1,6 @@
 # Hyperlight
 
-> The packaged Python guest on Windows WHP, with a killable worker for each sandbox and no file channels.
+> The packaged Python guest on Windows WHP and Linux KVM, with a killable worker for each sandbox and no file channels.
 
 [`maf-sandbox-hyperlight`](../../../packages/maf-sandbox-hyperlight/) implements `SandboxBackend` directly over the Hyperlight Python SDK. The [package README](../../../packages/maf-sandbox-hyperlight/README.md) owns installation, configuration and usage. Kinds continue to use the core protocol; CodeAct opts into `CodeactRuntime` with the backend's `RUNTIME_INSTRUCTIONS`.
 
@@ -8,7 +8,7 @@
 
 | Axis | Contract |
 | --- | --- |
-| Isolation | `MICROVM`, only the packaged Python guest / Wasm backend / Windows x86-64 WHP family |
+| Isolation | `MICROVM`, only the packaged Python guest / Wasm backend on x86-64 Windows WHP or Linux KVM |
 | Capabilities | `RUN_CODE`, `SNAPSHOT` |
 | Egress | `CLOSED`, exact-host `ALLOWLIST`; HTTP 80 and HTTPS 443, no method or identity refinements |
 | Guest OS | No OS family declared; this is a language runtime |
@@ -17,17 +17,19 @@
 | File capabilities | `FILES_IN`, `FILES_OUT`, `FILES_LIST`, `FILES_DELETE`, `RECLAIM` withheld; protocol methods refuse |
 | Other channels | `EXEC`, `HOST_TOOLS`, `EGRESS_METHODS`, `ATTACHED_IDENTITY` withheld |
 
-The exact 0.7.0 SDK, Wasm backend and Python guest are pinned together. The adapter accepts no custom guest, image or guest working directory, and refuses acquire on unvalidated platforms. Construction starts no worker. Each worker retains `WinHvPlatform.dll` and uses the pinned host's single-VM mode, `HYPERLIGHT_MAX_SURROGATES=0`. Default surrogate-manager startup failed in the investigation; this adapter does not depend on it.
+The exact 0.7.0 SDK, Wasm backend and Python guest are pinned together. The adapter accepts no custom guest, image or guest working directory, and refuses unsupported platforms. Construction starts no worker. Windows workers retain `WinHvPlatform.dll`; Linux workers verify KVM API access and VM creation. Each uses the pinned host's single-VM mode, `HYPERLIGHT_MAX_SURROGATES=0`. Linux hosts exposing MSHV are refused until that family has its own validation.
 
 The bundled runtime is CPython 3.14 with a reduced standard library. It supplies Python statement execution, separate stdout/stderr, persistent globals and snapshot restore. In the pinned guest, `json`, `math` and `re` are available, while `datetime`, `statistics`, `pickle` and `__future__` are not. The runtime instructions expose this limitation instead of implying desktop Python compatibility.
 
 ## Execution and cleanup
 
-A worker owns all PyO3/native objects on its main thread. Acquire starts the process, adds it to a parent-owned Windows job, initializes the guest, runs its warm preparation and records the baseline snapshot. No program is admitted before that completes. The process environment excludes application credentials, and neither input nor output directories are configured in the SDK.
+A worker owns all PyO3/native objects on its main thread. Acquire starts the process, establishes Windows job or Linux cgroup containment, initializes the guest, runs its warm preparation and records the baseline snapshot. No program is admitted before that completes. The process environment excludes application credentials, and neither input nor output directories are configured in the SDK.
 
-One host process owns Hyperlight on a machine, enforced by a Windows named event held for the host's lifetime. All backend objects in that process share a key/kind registry. Another process refuses acquire and reports disposal as unclean, so a delete routed to the wrong process cannot claim success. The serving host must receive requests and purges; this implementation does not support a multi-process or multi-machine deployment behind one logical backend. A Windows job kills each worker tree on host exit, so registry loss does not leave running guests to rediscover.
+One host process owns Hyperlight within a shared ownership namespace, enforced by a Windows machine-wide named event or a Linux lock file under `/run/lock`. All backend objects in that process share a key/kind registry. Another process refuses acquire and reports disposal as unclean, so a delete routed to the wrong process cannot claim success. The serving host must receive requests and purges; this implementation does not support multiple owners behind one logical backend. Separate Linux mount/PID/cgroup namespaces do not share this guarantee automatically.
 
-Admission uses locks independent of an asyncio event loop. A sandbox serializes run and reset; the backend serializes acquire and disposal. `run_code` includes queue time in its deadline. Expiry before submission is `SandboxQueuedTimeout` and preserves the running worker. Expiry after submission terminates it and raises `TimeoutError`; cancellation likewise terminates and reaps it before propagating. Cleanup has a separate bounded allowance and uses its own thread so it cannot queue behind blocked pipe readers. Native result buffering is bounded by the job's committed-memory limit, with a second byte limit on returned stdout/stderr and a separate 64 KiB retained diagnostic limit.
+A Windows job kills each worker tree on host exit. Linux requires an operator-delegated cgroup v2 root and creates a group per worker with `memory.max`, `memory.swap.max=0` and `memory.oom.group=1`. A trusted watcher outside that memory group monitors host and worker pidfds, kills the entire group when either exits, waits for it to empty and removes it. The watcher retains the owner lock until cleanup completes, so a new process cannot report a clean purge while the old tree is still being terminated. The operator keeps that watcher running and owns the lifetime of the delegated subtree. Acquisition refuses unavailable controls instead of weakening containment.
+
+Admission uses locks independent of an asyncio event loop. A sandbox serializes run and reset; the backend serializes acquire and disposal. `run_code` includes queue time in its deadline. Expiry before submission is `SandboxQueuedTimeout` and preserves the running worker. Expiry after submission terminates it and raises `TimeoutError`; cancellation likewise terminates and reaps it before propagating. Cleanup has a separate bounded allowance and uses its own thread so it cannot queue behind blocked pipe readers. Native result buffering is bounded by Windows committed-memory or Linux cgroup-accounted memory limits, with a second byte limit on returned stdout/stderr and a separate 64 KiB retained diagnostic limit. The defaults are 1.5 GiB on Windows and 3 GiB on Linux; Linux disables swap and rounds the ceiling down to a whole page.
 
 Reset restores the original warmed baseline and changes `instance_id` only after success. An ordinary guest exception returns a failed `ExecResult` and permits reuse; a transport/native failure retires the worker. Policy changes require disposal instead of reusing a VM under a different allowlist or execution contract. Exact-instance disposal ignores stale IDs, preserves other kinds and agents, and retains failed targets for retry. `dispose_scope` reaches every matching target in the owner's shared registry. Cancellation waits for the active worker's bounded cleanup attempt, then propagates without starting another target; unreported targets remain registered for retry. CodeAct's exclusive admission covers execution and cleanup, and `Cleanup.RESET` selects warm reset between its calls.
 
@@ -43,6 +45,8 @@ On 2026-09-13, Windows 11 AMD64 / WHP / host CPython 3.13 and the exact 0.7.0 tr
 
 The [earlier proposal](../research/hyperlight-backend-proposal.md) and [exploration](../research/hyperlight-backend-exploration.md) preserve the historical investigation. Their proposed file capabilities are not declarations of this adapter. Optional file work must establish its own conformance and cleanup before any file capability is enabled.
 
+The Linux validation used Ubuntu 24.04.4 under WSL2, kernel `6.18.40.1-microsoft-standard-WSL2`, CPython 3.12.3 and the same exact 0.7.0 trio. Real KVM VM creation and all ten guest scenarios passed: nine as an unprivileged host, with the HTTP-policy scenario run separately with permission to bind port 80. Kernel tests exercised cgroup OOM, descendants in separate sessions, abrupt owner exit and lock retention through cleanup. These are WSL2 measurements; native Linux outside WSL2, MSHV, ACA and AKS require their own environment records. CI's Linux cgroup checks exercise kernel lifecycle enforcement without claiming KVM execution.
+
 ## Azure Container Apps
 
 Direct execution inside a standard managed ACA Linux application container has no supported deployment path in the published platform contract inspected on 2026-09-14. Consumption, Dedicated and the inspected preview offerings expose no documented mechanism to inject a KVM/MSHV device. The [ACA feasibility record](../research/hyperlight-aca-feasibility.md) pins the current API-source audit, separates that conclusion from unmeasured runtime behavior, and assesses memory, cache, shutdown and owner routing. A Linux adapter alone does not supply the missing platform access.
@@ -56,6 +60,8 @@ An ACA application can instead be designed to call a separate Hyperlight worker 
 | Item | State | Tracking |
 | --- | --- | --- |
 | Initial runtime and reset backend | implemented with Windows WHP validation; umbrella remains open for the independent channels | [#382](https://github.com/sokolaidev/maf-extensions/issues/382) (open); initial runtime delivered by [#1223](https://github.com/sokolaidev/maf-extensions/pull/1223) (merged) |
+| Linux x86-64 KVM and WSL2 | implemented with local WSL2 KVM validation; native Linux environment validation remains open | [#1228](https://github.com/sokolaidev/maf-extensions/issues/1228) (open) |
+| ACA and AKS hosting | investigation | [#1229](https://github.com/sokolaidev/maf-extensions/issues/1229) (open); [#1230](https://github.com/sokolaidev/maf-extensions/issues/1230) (open) |
 | Optional writable inputs | open | [#1218](https://github.com/sokolaidev/maf-extensions/issues/1218) (open) |
 | Optional output collection/listing | open | [#1219](https://github.com/sokolaidev/maf-extensions/issues/1219) (open) |
 | Optional file cleanup | open | [#1220](https://github.com/sokolaidev/maf-extensions/issues/1220) (open) |

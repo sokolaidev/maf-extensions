@@ -1,4 +1,4 @@
-"""Packaged Python on WHP, with one killable process per logical sandbox."""
+"""Packaged Python in a micro-VM, with one killable process per logical sandbox."""
 
 from __future__ import annotations
 
@@ -35,7 +35,6 @@ from maf_sandbox import (
 
 from ._config import HyperlightSandboxConfig
 from ._process import Worker
-from ._windows import claim_host
 from ._wire import HyperlightWorkerError
 
 BACKEND_NAME = "hyperlight"
@@ -52,9 +51,17 @@ RUNTIME_INSTRUCTIONS = (
 
 
 def check_host() -> None:
-    """Only the validated Windows x86-64 packaged-guest family can be acquired."""
-    if sys.platform != "win32" or platform.machine().lower() not in {"amd64", "x86_64"}:
-        raise HyperlightWorkerError("Hyperlight currently supports Windows x86-64 with WHP only")
+    """Require a supported host and exclusive ownership before using the registry."""
+    if sys.platform not in {"win32", "linux"} or platform.machine().lower() not in {
+        "amd64",
+        "x86_64",
+    }:
+        raise HyperlightWorkerError("Hyperlight requires x86-64 Windows WHP or Linux KVM")
+    if sys.platform == "linux":
+        from ._linux import claim_host
+    else:
+        from ._windows import claim_host
+
     claim_host()
 
 
@@ -268,10 +275,10 @@ class _HyperlightSandbox:
 
 
 class HyperlightSandboxBackend:
-    """The packaged Python guest on Windows WHP, shared by key/kind within this host process.
+    """The packaged Python guest on WHP or KVM, shared by key/kind within this host process.
 
     Construction starts no worker. Acquire verifies the host and prepares a fresh reset baseline.
-    Backend objects share a registry. A machine permits one owning host process until it exits.
+    Backend objects share a registry. The host's lock namespace permits one owning process.
     """
 
     name = BACKEND_NAME
