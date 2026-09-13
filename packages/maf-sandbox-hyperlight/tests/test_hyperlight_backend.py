@@ -93,6 +93,23 @@ async def signalled(event: threading.Event) -> None:
             await asyncio.sleep(0.001)
 
 
+def test_offload_forwards_base_exceptions_instead_of_stranding_the_waiter():
+    class NativePanic(BaseException):
+        pass
+
+    failure = NativePanic("native failure")
+
+    def fail():
+        raise failure
+
+    async def check():
+        with pytest.raises(NativePanic) as raised:
+            await asyncio.wait_for(_backend._offload(fail), timeout=1)
+        assert raised.value is failure
+
+    asyncio.run(check())
+
+
 def test_declarations_and_worker_free_construction(monkeypatch: pytest.MonkeyPatch):
     def unexpected(*args: object):
         raise AssertionError("construction must start no process")

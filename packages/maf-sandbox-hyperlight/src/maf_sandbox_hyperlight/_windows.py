@@ -9,13 +9,12 @@ from ctypes import wintypes
 from ._wire import HyperlightWorkerError
 
 _owner_guard = threading.Lock()
-_owner_api: ctypes.WinDLL | None = None
 _owner_handle: int | None = None
 
 
 def claim_host() -> None:
     """Keep one backend host process per machine; a foreign scope purge must fail visibly."""
-    global _owner_api, _owner_handle
+    global _owner_handle
     with _owner_guard:
         if _owner_handle is not None:
             return
@@ -38,7 +37,7 @@ def claim_host() -> None:
             raise HyperlightWorkerError(
                 "another process owns Hyperlight; route requests and purges to that host"
             )
-        _owner_api, _owner_handle = api, handle
+        _owner_handle = handle
 
 
 class _BasicLimits(ctypes.Structure):

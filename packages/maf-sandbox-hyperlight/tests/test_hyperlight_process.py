@@ -20,9 +20,33 @@ from maf_sandbox_hyperlight import (
     _backend,
     _process,
 )
+from maf_sandbox_hyperlight._wire import decode, encode
 
 KEY = SandboxKey("process-test", "conversation", "agent")
 SPEC = SandboxSpec(kind="python", work_dir=None, requires=frozenset({Capability.RUN_CODE}))
+
+
+def test_native_base_exception_is_reported_before_worker_exit():
+    script = """from types import SimpleNamespace
+from maf_sandbox_hyperlight import _worker
+class NativePanic(BaseException):
+    pass
+def fail(**kwargs):
+    raise NativePanic('native failure')
+_worker.version = lambda package: '0.7.0'
+_worker.ctypes.WinDLL = lambda name: None
+_worker.importlib.import_module = lambda name: SimpleNamespace(Sandbox=fail)
+_worker.main()
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-u", "-c", script],
+        input=encode({"op": "init", "targets": [], "output_limit": 1024})
+        + encode({"op": "run", "code": "pass"}),
+        capture_output=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr.decode()
+    assert decode(result.stdout) == {"error": "native", "detail": "native failure"}
 
 
 class NoJob:

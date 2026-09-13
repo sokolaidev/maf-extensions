@@ -103,7 +103,7 @@ async def _finish[T](task: asyncio.Task[T]) -> T:
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError:
-            pass
+            continue
     return task.result()
 
 

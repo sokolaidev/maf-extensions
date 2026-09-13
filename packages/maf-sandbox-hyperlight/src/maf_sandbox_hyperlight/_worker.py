@@ -43,7 +43,7 @@ def main() -> None:
             ):
                 if version(package) != "0.7.0":
                     raise RuntimeError(f"{package} must be exactly 0.7.0")
-            _whp = ctypes.WinDLL("WinHvPlatform.dll")
+            ctypes.WinDLL("WinHvPlatform.dll")
             sdk = importlib.import_module("hyperlight_sandbox")
             constructor = cast("Callable[..., _NativeSandbox]", sdk.Sandbox)
             sandbox = constructor(
