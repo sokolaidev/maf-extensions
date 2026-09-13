@@ -79,4 +79,4 @@ The [research record](research/acas-host-credentials.md) contains the baseline f
 | Item | Status | Tracked by |
 |---|---|---|
 | Host-selected authority across sandbox operations, bounded client ownership and replica-independent cleanup | implemented; release pending | [#1169](https://github.com/sokolaidev/maf-extensions/issues/1169) (closed) by [#1225](https://github.com/sokolaidev/maf-extensions/pull/1225) (merged) |
-| Eager task progress and completed capacity-waiter reclamation | in progress | [#1233](https://github.com/sokolaidev/maf-extensions/issues/1233) (open), [#1234](https://github.com/sokolaidev/maf-extensions/issues/1234) (open) |
+| Eager task progress and completed capacity-waiter reclamation | implemented; release pending | [#1233](https://github.com/sokolaidev/maf-extensions/issues/1233) (closed), [#1234](https://github.com/sokolaidev/maf-extensions/issues/1234) (closed) by [#1235](https://github.com/sokolaidev/maf-extensions/pull/1235) (merged) |
